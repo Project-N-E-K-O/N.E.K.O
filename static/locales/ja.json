@@ -1157,6 +1157,7 @@
         "settingsSaved": "位置とモデル設定を保存しました！",
         "positionSavedModelFailed": "位置は保存しましたが、モデル設定の保存に失敗しました！",
         "modelSavedPositionFailed": "モデル設定は保存しましたが、位置の保存に失敗しました！",
+        "positionSaveFailedSuffix": "位置の保存に失敗しました",
         "saveFailedGeneral": "保存に失敗しました！",
         "uploadSuccess": "成功: {{message}}",
         "uploadFailed": "エラー: {{error}}",
@@ -1358,6 +1359,7 @@
         "modelSavedLightingAndMmdFailed": "モデル設定を保存しましたが、ライティングと MMD 設定の保存に失敗しました",
         "modelSavedLightingFailed": "モデル設定を保存しましたが、ライティング設定の保存に失敗しました",
         "modelSavedMmdSettingsFailed": "モデル設定を保存しましたが、MMD 設定の保存に失敗しました",
+        "partialSaveWarning": "モデル設定を保存しましたが、一部の関連設定の保存に失敗しました",
         "modelSettingsSavedWithLighting": "モデルとライティング設定を保存しました",
         "vrmModuleTimeout": "VRM モジュールの読み込みがタイムアウトしました。ページを再読み込みしてください",
         "loading": "モデルリストを読み込み中...",
@@ -1895,6 +1897,8 @@
         "autoMuteTimeout": "長時間音声入力がないため、マイクを自動オフにしました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
+        "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
+        "gameVoiceSttNotSupported": "このブラウザはゲーム音声文字起こしに対応していません。しばらくテキスト入力を使ってください。",
         "micMuted": "マイクをミュートしました",
         "micUnmuted": "マイクのミュートを解除しました",
         "speaking": "話し中...",
@@ -3811,6 +3815,39 @@
             "springJoints": "Spring Bone ジョイント",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw Calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "準備完了 — クリックで開始",
+            "ready": "準備完了"
+        },
+        "loading": {
+            "beginStartDefault": "開幕コンテキストを分析中…",
+            "assetsDone": "モデルの読み込みが完了しました",
+            "assetsFailed": "モデルの初期化に失敗しました。ゲームを続行します",
+            "routeDone": "開幕コンテキストの準備が完了しました",
+            "routeFallback": "開幕コンテキストはローカルの既定値を使用します",
+            "routeFailed": "開幕コンテキストの取得に失敗しました。ゲームを続行します"
+        },
+        "voiceStatus": {
+            "routeEnded": "ゲームルートは終了しました。ページを再読み込みすると再接続できます",
+            "unsupported": "このブラウザはゲーム音声の書き起こしに対応していません。当面はメインチャットのテキスト入力をご利用ください。",
+            "listening": "ゲーム音声 STT：プレイヤーの発話を待機中",
+            "error": "ゲーム音声 STT：{{code}}",
+            "startFailed": "ゲーム音声 STT：起動に失敗しました。当面はメインチャットのテキスト入力をご利用ください。",
+            "handoverInProgress": "ゲーム音声 STT：メイン音声入口が引き継ぎ中",
+            "waitingForHandover": "ゲーム音声 STT：メイン音声入口の引き継ぎを待機中",
+            "received": "プレイヤー音声を受信しました：{{text}}",
+            "debugSubmitted": "デバッグ STT を送信しました：{{text}}",
+            "debugListening": "デバッグ STT：プレイヤーの発話を待機中…",
+            "debugIdle": "デバッグ STT：待機中",
+            "debugUnsupported": "このブラウザはデバッグ STT に対応していません。デバッグテキスト入力をご利用ください。",
+            "recognitionError": "音声認識エラー：{{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "離して送信",
+            "idle": "デバッグ音声"
         }
     }
 }

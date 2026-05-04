@@ -102,6 +102,34 @@ GALGAME_DEFAULT_MASTER_PLACEHOLDER = {
     'zh': '玩家', 'en': 'Player', 'ja': 'プレイヤー', 'ko': '플레이어', 'ru': 'Игрок',
 }
 
+GALGAME_FALLBACK_OPTIONS = {
+    'zh': (
+        '我有点没听清，可以再说一次吗？',
+        '嗯嗯，我都在听，慢慢说就好。',
+        '如果我们现在掉进童话书里会怎样？',
+    ),
+    'en': (
+        'Could you walk me through that again?',
+        "I'm right here. Take your time, I'm listening.",
+        'What if we slipped into a storybook right now?',
+    ),
+    'ja': (
+        'もう一度ゆっくり説明してくれる？',
+        'ここにいるよ。ゆっくりで大丈夫。',
+        '今の話、もし絵本の中に紛れ込んだらどうする？',
+    ),
+    'ko': (
+        '한 번만 더 천천히 말해줄래?',
+        '여기 있어, 천천히 말해도 괜찮아.',
+        '우리가 지금 동화책 속으로 들어갔다면 어떨까?',
+    ),
+    'ru': (
+        'Можешь повторить ещё раз помедленнее?',
+        'Я рядом, не торопись, я слушаю.',
+        'А если бы мы сейчас провалились в сказку?',
+    ),
+}
+
 
 def get_galgame_option_generation_prompt(
     lang: str = 'zh',
@@ -121,3 +149,7 @@ def get_galgame_dialogue_header(lang: str = 'zh') -> str:
 
 def get_galgame_dialogue_footer(lang: str = 'zh') -> str:
     return _loc(GALGAME_DIALOGUE_FOOTER, lang)
+
+
+def get_galgame_fallback_options(lang: str = 'zh') -> tuple[str, str, str]:
+    return _loc(GALGAME_FALLBACK_OPTIONS, lang)

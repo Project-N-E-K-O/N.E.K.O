@@ -13,6 +13,7 @@ URL convention: routes declared WITHOUT trailing slash. See the project
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 from config.prompts_galgame import (
     GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
     GALGAME_DEFAULT_MASTER_PLACEHOLDER,
+    get_galgame_fallback_options,
     get_galgame_dialogue_footer,
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
@@ -42,34 +44,8 @@ logger = get_module_logger(__name__, "GalGame")
 GALGAME_MAX_HISTORY = 8
 GALGAME_MAX_TEXT_PER_TURN = 240
 GALGAME_OPTION_MAX_TOKENS = 360
+GALGAME_OPTION_TIMEOUT_SECONDS = 5.0
 GALGAME_OPTION_LABELS = ("A", "B", "C")
-GALGAME_FALLBACK_BY_LANG = {
-    "zh": (
-        "我有点没听清，可以再说一次吗？",
-        "嗯嗯，我都在听，慢慢说就好。",
-        "如果我们现在掉进童话书里会怎样？",
-    ),
-    "en": (
-        "Could you walk me through that again?",
-        "I'm right here. Take your time, I'm listening.",
-        "What if we slipped into a storybook right now?",
-    ),
-    "ja": (
-        "もう一度ゆっくり説明してくれる？",
-        "ここにいるよ。ゆっくりで大丈夫。",
-        "今の話、もし絵本の中に紛れ込んだらどうする？",
-    ),
-    "ko": (
-        "한 번만 더 천천히 말해줄래?",
-        "여기 있어, 천천히 말해도 괜찮아.",
-        "우리가 지금 동화책 속으로 들어갔다면 어떨까?",
-    ),
-    "ru": (
-        "Можешь повторить ещё раз помедленнее?",
-        "Я рядом, не торопись, я слушаю.",
-        "А если бы мы сейчас провалились в сказку?",
-    ),
-}
 
 
 def _resolve_language(text_sample: str, request_lang: str | None) -> str:
@@ -175,7 +151,7 @@ def _normalize_options(parsed: Any) -> list[dict[str, str]]:
 
 
 def _fallback_options(lang: str) -> list[dict[str, str]]:
-    texts = GALGAME_FALLBACK_BY_LANG.get(lang) or GALGAME_FALLBACK_BY_LANG['en']
+    texts = get_galgame_fallback_options(lang)
     return [
         {'label': label, 'text': text}
         for label, text in zip(GALGAME_OPTION_LABELS, texts)
@@ -222,12 +198,12 @@ async def generate_galgame_options(request: Request):
     master_name = (data.get('master_name') or master_name_current or '').strip() \
         or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
 
-    summary_config = config_manager.get_model_api_config('summary')
-    api_key = summary_config.get('api_key')
-    model = summary_config.get('model')
-    base_url = summary_config.get('base_url')
-    if not api_key or not model:
-        logger.warning("Summary model not configured; returning fallback options")
+    summary_config = config_manager.get_model_api_config('summary') or {}
+    api_key = (summary_config.get('api_key') or '').strip()
+    model = (summary_config.get('model') or '').strip()
+    base_url = (summary_config.get('base_url') or '').strip()
+    if not model or not base_url:
+        logger.warning("Summary model/base_url not configured; returning fallback options")
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
@@ -250,15 +226,26 @@ async def generate_galgame_options(request: Request):
         model,
         base_url,
         api_key,
-        temperature=0.85,
         max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
+        timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
     )
     try:
         async with llm:
-            result = await llm.ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=dialogue_block),
-            ])
+            result = await asyncio.wait_for(
+                llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=dialogue_block),
+                ]),
+                timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError:
+        logger.warning("GalGame option generation timed out")
+        return JSONResponse({
+            "success": True,
+            "options": _fallback_options(lang),
+            "fallback": True,
+            "error": "timeout",
+        })
     except Exception as exc:
         logger.warning("GalGame option generation failed: %s", exc)
         return JSONResponse({
@@ -278,7 +265,7 @@ async def generate_galgame_options(request: Request):
         except Exception:
             options = []
     if not options:
-        logger.info("GalGame model output unparseable, using fallback. raw=%r", raw_text[:200])
+        logger.info("GalGame model output unparseable, using fallback")
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),

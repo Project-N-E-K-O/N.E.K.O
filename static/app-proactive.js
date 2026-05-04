@@ -309,6 +309,12 @@
             return false;
         }
 
+        // 游戏路由 active 期间，普通 proactive 会干扰游戏语音/文本接管。
+        // 赛后 game_postgame 不走 /api/proactive_chat，不受这里影响。
+        if (S.gameRouteActive) {
+            return false;
+        }
+
         // 必须开启主动搭话
         if (!S.proactiveChatEnabled) {
             return false;
@@ -601,6 +607,10 @@
             // 「请她离开」状态下不触发
             if (isGoodbyeActive()) {
                 console.log('[ProactiveChat] goodbye 状态，跳过本次触发');
+                return;
+            }
+            if (S.gameRouteActive) {
+                console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
                 return;
             }
             // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──

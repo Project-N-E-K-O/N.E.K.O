@@ -1157,6 +1157,7 @@
         "settingsSaved": "Position and model settings saved successfully!",
         "positionSavedModelFailed": "Position saved successfully, but model settings save failed!",
         "modelSavedPositionFailed": "Model settings saved successfully, but position save failed!",
+        "positionSaveFailedSuffix": "position save failed",
         "saveFailedGeneral": "Save failed!",
         "uploadSuccess": "Success: {{message}}",
         "uploadFailed": "Error: {{error}}",
@@ -1358,6 +1359,7 @@
         "modelSavedLightingAndMmdFailed": "Model settings saved, but lighting and MMD settings failed to save",
         "modelSavedLightingFailed": "Model settings saved, but lighting settings failed to save",
         "modelSavedMmdSettingsFailed": "Model settings saved, but MMD settings failed to save",
+        "partialSaveWarning": "Model settings saved, but some related settings failed to save",
         "modelSettingsSavedWithLighting": "Model and lighting settings saved",
         "vrmModuleTimeout": "VRM module loading timed out. Please refresh and try again.",
         "loading": "Loading model list...",
@@ -1895,6 +1897,8 @@
         "autoMuteTimeout": "No voice input for a long time, microphone auto-closed",
         "deviceSelected": "Selected {{device}}",
         "micAccessDenied": "Cannot access microphone",
+        "gameVoiceSttMicPermissionDenied": "Game voice transcription does not have microphone permission. Please check your browser permissions.",
+        "gameVoiceSttNotSupported": "This browser does not support game voice transcription. Please use text input for now.",
         "micMuted": "Microphone muted",
         "micUnmuted": "Microphone unmuted",
         "speaking": "Speaking...",
@@ -3811,6 +3815,39 @@
             "springJoints": "Spring Bone joints",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "Ready — click to start",
+            "ready": "Ready"
+        },
+        "loading": {
+            "beginStartDefault": "Analyzing pregame context…",
+            "assetsDone": "Model loaded",
+            "assetsFailed": "Model init failed, continuing",
+            "routeDone": "Pregame context ready",
+            "routeFallback": "Pregame context using local default",
+            "routeFailed": "Pregame context fetch failed, continuing"
+        },
+        "voiceStatus": {
+            "routeEnded": "Game route ended — reload the page to reattach",
+            "unsupported": "This browser does not support game voice transcription. Please use main chat text input for now.",
+            "listening": "Game voice STT: listening to the player",
+            "error": "Game voice STT: {{code}}",
+            "startFailed": "Game voice STT: failed to start. Please use main chat text input for now.",
+            "handoverInProgress": "Game voice STT: main voice entry is taking over",
+            "waitingForHandover": "Game voice STT: waiting for main voice entry to take over",
+            "received": "Player voice received: {{text}}",
+            "debugSubmitted": "Debug STT submitted: {{text}}",
+            "debugListening": "Debug STT: listening to the player…",
+            "debugIdle": "Debug STT: idle",
+            "debugUnsupported": "This browser does not support debug STT. Please use the debug text box.",
+            "recognitionError": "Speech recognition error: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Release to submit",
+            "idle": "Debug voice"
         }
     }
 }

@@ -1157,6 +1157,7 @@
         "settingsSaved": "위치 및 모델 설정이 성공적으로 저장되었습니다!",
         "positionSavedModelFailed": "위치가 성공적으로 저장되었지만 모델 설정 저장에 실패했습니다!",
         "modelSavedPositionFailed": "모델 설정이 성공적으로 저장되었지만 위치 저장에 실패했습니다.",
+        "positionSaveFailedSuffix": "위치 저장에 실패했습니다",
         "saveFailedGeneral": "저장에 실패했습니다!",
         "uploadSuccess": "성공: {{message}}",
         "uploadFailed": "오류: {{error}}",
@@ -1358,6 +1359,7 @@
         "modelSavedLightingAndMmdFailed": "모델 설정은 저장되었지만 조명 및 MMD 설정 저장에 실패했습니다",
         "modelSavedLightingFailed": "모델 설정은 저장되었지만 조명 설정 저장에 실패했습니다",
         "modelSavedMmdSettingsFailed": "모델 설정은 저장되었지만 MMD 설정 저장에 실패했습니다",
+        "partialSaveWarning": "모델 설정은 저장되었지만 일부 관련 설정 저장에 실패했습니다",
         "modelSettingsSavedWithLighting": "모델 및 조명 설정이 저장되었습니다",
         "vrmModuleTimeout": "VRM 모듈 로드 시간이 초과되었습니다. 페이지를 새로고침해 주세요.",
         "loading": "모델 목록 로드 중...",
@@ -1895,6 +1897,8 @@
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "gameVoiceSttMicPermissionDenied": "게임 음성 전사에 마이크 권한이 없습니다. 브라우저 권한을 확인하세요.",
+        "gameVoiceSttNotSupported": "현재 브라우저는 게임 음성 전사를 지원하지 않습니다. 당분간 텍스트 입력을 사용하세요.",
         "micMuted": "마이크가 음소거되었습니다",
         "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",
@@ -3811,6 +3815,39 @@
             "springJoints": "Spring Bone 조인트",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw Calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "준비 완료 — 클릭하여 시작",
+            "ready": "준비 완료"
+        },
+        "loading": {
+            "beginStartDefault": "게임 시작 컨텍스트를 분석 중…",
+            "assetsDone": "모델 로딩 완료",
+            "assetsFailed": "모델 초기화에 실패했습니다. 게임을 계속 진행합니다",
+            "routeDone": "게임 시작 컨텍스트 준비 완료",
+            "routeFallback": "게임 시작 컨텍스트는 로컬 기본값을 사용합니다",
+            "routeFailed": "게임 시작 컨텍스트 요청에 실패했습니다. 게임을 계속 진행합니다"
+        },
+        "voiceStatus": {
+            "routeEnded": "게임 라우트가 종료되었습니다. 페이지를 새로고침하면 다시 연결할 수 있습니다",
+            "unsupported": "이 브라우저는 게임 음성 전사를 지원하지 않습니다. 잠시 메인 채팅의 텍스트 입력을 사용해 주세요.",
+            "listening": "게임 음성 STT: 플레이어의 말을 듣는 중",
+            "error": "게임 음성 STT: {{code}}",
+            "startFailed": "게임 음성 STT: 시작에 실패했습니다. 잠시 메인 채팅의 텍스트 입력을 사용해 주세요.",
+            "handoverInProgress": "게임 음성 STT: 메인 음성 입력이 인계 중",
+            "waitingForHandover": "게임 음성 STT: 메인 음성 입력의 인계를 기다리는 중",
+            "received": "플레이어 음성 수신: {{text}}",
+            "debugSubmitted": "디버그 STT 전송됨: {{text}}",
+            "debugListening": "디버그 STT: 플레이어의 말을 듣는 중…",
+            "debugIdle": "디버그 STT: 대기",
+            "debugUnsupported": "이 브라우저는 디버그 STT를 지원하지 않습니다. 디버그 텍스트 입력을 사용해 주세요.",
+            "recognitionError": "음성 인식 오류: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "손을 떼어 제출",
+            "idle": "디버그 음성"
         }
     }
 }

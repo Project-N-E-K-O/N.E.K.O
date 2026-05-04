@@ -26,6 +26,7 @@ from .shared_state import (
     get_config_manager,
     get_session_id,
 )
+from .game_router import is_game_route_active, route_external_stream_message
 
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
@@ -125,6 +126,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = False
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text']:
+                    if is_game_route_active(lanlan_name):
+                        if input_type == "text":
+                            logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
+                            _fire_task(session_manager[lanlan_name].send_session_started("text"))
+                            continue
+                        if input_type == "audio":
+                            logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            if session_manager[lanlan_name]._starting_session_count == 0:
+                                session_manager[lanlan_name].reset_session_start_circuit()
+                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
+                            continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
@@ -141,6 +154,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                if is_game_route_active(lanlan_name):
+                    input_type = message.get("input_type")
+                    if input_type == "audio":
+                        await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
+                    else:
+                        handled_by_game = await route_external_stream_message(lanlan_name, message)
+                        if handled_by_game:
+                            continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
@@ -158,7 +179,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                _fire_task(session_manager[lanlan_name].stream_data(message))
+                if message.get("input_type") == "audio":
+                    await session_manager[lanlan_name].stream_data(message)
+                else:
+                    _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "avatar_interaction":
                 _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))

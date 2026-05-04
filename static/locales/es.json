@@ -1157,6 +1157,7 @@
         "settingsSaved": "¡La configuración de posición y modelo se guardó correctamente!",
         "positionSavedModelFailed": "¡La posición se guardó correctamente, pero la configuración del modelo falló!",
         "modelSavedPositionFailed": "La configuración del modelo se guardó correctamente, ¡pero falló al guardar la posición!",
+        "positionSaveFailedSuffix": "no se pudo guardar la posición",
         "saveFailedGeneral": "¡Error al guardar!",
         "uploadSuccess": "Éxito: {{message}}",
         "uploadFailed": "Error: {{error}}",
@@ -1358,6 +1359,7 @@
         "modelSavedLightingAndMmdFailed": "Configuración del modelo guardada, pero no se guardaron la iluminación ni la configuración MMD",
         "modelSavedLightingFailed": "Configuración del modelo guardada, pero no se guardó la iluminación",
         "modelSavedMmdSettingsFailed": "Configuración del modelo guardada, pero no se guardó la configuración MMD",
+        "partialSaveWarning": "Configuración del modelo guardada, pero algunas opciones relacionadas no se guardaron",
         "modelSettingsSavedWithLighting": "Configuración del modelo y de iluminación guardada",
         "vrmModuleTimeout": "Se agotó el tiempo de carga del módulo VRM. Actualiza la página e inténtalo de nuevo.",
         "loading": "Cargando lista de modelos...",
@@ -1895,6 +1897,8 @@
         "autoMuteTimeout": "Sin entrada de voz durante mucho tiempo, micrófono cerrado automáticamente",
         "deviceSelected": "Seleccionado {{device}}",
         "micAccessDenied": "No puedo acceder al micrófono",
+        "gameVoiceSttMicPermissionDenied": "La transcripción de voz del juego no tiene permiso para usar el micrófono. Revisa los permisos del navegador.",
+        "gameVoiceSttNotSupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto por ahora.",
         "micMuted": "Micrófono silenciado",
         "micUnmuted": "Micrófono activado",
         "speaking": "Discurso...",
@@ -3811,6 +3815,39 @@
             "springJoints": "Spring Bone joints",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "Listo — haz clic para empezar",
+            "ready": "Listo"
+        },
+        "loading": {
+            "beginStartDefault": "Analizando contexto de inicio…",
+            "assetsDone": "Modelo cargado",
+            "assetsFailed": "Error al inicializar el modelo, continuando",
+            "routeDone": "Contexto de inicio listo",
+            "routeFallback": "Contexto de inicio usando valores predeterminados locales",
+            "routeFailed": "Falló la solicitud del contexto de inicio, continuando"
+        },
+        "voiceStatus": {
+            "routeEnded": "Ruta del juego finalizada — recarga la página para volver a conectar",
+            "unsupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto del chat principal por ahora.",
+            "listening": "STT del juego: escuchando al jugador",
+            "error": "STT del juego: {{code}}",
+            "startFailed": "STT del juego: error al iniciar. Usa la entrada de texto del chat principal por ahora.",
+            "handoverInProgress": "STT del juego: la entrada de voz principal está tomando el control",
+            "waitingForHandover": "STT del juego: esperando que la entrada de voz principal tome el control",
+            "received": "Voz del jugador recibida: {{text}}",
+            "debugSubmitted": "STT de depuración enviado: {{text}}",
+            "debugListening": "STT de depuración: escuchando al jugador…",
+            "debugIdle": "STT de depuración: en espera",
+            "debugUnsupported": "Este navegador no admite el STT de depuración. Usa el cuadro de texto de depuración.",
+            "recognitionError": "Error de reconocimiento de voz: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Suelta para enviar",
+            "idle": "Voz de depuración"
         }
     }
 }

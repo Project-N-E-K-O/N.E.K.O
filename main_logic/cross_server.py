@@ -87,6 +87,15 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
+# Mirror schema + detection now lives in main_logic.mirror_meta;
+# cross_server only consumes those helpers — does not own the schema.
+from main_logic.mirror_meta import (
+    MIRROR_USER_INPUT_TYPES,
+    is_mirror_assistant_message,
+    is_mirror_turn_end_meta,
+)
+
+
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     """合并 last_synced_index 之后末尾连续的 assistant 消息为一条。
 
@@ -554,6 +563,7 @@ async def run_sync_connector(
 
     user_input_cache = ''
     text_output_cache = ''  # lanlan的当前消息
+    text_output_request_id = None
     current_turn = 'user'
     had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
     current_turn_start_index = 0
@@ -580,12 +590,20 @@ async def run_sync_connector(
 
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
+                            if is_mirror_assistant_message(message["data"]):
+                                logger.debug(
+                                    "[%s] mirror assistant line skipped for ordinary memory: source=%s",
+                                    lanlan_name,
+                                    (message["data"].get("metadata") or {}).get("source"),
+                                )
+                                continue
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
                                     user_input_cache = ''
                                 current_turn = 'assistant'
+                                text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
 
@@ -630,6 +648,16 @@ async def run_sync_connector(
                             # 发送用户转录到 monitor 供副终端显示
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                        elif input_type in MIRROR_USER_INPUT_TYPES:
+                            # Mirror channel user inputs (e.g. text/voice that
+                            # was hijacked into an external controller) are
+                            # logged for monitor display but **never** flushed
+                            # into chat_history as a UserMessage — the chat
+                            # LLM did not "hear" them; they belong to the
+                            # external controller's transcript log.
+                            if data:
+                                await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                            await _try_send_json(sync_slot, {'type': 'user_activity'})
                         elif input_type == "screen":
                             last_screen = data
                             if data:
@@ -650,10 +678,12 @@ async def run_sync_connector(
                                     chat_history.append({'role': 'system', 'content': [
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             elif message["data"] == "response_discarded_clear":
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
+                                text_output_request_id = None
                             
                             if message["data"] == "renew session":
                                 # 检查是否正在关闭
@@ -673,6 +703,7 @@ async def run_sync_connector(
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -717,18 +748,56 @@ async def run_sync_connector(
 
                             if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
                                 is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
+                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
+                                # 的 pending_* 状态。game-only 足球台词在这里先截断，避免
+                                # 未打标的兼容镜像文本先 append 到 ordinary chat_history。
+                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
+                                if not isinstance(turn_end_meta, dict):
+                                    turn_end_meta = None
+                                was_assistant_turn = current_turn == 'assistant'
+                                if is_mirror_turn_end_meta(turn_end_meta):
+                                    # Mirror turn-end: mirror assistant messages
+                                    # never enter ``text_output_cache`` (they
+                                    # ``continue`` at line ~595), and mirror user
+                                    # inputs never enter ``user_input_cache``
+                                    # (policy A at line ~660), so we must NOT
+                                    # touch user-side state — a pre-takeover real
+                                    # user utterance is still legitimate and must
+                                    # be flushed when the post-takeover assistant
+                                    # turn arrives.
+                                    #
+                                    # BUT if takeover started mid-ordinary-
+                                    # assistant turn, that turn becomes orphaned:
+                                    # ``current_turn`` stays ``'assistant'`` and
+                                    # ``text_output_cache`` holds partial text
+                                    # from a turn that never completes.  Without
+                                    # cleanup the next post-takeover real
+                                    # ``gemini_response`` is treated as a
+                                    # continuation, skipping the ``current_turn
+                                    # == 'user'`` block that flushes
+                                    # ``user_input_cache`` into chat_history → the
+                                    # user's input is silently dropped.
+                                    # So reset assistant-side state when the
+                                    # current ordinary turn was in flight, leave
+                                    # user-side alone.
+                                    if was_assistant_turn:
+                                        text_output_cache = ''
+                                        text_output_request_id = None
+                                        current_turn = 'user'
+                                        current_turn_start_index = len(chat_history)
+                                        had_user_input_this_turn = False
+                                    await _try_send_json(sync_slot, {'type': 'turn end'})
+                                    logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
+                                    continue
                                 current_turn = 'user'
                                 text_output_cache = normalize_text(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
-                                # 的 pending_* 状态。kind == 'avatar_interaction' 才进入隔离
-                                # 路径，其它情况按 proactive / normal 处理。
-                                turn_end_meta = message.get("meta") if isinstance(message, dict) else None
-                                if not isinstance(turn_end_meta, dict):
-                                    turn_end_meta = None
+                                text_output_request_id = None
+                                # kind == 'avatar_interaction' 才进入隔离路径，其它情况按
+                                # proactive / normal 处理。
                                 # meta 由 core 端 turn end 原子打标；avatar 互动若被用户
                                 # 接管则 core 会清空 meta，所以这里不再需要 had_user_input
                                 # 二次兜底，避免"用户语音缓存刚好先入队"误落回普通路径。
@@ -907,6 +976,7 @@ async def run_sync_connector(
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                text_output_request_id = None
                                 current_turn_start_index = len(chat_history)
                                 # 合并未同步的连续主动搭话消息
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)

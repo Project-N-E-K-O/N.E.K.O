@@ -22,6 +22,10 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function logTutorialPromptFlow(step, details = {}) {
+    // 默认关闭高频引导流程日志，避免 heartbeat 等调试信息刷屏。
+    if (localStorage.getItem('neko_tutorial_prompt_flow_debug') !== '1') {
+        return;
+    }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
 }
 

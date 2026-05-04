@@ -1157,6 +1157,7 @@
         "settingsSaved": "Configurações de posição e modelo salvas com sucesso!",
         "positionSavedModelFailed": "Posição salva com sucesso, mas falha ao salvar as configurações do modelo!",
         "modelSavedPositionFailed": "As configurações do modelo foram salvas com sucesso, mas o salvamento da posição falhou!",
+        "positionSaveFailedSuffix": "falha ao salvar a posição",
         "saveFailedGeneral": "Falha ao salvar!",
         "uploadSuccess": "Sucesso: {{message}}",
         "uploadFailed": "Erro: {{error}}",
@@ -1358,6 +1359,7 @@
         "modelSavedLightingAndMmdFailed": "Configurações do modelo salvas, mas as configurações de iluminação e MMD falharam",
         "modelSavedLightingFailed": "Configurações do modelo salvas, mas as configurações de iluminação falharam",
         "modelSavedMmdSettingsFailed": "Configurações do modelo salvas, mas as configurações MMD falharam",
+        "partialSaveWarning": "Configurações do modelo salvas, mas algumas configurações relacionadas falharam",
         "modelSettingsSavedWithLighting": "Configurações do modelo e de iluminação salvas",
         "vrmModuleTimeout": "O carregamento do módulo VRM expirou. Atualize a página e tente novamente.",
         "loading": "Carregando lista de modelos...",
@@ -1895,6 +1897,8 @@
         "autoMuteTimeout": "Sem entrada de voz por muito tempo, microfone fechado automaticamente",
         "deviceSelected": "Selecionado {{device}}",
         "micAccessDenied": "Não é possível acessar o microfone",
+        "gameVoiceSttMicPermissionDenied": "A transcrição de voz do jogo não tem permissão para usar o microfone. Verifique as permissões do navegador.",
+        "gameVoiceSttNotSupported": "Este navegador não oferece suporte à transcrição de voz do jogo. Use a entrada de texto por enquanto.",
         "micMuted": "Microfone silenciado",
         "micUnmuted": "Microfone ativado",
         "speaking": "Falando...",
@@ -3811,6 +3815,39 @@
             "springJoints": "Spring Bone joints",
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
+        }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "Pronto — clique para começar",
+            "ready": "Pronto"
+        },
+        "loading": {
+            "beginStartDefault": "Analisando contexto de início…",
+            "assetsDone": "Modelo carregado",
+            "assetsFailed": "Falha ao inicializar o modelo, continuando",
+            "routeDone": "Contexto de início pronto",
+            "routeFallback": "Contexto de início usando valores padrão locais",
+            "routeFailed": "Falha ao obter contexto de início, continuando"
+        },
+        "voiceStatus": {
+            "routeEnded": "Rota do jogo encerrada — recarregue a página para reconectar",
+            "unsupported": "Este navegador não suporta transcrição de voz do jogo. Use a entrada de texto do chat principal por enquanto.",
+            "listening": "STT do jogo: ouvindo o jogador",
+            "error": "STT do jogo: {{code}}",
+            "startFailed": "STT do jogo: falha ao iniciar. Use a entrada de texto do chat principal por enquanto.",
+            "handoverInProgress": "STT do jogo: a entrada de voz principal está assumindo",
+            "waitingForHandover": "STT do jogo: aguardando a entrada de voz principal assumir",
+            "received": "Voz do jogador recebida: {{text}}",
+            "debugSubmitted": "STT de depuração enviado: {{text}}",
+            "debugListening": "STT de depuração: ouvindo o jogador…",
+            "debugIdle": "STT de depuração: ocioso",
+            "debugUnsupported": "Este navegador não suporta STT de depuração. Use a caixa de texto de depuração.",
+            "recognitionError": "Erro de reconhecimento de voz: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Solte para enviar",
+            "idle": "Voz de depuração"
         }
     }
 }
