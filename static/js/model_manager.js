@@ -7349,7 +7349,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const modelFullySaved = modelStatus === 'ok';
+            const modelFullySaved = currentModelType === 'live3d'
+                ? modelStatus === 'ok'
+                : (positionSuccess && modelStatus === 'ok');
             const shouldOfferCardFace = modelFullySaved
                 && (
                     window._modelManagerModelChangedSinceSave
