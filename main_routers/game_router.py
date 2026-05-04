@@ -3052,6 +3052,14 @@ async def _finalize_game_route_state(
       the first caller's ``False`` won; the second caller then redundantly
       invoked ``_close_and_remove_session`` outside the shield, racing
       with the inner finalize and producing double-pop / double-close.
+    - codex P2 follow-up: a late caller arriving with
+      ``close_game_session=True`` AFTER the inner runner already passed
+      its close-site check (or finished entirely) used to lose its
+      request — the dispatcher just awaited the cached task result. We
+      now re-check ``_exit_close_session_request`` against the inner's
+      result on the existing-task path and perform the close ourselves
+      if the inner missed it. ``_close_and_remove_session`` is
+      idempotent so concurrent late callers cannot double-close.
     """
     if close_game_session:
         state["_exit_close_session_request"] = True
@@ -3060,7 +3068,20 @@ async def _finalize_game_route_state(
 
     existing_task = state.get("_exit_task")
     if existing_task:
-        return await asyncio.shield(existing_task)
+        result = await asyncio.shield(existing_task)
+        if state.get("_exit_close_session_request") and not result.get("game_session_closed"):
+            closed_now = await _close_and_remove_session(
+                str(state.get("game_type") or ""),
+                str(state.get("session_id") or "default"),
+                str(state.get("lanlan_name") or ""),
+            )
+            if closed_now:
+                # Why: mutate the shared result dict so any other awaiter (or
+                # subsequent late caller) observes the close. The inner's
+                # return dict is the single source of truth handed back to
+                # every shielded await.
+                result["game_session_closed"] = True
+        return result
 
     task = asyncio.create_task(_finalize_game_route_state_inner(state, reason=reason))
     state["_exit_task"] = task

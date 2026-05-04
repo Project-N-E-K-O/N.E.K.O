@@ -137,6 +137,140 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_b5_finalize_late_close_request_after_inner_done(monkeypatch):
+    """codex P2 follow-up (PR #1127): a ``close_game_session=True`` caller
+    arriving AFTER the inner finalize already passed its close-site check
+    must still close the session.
+
+    Pre-fix race: Caller A spawns inner with ``close=False``; inner reads
+    ``_exit_close_session_request=False`` at the close site and returns
+    without closing. Caller B then arrives with ``close=True``; the
+    dispatcher ORs the flag but only awaits the cached (done) task and
+    returns its no-close result. Session leaks until heartbeat sweep.
+
+    Post-fix: dispatcher re-checks the OR-merge flag against the cached
+    result on the existing-task path and performs the close itself.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_b5_late")
+        fake_session = _FakeOmniSession(name="b5_late")
+        key = game_router._game_session_key("Lan", "soccer", "match_b5_late")
+        game_router._game_sessions[key] = {
+            "session": fake_session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+
+        # Caller A: close=False. Run to completion BEFORE B arrives so the
+        # inner task has fully passed its close-site check and returned.
+        result_a = await asyncio.wait_for(
+            game_router._finalize_game_route_state(
+                state, reason="A_no_close", close_game_session=False,
+            ),
+            timeout=5.0,
+        )
+        assert result_a["game_session_closed"] is False
+        assert fake_session.close_calls == 0
+        assert key in game_router._game_sessions
+
+        # Caller B arrives late with close=True. The cached task is already
+        # done; dispatcher must still honor B's close request.
+        result_b = await asyncio.wait_for(
+            game_router._finalize_game_route_state(
+                state, reason="B_late_close", close_game_session=True,
+            ),
+            timeout=5.0,
+        )
+        assert result_b["game_session_closed"] is True
+        assert fake_session.close_calls == 1
+        assert key not in game_router._game_sessions
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
+    """codex P2 follow-up (PR #1127): late ``close=True`` caller variant
+    where the inner is parked on archive submission when B arrives.
+
+    This exercises a finer-grained race: even if scheduling lets the inner
+    resume past its close-site check before observing B's flag set
+    (because B has not actually been scheduled yet at the resume point),
+    the dispatcher recheck on B's existing-task path still performs the
+    close. ``_close_and_remove_session`` is idempotent, so concurrent
+    close paths between inner and dispatcher cannot double-close.
+    """
+    _stub_archive_calls(monkeypatch)
+    barrier = asyncio.Event()
+
+    async def _blocked_submit(_archive):
+        await barrier.wait()
+        return {"status": "ok"}
+
+    monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", _blocked_submit)
+
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_b5_mid")
+        fake_session = _FakeOmniSession(name="b5_mid")
+        key = game_router._game_session_key("Lan", "soccer", "match_b5_mid")
+        game_router._game_sessions[key] = {
+            "session": fake_session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+
+        # Caller A spawns inner with close=False; inner parks on the barrier
+        # at archive submission, BEFORE reaching the close-site check.
+        task_a = asyncio.create_task(
+            game_router._finalize_game_route_state(
+                state, reason="A_no_close", close_game_session=False,
+            )
+        )
+        # Yield until inner has spawned and parked on the barrier.
+        for _ in range(50):
+            if state.get("_exit_task") is not None and not barrier.is_set():
+                # Give the inner a chance to reach the barrier.
+                await asyncio.sleep(0)
+                if state.get("archive") is not None:
+                    break
+            await asyncio.sleep(0)
+
+        # Caller B: close=True. Dispatcher ORs the flag and awaits the
+        # in-flight task.
+        task_b = asyncio.create_task(
+            game_router._finalize_game_route_state(
+                state, reason="B_close", close_game_session=True,
+            )
+        )
+        await asyncio.sleep(0)
+
+        # Release the barrier so inner reaches its close-site check with
+        # the OR-merged flag set to True.
+        barrier.set()
+        result_a, result_b = await asyncio.wait_for(
+            asyncio.gather(task_a, task_b), timeout=5.0,
+        )
+
+        assert result_a["game_session_closed"] is True
+        assert result_b["game_session_closed"] is True
+        # Exactly one close, despite the dispatcher recheck path being
+        # eligible to fire.
+        assert fake_session.close_calls == 1
+        assert key not in game_router._game_sessions
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_b1_chat_short_circuits_when_route_exit_started(monkeypatch):
     """B1/B2: ``_run_game_chat`` must short-circuit if the route flipped to
     ``_exit_flow_started`` before the call lands. Otherwise it would issue
