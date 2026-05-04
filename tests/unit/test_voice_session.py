@@ -487,7 +487,8 @@ async def test_signal_user_activity_end_websocket_manual_sends_commit_and_respon
     async def fake_send(payload):
         try:
             sent.append(json.loads(payload))
-        except Exception:
+        except json.JSONDecodeError:
+            # Why: payload may be bytes audio frames, not JSON — ignore non-JSON in this collector.
             pass
 
     mock_ws = AsyncMock()
