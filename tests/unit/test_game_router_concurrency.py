@@ -207,8 +207,10 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
     """
     _stub_archive_calls(monkeypatch)
     barrier = asyncio.Event()
+    archive_started = asyncio.Event()
 
     async def _blocked_submit(_archive):
+        archive_started.set()
         await barrier.wait()
         return {"status": "ok"}
 
@@ -216,6 +218,15 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
 
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_b5_mid")
+        # Force the inner to actually enter ``_submit_game_archive_to_memory``
+        # so the barrier in ``_blocked_submit`` becomes a real park point.
+        # Without these flags ``_game_archive_memory_skip_reason`` returns
+        # "game_not_started" / "soccer_game_memory_archive_disabled" and
+        # the submit call is bypassed entirely.
+        state["game_started"] = True
+        state["game_started_at"] = game_router.time.time() - 30
+        state["soccer_game_memory_enabled"] = True
+        state["soccer_game_memory_archive_enabled"] = True
         fake_session = _FakeOmniSession(name="b5_mid")
         key = game_router._game_session_key("Lan", "soccer", "match_b5_mid")
         game_router._game_sessions[key] = {
@@ -236,14 +247,11 @@ async def test_b5_finalize_late_close_request_during_inner_archive(monkeypatch):
                 state, reason="A_no_close", close_game_session=False,
             )
         )
-        # Yield until inner has spawned and parked on the barrier.
-        for _ in range(50):
-            if state.get("_exit_task") is not None and not barrier.is_set():
-                # Give the inner a chance to reach the barrier.
-                await asyncio.sleep(0)
-                if state.get("archive") is not None:
-                    break
-            await asyncio.sleep(0)
+        # Pin the timing: wait until the inner has actually entered
+        # ``_blocked_submit`` and is parked on ``barrier``. Explicit event
+        # sync — robust against future reordering of ``state["archive"]``
+        # assignment around the archive submit call.
+        await asyncio.wait_for(archive_started.wait(), timeout=5.0)
 
         # Caller B: close=True. Dispatcher ORs the flag and awaits the
         # in-flight task.
