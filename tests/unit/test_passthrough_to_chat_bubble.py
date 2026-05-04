@@ -254,6 +254,46 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
 
 
 @pytest.mark.unit
+async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(monkeypatch):
+    """Verbatim contract: passthrough must receive the RAW event text with
+    leading/trailing whitespace intact, even though the empty-check / log /
+    callback paths in _handle_agent_event use a stripped local. CodeRabbit
+    PR #1128 r3182231689 — pre-fix the call shared the stripped local and
+    silently swallowed surrounding whitespace/newlines."""
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "  hello world\n\n",
+        "channel": "plugin:foo",
+        "task_id": "task-verbatim",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    call = fake_mgr.passthrough_to_chat_bubble.await_args
+    assert call.args[0] == "  hello world\n\n"
+
+
+@pytest.mark.unit
 async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(monkeypatch):
     """When ai_behavior != "blind", the passthrough branch must NOT fire
     even if visibility includes "chat" — non-blind ai_behavior already

@@ -637,7 +637,10 @@ async def _handle_agent_event(event: dict):
             logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
         if event_type in ("task_result", "proactive_message"):
-            text = (event.get("text") or "").strip()
+            raw_text = event.get("text") or ""
+            # Why: chat-blind passthrough must preserve verbatim whitespace;
+            # only the empty-check / log / callback paths use the stripped form.
+            text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
             # same proactive_message event.  Image parts go straight to the
@@ -822,7 +825,7 @@ async def _handle_agent_event(event: dict):
                         # raw + "plugin" default would mislabel non-plugin sources.
                         passthrough_source = source_kind or "plugin"
                         await mgr.passthrough_to_chat_bubble(
-                            text,
+                            raw_text,
                             request_id=event.get("task_id") or None,
                             source=passthrough_source,
                         )
