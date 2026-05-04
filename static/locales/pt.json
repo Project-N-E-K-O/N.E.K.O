@@ -64,6 +64,11 @@
         "never": "Não me lembre",
         "startFailed": "O tutorial não pôde ser iniciado agora. Por favor, tente novamente mais tarde."
     },
+    "exitRetention": {
+        "goodbyeBubble": "Você quer mesmo que eu vá...? Vou esperar aqui até você me chamar de volta.",
+        "returnBubble": "Voltei. Vou ficar com você.",
+        "stayButton": "Fique"
+    },
     "characterProfile": {
         "gender": "Gênero",
         "age": "Idade",

@@ -24,7 +24,19 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_YUI_GUIDE_ASSET_VERSION_PATHS = (
+_STATIC_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/app-exit-retention.js",
+    _PROJECT_ROOT / "static/app-ui.js",
+    _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/i18n-i18next.js",
+    _PROJECT_ROOT / "static/locales/en.json",
+    _PROJECT_ROOT / "static/locales/es.json",
+    _PROJECT_ROOT / "static/locales/ja.json",
+    _PROJECT_ROOT / "static/locales/ko.json",
+    _PROJECT_ROOT / "static/locales/pt.json",
+    _PROJECT_ROOT / "static/locales/ru.json",
+    _PROJECT_ROOT / "static/locales/zh-CN.json",
+    _PROJECT_ROOT / "static/locales/zh-TW.json",
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
@@ -62,7 +74,7 @@ def _static_assets_ctx() -> dict:
         return {"static_asset_version": cached_version}
 
     latest_mtime = 0
-    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+    for path in _STATIC_ASSET_VERSION_PATHS:
         try:
             latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
         except OSError:

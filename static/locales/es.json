@@ -64,6 +64,11 @@
         "never": "no me lo recuerdes",
         "startFailed": "El tutorial no se pudo iniciar en este momento. Inténtelo de nuevo más tarde."
     },
+    "exitRetention": {
+        "goodbyeBubble": "¿De verdad quieres que me vaya...? Esperaré aquí hasta que me llames.",
+        "returnBubble": "Ya volví. Me quedo contigo.",
+        "stayButton": "Quédate"
+    },
     "characterProfile": {
         "gender": "Género",
         "age": "Edad",

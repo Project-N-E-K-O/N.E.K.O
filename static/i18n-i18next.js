@@ -28,9 +28,23 @@
     // 支持的语言列表
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
-    // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-04-28-1';
+    // locale 资源版本跟随当前 i18n 脚本的 ?v=，避免新增 key 时浏览器继续使用旧语言包。
+    const LOCALE_VERSION_FALLBACK = '2026-04-28-1';
+
+    function getLocaleVersionFromScript() {
+        try {
+            const script = document.currentScript
+                || document.querySelector('script[src*="/static/i18n-i18next.js"]');
+            const src = script && script.getAttribute('src');
+            if (!src) return LOCALE_VERSION_FALLBACK;
+            const url = new URL(src, window.location.href);
+            return url.searchParams.get('v') || LOCALE_VERSION_FALLBACK;
+        } catch (_) {
+            return LOCALE_VERSION_FALLBACK;
+        }
+    }
+
+    let LOCALE_VERSION = getLocaleVersionFromScript();
 
     function getLanguageFromQuery() {
         try {

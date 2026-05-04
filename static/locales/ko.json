@@ -64,6 +64,11 @@
         "never": "다시 묻지 않기",
         "startFailed": "지금은 튜토리얼을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요."
     },
+    "exitRetention": {
+        "goodbyeBubble": "정말 가야 해...? 다시 불러줄 때까지 여기서 기다릴게.",
+        "returnBubble": "돌아왔어. 다시 곁에 있을게.",
+        "stayButton": "가지 마"
+    },
     "characterProfile": {
         "gender": "성별",
         "age": "나이",
