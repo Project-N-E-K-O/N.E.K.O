@@ -4489,47 +4489,67 @@ async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:
     chat output). Finalizing immediately at switch time releases the
     takeover and closes the LLM session.
 
+    Concurrency (codex P2 follow-up): the snapshot + iterate + finalize
+    block runs under the per-``lanlan_name`` supersede lock (the same OUTER
+    lock ``game_route_start`` takes). Without it, a concurrent
+    ``/route/start`` for the same ``lanlan_name`` can activate a NEW route
+    AFTER we snapshot ``_game_route_states`` and escape cleanup — the
+    character switch then completes with an old-character route still
+    active (takeover, session, heartbeat all live), defeating B8's
+    "immediate teardown on switch" guarantee. Holding the supersede lock
+    across the whole sweep forces any concurrent ``/route/start`` for the
+    same ``lanlan_name`` to land strictly before (in which case our
+    snapshot includes it) or strictly after (in which case our cleanup
+    completed first and the new route is intentional post-switch state
+    the caller can deal with separately).
+
+    Lock ordering: OUTER ``_route_supersede_locks[lanlan_name]`` then
+    INNER ``_route_state_locks[(lanlan, game_type)]`` per iteration.
+    Same direction as ``game_route_start`` — no deadlock window.
+
     Returns the number of routes finalized.
     """
     target = str(old_lanlan_name or "")
     if not target:
         return 0
-    candidates = [
-        candidate
-        for candidate in list(_game_route_states.values())
-        if candidate.get("game_route_active")
-        and str(candidate.get("lanlan_name") or "") == target
-    ]
+    supersede_lock = _get_supersede_lock(target)
     finalized_count = 0
-    for old_state in candidates:
-        old_game_type = str(old_state.get("game_type") or "")
-        logger.warning(
-            "🎮 角色切换前结束旧角色游戏路由: lanlan=%s game=%s session=%s",
-            target,
-            old_game_type,
-            old_state.get("session_id") or "",
-        )
-        route_lock = _get_route_lock(target, old_game_type)
-        try:
-            async with route_lock:
-                if not old_state.get("game_route_active"):
-                    if old_state.get("_exit_task"):
-                        await asyncio.shield(old_state["_exit_task"])
-                    continue
-                await _finalize_game_route_state(
-                    old_state,
-                    reason="character_switch",
-                    close_game_session=True,
-                )
-                finalized_count += 1
-        except Exception as exc:
+    async with supersede_lock:
+        candidates = [
+            candidate
+            for candidate in list(_game_route_states.values())
+            if candidate.get("game_route_active")
+            and str(candidate.get("lanlan_name") or "") == target
+        ]
+        for old_state in candidates:
+            old_game_type = str(old_state.get("game_type") or "")
             logger.warning(
-                "🎮 角色切换收尾失败: lanlan=%s game=%s err=%s",
+                "🎮 角色切换前结束旧角色游戏路由: lanlan=%s game=%s session=%s",
                 target,
                 old_game_type,
-                exc,
-                exc_info=True,
+                old_state.get("session_id") or "",
             )
+            route_lock = _get_route_lock(target, old_game_type)
+            try:
+                async with route_lock:
+                    if not old_state.get("game_route_active"):
+                        if old_state.get("_exit_task"):
+                            await asyncio.shield(old_state["_exit_task"])
+                        continue
+                    await _finalize_game_route_state(
+                        old_state,
+                        reason="character_switch",
+                        close_game_session=True,
+                    )
+                    finalized_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "🎮 角色切换收尾失败: lanlan=%s game=%s err=%s",
+                    target,
+                    old_game_type,
+                    exc,
+                    exc_info=True,
+                )
     return finalized_count
 
 

@@ -2,12 +2,16 @@
 
 These cover the audit findings B1, B2, B3, B5, B6, B8 (B4 is a defensive
 guard verified in ``test_game_context_organizer.py``; B7 was landed in
-PR #1125), plus two PR #1127 follow-up tests:
+PR #1125), plus three PR #1127 follow-up tests:
 
 - ``test_route_start_serializes_supersede_across_game_types_for_same_lanlan``
   guards CodeRabbit's per-lanlan supersede-lock finding.
 - ``test_game_session_create_lock_evicted_with_session`` guards codex's
   ``_game_session_create_locks`` memory-leak finding.
+- ``test_character_switch_finalize_blocks_concurrent_route_start_for_same_lanlan``
+  guards codex's ``finalize_game_routes_for_character`` snapshot-without-
+  supersede-lock finding (race lets a concurrent ``/route/start`` activate
+  a NEW route AFTER the snapshot and escape character-switch cleanup).
 """
 from __future__ import annotations
 
@@ -536,3 +540,187 @@ async def test_get_or_create_session_canonical_key_mismatch_leaves_no_orphan_loc
         assert closed is True
         assert canonical_key not in game_router._game_session_create_locks
         assert raw_key not in game_router._game_session_create_locks
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_switch_finalize_blocks_concurrent_route_start_for_same_lanlan(
+    monkeypatch,
+):
+    """codex P2 follow-up (PR #1127 thread 3182019570):
+    ``finalize_game_routes_for_character`` must serialize with concurrent
+    ``/route/start`` calls for the same ``lanlan_name`` via the per-lanlan
+    supersede lock — otherwise a route activated AFTER finalize's snapshot
+    escapes cleanup and the character switch completes with an old-character
+    route still alive.
+
+    Pre-fix shape: ``finalize_game_routes_for_character`` snapshots
+    ``_game_route_states`` BEFORE acquiring any supersede lock. A
+    concurrent ``/route/start`` for the same ``lanlan_name`` could:
+      1. land its activation between the snapshot and the iterate step,
+      2. miss being included in the snapshot,
+      3. survive the character switch unfinalized.
+
+    Post-fix shape: finalize takes ``_route_supersede_locks[lanlan_name]``
+    (the OUTER lock per the lock-ordering rule documented in
+    ``utils/game_route_state.py``) BEFORE snapshotting. Any concurrent
+    ``/route/start`` for the same lanlan_name blocks on that lock until
+    cleanup finishes; the new route either lands strictly before the
+    snapshot (in which case finalize observes and cleans it) or strictly
+    after (in which case finalize already returned).
+
+    This test forces the race by externally holding the supersede lock
+    while ``finalize_game_routes_for_character`` is in flight, and then
+    firing a concurrent ``/route/start``. With the fix, finalize must
+    block on the supersede lock until we release it; without the fix,
+    finalize would complete immediately because it never tries to take
+    the lock.
+    """
+    _stub_archive_calls(monkeypatch)
+
+    async def _fake_pregame(**_kwargs):
+        return (
+            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+
+    with reset_game_route_state():
+        # Drop any leftover supersede / route locks so this test starts
+        # fresh — locks live across tests because they're a process-global
+        # registry by design (see comment on ``_route_state_locks``).
+        from utils import game_route_state as grs_mod
+        grs_mod._route_supersede_locks.pop("Lan", None)
+        grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "soccer"), None)
+
+        # Existing active route for the OLD character: this is what
+        # ``finalize_game_routes_for_character`` is supposed to clean up.
+        old_state = _activate_route("Lan", "soccer", "match_old")
+        fake_session = _FakeOmniSession(name="charswitch_old")
+        old_key = game_router._game_session_key("Lan", "soccer", "match_old")
+        game_router._game_sessions[old_key] = {
+            "session": fake_session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+
+        # Acquire the supersede lock externally to simulate a /route/start
+        # already in progress. Post-fix: finalize must block on this lock.
+        # Pre-fix: finalize would NOT take this lock and would proceed
+        # without serialization.
+        supersede_lock = grs_mod._get_supersede_lock("Lan")
+        await supersede_lock.acquire()
+
+        try:
+            # Schedule finalize in the background. Post-fix, this awaits
+            # the supersede lock and never returns until we release it.
+            finalize_task = asyncio.create_task(
+                game_router.finalize_game_routes_for_character("Lan")
+            )
+
+            # Yield enough times to let finalize_task run as far as it can.
+            # Post-fix: it parks on supersede_lock.acquire().
+            for _ in range(10):
+                await asyncio.sleep(0)
+
+            # Post-fix invariant: finalize is still running (blocked on
+            # supersede lock). Pre-fix: finalize would already be done.
+            assert not finalize_task.done(), (
+                "finalize_game_routes_for_character must block on the "
+                "per-lanlan supersede lock; it appears to have skipped "
+                "the lock and snapshotted _game_route_states without "
+                "serialization (codex P2 race window)."
+            )
+            # The old route is still active because finalize is parked
+            # before it could snapshot.
+            assert old_state.get("game_route_active") is True
+        finally:
+            # Release the lock so finalize can proceed and we don't leak
+            # a stuck task.
+            supersede_lock.release()
+
+        # Finalize now proceeds: snapshot, iterate, cleanup.
+        n = await finalize_task
+        assert n == 1
+        assert old_state.get("_exit_flow_started") is True
+        assert old_state.get("game_route_active") is False
+        assert fake_session.close_calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_switch_finalize_serializes_with_concurrent_route_start_via_gather(
+    monkeypatch,
+):
+    """codex P2 follow-up (PR #1127 thread 3182019570) — gather variant.
+
+    End-to-end: ``finalize_game_routes_for_character`` and a concurrent
+    ``game_route_start`` for the same ``lanlan_name`` are launched via
+    ``asyncio.gather``. After both complete, the per-lanlan supersede
+    lock guarantees that the resulting state is one of the two stable
+    interleavings (route_start-then-finalize, or finalize-then-
+    route_start), never a half-state where finalize "missed" a route
+    that was activated mid-iteration.
+
+    The load-bearing assertion is in the FIRST test
+    (``test_character_switch_finalize_blocks_concurrent_route_start_for_same_lanlan``)
+    which directly verifies the supersede lock is taken; this test just
+    smoke-checks that running both concurrently doesn't trip any
+    deadlock or lock-ordering inversion. The lock order in
+    ``finalize_game_routes_for_character`` is OUTER ``_route_supersede_locks``
+    then INNER ``_route_state_locks``, identical to ``game_route_start`` —
+    no deadlock window.
+    """
+    _stub_archive_calls(monkeypatch)
+
+    async def _fake_pregame(**_kwargs):
+        return (
+            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+
+    with reset_game_route_state():
+        from utils import game_route_state as grs_mod
+        grs_mod._route_supersede_locks.pop("Lan", None)
+        grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "soccer"), None)
+
+        # Both calls fired concurrently. The supersede lock serializes
+        # them; whichever lands inside the lock first runs to completion
+        # before the other proceeds. No deadlock should occur.
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                game_router.game_route_start(
+                    "soccer",
+                    _FakeRouteStartRequest({
+                        "lanlan_name": "Lan",
+                        "session_id": "match_charswitch_race",
+                    }),
+                ),
+                game_router.finalize_game_routes_for_character("Lan"),
+            ),
+            timeout=5.0,  # If serialization is broken, deadlock surfaces here.
+        )
+
+        route_start_result, _finalize_count = results
+        assert route_start_result.get("ok"), route_start_result
+
+        # Final state: AT MOST one active Lan route. Whichever
+        # interleaving the supersede lock chose, the result is a
+        # well-defined steady state — never two concurrently-active
+        # routes for the same character.
+        active_for_lan = [
+            key
+            for key, state in game_router._game_route_states.items()
+            if key[0] == "Lan" and state.get("game_route_active")
+        ]
+        assert len(active_for_lan) <= 1, active_for_lan
