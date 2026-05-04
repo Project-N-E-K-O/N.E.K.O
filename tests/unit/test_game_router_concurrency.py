@@ -114,13 +114,16 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
         }
 
         # Caller A: close_game_session=False; Caller B: True.
-        results = await asyncio.gather(
-            game_router._finalize_game_route_state(
-                state, reason="A_no_close", close_game_session=False,
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                game_router._finalize_game_route_state(
+                    state, reason="A_no_close", close_game_session=False,
+                ),
+                game_router._finalize_game_route_state(
+                    state, reason="B_close", close_game_session=True,
+                ),
             ),
-            game_router._finalize_game_route_state(
-                state, reason="B_close", close_game_session=True,
-            ),
+            timeout=5.0,
         )
 
         # Both callers see the same finalized result (the shared task).
@@ -267,9 +270,12 @@ async def test_b6_session_create_lock_serializes_concurrent_misses(monkeypatch):
             lambda *args, **kwargs: "stub_prompt",
         )
 
-        results = await asyncio.gather(
-            game_router._get_or_create_session("soccer", "match_b6", "Lan"),
-            game_router._get_or_create_session("soccer", "match_b6", "Lan"),
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                game_router._get_or_create_session("soccer", "match_b6", "Lan"),
+                game_router._get_or_create_session("soccer", "match_b6", "Lan"),
+            ),
+            timeout=5.0,
         )
 
         assert construct_count["n"] == 1
@@ -766,21 +772,24 @@ async def test_route_start_serializes_supersede_across_game_types_for_same_lanla
         grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "soccer"), None)
         grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "chess"), None)
 
-        results = await asyncio.gather(
-            game_router.game_route_start(
-                "soccer",
-                _FakeRouteStartRequest({
-                    "lanlan_name": "Lan",
-                    "session_id": "soccer_match",
-                }),
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                game_router.game_route_start(
+                    "soccer",
+                    _FakeRouteStartRequest({
+                        "lanlan_name": "Lan",
+                        "session_id": "soccer_match",
+                    }),
+                ),
+                game_router.game_route_start(
+                    "chess",
+                    _FakeRouteStartRequest({
+                        "lanlan_name": "Lan",
+                        "session_id": "chess_match",
+                    }),
+                ),
             ),
-            game_router.game_route_start(
-                "chess",
-                _FakeRouteStartRequest({
-                    "lanlan_name": "Lan",
-                    "session_id": "chess_match",
-                }),
-            ),
+            timeout=5.0,
         )
 
         assert all(r.get("ok") for r in results), results
@@ -1303,7 +1312,10 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
             current_fn["fn"] = _succeed_b
             b_can_unblock.set()
 
-        await asyncio.gather(_a_runner(), _b_runner(), _release_a_after_b_parks())
+        await asyncio.wait_for(
+            asyncio.gather(_a_runner(), _b_runner(), _release_a_after_b_parks()),
+            timeout=5.0,
+        )
 
         # Invariant 1: A saw a non-None waiter list at the moment of
         # raise. This is the precondition for the conditional-pop guard
@@ -1467,3 +1479,82 @@ async def test_partial_connect_race_does_not_orphan_session(monkeypatch):
         # Stream was never invoked — short-circuit fired before
         # stream_text.
         assert constructed[0].stream_calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_session_cancellation_closes_half_open_client(monkeypatch):
+    """CR Major (PR #1127 r3182318081): if ``_build_and_register_game_session``
+    is cancelled mid ``await session.connect(...)``, the half-open client
+    must still be closed. ``asyncio.CancelledError`` does not inherit from
+    ``Exception`` in Python 3.8+, so a bare ``except Exception`` would
+    swallow nothing here and leak the freshly built client.
+    """
+    with reset_game_route_state():
+        canonical_key = game_router._game_session_key(
+            "Lan", "soccer", "match_cancel_during_connect",
+        )
+        game_router._game_session_create_locks.pop(canonical_key, None)
+
+        connect_started = asyncio.Event()
+        # Connect parks on this event forever — the test cancels the
+        # build task while it is awaiting here.
+        connect_release = asyncio.Event()
+        constructed: list = []
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                self.close_calls = 0
+                constructed.append(self)
+
+            async def connect(self, *, instructions: str = ""):
+                connect_started.set()
+                await connect_release.wait()
+
+            async def close(self):
+                self.close_calls += 1
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        build_task = asyncio.create_task(
+            game_router._get_or_create_session(
+                "soccer", "match_cancel_during_connect", "Lan",
+            )
+        )
+        await asyncio.wait_for(connect_started.wait(), timeout=2.0)
+
+        build_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await build_task
+
+        # Invariant: the half-open client must have been closed exactly
+        # once on the cancellation path. Pre-fix, this assertion fails
+        # because ``except Exception`` does not catch CancelledError.
+        assert len(constructed) == 1
+        assert constructed[0].close_calls == 1, (
+            "Cancelled session.connect leaked a half-open OmniOfflineClient; "
+            "CancelledError must trigger the same cleanup as Exception."
+        )
+        # Cache state is clean: nothing was registered, lock evicted.
+        assert canonical_key not in game_router._game_sessions
+        assert canonical_key not in game_router._game_session_create_locks

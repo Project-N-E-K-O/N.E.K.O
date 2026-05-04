@@ -3270,6 +3270,15 @@ async def _build_and_register_game_session(
     )
     try:
         await session.connect(instructions=system_prompt)
+    except asyncio.CancelledError:
+        # Why: CancelledError doesn't inherit from Exception in Python
+        # 3.8+; without this branch a cancelled connect leaks the half-
+        # open client.
+        try:
+            await session.close()
+        except Exception:
+            pass
+        raise
     except Exception:
         # Connect failed — ensure we don't leak a half-open client. close
         # is idempotent / tolerant of "never connected".
