@@ -57,7 +57,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
     print(f"  path={plugin_dir}")
     print(f"  version={source.version}")
     print(f"  entry={source.entry_point}")
-    _print_issues(issues)
+    _print_issues(issues, plugin_id=source.plugin_id, plugin_dir=plugin_dir, show_fixes=True)
     return 1 if errors else 0
 
 
@@ -70,7 +70,7 @@ def handle_release_check(args: argparse.Namespace) -> int:
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
             print(f"[FAIL] {source.plugin_id}: release-check blocked by validation errors", file=sys.stderr)
-            _print_issues(issues)
+            _print_issues(issues, plugin_id=source.plugin_id, plugin_dir=plugin_dir, show_fixes=True)
             return 1
 
         test_result = _run_tests(plugin_dir, skip_tests=args.skip_tests)
@@ -172,7 +172,54 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _print_issues(issues: list[Issue]) -> None:
+def _print_issues(
+    issues: list[Issue],
+    *,
+    plugin_id: str = "",
+    plugin_dir: Path | None = None,
+    show_fixes: bool = False,
+) -> None:
     for severity, message in issues:
         stream = sys.stderr if severity == "error" else sys.stdout
         print(f"  [{severity.upper()}] {message}", file=stream)
+        if show_fixes:
+            fix = _suggest_fix(message, plugin_id=plugin_id, plugin_dir=plugin_dir)
+            if fix:
+                print(f"    fix: {fix}", file=stream)
+
+
+def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
+    label = plugin_id or "<plugin>"
+    if message.endswith("is missing"):
+        missing = message.removesuffix(" is missing")
+        if missing == "pyproject.toml":
+            return "add pyproject.toml when this plugin needs standalone metadata or pack rules"
+        if missing in {
+            "README.md",
+            "tests/test_smoke.py",
+            ".vscode/settings.json",
+            ".vscode/tasks.json",
+            ".github/workflows/verify.yml",
+            ".gitignore",
+        }:
+            return f"neko-plugin setup-repo {label} --github-actions"
+    if message == "[plugin.sdk] is missing":
+        return "add a [plugin.sdk] table to plugin.toml with recommended and supported SDK ranges"
+    if message.startswith("plugin.entry should usually start with"):
+        return "check plugin.toml [plugin].entry and make sure it points at the plugin entry class"
+    if message.startswith("plugin.id ") and "does not match directory name" in message:
+        return "rename the directory or update plugin.toml [plugin].id so they match"
+    if message.startswith(".gitignore should include "):
+        pattern = message.removeprefix(".gitignore should include ")
+        return f"add {pattern} to .gitignore"
+    if message == "plugin directory is not a standalone git repository":
+        if plugin_dir is None:
+            return "run git init inside the plugin directory"
+        return f"cd {plugin_dir} && git init"
+    if message == "git remote 'origin' is not configured":
+        return "git remote add origin <repo-url>"
+    if message == "git working tree has uncommitted changes":
+        return "commit or stash changes before publishing"
+    if message == "git executable not found":
+        return "install git, then rerun neko-plugin doctor"
+    return ""

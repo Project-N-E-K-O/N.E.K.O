@@ -79,15 +79,18 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "SdkError" not in init_text
 
     readme_text = (target / "README.md").read_text(encoding="utf-8")
-    assert "uv run python neko-plugin-cli/cli.py pack quick_demo" in readme_text
+    assert "uv run python neko-plugin-cli/cli.py doctor quick_demo" in readme_text
+    assert "uv run python neko-plugin-cli/cli.py release-check quick_demo" in readme_text
     assert 'entry = "plugin.plugins.quick_demo:QuickDemoPlugin"' in readme_text
     assert (target / "tests" / "test_smoke.py").is_file()
     assert (target / ".vscode" / "settings.json").is_file()
     assert (target / ".vscode" / "tasks.json").is_file()
 
     tasks_text = (target / ".vscode" / "tasks.json").read_text(encoding="utf-8")
+    assert "N.E.K.O: doctor quick_demo" in tasks_text
+    assert "N.E.K.O: release-check quick_demo" in tasks_text
     assert "N.E.K.O: pack quick_demo" in tasks_text
-    assert "uv run python neko-plugin-cli/cli.py verify quick_demo.neko-plugin" in tasks_text
+    assert "uv run python neko-plugin-cli/cli.py verify quick_demo.neko-plugin" not in tasks_text
 
     settings_text = (target / ".vscode" / "settings.json").read_text(encoding="utf-8")
     assert '"nekoPlugin.pluginRoot": "../.."' in settings_text
@@ -206,10 +209,10 @@ def test_generate_repo_verification_workflow_when_requested(tmp_path: Path) -> N
     assert "NEKO_REPOSITORY: neko-org/N.E.K.O" in workflow_text
     assert "NEKO_REF: v1.2.3" in workflow_text
     assert "Checkout N.E.K.O" in workflow_text
-    assert 'pack "${PLUGIN_ID}"' in workflow_text
-    assert 'inspect "${PLUGIN_ID}.neko-plugin"' in workflow_text
-    assert 'verify "${PLUGIN_ID}.neko-plugin"' in workflow_text
+    assert 'release-check "${PLUGIN_ID}"' in workflow_text
+    assert "${PLUGIN_ID}.release-check.txt" in workflow_text
     assert "N.E.K.O Plugin Verification" in workflow_text
+    assert "Release Check" in workflow_text
     assert "GITHUB_STEP_SUMMARY" in workflow_text
     assert "Upload verification artifact" in workflow_text
 

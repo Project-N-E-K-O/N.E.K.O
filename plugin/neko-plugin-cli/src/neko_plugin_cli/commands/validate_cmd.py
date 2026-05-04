@@ -16,7 +16,11 @@ from ._resolve import resolve_plugin_dir_candidate
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("validate", help="Validate plugin source repository conventions")
+    parser = subparsers.add_parser("validate", help="Internal validation command")
+    subparsers._choices_actions = [  # type: ignore[attr-defined]
+        action for action in subparsers._choices_actions  # type: ignore[attr-defined]
+        if getattr(action, "dest", None) != "validate"
+    ]
     plugin_arg = parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
     plugin_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")

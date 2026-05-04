@@ -17,6 +17,7 @@ Shell completion (requires ``shtab``)::
 from __future__ import annotations
 
 import argparse
+import textwrap
 
 from .commands import pack_cmd, inspect_cmd, verify_cmd, unpack_cmd, analyze_cmd, init_cmd, validate_cmd, release_cmd
 from .paths import resolve_default_paths
@@ -37,7 +38,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="neko-plugin",
-        description="N.E.K.O plugin packaging and inspection CLI",
+        description="N.E.K.O plugin development, packaging, and release CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Recommended workflow:
+              neko-plugin init-repo <plugin>       Create a standalone plugin repo
+              neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
+              neko-plugin doctor <plugin>          Diagnose local repo readiness
+              neko-plugin release-check <plugin>   Run the pre-release check used by CI
+
+            Advanced/debug commands:
+              pack, inspect, verify, unpack, analyze
+            """
+        ),
     )
 
     # Shell completion support (optional dependency).
@@ -47,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     except ImportError:
         pass
 
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     init_cmd.register(subparsers, defaults=defaults)
     validate_cmd.register(subparsers, defaults=defaults)

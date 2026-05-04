@@ -499,9 +499,8 @@ N.E.K.O/plugin/plugins/{spec.plugin_id}
 From the N.E.K.O `plugin/` directory:
 
 ```bash
-uv run python neko-plugin-cli/cli.py pack {spec.plugin_id}
-uv run python neko-plugin-cli/cli.py inspect neko-plugin-cli/target/{spec.plugin_id}.neko-plugin
-uv run python neko-plugin-cli/cli.py verify neko-plugin-cli/target/{spec.plugin_id}.neko-plugin
+uv run python neko-plugin-cli/cli.py doctor {spec.plugin_id}
+uv run python neko-plugin-cli/cli.py release-check {spec.plugin_id}
 ```
 
 ## Entry
@@ -557,36 +556,27 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
   "version": "2.0.0",
   "tasks": [
     {{
+      "label": "N.E.K.O: doctor {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run python neko-plugin-cli/cli.py doctor {spec.plugin_id}",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
+      "label": "N.E.K.O: release-check {spec.plugin_id}",
+      "type": "shell",
+      "command": "uv run python neko-plugin-cli/cli.py release-check {spec.plugin_id}",
+      "options": {{
+        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+      }},
+      "problemMatcher": []
+    }},
+    {{
       "label": "N.E.K.O: pack {spec.plugin_id}",
       "type": "shell",
       "command": "uv run python neko-plugin-cli/cli.py pack {spec.plugin_id}",
-      "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
-      }},
-      "problemMatcher": []
-    }},
-    {{
-      "label": "N.E.K.O: verify {spec.plugin_id}",
-      "type": "shell",
-      "command": "uv run python neko-plugin-cli/cli.py verify {spec.plugin_id}.neko-plugin",
-      "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
-      }},
-      "problemMatcher": []
-    }},
-    {{
-      "label": "N.E.K.O: inspect {spec.plugin_id}",
-      "type": "shell",
-      "command": "uv run python neko-plugin-cli/cli.py inspect {spec.plugin_id}.neko-plugin",
-      "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
-      }},
-      "problemMatcher": []
-    }},
-    {{
-      "label": "N.E.K.O: test {spec.plugin_id}",
-      "type": "shell",
-      "command": "uv run pytest ${{workspaceFolder}}/tests",
       "options": {{
         "cwd": "${{config:nekoPlugin.pluginRoot}}"
       }},
@@ -635,21 +625,10 @@ jobs:
           mkdir -p neko/plugin/plugins
           cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
 
-      - name: Test plugin
+      - name: Release check
         working-directory: neko/plugin
         run: |
-          if [ -d "plugins/${{PLUGIN_ID}}/tests" ]; then
-            uv run pytest "plugins/${{PLUGIN_ID}}/tests"
-          else
-            echo "No plugin tests found; skipping."
-          fi
-
-      - name: Pack and verify
-        working-directory: neko/plugin
-        run: |
-          uv run python neko-plugin-cli/cli.py pack "${{PLUGIN_ID}}"
-          uv run python neko-plugin-cli/cli.py inspect "${{PLUGIN_ID}}.neko-plugin" | tee "neko-plugin-cli/target/${{PLUGIN_ID}}.inspect.txt"
-          uv run python neko-plugin-cli/cli.py verify "${{PLUGIN_ID}}.neko-plugin" | tee "neko-plugin-cli/target/${{PLUGIN_ID}}.verify.txt"
+          uv run python neko-plugin-cli/cli.py release-check "${{PLUGIN_ID}}" | tee "neko-plugin-cli/target/${{PLUGIN_ID}}.release-check.txt"
 
       - name: Write verification summary
         working-directory: neko/plugin
@@ -671,14 +650,9 @@ jobs:
             echo "| Package | ${{PLUGIN_ID}}.neko-plugin |"
             echo "| Package SHA256 | ${{PACKAGE_SHA256}} |"
             echo ""
-            echo "### Inspect"
+            echo "### Release Check"
             echo '```text'"
-            cat "neko-plugin-cli/target/${{PLUGIN_ID}}.inspect.txt"
-            echo '```'
-            echo ""
-            echo "### Verify"
-            echo '```text'"
-            cat "neko-plugin-cli/target/${{PLUGIN_ID}}.verify.txt"
+            cat "neko-plugin-cli/target/${{PLUGIN_ID}}.release-check.txt"
             echo '```'
           }} >> "$GITHUB_STEP_SUMMARY"
 
@@ -688,8 +662,7 @@ jobs:
           name: ${{{{ env.PLUGIN_ID }}}}-verification
           path: |
             neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
-            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.inspect.txt
-            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.verify.txt
+            neko/plugin/neko-plugin-cli/target/${{{{ env.PLUGIN_ID }}}}.release-check.txt
 '''
 
 

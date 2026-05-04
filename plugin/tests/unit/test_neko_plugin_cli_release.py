@@ -63,6 +63,8 @@ def test_doctor_reports_repository_warnings_without_failing(tmp_path: Path, caps
     assert exit_code == 0
     assert "doctor found" in captured.out
     assert "not a standalone git repository" in captured.out
+    assert "fix: cd " in captured.out
+    assert "git init" in captured.out
 
 
 def test_release_check_runs_tests_and_creates_verified_package(tmp_path: Path, capsys) -> None:
@@ -115,3 +117,4 @@ def test_release_check_blocks_when_strict_support_files_are_missing(tmp_path: Pa
     assert exit_code == 1
     assert "release-check blocked" in captured.err
     assert "README.md is missing" in captured.err
+    assert "fix: neko-plugin setup-repo missing_release_files --github-actions" in captured.err
