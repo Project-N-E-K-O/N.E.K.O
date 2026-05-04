@@ -947,8 +947,12 @@ def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
         language = getattr(manager, "user_language", None)
         if language:
             return normalize_language_code(str(language), format="short") or "en"
-    except Exception as exc:
-        logger.debug("🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s err=%s", lanlan_name, exc)
+    except Exception:
+        logger.debug(
+            "🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
 
     try:
         return normalize_language_code(get_global_language(), format="short") or "en"
