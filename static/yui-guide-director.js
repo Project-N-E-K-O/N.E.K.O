@@ -8895,7 +8895,13 @@
                 return;
             }
 
-            if (this.mobileTouchInteractionPassthrough && this.isTouchInteractionEvent(event)) {
+            // 等待特定目标点击期间不得放行触控事件，否则会破坏 awaitIntroActivation / manualPluginDashboard 的守卫语义
+            if (
+                this.mobileTouchInteractionPassthrough
+                && this.isTouchInteractionEvent(event)
+                && !this.awaitingIntroActivation
+                && !this.manualPluginDashboardOpenAllowed
+            ) {
                 return;
             }
 
