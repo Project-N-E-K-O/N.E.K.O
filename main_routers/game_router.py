@@ -28,6 +28,13 @@ from config.prompts_game import (
     get_soccer_system_prompt,
 )
 from .shared_state import get_config_manager, get_session_manager
+from utils.game_route_state import (
+    _game_route_states,
+    _get_active_game_route_state,
+    _route_state_key,
+    is_game_route_active,
+    register_voice_transcript_handler,
+)
 from utils.language_utils import get_global_language, normalize_language_code
 from utils.logger_config import get_module_logger
 
@@ -83,10 +90,10 @@ _SOCCER_GAME_STANCES = {
     "withdrawn",
 }
 
-# key = f"{lanlan_name}:{game_type}"
 # 游戏期间外部主入口路由状态。这里记录的是“主语音入口/主聊天窗是否被游戏接管”，
 # 不是游戏页面内部另起一套聊天入口。
-_game_route_states: Dict[str, dict] = {}
+# 实际容器在 utils/game_route_state.py，这里只 re-import 以保持现有调用点 / 测试
+# 使用 game_router._game_route_states / _route_state_key 的写法不变。
 _DEFAULT_LAST_FULL_DIALOGUE_COUNT = 8
 _GAME_ROUTE_OUTPUT_LIMIT = 50
 _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS = 2.5
@@ -1049,10 +1056,6 @@ async def _build_soccer_pregame_context(
     return context, source, error
 
 
-def _route_state_key(lanlan_name: str, game_type: str) -> str:
-    return f"{lanlan_name}:{game_type}"
-
-
 def _public_route_state(state: dict | None) -> dict:
     if not state:
         return {"game_route_active": False}
@@ -1089,16 +1092,6 @@ def _resolve_lanlan_name(raw: Any = None) -> str:
         return ""
 
 
-def _get_active_game_route_state(lanlan_name: str, game_type: str | None = None) -> dict | None:
-    if game_type:
-        state = _game_route_states.get(_route_state_key(lanlan_name, game_type))
-        return state if state and state.get("game_route_active") else None
-    for key, state in _game_route_states.items():
-        if key.startswith(f"{lanlan_name}:") and state.get("game_route_active"):
-            return state
-    return None
-
-
 def _find_game_route_state_for_session(
     game_type: str,
     session_id: str,
@@ -1115,11 +1108,6 @@ def _find_game_route_state_for_session(
         ):
             return state
     return None
-
-
-def is_game_route_active(lanlan_name: str, game_type: str | None = None) -> bool:
-    """Used by the main WebSocket route to decide whether ordinary chat is hijacked."""
-    return _get_active_game_route_state(lanlan_name, game_type) is not None
 
 
 def _build_route_state(
@@ -4147,6 +4135,12 @@ async def route_external_voice_transcript(
     game_type: str | None = None,
     session_id: str | None = None,
 ) -> bool:
+    """Route a voice transcript into the active game route, if any.
+
+    Also registered with ``utils.game_route_state`` so ``main_logic/core.py``
+    can dispatch transcripts via the generic helper without taking a
+    ``main_logic → main_routers`` import.
+    """
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state:
         return False
@@ -4161,6 +4155,12 @@ async def route_external_voice_transcript(
         kind="user-voice",
         request_id=request_id,
     )
+
+
+# Plug the heavy implementation into the shared dispatcher so main_logic/
+# can call ``utils.game_route_state.route_external_voice_transcript`` instead
+# of importing from ``main_routers``.
+register_voice_transcript_handler(route_external_voice_transcript)
 
 
 async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:

@@ -882,7 +882,7 @@ class LLMSessionManager:
 
     def _is_game_route_active(self) -> bool:
         try:
-            from main_routers.game_router import is_game_route_active
+            from utils.game_route_state import is_game_route_active
 
             return bool(is_game_route_active(self.lanlan_name))
         except Exception:
@@ -1400,7 +1400,7 @@ class LLMSessionManager:
         transcript_text = transcript.strip()
         if is_voice_source and transcript_text and self._is_game_route_active():
             try:
-                from main_routers.game_router import _get_active_game_route_state, route_external_voice_transcript
+                from utils.game_route_state import _get_active_game_route_state, route_external_voice_transcript
 
                 route_state = _get_active_game_route_state(self.lanlan_name)
                 route_game_type = str(route_state.get("game_type") or "") if route_state else ""
@@ -3744,7 +3744,7 @@ class LLMSessionManager:
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
         try:
-            from main_routers.game_router import is_game_route_active
+            from utils.game_route_state import is_game_route_active
             if is_game_route_active(self.lanlan_name):
                 logger.info("[%s] voice proactive nudge skipped: game route active", self.lanlan_name)
                 return False

@@ -4,6 +4,7 @@ import pytest
 
 from main_logic.core import LLMSessionManager
 from main_routers import game_router
+from utils import game_route_state
 
 
 class _AsyncNullLock:
@@ -252,11 +253,11 @@ async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(m
         return True
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_router, "_get_active_game_route_state", lambda lanlan_name: {
+    monkeypatch.setattr(game_route_state, "_get_active_game_route_state", lambda lanlan_name: {
         "game_type": "soccer",
         "session_id": "match_1",
     })
-    monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
+    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fake_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
 
@@ -322,7 +323,7 @@ async def test_non_voice_transcript_reuse_does_not_enter_active_game_route(monke
         raise AssertionError("non-voice transcript reuse must not route through game voice")
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_router, "route_external_voice_transcript", fail_route)
+    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fail_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 
@@ -351,11 +352,11 @@ async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch
         return False
 
     monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_router, "_get_active_game_route_state", lambda lanlan_name: {
+    monkeypatch.setattr(game_route_state, "_get_active_game_route_state", lambda lanlan_name: {
         "game_type": "soccer",
         "session_id": "match_1",
     })
-    monkeypatch.setattr(game_router, "route_external_voice_transcript", fake_route)
+    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fake_route)
 
     await LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)
 
