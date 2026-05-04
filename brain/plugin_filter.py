@@ -2,11 +2,13 @@
 """
 Two-stage plugin filtering for agent assessment.
 
-Stage 1 (coarse — only when plugin descriptions > 4000 chars):
+Stage 1 (coarse — only when plugin descriptions exceed
+config.AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
   - BM25 text matching: select plugins with token overlap to user intent
   - LLM coarse screening: pick semantically relevant plugins by id + short_description
   - Keyword hit: plugins whose configured regex keywords match the user text
-  → Union of all three goes to Stage 2
+  → Union of all three goes to Stage 2. If the union is empty, Stage 2
+    receives no plugin candidates rather than falling back to the full list.
 
 Stage 2 (fine — always runs):
   - Full LLM assessment with complete plugin descriptions (current behavior)
