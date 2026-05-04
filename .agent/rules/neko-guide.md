@@ -55,6 +55,31 @@ CI 守门：
 
 旧的 `#chat-container`（纯 DOM 聊天）已弃用，CSS 强制隐藏。`app-chat-adapter.js` 拦截所有遗留的 `appendMessage()` 调用并统一路由到 React 侧。修改聊天 UI/逻辑时去 `/frontend/react-neko-chat/` 改，不要碰 `#chat-container` 的旧代码。
 
+## 架构：跨模块 prompt 不能写死特定游戏 / 功能
+
+系统级 / 跨模块的 LLM prompt（archive label、history review、postgame realtime context、memory highlight selector、context organizer 等）只能用通用层概念，**不能**出现"足球""比分""射门""乌龙""抢断""进球""防守"等特定游戏术语。具体游戏术语只能出现在 module-bound 的 helper 内（函数名带 module 名的，如 `_format_soccer_pregame_context_for_prompt`、`_build_soccer_balance_hint`），或者 `config/prompts_game.py` 里 `SOCCER_*_PROMPT` 这种 specific-by-design 的常量里。
+
+边界判定：
+- **prompt 指令**：`_build_game_archive_memory_text` / `_build_postgame_realtime_context_text` / `_select_game_archive_memory_highlights` / `_run_game_context_organizer_ai` 这种函数名是 generic（没有 module 名）的，里面所有字符串都必须 module-agnostic。
+- **module-bound prompt**：函数名 `_*_soccer_*` 或 `prompts_game.py` 里的 `SOCCER_*_PROMPT`，用 `if game_type == "soccer":` gate 进入，里面提足球/比分天然合理。
+- **data 不算 prompt**：score 数值、`_GAME_EVENT_MEMORY_LABELS` 这种 event-kind→中文 label 表、`game_type: "soccer"` 字段值——是数据不是指令，不受此规则约束。
+- **写入侧也要查**：写进 ordinary memory 的字符串会被后续 `HISTORY_REVIEW_PROMPT` 读到，等同于 prompt，必须 generic；不要靠 review prompt 兜底（`config/prompts_memory.py` 里的"游戏模块归档"豁免规则是兜底，不是借口）。
+
+理由：
+1. 跨模块 prompt 会反复进入 review LLM 视野，review LLM 不知道当前是哪个游戏；硬编码具体游戏名会让其他游戏的 archive 在 review 阶段被错判。
+2. 加第二个游戏（chess、racing 等）时不必双写所有 cross-module prompt。
+3. system-level 不应该泄漏 module-internal 概念，否则就是抽象层错位。
+
+应避免 → 应使用：
+- `"[足球小游戏记忆记录]"` → `"[游戏模块记忆记录]"`
+- `"官方比分"` / `"比分规则"` / `"比分说明"` / `"最终/最近比分"` → `"官方结果"` / `"结果规则"` / `"结果说明"` / `"最终/最近结果"`
+- `"比赛事件"` / `"比赛事实"`（信号组键）→ `"本局事件"` / `"本局事实"`
+- `"刚才足球小游戏已经结束"` → `"刚才这局游戏已经结束"`
+- `"不要再说站好、射门、继续进攻等比赛中指令"` → `"不要再说任何只在游戏进行中才合理的指令或动作"`
+- `"足球小游戏赛后记录"` / `"soccer minigame postgame record"`（5 locale 都要查）→ `"游戏模块归档"` / `"game module archive"`
+
+检测方法：在 `main_routers/` 等跨模块代码里 `grep -nE "足球|比分|射门|乌龙|抢断|进球"`，结果应该全部落在带 module 名的函数（`_*_soccer_*`）或 module-specific 路径里。
+
 ## 架构：单进程 + 事件循环零阻塞
 
 `main_server` / `memory_server` / `agent_server` 三子系统已合并进同一个 FastAPI 进程，共享事件循环。任何会阻塞事件循环超过数十毫秒的调用都会把另外两个子系统也拖慢，因此在 async 路径（`async def` 函数、FastAPI 路由、`asyncio.create_task` 后台任务、WebSocket handler）里禁止以下操作：
