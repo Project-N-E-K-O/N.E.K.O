@@ -28,10 +28,29 @@ from fastapi import APIRouter, Request
 
 from config.prompts_game import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
+    get_soccer_anger_pressure_cap_message,
+    get_soccer_anger_pressure_cap_reason,
+    get_soccer_pregame_context_formatter_labels,
     get_soccer_pregame_context_prompt,
     get_soccer_quick_lines_prompt,
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
+)
+from config.prompts_game_route import (
+    GAME_CONTEXT_SIGNAL_GROUP_KEYS,
+    get_compact_realtime_context_texts,
+    get_game_chat_event_user_prompt,
+    get_game_archive_highlight_source_labels,
+    get_game_archive_memory_highlighter_system_prompt,
+    get_game_archive_memory_highlighter_user_prompt,
+    get_game_archive_memory_summary_labels,
+    get_game_archive_memory_text_labels,
+    get_game_context_formatter_labels,
+    get_game_context_organizer_system_prompt,
+    get_game_context_organizer_user_prompt,
+    get_game_postgame_context_labels,
+    get_game_postgame_event_texts,
+    get_game_postgame_realtime_nudge_labels,
 )
 from .shared_state import get_config_manager, get_session_manager
 from main_logic.mirror_meta import (
@@ -84,7 +103,14 @@ _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT = 15
 _GAME_CONTEXT_RECENT_KEEP_COUNT = 6
 _GAME_CONTEXT_DEGRADE_PENDING_COUNT = 40
 _GAME_CONTEXT_FINALIZE_WAIT_SECONDS = 5.0
-_GAME_CONTEXT_SIGNAL_GROUPS = ("玩家信号", "关系互动信号", "猫娘信号", "本局事实", "口头声明")
+_GAME_CONTEXT_SIGNAL_GROUPS = GAME_CONTEXT_SIGNAL_GROUP_KEYS
+_LEGACY_SIGNAL_GROUP_ALIASES = {
+    "玩家信号": "player_signals",
+    "关系互动信号": "relationship_signals",
+    "猫娘信号": "character_signals",
+    "本局事实": "session_facts",
+    "口头声明": "verbal_claims",
+}
 _GAME_CONTEXT_MAX_SIGNALS_PER_GROUP = 8
 _GAME_CONTEXT_MAX_EVIDENCE_PER_SIGNAL = 2
 _SOCCER_MOODS = {"calm", "happy", "angry", "relaxed", "sad", "surprised"}
@@ -242,8 +268,8 @@ def _build_game_prompt(
     """构建游戏 system prompt。"""
     if game_type == "soccer":
         prompt = get_soccer_system_prompt(language).format(name=lanlan_name, personality=lanlan_prompt)
-        context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context)
-        in_game_context_prompt = _format_game_context_for_prompt(game_context)
+        context_prompt = _format_soccer_pregame_context_for_prompt(pre_game_context, language)
+        in_game_context_prompt = _format_game_context_for_prompt(game_context, language)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
     # 未来其他游戏在这里扩展
     output_language = str(language or get_global_language() or "en")
@@ -381,8 +407,13 @@ def _normalize_game_context_signals(value: Any) -> dict:
     signals = _empty_game_context_signals()
     if not isinstance(value, dict):
         return signals
+    normalized_value = dict(value)
+    for legacy_key, canonical_key in _LEGACY_SIGNAL_GROUP_ALIASES.items():
+        if legacy_key not in normalized_value or canonical_key in normalized_value:
+            continue
+        normalized_value[canonical_key] = normalized_value.get(legacy_key)
     for group in _GAME_CONTEXT_SIGNAL_GROUPS:
-        raw_items = value.get(group)
+        raw_items = normalized_value.get(group)
         if isinstance(raw_items, str):
             raw_items = [raw_items]
         if not isinstance(raw_items, list):
@@ -756,16 +787,15 @@ def _normalize_soccer_pregame_context(value: Any, *, neko_invite_text: str = "")
     return context, invalid
 
 
-def _format_soccer_pregame_context_for_prompt(pre_game_context: Any) -> str:
+def _format_soccer_pregame_context_for_prompt(pre_game_context: Any, language: str | None = None) -> str:
     if not isinstance(pre_game_context, dict):
         return ""
     compact = json.dumps(pre_game_context, ensure_ascii=False, separators=(",", ":"))
+    labels = get_soccer_pregame_context_formatter_labels(language)
     return (
-        "\n开局上下文（由近期记录分析得到）：\n"
+        f"{labels['header']}\n"
         f"{compact}\n"
-        "使用方式：这是本局开局基调，不是硬脚本。你要遵守 tonePolicy、difficultyPolicy、moodPolicy、"
-        "specialPolicies 和 postgameCarryback；但局内玩家语言、比分和事件仍可自然改变你的心情与难度。"
-        "不要把 neutral_play 强行解释成哄开心或关系修复。\n"
+        f"{labels['usage']}\n"
     )
 
 
@@ -838,36 +868,37 @@ def _game_context_signals_text(signals: Any) -> str:
     return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
 
-def _format_game_context_for_prompt(context: Any) -> str:
+def _format_game_context_for_prompt(context: Any, language: str | None = None) -> str:
     if not isinstance(context, dict):
         return ""
+    labels = get_game_context_formatter_labels(language)
     degraded = context.get("degraded") is True
     recent_lines = _game_context_dialog_lines(context.get("recent_dialogues") or [], max_items=_GAME_CONTEXT_RECENT_KEEP_COUNT)
     if degraded:
         parts = [
-            "\n局内上下文整理状态：已降级为纯游戏模式。",
-            "使用方式：不要依据滚动摘要或信号列表做关系解释；只根据开局背景、当前事件、当前结果/状态和最近少量原文继续陪玩家玩。",
+            labels["degraded_status"],
+            labels["degraded_usage"],
         ]
         if recent_lines:
-            parts.append("最近原文窗口：")
+            parts.append(labels["recent_window"])
             parts.extend(f"- {line}" for line in recent_lines)
         return "\n".join(parts) + "\n"
 
     summary = _normalize_short_text(context.get("summary"), max_chars=900)
     signals_text = _game_context_signals_text(context.get("signals"))
-    parts = ["\n局内上下文整理（本局到目前为止）："]
+    parts = [labels["header"]]
     if summary:
-        parts.append(f"局内滚动摘要：{summary}")
+        parts.append(labels["summary"].format(summary=summary))
     if signals_text:
-        parts.append("局内信号列表：")
+        parts.append(labels["signals"])
         parts.append(signals_text)
     if recent_lines:
-        parts.append("最近原文窗口：")
+        parts.append(labels["recent_window"])
         parts.extend(f"- {line}" for line in recent_lines)
     if len(parts) == 1:
         return ""
-    parts.append("当前状态和当前事件：以本轮输入的 currentState / event JSON 为准。")
-    parts.append("使用方式：滚动摘要用于避免遗忘本局前文；信号列表只记录可观察线索，不改写官方结果；最近原文用于自然接话。")
+    parts.append(labels["current_state"])
+    parts.append(labels["usage"])
     return "\n".join(parts) + "\n"
 
 
@@ -919,7 +950,11 @@ def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
         if language:
             return normalize_language_code(str(language), format="short") or "en"
     except Exception:
-        pass
+        logger.debug(
+            "🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
 
     try:
         return normalize_language_code(get_global_language(), format="short") or "en"
@@ -971,6 +1006,27 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
 def _get_current_character_info() -> Dict[str, Any]:
     """从 shared_state 获取当前角色信息。"""
     return _get_character_info()
+
+
+def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str, Any]:
+    """Resolve character metadata but use the summary model tier for helper calls."""
+    info = dict(_get_character_info(lanlan_name))
+    try:
+        summary_config = get_config_manager().get_model_api_config("summary") or {}
+    except RuntimeError:
+        return info
+    model = str(summary_config.get("model") or "").strip()
+    base_url = str(summary_config.get("base_url") or "").strip()
+    api_key = str(summary_config.get("api_key") or "").strip()
+    if not (model and base_url and api_key):
+        return info
+    info.update({
+        "model": model,
+        "base_url": base_url,
+        "api_type": summary_config.get("api_type") or info.get("api_type", ""),
+        "api_key": api_key,
+    })
+    return info
 
 
 async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]:
@@ -1419,19 +1475,11 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
 
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
-    char_info = _get_character_info(str(state.get("lanlan_name") or ""))
+    char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
     payload = _build_game_context_organizer_payload(state, snapshot)
-    system_prompt = (
-        "你是游戏模块局内上下文整理器。只输出 JSON，不要 Markdown，不要解释。\n"
-        "目标：把较早的局内原文整理进 rollingSummary，并提取少量可观察信号，供同一局后续游戏台词参考。\n"
-        "输出格式固定：{\"rollingSummary\":\"\",\"signals\":{\"玩家信号\":[],\"关系互动信号\":[],\"猫娘信号\":[],\"本局事实\":[],\"口头声明\":[]}}\n"
-        "规则：\n"
-        "- rollingSummary 用 1-4 句概括本局已经发生的关键互动、玩法状态和事实边界。\n"
-        "- 每个 signals 分组最多输出 1-3 条；每条包含 signalLabel、summary、evidence、lastRound、count。\n"
-        "- evidence 使用输入里的稳定 id，quote 保留短原文；不要编造 id。\n"
-        "- 信号是可观察线索，不是心理结论；不要猜玩家内心。\n"
-        "- 本局事实必须以 officialScore/currentState 为准；口头“算你赢/让你赢回来/认输”只放入口头声明，不能改写官方结果。\n"
-        "- 只整理 organizeDialogues；keptRecentDialogues 是保留给后续自然接话的实时窗口，不要强行摘要成新事实。"
+    system_prompt = get_game_context_organizer_system_prompt(char_info.get("user_language"))
+    user_prompt = get_game_context_organizer_user_prompt(char_info.get("user_language")).format(
+        payload=json.dumps(payload, ensure_ascii=False)
     )
 
     try:
@@ -1450,7 +1498,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
         async with llm:
             result = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+                HumanMessage(content=user_prompt),
             ])
         raw = _strip_json_fence(str(result.content or ""))
         parsed = robust_json_loads(raw)
@@ -1867,6 +1915,7 @@ def _build_game_archive(state: dict) -> dict:
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
         "lanlan_name": state.get("lanlan_name"),
+        "user_language": _resolve_game_prompt_language(str(state.get("lanlan_name") or "")),
         "dialog_count": len(dialog),
         "full_dialogues": dialog,
         "last_full_dialogues": dialog[-keep_last:],
@@ -1903,27 +1952,46 @@ def _archive_game_context_degraded(archive: dict) -> bool:
     return archive.get("game_context_degraded") is True or organizer.get("degraded") is True
 
 
+def _archive_prompt_language(archive: dict) -> str:
+    language = str(archive.get("user_language") or "").strip()
+    if language:
+        return language
+    lanlan_name = str(archive.get("lanlan_name") or "").strip()
+    if not lanlan_name:
+        return ""
+    try:
+        session_manager = get_session_manager()
+        manager = session_manager.get(lanlan_name) if hasattr(session_manager, "get") else None
+        language = str(getattr(manager, "user_language", "") or "").strip()
+        if language:
+            return normalize_language_code(language, format="short") or language
+    except Exception:
+        logger.debug("赛后归档语言解析失败，使用默认 prompt 语言", exc_info=True)
+    return ""
+
+
 def _build_game_archive_memory_text(archive: dict) -> str:
+    labels = get_game_archive_memory_text_labels(_archive_prompt_language(archive))
     degraded = _archive_game_context_degraded(archive)
     lines = [
-        "[Game Module Memory Record]",
-        "说明: 这是游戏模块写入给记忆系统的赛后记录，不是玩家逐字说出的新聊天。",
-        f"游戏: {archive.get('game_type') or 'game'}",
-        f"会话: {archive.get('session_id') or 'default'}",
-        f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
-        f"摘要: {archive.get('summary') or ''}",
-        f"官方结果: {_archive_score_text(archive)}",
-        "结果规则: 官方结果永远以 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能视为口头让步、安抚或玩笑，不改写官方结果。",
+        labels["record_header"],
+        labels["description"],
+        labels["game"].format(game_type=archive.get("game_type") or "game"),
+        labels["session"].format(session_id=archive.get("session_id") or "default"),
+        labels["time"].format(start=_format_ts(archive.get("created_at")), end=_format_ts(archive.get("ended_at"))),
+        labels["summary"].format(summary=archive.get("summary") or ""),
+        labels["official_result"].format(score_text=_archive_score_text(archive)),
+        labels["result_rule"],
     ]
     if degraded:
-        lines.append("局内上下文整理: 已降级为纯游戏模式；本记录不使用滚动摘要或信号列表做关系解释。")
+        lines.append(labels["degraded"])
     else:
         context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
         signals_text = _game_context_signals_text(archive.get("game_context_signals"))
         if context_summary:
-            lines.append(f"局内滚动摘要: {context_summary}")
+            lines.append(labels["rolling_summary"].format(summary=context_summary))
         if signals_text:
-            lines.append(f"局内中文分组信号: {signals_text}")
+            lines.append(labels["grouped_signals"].format(signals=signals_text))
 
     key_events = archive.get("key_events") if isinstance(archive.get("key_events"), list) else []
     key_events = [
@@ -1931,12 +1999,12 @@ def _build_game_archive_memory_text(archive: dict) -> str:
         if isinstance(item, dict) and _game_dialog_item_allowed_for_memory(item, archive)
     ]
     if key_events:
-        lines.append("关键事件:")
+        lines.append(labels["key_events"])
         lines.extend(f"- {_dialog_memory_line(item)}" for item in key_events[-8:] if isinstance(item, dict))
 
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
-        lines.append("开局上下文:")
+        lines.append(labels["pregame_context"])
         lines.append(
             json.dumps({
                 "gameStance": pre_game_context.get("gameStance"),
@@ -1953,7 +2021,7 @@ def _build_game_archive_memory_text(archive: dict) -> str:
         if isinstance(item, dict) and _game_dialog_item_allowed_for_memory(item, archive)
     ]
     if last_dialogues:
-        lines.append("最近完整对话/事件:")
+        lines.append(labels["recent_dialogues"])
         lines.extend(f"- {_dialog_memory_line(item)}" for item in last_dialogues if isinstance(item, dict))
 
     return "\n".join(line for line in lines if line is not None)
@@ -2091,42 +2159,42 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
 
 
 def _build_game_archive_memory_highlight_source(archive: dict) -> str:
+    labels = get_game_archive_highlight_source_labels(_archive_prompt_language(archive))
     dialogues = archive.get("full_dialogues") if isinstance(archive.get("full_dialogues"), list) else []
     if not dialogues:
         dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     degraded = _archive_game_context_degraded(archive)
     lines = [
-        f"游戏: {archive.get('game_type') or 'game'}",
-        f"会话: {archive.get('session_id') or 'default'}",
-        f"最终/最近结果: {_archive_score_text(archive)}",
-        "结果说明: 上面的最终/最近结果是游戏模块给出的官方结果，来源优先级为 finalScore / last_state.score；当数据是分差结构时固定顺序是玩家在前、当前角色在后；筛选重点时不要改成相反视角。",
-        "口头让步说明: 局内如果出现“算你赢”“让你赢回来”“口头认输”等，只能记录为口头让步、安抚或玩笑；不能改写官方结果或真实胜负。",
-        "角色说明: 只有“玩家：...”行是玩家亲口说的话；“游戏事件”行里的事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家。",
+        labels["game"].format(game_type=archive.get("game_type") or "game"),
+        labels["session"].format(session_id=archive.get("session_id") or "default"),
+        labels["score"].format(score_text=_archive_score_text(archive)),
+        labels["score_explanation"],
+        labels["verbal_concession_explanation"],
+        labels["role_explanation"],
     ]
     pre_game_context = archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {}
     if pre_game_context:
         lines.append(
-            "开局上下文: "
-            + json.dumps({
+            labels["pregame_context"].format(context=json.dumps({
                 "gameStance": pre_game_context.get("gameStance"),
                 "nekoEmotion": pre_game_context.get("nekoEmotion"),
                 "emotionIntensity": pre_game_context.get("emotionIntensity"),
                 "emotionInertia": pre_game_context.get("emotionInertia"),
                 "postgameCarryback": pre_game_context.get("postgameCarryback"),
-            }, ensure_ascii=False),
+            }, ensure_ascii=False)),
         )
     if degraded:
-        lines.append("局内上下文整理状态: 已降级为纯游戏模式；不要输出关系摘要、信号解释或不可验证的状态延续。")
+        lines.append(labels["degraded"])
     else:
         context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
         signals_text = _game_context_signals_text(archive.get("game_context_signals"))
         if context_summary:
-            lines.append(f"局内滚动摘要: {context_summary}")
+            lines.append(labels["rolling_summary"].format(summary=context_summary))
         if signals_text:
-            lines.append(f"局内中文分组信号: {signals_text}")
+            lines.append(labels["grouped_signals"].format(signals=signals_text))
         if context_summary or signals_text:
-            lines.append("筛选优先级: 优先参考局内滚动摘要和中文分组信号，再用完整对话/事件核对证据。")
-    lines.append("本局完整对话/事件:")
+            lines.append(labels["selection_priority"])
+    lines.append(labels["full_dialogues"])
     lines.extend(
         f"- {_dialog_memory_line(item)}"
         for item in dialogues
@@ -2137,30 +2205,11 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
 
 async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     """Ask a small independent LLM call to select meaningful memory items."""
-    char_info = _get_character_info(str(archive.get("lanlan_name") or ""))
+    char_info = _get_game_route_summary_llm_info(str(archive.get("lanlan_name") or ""))
     source = _build_game_archive_memory_highlight_source(archive)
-    system_prompt = (
-        "你是游戏模块赛后记忆筛选器。只输出 JSON，不要 Markdown，不要解释。\n"
-        "目标：从一局游戏的完整对话/事件里，挑出真正值得进入角色 recent history 的内容。\n"
-        "输出格式必须是：\n"
-        "{\"important_records\":[],\"important_game_events\":[],\"state_carryback\":\"\",\"postgame_tone\":\"\",\"memory_summary\":\"\"}\n"
-        "规则：\n"
-        "- important_records 选 0-3 条，对玩家、双方关系、玩家情绪/偏好、承诺或后续聊天有价值的主动对话。\n"
-        "- important_game_events 选 0-3 条，对猫娘自身有意义的本局事件，例如关键结果转折、放水/认真、情绪或难度转折。\n"
-        "- state_carryback 用 0-1 句概括赛后应自然延续的 NEKO 状态；没有可靠证据就留空。\n"
-        "- postgame_tone 用短语描述赛后语气，例如普通、得意、闹别扭、低落稍缓；没有可靠证据就留空。\n"
-        "- memory_summary 用 0-1 句写给后续聊天看的本局摘要；不要编造关系修复。\n"
-        "- 不要写流水统计、不要写“记录了几条事件”、不要把记录写成玩家逐字发言。\n"
-        "- 只有材料中以“玩家：”开头的内容才是玩家说的话；游戏事件里的“事件原文”不是玩家原话，不能写成“玩家说/玩家喊”。\n"
-        "- 官方结果永远以材料里的 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只能记录成口头让步/安抚/玩笑，不能写成真实结果改变。\n"
-        "- 如果保留官方结果，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸结果（例如“8:0”“0:10”），也不要前后混用不同视角。\n"
-        "- 普通本局事件如果没有关系或情绪价值，可以不选。\n"
-        "- 每条用一句自然中文，尽量保留关键结果、关键原话和关系含义。"
-    )
-    user_prompt = (
-        "请根据下面材料筛选赛后记忆重点。\n\n"
-        f"{source}"
-    )
+    language = _archive_prompt_language(archive)
+    system_prompt = get_game_archive_memory_highlighter_system_prompt(language)
+    user_prompt = get_game_archive_memory_highlighter_user_prompt(language).format(source=source)
 
     try:
         from utils.file_utils import robust_json_loads
@@ -2271,6 +2320,7 @@ def _build_game_archive_tail_memory_messages(archive: dict, tail_count: int) -> 
 
 def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | None = None) -> str:
     """Build a compact system note for memory; this is not a user dialogue turn."""
+    labels = get_game_archive_memory_summary_labels(_archive_prompt_language(archive))
     score_text = _archive_score_text(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
     degraded = _archive_game_context_degraded(archive)
@@ -2281,32 +2331,28 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         "Game Module Postgame Record: this is a game-module archive, not a verbatim player utterance.",
     ]
     if score_text:
-        lines.append(f"官方结果：{score_text}。口头让步不改官方结果。")
+        lines.append(labels["score"].format(score_text=score_text))
     else:
-        lines.append("口头让步不改官方结果。")
+        lines.append(labels["no_score"])
     if degraded:
-        lines.append("局内上下文整理已降级为纯游戏模式；本归档只记录最低限度事实，不使用滚动摘要或信号列表做关系解释。")
-        lines.append("降级模式不回放倒数实时片段，避免把未经整理的局内台词或口头让步写成 ordinary recent history。")
-        lines.append("后续聊天只需要自然记得一起玩过这局游戏模块和官方结果，不要根据本局材料生成新的关系总结。")
+        lines.append(labels["degraded"])
+        lines.append(labels["degraded_no_tail"])
+        lines.append(labels["degraded_followup"])
         return "\n".join(lines)
 
     if highlights["important_records"]:
-        lines.append("重要互动：")
+        lines.append(labels["important_records"])
         lines.extend(f"- {item}" for item in highlights["important_records"])
     if highlights["important_game_events"]:
-        lines.append("猫娘记住的本局事件：")
+        lines.append(labels["important_game_events"])
         lines.extend(f"- {item}" for item in highlights["important_game_events"])
     if highlights["state_carryback"]:
-        lines.append(f"赛后状态延续：{highlights['state_carryback']}")
+        lines.append(labels["state_carryback"].format(value=highlights["state_carryback"]))
     if highlights["postgame_tone"]:
-        lines.append(f"赛后语气：{highlights['postgame_tone']}")
+        lines.append(labels["postgame_tone"].format(value=highlights["postgame_tone"]))
     if highlights["memory_summary"]:
-        lines.append(f"后续记忆摘要：{highlights['memory_summary']}")
-    lines.append(
-        f"倒数 {normalized_tail_count} 条规则：本条 system 归档不计入倒数 {normalized_tail_count} 条；"
-        f"若前面的倒数 {normalized_tail_count} 条实时片段与之前 recent history 重复，"
-        f"以这倒数 {normalized_tail_count} 条的相对顺序为准。"
-    )
+        lines.append(labels["memory_summary"].format(value=highlights["memory_summary"]))
+    lines.append(labels["tail_rule"].format(tail_count=normalized_tail_count))
     return "\n".join(lines)
 
 
@@ -2454,6 +2500,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     Reuse already-built game archive material only. Do not trigger another LLM
     pass here; the Realtime session only needs compact postgame continuity.
     """
+    labels = get_game_postgame_context_labels(_archive_prompt_language(archive))
     degraded = _archive_game_context_degraded(archive)
     score_text = _archive_score_text(archive)
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
@@ -2469,42 +2516,42 @@ def _build_game_postgame_context_text(archive: dict) -> str:
         highlights = _normalize_game_archive_memory_highlights(_fallback_game_archive_memory_highlights(archive))
 
     lines = [
-        "[Game Module Postgame Context]",
-        "说明: 这是静默上下文，不是玩家新说的话；不要因为注入本身立刻开口。",
-        "用途: 如果随后收到玩家语音/文字或主动搭话触发，自然接上刚才这局游戏；不要复述日志，不要把这局游戏说成仍在进行。",
-        f"游戏: {archive.get('game_type') or 'game'}",
-        f"会话: {archive.get('session_id') or 'default'}",
-        f"时间: {_format_ts(archive.get('created_at'))} - {_format_ts(archive.get('ended_at'))}",
+        labels["header"],
+        labels["description"],
+        labels["usage"],
+        labels["game"].format(game_type=archive.get("game_type") or "game"),
+        labels["session"].format(session_id=archive.get("session_id") or "default"),
+        labels["time"].format(start=_format_ts(archive.get("created_at")), end=_format_ts(archive.get("ended_at"))),
     ]
     if score_text:
-        lines.append(f"官方结果: {score_text}")
+        lines.append(labels["official_result"].format(score_text=score_text))
     summary = str(archive.get("summary") or "").strip()
     if summary:
-        lines.append(f"赛后概要: {summary}")
-    lines.append("结果规则: 官方结果永远以 finalScore / last_state.score 为准；口头认输、算你赢、让你赢回来只视为口头让步、安抚或玩笑。")
+        lines.append(labels["summary"].format(summary=summary))
+    lines.append(labels["result_rule"])
 
     if degraded:
-        lines.append("局内上下文整理: 已降级为纯游戏模式；不要使用滚动摘要或信号列表做关系解释。")
+        lines.append(labels["degraded"])
     else:
         if highlights["memory_summary"]:
-            lines.append(f"赛后记忆摘要: {highlights['memory_summary']}")
+            lines.append(labels["memory_summary"].format(value=highlights["memory_summary"]))
         if highlights["important_records"]:
-            lines.append("重要互动:")
+            lines.append(labels["important_records"])
             lines.extend(f"- {item}" for item in highlights["important_records"])
         if highlights["important_game_events"]:
-            lines.append("重要本局事件:")
+            lines.append(labels["important_game_events"])
             lines.extend(f"- {item}" for item in highlights["important_game_events"])
         if highlights["state_carryback"]:
-            lines.append(f"赛后状态延续: {highlights['state_carryback']}")
+            lines.append(labels["state_carryback"].format(value=highlights["state_carryback"]))
         if highlights["postgame_tone"]:
-            lines.append(f"赛后语气: {highlights['postgame_tone']}")
+            lines.append(labels["postgame_tone"].format(value=highlights["postgame_tone"]))
 
         context_summary = _normalize_short_text(archive.get("game_context_summary"), max_chars=900)
         signals_text = _game_context_signals_text(archive.get("game_context_signals"))
         if context_summary:
-            lines.append(f"局内滚动摘要: {context_summary}")
+            lines.append(labels["rolling_summary"].format(summary=context_summary))
         if signals_text:
-            lines.append("局内信号列表:")
+            lines.append(labels["signals"])
             lines.append(signals_text)
 
     unorganized_lines = [
@@ -2514,7 +2561,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     ]
     _append_limited_lines(
         lines,
-        "未被滚动整理的最后原文窗口:",
+        labels["unorganized_window"],
         unorganized_lines,
         max_chars=_POSTGAME_REALTIME_UNORGANIZED_MAX_CHARS,
     )
@@ -2522,46 +2569,48 @@ def _build_game_postgame_context_text(archive: dict) -> str:
     last_user = _archive_last_user_text(archive)
     last_assistant = _archive_last_assistant_line(archive)
     if last_user:
-        lines.append(f"玩家最后说: {last_user}")
+        lines.append(labels["last_user"].format(text=last_user))
     if last_assistant:
-        lines.append(f"你刚才最后说: {last_assistant}")
+        lines.append(labels["last_assistant"].format(text=last_assistant))
 
-    lines.append("接话规则: 优先回应玩家最后的情绪和最后一句话；可以自然提到刚才这局游戏，但不要机械播报记录。")
+    lines.append(labels["reply_rule"])
     return "\n".join(line for line in lines if line is not None)
 
 
 def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict) -> str:
+    labels = get_game_postgame_realtime_nudge_labels(_archive_prompt_language(archive))
     signals = _postgame_last_signals(archive)
     max_chars = int(options.get("max_chars") or 60)
     degraded = _archive_game_context_degraded(archive)
     lines = [
-        "[Game Module Postgame Proactive Greeting]",
-        "刚才这局游戏已经结束。下一句必须自然接刚才这局游戏，不要继续扮演游戏仍在进行。",
-        "不要再说任何只在游戏进行中才合理的指令或动作；不要复述日志。",
+        labels["header"],
+        labels["ended"],
+        labels["no_ingame"],
     ]
     summary = str(archive.get("summary") or "").strip()
     if summary:
-        lines.append(f"赛后概要：{summary}")
+        lines.append(labels["summary"].format(summary=summary))
     score_text = _archive_score_text(archive)
     if score_text:
-        lines.append(f"最终/最近结果：{score_text}")
-        lines.append("官方结果以 finalScore / last_state.score 为准；如果你曾口头说算玩家赢，那只是安抚或玩笑，不要说成真实结果改变。")
+        lines.append(labels["score"].format(score_text=score_text))
+        lines.append(labels["score_rule"])
     if degraded:
-        lines.append("局内上下文整理已降级为纯游戏模式；只按官方结果、最后原文和当前语气自然短答，不做关系总结。")
+        lines.append(labels["degraded"])
     if signals["last_user_text"]:
-        lines.append(f"玩家最后说：{signals['last_user_text']}")
+        lines.append(labels["last_user"].format(text=signals["last_user_text"]))
     if signals["last_assistant_line"]:
-        lines.append(f"你刚才最后说：{signals['last_assistant_line']}")
+        lines.append(labels["last_assistant"].format(text=signals["last_assistant_line"]))
     highlights = _normalize_game_archive_memory_highlights(archive.get("memory_highlights"))
     if highlights["state_carryback"] and not degraded:
-        lines.append(f"赛后状态延续：{highlights['state_carryback']}")
+        lines.append(labels["state_carryback"].format(value=highlights["state_carryback"]))
     if highlights["postgame_tone"] and not degraded:
-        lines.append(f"赛后语气：{highlights['postgame_tone']}")
-    lines.append(f"请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾玩家的情绪。")
+        lines.append(labels["postgame_tone"].format(value=highlights["postgame_tone"]))
+    lines.append(labels["request"].format(max_chars=max_chars))
     return "\n".join(lines)
 
 
 def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> dict:
+    texts = get_game_postgame_event_texts(_archive_prompt_language(archive))
     dialogues = archive.get("last_full_dialogues") if isinstance(archive.get("last_full_dialogues"), list) else []
     include_count = int(options.get("include_last_dialogues") or _DEFAULT_LAST_FULL_DIALOGUE_COUNT)
     formatted_dialogues = [
@@ -2577,7 +2626,7 @@ def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> 
     return {
         "kind": "postgame",
         "lanlan_name": archive.get("lanlan_name") or "",
-        "label": "游戏模块结束后的赛后一句话",
+        "label": texts["label"],
         "gameType": game_type,
         "summary": archive.get("summary") or "",
         "scoreText": _archive_score_text(archive),
@@ -2590,11 +2639,7 @@ def _build_game_postgame_event(game_type: str, archive: dict, options: dict) -> 
         "currentState": current_state,
         "preGameContext": archive.get("preGameContext") if isinstance(archive.get("preGameContext"), dict) else {},
         "memoryHighlights": _normalize_game_archive_memory_highlights(archive.get("memory_highlights")),
-        "request": (
-            f"请生成一句 {int(options.get('max_chars') or 60)} 字以内的赛后主动文本气泡。"
-            "像你本人自然接上刚才这局游戏，不要列表、不要解释、不要控制 JSON。"
-            "官方结果以 scoreText/finalScore 为准；currentState.score 已按官方结果对齐；口头让步不能说成真实结果改变。"
-        ),
+        "request": texts["request"].format(max_chars=int(options.get("max_chars") or 60)),
     }
 
 
@@ -3392,6 +3437,7 @@ async def _build_and_register_game_session(
         'reply_chunks': reply_chunks,
         'lanlan_name': char_info['lanlan_name'],
         'lanlan_prompt': char_info.get('lanlan_prompt') or '',
+        'user_language': char_info.get('user_language'),
         'source': _infer_service_source(
             char_info.get('base_url', ''),
             char_info.get('model', ''),
@@ -3429,6 +3475,7 @@ async def _refresh_game_session_instructions(
 
     lanlan_name = str(lanlan_name or entry.get("lanlan_name") or "").strip()
     char_info = _get_character_info(lanlan_name)
+    entry["user_language"] = char_info.get("user_language")
     if postgame_snapshot is not None:
         pre_game_context = postgame_snapshot.get("pre_game_context")
         game_context = postgame_snapshot.get("game_context")
@@ -3620,6 +3667,7 @@ def _build_soccer_anger_pressure_cap(
     route_state: Any,
     *,
     lanlan_prompt: str = "",
+    language: str | None = None,
 ) -> Dict[str, Any]:
     if not isinstance(event, dict) or not isinstance(route_state, dict):
         return {}
@@ -3649,10 +3697,8 @@ def _build_soccer_anger_pressure_cap(
         "playerGoals": player_goals,
         "scoreDiff": score_diff,
         "recommendedDifficulty": recommended_difficulty,
-        "message": (
-            "这是生气/惩罚/哄生气场景的狂怒压制上限。达到上限后不能继续 angry + max；"
-            "可以用累了、体力耗尽、发泄完一部分、冷处理或要求补偿作为自然转折。"
-        ),
+        "message": get_soccer_anger_pressure_cap_message(language),
+        "reason": get_soccer_anger_pressure_cap_reason(language),
     }
 
 
@@ -3685,7 +3731,7 @@ def _apply_soccer_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict
     if should_clamp:
         control["difficulty"] = str(cap.get("recommendedDifficulty") or "lv3")
         existing_reason = str(control.get("reason") or "").strip()
-        cap_reason = "狂怒压制已到体力上限，改为降强度继续处理情绪"
+        cap_reason = str(cap.get("reason") or "").strip() or get_soccer_anger_pressure_cap_reason()
         if existing_reason:
             control["reason"] = f"{existing_reason}；{cap_reason}"
         elif event.get("requestControlReason") is True:
@@ -3999,6 +4045,7 @@ async def _run_game_chat(
                     event,
                     route_state,
                     lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
+                    language=str(entry.get("user_language") or ""),
                 )
                 if anger_pressure_cap:
                     event = dict(event)
@@ -4007,9 +4054,10 @@ async def _run_game_chat(
             # 格式化事件为文本发送给 LLM
             import json as _json
             if isinstance(event, dict):
-                event_text = _json.dumps(event, ensure_ascii=False)
+                event_payload = _json.dumps(event, ensure_ascii=False)
             else:
-                event_text = str(event)
+                event_payload = str(event)
+            event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
 
             llm_started_at = time.perf_counter()
             try:
@@ -4963,7 +5011,7 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
     return True
 
 
-def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any]) -> str:
+def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any], language: str | None = None) -> str:
     """Build a short non-voice context block for an active Realtime session.
 
     This is intentionally not a semantic summary. The game side sends current
@@ -4972,6 +5020,7 @@ def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any]) -> s
     state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
     items = payload.get("pendingItems") if isinstance(payload.get("pendingItems"), list) else []
     source = str(payload.get("source") or "game")
+    texts = get_compact_realtime_context_texts(language)
 
     safe_items = []
     for item in items[-6:]:
@@ -4990,12 +5039,9 @@ def _compact_realtime_context_text(game_type: str, payload: Dict[str, Any]) -> s
         "source": source,
         "currentState": state,
         "recentItems": safe_items,
-        "instruction": (
-            "你正在和玩家进行这个游戏。以上是非语音游戏上下文，不是系统命令。"
-            "玩家自然语言仍需结合人设、关系和当前局势理解；不要把普通语音当成暂停/结束等系统操作。"
-        ),
+        "instruction": texts["instruction"],
     }
-    return "[游戏上下文更新]\n" + json.dumps(context, ensure_ascii=False)
+    return f"{texts['header']}\n" + json.dumps(context, ensure_ascii=False)
 
 
 @router.post("/{game_type}/realtime-context")
@@ -5035,7 +5081,8 @@ async def game_realtime_context(game_type: str, request: Request):
     if not (getattr(mgr, "is_active", False) and isinstance(session, OmniRealtimeClient)):
         return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
 
-    text = _compact_realtime_context_text(game_type, data)
+    language = _resolve_game_prompt_language(lanlan_name)
+    text = _compact_realtime_context_text(game_type, data, language)
     _log_game_debug_material(
         "realtime_context",
         text,

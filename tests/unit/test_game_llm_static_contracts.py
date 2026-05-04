@@ -79,6 +79,7 @@ def test_build_game_prompt_uses_requested_language():
 
     assert "Output only the spoken line" in prompt
     assert "你正在和玩家踢一场足球比赛" not in prompt
+    assert "======以上为足球游戏会话系统提示======" in prompt
 
 
 @pytest.mark.unit
