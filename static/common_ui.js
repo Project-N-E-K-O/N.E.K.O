@@ -419,7 +419,7 @@ if (toggleBtn) {
                 }
 
                 if (becomingCollapsed) {
-                    iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.src = '/static/icons/expand_icon_off_ball.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                     // 折叠后执行回弹，避免位置越界
@@ -554,7 +554,7 @@ if (toggleBtn) {
 
             if (isMinimized) {
                 // 刚刚最小化，显示展开图标（加号）
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = '/static/icons/expand_icon_off_ball.png';
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
@@ -601,7 +601,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = '/static/icons/expand_icon_off_ball.png';
             }
         }
     });
@@ -1082,7 +1082,7 @@ async function initCommonUiAfterStorageBarrier() {
 
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon_off.png';
+            iconImg.src = '/static/icons/expand_icon_off_ball.png';
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
