@@ -1413,7 +1413,7 @@
         "applyingVoice": "ボイス「{{name}}」を適用中...",
         "applyVoiceSuccess": "ボイス「{{name}}」を現在のキャラクターに適用しました",
         "applyVoiceFailed": "ボイスの適用に失敗しました: {{error}}",
-        "applyVoiceAria": "ボイス {{name}} を現在のキャラクターに適用",
+        "applyVoiceAria": "ボイス「{{name}}」を現在のキャラクターに適用",
         "voiceIdSaveRequestError": "voice_idの自動保存リクエストエラー",
         "chooseFile": "ファイルを選択",
         "noFileSelected": "ファイル未選択",

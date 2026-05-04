@@ -5,6 +5,8 @@ let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
 let suppressProviderTouchedTracking = false;
+// 防止并发应用音色的可重入守卫
+let isApplyingVoice = false;
 
 // 打开API设置页（带弹窗拦截回退）
 function openApiSettings() {
@@ -151,6 +153,9 @@ function markSelectedVoiceItem(item, selected) {
 
 async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
     if (!voiceId) return;
+    if (isApplyingVoice) return;
+    isApplyingVoice = true;
+
     const resultDiv = document.getElementById('result');
     const refreshBtn = document.getElementById('refresh-voices-btn');
     const voiceItems = document.querySelectorAll('.voice-list-item');
@@ -196,6 +201,7 @@ async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
             resultDiv.textContent = window.t ? window.t('voice.applyVoiceFailed', { error: errorMsg }) : `应用音色失败：${errorMsg}`;
         }
     } finally {
+        isApplyingVoice = false;
         if (refreshBtn) refreshBtn.disabled = false;
     }
 }
@@ -499,6 +505,10 @@ if (window.i18n && window.i18n.isInitialized) {
         // 设置到隐藏字段
         if (lanlanInput) {
             lanlanInput.value = lanlanName;
+        }
+        // lanlan_name 就绪后再刷新音色列表，确保当前音色选中态正确
+        if (typeof loadVoices === 'function') {
+            try { await loadVoices(); } catch (_) { /* 静默忽略二次加载错误 */ }
         }
     } catch (error) {
         console.error('获取 lanlan_name 失败:', error);
