@@ -2146,7 +2146,6 @@
             this.messageHandler = this.onWindowMessage.bind(this);
             this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
             this.interactionGuardHandler = this.onInteractionGuard.bind(this);
-            this.mobileTouchInteractionPassthrough = this.shouldUseMobileTouchInteractionPassthrough();
             this.externalizedChatSpotlightKind = '';
             const capabilityApi = window.homeTutorialPlatformCapabilities;
             this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
@@ -8771,6 +8770,10 @@
             this.destroy();
         }
 
+        get mobileTouchInteractionPassthrough() {
+            return this.shouldUseMobileTouchInteractionPassthrough();
+        }
+
         shouldUseMobileTouchInteractionPassthrough() {
             const coarsePointer = !!(
                 window.matchMedia
@@ -8787,6 +8790,18 @@
 
             // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
             return !!((coarsePointer || touchCapable) && narrowViewport);
+        }
+
+        isTouchInteractionEvent(event) {
+            if (!event || typeof event.type !== 'string') {
+                return false;
+            }
+
+            if (event.type.indexOf('touch') === 0) {
+                return true;
+            }
+
+            return event.pointerType === 'touch';
         }
 
         isAllowedTutorialInteractionTarget(target) {
@@ -8866,7 +8881,7 @@
                 return;
             }
 
-            if (this.mobileTouchInteractionPassthrough) {
+            if (this.mobileTouchInteractionPassthrough && this.isTouchInteractionEvent(event)) {
                 return;
             }
 
