@@ -105,10 +105,46 @@ async function handleOpenUi() {
     return
   }
 
-  await router.push({
+  // 尊重 backend 的 list_action 契约（plugin/server/application/plugins/ui_query_service.py
+  // _normalize_list_action 会显式 normalize `target` 和 `open_in`）。
+  // 若 plugin 声明了外部 URL / 自定义路由 / 新 tab 打开，UI 必须按字段路由，
+  // 而不是无条件回退到默认的 `/plugins/{id}?tab=ui` 静态详情页。
+  const action = uiAction.value
+  const target = action.target?.trim() || ''
+  const openInNewTab = action.open_in === 'new_tab'
+
+  // 1) 显式外部 URL：按 open_in 在新 tab 或当前页跳转
+  if (target && /^https?:\/\//i.test(target)) {
+    if (openInNewTab) {
+      window.open(target, '_blank', 'noopener,noreferrer')
+    } else {
+      window.location.href = target
+    }
+    return
+  }
+
+  // 2) 内部路由：target 作为 vue-router path
+  if (target) {
+    if (openInNewTab) {
+      const resolved = router.resolve(target)
+      window.open(resolved.href, '_blank', 'noopener,noreferrer')
+    } else {
+      await router.push(target)
+    }
+    return
+  }
+
+  // 3) 无 target 时退回默认 plugin 详情页 ?tab=ui
+  const fallback = {
     path: `/plugins/${encodeURIComponent(props.pluginId)}`,
     query: { tab: 'ui' },
-  })
+  }
+  if (openInNewTab) {
+    const resolved = router.resolve(fallback)
+    window.open(resolved.href, '_blank', 'noopener,noreferrer')
+  } else {
+    await router.push(fallback)
+  }
 }
 
 async function handleStart() {

@@ -27,7 +27,6 @@ from plugin.server.routes import (
     logs_router,
     messages_router,
     metrics_router,
-    galgame_install_router,
     plugin_cli_router,
     plugin_ui_router,
     plugins_router,
@@ -169,7 +168,21 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     app.include_router(frontend_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
-    app.include_router(galgame_install_router)
+    # galgame_plugin install routes 是可选模块：plugin import-time 副作用
+    # （缺 dxcam / tesseract / textractor 等可选依赖、非 Windows 运行时等）不应让
+    # 整个 plugin server 启动失败；失败时只让 install 端点返回 404。
+    try:
+        from plugin.plugins.galgame_plugin.install_routes import (
+            router as galgame_install_router,
+        )
+        app.include_router(galgame_install_router)
+    except ImportError as exc:
+        logger.warning(
+            "galgame install routes unavailable, install endpoints will be 404: "
+            "err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
     return app
