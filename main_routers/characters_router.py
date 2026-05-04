@@ -88,6 +88,11 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.new_character_greeting_state import (
+    mark_pending as mark_new_character_greeting_pending,
+    remove_pending as remove_new_character_greeting_pending,
+    rename_pending as rename_new_character_greeting_pending,
+)
 from utils.persona_presets import (
     build_persona_override_payload,
     get_persona_preset,
@@ -107,6 +112,13 @@ logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+
+
+async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> None:
+    try:
+        await mark_new_character_greeting_pending(config_manager, character_name, source=source)
+    except Exception as exc:
+        logger.warning("mark new character greeting pending failed: %s (%s)", character_name, exc)
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -1889,6 +1901,11 @@ async def rename_catgirl(old_name: str, request: Request):
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
+    try:
+        await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
+    except Exception as exc:
+        logger.warning("rename new character greeting pending failed: %s -> %s (%s)", old_name, new_name, exc)
+
     return {
         "success": True,
         "memory_renamed": True,
@@ -2354,6 +2371,7 @@ async def add_catgirl(request: Request):
     await init_one_catgirl(key, is_new=True)
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
+    await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     return {
         "success": True,
@@ -2597,6 +2615,11 @@ async def delete_catgirl(name: str):
                 },
                 status_code=500,
             )
+
+    try:
+        await remove_new_character_greeting_pending(_config_manager, name)
+    except Exception as exc:
+        logger.warning("remove new character greeting pending failed: %s (%s)", name, exc)
 
     return {"success": True, "memory_server_reloaded": memory_server_reloaded}
 
@@ -3972,6 +3995,7 @@ async def save_character_card(request: Request):
         if name_error:
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()
+        is_new_character = chara_name not in characters['猫娘']
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段
@@ -3992,6 +4016,9 @@ async def save_character_card(request: Request):
         if initialize_character_data:
             await initialize_character_data()
         
+        if is_new_character:
+            await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
         return {"success": True, "character_card_name": chara_name}
     except Exception as e:
@@ -4738,6 +4765,7 @@ async def import_character_card(
                 await asyncio.to_thread(_write_card_meta, meta_path, meta)
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
+                await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
                 return JSONResponse({
                     "success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
@@ -4782,6 +4810,7 @@ async def import_character_card(
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
+        await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
         return JSONResponse({
             'success': True,
             'character_name': character_name,

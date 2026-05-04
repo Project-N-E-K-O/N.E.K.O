@@ -1962,9 +1962,67 @@
     // ========================  Greeting check (after model loaded)  ========================
     // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，
     // 无论哪个先就绪都由后到的那个触发。
+    function _isElementVisible(el) {
+        if (!el || el.hidden) return false;
+        var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+            return false;
+        }
+        var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        return !rect || rect.width > 0 || rect.height > 0;
+    }
+    function _hasVisibleGreetingBlocker(selectors) {
+        for (var i = 0; i < selectors.length; i += 1) {
+            var nodes = document.querySelectorAll(selectors[i]);
+            for (var j = 0; j < nodes.length; j += 1) {
+                if (_isElementVisible(nodes[j])) return true;
+            }
+        }
+        return false;
+    }
+    function _isTutorialBlockingGreeting() {
+        try {
+            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function'
+                    && window.isNekoHomeTutorialBlockingGreeting() === true) {
+                return true;
+            }
+        } catch (_) {}
+        return window.isInTutorial === true
+            || !!(window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning);
+    }
+    function _isGreetingCheckBlocked() {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
+        if (window.location && /^\/chat(?:\/|$)/.test(window.location.pathname || '')) return true;
+        if (_isTutorialBlockingGreeting()) return true;
+        if (S.isRecording || S.isPlaying) return true;
+        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        if (S.assistantTurnAwaitingBubble || S.assistantSpeechActiveTurnId) return true;
+        return _hasVisibleGreetingBlocker([
+            '#prominent-notice-overlay',
+            '.modal-overlay',
+            '.modal-dialog',
+            '.driver-popover',
+            '.driver-overlay',
+            '.storage-location-completion-card',
+            '#storage-location-overlay',
+            '.storage-location-modal'
+        ]);
+    }
+    function _scheduleGreetingCheckRetry() {
+        if (S._greetingCheckRetryTimer) {
+            clearTimeout(S._greetingCheckRetryTimer);
+        }
+        S._greetingCheckRetryTimer = setTimeout(function () {
+            S._greetingCheckRetryTimer = 0;
+            _sendGreetingCheckIfReady();
+        }, 800);
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) return;
-        S._greetingCheckPending = false;
+        if (_isGreetingCheckBlocked()) {
+            _scheduleGreetingCheckRetry();
+            return;
+        }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({
@@ -1972,10 +2030,16 @@
                     is_switch: !!S._greetingCheckIsSwitch,
                     language: (window.i18next && window.i18next.language) || ''
                 }));
+                S._greetingCheckPending = false;
+                if (S._greetingCheckRetryTimer) {
+                    clearTimeout(S._greetingCheckRetryTimer);
+                    S._greetingCheckRetryTimer = 0;
+                }
                 console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
+            _scheduleGreetingCheckRetry();
         }
     }
     function _onModelReady() {

@@ -4033,6 +4033,105 @@ class LLMSessionManager:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    async def trigger_new_character_greeting(self) -> None:
+        from config.prompts_proactive import get_new_character_greeting_prompt
+        from utils.new_character_greeting_state import has_pending, remove_pending
+
+        config_manager = get_config_manager()
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: no pending intent", self.lanlan_name)
+            return
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+
+        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+        template = get_new_character_greeting_prompt(_lang)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session check, skipping", self.lanlan_name)
+            return
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            if not self._has_connected_websocket():
+                logger.warning("[%s] trigger_new_character_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_new_character_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_new_character_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_new_character_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: pending intent already consumed", self.lanlan_name)
+            return
+
+        instruction = template.format(name=self.lanlan_name, master=self.master_name)
+        print(f"[trigger_new_character_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_new_character_greeting: delivering", self.lanlan_name)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_new_character_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        delivered = False
+        proactive_sid = None
+        history_len = None
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_new_character_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_new_character_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                history = getattr(self.session, "_conversation_history", None)
+                if isinstance(history, list):
+                    history_len = len(history)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_new_character_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            try:
+                interrupted = bool(proactive_sid) and self.current_speech_id != proactive_sid
+                if (not delivered or interrupted) and history_len is not None:
+                    history = getattr(self.session, "_conversation_history", None)
+                    if isinstance(history, list) and len(history) > history_len:
+                        del history[history_len:]
+                if delivered and proactive_sid and self.current_speech_id == proactive_sid:
+                    try:
+                        await remove_pending(config_manager, self.lanlan_name)
+                    except Exception as exc:
+                        logger.warning("[%s] trigger_new_character_greeting: remove pending failed: %s", self.lanlan_name, exc)
+            finally:
+                await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
