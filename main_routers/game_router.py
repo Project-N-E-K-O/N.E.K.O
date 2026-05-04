@@ -3298,6 +3298,9 @@ async def _build_and_register_game_session(
         try:
             await session.close()
         except Exception:
+            # Why: cleanup must remain idempotent on the cancellation
+            # path — a close() failure here would mask the original
+            # CancelledError that we re-raise below.
             pass
         raise
     except Exception:
@@ -3306,6 +3309,9 @@ async def _build_and_register_game_session(
         try:
             await session.close()
         except Exception:
+            # Why: cleanup must not raise from the exception path —
+            # a close() failure would mask the original connect error
+            # that we re-raise below.
             pass
         raise
 

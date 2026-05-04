@@ -1433,6 +1433,10 @@ async def test_get_or_create_session_keeps_create_lock_when_peer_waits(monkeypat
                     "soccer", "match_peer_wait", "Lan",
                 )
             except RuntimeError:
+                # Why: A's build dispatcher is the injected failing
+                # builder (peer-waiter orchestration). The RuntimeError
+                # is the expected outcome — we swallow it so B's
+                # subsequent acquire of the create lock can be observed.
                 pass
 
         async def _b_runner():
