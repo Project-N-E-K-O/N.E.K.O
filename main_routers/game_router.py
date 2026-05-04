@@ -3646,6 +3646,17 @@ async def _close_and_remove_session(
     the 15s ``stream_text`` timeout. New chats arriving after we set the
     route's ``_exit_flow_started`` flag short-circuit before they ever
     touch the entry lock.
+
+    codex P1 (PR #1127 r3182582714): identity-gate the cache eviction.
+    Two close callers can read the same ``entry`` then queue on its
+    lock; while they wait, a peer may pop the cache, a fresh
+    ``/route/start`` may build ``entry_NEW`` under the same key, and we
+    would otherwise wake up and pop ``entry_NEW`` — closing a live
+    session a different route owns. Mirrors the postgame ownership gate
+    in ``_deliver_postgame_text_bubble``'s finally. We always close OUR
+    captured ``entry``'s session (it's ours since the top of this
+    function) but only touch the cache / create-lock dicts if they
+    still point at us.
     """
     keys = []
     if lanlan_name:
@@ -3668,33 +3679,30 @@ async def _close_and_remove_session(
     entry_lock = entry.get('lock')
     if isinstance(entry_lock, asyncio.Lock):
         async with entry_lock:
-            popped = _game_sessions.pop(key, None)
-            if popped is None:
-                return False
-            session = popped.get('session')
+            cache_owned = _game_sessions.get(key) is entry
+            if cache_owned:
+                _game_sessions.pop(key, None)
+                _game_session_create_locks.pop(key, None)
     else:
-        popped = _game_sessions.pop(key, None)
-        if popped is None:
-            return False
-        session = popped.get('session')
+        cache_owned = _game_sessions.get(key) is entry
+        if cache_owned:
+            _game_sessions.pop(key, None)
+            _game_session_create_locks.pop(key, None)
 
-    # codex P2 follow-up: drop the per-key create lock alongside the
-    # evicted session so ``_game_session_create_locks`` does not grow
-    # unbounded over uptime. After eviction the lock would only protect
-    # a fresh, unrelated build — keeping the stale Lock instance buys
-    # nothing and accumulates memory as session_ids churn. Pop is
-    # synchronous (no await) so two concurrent close callers cannot
-    # race and double-pop into a KeyError; ``pop(..., None)`` is
-    # idempotent.
-    _game_session_create_locks.pop(key, None)
-
+    # Why: ``entry`` was captured at the top of this function; we own its
+    # lifecycle even if a peer closer rotated the cache to ``entry_NEW``
+    # while we waited on the lock. Always close OUR session so the
+    # client cannot leak. ``OmniOfflineClient.close`` is idempotent
+    # (omni_offline_client.py:1815-1835), so any peer's prior close on
+    # the same object is safe to re-run.
+    session = entry.get('session')
     if session:
         try:
             await session.close()
         except Exception as e:
             logger.debug("🎮 关闭游戏 session 失败: key=%s err=%s", key, e, exc_info=True)
 
-    logger.info("🎮 结束游戏 session: %s", key)
+    logger.info("🎮 结束游戏 session: %s cache_owned=%s", key, cache_owned)
     return True
 
 

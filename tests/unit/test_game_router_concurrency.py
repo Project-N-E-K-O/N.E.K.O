@@ -1692,3 +1692,143 @@ async def test_build_session_cancellation_closes_half_open_client(monkeypatch):
         # Cache state is clean: nothing was registered, lock evicted.
         assert canonical_key not in game_router._game_sessions
         assert canonical_key not in game_router._game_session_create_locks
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
+    """codex P1 (PR #1127 r3182582714): ``_close_and_remove_session``
+    must identity-gate ``_game_sessions.pop`` against the captured
+    ``entry`` so a peer that rotated the cache to ``entry_NEW`` while we
+    waited on ``entry['lock']`` does NOT lose its live session.
+
+    Race window:
+      1. Caller A reads entry_A from the cache, awaits entry_A['lock'].
+      2. A peer closer (also queued on entry_A['lock']) wins the lock
+         first, pops entry_A, closes it, releases the lock.
+      3. ``/route/start`` reuses the same (lanlan, game_type, session_id)
+         and inserts entry_NEW at the same key with a fresh
+         ``OmniOfflineClient``.
+      4. Caller A finally acquires entry_A['lock'] and proceeds to its
+         pop — pre-fix this evicts entry_NEW (NOT entry_A) from the
+         cache and closes entry_NEW's live session. Post-fix the pop is
+         identity-gated on ``cache.get(key) is entry`` so Caller A
+         leaves entry_NEW alone and only closes its OWN entry_A
+         session.
+
+    The two ``_FakeOmniSession`` instances are distinct objects, so the
+    test asserts on the per-object ``close_calls`` to verify which side
+    was actually closed.
+    """
+    with reset_game_route_state():
+        key = game_router._game_session_key("Lan", "soccer", "match_close_idgate")
+        game_router._game_sessions.pop(key, None)
+        game_router._game_session_create_locks.pop(key, None)
+
+        session_a = _FakeOmniSession(name="entry_A")
+        lock_a = asyncio.Lock()
+        entry_a = {
+            "session": session_a,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": lock_a,
+            "instructions": "",
+        }
+        game_router._game_sessions[key] = entry_a
+
+        # A peer task holds entry_A's lock — stand-in for "another caller
+        # already won the lock acquisition race". Caller A will queue
+        # behind it.
+        peer_release = asyncio.Event()
+
+        async def _hold_entry_a_lock():
+            async with lock_a:
+                await peer_release.wait()
+
+        peer_task = asyncio.create_task(_hold_entry_a_lock())
+        # Yield until the peer has actually acquired lock_a.
+        for _ in range(50):
+            if lock_a.locked():
+                break
+            await asyncio.sleep(0)
+        assert lock_a.locked(), "peer task failed to acquire entry_A's lock"
+
+        # Caller A: enters _close_and_remove_session, captures entry_a,
+        # then awaits lock_a (parked behind the peer).
+        caller_a_task = asyncio.create_task(
+            game_router._close_and_remove_session("soccer", "match_close_idgate", "Lan")
+        )
+        # Spin until Caller A is waiting on the lock (i.e., it has read
+        # entry and is queued — lock has waiters).
+        for _ in range(200):
+            waiters = getattr(lock_a, "_waiters", None)
+            if waiters and len(waiters) > 0:
+                break
+            await asyncio.sleep(0)
+        waiters = getattr(lock_a, "_waiters", None)
+        assert waiters and len(waiters) > 0, (
+            "Caller A failed to queue on entry_A['lock']; "
+            "the test cannot reproduce the race without that queueing."
+        )
+
+        # Simulate the peer-rotation: the lock holder pops entry_A,
+        # closes it, and a fresh /route/start inserts entry_NEW at the
+        # same key with a NEW lock + NEW session BEFORE we release
+        # lock_a. We perform these synchronously while Caller A is
+        # still parked.
+        evicted = game_router._game_sessions.pop(key, None)
+        assert evicted is entry_a
+        game_router._game_session_create_locks.pop(key, None)
+
+        session_b = _FakeOmniSession(name="entry_NEW")
+        entry_new = {
+            "session": session_b,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+        game_router._game_sessions[key] = entry_new
+        # Stand-in create lock for entry_NEW so the assertion below can
+        # distinguish "evicted by us" from "never present".
+        entry_new_create_lock = game_router._get_session_create_lock(key)
+        assert key in game_router._game_session_create_locks
+
+        # Release the peer's hold on lock_a so Caller A wakes up.
+        peer_release.set()
+        await peer_task
+        result = await asyncio.wait_for(caller_a_task, timeout=5.0)
+
+        # Caller A reports success — it closed its own entry's session.
+        assert result is True
+
+        # Identity gate held: entry_NEW is still in the cache, untouched.
+        assert game_router._game_sessions.get(key) is entry_new, (
+            "Identity gate failed: Caller A's pop evicted entry_NEW. "
+            "This is the codex P1 bug — a fresh /route/start's session "
+            "would now be orphaned and its session closed by us."
+        )
+        assert session_b.close_calls == 0, (
+            "entry_NEW's session was closed by Caller A; identity gate "
+            "must protect it because Caller A captured entry_A, not "
+            "entry_NEW."
+        )
+        # entry_NEW's create lock must also still be present.
+        assert game_router._game_session_create_locks.get(key) is entry_new_create_lock
+
+        # entry_A's session was closed (Caller A always owns its captured
+        # entry's lifecycle, regardless of cache state).
+        assert session_a.close_calls == 1, (
+            "entry_A's session must be closed by Caller A even when the "
+            "cache rotated; the captured entry is our responsibility."
+        )
+
+        # Cleanup so we leave the registry clean for sibling tests.
+        game_router._game_sessions.pop(key, None)
+        game_router._game_session_create_locks.pop(key, None)
