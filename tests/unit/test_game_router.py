@@ -761,6 +761,36 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "summary"
+            return {
+                "model": "summary-model",
+                "base_url": "",
+                "api_key": "summary-key",
+                "api_type": "summary-api",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["model"] == "conversation-model"
+    assert info["base_url"] == "http://conversation.test/v1"
+    assert info["api_key"] == "conversation-key"
+    assert info["api_type"] == "conversation-api"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
     class FakeSession:
