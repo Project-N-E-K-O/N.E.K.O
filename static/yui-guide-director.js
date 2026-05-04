@@ -1,6 +1,9 @@
 (function () {
     'use strict';
 
+    // 最近一次触控事件时间戳，用于识别触控衍生的合成鼠标/点击事件
+    var lastTouchTime = 0;
+
     function translateGuideText(textKey, fallbackText) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
@@ -8798,10 +8801,21 @@
             }
 
             if (event.type.indexOf('touch') === 0) {
+                lastTouchTime = Date.now();
                 return true;
             }
 
-            return event.pointerType === 'touch';
+            if (event.pointerType === 'touch') {
+                lastTouchTime = Date.now();
+                return true;
+            }
+
+            // 触控衍生的合成鼠标/点击事件：在触控后的短时间窗口内视为触控交互
+            if (/^(click|mousedown|mouseup)$/.test(event.type) && Date.now() - lastTouchTime < 500) {
+                return true;
+            }
+
+            return false;
         }
 
         isAllowedTutorialInteractionTarget(target) {
