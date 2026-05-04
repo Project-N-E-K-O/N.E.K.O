@@ -7,10 +7,10 @@ when nothing in the watched folders changed, this script is a no-op.
 
 Group 1 — static/locales/*.json
    When ANY file in static/locales/ changes, ALL 8 language files must
-   change AND the same JSON key paths must change across all 8 languages.
-   This catches "added a key in zh-CN but forgot the others" without relying
-   on physical line numbers, because locale files may contain language-specific
-   ordering differences from previous edits.
+   change AND every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must
+   match across all 8. The locale JSONs are line-aligned by convention
+   (the same key sits on the same line across languages); strict alignment
+   catches "added a key in zh-CN but forgot the others" at the diff stage.
 
 Group 2 — frontend/plugin-manager/src/i18n/locales/*.ts
    Same rule but for plugin-manager TS locales. ``yuiGuide.ts`` is
@@ -20,7 +20,7 @@ Group 2 — frontend/plugin-manager/src/i18n/locales/*.ts
 Suppression
 -----------
 None at the line level. If a structural reorganisation legitimately needs
- to change comparison behavior, edit the script's GROUPS definition in the same PR
+to break alignment, edit the script's GROUPS definition in the same PR
 and explain in the description.
 
 Output
@@ -33,7 +33,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -50,7 +49,6 @@ GROUPS: list[dict[str, object]] = [
             "en.json", "es.json", "ja.json", "ko.json",
             "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
         ],
-        "compare": "json_keys",
     },
     {
         "name": "plugin-manager i18n locales",
@@ -86,7 +84,6 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
 )
 
-
 def _parse_hunks(diff_text: str) -> list[tuple[int, int, int, int]]:
     """Parse a unified diff. Returns list of (old_start, old_count, new_start, new_count).
 
@@ -109,40 +106,6 @@ def _file_diff(base: str, path: str) -> str:
     return _git("diff", "--unified=0", f"{base}...HEAD", "--", path)
 
 
-def _git_file(ref: str, path: str) -> str | None:
-    result = subprocess.run(
-        ["git", "show", f"{ref}:{path}"],
-        cwd=REPO_ROOT,
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout
-
-
-def _flatten_json(value: object, prefix: tuple[str, ...] = ()) -> dict[tuple[str, ...], object]:
-    # 将嵌套 JSON 展平成键路径，避免用物理行号判断本地化是否同步。
-    if isinstance(value, dict):
-        out: dict[tuple[str, ...], object] = {}
-        for key, child in value.items():
-            out.update(_flatten_json(child, (*prefix, str(key))))
-        return out
-    return {prefix: value}
-
-
-def _json_changed_paths(base: str, path: str) -> set[tuple[str, ...]]:
-    old_text = _git_file(base, path)
-    new_text = (REPO_ROOT / path).read_text(encoding="utf-8")
-    old_flat = _flatten_json(json.loads(old_text)) if old_text is not None else {}
-    new_flat = _flatten_json(json.loads(new_text))
-    keys = set(old_flat) | set(new_flat)
-    return {key for key in keys if old_flat.get(key) != new_flat.get(key)}
-
-
-def _format_json_paths(paths: set[tuple[str, ...]]) -> str:
-    return ", ".join(".".join(path) for path in sorted(paths))
-
-
 def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
     errors: list[str] = []
     dir_prefix = str(group["dir"]).rstrip("/") + "/"
@@ -162,23 +125,6 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
         )
         return errors  # alignment check is meaningless when files are missing
 
-    compare_mode = group.get("compare")
-    if compare_mode == "json_keys":
-        paths_by_file = {f: _json_changed_paths(base, f) for f in files_in_group}
-        ref_file = files_in_group[0]
-        ref_paths = paths_by_file[ref_file]
-        for f in files_in_group[1:]:
-            if paths_by_file[f] != ref_paths:
-                errors.append(
-                    f"[{group['name']}] changed JSON keys in {f} differ from "
-                    f"{ref_file}; locale changes must touch the same keys "
-                    f"across all languages.\n"
-                    f"  reference ({ref_file}): {_format_json_paths(ref_paths)}\n"
-                    f"  this file ({f}): {_format_json_paths(paths_by_file[f])}"
-                )
-        return errors
-
-    # 默认比较 hunk 行号，适用于没有可解析结构的本地化源码文件。
     hunks_by_file: dict[str, list[tuple[int, int, int, int]]] = {}
     for f in files_in_group:
         diff = _file_diff(base, f)
