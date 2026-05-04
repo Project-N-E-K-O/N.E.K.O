@@ -4020,14 +4020,32 @@ async def _route_external_transcript_to_game(
 
     now = time.time()
     if kind == "user-voice":
+        # Dedup on request_id when available — every transcript carries its own
+        # idempotency id, so two genuinely-distinct shouts of the same phrase
+        # (e.g. "再来！再来！") arrive with different request_ids and must both
+        # deliver. Only fall back to text+timestamp dedup when request_id is
+        # missing (legacy callers / unit-test scaffolding without one), and use
+        # a tighter 1.0s window since it only guards retransmits-of-the-same-id
+        # in that fallback path.
         last_voice = state.get("_last_external_voice_transcript") if isinstance(state.get("_last_external_voice_transcript"), dict) else {}
-        if (
-            str(last_voice.get("text") or "") == text
-            and now - float(last_voice.get("ts") or 0) < 3.0
-        ):
-            logger.info("🎮 游戏语音转写去重: lanlan=%s text=%s", lanlan_name, text[:40])
+        last_request_id = str(last_voice.get("request_id") or "")
+        current_request_id = str(request_id or "")
+        if current_request_id and last_request_id and current_request_id == last_request_id:
+            logger.info("🎮 游戏语音转写去重(request_id): lanlan=%s text=%s", lanlan_name, text[:40])
             return True
-        state["_last_external_voice_transcript"] = {"text": text, "ts": now}
+        if (
+            not current_request_id
+            and not last_request_id
+            and str(last_voice.get("text") or "") == text
+            and now - float(last_voice.get("ts") or 0) < 1.0
+        ):
+            logger.info("🎮 游戏语音转写去重(fallback text+ts): lanlan=%s text=%s", lanlan_name, text[:40])
+            return True
+        state["_last_external_voice_transcript"] = {
+            "text": text,
+            "ts": now,
+            "request_id": current_request_id,
+        }
 
     mgr = get_session_manager().get(lanlan_name)
     game_type = str(state.get("game_type") or "soccer")

@@ -667,14 +667,67 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 
 
 @pytest.mark.unit
+def test_route_state_key_is_tuple_no_collision_no_prefix_false_match(monkeypatch):
+    """The previous f"{lanlan}:{game_type}" string key collided when a
+    lanlan_name contained a literal ':' and the prefix-style lookup
+    false-matched 'Lan' against 'Lan2:soccer'."""
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    # Tuple key — no string-concat collision possible.
+    state_a = game_router._activate_game_route("soccer", "match_1", "Lan:Alt")
+    state_b = game_router._activate_game_route("soccer", "match_2", "Lan")
+    state_c = game_router._activate_game_route("soccer", "match_3", "Lan2")
+
+    # Slot identity is preserved despite ':' in one lanlan_name.
+    assert game_router._game_route_states[("Lan:Alt", "soccer")] is state_a
+    assert game_router._game_route_states[("Lan", "soccer")] is state_b
+    assert game_router._game_route_states[("Lan2", "soccer")] is state_c
+
+    # Prefix false-match defense: looking up 'Lan' must NOT return state_c
+    # (which used to collide because 'Lan2:soccer'.startswith('Lan:') is False
+    # but 'Lan:soccer'.startswith('Lan:') IS true; symmetrically a real bug
+    # was 'Lan'.startswith vs 'Lan' returning the wrong slot for ambiguous
+    # equality. With tuple keys we compare lanlan_name by exact string).
+    found = game_router._get_active_game_route_state("Lan")
+    assert found is state_b
+    found2 = game_router._get_active_game_route_state("Lan2")
+    assert found2 is state_c
+    found_alt = game_router._get_active_game_route_state("Lan:Alt")
+    assert found_alt is state_a
+
+
+@pytest.mark.unit
 def test_memory_review_prompt_protects_soccer_archive_records():
     from config.prompts_memory import get_history_review_prompt
 
     prompt = get_history_review_prompt("zh")
 
     assert "游戏模块归档" in prompt
+    assert "游戏模块赛后记录" in prompt
+    assert "游戏模块记忆记录" in prompt
     assert "不同时间/会话的同一类游戏默认代表不同局" in prompt
     assert "不要整条删除" in prompt
+
+
+@pytest.mark.unit
+def test_memory_review_prompt_carries_chinese_literal_in_all_locales():
+    """The archive tags written by the game module ('游戏模块归档' /
+    '游戏模块赛后记录' / '游戏模块记忆记录') are emitted verbatim in Chinese
+    regardless of the UI / review-LLM language. So every locale's
+    HISTORY_REVIEW_PROMPT must mention the Chinese literals so the review
+    LLM can match them, not just localized translations."""
+    from config.prompts_memory import get_history_review_prompt
+
+    expected_zh_literals = (
+        "游戏模块归档",
+        "游戏模块赛后记录",
+        "游戏模块记忆记录",
+    )
+    for lang in ("zh", "en", "ja", "ko", "ru"):
+        prompt = get_history_review_prompt(lang)
+        for literal in expected_zh_literals:
+            assert literal in prompt, (
+                f"locale={lang} HISTORY_REVIEW_PROMPT missing Chinese literal {literal!r}"
+            )
 
 
 @pytest.mark.unit
@@ -1311,6 +1364,44 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     assert state["pending_outputs"][1]["meta"]["hasUserSpeech"] is True
     assert "skipOrdinaryMemory" not in state["pending_outputs"][1]["meta"]
     assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_keys_on_request_id(monkeypatch):
+    """Two genuinely-distinct shouts of the same phrase with different
+    request_ids must both deliver — the (text, time<3s) heuristic was
+    swallowing rapid-fire repeats like '再来！再来！'."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    chat_calls = []
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        chat_calls.append(event["userVoiceText"])
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled1 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-1", game_type="soccer", session_id="match_1",
+    )
+    handled2 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
+    )
+
+    assert handled1 is True
+    assert handled2 is True
+    # Both shouts must have actually reached the LLM, not been silently swallowed.
+    assert chat_calls == ["再来", "再来"]
+    assert len(mgr.mirrored) == 2
+    # And the same request_id retransmitted is still squashed (idempotency).
+    handled3 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
+    )
+    assert handled3 is True
+    assert chat_calls == ["再来", "再来"]
 
 
 @pytest.mark.unit
