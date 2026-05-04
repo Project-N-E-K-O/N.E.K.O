@@ -2245,6 +2245,12 @@
             setGalgameModeTemporarilyDisabled(false);
         });
 
+        window.addEventListener('neko:tutorial-skipped', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
