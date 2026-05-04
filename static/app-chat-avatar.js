@@ -536,6 +536,7 @@
             var currentSourceWidth = sourceWidth;
             var currentSourceHeight = sourceHeight;
             var currentModelType = options.modelType || getCurrentModelType();
+            var currentCacheKey = options.cacheKey || getCurrentModelCacheKey();
             var recaptureFn = typeof options.recaptureFn === 'function' ? options.recaptureFn : null;
             var displayW, displayH, scaleRatio;
             var crop = { x: 0, y: 0, size: 0 };
@@ -596,6 +597,7 @@
                 currentSourceWidth = next.sourceWidth || currentSourceWidth || 640;
                 currentSourceHeight = next.sourceHeight || currentSourceHeight || 640;
                 currentModelType = next.modelType || currentModelType || getCurrentModelType();
+                currentCacheKey = next.cacheKey || currentCacheKey || getCurrentModelCacheKey();
                 drag = null;
                 img.src = currentSourceDataUrl;
                 initLayout();
@@ -706,7 +708,8 @@
                             size: Math.round(crop.size * scaleRatio)
                         },
                         sourceDataUrl: currentSourceDataUrl,
-                        modelType: currentModelType
+                        modelType: currentModelType,
+                        cacheKey: currentCacheKey
                     });
                 } else {
                     resolve(null);
@@ -906,6 +909,7 @@
                 var defRect = result.cropRectPixels || null;
 
                 async function recaptureCropperSource() {
+                    var freshCacheKey = getCurrentModelCacheKey();
                     var fresh = await captureAvatarPreview({ includeSourceDataUrl: true });
                     if (!fresh || !fresh.sourceDataUrl) {
                         throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
@@ -916,12 +920,14 @@
                         cropRectPixels: fresh.cropRectPixels || null,
                         sourceWidth: dims.w,
                         sourceHeight: dims.h,
-                        modelType: fresh.modelType || getCurrentModelType()
+                        modelType: fresh.modelType || getCurrentModelType(),
+                        cacheKey: freshCacheKey || getCurrentModelCacheKey()
                     };
                 }
 
                 var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h, {
                     modelType: result.modelType || getCurrentModelType(),
+                    cacheKey: cacheKey,
                     recaptureFn: recaptureCropperSource
                 });
                 if (token !== activeCaptureToken) return;
@@ -930,7 +936,7 @@
                     var croppedDataUrl = await cropSourceToAvatar(userCrop.sourceDataUrl, userCrop.cropRect);
                     applyPreviewResult(
                         { dataUrl: croppedDataUrl, modelType: userCrop.modelType || result.modelType },
-                        getCurrentModelCacheKey() || cacheKey
+                        userCrop.cacheKey || cacheKey
                     );
                 } else {
                     if (prevCachedPreview) {
