@@ -97,6 +97,14 @@ GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS = {
     "ru": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_RU,
 }
 
+GAME_CONTEXT_ORGANIZER_USER_PROMPTS = {
+    "zh": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    "en": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    "ja": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    "ko": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    "ru": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+}
+
 
 GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS = {
     "zh": """\
@@ -187,11 +195,11 @@ Rules:
 }
 
 GAME_ARCHIVE_MEMORY_HIGHLIGHTER_USER_PROMPTS = {
-    "zh": "请根据下面材料筛选赛后记忆重点。\n\n{source}",
-    "en": "Please select the postgame memory highlights from the material below.\n\n{source}",
-    "ja": "以下の材料から試合後の記憶重点を選んでください。\n\n{source}",
-    "ko": "아래 자료를 바탕으로 종료 후 기억 핵심을 골라 주세요.\n\n{source}",
-    "ru": "Выбери послематчевые акценты памяти по материалу ниже.\n\n{source}",
+    "zh": "请根据下面材料筛选赛后记忆重点。\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+    "en": "Please select the postgame memory highlights from the material below.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+    "ja": "以下の材料から試合後の記憶重点を選んでください。\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+    "ko": "아래 자료를 바탕으로 종료 후 기억 핵심을 골라 주세요.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+    "ru": "Выбери послематчевые акценты памяти по материалу ниже.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
 }
 
 
@@ -719,6 +727,10 @@ GAME_CONTEXT_FORMATTER_LABELS = {
 
 def get_game_context_organizer_system_prompt(lang: str | None = None) -> str:
     return _localized_template(GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS, lang)
+
+
+def get_game_context_organizer_user_prompt(lang: str | None = None) -> str:
+    return _localized_template(GAME_CONTEXT_ORGANIZER_USER_PROMPTS, lang)
 
 
 def get_game_archive_memory_highlighter_system_prompt(lang: str | None = None) -> str:

@@ -46,6 +46,7 @@ from config.prompts_game_route import (
     get_game_archive_memory_text_labels,
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
+    get_game_context_organizer_user_prompt,
     get_game_postgame_context_labels,
     get_game_postgame_event_texts,
     get_game_postgame_realtime_nudge_labels,
@@ -1006,6 +1007,22 @@ def _get_current_character_info() -> Dict[str, Any]:
     return _get_character_info()
 
 
+def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str, Any]:
+    """Resolve character metadata but use the summary model tier for helper calls."""
+    info = dict(_get_character_info(lanlan_name))
+    try:
+        summary_config = get_config_manager().get_model_api_config("summary") or {}
+    except RuntimeError:
+        return info
+    info.update({
+        "model": summary_config.get("model") or info.get("model", ""),
+        "base_url": summary_config.get("base_url") or info.get("base_url", ""),
+        "api_type": summary_config.get("api_type") or info.get("api_type", ""),
+        "api_key": summary_config.get("api_key") or info.get("api_key", ""),
+    })
+    return info
+
+
 async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]:
     try:
         from config import MEMORY_SERVER_PORT
@@ -1452,9 +1469,12 @@ def _build_game_context_organizer_payload(state: dict, snapshot: list[dict]) -> 
 
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
-    char_info = _get_character_info(str(state.get("lanlan_name") or ""))
+    char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
     payload = _build_game_context_organizer_payload(state, snapshot)
     system_prompt = get_game_context_organizer_system_prompt(char_info.get("user_language"))
+    user_prompt = get_game_context_organizer_user_prompt(char_info.get("user_language")).format(
+        payload=json.dumps(payload, ensure_ascii=False)
+    )
 
     try:
         from utils.file_utils import robust_json_loads
@@ -1472,7 +1492,7 @@ async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> d
         async with llm:
             result = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+                HumanMessage(content=user_prompt),
             ])
         raw = _strip_json_fence(str(result.content or ""))
         parsed = robust_json_loads(raw)
@@ -1940,7 +1960,7 @@ def _archive_prompt_language(archive: dict) -> str:
         if language:
             return normalize_language_code(language, format="short") or language
     except Exception:
-        pass
+        logger.debug("赛后归档语言解析失败，使用默认 prompt 语言", exc_info=True)
     return ""
 
 
@@ -2179,7 +2199,7 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
 
 async def _select_game_archive_memory_highlights(archive: dict) -> dict:
     """Ask a small independent LLM call to select meaningful memory items."""
-    char_info = _get_character_info(str(archive.get("lanlan_name") or ""))
+    char_info = _get_game_route_summary_llm_info(str(archive.get("lanlan_name") or ""))
     source = _build_game_archive_memory_highlight_source(archive)
     language = _archive_prompt_language(archive)
     system_prompt = get_game_archive_memory_highlighter_system_prompt(language)

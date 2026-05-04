@@ -692,6 +692,39 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     assert "不要写无主体裸结果" in captured["system"]
     assert "不要前后混用不同视角" in captured["system"]
     assert "固定顺序是玩家在前、当前角色在后" in captured["user"]
+    assert "======以上为赛后记忆筛选材料======" in captured["user"]
+
+
+@pytest.mark.unit
+def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "summary"
+            return {
+                "model": "summary-model",
+                "base_url": "http://summary.test/v1",
+                "api_key": "summary-key",
+                "api_type": "summary-api",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["lanlan_name"] == "Lan"
+    assert info["user_language"] == "zh"
+    assert info["model"] == "summary-model"
+    assert info["base_url"] == "http://summary.test/v1"
+    assert info["api_key"] == "summary-key"
+    assert info["api_type"] == "summary-api"
 
 
 @pytest.mark.unit
