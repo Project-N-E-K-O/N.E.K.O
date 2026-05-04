@@ -1353,6 +1353,30 @@ class ConfigManager:
             print(f"Warning: Failed to create card_faces directory: {e}", file=sys.stderr)
             return False
 
+    def migrate_default_card_faces(self):
+        """补写内置默认卡面，不覆盖用户已经创建的卡面。"""
+        source_dir = self.project_config_dir.parent / "static" / "default" / "card_faces"
+        if not source_dir.exists():
+            return
+        if not self.ensure_card_faces_directory():
+            return
+
+        try:
+            source_files = list(source_dir.glob("*.png"))
+        except Exception as e:
+            self._log(f"Warning: Failed to scan default card faces: {e}")
+            return
+
+        for source_path in source_files:
+            target_path = self.card_faces_dir / source_path.name
+            if target_path.exists():
+                continue
+            try:
+                shutil.copy2(source_path, target_path)
+                self._log(f"[ConfigManager] Migrated default card face: {source_path.name}")
+            except Exception as e:
+                self._log(f"Warning: Failed to migrate default card face {source_path.name}: {e}")
+
     def card_face_meta_path(self, name: str):
         """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。
 
@@ -3570,6 +3594,7 @@ def _ensure_config_manager_migrated():
     # 统一在首次真正需要运行时配置时再迁移，允许启动 phase-0
     # 先基于“尚未注入默认配置的运行根”判断是否需要导入云快照。
     _config_manager.migrate_config_files()
+    _config_manager.migrate_default_card_faces()
     _config_manager.migrate_memory_files()
     # 在 config/memory 基础迁移完成后，对遗留 Documents/AppData 路径下的
     # N.E.K.O/memory 做一次性软迁移：只迁移已关联角色的条目，未关联条目

@@ -2,6 +2,7 @@
     "common": {
         "load": "加载",
         "minimize": "最小化",
+        "maximize": "最大化",
         "expand": "展开",
         "close": "关闭",
         "save": "保存",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "加载失败"
+    },
+    "model": {
+        "resetToDefaultSuccess": "已恢复默认模型",
+        "resetToDefaultFailed": "恢复默认模型失败"
     },
     "autostartPrompt": {
         "title": "要不要让 N.E.K.O 开机自动启动？",
@@ -1103,6 +1108,7 @@
         "noMotion": "无动作",
         "noExpression": "无表情",
         "noMotionFiles": "没有动作文件",
+        "noExpressionFiles": "没有表情文件",
         "touchAnim": {
             "title": "触摸动画配置",
             "selectMotion": "绑定动作",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "更新作者失败: {{error}}",
         "saveMasterSuccess": "保存主人设定成功",
         "editCardFace": "编辑卡面",
+        "cardFaceModelSettings": "模型设置",
         "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "加载 Live2D 列表失败:",
         "getLanlanNameFailed": "获取 lanlan_name 失败:",
         "updateParameterEditorLinkFailed": "更新参数编辑器链接失败:",
+        "editCardFaceAfterModelSaveTitle": "编辑卡面",
+        "editCardFaceAfterModelSaveMessage": "模型设置已保存。是否要现在编辑卡面？",
+        "editCardFaceNow": "编辑卡面",
+        "createDefaultCardFace": "生成默认卡面",
         "invalidVRMPathDetected": "[模型管理] 检测到无效的 VRM 模型路径，尝试自动修复:",
         "saveModelSettingsFailed": "保存模型设置失败:",
         "vrmCleanupWarning": "[模型管理] VRM清理时出现警告:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "弹窗被阻止，请允许弹窗后重试",
         "saveCardFace": "保存卡面",
         "savingCardFace": "保存中...",
+        "autoSavingDefaultCardFace": "正在生成默认卡面...",
+        "autoSaveDefaultCardFaceFailed": "默认卡面生成失败",
         "saveCardFaceSuccess": "保存成功！",
         "saveCardFaceFailed": "保存失败: {{error}}",
         "saveCardFacePartialSuccess": "PNG 已保存，但元数据写入失败: {{error}}",

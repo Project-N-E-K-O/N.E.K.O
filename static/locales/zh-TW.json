@@ -2,6 +2,7 @@
     "common": {
         "load": "加載",
         "minimize": "最小化",
+        "maximize": "最大化",
         "expand": "展開",
         "close": "關閉",
         "save": "保存",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "載入失敗"
+    },
+    "model": {
+        "resetToDefaultSuccess": "已恢復預設模型",
+        "resetToDefaultFailed": "恢復預設模型失敗"
     },
     "autostartPrompt": {
         "title": "要不要讓 N.E.K.O 開機自動啟動？",
@@ -1103,6 +1108,7 @@
         "noMotion": "無動作",
         "noExpression": "無錶情",
         "noMotionFiles": "沒有動作文件",
+        "noExpressionFiles": "沒有表情檔案",
         "touchAnim": {
             "title": "觸摸動畫配置",
             "selectMotion": "綁定動作",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
         "saveMasterSuccess": "儲存主人設定成功",
         "editCardFace": "編輯卡面",
+        "cardFaceModelSettings": "模型設定",
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "加載 Live2D 列錶失敗:",
         "getLanlanNameFailed": "獲取 lanlan_name 失敗:",
         "updateParameterEditorLinkFailed": "更新參數編輯器鏈接失敗:",
+        "editCardFaceAfterModelSaveTitle": "編輯卡面",
+        "editCardFaceAfterModelSaveMessage": "模型設定已儲存。是否要現在編輯卡面？",
+        "editCardFaceNow": "編輯卡面",
+        "createDefaultCardFace": "生成預設卡面",
         "invalidVRMPathDetected": "[模型管理] 檢測到無效的 VRM 模型路徑，嘗試自動修復:",
         "saveModelSettingsFailed": "保存模型設置失敗:",
         "vrmCleanupWarning": "[模型管理] VRM清理時齣現警告:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "彈窗被阻止，請允許彈窗後重試",
         "saveCardFace": "儲存卡面",
         "savingCardFace": "儲存中...",
+        "autoSavingDefaultCardFace": "正在生成預設卡面...",
+        "autoSaveDefaultCardFaceFailed": "預設卡面生成失敗",
         "saveCardFaceSuccess": "儲存成功！",
         "saveCardFaceFailed": "儲存失敗: {{error}}",
         "saveCardFacePartialSuccess": "PNG 已儲存，但中繼資料寫入失敗: {{error}}",
