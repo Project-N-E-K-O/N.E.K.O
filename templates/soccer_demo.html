@@ -290,9 +290,11 @@
       button.hidden = !visible;
       button.disabled = !enabled;
     };
+    const _localized = (key, fallback) =>
+      typeof window.t === 'function' ? window.t(`soccer.${key}`) : fallback;
     const syncStartScreen = (fallbackText = '') => {
       if (state.assets && state.route && !state.routeStarting && !state.started) {
-        updateText(fallbackText || '准备完成，点击开始');
+        updateText(fallbackText || _localized('startScreen.readyToStart', '准备完成，点击开始'));
         setSpinnerVisible(false);
         setStartVisible(true, true);
         setExitVisible(false);
@@ -307,7 +309,7 @@
     };
     const tryHide = () => {
       if (!state.assets || !state.route || !state.started) return;
-      updateText('准备完成');
+      updateText(_localized('startScreen.ready', '准备完成'));
       setSpinnerVisible(false);
       setStartVisible(false);
       setExitVisible(true, true);
@@ -325,7 +327,7 @@
       isReady() {
         return state.assets && state.route && state.started;
       },
-      beginStart(text = '分析开局上下文…') {
+      beginStart(text = _localized('loading.beginStartDefault', '分析开局上下文…')) {
         state.route = false;
         state.routeStarting = true;
         state.started = false;
@@ -355,7 +357,7 @@
         setExitVisible(false, false);
         showOverlay();
       },
-      showStart(text = '准备完成，点击开始') {
+      showStart(text = _localized('startScreen.readyToStart', '准备完成，点击开始')) {
         state.route = true;
         state.routeStarting = false;
         state.started = false;
@@ -630,12 +632,18 @@
       setStatus('L2D failed: ' + (l2dErr.message || l2dErr));
     }
 
-    window.__SoccerLoading?.done('assets', '模型加载完成');
+    window.__SoccerLoading?.done(
+      'assets',
+      typeof window.t === 'function' ? window.t('soccer.loading.assetsDone') : '模型加载完成',
+    );
     setTimeout(() => { statusEl.style.opacity = '0'; statusEl.style.transition = 'opacity 0.8s'; }, 1500);
   } catch (e) {
     console.error('[soccer_demo] VRM init failed:', e);
     setStatus('VRM init failed: ' + (e.message || e));
-    window.__SoccerLoading?.done('assets', '模型初始化失败，继续进入游戏');
+    window.__SoccerLoading?.done(
+      'assets',
+      typeof window.t === 'function' ? window.t('soccer.loading.assetsFailed') : '模型初始化失败，继续进入游戏',
+    );
   }
 })();
 </script>
@@ -744,6 +752,14 @@
  *  ═══════════════════════════════════════════════════════════════════════════
  */
 (() => {
+  const _i18n = (key, fallback, params) => {
+    if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
+    if (!params) return fallback;
+    return Object.entries(params).reduce(
+      (s, [k, v]) => s.replaceAll(`{{${k}}}`, String(v)),
+      fallback,
+    );
+  };
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -1396,7 +1412,7 @@
     'goal-conceded': '猫娘丢球',
     'own-goal-by-ai': '猫娘乌龙球',
     'own-goal-by-player': '玩家乌龙球',
-    'user-voice': '主人语音',
+    'user-voice': '玩家语音',
     'mailbox-batch': '累积上下文',
     'steal': '猫娘抢到球',
     'stolen': '猫娘被抢断',
@@ -1467,7 +1483,7 @@
     const now = performance.now();
     if (opts.cooldownKey && SPEECH_CD[opts.cooldownKey] > now) return false;
     // 头顶气泡按“最新文本”显示；唯一保护对象是正在显示的用户输入回复，
-    // 避免普通游戏事件把正在回应主人的气泡顶掉。语音优先级只影响播放仲裁。
+    // 避免普通游戏事件把正在回应玩家的气泡顶掉。语音优先级只影响播放仲裁。
     if (now < bubbleEndsAt && currentSpeechIsUserReply && !_isUserReplyBubbleOpts(opts)) return false;
     return true;
   }
@@ -1542,7 +1558,7 @@
     'goal-scored':   ['进啦！😼', '我赢定了~', '嘻嘻~'],
     'goal-conceded': ['啊——！', '等等，再来一次！', '可恶……'],
     'own-goal-by-ai': ['……我踢进自己门了？', '刚刚不算！', '呜，脚滑了啦'],
-    'own-goal-by-player': ['诶？你帮我进了？', '这是送我的球吗~', '主人你踢错边啦'],
+    'own-goal-by-player': ['诶？你帮我进了？', '这是送我的球吗~', '怎么踢错边啦'],
     'shot-miss':     ['啧……', '差一点', '嗯？'],
     'steal':         ['嘿嘿，给我的~', '我拿到了', '哈！'],
     'stolen':        ['哎呀', '啊！', '等等！'],
@@ -2219,7 +2235,7 @@
       }
       if (resp.ok && data.ok && data.active === false) {
         console.warn('[SoccerRoute] 心跳发现后端路由已结束:', data.reason || 'inactive');
-        _setVoiceStatus('游戏路由已结束，刷新页面可重新接管');
+        _setVoiceStatus(_i18n('voiceStatus.routeEnded', '游戏路由已结束，刷新页面可重新接管'));
         _stopGameRouteHeartbeat();
         return;
       }
@@ -2279,7 +2295,7 @@
 	    const SpeechRecognition = _routeVoiceRecognitionCtor();
 	    if (!SpeechRecognition) {
 	      console.warn('[SoccerVoice][RouteSTT] 当前浏览器不支持 SpeechRecognition，无法接收主语音最终转写');
-	      _setVoiceStatus('当前浏览器不支持游戏语音转写，请暂时使用主聊天文本输入');
+	      _setVoiceStatus(_i18n('voiceStatus.unsupported', '当前浏览器不支持游戏语音转写，请暂时使用主聊天文本输入'));
 	      return false;
 	    }
 	    if (!_llm.routeVoiceSttRecognition) {
@@ -2291,7 +2307,7 @@
 	      rec.onstart = () => {
 	        _llm.routeVoiceSttListening = true;
 	        _llm.routeVoiceSttStopping = false;
-	        _setVoiceStatus('游戏语音 STT：正在听主人说话');
+	        _setVoiceStatus(_i18n('voiceStatus.listening', '游戏语音 STT：正在听玩家说话'));
 	        console.log('[SoccerVoice][RouteSTT] 已启动');
 	      };
 	      rec.onaudiostart = () => console.log('[SoccerVoice][RouteSTT][Diag] audio start');
@@ -2324,7 +2340,7 @@
 	        if (errorCode === 'no-speech') {
 	          console.warn('[SoccerVoice][RouteSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
 	        }
-	        _setVoiceStatus(`游戏语音 STT：${errorCode}`);
+	        _setVoiceStatus(_i18n('voiceStatus.error', `游戏语音 STT：${errorCode}`, { code: errorCode }));
 	        if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
 	          _llm.routeVoiceSttActive = false;
 	          _llm.routeVoiceSttStopping = true;
@@ -2356,7 +2372,7 @@
 	        return true;
 	      }
 	      console.warn('[SoccerVoice][RouteSTT] 启动失败:', e);
-	      _setVoiceStatus('游戏语音 STT：启动失败，请暂时使用主聊天文本输入');
+	      _setVoiceStatus(_i18n('voiceStatus.startFailed', '游戏语音 STT：启动失败，请暂时使用主聊天文本输入'));
 	      _llm.routeVoiceSttListening = false;
 	      return false;
 	    }
@@ -2379,13 +2395,13 @@
 
 	  function _handleGameVoiceSttGateOutput(output) {
 	    _llm.routeVoiceSttActive = true;
-	    _setVoiceStatus('游戏语音 STT：主语音入口接管中');
+	    _setVoiceStatus(_i18n('voiceStatus.handoverInProgress', '游戏语音 STT：主语音入口接管中'));
 	    console.log('[SoccerVoice][RouteSTT] 后端要求启动游戏语音 STT，复用主 Realtime 转写:', output);
 	  }
 
 	  async function _startGameRoute() {
 	    try {
-	      window.__SoccerLoading?.beginStart?.('分析开局上下文…');
+	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
 	      const resp = await fetch('/api/game/soccer/route/start', {
 	        method: 'POST',
 	        headers: { 'Content-Type': 'application/json' },
@@ -2398,21 +2414,21 @@
 	        _applyPreGameContext(data.state);
 	        if (data.state?.game_external_voice_route_active) {
 	          _llm.routeVoiceSttActive = true;
-	          _setVoiceStatus('游戏语音 STT：等待主语音入口接管');
+	          _setVoiceStatus(_i18n('voiceStatus.waitingForHandover', '游戏语音 STT：等待主语音入口接管'));
 	          console.log('[SoccerVoice][RouteSTT] 已进入游戏语音路由，等待主 Realtime 转写接管');
 	        }
 	        _startGameRouteHeartbeat();
 	        _startRouteDrain();
-	        window.__SoccerLoading?.done('route', '开局上下文准备完成');
+	        window.__SoccerLoading?.done('route', _i18n('loading.routeDone', '开局上下文准备完成'));
 	      } else {
 	        soccerRecoverableLog('[SoccerRoute] 接管主入口失败:', data);
 	        _startRouteDrain();
-	        window.__SoccerLoading?.done('route', '开局上下文使用本地默认');
+	        window.__SoccerLoading?.done('route', _i18n('loading.routeFallback', '开局上下文使用本地默认'));
 	      }
 	    } catch (e) {
 	      soccerRecoverableLog('[SoccerRoute] 接管主入口请求失败:', e);
 	      _startRouteDrain();
-	      window.__SoccerLoading?.done('route', '开局上下文请求失败，继续游戏');
+	      window.__SoccerLoading?.done('route', _i18n('loading.routeFailed', '开局上下文请求失败，继续游戏'));
 	    }
 	  }
 
@@ -2579,7 +2595,7 @@
     return {
       type: 'user_speech',
       kind: 'user-voice',
-      label: '主人语音',
+      label: '玩家语音',
       textRaw: clean,
       mood: snapshot.mood,
       priority: 8,
@@ -2591,7 +2607,7 @@
 
   function _compactMailboxItems(items) {
     // 代码层不做“求饶/挑衅/撒娇”这类语义总结；只做证据保全和机械限流。
-    // 主人语音保留原文与当时快照，游戏事件在过多时保留最近记录和计数摘要。
+    // 玩家语音保留原文与当时快照，游戏事件在过多时保留最近记录和计数摘要。
     if (items.length <= _llm.maxPendingItems) return items;
     const preserved = [];
     const counts = Object.create(null);
@@ -3492,7 +3508,7 @@
   }
 
   let _prepareStartInFlight = false;
-  async function _prepareGameForStartScreen(text = '分析开局上下文…') {
+  async function _prepareGameForStartScreen(text = _i18n('loading.beginStartDefault', '分析开局上下文…')) {
     if (_prepareStartInFlight) return;
     _prepareStartInFlight = true;
     try {
@@ -3554,7 +3570,7 @@
     if (!item) return;
     _markUserInputForVoiceArbiter(source);
     console.log(`[SoccerVoice] 输入 | 来源=${source} 回合=${item.round} 分数=${JSON.stringify(item.snapshot.score)} 原文="${item.textRaw}"`);
-    _setVoiceStatus(`已收到主人语音：${item.textRaw}`);
+    _setVoiceStatus(_i18n('voiceStatus.received', `已收到玩家语音：${item.textRaw}`, { text: item.textRaw }));
 
     const requestId = `debug-stt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
@@ -3569,7 +3585,7 @@
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok && data.handled) {
-        _setVoiceStatus(`已提交调试 STT：${clean}`);
+        _setVoiceStatus(_i18n('voiceStatus.debugSubmitted', `已提交调试 STT：${clean}`, { text: clean }));
         return;
       }
       soccerRecoverableLog('[SoccerVoice] 调试 STT 后端路由未接收，回退本地队列:', data.reason || resp.status);
@@ -3598,13 +3614,17 @@
   function _setVoiceListening(next) {
     voiceListening = next;
     voiceMicButton?.classList.toggle('listening', next);
-    if (voiceMicButton) voiceMicButton.textContent = next ? '松开提交' : '调试语音';
-    _setVoiceStatus(next ? '调试 STT：正在听主人说话…' : '调试 STT：待机');
+    if (voiceMicButton) voiceMicButton.textContent = next
+      ? _i18n('debugButton.holdToSubmit', '松开提交')
+      : _i18n('debugButton.idle', '调试语音');
+    _setVoiceStatus(next
+      ? _i18n('voiceStatus.debugListening', '调试 STT：正在听玩家说话…')
+      : _i18n('voiceStatus.debugIdle', '调试 STT：待机'));
   }
 
   function _ensureVoiceRecognition() {
     if (!BrowserSpeechRecognition) {
-      _setVoiceStatus('当前浏览器不支持调试 STT，请用调试文本框提交');
+      _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
       console.warn('[SoccerVoice] 浏览器不支持 SpeechRecognition，调试 STT 文本框仍可提交最终转写');
       return null;
     }
@@ -3639,7 +3659,7 @@
       if ((event.error || '') === 'no-speech') {
         console.warn('[SoccerVoice][DebugSTT][Diag] no-speech: 识别器启动了但没有形成最终语音。检查是否出现 audio/sound/speech start。');
       }
-      _setVoiceStatus(`语音识别错误：${event.error || 'unknown'}`);
+      _setVoiceStatus(_i18n('voiceStatus.recognitionError', `语音识别错误：${event.error || 'unknown'}`, { code: event.error || 'unknown' }));
     };
     voiceRecognition.onend = () => _setVoiceListening(false);
     return voiceRecognition;
@@ -3667,7 +3687,7 @@
   window.addEventListener('mouseup', _stopVoiceRecognition);
   window.addEventListener('touchend', _stopVoiceRecognition);
   if (!BrowserSpeechRecognition) {
-    _setVoiceStatus('当前浏览器不支持调试 STT，请用调试文本框提交');
+    _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
   }
 
   window.addEventListener('pagehide', () => _endGameLLMSession(true));

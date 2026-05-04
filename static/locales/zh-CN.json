@@ -3816,5 +3816,38 @@
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw Calls"
         }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "准备完成，点击开始",
+            "ready": "准备完成"
+        },
+        "loading": {
+            "beginStartDefault": "分析开局上下文…",
+            "assetsDone": "模型加载完成",
+            "assetsFailed": "模型初始化失败，继续进入游戏",
+            "routeDone": "开局上下文准备完成",
+            "routeFallback": "开局上下文使用本地默认",
+            "routeFailed": "开局上下文请求失败，继续游戏"
+        },
+        "voiceStatus": {
+            "routeEnded": "游戏路由已结束，刷新页面可重新接管",
+            "unsupported": "当前浏览器不支持游戏语音转写，请暂时使用主聊天文本输入",
+            "listening": "游戏语音 STT：正在听玩家说话",
+            "error": "游戏语音 STT：{{code}}",
+            "startFailed": "游戏语音 STT：启动失败，请暂时使用主聊天文本输入",
+            "handoverInProgress": "游戏语音 STT：主语音入口接管中",
+            "waitingForHandover": "游戏语音 STT：等待主语音入口接管",
+            "received": "已收到玩家语音：{{text}}",
+            "debugSubmitted": "已提交调试 STT：{{text}}",
+            "debugListening": "调试 STT：正在听玩家说话…",
+            "debugIdle": "调试 STT：待机",
+            "debugUnsupported": "当前浏览器不支持调试 STT，请用调试文本框提交",
+            "recognitionError": "语音识别错误：{{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "松开提交",
+            "idle": "调试语音"
+        }
     }
 }

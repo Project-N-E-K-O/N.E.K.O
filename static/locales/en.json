@@ -3816,5 +3816,38 @@
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
         }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "Ready — click to start",
+            "ready": "Ready"
+        },
+        "loading": {
+            "beginStartDefault": "Analyzing pregame context…",
+            "assetsDone": "Model loaded",
+            "assetsFailed": "Model init failed, continuing",
+            "routeDone": "Pregame context ready",
+            "routeFallback": "Pregame context using local default",
+            "routeFailed": "Pregame context fetch failed, continuing"
+        },
+        "voiceStatus": {
+            "routeEnded": "Game route ended — reload the page to reattach",
+            "unsupported": "This browser does not support game voice transcription. Please use main chat text input for now.",
+            "listening": "Game voice STT: listening to the player",
+            "error": "Game voice STT: {{code}}",
+            "startFailed": "Game voice STT: failed to start. Please use main chat text input for now.",
+            "handoverInProgress": "Game voice STT: main voice entry is taking over",
+            "waitingForHandover": "Game voice STT: waiting for main voice entry to take over",
+            "received": "Player voice received: {{text}}",
+            "debugSubmitted": "Debug STT submitted: {{text}}",
+            "debugListening": "Debug STT: listening to the player…",
+            "debugIdle": "Debug STT: idle",
+            "debugUnsupported": "This browser does not support debug STT. Please use the debug text box.",
+            "recognitionError": "Speech recognition error: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Release to submit",
+            "idle": "Debug voice"
+        }
     }
 }

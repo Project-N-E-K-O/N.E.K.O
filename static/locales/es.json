@@ -3816,5 +3816,38 @@
             "morphTargets": "Morph Targets",
             "drawCalls": "Draw calls"
         }
+    },
+    "soccer": {
+        "startScreen": {
+            "readyToStart": "Listo — haz clic para empezar",
+            "ready": "Listo"
+        },
+        "loading": {
+            "beginStartDefault": "Analizando contexto de inicio…",
+            "assetsDone": "Modelo cargado",
+            "assetsFailed": "Error al inicializar el modelo, continuando",
+            "routeDone": "Contexto de inicio listo",
+            "routeFallback": "Contexto de inicio usando valores predeterminados locales",
+            "routeFailed": "Falló la solicitud del contexto de inicio, continuando"
+        },
+        "voiceStatus": {
+            "routeEnded": "Ruta del juego finalizada — recarga la página para volver a conectar",
+            "unsupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto del chat principal por ahora.",
+            "listening": "STT del juego: escuchando al jugador",
+            "error": "STT del juego: {{code}}",
+            "startFailed": "STT del juego: error al iniciar. Usa la entrada de texto del chat principal por ahora.",
+            "handoverInProgress": "STT del juego: la entrada de voz principal está tomando el control",
+            "waitingForHandover": "STT del juego: esperando que la entrada de voz principal tome el control",
+            "received": "Voz del jugador recibida: {{text}}",
+            "debugSubmitted": "STT de depuración enviado: {{text}}",
+            "debugListening": "STT de depuración: escuchando al jugador…",
+            "debugIdle": "STT de depuración: en espera",
+            "debugUnsupported": "Este navegador no admite el STT de depuración. Usa el cuadro de texto de depuración.",
+            "recognitionError": "Error de reconocimiento de voz: {{code}}"
+        },
+        "debugButton": {
+            "holdToSubmit": "Suelta para enviar",
+            "idle": "Voz de depuración"
+        }
     }
 }
