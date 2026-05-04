@@ -38,6 +38,7 @@ jobs:
       - name: Release check
         working-directory: neko/plugin
         run: |
+          mkdir -p neko_plugin_cli/target
           uv run python neko_plugin_cli/cli.py release-check "${PLUGIN_ID}" | tee "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
 
       - name: Write verification summary
@@ -61,7 +62,7 @@ jobs:
             echo "| Package SHA256 | ${PACKAGE_SHA256} |"
             echo ""
             echo "### Release Check"
-            echo '```text'"
+            echo '```text'
             cat "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
