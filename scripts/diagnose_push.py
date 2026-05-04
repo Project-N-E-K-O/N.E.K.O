@@ -7,7 +7,6 @@ module and calling galgame_get_status directly.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
@@ -18,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "plugin"))
 
 
-async def main() -> None:
+def main() -> None:
     import urllib.request
     import urllib.error
 
@@ -210,4 +209,4 @@ def print_diagnostics(data: dict) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
