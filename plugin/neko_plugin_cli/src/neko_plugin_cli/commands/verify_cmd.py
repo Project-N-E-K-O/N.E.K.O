@@ -50,10 +50,10 @@ def handle(args: argparse.Namespace) -> int:
             "archive content does not match the hash stored in metadata.toml. "
             "This can happen when:\n"
             "  - the package was built on a different OS (e.g. Windows) with an older\n"
-            "    version of neko-plugin-cli that had cross-platform sorting issues\n"
+            "    version of neko_plugin_cli that had cross-platform sorting issues\n"
             "  - the archive was modified or corrupted after packaging\n"
             "  - the plugin source changed but the package was not re-built\n"
-            "Try re-packing the plugin with the latest neko-plugin-cli.",
+            "Try re-packing the plugin with the latest neko_plugin_cli.",
             file=sys.stderr,
         )
     return 1

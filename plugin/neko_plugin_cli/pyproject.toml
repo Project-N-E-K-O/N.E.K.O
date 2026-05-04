@@ -1,5 +1,5 @@
 [project]
-name = "neko-plugin-cli"
+name = "neko_plugin_cli"
 version = "0.2.0"
 description = "N.E.K.O plugin packaging, inspection, and scaffolding CLI"
 requires-python = ">=3.11"

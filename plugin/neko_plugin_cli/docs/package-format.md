@@ -2,7 +2,7 @@
 
 ## Overview
 
-`neko-plugin-cli` defines two package types:
+`neko_plugin_cli` defines two package types:
 
 - `.neko-plugin`: single plugin package
 - `.neko-bundle`: multi-plugin bundle package
@@ -24,10 +24,10 @@ Both package types are standard ZIP archives and must remain compatible with nor
 
 ## CLI Entry
 
-`neko-plugin-cli` now uses a single CLI entry:
+`neko_plugin_cli` now uses a single CLI entry:
 
 ```bash
-uv run python plugin/neko-plugin-cli/cli.py <command> ...
+uv run python plugin/neko_plugin_cli/cli.py <command> ...
 ```
 
 Current commands:
@@ -41,11 +41,11 @@ Current commands:
 Examples:
 
 ```bash
-uv run python plugin/neko-plugin-cli/cli.py pack qq_auto_reply
-uv run python plugin/neko-plugin-cli/cli.py inspect qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py verify qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py unpack qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py analyze qq_auto_reply mijia
+uv run python plugin/neko_plugin_cli/cli.py pack qq_auto_reply
+uv run python plugin/neko_plugin_cli/cli.py inspect qq_auto_reply.neko-plugin
+uv run python plugin/neko_plugin_cli/cli.py verify qq_auto_reply.neko-plugin
+uv run python plugin/neko_plugin_cli/cli.py unpack qq_auto_reply.neko-plugin
+uv run python plugin/neko_plugin_cli/cli.py analyze qq_auto_reply mijia
 ```
 
 ## Archive Layout
@@ -309,7 +309,7 @@ Recommended pipeline for a bundle:
 
 ## Status
 
-This document is an initial draft for `neko-plugin-cli`.
+This document is an initial draft for `neko_plugin_cli`.
 
 Current intent:
 

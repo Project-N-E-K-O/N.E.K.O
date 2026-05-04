@@ -8,7 +8,7 @@ import shutil
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
+CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
 _SRC_DIR = str(CLI_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
@@ -79,8 +79,8 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "SdkError" not in init_text
 
     readme_text = (target / "README.md").read_text(encoding="utf-8")
-    assert "uv run python neko-plugin-cli/cli.py doctor quick_demo" in readme_text
-    assert "uv run python neko-plugin-cli/cli.py release-check quick_demo" in readme_text
+    assert "uv run python neko_plugin_cli/cli.py doctor quick_demo" in readme_text
+    assert "uv run python neko_plugin_cli/cli.py release-check quick_demo" in readme_text
     assert 'entry = "plugin.plugins.quick_demo:QuickDemoPlugin"' in readme_text
     assert (target / "tests" / "test_smoke.py").is_file()
     assert (target / ".vscode" / "settings.json").is_file()
@@ -90,7 +90,7 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "N.E.K.O: doctor quick_demo" in tasks_text
     assert "N.E.K.O: release-check quick_demo" in tasks_text
     assert "N.E.K.O: pack quick_demo" in tasks_text
-    assert "uv run python neko-plugin-cli/cli.py verify quick_demo.neko-plugin" not in tasks_text
+    assert "uv run python neko_plugin_cli/cli.py verify quick_demo.neko-plugin" not in tasks_text
 
     settings_text = (target / ".vscode" / "settings.json").read_text(encoding="utf-8")
     assert '"nekoPlugin.pluginRoot": "../.."' in settings_text

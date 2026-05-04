@@ -2,7 +2,7 @@
 
 Can be invoked as:
   - ``python -m neko_plugin_cli`` (when installed)
-  - ``python plugin/neko-plugin-cli/cli.py`` (legacy, via shim)
+  - ``python plugin/neko_plugin_cli/cli.py`` (legacy, via shim)
   - ``neko-plugin <command>`` (when installed via pip/uv with entry_points)
 
 Shell completion (requires ``shtab``)::

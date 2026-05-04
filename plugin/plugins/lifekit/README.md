@@ -13,8 +13,8 @@ N.E.K.O/plugin/plugins/lifekit
 From the N.E.K.O `plugin/` directory:
 
 ```bash
-uv run python neko-plugin-cli/cli.py doctor lifekit
-uv run python neko-plugin-cli/cli.py release-check lifekit
+uv run python neko_plugin_cli/cli.py doctor lifekit
+uv run python neko_plugin_cli/cli.py release-check lifekit
 ```
 
 ## Entry

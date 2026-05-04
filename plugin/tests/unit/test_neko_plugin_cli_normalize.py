@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
+CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
 _SRC_DIR = str(CLI_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)

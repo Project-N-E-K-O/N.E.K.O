@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
+CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
 _SRC_DIR = str(CLI_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
@@ -28,7 +28,7 @@ def test_resolve_default_paths_from_repo_layout() -> None:
 
 def test_resolve_default_paths_with_custom_cli_root(tmp_path: Path) -> None:
     """Custom cli_root should shift all derived paths accordingly."""
-    fake_cli = tmp_path / "repo" / "plugin" / "neko-plugin-cli"
+    fake_cli = tmp_path / "repo" / "plugin" / "neko_plugin_cli"
     fake_cli.mkdir(parents=True)
 
     defaults = resolve_default_paths(cli_root=fake_cli)
@@ -42,7 +42,7 @@ def test_resolve_default_paths_with_custom_cli_root(tmp_path: Path) -> None:
 def test_cli_defaults_repo_root_property() -> None:
     defaults = CliDefaults(
         plugin_root=Path("/fake/plugin"),
-        target_dir=Path("/fake/plugin/neko-plugin-cli/target"),
+        target_dir=Path("/fake/plugin/neko_plugin_cli/target"),
         plugins_root=Path("/fake/plugin/plugins"),
         profiles_root=Path("/fake/plugin/.neko-package-profiles"),
     )

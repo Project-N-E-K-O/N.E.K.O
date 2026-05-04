@@ -53,10 +53,10 @@ class PackageUnpacker:
                     f"  expected (metadata.toml): {expected}\n"
                     f"  computed (archive):       {payload_hash}\n"
                     f"This usually means the package was built on a different platform "
-                    f"(e.g. Windows vs Linux) with an older version of neko-plugin-cli "
+                    f"(e.g. Windows vs Linux) with an older version of neko_plugin_cli "
                     f"that had cross-platform sorting issues, or the archive was modified "
                     f"after packaging. Try re-packing the plugin with the latest "
-                    f"neko-plugin-cli."
+                    f"neko_plugin_cli."
                 )
             folder_mapping = self.plan_plugin_targets(
                 plugin_folders,

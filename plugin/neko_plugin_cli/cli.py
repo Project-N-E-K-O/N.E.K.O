@@ -1,7 +1,7 @@
-"""Legacy CLI entry point — delegates to neko_plugin_cli.cli.
+"""Source-tree CLI entry point — delegates to neko_plugin_cli.cli.
 
-Existing invocations like ``python plugin/neko-plugin-cli/cli.py pack ...``
-continue to work unchanged.
+Invocations like ``python plugin/neko_plugin_cli/cli.py pack ...`` work
+without installing the package first.
 """
 
 from __future__ import annotations

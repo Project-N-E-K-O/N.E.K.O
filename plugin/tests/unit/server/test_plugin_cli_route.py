@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
 
-CLI_ROOT = Path(__file__).resolve().parents[3] / "neko-plugin-cli"
+CLI_ROOT = Path(__file__).resolve().parents[3] / "neko_plugin_cli"
 if str(CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(CLI_ROOT))
 

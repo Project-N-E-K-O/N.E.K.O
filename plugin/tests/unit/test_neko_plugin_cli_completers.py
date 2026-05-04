@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
+CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
 if str(CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(CLI_ROOT))
 

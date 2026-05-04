@@ -11,7 +11,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import USER_PACKAGE_PROFILES_ROOT, USER_PLUGIN_CONFIG_ROOT
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-_CLI_ROOT = _PLUGIN_ROOT / "neko-plugin-cli"
+_CLI_ROOT = _PLUGIN_ROOT / "neko_plugin_cli"
 # 源仓库内置插件目录：用于 list/pack（只读扫描）。
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
 # unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。

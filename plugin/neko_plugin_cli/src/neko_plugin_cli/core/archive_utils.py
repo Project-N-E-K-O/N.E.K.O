@@ -20,7 +20,7 @@ def read_archive_toml(archive: zipfile.ZipFile, member_name: str, *, required: b
         if required:
             raise FileNotFoundError(
                 f"required file '{member_name}' not found in package archive '{archive_name}'. "
-                f"The archive may be corrupted or was not created by neko-plugin-cli."
+                f"The archive may be corrupted or was not created by neko_plugin_cli."
             ) from None
         return None
 
