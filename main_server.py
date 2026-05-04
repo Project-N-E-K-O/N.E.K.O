@@ -806,10 +806,13 @@ async def _handle_agent_event(event: dict):
                 # because non-blind ai_behavior already enqueues the LLM
                 # callback above and the AI's own response is what the
                 # user should see in the chat bubble.
-                _vis = event.get("visibility") or []
+                _vis_raw = event.get("visibility")
+                _vis_present = isinstance(_vis_raw, list)
+                _vis = _vis_raw if _vis_present else []
+                _ai_behavior = (event.get("ai_behavior") or "").strip()
                 if (
                     "chat" in _vis
-                    and event.get("ai_behavior") == "blind"
+                    and _ai_behavior == "blind"
                     and hasattr(mgr, "passthrough_to_chat_bubble")
                 ):
                     try:
@@ -831,8 +834,21 @@ async def _handle_agent_event(event: dict):
                         logger.warning(
                             "[EventBus] passthrough_to_chat_bubble failed: %s", e,
                         )
+                # v2 visibility contract: HUD agent_notification fires only
+                # when "hud" is in visibility. Why: visibility=["chat"] must
+                # not double-render as both chat bubble AND HUD toast.
+                # Legacy emitters that omit the visibility field entirely
+                # (no v2 plumbing) keep the pre-v2 behavior of firing HUD
+                # by default — checked via _vis_present, not via _vis truthiness,
+                # so an explicit visibility=[] (v2 "no verbatim render") suppresses HUD.
+                _hud_allowed = ("hud" in _vis) if _vis_present else True
                 ws = getattr(mgr, "websocket", None)
-                if _is_websocket_connected(ws):
+                if not _hud_allowed:
+                    logger.info(
+                        "[EventBus] agent_notification suppressed by visibility=%s (no 'hud') for lanlan=%s",
+                        _vis, lanlan,
+                    )
+                elif _is_websocket_connected(ws):
                     try:
                         notif = {
                             "type": "agent_notification",

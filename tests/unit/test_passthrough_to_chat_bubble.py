@@ -455,3 +455,156 @@ async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
     fake_mgr.enqueue_agent_callback.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# HUD visibility-gating contract (codex P2 — PR #1128)
+# ──────────────────────────────────────────────────────────────────────
+#
+# These tests verify the v2 visibility contract for the HUD
+# ``agent_notification`` send path. Why they need their own block: prior
+# tests forced the websocket to disconnected so HUD never fired anyway —
+# they couldn't tell whether HUD was suppressed by visibility or by the
+# socket being down. Here we attach a real (mocked) websocket and assert
+# on send_json calls.
+
+
+def _hud_event(visibility, ai_behavior="blind", text="hud-or-chat line"):
+    """Build a proactive_message event with the requested visibility/behavior."""
+    return {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": text,
+        "channel": "plugin:foo",
+        "task_id": "task-vis",
+        "delivery_mode": "silent",
+        "ai_behavior": ai_behavior,
+        "visibility": visibility,
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+
+def _hud_fake_mgr():
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = MagicMock()
+    fake_mgr.websocket.send_json = AsyncMock()
+    fake_mgr._pending_agent_callback_task = None
+    return fake_mgr
+
+
+def _patch_main_server(monkeypatch, fake_mgr):
+    import main_server  # noqa: F401  (imported by callers)
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: True)
+
+
+def _hud_send_count(fake_mgr) -> int:
+    """Return count of agent_notification frames sent on the websocket."""
+    return sum(
+        1
+        for c in fake_mgr.websocket.send_json.await_args_list
+        if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "agent_notification"
+    )
+
+
+@pytest.mark.unit
+async def test_visibility_chat_blind_chat_fires_hud_does_not(monkeypatch):
+    """visibility=["chat"] + blind → chat passthrough fires, HUD does NOT.
+
+    This is the codex P2 regression: prior code fired HUD unconditionally,
+    double-rendering chat-only events as both bubble and toast.
+    """
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event(["chat"]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    assert _hud_send_count(fake_mgr) == 0
+
+
+@pytest.mark.unit
+async def test_visibility_hud_blind_hud_fires_chat_does_not(monkeypatch):
+    """visibility=["hud"] + blind → HUD toast fires, chat passthrough does NOT."""
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event(["hud"]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    assert _hud_send_count(fake_mgr) == 1
+
+
+@pytest.mark.unit
+async def test_visibility_chat_and_hud_blind_both_fire(monkeypatch):
+    """visibility=["chat","hud"] + blind → BOTH chat passthrough and HUD fire."""
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    assert _hud_send_count(fake_mgr) == 1
+
+
+@pytest.mark.unit
+async def test_visibility_empty_explicit_blind_suppresses_hud(monkeypatch):
+    """visibility=[] (explicit v2 empty) + blind → neither chat nor HUD fires.
+
+    Per the v2 schema (`plugin/sdk/shared/core/push_message_schema.py`)
+    an explicit empty list means "no verbatim user-facing render".
+    """
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event([]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    assert _hud_send_count(fake_mgr) == 0
+
+
+@pytest.mark.unit
+async def test_visibility_absent_field_legacy_fires_hud(monkeypatch):
+    """visibility field ABSENT (legacy emitter, no v2 plumbing) → HUD fires.
+
+    Why: pre-v2 emitters that never learned about the visibility axis must
+    keep their original "fire HUD by default" behavior. We distinguish
+    "field absent" from "field == []" so v2 callers can opt out via [].
+    """
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    legacy_event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "legacy notice",
+        "channel": "plugin:foo",
+        "task_id": "task-legacy",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        # NB: no "visibility" key at all
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(legacy_event)
+
+    fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    assert _hud_send_count(fake_mgr) == 1
