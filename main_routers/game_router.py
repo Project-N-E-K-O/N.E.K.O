@@ -3116,11 +3116,20 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
     build a fresh ``OmniOfflineClient`` and overwrite each other in
     ``_game_sessions``, leaking the loser's connection.
 
-    Note: ``lanlan_name`` may be empty on entry (caller-supplied) but
-    canonicalizes to ``char_info["lanlan_name"]`` after the cache miss.
-    The cache + lock keys must agree, so we recompute both under the
-    initial-key lock; if the canonical key differs, we re-acquire the
-    canonical lock to keep the dedup invariant.
+    CodeRabbit follow-up: ``lanlan_name`` may be empty on entry
+    (caller-supplied) but canonicalizes to ``char_info["lanlan_name"]``.
+    Resolve the canonical key BEFORE acquiring the create lock so we
+    only ever take one lock — under the canonical key. The previous
+    "lock under raw key, then re-lock under canonical key" shape left
+    an orphan ``_game_session_create_locks[raw_key]`` entry whenever
+    the canonical resolution changed the key, because
+    ``_close_and_remove_session`` only evicts the lock keyed by the
+    session's actual storage key (the canonical one).
+
+    The fast-path cache check still uses the raw key so a hit on the
+    pre-canonicalization shape (rare; only happens if a session was
+    cached under an empty lanlan_name) short-circuits without paying
+    the ``_get_character_info`` lookup.
     """
     key = _game_session_key(lanlan_name, game_type, session_id)
 
@@ -3129,32 +3138,25 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
         entry['last_activity'] = time.time()
         return entry
 
-    create_lock = _get_session_create_lock(key)
-    async with create_lock:
-        if key in _game_sessions:
-            entry = _game_sessions[key]
-            entry['last_activity'] = time.time()
-            return entry
+    char_info = _get_character_info(lanlan_name)
+    canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
+    canonical_key = _game_session_key(canonical_lanlan, game_type, session_id)
 
-        char_info = _get_character_info(lanlan_name)
-        lanlan_name = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
-        canonical_key = _game_session_key(lanlan_name, game_type, session_id)
-        if canonical_key != key:
-            canonical_lock = _get_session_create_lock(canonical_key)
-            async with canonical_lock:
-                if canonical_key in _game_sessions:
-                    entry = _game_sessions[canonical_key]
-                    entry['last_activity'] = time.time()
-                    return entry
-                return await _build_and_register_game_session(
-                    canonical_key, game_type, session_id, char_info,
-                )
-        if key in _game_sessions:
-            entry = _game_sessions[key]
+    # Fast path: canonical_key may already be cached (e.g. another caller
+    # passed the canonical lanlan_name and built it).
+    if canonical_key in _game_sessions:
+        entry = _game_sessions[canonical_key]
+        entry['last_activity'] = time.time()
+        return entry
+
+    create_lock = _get_session_create_lock(canonical_key)
+    async with create_lock:
+        if canonical_key in _game_sessions:
+            entry = _game_sessions[canonical_key]
             entry['last_activity'] = time.time()
             return entry
         return await _build_and_register_game_session(
-            key, game_type, session_id, char_info,
+            canonical_key, game_type, session_id, char_info,
         )
 
 

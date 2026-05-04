@@ -443,3 +443,96 @@ async def test_game_session_create_lock_evicted_with_session():
         # The create lock for this evicted session must also be gone.
         assert key not in game_router._game_session_create_locks
         assert session.closed is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_or_create_session_canonical_key_mismatch_leaves_no_orphan_lock(
+    monkeypatch,
+):
+    """CodeRabbit follow-up (PR #1127): when caller passes an empty
+    ``lanlan_name`` and ``_get_character_info`` canonicalizes it to a
+    non-empty name, the raw key (``""+game_type+session_id``) must NOT
+    leave an orphan entry in ``_game_session_create_locks``.
+
+    Pre-fix shape acquired the create lock under the raw key, then
+    canonicalized inside the lock and acquired a SECOND lock under the
+    canonical key. The session was stored under the canonical key, so
+    ``_close_and_remove_session`` only evicted
+    ``_game_session_create_locks[canonical_key]`` — the raw-key entry
+    accumulated over uptime as an unreachable, never-cleaned ``Lock``.
+
+    Post-fix shape resolves the canonical key BEFORE locking, so only
+    one lock is ever taken and the dict only ever contains the
+    canonical-key entry (which the existing eviction path already
+    handles).
+    """
+    with reset_game_route_state():
+        raw_key = game_router._game_session_key("", "soccer", "match_canon")
+        canonical_key = game_router._game_session_key("Lan", "soccer", "match_canon")
+        assert raw_key != canonical_key  # sanity: keys actually differ.
+
+        # Drop any leftovers from earlier runs.
+        game_router._game_session_create_locks.pop(raw_key, None)
+        game_router._game_session_create_locks.pop(canonical_key, None)
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                self._closed = False
+
+            async def connect(self, *, instructions: str = ""):
+                pass
+
+            async def close(self):
+                self._closed = True
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            # Caller-supplied ``name`` is empty; canonicalize to "Lan".
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        # Caller passes empty lanlan_name → triggers canonical_key != key.
+        entry = await game_router._get_or_create_session(
+            "soccer", "match_canon", "",
+        )
+
+        # Session is stored under the canonical key, not the raw key.
+        assert canonical_key in game_router._game_sessions
+        assert raw_key not in game_router._game_sessions
+        assert game_router._game_sessions[canonical_key] is entry
+
+        # Critical invariant: no orphan lock under the raw key. Only the
+        # canonical key may have a lock entry — and that one will be
+        # evicted by ``_close_and_remove_session`` when the session ends.
+        assert raw_key not in game_router._game_session_create_locks, (
+            "Raw-key create lock leaked when canonical_key != key; "
+            "_close_and_remove_session would never evict it."
+        )
+
+        # Round-trip: closing the session via the canonical lookup must
+        # still clean up the (only) lock entry, leaving the dict free of
+        # any per-session entries for this case.
+        closed = await game_router._close_and_remove_session(
+            "soccer", "match_canon", "Lan",
+        )
+        assert closed is True
+        assert canonical_key not in game_router._game_session_create_locks
+        assert raw_key not in game_router._game_session_create_locks
