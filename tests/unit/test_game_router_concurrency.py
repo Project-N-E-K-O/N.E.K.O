@@ -134,22 +134,45 @@ async def test_b5_finalize_or_merges_close_session_request(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_b1_chat_short_circuits_when_route_exit_started():
+async def test_b1_chat_short_circuits_when_route_exit_started(monkeypatch):
     """B1/B2: ``_run_game_chat`` must short-circuit if the route flipped to
     ``_exit_flow_started`` before the call lands. Otherwise it would issue
     a ``stream_text`` against a session that finalize is about to close.
+
+    CodeRabbit Minor follow-up (PR #1127): pin the assertion to the
+    session-creation path. A pure return-value check would still pass if
+    the implementation regressed to "first build a session, then notice
+    the route is inactive, then return ``skipped``" — leaking the freshly
+    built ``OmniOfflineClient``. Monkeypatch ``_get_or_create_session`` to
+    raise on call AND assert ``_game_sessions`` / ``_game_session_create_locks``
+    were never touched, so any future regression that takes the slow path
+    fails this test loudly.
     """
     with reset_game_route_state():
         state = _activate_route("Lan", "soccer", "match_b1")
         state["_exit_flow_started"] = True
-        # No need to populate _game_sessions — the pre-create short-circuit
-        # in _run_game_chat must trip *before* ever calling
-        # _get_or_create_session.
+
+        async def _explode(*_args, **_kwargs):
+            raise AssertionError(
+                "B1/B2 short-circuit must trip BEFORE _get_or_create_session; "
+                "the route is inactive and creating a session would leak."
+            )
+
+        monkeypatch.setattr(game_router, "_get_or_create_session", _explode)
+
+        # Snapshot cache state to verify nothing was inserted.
+        sessions_snapshot = dict(game_router._game_sessions)
+        create_locks_snapshot = dict(game_router._game_session_create_locks)
+
         result = await game_router._run_game_chat(
             "soccer", "match_b1", {"kind": "free-ball", "lanlan_name": "Lan"},
         )
         assert result.get("skipped") == "route_inactive"
         assert result.get("line") == ""
+
+        # Cache invariants: no new entries materialized via the slow path.
+        assert game_router._game_sessions == sessions_snapshot
+        assert game_router._game_session_create_locks == create_locks_snapshot
 
 
 @pytest.mark.unit
@@ -263,32 +286,255 @@ async def test_b8_finalize_routes_for_character_closes_old_routes(monkeypatch):
     """B8: switching characters must finalize all active routes for the
     outgoing character, releasing the SessionManager takeover and
     closing the LLM session.
+
+    CodeRabbit Minor follow-up (PR #1127): seed at least TWO active
+    routes for the same ``lanlan_name`` (different ``game_type``) and
+    assert ``n == 2``. With a single route, an implementation that only
+    closes the first match — leaving sibling routes for the same
+    character alive after a character switch — would still pass. Two
+    routes guards against that regression directly.
     """
     _stub_archive_calls(monkeypatch)
     with reset_game_route_state():
-        state = _activate_route("Lan", "soccer", "match_b8")
-        fake_session = _FakeOmniSession(name="b8")
-        key = game_router._game_session_key("Lan", "soccer", "match_b8")
-        game_router._game_sessions[key] = {
-            "session": fake_session,
-            "reply_chunks": [],
-            "lanlan_name": "Lan",
-            "lanlan_prompt": "",
-            "source": {},
-            "last_activity": 0,
-            "lock": asyncio.Lock(),
-            "instructions": "",
-        }
+        state_soccer = _activate_route("Lan", "soccer", "match_b8")
+        state_chess = _activate_route("Lan", "chess", "match_b8_chess")
+        fake_session_soccer = _FakeOmniSession(name="b8_soccer")
+        fake_session_chess = _FakeOmniSession(name="b8_chess")
+        soccer_key = game_router._game_session_key("Lan", "soccer", "match_b8")
+        chess_key = game_router._game_session_key("Lan", "chess", "match_b8_chess")
+        for key, fake in (
+            (soccer_key, fake_session_soccer),
+            (chess_key, fake_session_chess),
+        ):
+            game_router._game_sessions[key] = {
+                "session": fake,
+                "reply_chunks": [],
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "source": {},
+                "last_activity": 0,
+                "lock": asyncio.Lock(),
+                "instructions": "",
+            }
 
         n = await game_router.finalize_game_routes_for_character("Lan")
 
-        assert n == 1
-        assert state.get("_exit_flow_started") is True
-        assert state.get("game_route_active") is False
-        assert fake_session.close_calls == 1
-        # Calling again is a no-op (route already inactive).
+        assert n == 2
+        # Both routes for ``Lan`` are now inactive and their sessions closed.
+        for state in (state_soccer, state_chess):
+            assert state.get("_exit_flow_started") is True
+            assert state.get("game_route_active") is False
+        assert fake_session_soccer.close_calls == 1
+        assert fake_session_chess.close_calls == 1
+        # Calling again is a no-op (both routes already inactive).
         n_again = await game_router.finalize_game_routes_for_character("Lan")
         assert n_again == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_bypass_runs_chat_after_finalize(monkeypatch):
+    """codex P1 follow-up (PR #1127 thread r3182095129): postgame text
+    generation runs AFTER ``_finalize_game_route_state`` flips the route
+    to inactive, on purpose. The B1/B2 short-circuits in ``_run_game_chat``
+    must therefore be bypass-able for this designed teardown step,
+    otherwise non-Realtime sessions silently lose the postgame bubble.
+
+    With ``allow_postgame=True`` the route-active gates are skipped and a
+    fresh chat call lands successfully. The test pins the contract:
+    given an inactive route state, the chat returns a non-empty line and
+    no ``skipped`` marker.
+    """
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_postgame_bypass")
+        # Mark the route as already finalized — this is exactly the
+        # state postgame observes when ``_complete_game_end_from_payload``
+        # runs ``_deliver_game_postgame`` after finalize.
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+
+        captured_callback = {"fn": None}
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                captured_callback["fn"] = kwargs.get("on_text_delta")
+                self._closed = False
+
+            async def connect(self, *, instructions: str = ""):
+                pass
+
+            async def close(self):
+                self._closed = True
+
+            async def stream_text(self, text: str):
+                cb = captured_callback["fn"]
+                if cb is not None:
+                    await cb("postgame line", True)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        # Without allow_postgame: short-circuits to ``route_inactive``.
+        baseline = await game_router._run_game_chat(
+            "soccer",
+            "match_postgame_bypass",
+            {"kind": "postgame", "lanlan_name": "Lan"},
+        )
+        assert baseline.get("skipped") == "route_inactive"
+        assert baseline.get("line") == ""
+
+        # With allow_postgame=True: bypass trips, chat runs to completion.
+        result = await game_router._run_game_chat(
+            "soccer",
+            "match_postgame_bypass",
+            {"kind": "postgame", "lanlan_name": "Lan"},
+            allow_postgame=True,
+        )
+        assert result.get("skipped") is None, result
+        assert result.get("line") == "postgame line"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_text_bubble_closes_session_after_finalize(monkeypatch):
+    """codex P1 follow-up (PR #1127 thread r3182095129): the postgame
+    bypass must NOT leak the freshly-built ``OmniOfflineClient``.
+
+    ``_deliver_postgame_text_bubble`` runs after finalize has already
+    evicted the prior session. The bypass lets us build a NEW one to
+    generate the postgame line; nothing else in the lifecycle would
+    close it (which is exactly why the original B1/B2 guards existed),
+    so the bubble itself owns cleanup. Regressing the cleanup means
+    long-running processes accumulate one open ``OmniOfflineClient``
+    per finished game over uptime.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_postgame_leak")
+        # Simulate post-finalize state — the prior session is already
+        # gone (finalize closed it before postgame ran).
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+
+        captured_callback = {"fn": None}
+        constructed = []
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                captured_callback["fn"] = kwargs.get("on_text_delta")
+                self.closed = False
+                constructed.append(self)
+
+            async def connect(self, *, instructions: str = ""):
+                pass
+
+            async def close(self):
+                self.closed = True
+
+            async def stream_text(self, text: str):
+                cb = captured_callback["fn"]
+                if cb is not None:
+                    await cb("postgame bubble line", True)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        # Minimal stub SessionManager mirroring the prepare/finish/feed_tts
+        # contract that ``_deliver_postgame_text_bubble`` calls.
+        class _StubManager:
+            is_active = False
+            session = None
+            current_speech_id = "speech-postgame"
+            state = None
+
+            def __init__(self):
+                self.delivered = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                self.delivered = line
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        mgr = _StubManager()
+        archive = {
+            "lanlan_name": "Lan",
+            "summary": "",
+            "last_full_dialogues": [],
+            "last_state": {},
+            "finalScore": {},
+            "preGameContext": {},
+        }
+        options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
+
+        # Sanity: cache is empty before postgame runs.
+        key = game_router._game_session_key("Lan", "soccer", "match_postgame_leak")
+        assert key not in game_router._game_sessions
+
+        result = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_postgame_leak", mgr, archive, options,
+        )
+
+        # Bubble committed: postgame line was generated AND finished.
+        assert result.get("ok") is True, result
+        assert result.get("action") == "chat", result
+        assert result.get("line") == "postgame bubble line"
+        assert mgr.delivered == "postgame bubble line"
+
+        # Lifecycle invariant: exactly one client built, and it was
+        # closed + evicted from ``_game_sessions`` after the bubble.
+        assert len(constructed) == 1
+        assert constructed[0].closed is True
+        assert key not in game_router._game_sessions
+        assert key not in game_router._game_session_create_locks
 
 
 @pytest.mark.unit
