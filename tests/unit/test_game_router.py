@@ -415,13 +415,13 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
     system_text = messages[2]["content"][0]["text"]
     assert "游戏模块归档，不是玩家逐字发言" in system_text
-    assert "soccer 小游戏结束" not in system_text
-    assert "官方比分：玩家 1 : 4 Lan。口头让步不改官方比分。" in system_text
-    assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
+    assert "soccer 游戏结束" not in system_text
+    assert "官方结果：玩家 1 : 4 Lan。口头让步不改官方结果。" in system_text
+    assert "官方结果永远以 finalScore / last_state.score 为准" not in system_text
     assert "口头让步规则" not in system_text
     assert "重要互动：" in system_text
     assert "玩家要求温柔一点，你改成让球式回应。" in system_text
-    assert "猫娘记住的比赛事件：" in system_text
+    assert "猫娘记住的本局事件：" in system_text
     assert "赛后状态延续：赛后猫娘仍有点得意，但愿意继续陪玩家玩。" in system_text
     assert "赛后语气：得意但放软" in system_text
     assert "后续记忆摘要：玩家希望猫娘温柔一点，猫娘开始让球。" in system_text
@@ -461,11 +461,11 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
 
     assert [msg["role"] for msg in messages] == ["assistant", "user", "assistant", "system"]
     assert messages[0]["content"][0]["text"] == "嘿嘿，这球归我啦"
-    assert "足球小游戏事件" not in messages[0]["content"][0]["text"]
+    assert "本局游戏事件" not in messages[0]["content"][0]["text"]
     assert messages[1]["content"][0]["text"] == "你刚才说算我赢？"
     assert messages[2]["content"][0]["text"] == "那是哄你的，比分可没改哦。"
     system_text = messages[-1]["content"][0]["text"]
-    assert "官方比分：玩家 9 : 20 Lan。口头让步不改官方比分。" in system_text
+    assert "官方结果：玩家 9 : 20 Lan。口头让步不改官方结果。" in system_text
     assert "口头让步规则" not in system_text
     assert "倒数 4 条规则" in system_text
 
@@ -492,8 +492,8 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
     messages = game_router._build_game_archive_memory_messages(archive, tail_count=1)
     system_text = messages[-1]["content"][0]["text"]
 
-    assert "官方比分：玩家 9 : 20 Lan。口头让步不改官方比分。" in system_text
-    assert "官方比分永远以 finalScore / last_state.score 为准" not in system_text
+    assert "官方结果：玩家 9 : 20 Lan。口头让步不改官方结果。" in system_text
+    assert "官方结果永远以 finalScore / last_state.score 为准" not in system_text
     assert "口头让步规则" not in system_text
     assert messages[0]["role"] == "assistant"
     assert messages[0]["content"][0]["text"] == "行吧，这局算你赢。"
@@ -570,7 +570,7 @@ def test_game_archive_summary_keeps_score_not_counters():
         ],
     )
 
-    assert summary == "soccer 小游戏结束。最终/最近比分：玩家 0 : 5 Lan。"
+    assert summary == "soccer 游戏结束。最终/最近结果：玩家 0 : 5 Lan。"
     assert "本局记录了" not in summary
     assert "外部接管模式" not in summary
 
@@ -615,8 +615,8 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
     assert "只有“玩家：...”行是玩家亲口说的话" in source
     assert "事件原文是游戏模块/猫娘气泡或事件标签，不要归因给玩家" in source
     assert "游戏事件 goal-conceded（玩家进球 / 猫娘丢球）" in source
-    assert "玩家分数在前，当前角色分数在后" in source
-    assert "官方比分，来源优先级为 finalScore / last_state.score" in source
+    assert "固定顺序是玩家在前、当前角色在后" in source
+    assert "官方结果，来源优先级为 finalScore / last_state.score" in source
     assert "口头让步、安抚或玩笑" in source
 
 
@@ -661,9 +661,9 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 
     assert result["important_records"] == []
     assert result["important_game_events"] == []
-    assert "不要写无主体裸比分" in captured["system"]
+    assert "不要写无主体裸结果" in captured["system"]
     assert "不要前后混用不同视角" in captured["system"]
-    assert "玩家分数在前，当前角色分数在后" in captured["user"]
+    assert "固定顺序是玩家在前、当前角色在后" in captured["user"]
 
 
 @pytest.mark.unit
@@ -672,8 +672,8 @@ def test_memory_review_prompt_protects_soccer_archive_records():
 
     prompt = get_history_review_prompt("zh")
 
-    assert "足球小游戏赛后记录" in prompt
-    assert "不同时间/会话的足球比分默认代表不同局比赛" in prompt
+    assert "游戏模块归档" in prompt
+    assert "不同时间/会话的同一类游戏默认代表不同局" in prompt
     assert "不要整条删除" in prompt
 
 
@@ -1706,7 +1706,7 @@ async def test_game_end_archives_active_route_to_memory(monkeypatch):
 
     assert result["route_closed"] is True
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
-    assert result["archive"]["summary"].startswith("soccer 小游戏结束")
+    assert result["archive"]["summary"].startswith("soccer 游戏结束")
     assert "待接入 memory_server" not in result["archive"]["summary"]
     assert result["archive"]["preGameContext"]["gameStance"] == "soft_teasing"
     assert result["archive"]["pre_game_context_source"] == "ai"
@@ -1841,12 +1841,12 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     await asyncio.wait_for(mgr.voice_nudge_event.wait(), timeout=1.0)
     assert mgr.voice_nudge_calls == 1
     assert mgr.voice_nudge_kwargs[0]["qwen_manual_commit"] is True
-    assert "足球小游戏赛后主动搭话" in mgr.voice_nudge_kwargs[0]["instruction"]
-    assert "不要继续扮演比赛仍在进行" in mgr.voice_nudge_kwargs[0]["instruction"]
+    assert "游戏模块赛后主动搭话" in mgr.voice_nudge_kwargs[0]["instruction"]
+    assert "不要继续扮演游戏仍在进行" in mgr.voice_nudge_kwargs[0]["instruction"]
     assert session.prime_context_calls
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
-    assert "足球小游戏赛后上下文" in context_text
+    assert "游戏模块赛后上下文" in context_text
     assert "我是不是不适合玩这个？" in context_text
 
 
@@ -1888,9 +1888,9 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert session.prompt_calls == []
     assert mgr.voice_nudge_calls == 0
     assert len(session.create_response_calls) == 1
-    assert "足球小游戏赛后上下文" in session.create_response_calls[0]
-    assert "足球小游戏赛后主动搭话" in session.create_response_calls[0]
-    assert "不要继续扮演比赛仍在进行" in session.create_response_calls[0]
+    assert "游戏模块赛后上下文" in session.create_response_calls[0]
+    assert "游戏模块赛后主动搭话" in session.create_response_calls[0]
+    assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
 
 
 class _FakePostgameState:

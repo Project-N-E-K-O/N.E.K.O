@@ -35,7 +35,7 @@ def _fake_success_result():
             }],
             "关系互动信号": [],
             "猫娘信号": [],
-            "比赛事实": [{
+            "本局事实": [{
                 "signalLabel": "官方比分按 finalScore 记录",
                 "summary": "比分解释以状态为准。",
                 "evidence": [{"id": "glog_0005", "quote": "第 5 句"}],
@@ -412,7 +412,7 @@ def test_archive_uses_context_summary_and_grouped_signals_only_as_highlight_sour
     assert "玩家在意能否追上比分" not in memory_text
     assert "重要互动：" in memory_text
     assert "玩家继续追分，猫娘放慢节奏回应。" in memory_text
-    assert "猫娘记住的比赛事件：" in memory_text
+    assert "猫娘记住的本局事件：" in memory_text
     assert "后续记忆摘要：玩家和猫娘刚踢完一局足球小游戏，猫娘小幅领先。" in memory_text
     assert "玩家最近在比赛里说：" not in memory_text
     assert "你最后回应：" not in memory_text
@@ -447,9 +447,9 @@ async def test_degraded_archive_uses_minimal_memory_facts(monkeypatch):
 
     assert highlights["source"]["method"] == "degraded_minimal_facts"
     assert "局内上下文整理已降级为纯游戏模式" in memory_text
-    assert "官方比分：玩家 1 : 9 Lan。口头让步不改官方比分。" in memory_text
+    assert "官方结果：玩家 1 : 9 Lan。口头让步不改官方结果。" in memory_text
     assert "不可靠关系摘要" not in memory_text
     assert "不可靠关系信号" not in memory_text
-    assert "口头让步不改官方比分" in memory_text
+    assert "口头让步不改官方结果" in memory_text
     assert [message["role"] for message in messages] == ["system"]
     assert "算你赢啦" not in messages[0]["content"][0]["text"]
