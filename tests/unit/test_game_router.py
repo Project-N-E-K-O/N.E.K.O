@@ -107,6 +107,7 @@ def test_soccer_anger_pressure_cap_applies_only_to_punishing_anger_context():
     assert cap["reached"] is True
     assert cap["capGoals"] == 25
     assert cap["recommendedDifficulty"] == "lv4"
+    assert cap["reason"] == "狂怒压制已到体力上限，改为降强度继续处理情绪"
 
     neutral = {
         "preGameContext": {
@@ -211,6 +212,33 @@ def test_soccer_anger_pressure_cap_forces_difficulty_when_llm_omits_control():
     assert adjusted["control"]["difficulty"] == "lv4"
     assert adjusted["control"]["reason"] == "狂怒压制已到体力上限，改为降强度继续处理情绪"
     assert adjusted["anger_pressure_cap"]["adjusted"] is True
+
+
+@pytest.mark.unit
+def test_soccer_anger_pressure_cap_reason_uses_requested_locale():
+    state = {
+        "preGameContext": {
+            "gameStance": "punishing",
+            "nekoEmotion": "angry",
+            "initialMood": "angry",
+        },
+    }
+    event = {
+        "score": {"player": 4, "ai": 26},
+        "scoreDiff": 22,
+        "difficulty": "max",
+        "mood": "angry",
+        "requestControlReason": True,
+    }
+
+    cap = game_router._build_soccer_anger_pressure_cap(event, state, language="en")
+    adjusted = game_router._apply_soccer_anger_pressure_cap(
+        {"line": "Fine.", "control": {}},
+        {**event, "angerPressureCap": cap},
+    )
+
+    assert "stamina cap" in cap["reason"]
+    assert adjusted["control"]["reason"] == cap["reason"]
 
 
 @pytest.mark.unit
@@ -621,6 +649,39 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
 
 
 @pytest.mark.unit
+def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypatch):
+    monkeypatch.setattr(game_router, "_archive_prompt_language", lambda _archive: "en")
+
+    source = game_router._build_game_archive_memory_highlight_source({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
+        "full_dialogues": [
+            {"type": "user", "text": "I almost caught up"},
+            {
+                "type": "game_event",
+                "kind": "goal-conceded",
+                "text": "goal",
+                "result_line": "Nice shot.",
+            },
+        ],
+    })
+
+    assert 'literal marker "玩家："' in source
+    assert '"事件原文" inside "游戏事件" lines' in source
+    assert "玩家：I almost caught up" in source
+    assert "游戏事件 goal-conceded" in source
+    assert "Player:" not in source
+    assert "Game event" not in source
+
+
+@pytest.mark.unit
 def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     captured = {}
 
@@ -664,6 +725,109 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     assert "不要写无主体裸结果" in captured["system"]
     assert "不要前后混用不同视角" in captured["system"]
     assert "固定顺序是玩家在前、当前角色在后" in captured["user"]
+    assert "======以上为赛后记忆筛选材料======" in captured["user"]
+
+
+@pytest.mark.unit
+def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "summary"
+            return {
+                "model": "summary-model",
+                "base_url": "http://summary.test/v1",
+                "api_key": "summary-key",
+                "api_type": "summary-api",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["lanlan_name"] == "Lan"
+    assert info["user_language"] == "zh"
+    assert info["model"] == "summary-model"
+    assert info["base_url"] == "http://summary.test/v1"
+    assert info["api_key"] == "summary-key"
+    assert info["api_type"] == "summary-api"
+
+
+@pytest.mark.unit
+def test_game_route_helper_llm_info_does_not_mix_partial_summary_config(monkeypatch):
+    class FakeConfigManager:
+        def get_model_api_config(self, tier):
+            assert tier == "summary"
+            return {
+                "model": "summary-model",
+                "base_url": "",
+                "api_key": "summary-key",
+                "api_type": "summary-api",
+            }
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda _lanlan_name=None: {
+        "lanlan_name": "Lan",
+        "model": "conversation-model",
+        "base_url": "http://conversation.test/v1",
+        "api_key": "conversation-key",
+        "api_type": "conversation-api",
+        "user_language": "zh",
+    })
+    monkeypatch.setattr(game_router, "get_config_manager", lambda: FakeConfigManager())
+
+    info = game_router._get_game_route_summary_llm_info("Lan")
+
+    assert info["model"] == "conversation-model"
+    assert info["base_url"] == "http://conversation.test/v1"
+    assert info["api_key"] == "conversation-key"
+    assert info["api_type"] == "conversation-api"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.last_text = ""
+
+        async def stream_text(self, text):
+            self.last_text = text
+
+        async def update_session(self, _config):
+            return None
+
+    fake_session = FakeSession()
+    key = game_router._game_session_key("Lan", "soccer", "match_1")
+    game_router._game_sessions[key] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "",
+        "user_language": "en",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "last_activity": 0,
+        "lock": asyncio.Lock(),
+        "instructions": "stub",
+    }
+    monkeypatch.setattr(game_router, "_refresh_game_session_instructions", AsyncMock())
+
+    result = await game_router._run_game_chat(
+        "soccer",
+        "match_1",
+        {"kind": "goal-scored", "lanlan_name": "Lan"},
+    )
+
+    assert result["line"] == ""
+    assert "======以上为游戏事件输入======" in fake_session.last_text
+    assert '"kind": "goal-scored"' in fake_session.last_text
 
 
 @pytest.mark.unit

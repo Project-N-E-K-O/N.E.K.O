@@ -2079,7 +2079,7 @@
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/icons/expand_icon_off.png';
+                        iconImg.src = '/static/icons/expand_icon_off_ball.png';
                         iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
