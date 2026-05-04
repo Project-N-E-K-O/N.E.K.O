@@ -14,6 +14,78 @@
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
     <style>
+        /* 标题栏按钮容器 */
+        .title-bar-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            -webkit-app-region: no-drag;
+        }
+
+        /* 最大化/恢复按钮 - 样式与关闭按钮统一 */
+        .maximize-btn {
+            background: transparent;
+            border: none;
+            color: #fff;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+            border-radius: 4px;
+            transition: background 0.2s, transform 0.1s ease;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-app-region: no-drag;
+        }
+
+        .maximize-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .maximize-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(1px) scale(0.95);
+            opacity: 0.9;
+        }
+
+        /* 最大化图标：实心方框 */
+        .maximize-icon {
+            display: block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+
+        /* 恢复图标：重叠方框（模拟窗口层叠） */
+        .maximize-icon.restored {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            position: relative;
+            background: #4BD4FD;
+            box-sizing: border-box;
+        }
+
+        .maximize-icon.restored::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: 3px;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            background: #4BD4FD;
+            box-sizing: border-box;
+        }
+
         /* 主人档案补充样式 */
         .master-profile-section {
             border: 2px solid #b3e5fc;
@@ -332,9 +404,14 @@
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
-        <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
-            <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
-        </button>
+        <div class="title-bar-buttons">
+            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" title="最大化">
+                <span class="maximize-icon"></span>
+            </button>
+            <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
+            </button>
+        </div>
     </div>
 
     <!-- 侧边栏 -->
@@ -792,10 +869,61 @@
 
     <!-- 初始化 -->
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
+        // 最大化/恢复按钮逻辑
+        async function toggleMaximize() {
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.maximize !== 'function') return;
+            try {
+                const result = await api.maximize();
+                if (result && result.ok) {
+                    updateMaximizeIcon(result.isMaximized);
+                }
+            } catch (e) {
+                // 忽略非 Electron 环境
+            }
+        }
+
+        function updateMaximizeIcon(isMaximized) {
+            const icon = document.querySelector('.maximize-icon');
+            if (!icon) return;
+            if (isMaximized) {
+                icon.classList.add('restored');
+                const btn = document.getElementById('maximizeBtn');
+                if (btn) btn.setAttribute('title', '恢复');
+            } else {
+                icon.classList.remove('restored');
+                const btn = document.getElementById('maximizeBtn');
+                if (btn) btn.setAttribute('title', '最大化');
+            }
+        }
+
+        // 页面加载时查询当前最大化状态，确保图标正确
+        document.addEventListener('DOMContentLoaded', async function() {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
             }
+            // 初始化最大化按钮图标
+            try {
+                const api = window.nekoWindowControl;
+                if (api && typeof api.isMaximized === 'function') {
+                    const isMaximized = await api.isMaximized();
+                    updateMaximizeIcon(isMaximized);
+                }
+            } catch (e) {
+                // 浏览器环境忽略
+            }
+            // 监听窗口大小变化以同步图标状态（unmaximize 可能通过双击标题栏等方式触发）
+            window.addEventListener('resize', async function() {
+                try {
+                    const api = window.nekoWindowControl;
+                    if (api && typeof api.isMaximized === 'function') {
+                        const isMaximized = await api.isMaximized();
+                        updateMaximizeIcon(isMaximized);
+                    }
+                } catch (e) {
+                    // 忽略
+                }
+            });
         });
     </script>
 </body>
