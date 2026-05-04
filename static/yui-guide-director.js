@@ -1,6 +1,9 @@
 (function () {
     'use strict';
 
+    // 最近一次触控事件时间戳，用于识别触控衍生的合成鼠标/点击事件
+    var lastTouchTime = 0;
+
     function translateGuideText(textKey, fallbackText) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
@@ -8770,6 +8773,51 @@
             this.destroy();
         }
 
+        get mobileTouchInteractionPassthrough() {
+            return this.shouldUseMobileTouchInteractionPassthrough();
+        }
+
+        shouldUseMobileTouchInteractionPassthrough() {
+            const coarsePointer = !!(
+                window.matchMedia
+                && window.matchMedia('(hover: none), (pointer: coarse)').matches
+            );
+            const narrowViewport = Math.max(
+                window.innerWidth || 0,
+                document.documentElement ? document.documentElement.clientWidth || 0 : 0
+            ) <= 768;
+            const touchCapable = !!(
+                'ontouchstart' in window
+                || (navigator && Number(navigator.maxTouchPoints || 0) > 0)
+            );
+
+            // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
+            return !!((coarsePointer || touchCapable) && narrowViewport);
+        }
+
+        isTouchInteractionEvent(event) {
+            if (!event || typeof event.type !== 'string') {
+                return false;
+            }
+
+            if (event.type.indexOf('touch') === 0) {
+                lastTouchTime = Date.now();
+                return true;
+            }
+
+            if (event.pointerType === 'touch') {
+                lastTouchTime = Date.now();
+                return true;
+            }
+
+            // 触控衍生的合成鼠标/点击事件：在触控后的短时间窗口内视为触控交互
+            if (/^(click|mousedown|mouseup)$/.test(event.type) && Date.now() - lastTouchTime < 500) {
+                return true;
+            }
+
+            return false;
+        }
+
         isAllowedTutorialInteractionTarget(target) {
             if (!target || typeof target.closest !== 'function') {
                 return false;
@@ -8839,9 +8887,20 @@
                 return;
             }
 
+            const isAllowedTarget = this.isAllowedTutorialInteractionTarget(event.target);
             if (
-                this.isAllowedTutorialInteractionTarget(event.target)
+                isAllowedTarget
                 || this.isSystemDialogInteractionTarget(event.target)
+            ) {
+                return;
+            }
+
+            // 等待特定目标点击期间不得放行触控事件，否则会破坏 awaitIntroActivation / manualPluginDashboard 的守卫语义
+            if (
+                this.mobileTouchInteractionPassthrough
+                && this.isTouchInteractionEvent(event)
+                && !this.awaitingIntroActivation
+                && !this.manualPluginDashboardOpenAllowed
             ) {
                 return;
             }

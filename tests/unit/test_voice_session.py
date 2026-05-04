@@ -13,6 +13,7 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 # Dummy WAV header + silence for testing audio streaming
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
 
+
 @pytest.fixture
 def mock_websocket():
     """Returns a mock websocket object."""
@@ -140,6 +141,7 @@ async def test_stream_audio(realtime_client):
     
     await realtime_client.close()
 
+
 @pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
     """Test handling of incoming text delta events via handle_messages."""
@@ -152,13 +154,8 @@ async def test_receive_text_delta(realtime_client):
     ]
     
     
-    # Configure the mock ws to yield these events then exit
-    async def mock_iter():
-        for ev in events:
-            yield ev
-    
     realtime_client.ws = AsyncMock()
-    realtime_client.ws.__aiter__ = lambda self: mock_iter()
+    realtime_client.ws.__aiter__.return_value = events
     
     # Ensure on_text_delta is an AsyncMock so we can track calls
     text_delta_mock = AsyncMock()
@@ -186,4 +183,3 @@ async def test_receive_text_delta(realtime_client):
     
     # Verify response.done was processed
     assert response_done_mock.called
-

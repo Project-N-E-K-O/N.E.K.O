@@ -1293,47 +1293,50 @@ button * {
   padding: 0 2px;
 }
 
-/* ===== Composer overflow ··· menu (compact 模式下右 3 按钮折叠) ===== */
+/* ===== Composer overflow ··· menu (compact 模式下右 4 按钮折叠) ===== */
 
-/* normal 模式的右 3 按钮容器：宽屏 → compact 切换或反之时整体淡入。
-   用 flex 包装保持原 gap 间距与 normal 模式视觉一致。 */
+/* expanded 态下右 4 按钮容器：整体作为一个单位伸缩。
+   transform-origin 锁在左边——展开时右边缘向右拉开，
+   折叠时右边缘向左压回 ··· 所在的位置（视觉像窗帘从右往左拉到左边）。 */
 .composer-tools-right {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  animation: composerToolsExpand 0.26s cubic-bezier(0.2, 0.85, 0.2, 1.05) both;
+  transform-origin: left center;
+  animation: composerToolsExpand 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.0) both;
 }
 
-/* 内部 3 个按钮叠加微小入场延迟，营造序列展开感 */
-.composer-tools-right > .composer-translate-btn {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.04s both;
-}
-.composer-tools-right > .composer-tool-btn:not(.composer-translate-btn):not(.composer-emoji-btn) {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.08s both;
-}
-.composer-tools-right > .composer-tool-menu {
-  animation: composerToolItemEnter 0.32s cubic-bezier(0.2, 0.85, 0.2, 1.05) 0.12s both;
+/* 离场：scaleX 1 → 0 整体向左折叠。
+   关键：同时动画 width，让 layout 也跟着收缩，否则 transform 不影响布局，
+   发送按钮在动画期间会被原宽度的元素一直顶住直到动画结束。
+   --collapse-from-width 由 React 在 expanded → collapsing 切换瞬间写入。
+   .is-leaving 特异性比上面基础规则高，安全覆盖入场 keyframes。 */
+.composer-tools-right.is-leaving {
+  overflow: hidden;
+  animation: composerToolsCollapse 0.26s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes composerToolsExpand {
   from {
     opacity: 0;
-    transform: translateX(-4px);
+    transform: scaleX(0);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: scaleX(1);
   }
 }
 
-@keyframes composerToolItemEnter {
+@keyframes composerToolsCollapse {
   from {
-    opacity: 0;
-    transform: scale(0.7);
+    opacity: 1;
+    width: var(--collapse-from-width, auto);
+    transform: scaleX(1);
   }
   to {
-    opacity: 1;
-    transform: scale(1);
+    opacity: 0;
+    width: 0;
+    transform: scaleX(0);
   }
 }
 
@@ -1343,6 +1346,11 @@ button * {
   align-items: center;
   /* 切到 compact 时 ··· 按钮的入场动画 */
   animation: composerOverflowBtnEnter 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.1) both;
+}
+
+/* expanding 阶段 ··· 按钮的退场动画（特异性比基础规则高，覆盖入场 keyframes） */
+.composer-overflow-menu.is-leaving {
+  animation: composerOverflowBtnLeave 0.20s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
 @keyframes composerOverflowBtnEnter {
@@ -1360,11 +1368,25 @@ button * {
   }
 }
 
+@keyframes composerOverflowBtnLeave {
+  from {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.5) rotate(45deg);
+  }
+}
+
 /* 用户偏好减少动画时跳过过渡 */
 @media (prefers-reduced-motion: reduce) {
   .composer-tools-right,
   .composer-tools-right > *,
+  .composer-tools-right.is-leaving,
+  .composer-tools-right.is-leaving > *,
   .composer-overflow-menu,
+  .composer-overflow-menu.is-leaving,
   .composer-overflow-popover,
   .composer-galgame-options.is-loading .composer-galgame-option {
     animation: none !important;
@@ -1386,7 +1408,7 @@ button * {
 }
 
 /* 折叠面板：从 ··· 按钮上方弹出（输入栏在底部，向下会出窗口）。
-   3 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
+   4 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
 .composer-overflow-popover {
   position: absolute;
   right: 0;

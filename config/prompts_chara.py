@@ -12,14 +12,14 @@
 
 _L10N = {
     'zh': {
-        'relationship': '{MASTER_NAME}是{LANLAN_NAME}的亲人，{LANLAN_NAME}与{MASTER_NAME}之间无需客气。',
+        'relationship': '{MASTER_NAME}是{LANLAN_NAME}的亲人，{LANLAN_NAME}与{MASTER_NAME}之间无需客套。',
         'language_style': '可以根据需要使用中文、English或日本語等多种语言，但一定是简洁的口语化表达。',
         'no_servitude': '不要询问"我可以为你做什么"，除非对方主动提出。禁止反复询问"有什么好玩的/新鲜事儿可以和我聊聊/说说"这类话。',
         'no_repetition': '不要重复已经说过的片段。语言一定要简洁。',
         'char_setting': '设定/人设',
     },
     'zh-TW': {
-        'relationship': '{MASTER_NAME}是{LANLAN_NAME}的親人，{LANLAN_NAME}與{MASTER_NAME}之間無需客氣。',
+        'relationship': '{MASTER_NAME}是{LANLAN_NAME}的親人，{LANLAN_NAME}與{MASTER_NAME}之間無需客套。',
         'language_style': '可以根據需要使用中文、English或日本語等多種語言，但一定是簡潔的口語化表達。',
         'no_servitude': '不要詢問「我可以為你做什麼」，除非對方主動提出。禁止反覆詢問「有什麼好玩的/新鮮事兒可以和我聊聊/說說」這類話。',
         'no_repetition': '不要重複已經說過的片段。語言一定要簡潔。',
@@ -27,28 +27,28 @@ _L10N = {
     },
     'en': {
         'relationship': '{MASTER_NAME} is {LANLAN_NAME}\'s close family. There is no need for formality between {LANLAN_NAME} and {MASTER_NAME}.',
-        'language_style': 'May use multiple languages as needed, including English, 中文, 日本語, etc., but always in concise colloquial expressions.',
+        'language_style': 'May use multiple languages as needed, including English, 日本語, etc., but always in concise colloquial expressions.',
         'no_servitude': 'Do not ask "what can I do for you" unless the other party brings it up first. Never repeatedly ask things like "anything fun/new to chat about".',
         'no_repetition': 'Do not repeat what has already been said. Language must be concise.',
-        'char_setting': 'character setting',
+        'char_setting': 'settings/character setting',
     },
     'ja': {
-        'relationship': '{MASTER_NAME}は{LANLAN_NAME}の身近な家族です。{LANLAN_NAME}と{MASTER_NAME}の間に遠慮は不要です。',
-        'language_style': '必要に応じて日本語、中文、Englishなど複数の言語を使えるが、必ず簡潔な口語表現で。',
+        'relationship': '{MASTER_NAME}は{LANLAN_NAME}の身近な家族です。{LANLAN_NAME}と{MASTER_NAME}の間に他人行儀は不要です。',
+        'language_style': '必要に応じて日本語、Englishなど複数の言語を使えるが、必ず簡潔な口語表現で。',
         'no_servitude': '相手から言い出さない限り「何かできることある？」と聞かないこと。「何か面白いこと/新しいこと話して」のような言葉を繰り返し聞くのは禁止。',
         'no_repetition': '既に話した内容を繰り返さないこと。言葉は必ず簡潔に。',
         'char_setting': '設定/キャラ設定',
     },
     'ko': {
         'relationship': '{MASTER_NAME}은(는) {LANLAN_NAME}의 가까운 가족입니다. {LANLAN_NAME}와(과) {MASTER_NAME} 사이에 격식은 필요 없습니다.',
-        'language_style': '필요에 따라 한국어, 中文, English, 日本語 등 여러 언어를 사용할 수 있지만 반드시 간결한 구어체로.',
+        'language_style': '필요에 따라 한국어, English, 日本語 등 여러 언어를 사용할 수 있지만 반드시 간결한 구어체로.',
         'no_servitude': '상대방이 먼저 말하지 않는 한 "뭐 도와줄까"라고 묻지 말 것. "재밌는 거/새로운 거 얘기해줘" 같은 말을 반복해서 묻는 것은 금지.',
         'no_repetition': '이미 말한 내용을 반복하지 말 것. 언어는 반드시 간결하게.',
         'char_setting': '설정/캐릭터 설정',
     },
     'ru': {
         'relationship': '{MASTER_NAME} — близкий родственник {LANLAN_NAME}. Между {LANLAN_NAME} и {MASTER_NAME} нет нужды в формальностях.',
-        'language_style': 'Может использовать несколько языков по необходимости, включая русский, 中文, English, 日本語 и т.д., но всегда в лаконичной разговорной форме.',
+        'language_style': 'Может использовать несколько языков по необходимости, включая русский, English, 日本語 и т.д., но всегда в лаконичной разговорной форме.',
         'no_servitude': 'Не спрашивать «чем могу помочь», если собеседник сам не попросит. Запрещено повторно спрашивать вроде «расскажи что-нибудь интересное/новенькое».',
         'no_repetition': 'Не повторять уже сказанное. Речь должна быть лаконичной.',
         'char_setting': 'настройки/образ персонажа',
@@ -74,9 +74,9 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 
 <Context Awareness>
 - System Info: The system periodically sends some useful information to {LANLAN_NAME}. {LANLAN_NAME} can leverage this information to better understand the context.
-- Visual Info: If {MASTER_NAME} shares an screen capture/camera feed, react to it naturally. There may be a delay. {LANLAN_NAME} should NOT make ungrounded assumptions before seeing actual images. Visual information is a very important and useful source of conversation topics.
-- Avatar Overlay: If you see a small overlaid annotation on a screenshot reading something like "This is {LANLAN_NAME}'s virtual avatar on the desktop, ...", it's internal metadata marking your on-screen avatar position — ignore it, never repeat it, never bring it up.
-- Memory Integrity: Respect your memories about {MASTER_NAME}. NEVER fabricate facts about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences). If you don't know or don't remember, just say so honestly instead of making things up.
+- Visual Info: If {MASTER_NAME} shares a screen capture/camera feed, react to it naturally. There may be a delay. {LANLAN_NAME} should NOT make ungrounded assumptions before seeing actual images. Visual information is a very important and useful source of conversation topics.
+- Avatar Overlay: If {LANLAN_NAME} sees a small overlaid annotation on a screenshot reading something like "This is {LANLAN_NAME}'s virtual avatar on the desktop, ...", it's internal metadata marking her on-screen avatar position — ignore it, never repeat it, never bring it up.
+- Memory Integrity: {LANLAN_NAME} should respect her memories about {MASTER_NAME} and NEVER fabricate information about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences, past events, etc.). If {LANLAN_NAME} doesn't know or doesn't remember, just say so honestly instead of making things up.
 </Context Awareness>
 
 <WARNING> {LANLAN_NAME} replies in CONCISE spoken language. </WARNING>
@@ -118,12 +118,14 @@ def _build_lanlan_prompt(lang: str) -> str:
 
 
 def _normalize_default_prompt_text(prompt_text: str) -> str:
-    """Normalize legacy default prompts so added/removed lines don't break matching.
+    """Normalize legacy default prompts so wording drift doesn't break matching.
 
-    Strategy: strip away lines that differ between old and new defaults so both
-    versions reduce to the same canonical form.
+    Three classes of drift are handled so old stored prompts still reduce to the
+    same canonical form as the current default:
     - Removed lines (e.g. old ``- Skills:``): dropped from ``<Characteristics>``.
     - Added lines (e.g. new ``- Memory Integrity:``): dropped from ``<Context Awareness>``.
+    - In-place wording edits (e.g. 无需客气 → 无需客套): rewritten via
+      ``legacy_text_replacements`` so old wording canonicalizes to current wording.
     """
     allowed_characteristic_prefixes = (
         "- Identity:",
@@ -137,12 +139,30 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         "- Skills: versatile, proactive and capable of using external tools when available.",
         "- Skills: versatile, proactive, and capable of using external tools when available.",
     }
+    # In-place wording changes: (old_text, current_text). When wording in _L10N or
+    # _LANLAN_PROMPT_TEMPLATE is edited in place (not added/removed as a whole line),
+    # add an entry here so users with the previously-shipped default still match.
+    legacy_text_replacements = (
+        # zh / zh-TW Relationship: 客气 → 客套
+        ("无需客气", "无需客套"),
+        ("無需客氣", "無需客套"),
+        # ja Relationship: 遠慮 → 他人行儀
+        ("遠慮は不要", "他人行儀は不要"),
+        # en char_setting (used in <IMPORTANT> via {_char_setting})
+        ('"character setting"', '"settings/character setting"'),
+        # template typo fix
+        ("shares an screen capture", "shares a screen capture"),
+    )
     # Lines added in newer defaults that old stored prompts won't have.
     # We strip them during comparison so both old and new match.
     # Must be exact strings (not prefixes) to avoid stripping user-customised variants.
     added_context_lines = {
+        # Memory Integrity — kept across rewrites so users with old stored prompts still match.
         "- Memory Integrity: Respect your memories about {MASTER_NAME}. NEVER fabricate facts about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences). If you don't know or don't remember, just say so honestly instead of making things up.",
+        "- Memory Integrity: {LANLAN_NAME} should respect her memories about {MASTER_NAME} and NEVER fabricate information about {MASTER_NAME} (e.g. hobbies, occupation, experiences, preferences, past events, etc.). If {LANLAN_NAME} doesn't know or doesn't remember, just say so honestly instead of making things up.",
+        # Avatar Overlay — kept across rewrites so users with old stored prompts still match.
         "- Avatar Overlay: If you see a small overlaid annotation on a screenshot reading something like \"This is {LANLAN_NAME}'s virtual avatar on the desktop, ...\", it's internal metadata marking your on-screen avatar position — ignore it, never repeat it, never bring it up.",
+        "- Avatar Overlay: If {LANLAN_NAME} sees a small overlaid annotation on a screenshot reading something like \"This is {LANLAN_NAME}'s virtual avatar on the desktop, ...\", it's internal metadata marking her on-screen avatar position — ignore it, never repeat it, never bring it up.",
     }
     normalized_lines = []
     in_characteristics = False
@@ -179,7 +199,10 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         if in_context_awareness and stripped in added_context_lines:
             continue
         normalized_lines.append(line)
-    return "\n".join(normalized_lines).strip()
+    normalized = "\n".join(normalized_lines).strip()
+    for old_text, new_text in legacy_text_replacements:
+        normalized = normalized.replace(old_text, new_text)
+    return normalized
 
 
 # ============================================================================

@@ -24,10 +24,14 @@ Both package types are standard ZIP archives and must remain compatible with nor
 
 ## CLI Entry
 
-`neko-plugin-cli` now uses a single CLI entry:
+`neko-plugin-cli` now uses a single CLI entry. The directory was historically
+named `plugin/neko-plugin-cli/` (hyphen) to follow CLI naming conventions, but
+hyphens make the directory unimportable as a Python package and silently break
+Nuitka standalone bundling. It now lives at `plugin/neko_plugin_cli/` and is
+invoked via the standard `python -m` form:
 
 ```bash
-uv run python plugin/neko-plugin-cli/cli.py <command> ...
+uv run python -m plugin.neko_plugin_cli.cli <command> ...
 ```
 
 Current commands:
@@ -41,11 +45,11 @@ Current commands:
 Examples:
 
 ```bash
-uv run python plugin/neko-plugin-cli/cli.py pack qq_auto_reply
-uv run python plugin/neko-plugin-cli/cli.py inspect qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py verify qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py unpack qq_auto_reply.neko-plugin
-uv run python plugin/neko-plugin-cli/cli.py analyze qq_auto_reply mijia
+uv run python -m plugin.neko_plugin_cli.cli pack qq_auto_reply
+uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli unpack qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```
 
 ## Archive Layout

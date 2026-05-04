@@ -71,6 +71,8 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr._tts_done_queued_for_turn = False
     mgr.pending_agent_callbacks = []
     mgr.pending_extra_replies = []
+    mgr._takeover_active = False
+    mgr._takeover_input_dispatcher = None
     mgr._get_text_guard_max_length = MagicMock(return_value=200)
     # Patch OmniRealtimeClient / OmniOfflineClient isinstance 判定：
     # 在测试里我们只关心 OmniOfflineClient 分支，其他分支显式构造。

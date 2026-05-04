@@ -246,6 +246,17 @@ class OmniRealtimeClient:
         self._audio_in_buffer = False
         self._skip_until_next_response = False
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
+        self._audio_delta_total = 0  # monotonic diagnostic across responses
+        self._last_audio_delta_time = 0.0
+        self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
+        self._last_input_audio_committed_time = 0.0
+        self._response_created_total = 0  # diagnostic: response.created events observed
+        self._last_response_created_time = 0.0
+        self._response_done_total = 0  # diagnostic: response.done events observed
+        self._last_response_done_time = 0.0
+        self._last_response_transcript = ""
+        self._speech_started_total = 0  # diagnostic: server VAD start events observed
+        self._speech_stopped_total = 0  # diagnostic: server VAD stop events observed
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -1458,7 +1469,12 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def prompt_ephemeral(self, instruction: str = "", *, language: str = "zh") -> bool:
+    async def prompt_ephemeral(
+        self,
+        instruction: str = "",
+        *,
+        language: str = "zh",
+    ) -> bool:
         """Send a fire-and-forget audio nudge to trigger proactive AI speech.
 
         Injects a short WAV clip via ``input_audio_buffer.append`` so the
@@ -1925,6 +1941,8 @@ class OmniRealtimeClient:
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
                 elif event_type == "response.done":
+                    self._response_done_total += 1
+                    self._last_response_done_time = time.time()
                     # 解析实时 API 返回的 token 用量
                     try:
                         resp_data = event.get("response", {})
@@ -1948,10 +1966,12 @@ class OmniRealtimeClient:
                     self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
+                        self._last_response_transcript = self._current_response_transcript
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
+                        self._last_response_transcript = ""
                         print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
@@ -1962,6 +1982,8 @@ class OmniRealtimeClient:
                     if self.on_response_done:
                         await self.on_response_done()
                 elif event_type == "response.created":
+                    self._response_created_total += 1
+                    self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
@@ -1971,8 +1993,13 @@ class OmniRealtimeClient:
                     self._current_response_transcript = ""  # 重置当前回复转录
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
+                elif event_type == "input_audio_buffer.committed":
+                    self._input_audio_committed_total += 1
+                    self._last_input_audio_committed_time = time.time()
+                    logger.info("input_audio_buffer.committed observed (total=%d)", self._input_audio_committed_total)
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
+                    self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._audio_in_buffer = True
                     # 重置静默计时器
@@ -1991,6 +2018,7 @@ class OmniRealtimeClient:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
                 elif event_type == "input_audio_buffer.speech_stopped":
+                    self._speech_stopped_total += 1
                     logger.info("Speech ended")
                     if self.on_new_message:
                         await self.on_new_message()
@@ -2023,6 +2051,8 @@ class OmniRealtimeClient:
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
                         self._audio_delta_count += 1
+                        self._audio_delta_total += 1
+                        self._last_audio_delta_time = time.time()
                         if self._audio_delta_count == 1:
                             logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
@@ -2293,7 +2323,7 @@ class OmniRealtimeClient:
                             self._gemini_user_transcript = ""  # 清空累积
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
-                        if not self._skip_until_next_response and self.on_new_message:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
@@ -2309,7 +2339,7 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if not self._skip_until_next_response and self.on_text_delta:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
@@ -2324,7 +2354,7 @@ class OmniRealtimeClient:
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if not self._skip_until_next_response and self.on_audio_delta:
+                                if not self._skip_until_next_response and not self._interrupted and self.on_audio_delta:
                                     self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
 

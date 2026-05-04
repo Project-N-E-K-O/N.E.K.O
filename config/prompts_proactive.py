@@ -2842,6 +2842,40 @@ GREETING_PROMPT_VERY_LONG = {
 }
 
 
+NEW_CHARACTER_GREETING_PROMPT = {
+    'zh': '======以下是环境提示======\n'
+          '你是{name}。这是你第一次正式出现在{master}面前。\n'
+          '请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n'
+          '不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n'
+          '直接说出你想说的话，不要生成思考过程。\n'
+          '======以上是环境提示======',
+    'en': '======Below is Environment Notice======\n'
+          'You are {name}. This is the first time you formally appear in front of {master}.\n'
+          'Give {master} a brief, natural first greeting in a way that fits your personality.\n'
+          'Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n'
+          'Just say what you want to say. Do not generate thinking process.\n'
+          '======Above is Environment Notice======',
+    'ja': '======以下は環境通知======\n'
+          'あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n'
+          '自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n'
+          'システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n'
+          '言いたいことをそのまま言って。思考プロセスは生成しないで。\n'
+          '======以上は環境通知======',
+    'ko': '======아래는 환경 알림======\n'
+          '너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n'
+          '너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n'
+          '방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n'
+          '하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n'
+          '======위는 환경 알림======',
+    'ru': '======Ниже Уведомление======\n'
+          'Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n'
+          'Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n'
+          'Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n'
+          'Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n'
+          '======Выше Уведомление======',
+}
+
+
 def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     """根据对话间隔时长选择对应的主动搭话引导词。
 
@@ -2861,6 +2895,14 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
     return table.get(lang_key, table.get('en', table['zh']))
+
+
+def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
+    lang_key = _normalize_prompt_language(lang)
+    return NEW_CHARACTER_GREETING_PROMPT.get(
+        lang_key,
+        NEW_CHARACTER_GREETING_PROMPT.get('en', NEW_CHARACTER_GREETING_PROMPT['zh']),
+    )
 
 
 # ── 节日 / 周末提示模板 ─────────────────────────────────────────────

@@ -620,7 +620,7 @@ def test_memory_browser_storage_restart_requires_preflight_and_confirms_existing
         with mock_page.expect_response(lambda r: "/api/storage/location/restart" in r.url and r.status == 200):
             mock_page.locator("#storage-location-restart-btn").click()
 
-    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("关闭并迁移", timeout=5000)
+    expect(mock_page.locator("#storage-location-preflight-result")).to_contain_text("重启", timeout=5000)
     expect(mock_page.locator("#storage-location-pick-btn")).to_be_disabled()
     expect(mock_page.locator("#storage-target-root-input")).to_be_disabled()
     expect(mock_page.locator("#storage-location-restart-btn")).to_be_hidden()
@@ -788,7 +788,7 @@ def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_ov
                 "status": "maintenance",
                 "lifecycle_state": "maintenance",
                 "migration_stage": "pending",
-                "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                "maintenance_message": "正在关闭，数据会在关闭后迁移并自动重启。",
                 "poll_interval_ms": 500,
                 "effective_root": str(seed_memory_file.parents[2]),
                 "blocking_reason": "migration_pending",
@@ -858,7 +858,7 @@ def test_memory_browser_web_popup_restart_drives_opener_maintenance_overlay(mock
                 "status": "maintenance",
                 "lifecycle_state": "maintenance",
                 "migration_stage": "pending",
-                "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                "maintenance_message": "正在关闭，数据会在关闭后迁移并自动重启。",
                 "poll_interval_ms": 500,
                 "effective_root": str(seed_memory_file.parents[2]),
                 "blocking_reason": "migration_pending",
