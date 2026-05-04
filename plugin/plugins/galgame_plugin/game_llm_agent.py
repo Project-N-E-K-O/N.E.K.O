@@ -54,7 +54,6 @@ from .service import (
 
 _CHOICE_INSTRUCTION_TEXT_MAX_CHARS = 160
 _CHOICE_INSTRUCTION_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SCENE_SUMMARY_CONTENT_PREFIX = "游戏上下文（请猫娘自然回应）：\n"
 _TITLE_START_TEXT_MARKERS = (
     "start",
     "new game",
@@ -4806,7 +4805,15 @@ class GameLLMAgent:
             await self._push_agent_message(
                 shared,
                 kind="scene_summary",
-                content=f"{_SCENE_SUMMARY_CONTENT_PREFIX}{summary}",
+                content=(
+                    "======[游戏上下文提示]\n"
+                    "以下内容来自 galgame 插件对当前游戏画面和近期台词的理解。"
+                    "这不是后台任务，也不是任务完成通知。回复时不要说“后台任务完成”、"
+                    "“任务跑完了”、“插件完成了”。请直接以当前角色人格自然评论剧情、"
+                    "回应角色处境，或给出简短陪伴式反应。\n"
+                    + str(summary or "")
+                    + "\n======"
+                ),
                 scene_id=scene_id,
                 route_id=route_id,
                 metadata=push_metadata,

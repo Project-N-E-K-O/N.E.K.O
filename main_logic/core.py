@@ -220,35 +220,6 @@ NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
 
-def _is_galgame_context_callback(callback: dict) -> bool:
-    channel = str(callback.get("channel") or "")
-    metadata = callback.get("metadata") if isinstance(callback.get("metadata"), dict) else {}
-    context_type = str(callback.get("context_type") or metadata.get("context_type") or "")
-    return channel == "plugin:galgame_plugin" or context_type.startswith("galgame_")
-
-
-def _strip_galgame_context_prefix(text: str) -> str:
-    value = str(text or "").strip()
-    for prefix in (
-        "游戏上下文（请猫娘自然回应）：",
-        "剧情摘要（请猫娘评论）：",
-    ):
-        if value.startswith(prefix):
-            return value[len(prefix):].strip()
-    return value
-
-
-def _build_galgame_context_instruction(items: list[str]) -> str:
-    return (
-        "======[游戏上下文提示]\n"
-        "以下内容来自 galgame 插件对当前游戏画面和近期台词的理解。"
-        "这不是后台任务，也不是任务完成通知。回复时不要说“后台任务完成”、"
-        "“任务跑完了”、“插件完成了”。请直接以当前角色人格自然评论剧情、"
-        "回应角色处境，或给出简短陪伴式反应。\n"
-        + "\n".join(items)
-        + "\n======\n"
-    )
-
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -4269,27 +4240,6 @@ class LLMSessionManager:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        is_galgame_context = all(
-            _is_galgame_context_callback(cb)
-            for cb in proactive_cbs
-        )
-        if is_galgame_context:
-            items = [
-                _strip_galgame_context_prefix(str(cb.get("summary") or "").strip())
-                for cb in proactive_cbs
-                if str(cb.get("summary") or "").strip()
-            ]
-            if not items:
-                # detail-only callbacks with empty summary: drain them from the
-                # pending queue so they are consumed rather than retried forever.
-                snapshot_ids = {id(cb) for cb in proactive_cbs}
-                self.pending_agent_callbacks = [
-                    cb for cb in self.pending_agent_callbacks
-                    if id(cb) not in snapshot_ids
-                ]
-                return
-            instruction = _build_galgame_context_instruction(items)
-        else:
         # Render via _build_callback_instruction on the proactive subset only.
         # Note: this never returns "" while ``proactive_cbs`` is non-empty —
         # the renderer always emits at least the per-group outer header even
@@ -4297,13 +4247,13 @@ class LLMSessionManager:
         # early-return is needed (and the previous version incorrectly cleared
         # ``pending_extra_replies`` along the way, which is voice-hot-swap
         # state belonging to a different consumer).
-            instruction = _build_callback_instruction(
-                proactive_cbs,
-                lang=_lang,
-                lanlan_name=self.lanlan_name,
-                master_name=self.master_name,
-                passive=False,
-            )
+        instruction = _build_callback_instruction(
+            proactive_cbs,
+            lang=_lang,
+            lanlan_name=self.lanlan_name,
+            master_name=self.master_name,
+            passive=False,
+        )
         callbacks_snapshot = list(proactive_cbs)
 
         # 原子 check-and-claim：若另一路 proactive（router/greeting）在跑或 AI
@@ -4690,13 +4640,6 @@ class LLMSessionManager:
             return ""
         try:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
-            if all(_is_galgame_context_callback(cb) for cb in self.pending_agent_callbacks):
-                lines = [
-                    _strip_galgame_context_prefix(str(cb.get("summary") or cb.get("detail") or "").strip())
-                    for cb in self.pending_agent_callbacks
-                    if str(cb.get("summary") or cb.get("detail") or "").strip()
-                ]
-                return _build_galgame_context_instruction(lines) if lines else ""
             return _build_callback_instruction(
                 self.pending_agent_callbacks,
                 lang=_lang,

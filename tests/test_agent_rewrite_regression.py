@@ -792,9 +792,9 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
 
 
 @pytest.mark.asyncio
-async def test_task_executor_routes_galgame_continue_phrase_without_llm_assessment():
+async def test_task_executor_routes_galgame_continue_phrase_through_plugin_assessment():
     from unittest.mock import AsyncMock, patch
-    from brain.task_executor import DirectTaskExecutor
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
 
     plugins = [{
         "id": "galgame_plugin",
@@ -807,7 +807,21 @@ async def test_task_executor_routes_galgame_continue_phrase_without_llm_assessme
     executor._external_plugin_provider = AsyncMock(return_value=plugins)
     executor._short_desc_cache = {}
 
-    with patch.object(DirectTaskExecutor, "_assess_user_plugin", new_callable=AsyncMock) as mock_assess:
+    decision = UserPluginDecision(
+        has_task=True,
+        can_execute=True,
+        task_description="继续自动推进 galgame 剧情",
+        plugin_id="galgame_plugin",
+        entry_id="galgame_continue_auto_advance",
+        plugin_args={"message": "继续推进剧情"},
+        reason="llm_user_plugin_assessment",
+    )
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        return_value=decision,
+    ) as mock_assess:
         result = await executor.analyze_and_execute(
             [{"role": "user", "content": "继续推进剧情"}],
             agent_flags={
@@ -824,14 +838,14 @@ async def test_task_executor_routes_galgame_continue_phrase_without_llm_assessme
     assert result.tool_name == "galgame_plugin"
     assert result.entry_id == "galgame_continue_auto_advance"
     assert result.tool_args == {"message": "继续推进剧情"}
-    assert result.reason == "galgame_control_continue_auto_advance_rule"
-    mock_assess.assert_not_called()
+    assert result.reason == "llm_user_plugin_assessment"
+    mock_assess.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_task_executor_routes_galgame_mode_phrases_to_set_mode():
+async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessment():
     from unittest.mock import AsyncMock, patch
-    from brain.task_executor import DirectTaskExecutor
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
 
     plugins = [{
         "id": "galgame_plugin",
@@ -844,7 +858,32 @@ async def test_task_executor_routes_galgame_mode_phrases_to_set_mode():
     executor._external_plugin_provider = AsyncMock(return_value=plugins)
     executor._short_desc_cache = {}
 
-    with patch.object(DirectTaskExecutor, "_assess_user_plugin", new_callable=AsyncMock) as mock_assess:
+    decisions = [
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到自动推进模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "choice_advisor", "push_notifications": True},
+            reason="llm_user_plugin_assessment_auto",
+        ),
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到伴读模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "companion", "push_notifications": True},
+            reason="llm_user_plugin_assessment_companion",
+        ),
+    ]
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        side_effect=decisions,
+    ) as mock_assess:
         auto_result = await executor.analyze_and_execute(
             [{"role": "user", "content": "开启自动推进模式"}],
             agent_flags={
@@ -871,12 +910,12 @@ async def test_task_executor_routes_galgame_mode_phrases_to_set_mode():
     assert auto_result.tool_name == "galgame_plugin"
     assert auto_result.entry_id == "galgame_set_mode"
     assert auto_result.tool_args == {"mode": "choice_advisor", "push_notifications": True}
-    assert auto_result.reason == "galgame_control_auto_mode_rule"
+    assert auto_result.reason == "llm_user_plugin_assessment_auto"
     assert companion_result is not None
     assert companion_result.entry_id == "galgame_set_mode"
     assert companion_result.tool_args == {"mode": "companion", "push_notifications": True}
-    assert companion_result.reason == "galgame_control_companion_mode_rule"
-    mock_assess.assert_not_called()
+    assert companion_result.reason == "llm_user_plugin_assessment_companion"
+    assert mock_assess.await_count == 2
 
 
 def test_task_executor_plugin_desc_includes_enum_values():
