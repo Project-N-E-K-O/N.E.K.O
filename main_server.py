@@ -825,15 +825,23 @@ async def _handle_agent_event(event: dict):
                         # plugin:*→plugin, else system). Falling back to event
                         # raw + "plugin" default would mislabel non-plugin sources.
                         passthrough_source = source_kind or "plugin"
-                        await mgr.passthrough_to_chat_bubble(
-                            raw_text,
-                            request_id=event.get("task_id") or None,
-                            source=passthrough_source,
+                        # Why: passthrough_to_chat_bubble swallows send_json
+                        # failures and is a no-op when WS is missing/disconnected,
+                        # so absence-of-exception is NOT proof a frame was sent.
+                        # We must gate handle_proactive_complete on the bool
+                        # return — otherwise we emit turn-end without a matching
+                        # turn-start (frontend never opened the assistant
+                        # lifecycle), corrupting proactive rescheduling.
+                        passthrough_dispatched = bool(
+                            await mgr.passthrough_to_chat_bubble(
+                                raw_text,
+                                request_id=event.get("task_id") or None,
+                                source=passthrough_source,
+                            )
                         )
-                        passthrough_dispatched = True
                         logger.info(
-                            "[EventBus] passthrough_to_chat_bubble dispatched (text_len=%d, source=%s)",
-                            len(text), passthrough_source,
+                            "[EventBus] passthrough_to_chat_bubble dispatched=%s (text_len=%d, source=%s)",
+                            passthrough_dispatched, len(text), passthrough_source,
                         )
                     except Exception as e:
                         logger.warning(

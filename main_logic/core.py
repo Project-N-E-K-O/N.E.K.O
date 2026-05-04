@@ -1754,7 +1754,7 @@ class LLMSessionManager:
         request_id: str | None = None,
         turn_id: str | None = None,
         source: str = "passthrough",
-    ) -> None:
+    ) -> bool:
         """Render external text verbatim into the chat bubble WITHOUT
         entering chat-LLM context.
 
@@ -1770,6 +1770,15 @@ class LLMSessionManager:
 
         This is a generic SessionManager capability; it does not assume
         any particular consumer.
+
+        Returns ``True`` iff a ``gemini_response`` frame was actually
+        handed to ``send_json`` without raising. ``False`` covers every
+        no-op path: empty/whitespace text, websocket missing or
+        disconnected, and ``send_json`` failures swallowed below. Callers
+        that open an assistant-turn lifecycle on the frontend (e.g.
+        ``main_server`` chat-blind) MUST gate their turn-end emit on this
+        flag — a swallowed send means the frontend never opened a turn,
+        so emitting turn-end would close a lifecycle that never started.
         """
         # Why: caller passes raw_text deliberately (PR #1128 0ac9e8881).
         # We empty-check on the stripped form but forward the ORIGINAL so
@@ -1777,7 +1786,7 @@ class LLMSessionManager:
         # exactly as the plugin authored them.
         raw = str(text or "")
         if not raw or not raw.strip():
-            return
+            return False
         effective_turn_id = turn_id or request_id or str(uuid4())
         message = {
             "type": "gemini_response",
@@ -1787,18 +1796,21 @@ class LLMSessionManager:
             "request_id": request_id,
             "metadata": {"source": source, "passthrough": True},
         }
+        if not (
+            self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
         try:
-            if (
-                self.websocket
-                and hasattr(self.websocket, "client_state")
-                and self.websocket.client_state == self.websocket.client_state.CONNECTED
-            ):
-                await self.websocket.send_json(message)
+            await self.websocket.send_json(message)
         except Exception as e:
             logger.warning(
                 "[%s] passthrough_to_chat_bubble WS send failed: %s",
                 self.lanlan_name, e,
             )
+            return False
+        return True
 
     async def emit_mirror_turn_end(
         self,

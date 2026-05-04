@@ -774,12 +774,67 @@ async def test_hud_only_blind_does_not_emit_turn_end(monkeypatch):
     fake_mgr.handle_proactive_complete.assert_not_called()
 
 
+def _blind_chat_event(task_id: str) -> dict:
+    return {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "blind chat line",
+        "channel": "plugin:foo",
+        "task_id": task_id,
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+
 @pytest.mark.unit
-async def test_chat_blind_passthrough_failure_skips_turn_end(monkeypatch):
-    """If ``passthrough_to_chat_bubble`` raises, no gemini_response was
-    sent — so the frontend never opened an assistant turn lifecycle, and
-    we must NOT emit a stray turn-end. Otherwise the frontend would
-    receive a turn-end without a corresponding turn-start.
+async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
+    """Real failure semantics: ``passthrough_to_chat_bubble`` SWALLOWS
+    send_json failures and is a no-op when the WS is missing/disconnected
+    (see ``test_passthrough_send_failure_is_logged_not_raised`` and
+    ``test_passthrough_handles_disconnected_websocket_gracefully`` above).
+    In every such case the helper returns ``False`` — no
+    ``gemini_response`` was actually sent — so the frontend never opened
+    an assistant turn lifecycle, and we must NOT emit a stray turn-end.
+
+    The previous version of this test mocked the helper to raise, which
+    missed the most-likely-leaked path: helper returns success-shape
+    (``None`` under the old contract, ``False`` under the new one) but
+    never sent a frame, while ``main_server`` still emitted turn-end
+    based purely on absence-of-exception.
+    """
+    import main_server
+
+    fake_mgr = MagicMock()
+    # Simulate a swallowed no-op (e.g. WS disconnected mid-flight): the
+    # helper returns normally but reports False to indicate nothing was
+    # sent.
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=False)
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    await main_server._handle_agent_event(_blind_chat_event("task-blind-noop"))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.handle_proactive_complete.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatch):
+    """Defensive belt-and-suspenders: the production helper is supposed
+    to swallow all WS failures internally (returns False, never raises),
+    but ``main_server`` still wraps the call in try/except. If a future
+    refactor accidentally lets an exception escape, we must still NOT
+    emit a stray turn-end.
     """
     import main_server
 
@@ -794,21 +849,37 @@ async def test_chat_blind_passthrough_failure_skips_turn_end(monkeypatch):
     monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
     monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
 
-    event = {
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "blind chat line",
-        "channel": "plugin:foo",
-        "task_id": "task-blind-fail",
-        "delivery_mode": "silent",
-        "ai_behavior": "blind",
-        "visibility": ["chat"],
-        "source_kind": "plugin",
-        "source_name": "foo",
-        "media_parts": [],
-    }
-
-    await main_server._handle_agent_event(event)
+    await main_server._handle_agent_event(_blind_chat_event("task-blind-raise"))
 
     fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
     fake_mgr.handle_proactive_complete.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(monkeypatch):
+    """Lower-level integration: drive the REAL ``passthrough_to_chat_bubble``
+    against a websocket whose ``send_json`` raises. The helper must
+    swallow the exception, return False, and ``main_server`` must NOT
+    call ``handle_proactive_complete``.
+
+    This locks the end-to-end contract that motivated the bool return:
+    "send_json blew up, was swallowed; no turn was ever opened on the
+    frontend; do not close a phantom turn."
+    """
+    import main_server
+
+    real_mgr = _make_mgr(websocket=_FakeWebsocket(connected=True))
+    # Make send_json raise so the real helper exercises the swallow path.
+    real_mgr.websocket.send_json = AsyncMock(side_effect=RuntimeError("ws boom"))
+    real_mgr.handle_proactive_complete = AsyncMock()
+    real_mgr.enqueue_agent_callback = MagicMock()
+    real_mgr.trigger_agent_callbacks = AsyncMock()
+    real_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: real_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    await main_server._handle_agent_event(_blind_chat_event("task-blind-swallowed"))
+
+    assert real_mgr.websocket.send_json.await_count == 1
+    real_mgr.handle_proactive_complete.assert_not_called()
