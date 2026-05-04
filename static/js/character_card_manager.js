@@ -4497,9 +4497,59 @@ function openNewCatgirlPanel() {
 }
 window.openNewCatgirlPanel = openNewCatgirlPanel;
 
-async function rollbackAutoCreatedCatgirl(form) {
+function buildCreatedCatgirlPanelActions(name) {
+    const actions = document.createElement('div');
+    actions.className = 'card-panel-actions';
+
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'card-panel-action-btn export-btn';
+    exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
+    exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+        + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+    exportBtn.onclick = function (e) {
+        e.stopPropagation();
+        exportCharacterCard(name);
+    };
+    actions.appendChild(exportBtn);
+
+    const switchBtn = document.createElement('button');
+    switchBtn.type = 'button';
+    switchBtn.className = 'card-panel-action-btn switch-btn';
+    const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
+    switchBtn.disabled = isCurrentChara;
+    switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
+    switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+        + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
+    switchBtn.onclick = function (e) {
+        e.stopPropagation();
+        workshopSwitchCatgirl(name);
+    };
+    actions.appendChild(switchBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
+    deleteBtn.title = isCurrentChara
+        ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+        : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+    deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+        + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+    deleteBtn.onclick = async function (e) {
+        e.stopPropagation();
+        const deleted = await workshopDeleteCatgirl(name);
+        if (deleted) {
+            closeCatgirlPanel();
+        }
+    };
+    actions.appendChild(deleteBtn);
+
+    return actions;
+}
+
+async function rollbackAutoCreatedCatgirl(form, targetName = '') {
     if (!form) return;
-    const tempName = form._autoCreatedName || form._autoCreatedDetachedName;
+    const tempName = targetName || form._autoCreatedName || form._autoCreatedDetachedName;
     if (!tempName) return;
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(tempName), {
@@ -4510,11 +4560,17 @@ async function rollbackAutoCreatedCatgirl(form) {
             console.warn('[角色面板] 回滚临时角色失败:', tempName, errData.error || resp.statusText);
             return;
         }
-        form._autoCreated = false;
-        form._autoCreatedName = '';
-        form._autoCreatedDetachedName = '';
-        form._autoCreatedRollbackWhenDependentCloses = false;
-        form._autoCreatedDependentPopupSaved = false;
+        if (form._autoCreatedName === tempName) {
+            form._autoCreated = false;
+            form._autoCreatedName = '';
+        }
+        if (form._autoCreatedDetachedName === tempName) {
+            form._autoCreatedDetachedName = '';
+        }
+        if (!form._autoCreatedName && !form._autoCreatedDetachedName) {
+            form._autoCreatedRollbackWhenDependentCloses = false;
+            form._autoCreatedDependentPopupSaved = false;
+        }
         if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
         if (window._cardMetas) delete window._cardMetas[tempName];
         if (typeof loadCharacterCards === 'function') {
@@ -4541,9 +4597,10 @@ async function closeCatgirlPanel() {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
     }
-    if (hasOpenAutoCreatedDependentPopup(currentForm)) {
+    const dependentSaved = !!(currentForm && currentForm._autoCreatedDependentPopupSaved);
+    if (!dependentSaved && hasOpenAutoCreatedDependentPopup(currentForm)) {
         currentForm._autoCreatedRollbackWhenDependentCloses = true;
-    } else {
+    } else if (!dependentSaved) {
         await rollbackAutoCreatedCatgirl(currentForm);
     }
 
@@ -5410,6 +5467,16 @@ async function rebuildSavedCatgirlPanel(form, catgirlName) {
     try {
         const freshData = await loadCharacterData();
         const rawData = freshData?.['猫娘']?.[catgirlName] || {};
+        const wrapper = container.closest('.catgirl-panel-wrapper');
+        const leftSection = wrapper?.querySelector('.catgirl-panel-left');
+        const metaBlock = leftSection?.querySelector('#card-meta-block');
+        if (metaBlock && typeof renderCardMetaBlock === 'function') {
+            renderCardMetaBlock(metaBlock, catgirlName, false, rawData);
+        }
+        if (leftSection) {
+            leftSection.querySelector('.card-panel-actions')?.remove();
+            leftSection.appendChild(buildCreatedCatgirlPanelActions(catgirlName));
+        }
         buildCatgirlDetailForm(catgirlName, rawData, false, container);
     } catch (e) {
         console.warn('[角色面板] 切换到已创建角色状态失败:', e);
@@ -5479,7 +5546,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             return;
         }
         if (form._autoCreatedDetachedName) {
-            await rollbackAutoCreatedCatgirl(form);
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
         } else if (form._autoCreated) {
             form._autoCreated = false;
             form._autoCreatedName = '';

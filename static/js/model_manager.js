@@ -894,10 +894,22 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
     const formData = new FormData();
     formData.append('image', cardBlob, 'card_face.png');
 
-    const response = await fetch(
-        `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
-        { method: 'PUT', body: formData }
-    );
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+        response = await fetch(
+            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+            { method: 'PUT', body: formData, signal: controller.signal }
+        );
+    } catch (error) {
+        if (error && error.name === 'AbortError') {
+            throw new Error('默认卡面上传超时，请稍后重试');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
     if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || `HTTP ${response.status}`);
@@ -953,7 +965,9 @@ async function offerCardFaceAfterModelSave(state = {}) {
             } catch (error) {
                 console.error('[模型管理] 生成默认卡面失败:', error);
                 setModelManagerStatusText(
-                    modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                    error && error.message
+                        ? error.message
+                        : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
                 );
                 return;
             }
@@ -7335,9 +7349,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
             if (shouldOfferCardFace) {
-                await offerCardFaceAfterModelSave({
+                offerCardFaceAfterModelSave({
                     currentModelType,
                     currentLive3dSubType
+                }).catch(error => {
+                    console.error('[模型管理] 保存后的卡面处理失败:', error);
                 });
             }
         } catch (error) {
