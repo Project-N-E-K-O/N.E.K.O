@@ -994,6 +994,19 @@
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
                         var realtimeRestore = statusDetails && statusDetails.realtime_restore;
                         var wasRecording = !!S.isRecording;
+                        // Stale-event guard: a delayed GAME_ROUTE_ENDED for a previous
+                        // session can arrive AFTER /route/start has finalized that one
+                        // and activated a new session_id. Without this check the handler
+                        // would unconditionally clear S.gameRoute* state and tear down
+                        // the freshly-activated STT gate. We keep an empty current
+                        // session_id permissive (legacy fallback) so events that
+                        // genuinely lack a session_id still process.
+                        var endedSessionId = (statusDetails && statusDetails.session_id) || '';
+                        var currentSessionId = S.gameRouteSessionId || '';
+                        if (endedSessionId && currentSessionId && endedSessionId !== currentSessionId) {
+                            console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_session=${endedSessionId} current_session=${currentSessionId}`);
+                            return;
+                        }
                         S.gameRouteActive = false;
                         S.gameRouteGameType = '';
                         S.gameRouteLanlanName = '';

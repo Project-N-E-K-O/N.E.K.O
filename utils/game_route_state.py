@@ -17,14 +17,30 @@ finalize, archive, organizer). This module only holds:
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 
-_game_route_states: Dict[str, dict] = {}
+# Tuple key (not a `f"{lanlan}:{game_type}"` string):
+#
+# 1. String-concatenation with a `:` delimiter collides on inputs like
+#    ``("a:b", "c")`` vs ``("a", "b:c")`` — a lanlan_name containing ``:``
+#    silently maps to the wrong slot.
+# 2. The prefix-style ``startswith(f"{lanlan}:")`` lookup over a stringified
+#    key would also false-match: lanlan_name "Lan" prefix-matches "Lan2"'s
+#    composite key. Iterating tuples and comparing the first element by
+#    equality is unambiguous.
+#
+# Same-character supersede invariant: the router enforces that at most one
+# active route per ``(lanlan_name, game_type)`` exists; ``/route/start`` for
+# a new ``session_id`` finalizes the previous one before activating. So
+# session_id intentionally does NOT enter the key — adding it would let two
+# pages of the same character + game co-exist and break that invariant.
+_RouteStateKey = Tuple[str, str]
+_game_route_states: Dict[_RouteStateKey, dict] = {}
 
 
-def _route_state_key(lanlan_name: str, game_type: str) -> str:
-    return f"{lanlan_name}:{game_type}"
+def _route_state_key(lanlan_name: str, game_type: str) -> _RouteStateKey:
+    return (str(lanlan_name or ""), str(game_type or ""))
 
 
 def _get_active_game_route_state(
@@ -34,8 +50,9 @@ def _get_active_game_route_state(
     if game_type:
         state = _game_route_states.get(_route_state_key(lanlan_name, game_type))
         return state if state and state.get("game_route_active") else None
-    for key, state in _game_route_states.items():
-        if key.startswith(f"{lanlan_name}:") and state.get("game_route_active"):
+    target_lanlan = str(lanlan_name or "")
+    for (key_lanlan, _key_game), state in _game_route_states.items():
+        if key_lanlan == target_lanlan and state.get("game_route_active"):
             return state
     return None
 

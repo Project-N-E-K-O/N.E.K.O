@@ -414,7 +414,7 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert messages[0]["content"][0]["text"] == "温柔一点"
     assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
     system_text = messages[2]["content"][0]["text"]
-    assert "游戏模块归档，不是玩家逐字发言" in system_text
+    assert "Game Module Postgame Record: this is a game-module archive, not a verbatim player utterance." in system_text
     assert "soccer 游戏结束" not in system_text
     assert "官方结果：玩家 1 : 4 Lan。口头让步不改官方结果。" in system_text
     assert "官方结果永远以 finalScore / last_state.score 为准" not in system_text
@@ -667,14 +667,60 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
 
 
 @pytest.mark.unit
-def test_memory_review_prompt_protects_soccer_archive_records():
+def test_route_state_key_is_tuple_no_collision_no_prefix_false_match(monkeypatch):
+    """The previous f"{lanlan}:{game_type}" string key collided when a
+    lanlan_name contained a literal ':' and the prefix-style lookup
+    false-matched 'Lan' against 'Lan2:soccer'."""
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    # Tuple key — no string-concat collision possible.
+    state_a = game_router._activate_game_route("soccer", "match_1", "Lan:Alt")
+    state_b = game_router._activate_game_route("soccer", "match_2", "Lan")
+    state_c = game_router._activate_game_route("soccer", "match_3", "Lan2")
+
+    # Slot identity is preserved despite ':' in one lanlan_name.
+    assert game_router._game_route_states[("Lan:Alt", "soccer")] is state_a
+    assert game_router._game_route_states[("Lan", "soccer")] is state_b
+    assert game_router._game_route_states[("Lan2", "soccer")] is state_c
+
+    # Prefix false-match defense: looking up 'Lan' must NOT return state_c
+    # (which used to collide because 'Lan2:soccer'.startswith('Lan:') is False
+    # but 'Lan:soccer'.startswith('Lan:') IS true; symmetrically a real bug
+    # was 'Lan'.startswith vs 'Lan' returning the wrong slot for ambiguous
+    # equality. With tuple keys we compare lanlan_name by exact string).
+    found = game_router._get_active_game_route_state("Lan")
+    assert found is state_b
+    found2 = game_router._get_active_game_route_state("Lan2")
+    assert found2 is state_c
+    found_alt = game_router._get_active_game_route_state("Lan:Alt")
+    assert found_alt is state_a
+
+
+@pytest.mark.unit
+def test_memory_review_prompt_protects_game_module_archive_records():
+    """All five locales' HISTORY_REVIEW_PROMPT must reference the English
+    archive tags 'Game Module Memory Record' / 'Game Module Postgame Record'
+    that the game module emits verbatim into chat history (write side at
+    main_routers.game_router._build_game_archive_memory_text /
+    _build_game_archive_memory_summary_text). The previous design used
+    Chinese-literal tags; the project standardised on English-only tags so
+    every review-LLM in any UI locale matches the same string."""
     from config.prompts_memory import get_history_review_prompt
 
-    prompt = get_history_review_prompt("zh")
+    expected_tags = (
+        "Game Module Memory Record",
+        "Game Module Postgame Record",
+    )
+    for lang in ("zh", "en", "ja", "ko", "ru"):
+        prompt = get_history_review_prompt(lang)
+        for tag in expected_tags:
+            assert tag in prompt, (
+                f"locale={lang} HISTORY_REVIEW_PROMPT missing archive tag {tag!r}"
+            )
 
-    assert "游戏模块归档" in prompt
-    assert "不同时间/会话的同一类游戏默认代表不同局" in prompt
-    assert "不要整条删除" in prompt
+    # zh-specific assertions retained as a localised-content check.
+    zh_prompt = get_history_review_prompt("zh")
+    assert "不同时间/会话的同一类游戏默认代表不同局" in zh_prompt
+    assert "不要整条删除" in zh_prompt
 
 
 @pytest.mark.unit
@@ -1315,6 +1361,166 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_idempotent_on_request_id(monkeypatch):
+    """The dedup must be a true idempotency check on request_id, not a
+    "last seen" single slot:
+      - voice-1, voice-2 (different shouts) both deliver
+      - voice-1 retransmitted → still squashed even after voice-2 was the
+        most recent (out-of-order replay protection — the original
+        single-slot version would let this through because last==voice-2)
+    """
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    chat_calls = []
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        chat_calls.append((event["userVoiceText"], event.get("requestId")))
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    handled1 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-1", game_type="soccer", session_id="match_1",
+    )
+    handled2 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
+    )
+    # Out-of-order retry of voice-1 after voice-2 — must still be squashed.
+    handled3 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-1", game_type="soccer", session_id="match_1",
+    )
+    # Same request_id retransmitted right away — also squashed.
+    handled4 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
+    )
+
+    assert handled1 is True
+    assert handled2 is True
+    assert handled3 is True
+    assert handled4 is True
+    assert [call[0] for call in chat_calls] == ["再来", "再来"]
+    assert len(mgr.mirrored) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
+    """After the TTL window passes, the same request_id is allowed to
+    deliver again (it isn't "stuck" in the dedup set forever)."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    fake_now = {"t": 10_000.0}
+    monkeypatch.setattr(game_router.time, "time", lambda: fake_now["t"])
+
+    h1 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] += 0.1
+    h2 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] += 60.0
+    h3 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    assert h1 is True and h2 is True and h3 is True
+    # voice-x at base and at base+60.1s both deliver (TTL=30s evicted the
+    # first entry by then); the in-window retry at base+0.1s is squashed.
+    assert len(mgr.mirrored) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_membership_check_before_lru_cap(
+    monkeypatch,
+):
+    """If the LRU cap is enforced BEFORE the membership check, the
+    oldest still-in-window entry can be evicted right before its retry
+    arrives — breaking request-id idempotency at >=64 unique-id high
+    throughput. Verify membership is checked first."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    # Lower the cap for the test so we don't have to spin 64 unique ids.
+    monkeypatch.setattr(game_router, "_EXTERNAL_VOICE_DEDUP_MAX_ENTRIES", 4)
+
+    # Fill the dedup set to capacity with 4 distinct request_ids; the
+    # very first one (voice-1) is the oldest entry.
+    for i in range(1, 5):
+        await game_router.route_external_voice_transcript(
+            "Lan", "上场", request_id=f"voice-{i}",
+            game_type="soccer", session_id="match_1",
+        )
+    assert len(mgr.mirrored) == 4
+
+    # Now retry voice-1. It IS in the dedup set; the LRU cap (4) IS
+    # already at the limit. If the cap is enforced before the membership
+    # check, voice-1 (the oldest) is evicted, then idempotency_key not in
+    # seen_ids → deliver again. The fix: check membership first.
+    handled_retry = await game_router.route_external_voice_transcript(
+        "Lan", "上场", request_id="voice-1",
+        game_type="soccer", session_id="match_1",
+    )
+    assert handled_retry is True
+    assert len(mgr.mirrored) == 4, "voice-1 retry must be squashed even when cap is full"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_no_request_id_fallback_window(
+    monkeypatch,
+):
+    """The no-request_id fallback uses a wall-clock 1.0s window (not an
+    int(now)-second bucket), so close pairs that straddle a second
+    boundary like 0.95s → 1.05s are correctly squashed."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    fake_now = {"t": 1000.95}
+    monkeypatch.setattr(game_router.time, "time", lambda: fake_now["t"])
+
+    h1 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] = 1001.05  # crossed second boundary, but only +0.10s
+    h2 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] = 1002.10  # +1.05s from first → outside 1.0s window
+    h3 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    assert h1 is True and h2 is True and h3 is True
+    # h1 delivered, h2 squashed (within 1s), h3 delivered (outside 1s)
+    assert len(mgr.mirrored) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_heartbeat_refreshes_last_state(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
@@ -1919,7 +2125,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert session.prime_context_calls
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
-    assert "游戏模块赛后上下文" in context_text
+    assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
 
 
@@ -1961,8 +2167,8 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert session.prompt_calls == []
     assert mgr.voice_nudge_calls == 0
     assert len(session.create_response_calls) == 1
-    assert "游戏模块赛后上下文" in session.create_response_calls[0]
-    assert "游戏模块赛后主动搭话" in session.create_response_calls[0]
+    assert "[Game Module Postgame Context]" in session.create_response_calls[0]
+    assert "[Game Module Postgame Proactive Greeting]" in session.create_response_calls[0]
     assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
 
 
