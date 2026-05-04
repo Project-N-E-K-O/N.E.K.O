@@ -208,7 +208,21 @@
         }
 
         const recognition = new SpeechRecognition();
-        recognition.lang = 'zh-CN';
+        recognition.lang = (function () {
+            const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+                || (typeof navigator !== 'undefined' && navigator.language)
+                || 'zh-CN';
+            const tag = String(raw).toLowerCase();
+            if (tag.startsWith('zh-tw') || tag === 'zh-hant' || tag.startsWith('zh-hk')) return 'zh-TW';
+            if (tag.startsWith('zh')) return 'zh-CN';
+            if (tag.startsWith('en')) return 'en-US';
+            if (tag.startsWith('ja')) return 'ja-JP';
+            if (tag.startsWith('ko')) return 'ko-KR';
+            if (tag.startsWith('ru')) return 'ru-RU';
+            if (tag.startsWith('es')) return 'es-ES';
+            if (tag.startsWith('pt')) return 'pt-BR';
+            return raw;
+        })();
         recognition.continuous = true;
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;

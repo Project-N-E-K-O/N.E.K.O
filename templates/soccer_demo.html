@@ -760,6 +760,21 @@
       fallback,
     );
   };
+  const _resolveSpeechLang = () => {
+    const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+      || (typeof navigator !== 'undefined' && navigator.language)
+      || 'zh-CN';
+    const tag = String(raw).toLowerCase();
+    if (tag.startsWith('zh-tw') || tag === 'zh-hant' || tag.startsWith('zh-hk')) return 'zh-TW';
+    if (tag.startsWith('zh')) return 'zh-CN';
+    if (tag.startsWith('en')) return 'en-US';
+    if (tag.startsWith('ja')) return 'ja-JP';
+    if (tag.startsWith('ko')) return 'ko-KR';
+    if (tag.startsWith('ru')) return 'ru-RU';
+    if (tag.startsWith('es')) return 'es-ES';
+    if (tag.startsWith('pt')) return 'pt-BR';
+    return raw;
+  };
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -2300,7 +2315,7 @@
 	    }
 	    if (!_llm.routeVoiceSttRecognition) {
 	      const rec = new SpeechRecognition();
-	      rec.lang = 'zh-CN';
+	      rec.lang = _resolveSpeechLang();
 	      rec.continuous = true;
 	      rec.interimResults = false;
 	      rec.maxAlternatives = 1;
@@ -3630,7 +3645,7 @@
     }
     if (voiceRecognition) return voiceRecognition;
     voiceRecognition = new BrowserSpeechRecognition();
-    voiceRecognition.lang = 'zh-CN';
+    voiceRecognition.lang = _resolveSpeechLang();
     voiceRecognition.continuous = false;
     voiceRecognition.interimResults = false;
     voiceRecognition.maxAlternatives = 1;
