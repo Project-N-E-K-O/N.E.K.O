@@ -818,6 +818,7 @@ async def _handle_agent_event(event: dict):
                     and _ai_behavior == "blind"
                     and hasattr(mgr, "passthrough_to_chat_bubble")
                 ):
+                    passthrough_dispatched = False
                     try:
                         # Reuse the already-resolved source_kind local (computed
                         # above from channel: computer_use→cu, browser_use→browser,
@@ -829,6 +830,7 @@ async def _handle_agent_event(event: dict):
                             request_id=event.get("task_id") or None,
                             source=passthrough_source,
                         )
+                        passthrough_dispatched = True
                         logger.info(
                             "[EventBus] passthrough_to_chat_bubble dispatched (text_len=%d, source=%s)",
                             len(text), passthrough_source,
@@ -837,6 +839,22 @@ async def _handle_agent_event(event: dict):
                         logger.warning(
                             "[EventBus] passthrough_to_chat_bubble failed: %s", e,
                         )
+                    # Why: gemini_response opens an assistant turn lifecycle on
+                    # the frontend (ensureAssistantTurnStarted in app-websocket.js);
+                    # without a matching turn-end event the assistant bubble
+                    # stays "in-progress" and proactive rescheduling / lifecycle
+                    # finalization never fire. handle_proactive_complete is the
+                    # canonical turn-end emitter shared with the direct task_result
+                    # reply path above. The HUD agent_notification branch below
+                    # does NOT open an assistant turn, so single-emit here is
+                    # sufficient even when visibility=["chat","hud"].
+                    if passthrough_dispatched and hasattr(mgr, "handle_proactive_complete"):
+                        try:
+                            await mgr.handle_proactive_complete()
+                        except Exception as e:
+                            logger.warning(
+                                "[EventBus] passthrough turn_end emit failed: %s", e,
+                            )
                 # v2 visibility contract: HUD agent_notification fires only
                 # when "hud" is in visibility. Why: visibility=["chat"] must
                 # not double-render as both chat bubble AND HUD toast.

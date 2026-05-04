@@ -673,3 +673,142 @@ async def test_visibility_absent_field_legacy_fires_hud(monkeypatch):
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
     assert _hud_send_count(fake_mgr) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Turn-end emission after chat-blind passthrough (codex P2 — PR #1128)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Background: ``passthrough_to_chat_bubble`` sends a ``gemini_response``
+# frame, which on the frontend opens an assistant turn lifecycle via
+# ``ensureAssistantTurnStarted``. Without a matching ``turn end`` /
+# ``turn end agent_callback`` system event, the assistant bubble stays
+# "in-progress" and proactive rescheduling never fires. The canonical
+# helper that emits this turn-end is
+# :py:meth:`LLMSessionManager.handle_proactive_complete`; the direct
+# task_result reply path at main_server.py:714 already calls it. The
+# chat-blind passthrough branch must do the same.
+#
+# The HUD-only branch (agent_notification) does NOT open an assistant
+# turn lifecycle on the frontend, so it does NOT need turn-end. This
+# means the dedup strategy is "emit once iff chat passthrough fired",
+# not "per-sink emit with explicit dedup".
+
+
+@pytest.mark.unit
+async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monkeypatch):
+    """visibility=["chat"] + blind → handle_proactive_complete called
+    exactly once after passthrough_to_chat_bubble returns. This is the
+    codex P2 regression: prior code dispatched the gemini_response bubble
+    but never closed the assistant turn lifecycle on the frontend.
+    """
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "blind chat line",
+        "channel": "plugin:foo",
+        "task_id": "task-blind-chat",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.handle_proactive_complete.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_chat_and_hud_blind_emits_turn_end_exactly_once(monkeypatch):
+    """visibility=["chat","hud"] + blind → BOTH chat passthrough AND HUD
+    fire (per the existing visibility contract), but turn-end must be
+    emitted EXACTLY ONCE. The HUD branch doesn't open an assistant turn,
+    so a single emit gated on the chat passthrough is correct.
+    """
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    assert _hud_send_count(fake_mgr) == 1
+    fake_mgr.handle_proactive_complete.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_hud_only_blind_does_not_emit_turn_end(monkeypatch):
+    """visibility=["hud"] + blind → HUD toast fires alone. agent_notification
+    on the frontend is a toast that doesn't open an assistant turn lifecycle,
+    so turn-end must NOT be emitted (no lifecycle to close).
+    """
+    import main_server
+
+    fake_mgr = _hud_fake_mgr()
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(_hud_event(["hud"]))
+
+    fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    assert _hud_send_count(fake_mgr) == 1
+    fake_mgr.handle_proactive_complete.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_chat_blind_passthrough_failure_skips_turn_end(monkeypatch):
+    """If ``passthrough_to_chat_bubble`` raises, no gemini_response was
+    sent — so the frontend never opened an assistant turn lifecycle, and
+    we must NOT emit a stray turn-end. Otherwise the frontend would
+    receive a turn-end without a corresponding turn-start.
+    """
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock(side_effect=RuntimeError("ws boom"))
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "blind chat line",
+        "channel": "plugin:foo",
+        "task_id": "task-blind-fail",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.handle_proactive_complete.assert_not_called()
