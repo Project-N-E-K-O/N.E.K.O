@@ -190,6 +190,103 @@ def test_validate_reports_decorator_rule_violations(tmp_path: Path, capsys) -> N
     assert "seconds > 0" in captured.err
 
 
+def test_validate_reports_plugin_toml_enum_and_type_violations(tmp_path: Path, capsys) -> None:
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = _make_plugin(plugins_root, "bad_toml")
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                'id = "bad_toml"',
+                'name = "Bad TOML"',
+                'version = "1.0.0"',
+                'type = "widget"',
+                'entry = "plugin.plugins.bad_toml:ValidDemoPlugin"',
+                'keywords = "search"',
+                'passive = 1',
+                "",
+                "[plugin.sdk]",
+                'conflicts = ">=0.2.0"',
+                "",
+                "[plugin_runtime]",
+                'enabled = "sometimes"',
+                "priority = 1.5",
+                "",
+                "[plugin.ui]",
+                "enabled = true",
+                "",
+                "[[plugin.ui.panel]]",
+                'entry = "ui/panel.tsx"',
+                'mode = "portal"',
+                'open_in = "popup"',
+                'context = "somewhere"',
+                'permissions = ["state:read", "danger:write"]',
+                "",
+                "[plugin_state]",
+                'backend = "s3"',
+                'persist_mode = "forever"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "bad_toml", "--plugins-root", str(plugins_root), "--strict"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "[plugin].type must be one of" in captured.err
+    assert "[plugin].keywords must be a list of strings" in captured.err
+    assert "[plugin].passive must be a boolean" in captured.err
+    assert "[plugin.sdk].conflicts must be a list of strings" in captured.err
+    assert "[plugin_runtime].enabled must be a boolean" in captured.err
+    assert "[plugin_runtime].priority must be an integer" in captured.err
+    assert "[plugin.ui].panel[0].mode must be one of" in captured.err
+    assert "[plugin.ui].panel[0].open_in must be one of" in captured.err
+    assert "[plugin.ui].panel[0].context must be one of" in captured.err
+    assert "[plugin_state].backend must be one of" in captured.err
+    assert "[plugin_state].persist_mode must be one of" in captured.err
+    assert "danger:write" in captured.out
+
+
+def test_validate_reports_plugin_toml_mutually_exclusive_fields(tmp_path: Path, capsys) -> None:
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = _make_plugin(plugins_root, "bad_dependency")
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                'id = "bad_dependency"',
+                'name = "Bad Dependency"',
+                'version = "1.0.0"',
+                'entry = "plugin.plugins.bad_dependency:ValidDemoPlugin"',
+                "",
+                "[[plugin.dependency]]",
+                'entry = "host:run"',
+                'custom_event = "host:event"',
+                'untested = ">=0.1.0"',
+                "",
+                "[[plugin.dependency]]",
+                "conflicts = true",
+                "",
+                "[[plugin.ui.panel]]",
+                'entry = "ui/panel.tsx"',
+                'url = "https://example.com/panel"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "bad_dependency", "--plugins-root", str(plugins_root), "--strict"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "cannot declare both entry and custom_event" in captured.err
+    assert "with conflicts=true requires id" in captured.err
+    assert "cannot declare both entry and url" in captured.err
+
+
 def test_validate_pack_runs_package_roundtrip(tmp_path: Path) -> None:
     plugins_root = tmp_path / "plugins"
     target_dir = tmp_path / "target"

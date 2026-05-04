@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..core import inspect_package, pack_plugin
 from ..core.plugin_source import load_plugin_source
+from ..core.toml_utils import load_toml
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
@@ -67,8 +68,18 @@ def handle(args: argparse.Namespace) -> int:
 
 def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
-    source = load_plugin_source(plugin_dir)
+    try:
+        source = load_plugin_source(plugin_dir)
+    except Exception:
+        plugin_toml_path = plugin_dir / "plugin.toml"
+        config = load_toml(plugin_toml_path)
+        plugin_table = config.get("plugin") if isinstance(config, dict) else {}
+        plugin_id = plugin_table.get("id") if isinstance(plugin_table, dict) else plugin_dir.name
+        plugin_id = plugin_id if isinstance(plugin_id, str) and plugin_id.strip() else plugin_dir.name
+        _check_plugin_toml_schema(plugin_dir, config, plugin_id.strip(), issues)
+        return issues
     plugin_table = source.plugin_table
+    _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
 
     if source.plugin_id != plugin_dir.name:
         issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
@@ -97,6 +108,372 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     _check_python_decorators(plugin_dir, issues)
 
     return issues
+
+
+def _check_plugin_toml_schema(
+    plugin_dir: Path,
+    config: dict[str, object],
+    plugin_id: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    plugin_table = config.get("plugin")
+    if not isinstance(plugin_table, dict):
+        issues.append(("error", "[plugin] must be a table"))
+        return
+
+    allowed_plugin_keys = {
+        "id",
+        "name",
+        "type",
+        "description",
+        "short_description",
+        "keywords",
+        "passive",
+        "version",
+        "entry",
+        "author",
+        "i18n",
+        "sdk",
+        "ui",
+        "store",
+        "host",
+        "safety",
+        "config_profiles",
+        "dependency",
+        "dependencies",
+    }
+    _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
+
+    _require_string(plugin_table, "id", "[plugin].id", issues, pattern=r"^[A-Za-z0-9_-]+$")
+    _require_string(plugin_table, "name", "[plugin].name", issues)
+    _require_string(plugin_table, "version", "[plugin].version", issues, pattern=r"^\d+\.\d+\.\d+.*$")
+    _require_string(plugin_table, "entry", "[plugin].entry", issues, pattern=r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
+
+    plugin_type = plugin_table.get("type", "plugin")
+    _check_enum(plugin_type, "[plugin].type", {"plugin", "extension", "script", "adapter"}, issues)
+    if plugin_type == "extension" and "host" not in plugin_table:
+        issues.append(("error", "type='extension' requires [plugin.host]"))
+    if plugin_type != "extension" and "host" in plugin_table:
+        issues.append(("error", "[plugin.host] is only valid when [plugin].type = 'extension'"))
+
+    _check_optional_string(plugin_table, "description", "[plugin].description", issues)
+    _check_optional_string(plugin_table, "short_description", "[plugin].short_description", issues)
+    _check_optional_bool(plugin_table, "passive", "[plugin].passive", issues)
+    _check_string_list(plugin_table.get("keywords"), "[plugin].keywords", issues, required=False)
+    _check_string_list(plugin_table.get("dependencies"), "[plugin].dependencies", issues, required=False)
+
+    _check_author_table(plugin_table.get("author"), issues)
+    _check_sdk_table(plugin_table.get("sdk"), issues)
+    _check_store_table(plugin_table.get("store"), issues)
+    _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
+    _check_host_table(plugin_table.get("host"), issues)
+    _check_safety_table(plugin_table.get("safety"), issues)
+    _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
+    _check_dependency_tables(plugin_table.get("dependency"), issues)
+    _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
+    _check_runtime_table(config.get("plugin_runtime"), issues)
+    _check_plugin_state_table(config.get("plugin_state"), issues)
+
+    adapter_table = config.get("adapter")
+    if adapter_table is not None:
+        if not isinstance(adapter_table, dict):
+            issues.append(("error", "[adapter] must be a table"))
+        else:
+            _check_enum(adapter_table.get("mode", "gateway"), "[adapter].mode", {"gateway"}, issues)
+            _check_optional_number(adapter_table, "priority", "[adapter].priority", issues, integer=True)
+
+
+def _warn_unknown_keys(table: dict[str, object], allowed: set[str], label: str, issues: list[tuple[str, str]]) -> None:
+    for key in sorted(set(table) - allowed):
+        issues.append(("warning", f"{label}.{key} is not a recognized plugin.toml field"))
+
+
+def _require_string(
+    table: dict[str, object],
+    key: str,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    pattern: str | None = None,
+) -> None:
+    value = table.get(key)
+    if not isinstance(value, str) or not value.strip():
+        issues.append(("error", f"{label} must be a non-empty string"))
+        return
+    if value.strip() != value:
+        issues.append(("warning", f"{label} contains leading/trailing whitespace"))
+    if pattern and not re.fullmatch(pattern, value.strip()):
+        issues.append(("error", f"{label} has invalid format: {value}"))
+
+
+def _check_optional_string(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
+    value = table.get(key)
+    if value is not None and not isinstance(value, str):
+        issues.append(("error", f"{label} must be a string"))
+
+
+def _check_optional_bool(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
+    value = table.get(key)
+    if value is None:
+        return
+    if isinstance(value, bool):
+        return
+    if isinstance(value, str) and value.strip().lower() in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+        issues.append(("warning", f"{label} uses string boolean '{value}'; prefer true/false"))
+        return
+    issues.append(("error", f"{label} must be a boolean"))
+
+
+def _check_enum(value: object, label: str, allowed: set[str], issues: list[tuple[str, str]]) -> None:
+    if not isinstance(value, str) or value not in allowed:
+        issues.append(("error", f"{label} must be one of: {', '.join(sorted(allowed))}"))
+
+
+def _check_string_list(value: object, label: str, issues: list[tuple[str, str]], *, required: bool) -> None:
+    if value is None:
+        if required:
+            issues.append(("error", f"{label} is required"))
+        return
+    if not isinstance(value, list):
+        issues.append(("error", f"{label} must be a list of strings"))
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            issues.append(("error", f"{label}[{index}] must be a non-empty string"))
+
+
+def _check_optional_number(
+    table: dict[str, object],
+    key: str,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    integer: bool = False,
+    minimum: float | None = None,
+) -> None:
+    value = table.get(key)
+    if value is None:
+        return
+    valid_type = isinstance(value, int) if integer else isinstance(value, (int, float))
+    if isinstance(value, bool) or not valid_type:
+        issues.append(("error", f"{label} must be an {'integer' if integer else 'number'}"))
+        return
+    if minimum is not None and value < minimum:
+        issues.append(("error", f"{label} must be >= {minimum:g}"))
+
+
+def _check_author_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.author] must be a table"))
+        return
+    _warn_unknown_keys(value, {"name", "email", "url"}, "[plugin.author]", issues)
+    for key in ("name", "email", "url"):
+        _check_optional_string(value, key, f"[plugin.author].{key}", issues)
+
+
+def _check_sdk_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.sdk] must be a table"))
+        return
+    _warn_unknown_keys(value, {"recommended", "supported", "untested", "conflicts"}, "[plugin.sdk]", issues)
+    for key in ("recommended", "supported", "untested"):
+        _check_optional_string(value, key, f"[plugin.sdk].{key}", issues)
+    conflicts = value.get("conflicts")
+    if conflicts is not None:
+        _check_string_list(conflicts, "[plugin.sdk].conflicts", issues, required=False)
+
+
+def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.store] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "backend"}, "[plugin.store]", issues)
+    _check_optional_bool(value, "enabled", "[plugin.store].enabled", issues)
+    backend = value.get("backend")
+    if backend is not None:
+        _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+
+
+def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.i18n] must be a table"))
+        return
+    _warn_unknown_keys(value, {"default_locale", "locales_dir"}, "[plugin.i18n]", issues)
+    _check_optional_string(value, "default_locale", "[plugin.i18n].default_locale", issues)
+    locales_dir = value.get("locales_dir")
+    if locales_dir is not None:
+        if not isinstance(locales_dir, str) or not locales_dir.strip():
+            issues.append(("error", "[plugin.i18n].locales_dir must be a non-empty string"))
+        elif not (plugin_dir / locales_dir).is_dir():
+            issues.append(("warning", f"[plugin.i18n].locales_dir does not exist: {locales_dir}"))
+
+
+def _check_host_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.host] must be a table"))
+        return
+    _warn_unknown_keys(value, {"plugin_id", "prefix"}, "[plugin.host]", issues)
+    _require_string(value, "plugin_id", "[plugin.host].plugin_id", issues, pattern=r"^[A-Za-z0-9_-]+$")
+    _check_optional_string(value, "prefix", "[plugin.host].prefix", issues)
+
+
+def _check_safety_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.safety] must be a table"))
+        return
+    _warn_unknown_keys(value, {"sync_call_in_handler"}, "[plugin.safety]", issues)
+    setting = value.get("sync_call_in_handler")
+    if setting is not None:
+        _check_enum(setting, "[plugin.safety].sync_call_in_handler", {"warn", "reject"}, issues)
+
+
+def _check_config_profiles_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.config_profiles] must be a table"))
+        return
+    _warn_unknown_keys(value, {"active", "files"}, "[plugin.config_profiles]", issues)
+    _check_optional_string(value, "active", "[plugin.config_profiles].active", issues)
+    files = value.get("files")
+    if files is not None:
+        if not isinstance(files, dict):
+            issues.append(("error", "[plugin.config_profiles].files must be a table"))
+        else:
+            for key, item in files.items():
+                if not isinstance(key, str) or not isinstance(item, str) or not item.strip():
+                    issues.append(("error", "[plugin.config_profiles].files must map profile names to file paths"))
+
+
+def _check_dependency_tables(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    deps = value if isinstance(value, list) else [value] if isinstance(value, dict) else None
+    if deps is None:
+        issues.append(("error", "[[plugin.dependency]] must be an array of tables"))
+        return
+    for index, dep in enumerate(deps):
+        label = f"[[plugin.dependency]][{index}]"
+        if not isinstance(dep, dict):
+            issues.append(("error", f"{label} must be a table"))
+            continue
+        _warn_unknown_keys(dep, {"id", "entry", "custom_event", "providers", "recommended", "supported", "untested", "conflicts"}, label, issues)
+        selectors = [name for name in ("id", "entry", "custom_event", "providers") if dep.get(name)]
+        if not selectors:
+            issues.append(("error", f"{label} must declare at least one of id, entry, custom_event, providers"))
+        if dep.get("entry") and dep.get("custom_event"):
+            issues.append(("error", f"{label} cannot declare both entry and custom_event"))
+        if dep.get("conflicts") is True and not dep.get("id"):
+            issues.append(("error", f"{label} with conflicts=true requires id"))
+        if dep.get("conflicts") is not True and "untested" not in dep:
+            issues.append(("error", f"{label} requires untested unless conflicts=true"))
+        for key in ("id", "entry", "custom_event", "recommended", "supported", "untested"):
+            _check_optional_string(dep, key, f"{label}.{key}", issues)
+        providers = dep.get("providers")
+        if providers is not None:
+            _check_string_list(providers, f"{label}.providers", issues, required=False)
+        conflicts = dep.get("conflicts")
+        if conflicts is not None and conflicts is not True:
+            if isinstance(conflicts, str):
+                continue
+            _check_string_list(conflicts, f"{label}.conflicts", issues, required=False)
+
+
+def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.ui] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "panel", "guide", "docs", "warnings"}, "[plugin.ui]", issues)
+    _check_optional_bool(value, "enabled", "[plugin.ui].enabled", issues)
+    for kind in ("panel", "guide", "docs"):
+        raw = value.get(kind)
+        if raw is None:
+            continue
+        items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else None
+        if items is None:
+            issues.append(("error", f"[plugin.ui].{kind} must be a table or array of tables"))
+            continue
+        for index, surface in enumerate(items):
+            _check_ui_surface(plugin_dir, surface, f"[plugin.ui].{kind}[{index}]", issues)
+
+
+def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    if not isinstance(value, dict):
+        issues.append(("error", f"{label} must be a table"))
+        return
+    _warn_unknown_keys(value, {"id", "title", "entry", "mode", "url", "ui_path", "open_in", "context", "permissions", "available"}, label, issues)
+    _check_optional_string(value, "id", f"{label}.id", issues)
+    _check_optional_string(value, "title", f"{label}.title", issues)
+    entry = value.get("entry")
+    url = value.get("url")
+    if entry and url:
+        issues.append(("error", f"{label} cannot declare both entry and url"))
+    if entry is not None:
+        if not isinstance(entry, str) or not entry.strip():
+            issues.append(("error", f"{label}.entry must be a non-empty string"))
+        elif not (plugin_dir / entry).exists():
+            issues.append(("warning", f"{label}.entry path does not exist: {entry}"))
+    _check_optional_string(value, "url", f"{label}.url", issues)
+    mode = value.get("mode")
+    if mode is not None:
+        _check_enum(mode, f"{label}.mode", {"static", "hosted-tsx", "markdown", "auto"}, issues)
+    open_in = value.get("open_in")
+    if open_in is not None:
+        _check_enum(open_in, f"{label}.open_in", {"iframe", "new_tab", "same_tab"}, issues)
+    context = value.get("context")
+    if context is not None:
+        _check_enum(context, f"{label}.context", {"dashboard", "chat", "settings", "plugin_detail"}, issues)
+    permissions = value.get("permissions")
+    if permissions is not None:
+        _check_string_list(permissions, f"{label}.permissions", issues, required=False)
+        if isinstance(permissions, list):
+            allowed = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+            for index, permission in enumerate(permissions):
+                if isinstance(permission, str) and permission not in allowed:
+                    issues.append(("warning", f"{label}.permissions[{index}] is not a recognized permission: {permission}"))
+    _check_optional_bool(value, "available", f"{label}.available", issues)
+
+
+def _check_runtime_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin_runtime] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "auto_start", "priority", "timeout"}, "[plugin_runtime]", issues)
+    _check_optional_bool(value, "enabled", "[plugin_runtime].enabled", issues)
+    _check_optional_bool(value, "auto_start", "[plugin_runtime].auto_start", issues)
+    _check_optional_number(value, "priority", "[plugin_runtime].priority", issues, integer=True)
+    _check_optional_number(value, "timeout", "[plugin_runtime].timeout", issues, minimum=0)
+
+
+def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin_state] must be a table"))
+        return
+    _warn_unknown_keys(value, {"backend", "persist_mode"}, "[plugin_state]", issues)
+    backend = value.get("backend")
+    if backend is not None:
+        _check_enum(backend, "[plugin_state].backend", {"file", "sqlite", "memory"}, issues)
+    persist_mode = value.get("persist_mode")
+    if persist_mode is not None:
+        _check_enum(persist_mode, "[plugin_state].persist_mode", {"auto", "always", "manual", "disabled"}, issues)
 
 
 def _check_entry_target(
