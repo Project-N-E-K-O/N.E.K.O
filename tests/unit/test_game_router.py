@@ -649,6 +649,39 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
 
 
 @pytest.mark.unit
+def test_memory_highlight_source_keeps_role_markers_aligned_in_english(monkeypatch):
+    monkeypatch.setattr(game_router, "_archive_prompt_language", lambda _archive: "en")
+
+    source = game_router._build_game_archive_memory_highlight_source({
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "lanlan_name": "Lan",
+        "last_state": {"score": {"player": 1, "ai": 2}},
+        "soccer_game_memory_enabled": True,
+        "soccer_game_memory_player_interaction_enabled": True,
+        "soccer_game_memory_event_reply_enabled": True,
+        "soccer_game_memory_archive_enabled": True,
+        "soccer_game_memory_postgame_context_enabled": True,
+        "full_dialogues": [
+            {"type": "user", "text": "I almost caught up"},
+            {
+                "type": "game_event",
+                "kind": "goal-conceded",
+                "text": "goal",
+                "result_line": "Nice shot.",
+            },
+        ],
+    })
+
+    assert 'literal marker "玩家："' in source
+    assert '"事件原文" inside "游戏事件" lines' in source
+    assert "玩家：I almost caught up" in source
+    assert "游戏事件 goal-conceded" in source
+    assert "Player:" not in source
+    assert "Game event" not in source
+
+
+@pytest.mark.unit
 def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
     captured = {}
 
