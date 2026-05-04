@@ -29,6 +29,7 @@ from fastapi import APIRouter, Request
 from config.prompts_game import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
+    get_soccer_anger_pressure_cap_reason,
     get_soccer_pregame_context_formatter_labels,
     get_soccer_pregame_context_prompt,
     get_soccer_quick_lines_prompt,
@@ -946,8 +947,8 @@ def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
         language = getattr(manager, "user_language", None)
         if language:
             return normalize_language_code(str(language), format="short") or "en"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s err=%s", lanlan_name, exc)
 
     try:
         return normalize_language_code(get_global_language(), format="short") or "en"
@@ -3444,6 +3445,7 @@ async def _refresh_game_session_instructions(
 
     lanlan_name = str(lanlan_name or entry.get("lanlan_name") or "").strip()
     char_info = _get_character_info(lanlan_name)
+    entry["user_language"] = char_info.get("user_language")
     if postgame_snapshot is not None:
         pre_game_context = postgame_snapshot.get("pre_game_context")
         game_context = postgame_snapshot.get("game_context")
@@ -3666,6 +3668,7 @@ def _build_soccer_anger_pressure_cap(
         "scoreDiff": score_diff,
         "recommendedDifficulty": recommended_difficulty,
         "message": get_soccer_anger_pressure_cap_message(language),
+        "reason": get_soccer_anger_pressure_cap_reason(language),
     }
 
 
@@ -3698,7 +3701,7 @@ def _apply_soccer_anger_pressure_cap(result: Dict[str, Any], event: Any) -> Dict
     if should_clamp:
         control["difficulty"] = str(cap.get("recommendedDifficulty") or "lv3")
         existing_reason = str(control.get("reason") or "").strip()
-        cap_reason = "狂怒压制已到体力上限，改为降强度继续处理情绪"
+        cap_reason = str(cap.get("reason") or "").strip() or get_soccer_anger_pressure_cap_reason()
         if existing_reason:
             control["reason"] = f"{existing_reason}；{cap_reason}"
         elif event.get("requestControlReason") is True:

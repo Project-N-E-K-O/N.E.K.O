@@ -4,6 +4,7 @@ from config.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
+    get_game_archive_memory_summary_labels,
     get_game_archive_memory_text_labels,
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
@@ -26,6 +27,7 @@ def test_game_route_prompt_getters_return_locale_content(locale):
 
     label_getters = (
         get_game_archive_highlight_source_labels,
+        get_game_archive_memory_summary_labels,
         get_game_archive_memory_text_labels,
         get_game_context_formatter_labels,
         get_game_postgame_context_labels,
@@ -67,3 +69,22 @@ def test_game_context_signal_normalizer_accepts_legacy_zh_group_keys():
     assert normalized["character_signals"] == []
     assert normalized["session_facts"] == []
     assert normalized["verbal_claims"] == []
+
+
+@pytest.mark.unit
+def test_router_formatter_uses_requested_english_locale():
+    zh_text = game_router._compact_realtime_context_text(
+        "soccer",
+        {"state": {"score": {"player": 1, "ai": 2}}, "pendingItems": []},
+        "zh",
+    )
+    en_text = game_router._compact_realtime_context_text(
+        "soccer",
+        {"state": {"score": {"player": 1, "ai": 2}}, "pendingItems": []},
+        "en",
+    )
+
+    assert "[游戏上下文更新]" in zh_text
+    assert "[Game Context Update]" in en_text
+    assert "non-voice game context" in en_text
+    assert en_text != zh_text

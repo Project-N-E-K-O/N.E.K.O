@@ -107,6 +107,7 @@ def test_soccer_anger_pressure_cap_applies_only_to_punishing_anger_context():
     assert cap["reached"] is True
     assert cap["capGoals"] == 25
     assert cap["recommendedDifficulty"] == "lv4"
+    assert cap["reason"] == "狂怒压制已到体力上限，改为降强度继续处理情绪"
 
     neutral = {
         "preGameContext": {
@@ -211,6 +212,33 @@ def test_soccer_anger_pressure_cap_forces_difficulty_when_llm_omits_control():
     assert adjusted["control"]["difficulty"] == "lv4"
     assert adjusted["control"]["reason"] == "狂怒压制已到体力上限，改为降强度继续处理情绪"
     assert adjusted["anger_pressure_cap"]["adjusted"] is True
+
+
+@pytest.mark.unit
+def test_soccer_anger_pressure_cap_reason_uses_requested_locale():
+    state = {
+        "preGameContext": {
+            "gameStance": "punishing",
+            "nekoEmotion": "angry",
+            "initialMood": "angry",
+        },
+    }
+    event = {
+        "score": {"player": 4, "ai": 26},
+        "scoreDiff": 22,
+        "difficulty": "max",
+        "mood": "angry",
+        "requestControlReason": True,
+    }
+
+    cap = game_router._build_soccer_anger_pressure_cap(event, state, language="en")
+    adjusted = game_router._apply_soccer_anger_pressure_cap(
+        {"line": "Fine.", "control": {}},
+        {**event, "angerPressureCap": cap},
+    )
+
+    assert "stamina cap" in cap["reason"]
+    assert adjusted["control"]["reason"] == cap["reason"]
 
 
 @pytest.mark.unit

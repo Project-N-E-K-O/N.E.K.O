@@ -675,6 +675,15 @@ SOCCER_ANGER_PRESSURE_CAP_MESSAGES = {
 }
 
 
+SOCCER_ANGER_PRESSURE_CAP_REASONS = {
+    "zh": "狂怒压制已到体力上限，改为降强度继续处理情绪",
+    "en": "Rage pressure reached the stamina cap, lowering intensity while continuing the emotional turn",
+    "ja": "強い圧制が体力上限に達したため、強度を下げて感情の流れを続ける",
+    "ko": "강한 압박이 체력 상한에 도달해 강도를 낮추고 감정 흐름을 이어감",
+    "ru": "Яростное давление достигло предела выносливости, интенсивность снижена с продолжением эмоционального поворота",
+}
+
+
 def get_soccer_system_prompt(lang: str | None = None) -> str:
     return _localized_template(SOCCER_SYSTEM_PROMPTS, lang)
 
@@ -698,3 +707,7 @@ def get_soccer_pregame_context_formatter_labels(lang: str | None = None) -> dict
 
 def get_soccer_anger_pressure_cap_message(lang: str | None = None) -> str:
     return _localized_template(SOCCER_ANGER_PRESSURE_CAP_MESSAGES, lang)
+
+
+def get_soccer_anger_pressure_cap_reason(lang: str | None = None) -> str:
+    return _localized_template(SOCCER_ANGER_PRESSURE_CAP_REASONS, lang)
