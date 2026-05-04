@@ -1369,13 +1369,21 @@ class ConfigManager:
 
         for source_path in source_files:
             target_path = self.card_faces_dir / source_path.name
-            if target_path.exists():
-                continue
-            try:
-                shutil.copy2(source_path, target_path)
-                self._log(f"[ConfigManager] Migrated default card face: {source_path.name}")
-            except Exception as e:
-                self._log(f"Warning: Failed to migrate default card face {source_path.name}: {e}")
+            if not target_path.exists():
+                try:
+                    shutil.copy2(source_path, target_path)
+                    self._log(f"[ConfigManager] Migrated default card face: {source_path.name}")
+                except Exception as e:
+                    self._log(f"Warning: Failed to migrate default card face {source_path.name}: {e}")
+
+            source_meta_path = source_path.with_suffix(".json")
+            target_meta_path = self.card_face_meta_path(source_path.stem)
+            if source_meta_path.exists() and not target_meta_path.exists():
+                try:
+                    shutil.copy2(source_meta_path, target_meta_path)
+                    self._log(f"[ConfigManager] Migrated default card face meta: {source_meta_path.name}")
+                except Exception as e:
+                    self._log(f"Warning: Failed to migrate default card face meta {source_meta_path.name}: {e}")
 
     def card_face_meta_path(self, name: str):
         """返回猫娘卡面元数据 sidecar 文件路径（card_faces/{name}.json）。

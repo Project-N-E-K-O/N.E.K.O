@@ -1897,7 +1897,7 @@
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
         "saveMasterSuccess": "儲存主人設定成功",
         "editCardFace": "編輯卡面",
-        "cardFaceModelSettings": "模型設定",
+        "cardFaceModelSettings": "卡面模型設定",
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {

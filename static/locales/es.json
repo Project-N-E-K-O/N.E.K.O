@@ -1897,7 +1897,7 @@
         "cardAuthorUpdateFailed": "Error al actualizar el autor: {{error}}",
         "saveMasterSuccess": "Perfil de maestro guardado correctamente",
         "editCardFace": "Editar cara de la tarjeta",
-        "cardFaceModelSettings": "Configuración del modelo",
+        "cardFaceModelSettings": "Ajustes del modelo de tarjeta",
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {

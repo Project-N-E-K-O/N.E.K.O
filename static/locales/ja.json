@@ -1897,7 +1897,7 @@
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
         "saveMasterSuccess": "マスタープロフィールを保存しました",
         "editCardFace": "カードフェイスを編集",
-        "cardFaceModelSettings": "モデル設定",
+        "cardFaceModelSettings": "カードモデル設定",
         "cardMakerPopupBlocked": "カード作成ページを自動的に開けませんでした。ブラウザのポップアップを許可して再試行するか、カードエリアをクリックして手動で開いてください。"
     },
     "app": {

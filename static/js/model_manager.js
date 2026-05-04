@@ -602,9 +602,21 @@ function modelSelectionChanged(before, after) {
 window._modelManagerHasSaved = false;
 window._modelManagerLanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || '';
 window._modelManagerModelChangedSinceSave = false;
+window._suppressModelManagerChange = false;
 
 function markModelChangedForCardFacePrompt() {
+    if (window._suppressModelManagerChange) return;
     window._modelManagerModelChangedSinceSave = true;
+}
+
+async function suppressModelManagerChange(fn) {
+    const previous = window._suppressModelManagerChange;
+    window._suppressModelManagerChange = true;
+    try {
+        return await fn();
+    } finally {
+        window._suppressModelManagerChange = previous;
+    }
 }
 
 function modelManagerText(key, fallback, params = {}) {
@@ -888,23 +900,41 @@ async function offerCardFaceAfterModelSave(state = {}) {
         const lanlanName = await resolveModelManagerLanlanName();
         if (!lanlanName) return;
 
-        const editCardFace = await showConfirm(
-            modelManagerText('modelManager.editCardFaceAfterModelSaveMessage', '模型设置已保存。是否要现在编辑卡面？'),
-            modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
-            {
-                okText: modelManagerText('modelManager.editCardFaceNow', '编辑卡面'),
-                cancelText: modelManagerText('modelManager.createDefaultCardFace', '生成默认卡面')
-            }
-        );
+        const cardFaceChoice = await showDecisionPrompt({
+            title: modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
+            message: modelManagerText('modelManager.editCardFaceAfterModelSaveMessage', '模型设置已保存。是否要现在编辑卡面？'),
+            buttons: [
+                {
+                    value: 'edit',
+                    text: modelManagerText('modelManager.editCardFaceNow', '编辑卡面'),
+                    variant: 'primary'
+                },
+                {
+                    value: 'default',
+                    text: modelManagerText('modelManager.createDefaultCardFace', '生成默认卡面'),
+                    variant: 'secondary'
+                },
+                {
+                    value: 'dismiss',
+                    text: modelManagerText('common.cancel', '取消'),
+                    variant: 'secondary'
+                }
+            ],
+            dismissValue: 'dismiss'
+        });
 
-        if (editCardFace) {
+        if (cardFaceChoice === 'dismiss') {
+            return;
+        }
+
+        if (cardFaceChoice === 'edit') {
             const makerWindow = openCardMakerFromModelManager(lanlanName);
             if (!makerWindow) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
                 return;
             }
-        } else {
+        } else if (cardFaceChoice === 'default') {
             try {
                 await generateDefaultCardFaceFromModelManager(lanlanName, state);
             } catch (error) {
@@ -914,6 +944,8 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 );
                 return;
             }
+        } else {
+            return;
         }
 
         window.hasUnsavedChanges = false;
@@ -7275,7 +7307,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const shouldOfferCardFace = modelSavedAtLeastPartially
+            const modelFullySaved = positionSuccess && modelStatus === 'ok';
+            const shouldOfferCardFace = modelFullySaved
                 && (
                     window._modelManagerModelChangedSinceSave
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
@@ -9016,7 +9049,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 所有事件监听器已注册，现在可以安全地加载当前角色模型
     // 这样 VRM 的 change 事件处理程序才能正确执行
     try {
-        await loadCurrentCharacterModel();
+        await suppressModelManagerChange(() => loadCurrentCharacterModel());
     } catch (loadError) {
         console.error('[模型管理] 加载当前角色模型失败:', loadError);
         showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

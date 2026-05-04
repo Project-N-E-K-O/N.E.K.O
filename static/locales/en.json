@@ -1897,7 +1897,7 @@
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
         "editCardFace": "Edit Card Face",
-        "cardFaceModelSettings": "Model Settings",
+        "cardFaceModelSettings": "Card Model Settings",
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {

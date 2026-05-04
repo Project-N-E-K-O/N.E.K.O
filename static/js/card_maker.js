@@ -128,7 +128,9 @@
         resetBtn.addEventListener('click', resetComposition);
         refreshBtn.addEventListener('click', () => refreshPreview());
         exportFullBtn.addEventListener('click', () => {
-            if (isMakerMode) { doSaveCardFace(); }
+            if (isMakerMode) {
+                doSaveCardFace().catch(() => {});
+            }
             else { doExport('full'); }
         });
         backBtn.addEventListener('click', () => {
@@ -709,6 +711,7 @@
             if (respJson.partial_success) {
                 exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
                 exportFullBtn.disabled = false;
+                notifyCardFaceUpdated(currentCharaName);
                 return;
             }
 
@@ -730,9 +733,7 @@
             }
             exportFullBtn.disabled = false;
             exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
-            if (options.closeAfterSave) {
-                setTimeout(() => window.close(), 800);
-            }
+            throw e;
         }
     }
 
@@ -753,9 +754,6 @@
             console.error('[CardMaker] 自动生成默认卡面失败:', e);
             exportFullBtn.disabled = false;
             exportFullBtn.textContent = t('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败');
-            if (closeAfterAutoSave) {
-                setTimeout(() => window.close(), 1000);
-            }
         }
     }
 
