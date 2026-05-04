@@ -4034,14 +4034,15 @@ async def _route_external_transcript_to_game(
         # request_ids and both deliver.
         #
         # Fallback for callers that don't send request_id (legacy paths /
-        # unit-test scaffolding): synthesize a "text+1s-bucket" key so
-        # tight retransmits of the exact same line collapse, while a
-        # genuine repeat 1s+ later still delivers.
+        # unit-test scaffolding): key on text alone and gate by the time
+        # since last-seen so tight retransmits collapse but a genuine
+        # repeat 1s+ later still delivers. (An earlier "text:int(ts)"
+        # bucketing missed cross-second close pairs like 0.95s → 1.05s.)
         seen_ids = state.get("_external_voice_seen_request_ids")
         if not isinstance(seen_ids, OrderedDict):
             seen_ids = OrderedDict()
             state["_external_voice_seen_request_ids"] = seen_ids
-        # Evict expired entries (TTL) and cap (LRU) before testing.
+        # 1. Prune expired entries (TTL) — opportunistic cleanup, always safe.
         ttl_cutoff = now - _EXTERNAL_VOICE_DEDUP_TTL_SECONDS
         while seen_ids:
             oldest_id = next(iter(seen_ids))
@@ -4049,18 +4050,29 @@ async def _route_external_transcript_to_game(
                 seen_ids.pop(oldest_id, None)
                 continue
             break
-        while len(seen_ids) >= _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES:
-            seen_ids.popitem(last=False)
+        # 2. Decide if the incoming key is a duplicate BEFORE touching the
+        #    LRU cap — otherwise an existing-but-oldest entry could be
+        #    LRU-evicted in step 3 right before its retry, breaking
+        #    request-id idempotency at 64+ unique-id high throughput.
         current_request_id = str(request_id or "")
-        idempotency_key = current_request_id or f"__no_id__:{text}:{int(now)}"
-        if idempotency_key in seen_ids:
+        idempotency_key = current_request_id or f"__no_id__:{text}"
+        last_seen_at = seen_ids.get(idempotency_key)
+        is_duplicate = last_seen_at is not None and (
+            bool(current_request_id)
+            # no request_id → 1s window
+            or (now - last_seen_at) < 1.0
+        )
+        if is_duplicate:
             logger.info(
                 "🎮 游戏语音转写去重: lanlan=%s key=%s text=%s",
                 lanlan_name, idempotency_key, text[:40],
             )
             return True
+        # 3. Inserting a new key (or a no_id repeat past 1s window) — only
+        #    now enforce the LRU cap.
+        while len(seen_ids) >= _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES:
+            seen_ids.popitem(last=False)
         seen_ids[idempotency_key] = now
-        # Touch order so the most-recent key sits at the LRU tail.
         seen_ids.move_to_end(idempotency_key)
 
     mgr = get_session_manager().get(lanlan_name)

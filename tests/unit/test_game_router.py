@@ -1371,7 +1371,7 @@ async def test_route_external_voice_transcript_dedup_idempotent_on_request_id(mo
     """
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_router._activate_game_route("soccer", "match_1", "Lan")
 
     chat_calls = []
 
@@ -1411,7 +1411,7 @@ async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
     deliver again (it isn't "stuck" in the dedup set forever)."""
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+    game_router._activate_game_route("soccer", "match_1", "Lan")
 
     async def fake_run_game_chat(game_type, session_id, event):
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
@@ -1435,6 +1435,87 @@ async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
     assert h1 is True and h2 is True and h3 is True
     # voice-x at base and at base+60.1s both deliver (TTL=30s evicted the
     # first entry by then); the in-window retry at base+0.1s is squashed.
+    assert len(mgr.mirrored) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_membership_check_before_lru_cap(
+    monkeypatch,
+):
+    """If the LRU cap is enforced BEFORE the membership check, the
+    oldest still-in-window entry can be evicted right before its retry
+    arrives — breaking request-id idempotency at >=64 unique-id high
+    throughput. Verify membership is checked first."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    # Lower the cap for the test so we don't have to spin 64 unique ids.
+    monkeypatch.setattr(game_router, "_EXTERNAL_VOICE_DEDUP_MAX_ENTRIES", 4)
+
+    # Fill the dedup set to capacity with 4 distinct request_ids; the
+    # very first one (voice-1) is the oldest entry.
+    for i in range(1, 5):
+        await game_router.route_external_voice_transcript(
+            "Lan", "上场", request_id=f"voice-{i}",
+            game_type="soccer", session_id="match_1",
+        )
+    assert len(mgr.mirrored) == 4
+
+    # Now retry voice-1. It IS in the dedup set; the LRU cap (4) IS
+    # already at the limit. If the cap is enforced before the membership
+    # check, voice-1 (the oldest) is evicted, then idempotency_key not in
+    # seen_ids → deliver again. The fix: check membership first.
+    handled_retry = await game_router.route_external_voice_transcript(
+        "Lan", "上场", request_id="voice-1",
+        game_type="soccer", session_id="match_1",
+    )
+    assert handled_retry is True
+    assert len(mgr.mirrored) == 4, "voice-1 retry must be squashed even when cap is full"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_no_request_id_fallback_window(
+    monkeypatch,
+):
+    """The no-request_id fallback uses a wall-clock 1.0s window (not an
+    int(now)-second bucket), so close pairs that straddle a second
+    boundary like 0.95s → 1.05s are correctly squashed."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    fake_now = {"t": 1000.95}
+    monkeypatch.setattr(game_router.time, "time", lambda: fake_now["t"])
+
+    h1 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] = 1001.05  # crossed second boundary, but only +0.10s
+    h2 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] = 1002.10  # +1.05s from first → outside 1.0s window
+    h3 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id=None,
+        game_type="soccer", session_id="match_1",
+    )
+    assert h1 is True and h2 is True and h3 is True
+    # h1 delivered, h2 squashed (within 1s), h3 delivered (outside 1s)
     assert len(mgr.mirrored) == 2
 
 
