@@ -4129,7 +4129,7 @@ class LLMSessionManager:
                         suffix_len = len(appended_snapshot)
                         if suffix_len <= len(history) and history[-suffix_len:] == appended_snapshot:
                             del history[-suffix_len:]
-                if delivered:
+                if delivered and not interrupted:
                     try:
                         await remove_pending(config_manager, self.lanlan_name)
                     except Exception as exc:
