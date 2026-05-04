@@ -17,6 +17,7 @@ finalize, archive, organizer). This module only holds:
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 
@@ -41,6 +42,38 @@ _game_route_states: Dict[_RouteStateKey, dict] = {}
 
 def _route_state_key(lanlan_name: str, game_type: str) -> _RouteStateKey:
     return (str(lanlan_name or ""), str(game_type or ""))
+
+
+# Per-(lanlan_name, game_type) ``asyncio.Lock`` registry.
+#
+# Used by ``main_routers/game_router`` to serialize lifecycle transitions
+# (``/route/start`` finalize of any prior route, heartbeat-timeout sweep
+# finalize, character-switch finalize) against in-flight chat work for the
+# same route slot. Same key domain as ``_game_route_states`` so the
+# supersede invariant stays self-consistent — there is exactly one lock
+# per ``(lanlan, game_type)`` slot in this process, regardless of
+# session_id churn. We deliberately keep entries around even after the
+# state slot is popped: a fresh ``/route/start`` racing against the tail of
+# a sweep finalize must serialize against that same instance, and the
+# memory cost is negligible (one ``asyncio.Lock`` per character × game).
+_route_state_locks: Dict[_RouteStateKey, "asyncio.Lock"] = {}
+
+
+def _get_route_lock(lanlan_name: str, game_type: str) -> "asyncio.Lock":
+    """Return (and lazily create) the ``asyncio.Lock`` for ``(lanlan, game_type)``.
+
+    The dict insert + read happen entirely synchronously without ``await``,
+    so two coroutines racing into this helper on the same loop cannot both
+    create a fresh ``Lock`` — the first one to land at ``setdefault`` wins
+    and the second one observes the same instance. Cross-loop correctness
+    is irrelevant here: in production the FastAPI app loop is the only
+    consumer, and unit tests construct an isolated loop per test.
+    """
+    key = _route_state_key(lanlan_name, game_type)
+    lock = _route_state_locks.get(key)
+    if lock is None:
+        lock = _route_state_locks.setdefault(key, asyncio.Lock())
+    return lock
 
 
 def _get_active_game_route_state(
