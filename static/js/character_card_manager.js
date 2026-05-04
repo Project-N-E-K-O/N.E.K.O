@@ -3074,6 +3074,10 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
     if (!popup) {
         if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
+        // 弹窗被拦截：回滚本次/此前已创建的临时角色，避免用户直接刷新/关页时残留空记录
+        if (form && form._autoCreated) {
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedName);
+        }
         return;
     }
 
@@ -4117,6 +4121,7 @@ function openCatgirlPanel(card, originEl) {
 
     // 监听角色卡制作页面的保存消息
     const onCardFaceMessage = (event) => {
+        if (event.origin !== window.location.origin) return;
         // 获取当前实际的档案名（新建猫娘时 name 为 null，需要从表单读取）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
         const currentName = form?.querySelector('[name="档案名"]')?.value || name;
