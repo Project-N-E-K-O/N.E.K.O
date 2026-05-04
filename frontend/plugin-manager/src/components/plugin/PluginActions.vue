@@ -118,7 +118,11 @@ async function handleOpenUi() {
   // 而不是无条件回退到默认的 `/plugins/{id}?tab=ui` 静态详情页。
   const action = uiAction.value
   const target = action.target?.trim() || ''
-  const openInNewTab = action.open_in === 'new_tab'
+  // open_in 缺省时统一默认 new_tab，与 usePluginListContextActions.ts:366
+  // 的 list-action executor convention 对齐（`open_in === 'same_tab' ? '_self'
+  // : '_blank'`）。否则同一个 plugin manager 里 Open UI 按钮和右键菜单
+  // action 行为分叉，用户体验不一致。
+  const openInNewTab = action.open_in !== 'same_tab'
 
   // 1) 显式外部 URL：按 open_in 在新 tab 或当前页跳转
   if (target && /^https?:\/\//i.test(target)) {
