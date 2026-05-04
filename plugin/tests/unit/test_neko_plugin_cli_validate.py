@@ -35,7 +35,26 @@ def _make_plugin(root: Path, plugin_id: str = "valid_demo") -> Path:
         ),
         encoding="utf-8",
     )
-    (plugin_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin",
+                "",
+                "",
+                "@neko_plugin",
+                "class ValidDemoPlugin(NekoPluginBase):",
+                '    @lifecycle(id="startup")',
+                "    def startup(self, **_):",
+                "        pass",
+                "",
+                '    @lifecycle(id="shutdown")',
+                "    def shutdown(self, **_):",
+                "        pass",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (plugin_dir / "README.md").write_text("# Valid Demo\n", encoding="utf-8")
     tests_dir = plugin_dir / "tests"
     tests_dir.mkdir()
@@ -88,6 +107,87 @@ def test_validate_reports_invalid_json(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "invalid JSON" in captured.err
+
+
+def test_validate_reports_missing_entry_class(tmp_path: Path, capsys) -> None:
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = _make_plugin(plugins_root, "missing_entry_class")
+    (plugin_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    exit_code = main(["validate", "missing_entry_class", "--plugins-root", str(plugins_root), "--strict"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "plugin.entry class 'ValidDemoPlugin' was not found" in captured.err
+
+
+def test_validate_reports_entry_class_without_neko_plugin_decorator(tmp_path: Path, capsys) -> None:
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = _make_plugin(plugins_root, "missing_neko_plugin")
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from plugin.sdk.plugin import NekoPluginBase, lifecycle",
+                "",
+                "",
+                "class ValidDemoPlugin(NekoPluginBase):",
+                '    @lifecycle(id="startup")',
+                "    def startup(self, **_):",
+                "        pass",
+                "",
+                '    @lifecycle(id="shutdown")',
+                "    def shutdown(self, **_):",
+                "        pass",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "missing_neko_plugin", "--plugins-root", str(plugins_root), "--strict"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "must be decorated with @neko_plugin" in captured.err
+
+
+def test_validate_reports_decorator_rule_violations(tmp_path: Path, capsys) -> None:
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = _make_plugin(plugins_root, "bad_decorators")
+    (plugin_dir / "bad.py").write_text(
+        "\n".join(
+            [
+                "from plugin.sdk.plugin import lifecycle, plugin_entry, timer_interval",
+                "",
+                "",
+                '@plugin_entry(id="dup")',
+                "def first(**_):",
+                "    pass",
+                "",
+                '@plugin_entry(id="dup")',
+                "def second(**_):",
+                "    pass",
+                "",
+                '@lifecycle(id="boot")',
+                "def bad_lifecycle(**_):",
+                "    pass",
+                "",
+                '@timer_interval(id="tick", seconds=0)',
+                "def bad_timer(**_):",
+                "    pass",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", "bad_decorators", "--plugins-root", str(plugins_root), "--strict"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "duplicate @plugin_entry id 'dup'" in captured.out
+    assert "@lifecycle id 'boot'" in captured.err
+    assert "seconds > 0" in captured.err
 
 
 def test_validate_pack_runs_package_roundtrip(tmp_path: Path) -> None:

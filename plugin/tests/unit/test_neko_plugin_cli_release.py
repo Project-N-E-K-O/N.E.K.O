@@ -37,7 +37,26 @@ def _make_release_ready_plugin(root: Path, plugin_id: str = "release_demo") -> P
         ),
         encoding="utf-8",
     )
-    (plugin_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin",
+                "",
+                "",
+                "@neko_plugin",
+                f"class {class_name}(NekoPluginBase):",
+                '    @lifecycle(id="startup")',
+                "    def startup(self, **_):",
+                "        pass",
+                "",
+                '    @lifecycle(id="shutdown")',
+                "    def shutdown(self, **_):",
+                "        pass",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (plugin_dir / "README.md").write_text("# Release Demo\n", encoding="utf-8")
     tests_dir = plugin_dir / "tests"
     tests_dir.mkdir()
