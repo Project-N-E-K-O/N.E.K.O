@@ -1190,7 +1190,7 @@ class OmniRealtimeClient:
         """Send audio data to Gemini Live API."""
         if not self._gemini_session:
             return
-        
+
         try:
             # 发送实时音频输入
             await self._gemini_session.send_realtime_input(
@@ -1201,6 +1201,47 @@ class OmniRealtimeClient:
             logger.error(f"Error sending audio to Gemini: {e}")
             if "closed" in str(e).lower():
                 self._fatal_error_occurred = True
+
+    async def signal_user_activity_end(self) -> None:
+        """Explicitly signal end-of-turn in MANUAL VAD mode.
+
+        With ``TurnDetectionMode.MANUAL`` the server-side VAD is
+        disabled, so the client owns turn boundaries and must emit a
+        provider-specific signal when the user stops speaking. Without
+        this, the model will never see a turn boundary and never
+        respond.
+
+        Per provider (MANUAL only — no-op in SERVER_VAD):
+        - Gemini Live: ``send_realtime_input(activity_end=ActivityEnd())``
+          (Google genai SDK ``LiveClientRealtimeInput`` docs:
+          "If automatic voice detection is disabled, the client must
+          send activity signals." ``audio_stream_end`` is NOT applicable
+          here — it's documented as "only when automatic activity
+          detection is enabled".)
+        - OpenAI / Qwen / GLM / Step / Free: ``input_audio_buffer.commit``
+          followed by ``response.create``.
+        """
+        if self.turn_detection_mode != TurnDetectionMode.MANUAL:
+            return
+        if self._fatal_error_occurred:
+            return
+        if self._is_gemini:
+            if not self._gemini_session:
+                return
+            if types is None:
+                logger.error("signal_user_activity_end: genai.types unavailable")
+                return
+            try:
+                await self._gemini_session.send_realtime_input(
+                    activity_end=types.ActivityEnd()
+                )
+            except Exception as e:
+                logger.error(f"Error sending activity_end to Gemini: {e}")
+                if "closed" in str(e).lower():
+                    self._fatal_error_occurred = True
+            return
+        await self.send_event({"type": "input_audio_buffer.commit"})
+        await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
         """Use VISION_MODEL to analyze image and return description."""

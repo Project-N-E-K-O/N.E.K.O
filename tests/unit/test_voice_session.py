@@ -365,6 +365,169 @@ async def test_connect_gemini_manual_vad_disables_automatic_activity_detection()
 
 
 # ──────────────────────────────────────────────────────────────────────
+# signal_user_activity_end() — MANUAL turn-end emission
+# ──────────────────────────────────────────────────────────────────────
+#
+# Codex PR #1128 r3182348361: with automatic_activity_detection.disabled=
+# True, end-of-turn becomes the client's responsibility. The Gemini
+# branch had no emission path — only raw audio chunks via
+# send_realtime_input(audio=...) — so manual sessions left the model
+# without a turn boundary.
+#
+# Authoritative source for the wire format (google-genai SDK
+# LiveClientRealtimeInput docs, types.py):
+#
+#   automatic_activity_detection: "If not set, automatic activity
+#   detection is enabled by default. If automatic voice detection is
+#   disabled, the client must send activity signals."
+#
+#   activity_end (ActivityEnd): "Marks the end of user activity. This
+#   can only be sent if automatic (i.e. server-side) activity detection
+#   is disabled."
+#
+#   audio_stream_end: "Indicates that the audio stream has ended ...
+#   This should only be sent when automatic activity detection is
+#   enabled (which is the default)." — therefore NOT applicable in our
+#   MANUAL path.
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_gemini_manual_sends_activity_end():
+    """Gemini MANUAL: signal_user_activity_end() must emit activity_end
+    via send_realtime_input(activity_end=ActivityEnd()) — without it,
+    the model never sees a turn boundary and never responds to spoken
+    input.
+    """
+    pytest.importorskip("google.genai")
+    from google.genai import types as genai_types
+
+    client = _make_manual_client(
+        model="gemini-2.0-flash-exp",
+        base_url="https://generativelanguage.googleapis.com",
+        api_type="gemini",
+    )
+
+    fake_session = AsyncMock()
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+    fake_genai_client = MagicMock()
+    fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
+
+    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+        mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
+        await client.connect(instructions="hi", native_audio=True)
+
+    # Reset call tracking after connect; we only care about the
+    # signal_user_activity_end emission, not connect-time setup calls.
+    fake_session.send_realtime_input.reset_mock()
+
+    await client.signal_user_activity_end()
+
+    assert fake_session.send_realtime_input.await_count == 1, (
+        "MANUAL Gemini must emit exactly one activity_end signal"
+    )
+    call_kwargs = fake_session.send_realtime_input.await_args.kwargs
+    assert "activity_end" in call_kwargs, (
+        f"Expected kw 'activity_end' in send_realtime_input call, got {call_kwargs!r}. "
+        f"Per SDK docs (LiveClientRealtimeInput.activity_end), this is the "
+        f"canonical signal when automatic_activity_detection.disabled=True. "
+        f"audio_stream_end is NOT applicable — it's documented as "
+        f"'only when automatic activity detection is enabled'."
+    )
+    assert isinstance(call_kwargs["activity_end"], genai_types.ActivityEnd)
+    # No other kwargs — the SDK requires exactly one arg per call.
+    assert set(call_kwargs.keys()) == {"activity_end"}
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_gemini_server_vad_is_noop():
+    """Gemini SERVER_VAD: signal_user_activity_end() must NOT emit
+    anything — server-side AAD owns turn detection in this mode, and
+    sending activity_end while AAD is enabled is rejected by the API.
+    """
+    pytest.importorskip("google.genai")
+
+    client = OmniRealtimeClient(
+        base_url="https://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.0-flash-exp",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="gemini",
+    )
+
+    fake_session = AsyncMock()
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+    fake_genai_client = MagicMock()
+    fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
+
+    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+        mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
+        await client.connect(instructions="hi", native_audio=True)
+
+    fake_session.send_realtime_input.reset_mock()
+    await client.signal_user_activity_end()
+
+    fake_session.send_realtime_input.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_websocket_manual_sends_commit_and_response_create():
+    """OpenAI/Qwen/GLM/Step path MANUAL: signal_user_activity_end() must
+    emit ``input_audio_buffer.commit`` followed by ``response.create``.
+    Without these, the server holds the buffered audio forever and never
+    runs inference.
+    """
+    client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        try:
+            sent.append(json.loads(payload))
+        except Exception:
+            pass
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=fake_send)
+    client.ws = mock_ws
+
+    await client.signal_user_activity_end()
+
+    types_sent = [e.get("type") for e in sent]
+    assert "input_audio_buffer.commit" in types_sent, (
+        f"MANUAL websocket path must send input_audio_buffer.commit; got {types_sent!r}"
+    )
+    assert "response.create" in types_sent, (
+        f"MANUAL websocket path must send response.create; got {types_sent!r}"
+    )
+    # Ordering: commit before response.create
+    assert types_sent.index("input_audio_buffer.commit") < types_sent.index("response.create")
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_websocket_server_vad_is_noop():
+    """SERVER_VAD path: signal_user_activity_end() is a no-op — the
+    server emits turn-end signals on its own.
+    """
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="qwen-omni-turbo-realtime",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="qwen",
+    )
+    mock_ws = AsyncMock()
+    client.ws = mock_ws
+
+    await client.signal_user_activity_end()
+
+    mock_ws.send.assert_not_awaited()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # VAD SERVER_VAD regression tests — ensure refactor preserved old behaviour
 # ──────────────────────────────────────────────────────────────────────
 
