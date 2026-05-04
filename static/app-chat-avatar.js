@@ -505,13 +505,24 @@
 
     var cropperState = null;
 
-    function openAvatarCropper(sourceDataUrl, defaultCropRect, sourceWidth, sourceHeight) {
+    function measureImageDataUrl(dataUrl) {
         return new Promise(function (resolve) {
+            var tmp = new Image();
+            tmp.onload = function () { resolve({ w: tmp.naturalWidth || 640, h: tmp.naturalHeight || 640 }); };
+            tmp.onerror = function () { resolve({ w: 640, h: 640 }); };
+            tmp.src = dataUrl;
+        });
+    }
+
+    function openAvatarCropper(sourceDataUrl, defaultCropRect, sourceWidth, sourceHeight, options) {
+        return new Promise(function (resolve) {
+            options = options || {};
             var popup = S.dom.chatAvatarPreviewCard;
             var wrap = document.getElementById('avatar-cropper-wrap');
             var img = document.getElementById('avatar-cropper-img');
             var svgMask = document.getElementById('avatar-cropper-mask');
             var cropBox = document.getElementById('avatar-cropper-box');
+            var retakeBtn = document.getElementById('avatar-cropper-retake');
             var cancelBtn = document.getElementById('avatar-cropper-cancel');
             var saveBtn = document.getElementById('avatar-cropper-save');
 
@@ -520,11 +531,18 @@
                 return;
             }
 
+            var currentSourceDataUrl = sourceDataUrl;
+            var currentDefaultCropRect = defaultCropRect;
+            var currentSourceWidth = sourceWidth;
+            var currentSourceHeight = sourceHeight;
+            var currentModelType = options.modelType || getCurrentModelType();
+            var recaptureFn = typeof options.recaptureFn === 'function' ? options.recaptureFn : null;
             var displayW, displayH, scaleRatio;
             var crop = { x: 0, y: 0, size: 0 };
             var MIN_SIZE = 40;
             var settled = false;
             var drag = null;
+            var recapturing = false;
 
             function initLayout() {
                 // 计算可用宽度：需扣除控制面板宽度、弹窗 padding/border
@@ -537,27 +555,27 @@
                 var maxW = Math.min(360, popupContentW - controlsWidth - areaGap);
                 if (maxW < MIN_SIZE) maxW = MIN_SIZE;
                 var maxH = Math.min(360, window.innerHeight - 180);
-                var aspect = sourceWidth / sourceHeight;
+                var aspect = currentSourceWidth / currentSourceHeight;
                 if (aspect >= 1) {
-                    displayW = Math.min(maxW, sourceWidth);
+                    displayW = Math.min(maxW, currentSourceWidth);
                     displayH = Math.round(displayW / aspect);
                     if (displayH > maxH) { displayH = maxH; displayW = Math.round(displayH * aspect); }
                 } else {
-                    displayH = Math.min(maxH, sourceHeight);
+                    displayH = Math.min(maxH, currentSourceHeight);
                     displayW = Math.round(displayH * aspect);
                     if (displayW > maxW) { displayW = maxW; displayH = Math.round(displayW / aspect); }
                 }
-                scaleRatio = sourceWidth / displayW;
+                scaleRatio = currentSourceWidth / displayW;
                 img.style.width = displayW + 'px';
                 img.style.height = displayH + 'px';
                 wrap.style.width = displayW + 'px';
                 wrap.style.height = displayH + 'px';
 
-                if (defaultCropRect) {
-                    var rX = defaultCropRect.x || 0;
-                    var rY = defaultCropRect.y || 0;
-                    var rW = defaultCropRect.width || defaultCropRect.size || 0;
-                    var rH = defaultCropRect.height || defaultCropRect.size || 0;
+                if (currentDefaultCropRect) {
+                    var rX = currentDefaultCropRect.x || 0;
+                    var rY = currentDefaultCropRect.y || 0;
+                    var rW = currentDefaultCropRect.width || currentDefaultCropRect.size || 0;
+                    var rH = currentDefaultCropRect.height || currentDefaultCropRect.size || 0;
                     if (rW > rH) { rX += Math.round((rW - rH) / 2); rW = rH; }
                     else if (rH > rW) { rY += Math.round((rH - rW) / 2); rH = rW; }
                     crop.size = Math.round(rW / scaleRatio);
@@ -570,6 +588,18 @@
                 }
                 clampCrop();
                 renderCrop();
+            }
+
+            function applySource(next) {
+                currentSourceDataUrl = next.sourceDataUrl;
+                currentDefaultCropRect = next.cropRectPixels || null;
+                currentSourceWidth = next.sourceWidth || currentSourceWidth || 640;
+                currentSourceHeight = next.sourceHeight || currentSourceHeight || 640;
+                currentModelType = next.modelType || currentModelType || getCurrentModelType();
+                drag = null;
+                img.src = currentSourceDataUrl;
+                initLayout();
+                positionPopupNearTrigger(popup, activeTrigger);
             }
 
             function clampCrop() {
@@ -654,6 +684,7 @@
                 document.removeEventListener('pointerup', onPointerUp);
                 wrap.removeEventListener('pointerdown', onPointerDown);
                 wrap.removeEventListener('wheel', onWheel);
+                if (retakeBtn) retakeBtn.removeEventListener('click', onRetake);
                 if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
                 if (saveBtn) saveBtn.removeEventListener('click', onSave);
                 if (cropperState && cropperState.controlsEl) {
@@ -669,9 +700,13 @@
                 cleanup();
                 if (accepted) {
                     resolve({
-                        x: Math.round(crop.x * scaleRatio),
-                        y: Math.round(crop.y * scaleRatio),
-                        size: Math.round(crop.size * scaleRatio)
+                        cropRect: {
+                            x: Math.round(crop.x * scaleRatio),
+                            y: Math.round(crop.y * scaleRatio),
+                            size: Math.round(crop.size * scaleRatio)
+                        },
+                        sourceDataUrl: currentSourceDataUrl,
+                        modelType: currentModelType
                     });
                 } else {
                     resolve(null);
@@ -680,6 +715,35 @@
 
             function onCancel() { finish(false); }
             function onSave() { finish(true); }
+
+            async function onRetake() {
+                if (!recaptureFn || recapturing || settled) return;
+                recapturing = true;
+                if (retakeBtn) retakeBtn.disabled = true;
+                if (saveBtn) saveBtn.disabled = true;
+                setPreviewStatus(translateLabel('chat.avatarCropRetaking', '正在重新拍照...'));
+                setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
+                try {
+                    var next = await recaptureFn();
+                    if (settled) return;
+                    if (!next || !next.sourceDataUrl) {
+                        throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                    }
+                    applySource(next);
+                    setPreviewStatus(translateLabel('chat.avatarPreviewCropping', '请调整裁剪区域'));
+                } catch (error) {
+                    if (!settled) {
+                        setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                        setPreviewNote(getErrorMessage(error));
+                    }
+                } finally {
+                    recapturing = false;
+                    if (!settled) {
+                        if (retakeBtn) retakeBtn.disabled = false;
+                        if (saveBtn) saveBtn.disabled = false;
+                    }
+                }
+            }
 
             var MOVE_STEP = 10;
             var SIZE_STEP_RATIO = 0.1;
@@ -725,11 +789,15 @@
 
             var controlsEl = popup.querySelector('.avatar-cropper-controls');
 
-            img.src = sourceDataUrl;
+            img.src = currentSourceDataUrl;
             wrap.addEventListener('pointerdown', onPointerDown);
             wrap.addEventListener('wheel', onWheel, { passive: false });
             document.addEventListener('pointermove', onPointerMove);
             document.addEventListener('pointerup', onPointerUp);
+            if (retakeBtn) {
+                retakeBtn.hidden = !recaptureFn;
+                retakeBtn.addEventListener('click', onRetake);
+            }
             cancelBtn.addEventListener('click', onCancel);
             saveBtn.addEventListener('click', onSave);
             if (controlsEl) controlsEl.addEventListener('click', onCtrlAction);
@@ -834,20 +902,36 @@
                 setLoadingState(false);
                 setPreviewStatus(translateLabel('chat.avatarPreviewCropping', '请调整裁剪区域'));
 
-                var srcDims = await new Promise(function (res) {
-                    var tmp = new Image();
-                    tmp.onload = function () { res({ w: tmp.naturalWidth, h: tmp.naturalHeight }); };
-                    tmp.onerror = function () { res({ w: 640, h: 640 }); };
-                    tmp.src = result.sourceDataUrl;
-                });
+                var srcDims = await measureImageDataUrl(result.sourceDataUrl);
                 var defRect = result.cropRectPixels || null;
 
-                var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h);
+                async function recaptureCropperSource() {
+                    var fresh = await captureAvatarPreview({ includeSourceDataUrl: true });
+                    if (!fresh || !fresh.sourceDataUrl) {
+                        throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                    }
+                    var dims = await measureImageDataUrl(fresh.sourceDataUrl);
+                    return {
+                        sourceDataUrl: fresh.sourceDataUrl,
+                        cropRectPixels: fresh.cropRectPixels || null,
+                        sourceWidth: dims.w,
+                        sourceHeight: dims.h,
+                        modelType: fresh.modelType || getCurrentModelType()
+                    };
+                }
+
+                var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h, {
+                    modelType: result.modelType || getCurrentModelType(),
+                    recaptureFn: recaptureCropperSource
+                });
                 if (token !== activeCaptureToken) return;
 
                 if (userCrop) {
-                    var croppedDataUrl = await cropSourceToAvatar(result.sourceDataUrl, userCrop);
-                    applyPreviewResult({ dataUrl: croppedDataUrl, modelType: result.modelType }, cacheKey);
+                    var croppedDataUrl = await cropSourceToAvatar(userCrop.sourceDataUrl, userCrop.cropRect);
+                    applyPreviewResult(
+                        { dataUrl: croppedDataUrl, modelType: userCrop.modelType || result.modelType },
+                        getCurrentModelCacheKey() || cacheKey
+                    );
                 } else {
                     if (prevCachedPreview) {
                         cachedPreview = prevCachedPreview;

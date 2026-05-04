@@ -659,6 +659,8 @@
         "avatarPreviewFailed": "No se pudo generar avatar",
         "avatarCropperTitle": "Ajustar el área de recorte del avatar",
         "avatarPreviewCropping": "Por favor ajuste el área de recorte",
+        "avatarCropRetake": "Volver a tomar",
+        "avatarCropRetaking": "Volviendo a tomar...",
         "avatarPreviewCropCancelled": "Recorte manual cancelado, manteniendo el avatar original.",
         "avatarCropMoveUp": "Subir",
         "avatarCropMoveDown": "Bajar",

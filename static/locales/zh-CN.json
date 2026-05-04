@@ -659,6 +659,8 @@
         "avatarPreviewFailed": "生成头像失败",
         "avatarCropperTitle": "调整头像裁剪区域",
         "avatarPreviewCropping": "请调整裁剪区域",
+        "avatarCropRetake": "重新拍照",
+        "avatarCropRetaking": "正在重新拍照...",
         "avatarPreviewCropCancelled": "已取消手动裁剪，保持原头像不变。",
         "avatarCropMoveUp": "上移",
         "avatarCropMoveDown": "下移",

@@ -659,6 +659,8 @@
         "avatarPreviewFailed": "Не удалось создать аватар",
         "avatarCropperTitle": "Настройка области обрезки аватара",
         "avatarPreviewCropping": "Настройте область обрезки",
+        "avatarCropRetake": "Снять заново",
+        "avatarCropRetaking": "Повторная съемка...",
         "avatarPreviewCropCancelled": "Ручная обрезка отменена. Аватар остаётся прежним.",
         "avatarCropMoveUp": "Вверх",
         "avatarCropMoveDown": "Вниз",
