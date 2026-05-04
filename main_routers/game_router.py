@@ -2809,6 +2809,8 @@ async def _deliver_postgame_text_bubble(
     mgr: Any,
     archive: dict,
     options: dict,
+    *,
+    postgame_snapshot: Optional[dict] = None,
 ) -> dict:
     if not mgr:
         return {"ok": False, "mode": "text", "action": "skip", "reason": "no_session_manager"}
@@ -2859,6 +2861,7 @@ async def _deliver_postgame_text_bubble(
         # any session built here and close it in the ``finally`` below.
         llm_result = await _run_game_chat(
             game_type, session_id, event, allow_postgame=True,
+            postgame_snapshot=postgame_snapshot,
         )
         if isinstance(llm_result, dict):
             postgame_entry = llm_result.get("_postgame_entry")
@@ -2958,6 +2961,8 @@ async def _deliver_game_postgame(
     lanlan_name: str,
     archive: dict,
     options: dict,
+    *,
+    postgame_snapshot: Optional[dict] = None,
 ) -> dict:
     if not options.get("enabled", True):
         return {"ok": True, "action": "skip", "reason": "disabled"}
@@ -2967,7 +2972,10 @@ async def _deliver_game_postgame(
         return await _deliver_postgame_to_realtime(mgr, archive, options)
     if mode == "realtime":
         return {"ok": False, "mode": "realtime", "action": "skip", "reason": "no_active_realtime_session"}
-    return await _deliver_postgame_text_bubble(game_type, session_id, mgr, archive, options)
+    return await _deliver_postgame_text_bubble(
+        game_type, session_id, mgr, archive, options,
+        postgame_snapshot=postgame_snapshot,
+    )
 
 
 async def _submit_game_archive_to_memory(archive: dict) -> dict:
@@ -3093,6 +3101,24 @@ async def _finalize_game_route_state(
     return await asyncio.shield(task)
 
 
+def _build_postgame_context_snapshot(state: dict) -> dict:
+    # Why: postgame's prompt context must be FROZEN at finalize time.
+    # Without this, ``_build_and_register_game_session`` /
+    # ``_refresh_game_session_instructions`` reverse-resolve live
+    # route_state via ``_find_game_route_state_for_session`` AFTER finalize
+    # has flipped this state inactive — and a fresh ``/route/start`` for
+    # the same ``(lanlan, game_type)`` key REPLACES the entry in
+    # ``_game_route_states``, so the lookup returns the NEW route's
+    # preGameContext / game_context. Snapshotting the two already-resolved
+    # dicts the prompt builder needs (``pre_game_context`` and
+    # ``game_context``) is the minimum-viable freeze.
+    pre_game_context = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else None
+    return {
+        "pre_game_context": pre_game_context,
+        "game_context": _build_game_context_prompt_payload(state),
+    }
+
+
 async def _finalize_game_route_state_inner(
     state: dict,
     *,
@@ -3101,6 +3127,10 @@ async def _finalize_game_route_state_inner(
     state["_exit_flow_started"] = True
     state["exit_reason"] = reason
     state["exit_started_at"] = time.time()
+    # Capture postgame's prompt context BEFORE flipping the route inactive
+    # / before the archive resolution / before any peer ``/route/start``
+    # can replace this state in ``_game_route_states``.
+    postgame_context_snapshot = _build_postgame_context_snapshot(state)
     state["game_route_active"] = False
     state["game_external_voice_route_active"] = False
     state["game_external_text_route_active"] = False
@@ -3173,10 +3203,17 @@ async def _finalize_game_route_state_inner(
         "game_session_closed": session_closed,
         "exit_reason": reason,
         "realtime_restore": realtime_restore,
+        "postgame_context_snapshot": postgame_context_snapshot,
     }
 
 
-async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: str = "") -> dict:
+async def _get_or_create_session(
+    game_type: str,
+    session_id: str,
+    lanlan_name: str = "",
+    *,
+    postgame_snapshot: Optional[dict] = None,
+) -> dict:
     """获取或创建游戏 session.
 
     B6: serialize the cache-miss → ctor → connect → cache-insert sequence
@@ -3227,6 +3264,7 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
         try:
             return await _build_and_register_game_session(
                 canonical_key, game_type, session_id, char_info,
+                postgame_snapshot=postgame_snapshot,
             )
         except BaseException:
             # codex P2 (PR #1127 r3182157092): if the build raises,
@@ -3259,9 +3297,19 @@ async def _build_and_register_game_session(
     game_type: str,
     session_id: str,
     char_info: dict,
+    *,
+    postgame_snapshot: Optional[dict] = None,
 ) -> dict:
     """Build a fresh game session entry; caller must already hold the
-    per-key creation lock (see ``_get_or_create_session``)."""
+    per-key creation lock (see ``_get_or_create_session``).
+
+    ``postgame_snapshot`` (when set) is the authoritative prompt-context
+    source for postgame builds — see ``_build_postgame_context_snapshot``.
+    Without it, a postgame build that races a fresh ``/route/start`` for
+    the same ``(lanlan, game_type, session_id)`` would reverse-resolve
+    live route_state and pick up the NEW route's preGameContext /
+    game_context.
+    """
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.token_tracker import set_call_type
 
@@ -3283,9 +3331,13 @@ async def _build_and_register_game_session(
         master_name=char_info['master_name'],
     )
 
-    route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
-    pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-    game_context = _build_game_context_prompt_payload(route_state)
+    if postgame_snapshot is not None:
+        pre_game_context = postgame_snapshot.get("pre_game_context")
+        game_context = postgame_snapshot.get("game_context")
+    else:
+        route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), lanlan_name)
+        pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
+        game_context = _build_game_context_prompt_payload(route_state)
     system_prompt = _build_game_prompt(
         game_type,
         char_info['lanlan_name'],
@@ -3352,6 +3404,8 @@ async def _refresh_game_session_instructions(
     game_type: str,
     session_id: str,
     lanlan_name: str = "",
+    *,
+    postgame_snapshot: Optional[dict] = None,
 ) -> None:
     session = entry.get("session") if isinstance(entry, dict) else None
     update = getattr(session, "update_session", None)
@@ -3360,9 +3414,13 @@ async def _refresh_game_session_instructions(
 
     lanlan_name = str(lanlan_name or entry.get("lanlan_name") or "").strip()
     char_info = _get_character_info(lanlan_name)
-    route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
-    pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
-    game_context = _build_game_context_prompt_payload(route_state)
+    if postgame_snapshot is not None:
+        pre_game_context = postgame_snapshot.get("pre_game_context")
+        game_context = postgame_snapshot.get("game_context")
+    else:
+        route_state = _find_game_route_state_for_session(game_type, _route_session_id(session_id), char_info["lanlan_name"])
+        pre_game_context = route_state.get("preGameContext") if isinstance(route_state, dict) else None
+        game_context = _build_game_context_prompt_payload(route_state)
     instructions = _build_game_prompt(
         game_type,
         char_info["lanlan_name"],
@@ -3632,6 +3690,11 @@ def _game_session_key(lanlan_name: str, game_type: str, session_id: str) -> str:
 
 
 _POSTGAME_SESSION_MARKER = "::postgame::"
+# Why: ``_make_postgame_session_id`` produces ``<session_id>::postgame::<uuid4.hex>``
+# where ``uuid4().hex`` is exactly 32 lowercase hex chars. ``_route_session_id``
+# strips ONLY this exact synthetic suffix shape so a legitimate client-supplied
+# session_id that happens to contain ``::postgame::`` is left untouched.
+_POSTGAME_UUID_TAIL_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def _make_postgame_session_id(session_id: str) -> str:
@@ -3646,12 +3709,22 @@ def _make_postgame_session_id(session_id: str) -> str:
 
 
 def _route_session_id(session_id: str) -> str:
-    # Why: route_state lookups must always use the user-facing session_id
-    # so postgame still resolves the prior route's preGameContext /
-    # game_context when building / refreshing its system prompt.
+    # Why: this helper is now defensive. The critical postgame paths
+    # (``_build_and_register_game_session`` / ``_refresh_game_session_instructions``)
+    # use a frozen ``postgame_snapshot`` instead of reverse-resolving live
+    # route_state, so the marker no longer needs to round-trip through
+    # ``_find_game_route_state_for_session`` for prompt context. We still
+    # tolerate the synthetic shape elsewhere by stripping ONLY the exact
+    # suffix produced by ``_make_postgame_session_id`` (marker + 32-char
+    # uuid4 hex tail at end of string). A legitimate client session_id
+    # that happens to contain ``::postgame::`` mid-string — or with a
+    # non-uuid tail — is returned unchanged.
     raw = str(session_id or "")
-    idx = raw.find(_POSTGAME_SESSION_MARKER)
+    idx = raw.rfind(_POSTGAME_SESSION_MARKER)
     if idx == -1:
+        return raw
+    tail = raw[idx + len(_POSTGAME_SESSION_MARKER):]
+    if not _POSTGAME_UUID_TAIL_RE.fullmatch(tail):
         return raw
     return raw[:idx]
 
@@ -3748,6 +3821,7 @@ async def _run_game_chat(
     event: Any,
     *,
     allow_postgame: bool = False,
+    postgame_snapshot: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Run A-layer game LLM for both HTTP game events and hijacked external text.
 
@@ -3801,7 +3875,10 @@ async def _run_game_chat(
             return {"line": "", "control": {}, "skipped": "route_inactive"}
 
     try:
-        entry = await _get_or_create_session(game_type, chat_session_id, lanlan_name)
+        entry = await _get_or_create_session(
+            game_type, chat_session_id, lanlan_name,
+            postgame_snapshot=postgame_snapshot if allow_postgame else None,
+        )
     except Exception as e:
         logger.error("🎮 创建游戏 session 失败: %s", e)
         return {"error": f"创建 session 失败: {e}"}
@@ -3865,7 +3942,10 @@ async def _run_game_chat(
 
             session = entry['session']
             reply_chunks = entry['reply_chunks']
-            await _refresh_game_session_instructions(entry, game_type, chat_session_id, lanlan_name)
+            await _refresh_game_session_instructions(
+                entry, game_type, chat_session_id, lanlan_name,
+                postgame_snapshot=postgame_snapshot if allow_postgame else None,
+            )
 
             # 清空上一次的回复
             reply_chunks.clear()
@@ -5006,6 +5086,7 @@ async def _complete_game_end_from_payload(
             lanlan_name,
             archive,
             postgame_options,
+            postgame_snapshot=finalized.get("postgame_context_snapshot"),
         )
         # B5: closing the LLM session is the inner finalize's job (now
         # that ``close_game_session=True`` reliably propagates via

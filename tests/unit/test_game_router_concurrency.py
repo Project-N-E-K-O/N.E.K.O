@@ -2022,3 +2022,213 @@ async def test_close_and_remove_session_identity_gates_pop_after_lock_wait():
         # Cleanup so we leave the registry clean for sibling tests.
         game_router._game_sessions.pop(key, None)
         game_router._game_session_create_locks.pop(key, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
+    """CR Major (PR #1127 r3182963544): postgame must build its prompt
+    from a context snapshot frozen at finalize time — not by reverse-
+    resolving live route_state.
+
+    Pre-fix path: ``_build_and_register_game_session`` and
+    ``_refresh_game_session_instructions`` strip the postgame marker via
+    ``_route_session_id`` and call ``_find_game_route_state_for_session``.
+    If a fresh ``/route/start`` for the same ``(lanlan, game_type)`` key
+    activates DURING postgame's bubble generation, that lookup returns
+    the NEW route's preGameContext / game_context — postgame's prompt
+    is built from the new route's context.
+
+    Post-fix: postgame receives an explicit ``postgame_snapshot`` from
+    finalize. Both helpers prefer the snapshot over the live lookup, so
+    a peer route activation cannot pollute postgame's prompt.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        # OLD route's preGameContext — what postgame should see.
+        old_pre = {"summary": "OLD_PREGAME", "marker": "old"}
+        new_pre = {"summary": "NEW_PREGAME", "marker": "new"}
+
+        # Activate OLD route, then simulate finalize (route_active=False)
+        # AND simulate a fresh /route/start that REPLACED the slot in
+        # ``_game_route_states`` with a NEW state under the same key.
+        # That's the dangerous mid-postgame topology: the OLD state dict
+        # has been kicked out, the lookup returns NEW.
+        old_state = _activate_route("Lan", "soccer", "match_snapshot")
+        old_state["preGameContext"] = old_pre
+        old_state["_exit_flow_started"] = True
+        old_state["game_route_active"] = False
+
+        # Snapshot captured during finalize (frozen on the OLD state).
+        snapshot = game_router._build_postgame_context_snapshot(old_state)
+
+        # Now simulate the racing /route/start: peer activates a new
+        # state at the SAME (lanlan, game_type) key — this REPLACES
+        # ``_game_route_states[key]`` per ``_activate_game_route``.
+        new_state = _activate_route("Lan", "soccer", "match_snapshot")
+        new_state["preGameContext"] = new_pre
+
+        # Sanity: live reverse-lookup now returns the NEW state. This is
+        # the contamination vector the snapshot defends against.
+        assert (
+            game_router._find_game_route_state_for_session(
+                "soccer", "match_snapshot", "Lan",
+            )
+            is new_state
+        )
+
+        captured_pre_contexts: list[Any] = []
+        captured_game_contexts: list[Any] = []
+
+        def _record_prompt(
+            game_type, lanlan, lanlan_prompt, pre_game_context, game_context, language,
+        ):
+            captured_pre_contexts.append(pre_game_context)
+            captured_game_contexts.append(game_context)
+            return "stub_prompt"
+
+        monkeypatch.setattr(game_router, "_build_game_prompt", _record_prompt)
+
+        captured_callback = {"fn": None}
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                captured_callback["fn"] = kwargs.get("on_text_delta")
+
+            async def connect(self, *, instructions: str = ""):
+                pass
+
+            async def close(self):
+                pass
+
+            async def stream_text(self, text: str):
+                cb = captured_callback["fn"]
+                if cb is not None:
+                    await cb("postgame line", True)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+
+        class _StubManager:
+            current_speech_id = "speech-snapshot"
+            state = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        archive = {"lanlan_name": "Lan", "preGameContext": old_pre}
+        options = {"enabled": True}
+
+        result = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_snapshot", _StubManager(), archive, options,
+            postgame_snapshot=snapshot,
+        )
+
+        assert result.get("ok") is True, result
+
+        # Postgame's prompt was built from the OLD route's preGameContext
+        # (frozen at finalize), NOT the NEW route's state that
+        # ``_find_game_route_state_for_session`` would now return.
+        assert captured_pre_contexts, "expected _build_game_prompt to be invoked"
+        for pre in captured_pre_contexts:
+            assert pre == old_pre, (
+                f"postgame prompt was built from live route_state, not the "
+                f"finalize-time snapshot. Got pre_game_context={pre!r}, "
+                f"expected old snapshot={old_pre!r}. The new route's "
+                f"preGameContext={new_pre!r} contaminated postgame."
+            )
+
+        # Negative-control: without a snapshot, the helpers fall back to
+        # the live reverse-lookup and DO pick up the NEW route's context.
+        # This documents the pre-fix bug that the snapshot path closes.
+        captured_pre_contexts.clear()
+        captured_game_contexts.clear()
+        # Clear any cached postgame entry from the previous run before
+        # the negative-control build.
+        for k in list(game_router._game_sessions.keys()):
+            if game_router._POSTGAME_SESSION_MARKER in k:
+                game_router._game_sessions.pop(k, None)
+
+        result_no_snapshot = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_snapshot", _StubManager(), archive, options,
+        )
+        assert result_no_snapshot.get("ok") is True, result_no_snapshot
+        assert captured_pre_contexts, "expected _build_game_prompt to be invoked again"
+        for pre in captured_pre_contexts:
+            assert pre == new_pre, (
+                f"negative-control: without snapshot, expected live lookup "
+                f"to surface NEW route's preGameContext={new_pre!r}, got "
+                f"{pre!r}. If this assertion changes, the snapshot test "
+                f"above is no longer demonstrating the contamination it "
+                f"defends against."
+            )
+
+
+@pytest.mark.unit
+def test_route_session_id_only_strips_synthetic_uuid_tail():
+    """codex P2 (PR #1127 r3182964201): ``_route_session_id`` must strip
+    ONLY the exact suffix shape produced by ``_make_postgame_session_id``
+    (marker + 32-char uuid4 hex tail at end-of-string). A legitimate
+    client session_id that happens to contain ``::postgame::`` mid-string
+    or with a non-uuid tail must be returned unchanged.
+    """
+    # 1) Synthetic id from the helper round-trips back to the original.
+    synthetic = game_router._make_postgame_session_id("real-session-42")
+    assert game_router._route_session_id(synthetic) == "real-session-42"
+
+    # 2) Bare client id with no marker is unchanged.
+    assert game_router._route_session_id("client::regular::id") == "client::regular::id"
+
+    # 3) Client id literally containing ``::postgame::`` but no uuid tail
+    # must NOT be truncated. Pre-fix: any occurrence triggered strip.
+    # Each of these is a legitimate client id whose meaning would change
+    # if silently rewritten.
+    benign_inputs = [
+        "client::postgame::data",                            # word tail
+        "client::postgame::",                                # empty tail
+        "client::postgame::12345",                           # short tail
+        "client::postgame::" + "g" * 32,                     # non-hex tail
+        "client::postgame::" + "0" * 31,                     # 31 chars (off by one)
+        "client::postgame::" + "0" * 33,                     # 33 chars
+        "client::postgame::deadbeef::extra",                 # extra suffix after fake tail
+        "client::postgame::" + "0" * 32 + "x",               # 32 hex + extra
+    ]
+    for raw in benign_inputs:
+        assert game_router._route_session_id(raw) == raw, (
+            f"_route_session_id must NOT strip benign input {raw!r}"
+        )
+
+    # 4) Empty / falsy inputs.
+    assert game_router._route_session_id("") == ""
+    assert game_router._route_session_id(None) == ""
+
+    # 5) An id with the marker MID-string AND a real synthetic suffix at
+    # the end strips only the suffix, preserving the mid-string marker.
+    base = "weird::postgame::client"
+    synth = game_router._make_postgame_session_id(base)
+    # synth = ``weird::postgame::client::postgame::<uuid_hex>`` — only the
+    # final suffix shape matches; the inner ``::postgame::client`` stays.
+    assert game_router._route_session_id(synth) == base
