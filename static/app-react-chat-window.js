@@ -1529,7 +1529,7 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off.png';
+            icon.src = '/static/icons/expand_icon_off_ball.png';
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -1786,7 +1786,7 @@
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off.png';
+            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
         }
     }
 
@@ -2369,7 +2369,7 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off.png';
+                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
             });
         }
 
