@@ -2838,6 +2838,12 @@ async def _deliver_postgame_text_bubble(
 
     proactive_sid = getattr(mgr, "current_speech_id", None)
     state_machine = getattr(mgr, "state", None)
+    # Why: pre-allocated out-dict captures the postgame entry/cache key
+    # AS SOON AS ``_run_game_chat`` builds the entry, so the ``finally``
+    # below can close it on EVERY termination path — including
+    # ``asyncio.CancelledError`` (which is ``BaseException`` and bypasses
+    # the structured error-result paths inside ``_run_game_chat``).
+    postgame_meta: Dict[str, Any] = {}
     postgame_entry: Optional[dict] = None
     postgame_cache_session_id: Optional[str] = None
     try:
@@ -2862,6 +2868,7 @@ async def _deliver_postgame_text_bubble(
         llm_result = await _run_game_chat(
             game_type, session_id, event, allow_postgame=True,
             postgame_snapshot=postgame_snapshot,
+            postgame_meta_out=postgame_meta,
         )
         if isinstance(llm_result, dict):
             postgame_entry = llm_result.get("_postgame_entry")
@@ -2928,6 +2935,14 @@ async def _deliver_postgame_text_bubble(
         # entry's session object so the postgame client can never leak.
         # ``OmniOfflineClient.close`` is idempotent, so a peer's prior
         # close is safe to re-run.
+        if postgame_entry is None:
+            # Why: on ``asyncio.CancelledError`` (or any other
+            # ``BaseException``) the await above never returned, so the
+            # local ``postgame_entry``/``postgame_cache_session_id`` are
+            # still ``None``. The out-dict ``_run_game_chat`` populated
+            # mid-call still has the entry, so we fall back to it here.
+            postgame_entry = postgame_meta.get("_postgame_entry")
+            postgame_cache_session_id = postgame_meta.get("_postgame_cache_session_id")
         if postgame_entry is not None:
             postgame_lanlan = str(
                 postgame_entry.get("lanlan_name") or archive.get("lanlan_name") or ""
@@ -3822,6 +3837,7 @@ async def _run_game_chat(
     *,
     allow_postgame: bool = False,
     postgame_snapshot: Optional[dict] = None,
+    postgame_meta_out: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run A-layer game LLM for both HTTP game events and hijacked external text.
 
@@ -3885,6 +3901,18 @@ async def _run_game_chat(
 
     # Re-resolve canonical lanlan_name for state lookups.
     lanlan_name = str(entry.get("lanlan_name") or lanlan_name or "").strip()
+
+    # Why: caller's ``finally`` (``_deliver_postgame_text_bubble``) needs
+    # to reach this entry even if the awaits below raise
+    # ``asyncio.CancelledError`` — which is ``BaseException``, not
+    # ``Exception``, so it bypasses the structured error-result paths
+    # that attach ``_postgame_entry``/``_postgame_cache_session_id``.
+    # We populate a shared out-dict the caller pre-allocates so the
+    # metadata is observable on every termination path (success,
+    # exception, cancellation).
+    if allow_postgame and postgame_meta_out is not None:
+        postgame_meta_out["_postgame_entry"] = entry
+        postgame_meta_out["_postgame_cache_session_id"] = chat_session_id
 
     # CR Major (PR #1127 r3182158697): when the post-lock route_inactive
     # short-circuit trips and our build won the race against a finalize
@@ -5310,6 +5338,14 @@ async def cleanup_expired_sessions():
                     if not state.get("game_route_active") or state.get("_exit_task"):
                         if state.get("_exit_task"):
                             await asyncio.shield(state["_exit_task"])
+                        continue
+                    # Why: a concurrent ``/route/heartbeat`` may have
+                    # bumped ``last_heartbeat_at`` between the lock-free
+                    # expired-scan and the lock acquisition above. The
+                    # browser is alive; finalizing here would kill a
+                    # live route. Re-check inside the lock with a fresh
+                    # ``time.time()`` and skip if the route recovered.
+                    if not _route_heartbeat_expired(state, time.time()):
                         continue
                     await _finalize_game_route_state(
                         state,

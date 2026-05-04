@@ -2396,3 +2396,236 @@ def test_route_session_id_only_strips_synthetic_uuid_tail():
     # synth = ``weird::postgame::client::postgame::<uuid_hex>`` — only the
     # final suffix shape matches; the inner ``::postgame::client`` stays.
     assert game_router._route_session_id(synth) == base
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_cleanup_runs_after_cancelled_error(monkeypatch):
+    """CR Major (PR #1127 r3183137463): if ``_run_game_chat(...,
+    allow_postgame=True)`` raises ``asyncio.CancelledError`` during
+    ``stream_text``, the freshly-built postgame ``OmniOfflineClient``
+    must still be closed by ``_deliver_postgame_text_bubble``'s
+    ``finally``.
+
+    Pre-fix: the only path that attached
+    ``_postgame_entry``/``_postgame_cache_session_id`` was the structured
+    return dict. ``CancelledError`` is ``BaseException`` (not
+    ``Exception``) so it bypassed the ``except Exception`` branches and
+    propagated without populating those keys. The caller's ``finally``
+    saw ``postgame_entry is None`` and skipped cleanup → orphan
+    private ``::postgame::...`` session until the 30-min idle sweep.
+
+    Post-fix: ``_run_game_chat`` populates a caller-allocated
+    ``postgame_meta_out`` dict as soon as the entry is built, BEFORE any
+    cancellable await. The bubble's ``finally`` falls back to that dict
+    and closes the entry on every termination path.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_cancel")
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+        snapshot = game_router._build_postgame_context_snapshot(state)
+
+        stream_started = asyncio.Event()
+        fake_session = _FakeOmniSession(name="postgame_cancel")
+
+        async def _stream_blocks_until_cancel(text: str):
+            stream_started.set()
+            # Park forever; the test cancels the parent task to trigger
+            # CancelledError from inside ``stream_text``.
+            await asyncio.Event().wait()
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self, *, instructions: str = ""):
+                await fake_session.connect()
+
+            async def close(self):
+                await fake_session.close()
+
+            async def stream_text(self, text: str):
+                await _stream_blocks_until_cancel(text)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        # Refresh is a no-op so the cancellation lands in stream_text.
+        async def _noop_refresh(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(
+            game_router,
+            "_refresh_game_session_instructions",
+            _noop_refresh,
+        )
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        class _StubManager:
+            current_speech_id = "speech-cancel"
+            state = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        archive = {"lanlan_name": "Lan", "preGameContext": {"summary": "snap"}}
+
+        async def _drive():
+            return await game_router._deliver_postgame_text_bubble(
+                "soccer", "match_cancel", _StubManager(), archive,
+                {"enabled": True}, postgame_snapshot=snapshot,
+            )
+
+        bubble_task = asyncio.create_task(_drive())
+        # Wait until ``stream_text`` has parked. At this point the
+        # postgame entry is already in ``_game_sessions`` and the bubble
+        # is awaiting ``stream_text``.
+        await asyncio.wait_for(stream_started.wait(), timeout=5.0)
+
+        # Cancel the bubble — this propagates as ``CancelledError`` up
+        # through ``_run_game_chat`` (bypassing every ``except
+        # Exception``) and into the bubble's try/except. Pre-fix:
+        # ``postgame_entry`` stays ``None`` and the close in ``finally``
+        # is skipped.
+        bubble_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await bubble_task
+
+        # Load-bearing invariant: the postgame session was closed by the
+        # bubble's ``finally``. Pre-fix this is 0; post-fix this is 1.
+        assert fake_session.connect_calls == 1
+        assert fake_session.close_calls == 1, (
+            "postgame session was not closed after CancelledError; "
+            "the bubble's finally had no handle to the freshly-built "
+            "OmniOfflineClient"
+        )
+
+        # The private postgame cache slot was evicted by the bubble's
+        # finally — no leftover ``::postgame::...`` keys.
+        for k in list(game_router._game_sessions.keys()):
+            assert game_router._POSTGAME_SESSION_MARKER not in k, (
+                f"postgame cache slot {k!r} was not evicted after "
+                f"CancelledError cleanup"
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
+    """CR Major (PR #1127 r3183137485): ``cleanup_expired_sessions``
+    flags expired routes lock-free, then takes the per-slot route lock
+    to finalize. A concurrent ``/route/heartbeat`` may bump
+    ``last_heartbeat_at`` between the lock-free scan and the lock
+    acquisition. Pre-fix: sweep finalized anyway, killing a route the
+    browser had just resumed.
+
+    Post-fix: re-check ``_route_heartbeat_expired`` inside the lock with
+    a fresh ``time.time()`` and skip if the route recovered.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        # Make the sweep fire fast.
+        monkeypatch.setattr(
+            game_router, "_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS", 0.01
+        )
+
+        finalize_calls: list[dict] = []
+
+        async def _track_finalize(state, *, reason, close_game_session):
+            finalize_calls.append(
+                {"reason": reason, "close_game_session": close_game_session}
+            )
+            return {"game_session_closed": False}
+
+        monkeypatch.setattr(
+            game_router, "_finalize_game_route_state", _track_finalize
+        )
+
+        # Build an expired route — last_heartbeat_at is well past the
+        # timeout window. ``_route_heartbeat_expired`` would return True
+        # against current time.
+        state = _activate_route("Lan", "soccer", "match_recheck")
+        state["heartbeat_timeout_seconds"] = 1.0
+        # Force the lock-free expired-scan to catch this route.
+        state["last_heartbeat_at"] = game_router.time.time() - 60.0
+        state["last_activity"] = game_router.time.time() - 60.0
+        state["created_at"] = game_router.time.time() - 60.0
+
+        # Pre-acquire the route lock so the sweep parks waiting for it.
+        # While parked, simulate a ``/route/heartbeat`` recovery by
+        # bumping ``last_heartbeat_at`` to NOW. After release, the
+        # post-fix recheck inside the lock observes the recovery and
+        # skips ``_finalize_game_route_state``.
+        route_lock = game_router._get_route_lock("Lan", "soccer")
+        await route_lock.acquire()
+        try:
+            sweep_task = asyncio.create_task(
+                game_router.cleanup_expired_sessions()
+            )
+            # Yield enough times for the sweep to: sleep → scan expired
+            # → reach ``async with sweep_lock`` and park on our held
+            # lock.
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                if route_lock._waiters:  # type: ignore[attr-defined]
+                    break
+            assert route_lock._waiters, (  # type: ignore[attr-defined]
+                "sweep did not reach the route lock; test setup is broken"
+            )
+
+            # Browser sends a heartbeat — last_heartbeat_at moves to NOW
+            # while sweep is parked. The lock-free expired-scan saw the
+            # old value; the post-fix in-lock recheck must see the new
+            # one and skip.
+            state["last_heartbeat_at"] = game_router.time.time()
+            state["last_activity"] = game_router.time.time()
+        finally:
+            route_lock.release()
+
+        # Give the sweep a few yields to acquire the released lock and
+        # complete its iteration body.
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if finalize_calls:
+                break
+
+        sweep_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sweep_task
+
+        # Load-bearing invariant: post-fix sweep observes the refreshed
+        # heartbeat inside the lock and skips finalize. Pre-fix this
+        # list contains a heartbeat_timeout entry.
+        assert finalize_calls == [], (
+            "sweep finalized a route whose heartbeat had recovered "
+            "before the lock was acquired; in-lock recheck is missing"
+        )
