@@ -419,6 +419,26 @@ async def test_galgame_plugin_rapidocr_install_status_route_reads_persisted_stat
 
 
 @pytest.mark.asyncio
+async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_before_run_lookup(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_get_run(run_id: str) -> RunRecord:
+        raise AssertionError(f"run lookup should not happen for invalid task_id: {run_id}")
+
+    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _unexpected_get_run)
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/rapidocr/install/..."
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid RapidOCR install task_id"
+
+
+@pytest.mark.asyncio
 async def test_galgame_plugin_tesseract_install_status_route_reads_persisted_state(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
@@ -699,6 +719,31 @@ async def test_galgame_plugin_rapidocr_install_stream_route_emits_sse_payload(
     assert payload["task_id"] == "run-rapidocr-stream"
     assert payload["kind"] == "rapidocr"
     assert payload["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for_missing_task(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing_get_run(run_id: str) -> RunRecord:
+        raise ServerDomainError(
+            code="RUN_NOT_FOUND",
+            message="run not found",
+            status_code=404,
+            details={"run_id": run_id},
+        )
+
+    monkeypatch.setattr(plugin_ui_route_module.run_service, "get_run", _missing_get_run)
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/rapidocr/install/missing-stream-task/stream"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "RapidOCR install task 'missing-stream-task' not found"
 
 
 @pytest.mark.asyncio

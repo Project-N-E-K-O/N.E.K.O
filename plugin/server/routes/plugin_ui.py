@@ -218,6 +218,9 @@ def _mark_stale_install_task(
 
 
 def _resolve_install_task_payload(task_id: str, *, kind: str, label: str) -> dict[str, object]:
+    task_id = (task_id or "").strip()
+    if not task_id or ".." in task_id or "/" in task_id or "\\" in task_id:
+        raise HTTPException(status_code=400, detail=f"Invalid {label} install task_id")
     state_payload = load_install_task_state(task_id, kind=kind)
     run_missing = False
     try:
@@ -349,6 +352,7 @@ def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSO
 def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request: Request) -> StreamingResponse:
     _ensure_galgame_plugin(plugin_id)
     spec = _get_install_kind_spec(kind)
+    _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
 
     async def _event_stream():
         last_payload = ""
