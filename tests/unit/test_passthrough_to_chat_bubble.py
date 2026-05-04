@@ -294,6 +294,134 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
 
 
 @pytest.mark.unit
+async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monkeypatch):
+    """Defensive contract: ``ai_behavior="blind"`` MUST never reach the
+    LLM channel, even if the upstream emitter sets ``delivery_mode`` to
+    "proactive" or "passive". The plugin ``proactive_bridge`` already
+    maps blind→silent, but that's an indirect translation contract — a
+    future direct emitter (or another bridge) could violate it. The host
+    side must enforce the invariant locally.
+
+    This test deliberately constructs a malformed-from-the-bridge event
+    (blind + proactive) that today the bridge wouldn't produce, to lock
+    in the host-side defense.
+    """
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "blind text",
+        "channel": "plugin:foo",
+        "task_id": "task-blind-proactive",
+        # Bridge contract says blind→silent; we deliberately violate it
+        # here to exercise the defensive host-side check.
+        "delivery_mode": "proactive",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    # Host-side defense must downgrade delivery_mode to silent and skip
+    # the LLM enqueue path even though the event arrived as "proactive".
+    fake_mgr.enqueue_agent_callback.assert_not_called()
+    fake_mgr.trigger_agent_callbacks.assert_not_called()
+    # Chat passthrough still fires (visibility includes "chat", behavior is blind).
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkeypatch):
+    """Symmetric to the proactive case: blind + passive must also be
+    forced to silent on the host side."""
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "blind passive text",
+        "channel": "plugin:foo",
+        "task_id": "task-blind-passive",
+        "delivery_mode": "passive",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "source_kind": "plugin",
+        "source_name": "foo",
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    fake_mgr.enqueue_agent_callback.assert_not_called()
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
+    """When the event omits ``source_kind`` but the channel implies one
+    (e.g. ``computer_use`` → ``cu``), the passthrough call must use the
+    locally-resolved ``source_kind`` rather than the raw event field
+    with a "plugin" default — otherwise non-plugin sources get
+    mislabeled as ``plugin`` in the chat bubble metadata.
+    """
+    import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+
+    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+
+    event = {
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "computer-use blind line",
+        # No source_kind on event — must be derived from channel.
+        "channel": "computer_use",
+        "task_id": "task-cu-1",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "media_parts": [],
+    }
+
+    await main_server._handle_agent_event(event)
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    call = fake_mgr.passthrough_to_chat_bubble.await_args
+    # Channel "computer_use" must resolve to source_kind="cu", NOT "plugin".
+    assert call.kwargs.get("source") == "cu"
+
+
+@pytest.mark.unit
 async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(monkeypatch):
     """visibility=["hud"] + ai_behavior="blind" → HUD-only toast path,
     passthrough must NOT fire (no "chat" in visibility)."""

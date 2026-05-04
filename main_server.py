@@ -728,6 +728,15 @@ async def _handle_agent_event(event: dict):
                 delivery_mode = (event.get("delivery_mode") or "proactive").strip()
                 if delivery_mode not in ("proactive", "passive", "silent"):
                     delivery_mode = "proactive"
+                # Defensive: blind ai_behavior must NEVER reach the LLM channel,
+                # even if delivery_mode arrives as "proactive" / "passive". The
+                # plugin proactive_bridge already maps blind→silent, but this
+                # is an indirect contract — a future direct emitter (or a bug
+                # in another bridge) could violate it. Forcing silent here
+                # locks the (blind ⇒ no LLM enqueue) invariant on the host
+                # side regardless of caller-supplied delivery_mode.
+                if (event.get("ai_behavior") or "").strip() == "blind":
+                    delivery_mode = "silent"
                 # Default source_kind from channel when caller didn't specify one.
                 # Plugin emit sites already pass explicit source_kind/source_name.
                 _channel = event.get("channel") or "unknown"
@@ -804,14 +813,19 @@ async def _handle_agent_event(event: dict):
                     and hasattr(mgr, "passthrough_to_chat_bubble")
                 ):
                     try:
+                        # Reuse the already-resolved source_kind local (computed
+                        # above from channel: computer_use→cu, browser_use→browser,
+                        # plugin:*→plugin, else system). Falling back to event
+                        # raw + "plugin" default would mislabel non-plugin sources.
+                        passthrough_source = source_kind or "plugin"
                         await mgr.passthrough_to_chat_bubble(
                             text,
                             request_id=event.get("task_id") or None,
-                            source=event.get("source_kind") or "plugin",
+                            source=passthrough_source,
                         )
                         logger.info(
                             "[EventBus] passthrough_to_chat_bubble dispatched (text_len=%d, source=%s)",
-                            len(text), event.get("source_kind") or "plugin",
+                            len(text), passthrough_source,
                         )
                     except Exception as e:
                         logger.warning(
