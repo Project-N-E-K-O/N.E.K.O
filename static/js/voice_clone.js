@@ -70,6 +70,129 @@ function resolveBackendErrorMsg(data, status) {
     return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
 }
 
+function appendVoiceApplyStatus(resultDiv, message, className = '') {
+    if (!resultDiv) return;
+    if (resultDiv.textContent || resultDiv.childNodes.length) {
+        resultDiv.appendChild(document.createElement('br'));
+    }
+    const statusSpan = document.createElement('span');
+    if (className) statusSpan.className = className;
+    statusSpan.textContent = message;
+    resultDiv.appendChild(statusSpan);
+}
+
+function notifyVoiceIdUpdated(voiceId, lanlanName, sessionRestarted) {
+    const payload = { type: 'voice_id_updated', voice_id: voiceId, lanlan_name: lanlanName, session_restarted: sessionRestarted };
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (e) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (e) { }
+    }
+}
+
+async function saveVoiceIdToCurrentCharacter(voiceId) {
+    const lanlanInput = document.getElementById('lanlan_name');
+    const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
+    if (!lanlanName) {
+        throw new Error(window.t ? window.t('voice.noCurrentCharacterForApply') : '未找到当前角色，无法应用音色');
+    }
+
+    const resp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_id: voiceId })
+    });
+    const { data, nonJson, text } = await safeReadResponse(resp);
+    if (!resp.ok) {
+        if (data && (data.error || data.detail)) {
+            throw new Error(data.error || data.detail);
+        }
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (nonJson) {
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (!data || data.success === false) {
+        throw new Error((data && data.error) || (window.t ? window.t('common.unknownError') : '未知错误'));
+    }
+    notifyVoiceIdUpdated(voiceId, lanlanName, data.session_restarted);
+    return { lanlanName, result: data };
+}
+
+async function getCurrentCharacterVoiceId() {
+    const lanlanInput = document.getElementById('lanlan_name');
+    const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
+    if (!lanlanName) return '';
+
+    const resp = await fetch('/api/characters?language=zh-CN', { cache: 'no-store' });
+    const { data, nonJson, text } = await safeReadResponse(resp);
+    if (!resp.ok) {
+        if (data && (data.error || data.detail)) {
+            throw new Error(data.error || data.detail);
+        }
+        throw new Error(buildNonJsonError(resp, text));
+    }
+    if (nonJson) {
+        throw new Error(buildNonJsonError(resp, text));
+    }
+
+    const catgirls = data && data['猫娘'];
+    const currentCatgirl = catgirls && catgirls[lanlanName];
+    if (!currentCatgirl || typeof currentCatgirl !== 'object') return '';
+    return String(currentCatgirl.voice_id || '').trim();
+}
+
+function markSelectedVoiceItem(item, selected) {
+    if (!item) return;
+    item.classList.toggle('selected', !!selected);
+    item.setAttribute('aria-pressed', selected ? 'true' : 'false');
+}
+
+async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
+    if (!voiceId) return;
+    const resultDiv = document.getElementById('result');
+    const refreshBtn = document.getElementById('refresh-voices-btn');
+    const voiceItems = document.querySelectorAll('.voice-list-item');
+
+    voiceItems.forEach(node => {
+        node.classList.remove('applying', 'selected');
+        node.setAttribute('aria-pressed', 'false');
+    });
+    if (item) item.classList.add('applying');
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    if (resultDiv) {
+        resultDiv.className = 'result';
+        resultDiv.textContent = window.t ? window.t('voice.applyingVoice', { name: displayName || voiceId }) : `正在应用音色「${displayName || voiceId}」...`;
+    }
+
+    try {
+        const { result } = await saveVoiceIdToCurrentCharacter(voiceId);
+        if (item) {
+            item.classList.remove('applying');
+            markSelectedVoiceItem(item, true);
+        }
+        if (resultDiv) {
+            resultDiv.className = 'result';
+            resultDiv.textContent = window.t ? window.t('voice.applyVoiceSuccess', { name: displayName || voiceId }) : `已将音色「${displayName || voiceId}」应用到当前角色`;
+            const statusText = result.session_restarted
+                ? (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音')
+                : (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
+            appendVoiceApplyStatus(resultDiv, statusText);
+        }
+    } catch (e) {
+        if (item) item.classList.remove('applying');
+        const errorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+        if (resultDiv) {
+            resultDiv.className = 'result error';
+            resultDiv.textContent = window.t ? window.t('voice.applyVoiceFailed', { error: errorMsg }) : `应用音色失败：${errorMsg}`;
+        }
+    } finally {
+        if (refreshBtn) refreshBtn.disabled = false;
+    }
+}
+
 function parseVoiceRegisterError(errorObj) {
     const errorCode = errorObj?.code;
     const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
@@ -725,56 +848,22 @@ function registerVoice() {
                 // 自动更新voice_id到后端
                 const lanlanName = document.getElementById('lanlan_name').value;
                 if (lanlanName) {
-                    fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ voice_id: data.voice_id })
-                    }).then(async resp => {
-                        const { data: respData, nonJson, text } = await safeReadResponse(resp);
-                        if (!resp.ok) {
-                            if (respData && (respData.error || respData.detail)) {
-                                throw new Error(respData.error || respData.detail);
-                            }
-                            throw new Error(buildNonJsonError(resp, text));
-                        }
-                        if (nonJson) {
-                            throw new Error(buildNonJsonError(resp, text));
-                        }
-                        return respData;
-                    }).then(res => {
-                        if (!res.success) {
-                            const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                            const errorSpan = document.createElement('span');
-                            errorSpan.className = 'error';
-                            errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveFailed', { error: errorMsg }) : 'voice_id自动保存失败: ' + errorMsg);
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(errorSpan);
+                    saveVoiceIdToCurrentCharacter(data.voice_id).then(({ result: res }) => {
+                        const successMsg = document.createElement('span');
+                        successMsg.textContent = (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
+                        resultDiv.appendChild(document.createElement('br'));
+                        resultDiv.appendChild(successMsg);
+
+                        // 如果session被结束，页面会自动刷新
+                        const statusSpan = document.createElement('span');
+                        statusSpan.style.color = 'blue';
+                        if (res.session_restarted) {
+                            statusSpan.textContent = (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音');
                         } else {
-                            const successMsg = document.createElement('span');
-                            successMsg.textContent = (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(successMsg);
-
-                            // 如果session被结束，页面会自动刷新
-                            const statusSpan = document.createElement('span');
-                            statusSpan.style.color = 'blue';
-                            if (res.session_restarted) {
-                                statusSpan.textContent = (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音');
-                            } else {
-                                statusSpan.textContent = (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
-                            }
-                            resultDiv.appendChild(document.createElement('br'));
-                            resultDiv.appendChild(statusSpan);
-
-                            // 通知父页面voice_id已更新
-                            const payload = { type: 'voice_id_updated', voice_id: data.voice_id, lanlan_name: lanlanName, session_restarted: res.session_restarted };
-                            if (window.parent !== window) {
-                                try { window.parent.postMessage(payload, window.location.origin); } catch (e) { }
-                            }
-                            if (window.opener && !window.opener.closed) {
-                                try { window.opener.postMessage(payload, window.location.origin); } catch (e) { }
-                            }
+                            statusSpan.textContent = (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
                         }
+                        resultDiv.appendChild(document.createElement('br'));
+                        resultDiv.appendChild(statusSpan);
                     }).catch(e => {
                         // e 可能携带 safeReadResponse/buildNonJsonError 构造的可读错误
                         // （含 HTTP 状态和正文摘要），必须拼进最终提示，否则诊断信息被吞。
@@ -903,6 +992,10 @@ async function loadVoices() {
     if (refreshBtn) refreshBtn.disabled = true;
 
     try {
+        const currentVoiceId = await getCurrentCharacterVoiceId().catch(error => {
+            console.warn('获取当前角色音色失败:', error);
+            return '';
+        });
         const response = await fetch('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
@@ -949,6 +1042,11 @@ async function loadVoices() {
         voicesArray.forEach(({ voiceId, prefix, created_at }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
+            item.dataset.voiceId = voiceId;
+            item.tabIndex = 0;
+            item.setAttribute('role', 'button');
+            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: prefix || voiceId }) : `应用音色 ${prefix || voiceId}`);
+            markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
             const voiceName = prefix || voiceId;
             const displayName = voiceName.length > 30 ? voiceName.substring(0, 30) + '...' : voiceName;
@@ -982,7 +1080,10 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
-            previewBtn.onclick = () => playPreview(voiceId, previewBtn);
+            previewBtn.onclick = (event) => {
+                event.stopPropagation();
+                playPreview(voiceId, previewBtn);
+            };
 
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'voice-delete-btn';
@@ -992,7 +1093,10 @@ async function loadVoices() {
             deleteImg.alt = '';
             deleteBtn.appendChild(deleteImg);
             deleteBtn.appendChild(document.createTextNode(deleteText));
-            deleteBtn.onclick = () => deleteVoice(voiceId, displayName);
+            deleteBtn.onclick = (event) => {
+                event.stopPropagation();
+                deleteVoice(voiceId, displayName);
+            };
 
             voiceActions.appendChild(previewBtn);
             voiceActions.appendChild(deleteBtn);
@@ -1019,6 +1123,13 @@ async function loadVoices() {
 
             item.appendChild(infoDiv);
             item.appendChild(voiceActions);
+            item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+            item.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                }
+            });
 
             container.appendChild(item);
         });
@@ -1037,7 +1148,11 @@ async function loadVoices() {
             Object.entries(data.free_voices).forEach(([voiceKey, voiceId]) => {
                 const item = document.createElement('div');
                 item.className = 'voice-list-item';
+                item.dataset.voiceId = voiceId;
                 item.style.opacity = '0.85';
+                item.tabIndex = 0;
+                item.setAttribute('role', 'button');
+                markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
                 const infoDiv = document.createElement('div');
                 infoDiv.className = 'voice-info';
@@ -1060,8 +1175,16 @@ async function loadVoices() {
                 infoDiv.appendChild(idDiv);
 
                 item.appendChild(infoDiv);
+                item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                item.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                    }
+                });
 
-                // 免费预设音色：不支持预览和删除
+                // 免费预设音色：不支持预览和删除，但支持点击应用到当前角色
 
                 container.appendChild(item);
             });
