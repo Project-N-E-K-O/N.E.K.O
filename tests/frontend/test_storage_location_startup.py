@@ -47,8 +47,8 @@ def _continue_storage_intro(page: Page) -> None:
     )
     expect(page.locator("text=喵呜～人类注意啦！")).to_be_visible(timeout=15_000)
     expect(page.get_by_role("heading", name="存储位置选择")).to_be_hidden(timeout=5_000)
-    expect(page.get_by_role("button", name="使用专属小窝")).to_be_visible(timeout=15_000)
-    page.get_by_role("button", name="其他小窝").click()
+    expect(page.get_by_role("button", name="推荐存储位置")).to_be_visible(timeout=15_000)
+    page.get_by_role("button", name="其他位置").click()
     expect(page.get_by_role("heading", name="存储位置选择")).to_be_visible(timeout=15_000)
 
 
@@ -279,7 +279,7 @@ def test_storage_location_overlay_blocks_page_config_until_current_path_confirme
     _arm_page_config_resolution_probe(page)
     assert _page_config_state(page) == "pending"
 
-    page.get_by_role("button", name="使用专属小窝").click()
+    page.get_by_role("button", name="推荐存储位置").click()
 
     expect(overlay).to_be_hidden(timeout=10_000)
     page.wait_for_function(
@@ -541,7 +541,7 @@ def test_storage_location_overlay_keeps_page_config_blocked_on_restart_required_
     selection_title = page.get_by_role("heading", name="存储位置选择")
     submit_other_button = page.get_by_role("button", name="提交该位置")
     custom_input = page.locator(".storage-location-input")
-    preview_note = page.locator("text=更改存储位置会先关闭当前实例")
+    preview_note = page.locator("text=更改存储位置后会重启")
 
     expect(overlay).to_be_visible(timeout=15_000)
     _continue_storage_intro(page)
@@ -632,7 +632,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
                         "status": "maintenance",
                         "lifecycle_state": "maintenance",
                         "migration_stage": "pending",
-                        "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                        "maintenance_message": "正在关闭，数据会在关闭后迁移并自动重启。",
                         "poll_interval_ms": 200,
                         "effective_root": "/tmp/runtime/N.E.K.O",
                         "last_error_summary": "",
@@ -781,7 +781,7 @@ def test_storage_location_restart_confirmation_enters_maintenance_page_and_recov
     _continue_storage_intro(page)
 
     submit_other_button = page.get_by_role("button", name="提交该位置")
-    confirm_restart_button = page.get_by_role("button", name="确认关闭并迁移")
+    confirm_restart_button = page.get_by_role("button", name="确认并重启")
     custom_input = page.locator(".storage-location-input")
     maintenance_title = page.get_by_role("heading", name="正在优化存储布局...")
     maintenance_progress = page.locator('[role="progressbar"]')
@@ -861,7 +861,7 @@ def test_storage_location_external_restart_notice_reuses_maintenance_overlay(
                     "status": "maintenance",
                     "lifecycle_state": "maintenance",
                     "migration_stage": "pending",
-                    "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+                    "maintenance_message": "正在关闭，数据会在关闭后迁移并自动重启。",
                     "poll_interval_ms": 500,
                     "effective_root": "/tmp/runtime/N.E.K.O",
                     "last_error_summary": "",
@@ -1022,7 +1022,7 @@ def test_storage_location_existing_target_requires_second_confirmation_before_re
     page.locator(".storage-location-input").fill(str(tmp_path / "existing-target"))
     page.get_by_role("button", name="提交该位置").click()
 
-    confirm_restart_button = page.get_by_role("button", name="确认关闭并迁移")
+    confirm_restart_button = page.get_by_role("button", name="确认并重启")
     expect(confirm_restart_button).to_be_enabled(timeout=10_000)
     expect(page.locator("text=目标文件夹已经包含 N.E.K.O 运行时数据")).to_be_visible(timeout=10_000)
     confirm_restart_button.click()
@@ -1106,7 +1106,7 @@ def test_storage_location_pending_migration_refresh_stays_on_maintenance_page_in
               "status": "maintenance",
               "lifecycle_state": "maintenance",
               "migration_stage": "pending",
-              "maintenance_message": "当前实例即将关闭，数据会在关闭后迁移并自动重启。",
+              "maintenance_message": "正在关闭，数据会在关闭后迁移并自动重启。",
               "poll_interval_ms": 1200,
               "effective_root": "/tmp/runtime/N.E.K.O",
               "last_error_summary": "",

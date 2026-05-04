@@ -381,7 +381,7 @@
         }
 
         const lines = [
-            translate('memory.storagePreflightReady', '预检通过。确认后应用需要关闭，并在关闭后迁移数据。'),
+            translate('memory.storagePreflightReady', '预检通过。更改存储位置后会重启，旧数据默认保留。'),
             translate('memory.storagePreflightTarget', '目标位置：{{path}}', {
                 path: String(payload.target_root || payload.selected_root || '')
             })
@@ -463,7 +463,7 @@
         }
         let restartAccepted = false;
         setStoragePreflightBusy(true);
-        setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备关闭并迁移...'), 'success');
+        setStoragePreflightResult(translate('memory.storageRestartStarting', '正在准备重启...'), 'success');
         try {
             const resp = await fetch('/api/storage/location/restart', {
                 method: 'POST',
@@ -476,10 +476,10 @@
             });
             const payload = await readJsonResponse(resp);
             if (!resp.ok || !payload || payload.ok !== true) {
-                throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '关闭并迁移请求失败')));
+                throw new Error(storageErrorMessage(payload, translate('memory.storageRestartFailed', '重启请求失败')));
             }
             restartAccepted = true;
-            setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求关闭并迁移。应用即将进入维护状态，请等待重启完成。'), 'success');
+            setStoragePreflightResult(translate('memory.storageRestartInitiated', '已请求重启。应用即将进入维护状态，请等待重启完成。'), 'success');
             notifyStorageRestartInitiated(payload, selectedRoot);
             storagePreflightState = null;
             const input = document.getElementById('storage-target-root-input');
@@ -491,7 +491,7 @@
             return true;
         } catch (e) {
             console.warn('[MemoryBrowser] storage location restart failed:', e);
-            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '关闭并迁移请求失败')), 'error');
+            setStoragePreflightResult(String(e && e.message ? e.message : translate('memory.storageRestartFailed', '重启请求失败')), 'error');
             renderStorageRestartButton();
             return false;
         } finally {
