@@ -96,11 +96,14 @@ async def test_passthrough_writes_to_websocket_with_passthrough_metadata():
     ws = _FakeWebsocket(connected=True)
     mgr = _make_mgr(websocket=ws)
 
-    await mgr.passthrough_to_chat_bubble(
-        "hello world",
-        request_id="req-1",
-        turn_id="turn-1",
-        source="plugin",
+    assert (
+        await mgr.passthrough_to_chat_bubble(
+            "hello world",
+            request_id="req-1",
+            turn_id="turn-1",
+            source="plugin",
+        )
+        is True
     )
 
     assert ws.send_json.await_count == 1
@@ -139,9 +142,14 @@ async def test_passthrough_handles_empty_text_no_op():
     ws = _FakeWebsocket(connected=True)
     mgr = _make_mgr(websocket=ws)
 
-    await mgr.passthrough_to_chat_bubble("", request_id="r")
-    await mgr.passthrough_to_chat_bubble("   \n\t  ", request_id="r")
-    await mgr.passthrough_to_chat_bubble(None, request_id="r")  # type: ignore[arg-type]
+    assert await mgr.passthrough_to_chat_bubble("", request_id="r") is False
+    assert (
+        await mgr.passthrough_to_chat_bubble("   \n\t  ", request_id="r") is False
+    )
+    assert (
+        await mgr.passthrough_to_chat_bubble(None, request_id="r")  # type: ignore[arg-type]
+        is False
+    )
 
     ws.send_json.assert_not_called()
 
@@ -153,7 +161,9 @@ async def test_passthrough_handles_disconnected_websocket_gracefully():
     mgr = _make_mgr(websocket=ws)
 
     # Should not raise; should not call send_json (gate guards it).
-    await mgr.passthrough_to_chat_bubble("hello", request_id="r")
+    assert (
+        await mgr.passthrough_to_chat_bubble("hello", request_id="r") is False
+    )
     ws.send_json.assert_not_called()
 
 
@@ -162,7 +172,9 @@ async def test_passthrough_handles_missing_websocket():
     """websocket=None → silently no-op, no AttributeError."""
     mgr = _make_mgr(websocket=None)
     # Should not raise.
-    await mgr.passthrough_to_chat_bubble("hello", request_id="r")
+    assert (
+        await mgr.passthrough_to_chat_bubble("hello", request_id="r") is False
+    )
 
 
 @pytest.mark.unit
@@ -173,7 +185,9 @@ async def test_passthrough_send_failure_is_logged_not_raised():
     mgr = _make_mgr(websocket=ws)
 
     # Should not propagate the RuntimeError.
-    await mgr.passthrough_to_chat_bubble("hello", request_id="r")
+    assert (
+        await mgr.passthrough_to_chat_bubble("hello", request_id="r") is False
+    )
     # send_json was attempted exactly once.
     assert ws.send_json.await_count == 1
 
@@ -211,7 +225,7 @@ async def test_passthrough_synthesizes_turn_id_when_missing():
     ws = _FakeWebsocket(connected=True)
     mgr = _make_mgr(websocket=ws)
 
-    await mgr.passthrough_to_chat_bubble("hi", source="plugin")
+    assert await mgr.passthrough_to_chat_bubble("hi", source="plugin") is True
 
     payload = ws.send_json.await_args.args[0]
     assert isinstance(payload["turn_id"], str)
