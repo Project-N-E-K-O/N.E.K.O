@@ -154,6 +154,12 @@ async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
     const resultDiv = document.getElementById('result');
     const refreshBtn = document.getElementById('refresh-voices-btn');
     const voiceItems = document.querySelectorAll('.voice-list-item');
+    const previousSelectedVoiceIds = new Set(
+        Array.from(voiceItems)
+            .filter(node => node.classList.contains('selected'))
+            .map(node => node.dataset.voiceId || '')
+            .filter(Boolean)
+    );
 
     voiceItems.forEach(node => {
         node.classList.remove('applying', 'selected');
@@ -183,6 +189,7 @@ async function applyVoiceToCurrentCharacter(voiceId, displayName, item) {
         }
     } catch (e) {
         if (item) item.classList.remove('applying');
+        voiceItems.forEach(node => markSelectedVoiceItem(node, previousSelectedVoiceIds.has(node.dataset.voiceId || '')));
         const errorMsg = e?.message || e?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
         if (resultDiv) {
             resultDiv.className = 'result error';
@@ -1125,6 +1132,7 @@ async function loadVoices() {
             item.appendChild(voiceActions);
             item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
             item.addEventListener('keydown', (event) => {
+                if (event.target !== item) return;
                 if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     applyVoiceToCurrentCharacter(voiceId, displayName, item);
@@ -1178,6 +1186,7 @@ async function loadVoices() {
                 item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
                 item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
                 item.addEventListener('keydown', (event) => {
+                    if (event.target !== item) return;
                     if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         applyVoiceToCurrentCharacter(voiceId, displayName, item);
