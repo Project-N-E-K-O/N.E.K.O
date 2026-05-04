@@ -954,6 +954,43 @@ def test_task_executor_plugin_desc_includes_enum_values():
     assert "action:string enum=[query_status|query_context|send_message|set_standby|list_messages|ack_message]" in "\n".join(lines)
 
 
+def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
+    """超过 12 个 enum 值时，截断标记必须在 [] 内并带 '+N more' 数量提示，
+    而不是孤零零的 '...'，以避免 LLM 把可见的 12 个误当成完整合法值清单。
+    """
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12，触发截断
+    lines = executor._build_plugin_desc_lines([
+        {
+            "id": "demo_plugin",
+            "description": "demo",
+            "entries": [
+                {
+                    "id": "demo_entry",
+                    "description": "demo entry",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": long_enum},
+                        },
+                    },
+                },
+            ],
+        },
+    ])
+    rendered = "\n".join(lines)
+
+    expected_inner = "|".join(long_enum[:12])
+    assert f"kind:string enum=[{expected_inner}|... +3 more]" in rendered
+    # 旧的 "]..." 形态必须消失，避免 LLM 误读为"列表完整、后面是注释省略号"
+    assert "]..." not in rendered
+    # 被截断的值不应该出现在 prompt 里
+    for v in long_enum[12:]:
+        assert v not in rendered
+
+
 def test_agent_server_user_turn_fingerprint_includes_attachments():
     source = Path("agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
