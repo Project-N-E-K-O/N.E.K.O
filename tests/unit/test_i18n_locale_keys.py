@@ -120,6 +120,7 @@ def test_error_placeholder_i18n_calls_pass_error_params():
             key for key, value in _flatten_leaf_strings(payload) if "{{error}}" in value
         }
 
+    assert "en.json" in locale_error_keys, "en.json locale file not found - ensure it exists in the locales directory"
     baseline = locale_error_keys["en.json"]
     assert all(keys == baseline for keys in locale_error_keys.values())
 
@@ -130,7 +131,7 @@ def test_error_placeholder_i18n_calls_pass_error_params():
     missing_error_params: list[str] = []
 
     for key in sorted(baseline):
-        pattern = re.compile(r"(?:window\.)?t\s*\(\s*['\"]" + re.escape(key) + r"['\"]")
+        pattern = re.compile(r"(?:window\.)?t\s*\(\s*['\"`]" + re.escape(key) + r"['\"`]")
         for path, source in source_texts:
             for match in pattern.finditer(source):
                 call = _extract_call(source, match.start())
