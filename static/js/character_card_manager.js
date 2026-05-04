@@ -3692,9 +3692,9 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'card-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3768,9 +3768,9 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'list-action-btn switch-btn';
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
+            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -3986,7 +3986,7 @@ function openCatgirlPanel(card, originEl) {
         switchBtn.className = 'card-panel-action-btn switch-btn';
         const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
         switchBtn.disabled = isCurrentChara;
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
             + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
         switchBtn.onclick = function (e) {
