@@ -756,18 +756,36 @@ async def run_sync_connector(
                                     turn_end_meta = None
                                 was_assistant_turn = current_turn == 'assistant'
                                 if is_mirror_turn_end_meta(turn_end_meta):
-                                    # Mirror turn-end has no corresponding ordinary
-                                    # state to reset:
-                                    #   - mirror assistant messages get
-                                    #     ``continue``-d at line ~595 (never enter
-                                    #     text_output_cache / chat_history)
-                                    #   - mirror user inputs are policy-A excluded
-                                    #     from user_input_cache (line ~660)
-                                    # So the previous version's resets here would
-                                    # have clobbered any genuine ordinary state
-                                    # (e.g. an in-flight transcript) that happened
-                                    # to be in progress.  Just monitor-forward and
-                                    # skip the rest of the ordinary turn-end path.
+                                    # Mirror turn-end: mirror assistant messages
+                                    # never enter ``text_output_cache`` (they
+                                    # ``continue`` at line ~595), and mirror user
+                                    # inputs never enter ``user_input_cache``
+                                    # (policy A at line ~660), so we must NOT
+                                    # touch user-side state — a pre-takeover real
+                                    # user utterance is still legitimate and must
+                                    # be flushed when the post-takeover assistant
+                                    # turn arrives.
+                                    #
+                                    # BUT if takeover started mid-ordinary-
+                                    # assistant turn, that turn becomes orphaned:
+                                    # ``current_turn`` stays ``'assistant'`` and
+                                    # ``text_output_cache`` holds partial text
+                                    # from a turn that never completes.  Without
+                                    # cleanup the next post-takeover real
+                                    # ``gemini_response`` is treated as a
+                                    # continuation, skipping the ``current_turn
+                                    # == 'user'`` block that flushes
+                                    # ``user_input_cache`` into chat_history → the
+                                    # user's input is silently dropped.
+                                    # So reset assistant-side state when the
+                                    # current ordinary turn was in flight, leave
+                                    # user-side alone.
+                                    if was_assistant_turn:
+                                        text_output_cache = ''
+                                        text_output_request_id = None
+                                        current_turn = 'user'
+                                        current_turn_start_index = len(chat_history)
+                                        had_user_input_this_turn = False
                                     await _try_send_json(sync_slot, {'type': 'turn end'})
                                     logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
