@@ -379,3 +379,131 @@ async def test_connect_qwen_server_vad_preserves_payload():
     assert isinstance(td, dict)
     assert td.get("type") in ("server_vad", "semantic_vad")
     assert "threshold" in td
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Regression: connect() must reset _has_server_vad to False in MANUAL
+# mode for every provider that defaults to server-VAD. Otherwise
+# stream_audio() and _check_silence_timeout() take the wrong branch
+# (stale _last_speech_time, false GLM/free auto-close, mis-applied
+# client-VAD suppression). Codex finding on PR #1128 (id 3181989081).
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Provider matrix → (model, base_url, api_type, expected_default_has_vad).
+# expected_default_has_vad is what __init__ would set for SERVER_VAD on the
+# same constructor args; MANUAL must override to False regardless.
+_VAD_PROVIDER_MATRIX = [
+    # provider id, model, base_url, api_type, default_has_server_vad
+    ("qwen", "qwen-omni-turbo-realtime", "wss://example.test/realtime", "qwen", True),
+    ("openai", "gpt-realtime", "wss://api.openai.com/v1/realtime", "openai", True),
+    ("glm", "glm-realtime", "wss://example.test/realtime", "glm", True),
+    ("step", "step-1o-audio", "wss://example.test/realtime", "step", True),
+    # lanlan.tech (China free, StepFun proxy) — has server VAD by default
+    ("free_stepfun", "free-model", "wss://lanlan.tech/realtime", "free", True),
+    # lanlan.app (international free, Vertex Gemini proxy) — __init__ already
+    # treats this as client-VAD only (False), so MANUAL has nothing to flip.
+    # Included to verify we don't accidentally re-enable server VAD.
+    ("free_vertex", "free-model", "wss://lanlan.app/realtime", "free", False),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    # NOTE: parameter renamed from ``base_url`` to ``ws_url`` to avoid
+    # collision with the session-scoped ``base_url`` fixture from
+    # pytest-base-url (otherwise pytest raises ScopeMismatch).
+    "provider_id,model,ws_url,api_type,default_has_vad",
+    _VAD_PROVIDER_MATRIX,
+    ids=[row[0] for row in _VAD_PROVIDER_MATRIX],
+)
+async def test_connect_manual_mode_resets_has_server_vad_for_all_providers(
+    provider_id, model, ws_url, api_type, default_has_vad,
+):
+    """MANUAL mode must force _has_server_vad=False for every websocket
+    provider, since connect() sends turn_detection=null and the provider
+    will not emit speech_started/stopped events.
+
+    Compares against the SERVER_VAD baseline to confirm the default
+    matches the codebase's __init__ heuristic, then asserts MANUAL flips
+    the flag to False post-connect().
+    """
+    # Baseline: SERVER_VAD client should keep the documented default.
+    server_vad_client = OmniRealtimeClient(
+        base_url=ws_url,
+        api_key="sk-test",
+        model=model,
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type=api_type,
+    )
+    assert server_vad_client._has_server_vad is default_has_vad, (
+        f"{provider_id}: SERVER_VAD default mismatch — fixture expectation "
+        f"is stale; expected {default_has_vad}, got {server_vad_client._has_server_vad}"
+    )
+
+    # MANUAL: pre-connect the flag matches __init__ default; post-connect
+    # it must be False regardless of provider default.
+    manual_client = _make_manual_client(model=model, base_url=ws_url, api_type=api_type)
+    assert manual_client._has_server_vad is default_has_vad, (
+        f"{provider_id}: pre-connect baseline drift"
+    )
+
+    await _run_connect_and_capture_session(manual_client)
+
+    assert manual_client._has_server_vad is False, (
+        f"{provider_id}: connect() MANUAL path must reset _has_server_vad to "
+        f"False so stream_audio/_check_silence_timeout pick the client-VAD "
+        f"branch (codex review id 3181989081)"
+    )
+
+
+@pytest.mark.unit
+async def test_connect_gemini_manual_mode_keeps_has_server_vad_false():
+    """Gemini path: __init__ already sets _has_server_vad=False (since
+    Gemini Live emits no speech_started/stopped). MANUAL path must not
+    accidentally flip it back to True. This guards the symmetry of the
+    fix across the websocket and Gemini connect paths.
+    """
+    pytest.importorskip("google.genai")
+
+    client = _make_manual_client(
+        model="gemini-2.0-flash-exp",
+        base_url="https://generativelanguage.googleapis.com",
+        api_type="gemini",
+    )
+    assert client._has_server_vad is False  # __init__ default for Gemini
+
+    fake_session = AsyncMock()
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+    fake_genai_client = MagicMock()
+    fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
+
+    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+        mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
+        await client.connect(instructions="hi", native_audio=True)
+
+    assert client._has_server_vad is False
+
+
+@pytest.mark.unit
+async def test_connect_server_vad_mode_preserves_has_server_vad_default():
+    """SERVER_VAD path must NOT touch _has_server_vad — provider defaults
+    from __init__ heuristic carry through. Counter-test to the MANUAL
+    override above.
+    """
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="qwen-omni-turbo-realtime",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="qwen",
+    )
+    assert client._has_server_vad is True
+
+    await _run_connect_and_capture_session(client)
+
+    assert client._has_server_vad is True, (
+        "SERVER_VAD must not flip _has_server_vad — only MANUAL forces False"
+    )

@@ -675,6 +675,19 @@ class OmniRealtimeClient:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
         is_manual = self.turn_detection_mode == TurnDetectionMode.MANUAL
+        # MANUAL mode: every per-provider session.update below sends
+        # ``turn_detection: null``, so the provider will NOT emit
+        # speech_started / speech_stopped events. _has_server_vad was
+        # initialised in __init__ from provider/model heuristics
+        # (defaults to True for Qwen/GLM/GPT/Step/lanlan.tech-free), but
+        # those events won't arrive in MANUAL — so downstream branches in
+        # stream_audio() and _check_silence_timeout() must take the
+        # client-VAD path, same as Gemini / lanlan.app-free. Override the
+        # flag here uniformly across all providers; the Gemini connect
+        # path is unaffected because __init__ already set this to False
+        # for ``_is_gemini`` clients.
+        if is_manual:
+            self._has_server_vad = False
         self._modalities = ["text", "audio"] if native_audio else ["text"]
 
         if 'glm' in self._model_lower:
