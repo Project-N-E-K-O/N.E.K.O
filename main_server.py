@@ -746,6 +746,7 @@ async def _handle_agent_event(event: dict):
                             source_name = _channel.split(":", 1)[1]
                     else:
                         source_kind = "system"
+                event_metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
                 callback = {
                     "event": "agent_task_callback",
                     "task_id": event.get("task_id") or "",
@@ -759,6 +760,8 @@ async def _handle_agent_event(event: dict):
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
                     "timestamp": event.get("timestamp") or "",
+                    "metadata": event_metadata,
+                    "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
                     mgr.enqueue_agent_callback(callback)

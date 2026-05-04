@@ -420,7 +420,9 @@ async def openclaw_availability():
     """检查 OpenClaw Agent 能力是否可用"""
     try:
         client = _get_http_client()
-        r = await client.get(f"{TOOL_SERVER_BASE}/openclaw/availability", timeout=1.5)
+        # OpenClaw availability may perform a downstream health probe and can
+        # legitimately take a bit longer than the lightweight local checks.
+        r = await client.get(f"{TOOL_SERVER_BASE}/openclaw/availability", timeout=4.5)
         if not r.is_success:
             return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
         return r.json()
