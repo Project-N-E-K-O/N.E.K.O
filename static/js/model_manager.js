@@ -952,12 +952,13 @@ async function offerCardFaceAfterModelSave(state = {}) {
             return;
         }
 
+        let shouldCloseAfterCardFaceFlow = true;
         if (cardFaceChoice === 'edit') {
             const makerWindow = openCardMakerFromModelManager(lanlanName);
             if (!makerWindow) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
-                return;
+                shouldCloseAfterCardFaceFlow = false;
             }
         } else if (cardFaceChoice === 'default') {
             try {
@@ -978,13 +979,15 @@ async function offerCardFaceAfterModelSave(state = {}) {
         window.hasUnsavedChanges = false;
         await notifyMainPageModelReload();
         window._modelManagerModelChangedSinceSave = false;
-        setTimeout(() => {
-            if (window.opener && !window.opener.closed) {
-                window.close();
-            } else {
-                window.location.href = '/';
-            }
-        }, 120);
+        if (shouldCloseAfterCardFaceFlow) {
+            setTimeout(() => {
+                if (window.opener && !window.opener.closed) {
+                    window.close();
+                } else {
+                    window.location.href = '/';
+                }
+            }, 120);
+        }
     } finally {
         window._modelManagerCardFacePromptActive = false;
     }
@@ -4722,7 +4725,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
-    function selectDefaultLive3DModel() {
+    function selectDefaultLive3DModel(options = {}) {
         if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
         const defaultFilename = 'sister1.0.vrm';
         const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
@@ -4732,7 +4735,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (matchedOption) {
             vrmModelSelect.value = matchedOption.value;
-            dispatchModelManagerChange(vrmModelSelect);
+            if (options.suppressChange) {
+                suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
+            } else {
+                dispatchModelManagerChange(vrmModelSelect);
+            }
             console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
             return true;
         }
@@ -8903,10 +8910,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        dispatchModelManagerChange(vrmModelSelect);
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项
@@ -9013,16 +9020,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        dispatchModelManagerChange(vrmModelSelect);
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 }
             } else if (modelType !== 'live2d') {
                 // Live3D 但无有效路径 → 尝试加载内置默认模型
                 console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，尝试加载默认模型`);
-                selectDefaultLive3DModel();
+                selectDefaultLive3DModel({ suppressChange: true });
             } else {
                 // Live2D 模型
                 // 构建API URL，支持可选的item_id参数
@@ -9086,7 +9093,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 所有事件监听器已注册，现在可以安全地加载当前角色模型
     // 这样 VRM 的 change 事件处理程序才能正确执行
     try {
-        await suppressModelManagerChange(() => loadCurrentCharacterModel());
+        await loadCurrentCharacterModel();
     } catch (loadError) {
         console.error('[模型管理] 加载当前角色模型失败:', loadError);
         showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

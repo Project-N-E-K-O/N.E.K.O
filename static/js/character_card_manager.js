@@ -4549,35 +4549,45 @@ function buildCreatedCatgirlPanelActions(name) {
 
 async function rollbackAutoCreatedCatgirl(form, targetName = '') {
     if (!form) return;
-    const tempName = targetName || form._autoCreatedName || form._autoCreatedDetachedName;
-    if (!tempName) return;
+    const tempNames = Array.from(new Set(
+        (targetName
+            ? [targetName]
+            : [form._autoCreatedName, form._autoCreatedDetachedName]
+        ).filter(Boolean)
+    ));
+    if (!tempNames.length) return;
+    const deletedNames = [];
     try {
-        const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(tempName), {
-            method: 'DELETE'
-        });
-        if (!resp.ok) {
-            const errData = await resp.json().catch(() => ({}));
-            console.warn('[角色面板] 回滚临时角色失败:', tempName, errData.error || resp.statusText);
-            return;
+        for (const tempName of tempNames) {
+            const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(tempName), {
+                method: 'DELETE'
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                console.warn('[角色面板] 回滚临时角色失败:', tempName, errData.error || resp.statusText);
+                continue;
+            }
+            deletedNames.push(tempName);
+            if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
+            if (window._cardMetas) delete window._cardMetas[tempName];
         }
-        if (form._autoCreatedName === tempName) {
+        if (!deletedNames.length) return;
+        if (deletedNames.includes(form._autoCreatedName)) {
             form._autoCreated = false;
             form._autoCreatedName = '';
         }
-        if (form._autoCreatedDetachedName === tempName) {
+        if (deletedNames.includes(form._autoCreatedDetachedName)) {
             form._autoCreatedDetachedName = '';
         }
         if (!form._autoCreatedName && !form._autoCreatedDetachedName) {
             form._autoCreatedRollbackWhenDependentCloses = false;
             form._autoCreatedDependentPopupSaved = false;
         }
-        if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
-        if (window._cardMetas) delete window._cardMetas[tempName];
         if (typeof loadCharacterCards === 'function') {
             loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
         }
     } catch (e) {
-        console.warn('[角色面板] 回滚临时角色请求失败:', tempName, e);
+        console.warn('[角色面板] 回滚临时角色请求失败:', tempNames.join(', '), e);
     }
 }
 
@@ -5547,6 +5557,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         }
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
+            form._autoCreated = false;
+            form._autoCreatedName = '';
         } else if (form._autoCreated) {
             form._autoCreated = false;
             form._autoCreatedName = '';
