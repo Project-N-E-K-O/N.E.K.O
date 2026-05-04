@@ -3988,7 +3988,7 @@ function openCatgirlPanel(card, originEl) {
         switchBtn.disabled = isCurrentChara;
         switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
         switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
         switchBtn.onclick = function (e) {
             e.stopPropagation();
             workshopSwitchCatgirl(name);
