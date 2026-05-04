@@ -159,6 +159,7 @@
             <LogViewer :plugin-id="pluginId" />
           </div>
         </el-tab-pane>
+
       </el-tabs>
     </el-card>
 

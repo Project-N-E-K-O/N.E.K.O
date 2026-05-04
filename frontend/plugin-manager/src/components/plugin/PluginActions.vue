@@ -1,5 +1,15 @@
 <template>
   <div class="plugin-actions">
+    <el-button
+      v-if="uiAction"
+      type="primary"
+      plain
+      :icon="Monitor"
+      @click="handleOpenUi"
+      :disabled="uiDisabled"
+    >
+      {{ uiAction.label || t('plugins.ui.open') }}
+    </el-button>
     <!-- Extension 操作按钮 -->
     <el-button-group v-if="isExtension">
       <el-button
@@ -56,8 +66,9 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { VideoPlay, VideoPause, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import { VideoPlay, VideoPause, Refresh, SwitchButton, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 
@@ -67,6 +78,7 @@ interface Props {
 
 const props = defineProps<Props>()
 const pluginStore = usePluginStore()
+const router = useRouter()
 const { t } = useI18n()
 
 const loading = ref(false)
@@ -78,6 +90,27 @@ const currentPlugin = computed(() => {
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const isExtension = computed(() => currentPlugin.value?.type === 'extension')
 const isDisabled = computed(() => status.value === 'disabled')
+const uiAction = computed(() => {
+  return currentPlugin.value?.list_actions?.find((action) => action.kind === 'ui') || null
+})
+const uiDisabled = computed(() => {
+  if (!uiAction.value) return true
+  if (uiAction.value.disabled) return true
+  if (uiAction.value.requires_running && status.value !== 'running') return true
+  return false
+})
+
+async function handleOpenUi() {
+  if (!uiAction.value || uiDisabled.value) {
+    return
+  }
+
+  await router.push({
+    path: `/plugins/${encodeURIComponent(props.pluginId)}`,
+    query: { tab: 'ui' },
+  })
+}
+
 async function handleStart() {
   if (isDisabled.value) {
     ElMessage.warning(t('messages.pluginDisabled'))
@@ -170,5 +203,6 @@ async function handleEnableExt() {
 .plugin-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 </style>
