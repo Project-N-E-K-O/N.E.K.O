@@ -18,7 +18,7 @@ font-family: 'Segoe UI', Arial, sans-serif;
 overflow: visible;
 }
 
-/* 页面标题栏 - 支持窗口拖动 */
+/* 页面标题栏 - 禁止窗口拖动 */
 body .page-title-bar {
     background: linear-gradient(to right, #4BD4FD, #17A7FF);
     padding: 18px 24px;
@@ -29,11 +29,6 @@ body .page-title-bar {
     position: sticky;
     top: 0;
     z-index: 100;
-    -webkit-app-region: drag;
-}
-
-/* 标题栏内的可交互元素需要禁用拖动 */
-.page-title-bar .close-btn {
     -webkit-app-region: no-drag;
 }
 
