@@ -2201,7 +2201,28 @@ async def set_current_catgirl(request: Request):
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
-    
+
+    # B8: if the previous character had an active game route, finalize it
+    # immediately. Otherwise the heartbeat-based timeout (10-60s) would
+    # leave a stale ``OmniOfflineClient`` consuming game events under the
+    # outgoing character's name and keep the SessionManager takeover
+    # muting the incoming character's ordinary chat output.
+    if old_catgirl and old_catgirl != catgirl_name:
+        try:
+            from main_routers.game_router import finalize_game_routes_for_character
+            finalized = await finalize_game_routes_for_character(old_catgirl)
+            if finalized:
+                logger.info(
+                    "角色切换：已收尾 %d 个旧角色 %s 的游戏路由",
+                    finalized,
+                    old_catgirl,
+                )
+        except Exception as exc:
+            # Swallow — character switch must not fail because of
+            # game-route cleanup; the heartbeat sweep will eventually
+            # clean up if this hook misses.
+            logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
+
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
     notification_count = 0

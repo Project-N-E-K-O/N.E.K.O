@@ -2220,12 +2220,16 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
     async def fake_submit(archive):
         return {"ok": True, "status": "cached", "count": 1}
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **kwargs):
         assert game_type == "soccer"
         assert session_id == "match_1"
         assert event["kind"] == "postgame"
         assert event["lastUserText"] == "我好像踢不进去。"
         assert event["scoreText"] == "玩家 2 : 4 Lan"
+        # Postgame must opt into the inactive-route bypass; the production
+        # caller passes ``allow_postgame=True`` so the chat can run after
+        # finalize.
+        assert kwargs.get("allow_postgame") is True
         return {
             "line": "刚才那局不算，我下次慢点陪你踢。",
             "llm_source": {"provider": "fake"},
@@ -2279,11 +2283,12 @@ async def test_route_end_uses_full_game_end_contract(monkeypatch):
     async def fake_submit(archive):
         return {"ok": True, "status": "cached", "count": 1}
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **kwargs):
         assert game_type == "soccer"
         assert session_id == "match_1"
         assert event["kind"] == "postgame"
         assert event["lastUserText"] == "再来一球就追上了。"
+        assert kwargs.get("allow_postgame") is True
         return {"line": "刚才那脚挺像样的。", "llm_source": {"provider": "fake"}}
 
     monkeypatch.setattr(game_router, "_submit_game_archive_to_memory", fake_submit)
