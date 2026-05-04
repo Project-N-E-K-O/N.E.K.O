@@ -114,12 +114,13 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
-async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> None:
+async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> bool:
     try:
         await mark_new_character_greeting_pending(config_manager, character_name, source=source)
+        return True
     except Exception:
         logger.exception("mark new character greeting pending failed: %s", character_name)
-        raise
+        return False
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -2364,7 +2365,7 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     await _config_manager.asave_characters(characters)
-    await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+    pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
@@ -2372,11 +2373,15 @@ async def add_catgirl(request: Request):
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
 
-    return {
+    response: dict = {
         "success": True,
         "character_name": key,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_mark_ok:
+        response["partial_success"] = True
+        response["pending_mark_failed"] = True
+    return response
 
 
 @router.put('/catgirl/{name}')
@@ -4007,15 +4012,21 @@ async def save_character_card(request: Request):
         await _config_manager.asave_characters(characters)
 
         if is_new_character:
-            await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
-        
+            pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
+        else:
+            pending_mark_ok = True
+
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
             await initialize_character_data()
 
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
-        return {"success": True, "character_card_name": chara_name}
+        result: dict = {"success": True, "character_card_name": chara_name}
+        if not pending_mark_ok:
+            result["partial_success"] = True
+            result["pending_mark_failed"] = True
+        return result
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -4731,7 +4742,7 @@ async def import_character_card(
 
             # 保存到文件
             await _config_manager.asave_characters(characters)
-            await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
+            pending_mark_ok = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
@@ -4805,11 +4816,15 @@ async def import_character_card(
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
-        return JSONResponse({
+        import_result: dict = {
             'success': True,
             'character_name': character_name,
-            'message': f'角色卡 "{character_name}" 导入成功'
-        })
+            'message': f'角色卡 "{character_name}" 导入成功',
+        }
+        if not pending_mark_ok:
+            import_result['partial_success'] = True
+            import_result['pending_mark_failed'] = True
+        return JSONResponse(import_result)
 
     except zipfile.BadZipFile:
         logger.error("导入角色卡失败：无效的ZIP文件")
