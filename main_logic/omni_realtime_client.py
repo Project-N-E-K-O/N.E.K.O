@@ -625,7 +625,11 @@ class OmniRealtimeClient:
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
-        
+        # Validate turn_detection_mode BEFORE any side effect (websockets.connect,
+        # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
+        if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
+            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -671,9 +675,6 @@ class OmniRealtimeClient:
             logger.info(f"静默超时检测已禁用（{reason}），不会自动关闭会话")
 
         # Set up default session configuration
-        if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
-            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
-
         is_manual = self.turn_detection_mode == TurnDetectionMode.MANUAL
         # MANUAL mode: every per-provider session.update below sends
         # ``turn_detection: null``, so the provider will NOT emit

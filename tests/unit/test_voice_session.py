@@ -678,3 +678,64 @@ async def test_connect_server_vad_mode_preserves_has_server_vad_default():
     assert client._has_server_vad is True, (
         "SERVER_VAD must not flip _has_server_vad — only MANUAL forces False"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Regression: connect() must validate turn_detection_mode BEFORE any
+# side effect (websocket open, _connect_gemini SDK init, silence-check
+# task spawn). CodeRabbit Major on PR #1128 (r3182466295): the original
+# check sat after websockets.connect() in the WebSocket branch and was
+# entirely bypassed by the early Gemini return — invalid modes either
+# leaked a half-open WebSocket or were silently accepted by Gemini.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+async def test_connect_gemini_invalid_turn_detection_mode_raises_before_side_effects():
+    """Gemini path: an invalid turn_detection_mode must raise ValueError
+    BEFORE _connect_gemini runs. Pre-fix the early Gemini return bypassed
+    validation entirely, so this asserts the hoist actually covers the
+    Gemini branch (the WebSocket branch already threw, just too late).
+    """
+    pytest.importorskip("google.genai")
+
+    client = OmniRealtimeClient(
+        base_url="https://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.0-flash-exp",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="gemini",
+    )
+    # Inject an invalid mode post-construction. The Enum has only two
+    # legal members so we use a sentinel object that fails the
+    # ``in (MANUAL, SERVER_VAD)`` membership check.
+    client.turn_detection_mode = "bogus_mode"
+
+    with patch.object(
+        client, "_connect_gemini", new_callable=AsyncMock
+    ) as mock_connect_gemini:
+        with pytest.raises(ValueError, match="Invalid turn detection mode"):
+            await client.connect(instructions="hi", native_audio=True)
+
+        mock_connect_gemini.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_connect_websocket_invalid_turn_detection_mode_raises_before_websocket_open():
+    """WebSocket path: validation hoist must fire before websockets.connect()
+    so we never leak a half-open socket on invalid mode.
+    """
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="qwen-omni-turbo-realtime",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="qwen",
+    )
+    client.turn_detection_mode = "bogus_mode"
+
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_ws_connect:
+        with pytest.raises(ValueError, match="Invalid turn detection mode"):
+            await client.connect(instructions="hi", native_audio=True)
+
+        mock_ws_connect.assert_not_called()
