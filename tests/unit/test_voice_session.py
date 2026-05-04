@@ -238,7 +238,14 @@ async def _run_connect_and_capture_session(client):
 
     with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
         mock_connect.return_value = mock_ws
-        await client.connect(instructions="You are helpful.", native_audio=True)
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+        finally:
+            # GLM/free providers start a background silence-detection task in
+            # connect(); without close() it lingers across tests and can cause
+            # cross-test interference / pytest warnings. close() cancels the
+            # task before returning.
+            await client.close()
 
     return captured.get("session")
 
