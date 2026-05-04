@@ -539,6 +539,157 @@ async def test_postgame_text_bubble_closes_session_after_finalize(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
+    """codex P1 / CR Major (PR #1127 r3182247827 / r3182218166): postgame
+    cleanup must close ONLY the entry it built, never the cache slot
+    blindly. After ``_complete_game_end_from_payload`` releases
+    ``end_route_lock``, a fresh ``/route/start`` for the same
+    ``(lanlan, game_type, session_id)`` can replace the cache entry
+    before postgame's ``finally`` runs. A key-based close would tear
+    down the new route's freshly-built ``OmniOfflineClient``.
+
+    Invariant: between ``_run_game_chat(..., allow_postgame=True)``
+    returning and the bubble's ``finally`` firing, swap the cache slot
+    with a peer-owned entry. The peer's session must remain intact and
+    cached after the bubble completes.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_postgame_replace")
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+
+        captured_callback = {"fn": None}
+        constructed: list = []
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                captured_callback["fn"] = kwargs.get("on_text_delta")
+                self.closed = False
+                constructed.append(self)
+
+            async def connect(self, *, instructions: str = ""):
+                pass
+
+            async def close(self):
+                self.closed = True
+
+            async def stream_text(self, text: str):
+                cb = captured_callback["fn"]
+                if cb is not None:
+                    await cb("postgame bubble line", True)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        peer_session = _FakeOmniSession(name="peer_after_finalize")
+        peer_entry = {
+            "session": peer_session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+        peer_lock = asyncio.Lock()
+        key = game_router._game_session_key(
+            "Lan", "soccer", "match_postgame_replace",
+        )
+
+        # Hook ``finish_proactive_delivery`` — it runs AFTER chat finishes
+        # but BEFORE the bubble's finally — to simulate a racing
+        # ``/route/start`` whose first ``/game_chat`` built a fresh entry
+        # and replaced postgame's cache slot.
+        class _StubManager:
+            is_active = False
+            session = None
+            current_speech_id = "speech-postgame"
+            state = None
+
+            def __init__(self):
+                self.delivered = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                # Simulate the race: a peer ``/route/start`` activated
+                # for the same key and its first ``/game_chat`` built a
+                # fresh entry, replacing postgame's cache slot.
+                game_router._game_sessions[key] = peer_entry
+                game_router._game_session_create_locks[key] = peer_lock
+                self.delivered = line
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        mgr = _StubManager()
+        archive = {
+            "lanlan_name": "Lan",
+            "summary": "",
+            "last_full_dialogues": [],
+            "last_state": {},
+            "finalScore": {},
+            "preGameContext": {},
+        }
+        options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
+
+        result = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_postgame_replace", mgr, archive, options,
+        )
+
+        assert result.get("ok") is True, result
+        assert result.get("action") == "chat", result
+        assert result.get("line") == "postgame bubble line"
+
+        # Postgame built exactly one ``OmniOfflineClient`` and closed it.
+        assert len(constructed) == 1
+        assert constructed[0].closed is True
+
+        # CRITICAL: the peer's entry survived. The bubble must not have
+        # touched the cache slot once identity diverged from its own
+        # entry, and must NOT have closed the peer's session.
+        assert peer_session.close_calls == 0, (
+            "postgame finally closed the peer route's session — "
+            "key-based close regressed"
+        )
+        assert game_router._game_sessions.get(key) is peer_entry, (
+            "postgame finally evicted the peer route's cache entry — "
+            "key-based eviction regressed"
+        )
+        assert game_router._game_session_create_locks.get(key) is peer_lock, (
+            "postgame finally evicted the peer route's create lock — "
+            "key-based eviction regressed"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_b1_supersede_then_chat_does_not_revive_closed_route(monkeypatch):
     """B1: after a ``/route/start`` supersede finalizes a prior route,
     a stale chat for that prior route must not silently re-create an

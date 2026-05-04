@@ -16,7 +16,7 @@ import random
 import re
 import time
 from collections import OrderedDict
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 
@@ -2835,6 +2835,7 @@ async def _deliver_postgame_text_bubble(
 
     proactive_sid = getattr(mgr, "current_speech_id", None)
     state_machine = getattr(mgr, "state", None)
+    postgame_entry: Optional[dict] = None
     try:
         from main_logic.session_state import SessionEvent
         if state_machine and hasattr(state_machine, "fire"):
@@ -2857,6 +2858,7 @@ async def _deliver_postgame_text_bubble(
         llm_result = await _run_game_chat(
             game_type, session_id, event, allow_postgame=True,
         )
+        postgame_entry = llm_result.get("_postgame_entry") if isinstance(llm_result, dict) else None
         line = str(llm_result.get("line") or "").strip()
         if not line:
             return {
@@ -2911,20 +2913,38 @@ async def _deliver_postgame_text_bubble(
             logger.debug("🎮 赛后文本气泡状态机收尾失败: %s", exc, exc_info=True)
         # Why: ``_run_game_chat(..., allow_postgame=True)`` may have built
         # a fresh ``OmniOfflineClient`` after finalize already evicted
-        # the prior session. No other lifecycle hook will close it once
-        # the route is gone — we must do it here to avoid a permanent
-        # leak (the very risk that motivated the B1/B2 short-circuits).
-        try:
-            postgame_lanlan = str(archive.get("lanlan_name") or "")
-            if postgame_lanlan:
-                await _close_and_remove_session(
-                    game_type, session_id, postgame_lanlan,
-                )
-        except Exception as exc:
-            logger.debug(
-                "🎮 赛后文本气泡 session 清理失败: game=%s session=%s err=%s",
-                game_type, session_id, exc, exc_info=True,
+        # the prior session; nothing else in the lifecycle would close it
+        # once the route is gone. Identity-gate the cache eviction so a
+        # racing ``/route/start`` that reused the same key after finalize
+        # released ``end_route_lock`` keeps its own freshly-built session
+        # untouched. We always close OUR captured entry's session object
+        # — even if the cache no longer points at it (peer evicted) — so
+        # the postgame client can never leak. ``OmniOfflineClient.close``
+        # is idempotent, so a peer's prior close is safe to re-run.
+        if postgame_entry is not None:
+            postgame_lanlan = str(
+                postgame_entry.get("lanlan_name") or archive.get("lanlan_name") or ""
             )
+            try:
+                key = _game_session_key(postgame_lanlan, game_type, session_id)
+                cached = _game_sessions.get(key)
+                if cached is postgame_entry:
+                    _game_sessions.pop(key, None)
+                    _game_session_create_locks.pop(key, None)
+            except Exception as exc:
+                logger.debug(
+                    "🎮 赛后文本气泡 cache 清理失败: game=%s session=%s err=%s",
+                    game_type, session_id, exc, exc_info=True,
+                )
+            postgame_session = postgame_entry.get("session")
+            if postgame_session is not None:
+                try:
+                    await postgame_session.close()
+                except Exception as exc:
+                    logger.debug(
+                        "🎮 赛后文本气泡 session 清理失败: game=%s session=%s err=%s",
+                        game_type, session_id, exc, exc_info=True,
+                    )
 
 
 async def _deliver_game_postgame(
@@ -3755,7 +3775,10 @@ async def _run_game_chat(
                     "🎮 chat short-circuit: entry no longer cached game=%s sid=%s lanlan=%s",
                     game_type, session_id, lanlan_name,
                 )
-                return {"line": "", "control": {}, "skipped": "entry_evicted"}
+                evicted_result: Dict[str, Any] = {"line": "", "control": {}, "skipped": "entry_evicted"}
+                if allow_postgame:
+                    evicted_result["_postgame_entry"] = entry
+                return evicted_result
 
             session = entry['session']
             reply_chunks = entry['reply_chunks']
@@ -3790,10 +3813,16 @@ async def _run_game_chat(
                 )
             except asyncio.TimeoutError:
                 logger.warning("🎮 游戏 LLM 响应超时: game=%s sid=%s", game_type, session_id)
-                return {"error": "LLM 响应超时", "line": "", "control": {}}
+                err_result: Dict[str, Any] = {"error": "LLM 响应超时", "line": "", "control": {}}
+                if allow_postgame:
+                    err_result["_postgame_entry"] = entry
+                return err_result
             except Exception as e:
                 logger.error("🎮 游戏 LLM 调用失败: %s", e)
-                return {"error": f"LLM 调用失败: {e}", "line": "", "control": {}}
+                err_result = {"error": f"LLM 调用失败: {e}", "line": "", "control": {}}
+                if allow_postgame:
+                    err_result["_postgame_entry"] = entry
+                return err_result
 
             llm_elapsed_ms = int((time.perf_counter() - llm_started_at) * 1000)
             full_reply = ''.join(reply_chunks)
@@ -3824,6 +3853,13 @@ async def _run_game_chat(
         'total_ms': total_elapsed_ms,
     }
     result['llm_source'] = dict(entry.get('source') or {})
+    if allow_postgame:
+        # Why: postgame teardown owns the lifecycle of the entry it used,
+        # but key-based close is racy — a fresh ``/route/start`` may
+        # reuse the same ``(lanlan, game_type, session_id)`` cache slot
+        # before the postgame's ``finally`` runs. Hand the caller the
+        # exact entry object so its close is identity-gated.
+        result['_postgame_entry'] = entry
     logger.info(
         "🎮 [%s:%s] LLM耗时=%sms 后端总耗时=%sms 事件=%s → 台词=%s",
         game_type, session_id, llm_elapsed_ms, total_elapsed_ms,
