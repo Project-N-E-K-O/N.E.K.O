@@ -3942,10 +3942,22 @@ async def _run_game_chat(
 
             session = entry['session']
             reply_chunks = entry['reply_chunks']
-            await _refresh_game_session_instructions(
-                entry, game_type, chat_session_id, lanlan_name,
-                postgame_snapshot=postgame_snapshot if allow_postgame else None,
-            )
+            try:
+                await _refresh_game_session_instructions(
+                    entry, game_type, chat_session_id, lanlan_name,
+                    postgame_snapshot=postgame_snapshot if allow_postgame else None,
+                )
+            except Exception as e:
+                logger.error("🎮 更新游戏 session 指令失败: %s", e)
+                err_result: Dict[str, Any] = {
+                    "error": f"更新 session 指令失败: {e}",
+                    "line": "",
+                    "control": {},
+                }
+                if allow_postgame:
+                    err_result["_postgame_entry"] = entry
+                    err_result["_postgame_cache_session_id"] = chat_session_id
+                return err_result
 
             # 清空上一次的回复
             reply_chunks.clear()

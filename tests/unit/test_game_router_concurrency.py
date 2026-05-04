@@ -2188,6 +2188,170 @@ async def test_postgame_uses_snapshot_not_live_route_state(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_postgame_refresh_failure_returns_metadata_for_cleanup(monkeypatch):
+    """CR Major (PR #1127 r3183073856): when
+    ``_refresh_game_session_instructions`` raises inside
+    ``_run_game_chat(..., allow_postgame=True)``, the freshly-built
+    postgame ``OmniOfflineClient`` must still be teardown-reachable.
+
+    Pre-fix: the refresh call had no try/except. An exception there
+    propagated straight out of ``_run_game_chat`` and the structured
+    return path that attaches ``_postgame_entry`` /
+    ``_postgame_cache_session_id`` was skipped, so
+    ``_deliver_postgame_text_bubble``'s ``finally`` had no handle to
+    close — the new client survived until the 30-min idle sweep.
+
+    Post-fix: the call is wrapped, the error result carries the
+    postgame metadata (when ``allow_postgame=True``), and the bubble's
+    ``finally`` closes the client.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        # Activate then finalize a soccer route so postgame is the
+        # designed teardown step.
+        old_state = _activate_route("Lan", "soccer", "match_refresh_fail")
+        old_state["preGameContext"] = {"summary": "snap"}
+        old_state["_exit_flow_started"] = True
+        old_state["game_route_active"] = False
+        snapshot = game_router._build_postgame_context_snapshot(old_state)
+
+        async def _refresh_explodes(*_args, **_kwargs):
+            raise RuntimeError("test refresh failed")
+
+        monkeypatch.setattr(
+            game_router,
+            "_refresh_game_session_instructions",
+            _refresh_explodes,
+        )
+
+        fake_session = _FakeOmniSession(name="postgame_refresh")
+
+        class _StubOmni:
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self, *, instructions: str = ""):
+                await fake_session.connect()
+
+            async def close(self):
+                await fake_session.close()
+
+            async def stream_text(self, text: str):
+                await fake_session.stream_text(text)
+
+            async def update_session(self, config):
+                pass
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+
+        # Part 1: call ``_run_game_chat`` directly and assert the error
+        # result carries the postgame metadata so the caller can close
+        # the freshly-built client.
+        event = {"lanlan_name": "Lan", "kind": "match_end"}
+        result = await game_router._run_game_chat(
+            "soccer", "match_refresh_fail", event,
+            allow_postgame=True, postgame_snapshot=snapshot,
+        )
+        assert isinstance(result, dict)
+        assert "error" in result and "session 指令失败" in result["error"]
+        # The two metadata keys are the load-bearing invariant: without
+        # them ``_deliver_postgame_text_bubble`` can't reach the session.
+        assert "_postgame_entry" in result, (
+            "postgame entry missing from refresh-failure result; "
+            "the freshly-built OmniOfflineClient cannot be closed"
+        )
+        assert "_postgame_cache_session_id" in result
+        leaked_entry = result["_postgame_entry"]
+        leaked_session = leaked_entry.get("session")
+        assert leaked_session is not None
+        # Sanity: the freshly built client did connect and was NOT
+        # closed by ``_run_game_chat`` itself — that's the caller's job.
+        assert fake_session.connect_calls == 1
+        assert fake_session.close_calls == 0
+
+        # Clean up before part 2 since part 1 left a postgame entry in
+        # the cache (caller never ran).
+        cache_key = game_router._game_session_key(
+            "Lan", "soccer", result["_postgame_cache_session_id"],
+        )
+        game_router._game_sessions.pop(cache_key, None)
+        game_router._game_session_create_locks.pop(cache_key, None)
+        await leaked_session.close()
+
+        # Part 2: full ``_deliver_postgame_text_bubble`` path. With the
+        # metadata propagated, the bubble's ``finally`` closes the
+        # postgame session.
+        fake_session2 = _FakeOmniSession(name="postgame_refresh_bubble")
+
+        class _StubOmni2:
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self, *, instructions: str = ""):
+                await fake_session2.connect()
+
+            async def close(self):
+                await fake_session2.close()
+
+            async def stream_text(self, text: str):
+                await fake_session2.stream_text(text)
+
+            async def update_session(self, config):
+                pass
+
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _StubOmni2)
+
+        class _StubManager:
+            current_speech_id = "speech-refresh-fail"
+            state = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        archive = {"lanlan_name": "Lan", "preGameContext": {"summary": "snap"}}
+        bubble_result = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_refresh_fail", _StubManager(), archive,
+            {"enabled": True}, postgame_snapshot=snapshot,
+        )
+        # Bubble pass-skips because the LLM produced no line, but the
+        # postgame session was still cleaned up via the ``finally``.
+        assert bubble_result.get("action") in {"pass", "skip"}
+        assert fake_session2.connect_calls == 1
+        assert fake_session2.close_calls == 1, (
+            "postgame session was not closed after refresh failure; "
+            "metadata propagation is broken or finally did not reach close"
+        )
+        # Cache slot evicted by the bubble's finally.
+        for k in list(game_router._game_sessions.keys()):
+            assert game_router._POSTGAME_SESSION_MARKER not in k, (
+                f"postgame cache slot {k!r} was not evicted after "
+                f"refresh-failure cleanup"
+            )
+
+
+@pytest.mark.unit
 def test_route_session_id_only_strips_synthetic_uuid_tail():
     """codex P2 (PR #1127 r3182964201): ``_route_session_id`` must strip
     ONLY the exact suffix shape produced by ``_make_postgame_session_id``
