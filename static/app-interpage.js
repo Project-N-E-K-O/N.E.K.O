@@ -320,6 +320,7 @@
             : null;
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
+        var throwOnError = !!reloadOptions.throwOnError;
 
         // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
         // 执行会导致异常并弹出误导性的"模型切换失败"toast。
@@ -858,6 +859,9 @@
                         3000
                     );
                 }
+                if (throwOnError) {
+                    throw new Error(data.error || 'page_config_failed');
+                }
             }
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
@@ -879,6 +883,9 @@
                     window.t ? window.t('app.modelSwitchFailed') : '模型切换失败',
                     3000
                 );
+            }
+            if (throwOnError) {
+                throw error;
             }
         } finally {
             // Clear in-flight flag
@@ -1936,34 +1943,45 @@
 
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         try {
-            // Persist the change so that future reloads keep the default avatar.
+            // Fail-fast when there is no character context. This happens if the
+            // tray IPC fires before `neko:config-injected`, or on a sub-window
+            // that never received the injection. Without lanlan_name we cannot
+            // PUT the persistence change, and handleModelReload('') would
+            // simply re-fetch the unchanged config — masking a no-op as success.
             if (!lanlanName) {
                 console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
-            } else {
-                var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
-                var putResp = await fetch(putUrl, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model_type: 'live2d',
-                        live2d: DEFAULT_LIVE2D_MODEL_NAME,
-                        live2d_idle_animation: null
-                    })
-                });
-                if (!putResp.ok) {
-                    var errText = '';
-                    try { errText = await putResp.text(); } catch (_) {}
-                    throw new Error('HTTP ' + putResp.status + (errText ? (': ' + errText) : ''));
-                }
+                throw new Error('missing_lanlan_name');
+            }
+
+            // Persist the change so that future reloads keep the default avatar.
+            var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
+            var putResp = await fetch(putUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model_type: 'live2d',
+                    live2d: DEFAULT_LIVE2D_MODEL_NAME,
+                    live2d_idle_animation: null
+                })
+            });
+            if (!putResp.ok) {
+                var errText = '';
+                try { errText = await putResp.text(); } catch (_) {}
+                throw new Error('HTTP ' + putResp.status + (errText ? (': ' + errText) : ''));
             }
 
             // Trigger the live model swap. handleModelReload re-fetches the
             // page_config, so it will pick up the freshly-saved default Live2D
             // model and recycle the VRM/MMD overlays as needed.
+            // suppressToast: this caller owns the success/failure toast.
+            // throwOnError: handleModelReload's own catch swallows errors; we
+            // need them surfaced so the reset doesn't report success after a
+            // failed hot-swap.
+            var reloadOpts = { suppressToast: true, throwOnError: true };
             if (typeof handleModelReload === 'function') {
-                await handleModelReload(lanlanName);
+                await handleModelReload(lanlanName, reloadOpts);
             } else if (typeof window.handleModelReload === 'function') {
-                await window.handleModelReload(lanlanName);
+                await window.handleModelReload(lanlanName, reloadOpts);
             } else {
                 console.warn('[Model] handleModelReload 不可用，跳过热切换');
             }
