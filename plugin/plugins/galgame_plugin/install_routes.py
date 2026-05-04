@@ -178,6 +178,13 @@ def _resolve_install_task_payload(task_id: str, *, kind: str, label: str) -> dic
     if not task_id or ".." in task_id or "/" in task_id or "\\" in task_id:
         raise HTTPException(status_code=400, detail=f"Invalid {label} install task_id")
     state_payload = load_install_task_state(task_id, kind=kind)
+
+    # Short-circuit: persisted terminal states don't need a live run lookup.
+    if state_payload is not None:
+        state_status = str(state_payload.get("status") or "")
+        if state_status in INSTALL_TERMINAL_STATUSES:
+            return dict(state_payload)
+
     run_missing = False
     try:
         run_record = run_service.get_run(task_id)
@@ -266,21 +273,32 @@ async def _start_install_task(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
-    state_payload = update_install_task_state(
-        created.run_id,
-        kind=spec["kind"],
-        run_id=created.run_id,
-        status="queued",
-        phase="queued",
-        message=spec["queued_message"],
-        progress=0.0,
-    )
+    local_save_failed = False
+    try:
+        state_payload = update_install_task_state(
+            created.run_id,
+            kind=spec["kind"],
+            run_id=created.run_id,
+            status="queued",
+            phase="queued",
+            message=spec["queued_message"],
+            progress=0.0,
+        )
+    except OSError:
+        logger.exception(
+            "failed to persist local install state for run=%s kind=%s",
+            created.run_id,
+            spec["kind"],
+        )
+        local_save_failed = True
+        state_payload = {}
     return JSONResponse(
         {
             "task_id": created.run_id,
             "run_id": created.run_id,
             "status": created.status,
             "state": state_payload,
+            "local_save_failed": local_save_failed,
         }
     )
 

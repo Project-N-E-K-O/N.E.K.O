@@ -1,6 +1,6 @@
 """Standalone Tesseract installer CLI.
 Run from repo root with venv activated:
-    python plugin/plugins/galgame_plugin/_install_tesseract_cli.py
+    python -m plugin.plugins.galgame_plugin._install_tesseract_cli
 """
 from __future__ import annotations
 

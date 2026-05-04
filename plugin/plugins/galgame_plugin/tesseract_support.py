@@ -59,6 +59,7 @@ def _iter_tesseract_candidates(
     configured_path: str,
     *,
     install_target_dir_raw: str = "",
+    prioritize_install_target: bool = False,
 ) -> list[Path]:
     candidates: list[Path] = []
     seen: set[str] = set()
@@ -72,17 +73,23 @@ def _iter_tesseract_candidates(
         seen.add(key)
         candidates.append(candidate)
 
+    if prioritize_install_target:
+        install_target_dir = str(install_target_dir_raw or "").strip()
+        if install_target_dir:
+            _add(_expand_candidate_path(f"{install_target_dir}/{TESSERACT_EXECUTABLE}"))
+
     configured = str(configured_path or "").strip()
     if configured:
         _add(_expand_candidate_path(configured))
 
+    if not prioritize_install_target:
+        install_target_dir = str(install_target_dir_raw or "").strip()
+        if install_target_dir:
+            _add(_expand_candidate_path(f"{install_target_dir}/{TESSERACT_EXECUTABLE}"))
+
     path_hit = shutil.which(TESSERACT_EXECUTABLE)
     if path_hit:
         _add(Path(path_hit))
-
-    install_target_dir = str(install_target_dir_raw or "").strip()
-    if install_target_dir:
-        _add(_expand_candidate_path(f"{install_target_dir}/{TESSERACT_EXECUTABLE}"))
 
     _add(
         _candidate_path_from_env(
@@ -118,10 +125,11 @@ def _iter_tesseract_candidates(
     return candidates
 
 
-def resolve_tesseract_path(configured_path: str, *, install_target_dir_raw: str = "") -> str:
+def resolve_tesseract_path(configured_path: str, *, install_target_dir_raw: str = "", prioritize_install_target: bool = False) -> str:
     for candidate in _iter_tesseract_candidates(
         configured_path,
         install_target_dir_raw=install_target_dir_raw,
+        prioritize_install_target=prioritize_install_target,
     ):
         if candidate.is_file():
             return str(candidate)
@@ -153,11 +161,12 @@ def inspect_tesseract_installation(
     install_target_dir_raw: str,
     languages: str = DEFAULT_TESSERACT_LANGUAGES,
     platform_fn: Callable[[], bool] | None = None,
+    prioritize_install_target: bool = False,
 ) -> dict[str, Any]:
     checker = platform_fn or is_windows_platform
     supported = bool(checker())
     target_dir = resolve_tesseract_install_target(install_target_dir_raw)
-    expected_executable_path = str(target_dir / TESSERACT_EXECUTABLE) if target_dir else ""
+    expected_executable_path = str(target_dir / TESSERACT_EXECUTABLE) if target_dir.parts else ""
     detected_path = ""
     tessdata_dir = Path()
     missing_languages = _required_languages(languages)
@@ -165,6 +174,7 @@ def inspect_tesseract_installation(
         detected_path = resolve_tesseract_path(
             configured_path,
             install_target_dir_raw=install_target_dir_raw,
+            prioritize_install_target=prioritize_install_target,
         )
         if detected_path:
             tessdata_dir = resolve_tessdata_dir(detected_path)
@@ -184,7 +194,7 @@ def inspect_tesseract_installation(
         "installed": installed,
         "can_install": supported and not installed,
         "detected_path": detected_path,
-        "target_dir": str(target_dir) if target_dir else "",
+        "target_dir": str(target_dir) if target_dir.parts else "",
         "expected_executable_path": expected_executable_path,
         "tessdata_dir": str(tessdata_dir) if tessdata_dir else "",
         "required_languages": _required_languages(languages),
@@ -676,6 +686,7 @@ async def install_tesseract(
                 install_target_dir_raw=install_target_dir_raw,
                 languages=languages,
                 platform_fn=platform_fn,
+                prioritize_install_target=True,
             )
             if not result_status["installed"]:
                 raise RuntimeError(

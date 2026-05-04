@@ -91,7 +91,7 @@ def _context_json_for_prompt(context: dict[str, Any]) -> str:
 
 
 _EXPLAIN_LINE_EXAMPLE = {
-    "explanation": "这句台词表现了角色的犹豫和试探。",
+    "explanation": "This line reveals the character's hesitation and tentative probing.",
     "evidence": [
         {
             "type": "current_line",
@@ -105,7 +105,7 @@ _EXPLAIN_LINE_EXAMPLE = {
 }
 
 _SUMMARIZE_SCENE_EXAMPLE = {
-    "summary": "这一段剧情在放学后的对话中推进了角色关系。",
+    "summary": "The scene advances character relationships through an after-school conversation.",
     "key_points": [
         {
             "type": "plot",
@@ -124,19 +124,19 @@ _SUGGEST_CHOICE_EXAMPLE = {
             "choice_id": "choice-1",
             "text": "好啊",
             "rank": 1,
-            "reason": "更符合当前关系升温的剧情方向。",
+            "reason": "Aligns with the current direction of warming relationship progression.",
         },
         {
             "choice_id": "choice-2",
             "text": "下次吧",
             "rank": 2,
-            "reason": "会让关系推进放缓。",
+            "reason": "Would stall the relationship momentum.",
         },
     ]
 }
 
 _AGENT_REPLY_EXAMPLE = {
-    "reply": "当前在放学后的对话场景，雪乃正在试探主角是否愿意一起回家。"
+    "reply": "The current scene is an after-school conversation where 雪乃 is tentatively inviting the protagonist to walk home together."
 }
 
 _SYSTEM_PROMPTS = {

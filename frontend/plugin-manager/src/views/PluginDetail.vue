@@ -82,6 +82,10 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
+          <PluginUIFrame :plugin-id="pluginId" height="560px" />
+        </el-tab-pane>
+
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
           <div class="info-section" data-yui-guide-id="plugin-detail-info">
             <el-descriptions :column="2" border>
@@ -180,7 +184,9 @@ import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
+import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
+import { get } from '@/api'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
@@ -194,8 +200,9 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
-const allowedTabs = new Set(['panel', 'guide', 'info', 'entries', 'metrics', 'config', 'logs'])
+const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
+const hasStaticUI = ref(false)
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -252,6 +259,7 @@ function resolveDefaultTab(value: unknown): string {
   const requested = resolveActiveTab(value)
   if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
   if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
+  if (requested === 'ui' && !hasStaticUI.value) return 'info'
   return requested
 }
 
@@ -296,11 +304,21 @@ async function fetchSurfaces() {
   syncSurfaceTabs()
 }
 
+async function fetchStaticUI() {
+  try {
+    const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(pluginId.value)}/ui-info`)
+    hasStaticUI.value = info?.has_ui ?? false
+  } catch {
+    hasStaticUI.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
     await fetchSurfaces()
+    await fetchStaticUI()
     activeTab.value = resolveDefaultTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
@@ -320,6 +338,7 @@ watch(pluginId, async () => {
   try {
     await pluginStore.fetchPluginStatus(pluginId.value)
     await fetchSurfaces()
+    await fetchStaticUI()
     activeTab.value = resolveDefaultTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {

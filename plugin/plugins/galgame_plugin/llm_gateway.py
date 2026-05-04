@@ -273,7 +273,7 @@ class LLMGateway:
                     result,
                     now=time.monotonic(),
                 )
-                if ttl > 0:
+                if ttl > 0 and not result.get("degraded"):
                     self._cache[fingerprint] = (time.monotonic() + ttl, _json_payload_copy(result))
                     self._cache.move_to_end(fingerprint)
                     while len(self._cache) > _LLM_RESPONSE_CACHE_MAX_ITEMS:

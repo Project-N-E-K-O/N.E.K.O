@@ -562,13 +562,20 @@ async def install_textractor(
                     if task_id:
                         update_install_task_state(task_id, **extracting_progress)
                     await _emit_progress(progress_callback, extracting_progress)
-                    staging_root = tmp_dir / f"extract-{asset_name}"
+                    extraction_root = tmp_dir / f"extract-{asset_name}"
                     source_dir = await asyncio.to_thread(
                         _safe_extract_archive,
                         archive_path,
-                        staging_root,
+                        extraction_root,
                     )
-                    await asyncio.to_thread(_copy_install_tree, source_dir, target_dir)
+                    install_staging_dir = target_dir.parent / (target_dir.name + ".staging")
+                    if install_staging_dir.exists():
+                        await asyncio.to_thread(
+                            shutil.rmtree, install_staging_dir, ignore_errors=True
+                        )
+                    await asyncio.to_thread(
+                        _copy_install_tree, source_dir, install_staging_dir
+                    )
 
                     verifying_progress = {
                         "status": "running",
@@ -586,12 +593,22 @@ async def install_textractor(
                     if task_id:
                         update_install_task_state(task_id, **verifying_progress)
                     await _emit_progress(progress_callback, verifying_progress)
-                    detected_path = resolve_textractor_path(
-                        configured_path,
-                        install_target_dir_raw=install_target_dir_raw,
-                    )
-                    if not detected_path:
-                        raise RuntimeError("TextractorCLI.exe is still missing after extraction")
+
+                    staging_exe = install_staging_dir / TEXTRACTOR_EXECUTABLE
+                    if not staging_exe.is_file():
+                        await asyncio.to_thread(
+                            shutil.rmtree, install_staging_dir, ignore_errors=True
+                        )
+                        raise RuntimeError(
+                            "TextractorCLI.exe is still missing after extraction"
+                        )
+
+                    if target_dir.exists():
+                        await asyncio.to_thread(
+                            shutil.rmtree, target_dir, ignore_errors=True
+                        )
+                    await asyncio.to_thread(shutil.move, str(install_staging_dir), str(target_dir))
+
                     result_status = inspect_textractor_installation(
                         configured_path=configured_path,
                         install_target_dir_raw=install_target_dir_raw,

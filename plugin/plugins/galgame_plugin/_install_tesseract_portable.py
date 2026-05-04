@@ -21,9 +21,10 @@ TESSDATA_BASE_URL = (
     "https://cdn.jsdelivr.net/gh/tesseract-ocr/"
     f"tessdata_fast@{TESSDATA_COMMIT}"
 )
-LANGUAGES = ["chi_sim", "eng"]
+LANGUAGES = ["chi_sim", "jpn", "eng"]
 LANGUAGE_SHA256 = {
     "chi_sim": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+    "jpn": "1f5de9236d2e85f5fdf4b3c500f2d4926f8d9449f28f5394472d9e8d83b91b4d",
     "eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
 }
 TARGET_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\Programs\N.E.K.O\Tesseract-OCR"))
@@ -132,6 +133,7 @@ def main() -> None:
             "/NORESTART",
             "/SP-",
             "/CURRENTUSER",
+            f"/DIR={TARGET_DIR}",
         ]
         try:
             subprocess.run(cmd, check=True, timeout=300)
@@ -146,6 +148,14 @@ def main() -> None:
     # Ensure tessdata dir and languages
     tessdata_dir = TARGET_DIR / "tessdata"
     tessdata_dir.mkdir(parents=True, exist_ok=True)
+
+    for lang in LANGUAGES:
+        data_file = tessdata_dir / f"{lang}.traineddata"
+        if data_file.exists():
+            try:
+                _verify_file_sha256(data_file, _language_sha256_from_env(lang))
+            except Exception:
+                print(f"  {lang}: cached file corrupted, will re-download")
 
     missing_langs = []
     for lang in LANGUAGES:

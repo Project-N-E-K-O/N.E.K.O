@@ -18,6 +18,12 @@ DXCAM_PACKAGE_NAME = "dxcam"
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+def _purge_module(module_name: str) -> None:
+    for name in list(sys.modules.keys()):
+        if name == module_name or name.startswith(f"{module_name}."):
+            sys.modules.pop(name, None)
+
+
 def _module_origin(module_name: str) -> str:
     try:
         spec = importlib.util.find_spec(module_name)
@@ -152,6 +158,8 @@ async def install_dxcam(
 
     try:
         await asyncio.to_thread(_run_pip_install, timeout_seconds=timeout_seconds)
+        _purge_module(DXCAM_PACKAGE_NAME)
+        importlib.invalidate_caches()
         verifying = {
             "status": "running",
             "phase": "verifying",

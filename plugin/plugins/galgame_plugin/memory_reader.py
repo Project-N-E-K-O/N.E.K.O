@@ -1116,8 +1116,18 @@ class MemoryReaderBridgeWriter:
             "route_id": self._state["route_id"],
         }
         self._append_event("session_ended", payload, ts=ts, update_snapshot=False)
+        self._write_session_snapshot()
         self._text_to_line_id.clear()
         self._line_id_owner.clear()
+        self._session_id = ""
+        self._process_name = ""
+        self._pid = 0
+        self._exe_path = ""
+        self._engine = ""
+        self._detection_reason = ""
+        self._started_at = ""
+        self._last_seq = 0
+        self._last_event_ts = ""
         return True
 
     def runtime(self) -> MemoryReaderRuntime:

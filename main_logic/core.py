@@ -4280,6 +4280,13 @@ class LLMSessionManager:
                 if str(cb.get("summary") or "").strip()
             ]
             if not items:
+                # detail-only callbacks with empty summary: drain them from the
+                # pending queue so they are consumed rather than retried forever.
+                snapshot_ids = {id(cb) for cb in proactive_cbs}
+                self.pending_agent_callbacks = [
+                    cb for cb in self.pending_agent_callbacks
+                    if id(cb) not in snapshot_ids
+                ]
                 return
             instruction = _build_galgame_context_instruction(items)
         else:
@@ -4685,9 +4692,9 @@ class LLMSessionManager:
             _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
             if all(_is_galgame_context_callback(cb) for cb in self.pending_agent_callbacks):
                 lines = [
-                    _strip_galgame_context_prefix(str(cb.get("summary") or "").strip())
+                    _strip_galgame_context_prefix(str(cb.get("summary") or cb.get("detail") or "").strip())
                     for cb in self.pending_agent_callbacks
-                    if str(cb.get("summary") or "").strip()
+                    if str(cb.get("summary") or cb.get("detail") or "").strip()
                 ]
                 return _build_galgame_context_instruction(lines) if lines else ""
             return _build_callback_instruction(

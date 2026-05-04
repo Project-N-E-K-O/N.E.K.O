@@ -314,10 +314,11 @@ class GalgameLLMBackend:
             {
                 "role": "user",
                 "content": (
-                    f"JSON 修正请求 {attempt}/{max_attempts}，operation={operation}。\n"
-                    f"解析错误：{bounded_error}\n"
-                    "你上一条回复不是合法 JSON 对象。请只返回一个合法 JSON 对象，"
-                    "不要带 Markdown、解释或额外文本。"
+                    f"JSON correction request {attempt}/{max_attempts}, operation={operation}.\n"
+                    f"Parse error: {bounded_error}\n"
+                    "Your last response was not a valid JSON object. "
+                    "Reply with ONLY a valid JSON object — "
+                    "no markdown, no explanation, no extra text."
                 ),
             }
         )
@@ -426,7 +427,7 @@ class GalgameLLMBackend:
                 api_key=api_key,
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
-                timeout=30.0,
+                timeout=float(getattr(self._config, "llm_call_timeout_seconds", 30.0) or 30.0) + 0.5,
             )
             self._llm_cache[cache_key] = llm
             return llm

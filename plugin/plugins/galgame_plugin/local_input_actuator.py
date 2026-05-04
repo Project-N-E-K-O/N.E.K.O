@@ -7,7 +7,7 @@ import threading
 from ctypes import wintypes
 from typing import Any
 
-from .models import SharedStatePayload
+from .models import DATA_SOURCE_MEMORY_READER, DATA_SOURCE_OCR_READER, SharedStatePayload
 
 
 VK_RETURN = 0x0D
@@ -138,8 +138,14 @@ class INPUT(ctypes.Structure):
 
 
 def _runtime_target(shared: SharedStatePayload) -> dict[str, Any]:
+    active_source = str(shared.get("active_data_source") or "").strip()
+    if active_source == DATA_SOURCE_OCR_READER:
+        preferred_keys = ("ocr_reader_runtime", "memory_reader_runtime")
+    else:
+        preferred_keys = ("memory_reader_runtime", "ocr_reader_runtime")
+
     fallback: dict[str, Any] = {}
-    for key in ("ocr_reader_runtime", "memory_reader_runtime"):
+    for key in preferred_keys:
         runtime = shared.get(key)
         if isinstance(runtime, dict):
             pid = int(runtime.get("pid") or 0)
