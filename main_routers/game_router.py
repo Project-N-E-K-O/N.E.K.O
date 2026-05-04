@@ -28,6 +28,11 @@ from config.prompts_game import (
     get_soccer_system_prompt,
 )
 from .shared_state import get_config_manager, get_session_manager
+from main_logic.mirror_meta import (
+    MIRROR_USER_TEXT_INPUT_TYPE,
+    MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE,
+    build_mirror_meta,
+)
 from utils.game_route_state import (
     _game_route_states,
     _get_active_game_route_state,
@@ -2545,14 +2550,7 @@ def _active_realtime_session(mgr: Any) -> Any | None:
 
 
 def _is_gemini_realtime_session(session: Any) -> bool:
-    model_lower = str(getattr(session, "_model_lower", "") or getattr(session, "model", "") or "").lower()
-    base_url = str(getattr(session, "base_url", "") or "").lower()
-    return bool(
-        getattr(session, "_is_gemini", False)
-        or "gemini" in model_lower
-        or "googleapis.com" in base_url
-        or "generativelanguage" in base_url
-    )
+    return bool(getattr(session, "_is_gemini", False))
 
 
 async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: dict, delays: tuple[float, ...]) -> None:
@@ -2590,13 +2588,7 @@ async def _run_postgame_realtime_nudge_task(mgr: Any, archive: dict, options: di
                 )
                 return
 
-            try:
-                delivered = bool(await trigger(
-                    qwen_manual_commit=True,
-                    instruction=instruction,
-                ))
-            except TypeError:
-                delivered = bool(await trigger())
+            delivered = bool(await trigger())
             logger.info(
                 "🎮 赛后 Realtime 主动搭话尝试: game=%s session=%s lanlan=%s attempt=%d delay=%.1fs delivered=%s",
                 archive.get("game_type"),
@@ -2982,20 +2974,13 @@ async def _finalize_game_route_state_inner(
     state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
-    session = getattr(mgr, "session", None) if mgr else None
-    realtime_restore = {"attempted": False, "ok": True, "reason": "not_needed"}
-    if session and hasattr(session, "set_game_route_stt_only"):
-        realtime_restore = {"attempted": True, "ok": False, "reason": "unknown"}
-        try:
-            restored = bool(await session.set_game_route_stt_only(False))
-            realtime_restore = {
-                "attempted": True,
-                "ok": restored,
-                "reason": "restored" if restored else "provider_update_failed_or_session_unavailable",
-            }
-        except Exception as exc:
-            realtime_restore = {"attempted": True, "ok": False, "reason": type(exc).__name__}
-            logger.warning("⚠️ 游戏路由退出时恢复 Realtime STT-only 失败: %s", exc)
+    # Release the SessionManager-level takeover so ordinary chat handlers come
+    # back online; chat LLM may produce auto-replies again, but the player has
+    # exited the game so that's the desired behavior.
+    if mgr is not None:
+        mgr._takeover_active = False
+        mgr._takeover_input_dispatcher = None
+    realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
     if mgr and hasattr(mgr, "send_status"):
         try:
@@ -3636,6 +3621,21 @@ async def game_route_start(game_type: str, request: Request):
         lanlan_name,
         data.get("game_last_full_dialogue_count"),
     )
+    # Take over the SessionManager: ordinary chat LLM output handlers must
+    # stay silent during the game, and any voice transcript that reaches
+    # the SessionManager must be redirected into route_external_voice_transcript.
+    mgr = get_session_manager().get(lanlan_name)
+    if mgr is not None:
+        async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
+            return await route_external_voice_transcript(
+                _lan,
+                transcript_text,
+                request_id=request_id,
+                game_type=game_type,
+                session_id=session_id,
+            )
+        mgr._takeover_active = True
+        mgr._takeover_input_dispatcher = _takeover_dispatcher
     state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
         data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
     )
@@ -3796,18 +3796,22 @@ async def _speak_game_line_via_project_tts(
     interrupt_audio: bool = False,
     event: dict | None = None,
 ) -> Dict[str, Any]:
-    speak = getattr(mgr, "speak_game_line", None)
+    speak = getattr(mgr, "mirror_assistant_speech", None)
     if not callable(speak):
         return {"ok": False, "reason": "project_tts_method_unavailable", "audio_sent": False}
+    metadata = build_mirror_meta(
+        source="game_route",
+        kind=game_type,
+        session_id=session_id,
+        event=event if isinstance(event, dict) else {},
+    )
     return await speak(
         line,
+        metadata=metadata,
         request_id=request_id,
-        game_type=game_type,
-        session_id=session_id,
         mirror_text=mirror_text,
-        emit_turn_end=emit_turn_end,
+        emit_turn_end_after=emit_turn_end,
         interrupt_audio=interrupt_audio,
-        event=event if isinstance(event, dict) else {},
     )
 
 
@@ -3833,17 +3837,20 @@ async def _mirror_game_assistant_text(
     event: dict | None = None,
     finalize_turn: bool = False,
 ) -> Dict[str, Any]:
-    mirror = getattr(mgr, "mirror_game_assistant_text", None)
+    mirror = getattr(mgr, "mirror_assistant_output", None)
     if not callable(mirror):
         return {"ok": False, "reason": "project_text_mirror_method_unavailable", "mirrored": False}
+    metadata = build_mirror_meta(
+        source=source,
+        kind=game_type,
+        session_id=session_id,
+        event=event if isinstance(event, dict) else {},
+    )
     return await mirror(
         line,
+        metadata=metadata,
         request_id=request_id,
-        game_type=game_type,
-        session_id=session_id,
-        source=source,
         turn_id=turn_id,
-        event=event or {},
         finalize_turn=finalize_turn,
     )
 
@@ -4032,19 +4039,20 @@ async def _route_external_transcript_to_game(
         mode,
         {"request_id": request_id or ""},
     )
-    if mgr and hasattr(mgr, "mirror_game_user_text"):
-        await mgr.mirror_game_user_text(
+    if mgr and hasattr(mgr, "mirror_user_input"):
+        await mgr.mirror_user_input(
             text,
+            metadata=build_mirror_meta(
+                source=source,
+                kind=game_type,
+                session_id=session_id,
+                event={"memory_enabled": memory_enabled},
+            ),
             request_id=request_id,
-            game_type=game_type,
-            session_id=session_id,
-            source=source,
-            # When game memory is off, keep any frontend transcript mirror but use
-            # an input_type that cross_server does not persist into ordinary memory.
             input_type=(
-                ("game_voice_transcript" if kind == "user-voice" else "game_text")
-                if memory_enabled
-                else ("game_voice_transcript_no_memory" if kind == "user-voice" else "game_text_no_memory")
+                MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE
+                if kind == "user-voice"
+                else MIRROR_USER_TEXT_INPUT_TYPE
             ),
             send_to_frontend=kind == "user-voice",
         )
@@ -4208,12 +4216,6 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
                 session_id=str(state.get("session_id") or ""),
             )
         _append_route_activation(state, "external_voice_hijacked_by_game", "voice")
-        session = getattr(mgr, "session", None) if mgr else None
-        if session and hasattr(session, "set_game_route_stt_only"):
-            try:
-                await session.set_game_route_stt_only(True)
-            except Exception as exc:
-                logger.warning("⚠️ 游戏路由启用 Realtime STT-only 失败: %s", exc)
         if not state.get("_voice_stt_gate_active_notified"):
             state["_voice_stt_gate_active_notified"] = True
             status_payload = {
@@ -4223,7 +4225,7 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
                     "session_id": str(state.get("session_id") or ""),
                     "lanlan_name": lanlan_name,
                     "stt_provider": str(message.get("stt_provider") or "realtime"),
-                    "message": "游戏期间主语音入口已被游戏路由接管。当前复用原 Realtime 作为 STT provider；最终转写交给游戏路由，普通 Realtime 回复由后端丢弃。",
+                    "message": "游戏期间主语音入口已被游戏路由接管。复用原 Realtime 作为 STT provider；最终转写交给游戏路由，普通 chat LLM 输出在 SessionManager 层被静音（session takeover）。",
                 },
             }
             _append_game_output(state, {

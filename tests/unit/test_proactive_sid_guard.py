@@ -56,6 +56,8 @@ def _make_mgr() -> LLMSessionManager:
     mgr._tts_bracket_stripper.flush.return_value = ""
     mgr._tts_norm_speech_id = None
     mgr.send_lanlan_response = AsyncMock()
+    mgr._takeover_active = False
+    mgr._takeover_input_dispatcher = None
     # 状态机：finish_proactive_delivery / handle_new_message 会 fire 事件，
     # 所以测试 mgr 也要有真实 SM 实例（轻量、无外部依赖）。
     mgr.state = SessionStateMachine(lanlan_name="Test")

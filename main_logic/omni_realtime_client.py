@@ -219,7 +219,6 @@ class OmniRealtimeClient:
         self.voice = voice
         self.ws = None
         self.instructions = None
-        self._active_instructions = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
         self.on_new_message = on_new_message
@@ -246,8 +245,6 @@ class OmniRealtimeClient:
         self._modalities = ["text", "audio"]
         self._audio_in_buffer = False
         self._skip_until_next_response = False
-        self._game_route_stt_only = False
-        self._game_route_stt_only_remote_applied: Optional[bool] = None
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         self._audio_delta_total = 0  # monotonic diagnostic across responses
         self._last_audio_delta_time = 0.0
@@ -509,118 +506,6 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
-    def _qwen_server_vad_turn_detection_config(self, create_response: Optional[bool] = None) -> Dict[str, Any]:
-        """Return the default Qwen turn-detection config used by this client."""
-        config: Dict[str, Any] = {
-            "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
-            "threshold": 0.55,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 600,
-        }
-        if create_response is not None:
-            config["create_response"] = bool(create_response)
-        return config
-
-    def _openai_audio_input_config(self, *, create_response: bool = True) -> Dict[str, Any]:
-        """Return OpenAI Realtime audio input config, preserving STT."""
-        return {
-            "transcription": {"model": "gpt-4o-mini-transcribe"},
-            "turn_detection": {
-                "type": "semantic_vad",
-                "eagerness": "auto",
-                "create_response": bool(create_response),
-                "interrupt_response": True,
-            },
-        }
-
-    @staticmethod
-    def _server_vad_turn_detection_config(create_response: Optional[bool] = None) -> Dict[str, Any]:
-        """Return a generic server_vad config, optionally requesting no auto-response."""
-        config: Dict[str, Any] = {"type": "server_vad"}
-        if create_response is not None:
-            config["create_response"] = bool(create_response)
-        return config
-
-    async def set_game_route_stt_only(self, enabled: bool) -> bool:
-        """Best-effort switch: keep Realtime input transcription, suppress auto replies."""
-        enabled = bool(enabled)
-        if self._game_route_stt_only == enabled and self._game_route_stt_only_remote_applied == enabled:
-            return True
-        if not self.ws or self._fatal_error_occurred:
-            self._game_route_stt_only = enabled
-            self._game_route_stt_only_remote_applied = None
-            return False
-
-        provider_supported = False
-        try:
-            if "qwen" in self._model_lower:
-                # Qwen Realtime follows server_vad for automatic turns.  This keeps
-                # VAD/transcription active while asking the provider not to create
-                # a normal assistant response during game routing.  On restore we
-                # explicitly send create_response=True because some providers merge
-                # session.update payloads and would otherwise keep the old false.
-                turn_detection = self._qwen_server_vad_turn_detection_config(create_response=not enabled)
-                await self.update_session({"turn_detection": turn_detection})
-                provider_supported = True
-            elif (
-                "gpt" in self._model_lower
-                or self._api_type.lower() == "openai"
-                or "api.openai.com" in str(self.base_url or "").lower()
-            ):
-                await self.update_session({
-                    "audio": {
-                        "input": self._openai_audio_input_config(create_response=not enabled),
-                    },
-                })
-                provider_supported = True
-            elif any(key in self._model_lower for key in ("glm", "step", "free")):
-                # These providers use a top-level server_vad shape in this
-                # client. Some servers may ignore or reject create_response; if
-                # so the caller still has the existing local output suppression.
-                await self.update_session({
-                    "turn_detection": self._server_vad_turn_detection_config(False if enabled else True),
-                })
-                provider_supported = True
-            elif self._is_gemini:
-                logger.info(
-                    "game route realtime STT-only mode for Gemini has no live session.update equivalent; "
-                    "output callbacks will be suppressed locally"
-                )
-            else:
-                logger.info(
-                    "game route realtime STT-only mode not configured for model=%s; output callbacks will be suppressed locally",
-                    self.model,
-                )
-        except Exception as exc:
-            logger.warning(
-                "game route realtime STT-only provider update failed for model=%s enabled=%s: %s; "
-                "falling back to local output suppression",
-                self.model,
-                enabled,
-                exc,
-            )
-            self._game_route_stt_only = enabled
-            self._game_route_stt_only_remote_applied = None
-            return False
-
-        self._game_route_stt_only = enabled
-        self._game_route_stt_only_remote_applied = enabled if provider_supported else None
-        logger.info(
-            "game route realtime STT-only mode %s for model=%s provider_update=%s",
-            "enabled" if enabled else "disabled",
-            self.model,
-            provider_supported,
-        )
-        return provider_supported
-
-    def _can_forward_model_output(self) -> bool:
-        """Return whether model output callbacks may reach ordinary consumers."""
-        return (
-            not self._game_route_stt_only
-            and not self._skip_until_next_response
-            and not self._interrupted
-        )
-
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -772,7 +657,6 @@ class OmniRealtimeClient:
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
         self._fatal_error_occurred = False
-        self._game_route_stt_only_remote_applied = None
 
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
@@ -825,7 +709,13 @@ class OmniRealtimeClient:
                     "input_audio_transcription": {
                         "model": "gummy-realtime-v1"
                     },
-                    "turn_detection": self._qwen_server_vad_turn_detection_config(),
+                    "turn_detection": {
+                        # TODO: 未来需要cover更多型号
+                        "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
+                        "threshold": 0.55,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 600
+                    },
                     "repetition_penalty": 1.2,
                     "temperature": 0.7,
                     # "enable_search": True,
@@ -926,10 +816,6 @@ class OmniRealtimeClient:
             else:
                 raise ValueError(f"Invalid model: {self.model}")
             self.instructions = instructions
-            self._active_instructions = instructions
-            if self._game_route_stt_only:
-                self._game_route_stt_only_remote_applied = None
-                await self.set_game_route_stt_only(True)
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
     
@@ -980,11 +866,9 @@ class OmniRealtimeClient:
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
             self._fatal_error_occurred = False
-            self._game_route_stt_only_remote_applied = None
 
             self._last_speech_time = time.time()
             self.instructions = instructions
-            self._active_instructions = instructions
             logger.info("✅ Gemini Live API connected successfully")
             
         except Exception as e:
@@ -1169,8 +1053,6 @@ class OmniRealtimeClient:
             "session": config
         }
         await self.send_event(event)
-        if "instructions" in config:
-            self._active_instructions = config.get("instructions")
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Stream raw audio data to the API.
@@ -1592,7 +1474,6 @@ class OmniRealtimeClient:
         instruction: str = "",
         *,
         language: str = "zh",
-        qwen_manual_commit: bool = False,
     ) -> bool:
         """Send a fire-and-forget audio nudge to trigger proactive AI speech.
 
@@ -1602,18 +1483,11 @@ class OmniRealtimeClient:
 
         Unlike ``prime_context`` (session-start system-prompt injection) and
         ``create_response`` (persistent mid-conversation message), this
-        channel is ephemeral: the audio prompt is consumed by the model but
-        never stored in conversation history.  When *instruction* is provided
-        for a manual Qwen nudge, it is temporarily appended to session
-        instructions for this response and restored afterwards.
+        channel is truly ephemeral — the audio prompt is consumed by the
+        model but never stored in conversation history.
 
         Chunk pacing mirrors hot-swap flush: 1600 bytes/chunk, 0.025 s sleep,
         40 chunks/s → 2× real-time delivery.
-
-        ``qwen_manual_commit=True`` is an experimental game-speech path for
-        short prerecorded prompts that do not reliably cross Qwen server-VAD:
-        the client temporarily disables VAD, appends the WAV, explicitly sends
-        ``input_audio_buffer.commit`` + ``response.create``, then restores VAD.
 
         Returns True if the audio was fully sent, False if skipped or aborted.
         """
@@ -1703,35 +1577,6 @@ class OmniRealtimeClient:
                 },
             })
             logger.info("prompt_ephemeral: injected vision text description for non-native backend")
-
-        manual_qwen_turn = bool(qwen_manual_commit and "qwen" in self._model_lower and not self._is_gemini)
-        restore_qwen_vad = False
-        restore_qwen_create_response = True
-        restore_instructions_after_manual_nudge = False
-        previous_instructions = None
-        if manual_qwen_turn:
-            restore_qwen_create_response = not self._game_route_stt_only
-            one_shot_instruction = str(instruction or "").strip()
-            if one_shot_instruction:
-                previous_instructions = self._active_instructions or self.instructions or ""
-                await self.update_session({
-                    "instructions": previous_instructions + "\n" + one_shot_instruction
-                })
-                restore_instructions_after_manual_nudge = True
-                logger.info("prompt_ephemeral: one-shot instruction attached for manual Qwen nudge")
-            try:
-                await self.update_session({"turn_detection": None})
-                restore_qwen_vad = True
-                logger.info("prompt_ephemeral: Qwen manual commit mode enabled for this nudge")
-            except Exception:
-                if restore_instructions_after_manual_nudge and previous_instructions is not None:
-                    try:
-                        await self.update_session({"instructions": previous_instructions})
-                    except Exception as restore_exc:
-                        logger.warning("prompt_ephemeral: failed to restore one-shot instruction after setup error: %s", restore_exc)
-                    else:
-                        logger.info("prompt_ephemeral: one-shot instruction restored after setup error")
-                raise
 
         # ── Suppress mic input during injection ────────────────────────
         self._proactive_injecting = True
@@ -1827,39 +1672,12 @@ class OmniRealtimeClient:
             # replaced by a newer frame from stream_image() during our async loop.
             if has_vision and self._latest_image_b64 == snapshot_image_b64:
                 self._proactive_image_consumed = True
-            response_trigger = "VAD → response"
-            if manual_qwen_turn:
-                await self.send_event({"type": "input_audio_buffer.commit"})
-                await self.send_event({"type": "response.create"})
-                response_trigger = "manual commit → response.create"
-            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for %s",
+            logger.info("prompt_ephemeral: audio injection complete (%s%s), waiting for VAD → response",
                          "vision" if has_vision else "general",
-                         "+image" if image_injected else "",
-                         response_trigger)
+                         "+image" if image_injected else "")
             return True
         finally:
             self._proactive_injecting = False
-            if (
-                restore_instructions_after_manual_nudge
-                and previous_instructions is not None
-                and not self._fatal_error_occurred
-                and self.ws is not None
-            ):
-                try:
-                    await self.update_session({"instructions": previous_instructions})
-                    logger.info("prompt_ephemeral: one-shot instruction restored after manual nudge")
-                except Exception as e:
-                    logger.warning("prompt_ephemeral: failed to restore one-shot instruction: %s", e)
-            if restore_qwen_vad and not self._fatal_error_occurred and self.ws is not None:
-                try:
-                    await self.update_session({
-                        "turn_detection": self._qwen_server_vad_turn_detection_config(
-                            create_response=restore_qwen_create_response
-                        )
-                    })
-                    logger.info("prompt_ephemeral: Qwen server VAD restored after manual nudge")
-                except Exception as e:
-                    logger.warning("prompt_ephemeral: failed to restore Qwen server VAD: %s", e)
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -2219,12 +2037,12 @@ class OmniRealtimeClient:
                         await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
-                    if self._output_transcript_buffer and self.on_output_transcript and self._can_forward_model_output():
+                    if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
-                if self._can_forward_model_output():
+                if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
@@ -2348,10 +2166,8 @@ class OmniRealtimeClient:
                 logger.error(f"Error closing websocket: {e}")
             finally:
                 self.ws = None  # 清空引用，防止后续误用
-                self._game_route_stt_only_remote_applied = None
                 logger.info("WebSocket connection closed")
         else:
-            self._game_route_stt_only_remote_applied = None
             logger.warning("WebSocket connection is already closed or None")
     
     async def _close_gemini(self) -> None:
@@ -2365,7 +2181,6 @@ class OmniRealtimeClient:
                 self._gemini_session = None
                 self._gemini_context_manager = None
                 self.ws = None
-                self._game_route_stt_only_remote_applied = None
 
                 # 重置静默超时相关状态（与普通close()保持一致）
                 self._silence_timeout_triggered = False
@@ -2508,7 +2323,7 @@ class OmniRealtimeClient:
                             self._gemini_user_transcript = ""  # 清空累积
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
-                        if self._can_forward_model_output() and self.on_new_message:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
@@ -2524,7 +2339,7 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if self._can_forward_model_output() and self.on_text_delta:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
@@ -2539,7 +2354,7 @@ class OmniRealtimeClient:
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if self._can_forward_model_output() and self.on_audio_delta:
+                                if not self._skip_until_next_response and not self._interrupted and self.on_audio_delta:
                                     self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
 

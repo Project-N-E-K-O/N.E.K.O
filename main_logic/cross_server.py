@@ -87,66 +87,13 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
-def _is_game_route_game_only_assistant_message(data: dict) -> bool:
-    """Return True for mirrored game lines that should not enter ordinary memory."""
-    if not isinstance(data, dict) or data.get("type") != "gemini_response":
-        return False
-    metadata = data.get("metadata")
-    if not isinstance(metadata, dict):
-        return False
-    game_route = metadata.get("game_route")
-    if not isinstance(game_route, dict):
-        return False
-    event = game_route.get("event")
-    if not isinstance(event, dict):
-        event = {}
-    return _is_game_route_event_memory_disabled_for_ordinary_memory(event)
-
-
-def _is_game_route_game_only_turn_end_meta(meta: dict | None) -> bool:
-    """Return True for a game TTS turn-end that belongs only to game display/archive."""
-    if not isinstance(meta, dict):
-        return False
-    game_route = meta.get("game_route")
-    if not isinstance(game_route, dict):
-        return False
-    event = game_route.get("event")
-    if not isinstance(event, dict):
-        return False
-    return _is_game_route_event_memory_disabled_for_ordinary_memory(event)
-
-
-def _payload_bool_from_keys(data: dict, *keys: str) -> bool | None:
-    for key in keys:
-        if key in data and isinstance(data.get(key), bool):
-            return data.get(key)
-    return None
-
-
-def _is_game_route_event_memory_disabled_for_ordinary_memory(event: dict) -> bool:
-    """Apply soccer-game memory sub-controls to mirrored assistant/turn-end entries."""
-    has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True
-    if has_user_input:
-        player_interaction_enabled = _payload_bool_from_keys(
-            event,
-            "soccer_game_memory_player_interaction_enabled",
-            "soccerGameMemoryPlayerInteractionEnabled",
-        )
-        if player_interaction_enabled is not None:
-            return player_interaction_enabled is False
-    else:
-        event_reply_enabled = _payload_bool_from_keys(
-            event,
-            "soccer_game_memory_event_reply_enabled",
-            "soccerGameMemoryEventReplyEnabled",
-        )
-        if event_reply_enabled is not None:
-            return event_reply_enabled is False
-
-    legacy_enabled = _payload_bool_from_keys(event, "game_memory_enabled", "gameMemoryEnabled")
-    if legacy_enabled is not None:
-        return legacy_enabled is False
-    return not has_user_input
+# Mirror schema + detection now lives in main_logic.mirror_meta;
+# cross_server only consumes those helpers — does not own the schema.
+from main_logic.mirror_meta import (
+    MIRROR_USER_INPUT_TYPES,
+    is_mirror_assistant_message,
+    is_mirror_turn_end_meta,
+)
 
 
 def merge_unsynced_tail_assistants(chat_history, last_synced_index):
@@ -643,9 +590,9 @@ async def run_sync_connector(
 
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
-                            if _is_game_route_game_only_assistant_message(message["data"]):
+                            if is_mirror_assistant_message(message["data"]):
                                 logger.debug(
-                                    "[%s] game-only assistant line skipped for ordinary memory: source=%s",
+                                    "[%s] mirror assistant line skipped for ordinary memory: source=%s",
                                     lanlan_name,
                                     (message["data"].get("metadata") or {}).get("source"),
                                 )
@@ -701,13 +648,16 @@ async def run_sync_connector(
                             # 发送用户转录到 monitor 供副终端显示
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
-                        elif input_type in {"game_text", "game_voice_transcript"}:
-                            if user_input_cache == '':
-                                await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
-                            user_input_cache += data
-                            # 发送用户转录/游戏期间外部文本到 monitor 供副终端显示
+                        elif input_type in MIRROR_USER_INPUT_TYPES:
+                            # Mirror channel user inputs (e.g. text/voice that
+                            # was hijacked into an external controller) are
+                            # logged for monitor display but **never** flushed
+                            # into chat_history as a UserMessage — the chat
+                            # LLM did not "hear" them; they belong to the
+                            # external controller's transcript log.
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
+                            await _try_send_json(sync_slot, {'type': 'user_activity'})
                         elif input_type == "screen":
                             last_screen = data
                             if data:
@@ -805,7 +755,7 @@ async def run_sync_connector(
                                 if not isinstance(turn_end_meta, dict):
                                     turn_end_meta = None
                                 was_assistant_turn = current_turn == 'assistant'
-                                if _is_game_route_game_only_turn_end_meta(turn_end_meta):
+                                if is_mirror_turn_end_meta(turn_end_meta):
                                     turn_end_request_id = message.get("request_id") if isinstance(message, dict) else None
                                     if was_assistant_turn and (
                                         not turn_end_request_id or turn_end_request_id == text_output_request_id
@@ -818,7 +768,7 @@ async def run_sync_connector(
                                     user_input_cache = ''
                                     pending_user_images = []
                                     await _try_send_json(sync_slot, {'type': 'turn end'})
-                                    logger.debug("[%s] game-only turn end skipped for ordinary memory/analyzer", lanlan_name)
+                                    logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
                                 current_turn = 'user'
                                 text_output_cache = normalize_text(text_output_cache)

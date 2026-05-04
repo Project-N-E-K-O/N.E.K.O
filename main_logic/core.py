@@ -12,7 +12,7 @@ import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 
 # Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
@@ -461,6 +461,18 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
+        # ── Session takeover ──────────────────────────────────────────
+        # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
+        # （text/audio delta、output transcript、response.complete、
+        # new-message 通知）都要静音；语音转写也要先丢给外部 dispatcher
+        # 处理，处理过的不再走本地 chat 路径。
+        # SessionManager 不知道 takeover 是谁、为什么——只认这两个 flag。
+        # 当前唯一消费者：main_routers.game_router；未来 plugin/agent 想完
+        # 全接管 chat 的场景也走同一套接口。
+        self._takeover_active: bool = False
+        self._takeover_input_dispatcher: Optional[
+            Callable[..., Awaitable[bool]]
+        ] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -880,18 +892,33 @@ class LLMSessionManager:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
 
-    def _is_game_route_active(self) -> bool:
-        try:
-            from utils.game_route_state import is_game_route_active
+    @property
+    def is_tts_pipeline_ready(self) -> bool:
+        """Light health check: TTS worker thread alive and ready, no orchestration."""
+        return bool(
+            self.tts_thread
+            and self.tts_thread.is_alive()
+            and self.tts_ready
+        )
 
-            return bool(is_game_route_active(self.lanlan_name))
-        except Exception:
-            return False
+    async def ensure_tts_pipeline_alive(self) -> None:
+        """Light TTS startup helper: spawn worker + handler task if not alive.
+
+        Does NOT wait for ``__ready__`` — callers that need confirmed-ready
+        must poll :attr:`is_tts_pipeline_ready` themselves.  Callers that
+        only need ``tts_pending_chunks`` to eventually drain do not need
+        to wait at all (the handler picks up pending chunks once
+        ``tts_ready`` flips).
+        """
+        if not (self.tts_thread and self.tts_thread.is_alive()):
+            self._start_tts_thread()
+        if self.tts_handler_task is None or self.tts_handler_task.done():
+            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
-        if self._is_game_route_active():
-            logger.info("[%s] game route active: suppressing ordinary realtime new-message handling", self.lanlan_name)
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
 
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
@@ -921,8 +948,8 @@ class LLMSessionManager:
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
-        if self._is_game_route_active():
-            logger.info("[%s] game route active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
             return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
@@ -1053,8 +1080,8 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        if self._is_game_route_active():
-            logger.info("[%s] game route active: dropping ordinary realtime response completion", self.lanlan_name)
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
             self._pending_turn_meta = None
             self._current_ai_turn_text = ""
@@ -1322,8 +1349,8 @@ class LLMSessionManager:
 
     async def handle_audio_data(self, audio_data: bytes):
         """Qwen音频回调：推送音频到WebSocket前端"""
-        if self._is_game_route_active():
-            logger.info("[%s] game route active: dropping ordinary realtime audio bytes=%d", self.lanlan_name, len(audio_data or b""))
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime audio bytes=%d", self.lanlan_name, len(audio_data or b""))
             return
         if not self.use_tts:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -1398,35 +1425,31 @@ class LLMSessionManager:
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
         transcript_text = transcript.strip()
-        if is_voice_source and transcript_text and self._is_game_route_active():
+        if (
+            is_voice_source
+            and transcript_text
+            and self._takeover_input_dispatcher is not None
+        ):
             try:
-                from utils.game_route_state import _get_active_game_route_state, route_external_voice_transcript
-
-                route_state = _get_active_game_route_state(self.lanlan_name)
-                route_game_type = str(route_state.get("game_type") or "") if route_state else ""
-                route_session_id = str(route_state.get("session_id") or "") if route_state else ""
-
-                handled = await route_external_voice_transcript(
+                handled = await self._takeover_input_dispatcher(
                     self.lanlan_name,
                     transcript_text,
                     request_id=f"realtime-stt-{uuid4()}",
-                    game_type=route_game_type or None,
-                    session_id=route_session_id or None,
                 )
                 logger.info(
-                    "[%s] game route active: realtime STT transcript routed handled=%s len=%d",
+                    "[%s] session takeover dispatcher: realtime STT transcript routed handled=%s len=%d",
                     self.lanlan_name, handled, len(transcript_text),
                 )
                 if handled:
                     if isinstance(self.session, OmniRealtimeClient):
                         try:
                             await self.session.cancel_response()
-                            logger.info("[%s] game route active: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
+                            logger.info("[%s] session takeover: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
                         except Exception as cancel_exc:
-                            logger.debug("[%s] game route active: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
+                            logger.debug("[%s] session takeover: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
                     return
             except Exception as exc:
-                logger.warning("[%s] game route realtime STT route failed: %s", self.lanlan_name, exc)
+                logger.warning("[%s] session takeover dispatcher failed: %s", self.lanlan_name, exc)
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
@@ -1489,8 +1512,8 @@ class LLMSessionManager:
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""
-        if self._is_game_route_active():
-            logger.info("[%s] game route active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
             return
 
         # 同 handle_text_data：proactive 路径设置的 sid 期望值若与 current 不符，
@@ -1614,34 +1637,54 @@ class LLMSessionManager:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
             return False
 
-    async def mirror_game_user_text(
+    # ------------------------------------------------------------------
+    # Mirror channel (chat-bubble passthrough that enters context as
+    # AIMessage; user-side inputs intentionally do NOT enter chat history
+    # as UserMessage — see ``main_logic.mirror_meta``).
+    # ------------------------------------------------------------------
+
+    async def mirror_user_input(
         self,
         text: str,
         *,
+        metadata: dict,
         request_id: str | None = None,
-        game_type: str = "",
-        session_id: str = "",
-        source: str = "external_text_route",
-        input_type: str = "game_text",
+        input_type: str | None = None,
         send_to_frontend: bool = False,
-    ):
-        """Mirror a hijacked main-chat text input without invoking the ordinary chat LLM."""
+    ) -> None:
+        """Record an external-controller user input into the sync stream.
+
+        The text is logged for monitor/display purposes but does not
+        flush into ``chat_history`` as a UserMessage (cross_server skips
+        ``input_type`` values listed in ``mirror_meta.MIRROR_USER_INPUT_TYPES``).
+        Use this when an external controller (e.g. a game route) has
+        captured what the user said but the ordinary chat LLM should not
+        see it.
+        """
+        from main_logic.mirror_meta import MIRROR_USER_TEXT_INPUT_TYPE
+
         clean = str(text or "").strip()
         if not clean:
             return
+        resolved_input_type = input_type or MIRROR_USER_TEXT_INPUT_TYPE
+        source = str(metadata.get("source") or "mirror") if isinstance(metadata, dict) else "mirror"
         self.last_user_activity_time = time.time()
         self.sync_message_queue.put({
             "type": "user",
             "data": {
-                "input_type": input_type,
+                "input_type": resolved_input_type,
                 "data": clean,
                 "source": source,
-                "game_type": game_type,
-                "session_id": session_id,
+                "metadata": metadata if isinstance(metadata, dict) else {},
                 "request_id": request_id or "",
             },
         })
-        if send_to_frontend and self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+        if (
+            send_to_frontend
+            and self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
             try:
                 await self.websocket.send_json({
                     "type": "user_transcript",
@@ -1650,100 +1693,68 @@ class LLMSessionManager:
                     "request_id": request_id,
                 })
             except Exception as e:
-                logger.error(f"⚠️ 发送游戏语音转写到前端失败: {e}")
+                logger.error(f"⚠️ mirror_user_input frontend dispatch failed: {e}")
 
-    async def mirror_game_assistant_text(
+    async def mirror_assistant_output(
         self,
         text: str,
         *,
+        metadata: dict,
         request_id: str | None = None,
-        game_type: str = "",
-        session_id: str = "",
-        source: str = "game_llm",
         turn_id: str | None = None,
-        event: dict | None = None,
         finalize_turn: bool = False,
     ) -> dict:
-        """Mirror a game assistant line without invoking TTS or ordinary chat generation."""
+        """Push an external-controller assistant line into the chat bubble.
+
+        Reuses the ordinary :meth:`send_lanlan_response` path with
+        ``track_ai_turn=False`` and ``cache_for_new_session=False`` so
+        the line shows on frontend + sync stream as an AIMessage but
+        doesn't pollute activity-tracker / hot-swap caches.
+        """
         clean = str(text or "").strip()
         if not clean:
             return {"ok": False, "reason": "missing_line", "mirrored": False}
 
-        mirror_turn_id = turn_id or request_id or str(uuid4())
-        event_payload = event if isinstance(event, dict) else {}
-        metadata = self._build_game_route_sync_meta(
-            source=source,
-            game_type=game_type,
-            session_id=session_id,
-            event=event_payload,
-        )
+        effective_turn_id = turn_id or request_id or str(uuid4())
         await self.send_lanlan_response(
             clean,
             is_first_chunk=True,
-            turn_id=mirror_turn_id,
+            turn_id=effective_turn_id,
             metadata=metadata,
             request_id=request_id,
             track_ai_turn=False,
             cache_for_new_session=False,
         )
         if finalize_turn:
-            await self._emit_game_route_turn_end(
+            await self.emit_mirror_turn_end(
+                metadata=metadata,
                 request_id=request_id,
-                game_type=game_type,
-                session_id=session_id,
-                event=event_payload,
-                log_context="game mirror",
+                log_context="mirror assistant",
             )
         return {
             "ok": True,
             "mirrored": True,
-            "turn_id": mirror_turn_id,
+            "turn_id": effective_turn_id,
             "request_id": request_id or "",
-            "game_type": game_type,
-            "session_id": session_id,
-            "source": source,
+            "metadata": metadata if isinstance(metadata, dict) else {},
             "turn_finalized": bool(finalize_turn),
         }
 
-    def _build_game_route_sync_meta(
+    async def emit_mirror_turn_end(
         self,
         *,
-        source: str,
-        game_type: str,
-        session_id: str,
-        event: dict | None,
-    ) -> dict:
-        event_payload = event if isinstance(event, dict) else {}
-        return {
-            "source": source,
-            "game_type": game_type,
-            "session_id": session_id,
-            "game_route": {
-                "game_type": game_type,
-                "session_id": session_id,
-                "event": event_payload,
-            },
-        }
-
-    async def _emit_game_route_turn_end(
-        self,
-        *,
-        request_id: str | None,
-        game_type: str,
-        session_id: str,
-        event: dict | None,
-        log_context: str,
+        metadata: dict,
+        request_id: str | None = None,
+        log_context: str = "",
     ) -> None:
+        """Emit a turn-end carrying mirror metadata (cross_server uses
+        the metadata to decide whether to fold the turn into ordinary
+        chat memory or skip it)."""
         turn_end_msg = {
             "type": "system",
             "data": "turn end",
             "request_id": request_id,
-            "meta": self._build_game_route_sync_meta(
-                source="game_route",
-                game_type=game_type,
-                session_id=session_id,
-                event=event if isinstance(event, dict) else {},
-            ),
+            "meta": metadata if isinstance(metadata, dict) else {},
         }
         self.sync_message_queue.put(turn_end_msg)
         try:
@@ -1754,74 +1765,34 @@ class LLMSessionManager:
             ):
                 await self.websocket.send_json(turn_end_msg)
         except Exception as e:
-            logger.warning("[%s] %s turn_end send failed: %s", self.lanlan_name, log_context, e)
+            logger.warning("[%s] %s turn_end send failed: %s", self.lanlan_name, log_context or "mirror", e)
 
-    async def _ensure_game_tts_runtime(self) -> bool:
-        """Ensure the existing project TTS worker/handler can speak a game line.
-
-        This intentionally does not create an OmniOfflineClient or OmniRealtimeClient;
-        it only uses the project's TTS worker and normal frontend audio queue.
-        """
-        started_new_worker = False
-        if self.tts_thread is None or not self.tts_thread.is_alive():
-            self._start_tts_thread()
-            started_new_worker = True
-            start_time = time.time()
-            ready = False
-            while time.time() - start_time < 12.0:
-                if not self.tts_response_queue.empty():
-                    msg = self.tts_response_queue.get_nowait()
-                    if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                        ready = bool(msg[1])
-                        break
-                    self.tts_response_queue.put(msg)
-                    break
-                await asyncio.sleep(0.05)
-            async with self.tts_cache_lock:
-                self.tts_ready = ready
-        elif not self.tts_ready:
-            # A running handler may receive __ready__ shortly; queued text will flush then.
-            logger.debug("[%s] game TTS worker alive but not ready; line will be cached", self.lanlan_name)
-
-        if started_new_worker and self.tts_handler_task and not self.tts_handler_task.done():
-            self.tts_handler_task.cancel()
-            try:
-                await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            self.tts_handler_task = None
-        if self.tts_handler_task and self.tts_handler_task.done():
-            self.tts_handler_task = None
-        if not self.tts_handler_task:
-            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
-
-        if self.tts_ready:
-            await self._flush_tts_pending_chunks()
-        return bool(self.tts_thread and self.tts_thread.is_alive())
-
-    async def speak_game_line(
+    async def mirror_assistant_speech(
         self,
         line: str,
         *,
+        metadata: dict,
         request_id: str | None = None,
-        game_type: str = "",
-        session_id: str = "",
         mirror_text: bool = True,
-        emit_turn_end: bool = True,
+        emit_turn_end_after: bool = True,
         interrupt_audio: bool = False,
-        event: dict | None = None,
     ) -> dict:
-        """Send a game A-layer line through the normal chat mirror and project TTS path."""
+        """Mirror an assistant line + play it through the project TTS pipeline.
+
+        Combines :meth:`mirror_assistant_output` with TTS chunk
+        enqueue.  TTS pipeline is started lazily via
+        :meth:`ensure_tts_pipeline_alive`; if the worker isn't ready
+        yet, the chunk is buffered in ``tts_pending_chunks`` and the
+        handler picks it up when ``__ready__`` arrives.
+        """
         clean = str(line or "").strip()
         if not clean:
             return {"ok": False, "reason": "missing_line", "audio_sent": False}
-        event_payload = event if isinstance(event, dict) else {}
 
         interrupted_speech_id = None
         if interrupt_audio:
             async with self.lock:
                 interrupted_speech_id = self.current_speech_id
-
             self.audio_resampler.clear()
             if self.use_tts:
                 await self._clear_tts_pipeline()
@@ -1840,34 +1811,28 @@ class LLMSessionManager:
                 clean,
                 is_first_chunk=True,
                 turn_id=turn_id,
-                metadata=self._build_game_route_sync_meta(
-                    source="game_route",
-                    game_type=game_type,
-                    session_id=session_id,
-                    event=event_payload,
-                ),
+                metadata=metadata,
                 request_id=request_id,
                 track_ai_turn=False,
                 cache_for_new_session=False,
             )
-        tts_available = await self._ensure_game_tts_runtime()
+
+        await self.ensure_tts_pipeline_alive()
         audio_queued = False
-        if tts_available:
+        if self.tts_thread and self.tts_thread.is_alive():
             async with self.tts_cache_lock:
-                if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                if self.tts_ready:
                     self._enqueue_tts_text_chunk(turn_id, clean)
                 else:
                     self.tts_pending_chunks.append((turn_id, clean))
                 status = self._request_tts_done_locked()
                 audio_queued = status in {"queued", "deferred", "already"}
 
-        if emit_turn_end:
-            await self._emit_game_route_turn_end(
+        if emit_turn_end_after:
+            await self.emit_mirror_turn_end(
+                metadata=metadata,
                 request_id=request_id,
-                game_type=game_type,
-                session_id=session_id,
-                event=event_payload,
-                log_context="game line",
+                log_context="mirror speech",
             )
 
         return {
@@ -1876,15 +1841,16 @@ class LLMSessionManager:
             "speech_id": turn_id,
             "audio_sent": audio_queued,
             "audio_queued": audio_queued,
-            "turn_end_emitted": bool(emit_turn_end),
+            "turn_end_emitted": bool(emit_turn_end_after),
             "interrupt_audio": bool(interrupt_audio),
             "voice_source": {
                 "provider": "project_tts",
                 "method": "project_tts",
                 "use_existing_send_speech": True,
-            }
+            },
         }
-        
+
+
     async def handle_silence_timeout(self, *, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""
         try:
@@ -3719,46 +3685,25 @@ class LLMSessionManager:
     # Voice-chat proactive audio nudge (dedicated path)
     # ------------------------------------------------------------------
 
-    async def trigger_voice_proactive_nudge(
-        self,
-        *,
-        qwen_manual_commit: bool = False,
-        instruction: str = "",
-    ) -> bool:
+    async def trigger_voice_proactive_nudge(self) -> bool:
         """Inject a pre-recorded audio prompt to nudge the voice model into speaking.
 
         This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
         ``trigger_agent_callbacks`` (which handles agent task results).
 
-        qwen_manual_commit forces the Qwen Realtime prompt audio to be committed
-        explicitly, which is useful for one-shot game/postgame nudges that should
-        not wait for server VAD to infer a user turn.
-
-        instruction is an optional one-shot steering note for this proactive
-        turn.  It is passed to the Realtime client as transient instructions and
-        must not be stored as a user message.
-
         Returns True if the audio was fully injected, False if skipped.
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
-        try:
-            from utils.game_route_state import is_game_route_active
-            if is_game_route_active(self.lanlan_name):
-                logger.info("[%s] voice proactive nudge skipped: game route active", self.lanlan_name)
-                return False
-        except Exception as exc:
-            logger.debug("[%s] voice proactive game-route guard skipped: %s", self.lanlan_name, exc)
+        if self._takeover_active:
+            logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
+            return False
         if self.is_hot_swap_imminent:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
         _lang = normalize_language_code(self.user_language, format='short') or 'zh'
-        delivered = await self.session.prompt_ephemeral(
-            instruction,
-            language=_lang,
-            qwen_manual_commit=qwen_manual_commit,
-        )
+        delivered = await self.session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:

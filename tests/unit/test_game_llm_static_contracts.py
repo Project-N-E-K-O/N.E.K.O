@@ -91,14 +91,17 @@ def test_game_voice_route_end_avoids_double_mic_restore():
 
 
 @pytest.mark.unit
-def test_realtime_reconnect_resets_active_instructions():
+def test_realtime_client_has_no_game_route_surface():
+    """omni_realtime_client.py must not carry any game-route-specific
+    APIs after Phase 1 of the dialog-passthrough refactor — that logic
+    belongs in main_routers/game_router.py + main_logic/core.py
+    (mirror_*) + main_logic/cross_server.py (mirror_meta detection)."""
     realtime_py = (ROOT / "main_logic" / "omni_realtime_client.py").read_text(encoding="utf-8")
 
-    assert not re.search(
-        r"if\s+self\._active_instructions\s+is\s+None\s*:\s*\n\s*self\._active_instructions\s*=\s*instructions",
-        realtime_py,
-    )
-    assert re.search(
-        r"self\.instructions\s*=\s*instructions\s*\n\s*self\._active_instructions\s*=\s*instructions",
-        realtime_py,
-    )
+    assert "set_game_route_stt_only" not in realtime_py
+    assert "_game_route_stt_only" not in realtime_py
+    assert "qwen_manual_commit" not in realtime_py
+    assert "_active_instructions" not in realtime_py
+    assert "_can_forward_model_output" not in realtime_py
+    assert "_qwen_server_vad_turn_detection_config" not in realtime_py
+    assert "_openai_audio_input_config" not in realtime_py

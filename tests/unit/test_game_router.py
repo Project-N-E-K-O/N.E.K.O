@@ -848,11 +848,8 @@ class _FakeRealtimeSession:
         if "instructions" in config:
             self._active_instructions = config["instructions"]
 
-    async def prompt_ephemeral(self, *args, language="zh", qwen_manual_commit=False):
-        call = {
-            "language": language,
-            "qwen_manual_commit": qwen_manual_commit,
-        }
+    async def prompt_ephemeral(self, *args, language="zh"):
+        call = {"language": language}
         if args:
             call["instruction"] = args[0]
         self.prompt_calls.append(call)
@@ -934,18 +931,20 @@ class _FakeGameRouteManager:
         self.spoken = []
         self.statuses = []
         self.user_activity_count = 0
+        self._takeover_active = False
+        self._takeover_input_dispatcher = None
 
-    async def mirror_game_user_text(self, text, **kwargs):
+    async def mirror_user_input(self, text, **kwargs):
         self.mirrored.append((text, kwargs))
 
-    async def mirror_game_assistant_text(self, text, **kwargs):
+    async def mirror_assistant_output(self, text, **kwargs):
         self.assistant_mirrored.append((text, kwargs))
         return {"ok": True, "mirrored": True, "method": "project_text_mirror"}
 
     async def send_user_activity(self):
         self.user_activity_count += 1
 
-    async def speak_game_line(self, line, **kwargs):
+    async def mirror_assistant_speech(self, line, **kwargs):
         self.spoken.append((line, kwargs))
         return {
             "ok": True,
@@ -1166,11 +1165,18 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
     assert state["game_input_mode"] == "text"
     assert state["activation_source"] == "external_text_hijacked_by_game"
     assert mgr.mirrored == [("你是不是在放水？", {
+        "metadata": {
+            "source": "external_text_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {
+                "kind": "soccer",
+                "session_id": "match_1",
+                "event": {"memory_enabled": False},
+            },
+        },
         "request_id": "req-1",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "external_text_route",
-        "input_type": "game_text_no_memory",
+        "input_type": "mirror_text",
         "send_to_frontend": False,
     })]
     assert mgr.user_activity_count == 1
@@ -1205,11 +1211,18 @@ async def test_route_external_text_uses_no_memory_input_type_when_game_memory_di
 
     assert handled is True
     assert mgr.mirrored == [("这局不要记", {
+        "metadata": {
+            "source": "external_text_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {
+                "kind": "soccer",
+                "session_id": "match_1",
+                "event": {"memory_enabled": False},
+            },
+        },
         "request_id": "req-no-memory",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "external_text_route",
-        "input_type": "game_text_no_memory",
+        "input_type": "mirror_text",
         "send_to_frontend": False,
     })]
     assert state["pending_outputs"][0]["meta"]["soccerGameMemoryPlayerInteractionEnabled"] is False
@@ -1276,11 +1289,18 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     assert state["game_external_voice_route_active"] is True
     assert state["game_input_mode"] == "voice"
     assert mgr.mirrored == [("我马上要进球了", {
+        "metadata": {
+            "source": "external_voice_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {
+                "kind": "soccer",
+                "session_id": "match_1",
+                "event": {"memory_enabled": False},
+            },
+        },
         "request_id": "voice-1",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "external_voice_route",
-        "input_type": "game_voice_transcript_no_memory",
+        "input_type": "mirror_voice_transcript",
         "send_to_frontend": True,
     })]
     assert mgr.user_activity_count == 1
@@ -1506,13 +1526,16 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
     assert result["method"] == "project_tts"
     assert result["voice_source"]["provider"] == "project_tts"
     assert mgr.spoken == [("换我进攻了", {
+        "metadata": {
+            "source": "game_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {"kind": "soccer", "session_id": "match_1", "event": {}},
+        },
         "request_id": "req-2",
-        "game_type": "soccer",
-        "session_id": "match_1",
         "mirror_text": True,
-        "emit_turn_end": True,
+        "emit_turn_end_after": True,
         "interrupt_audio": False,
-        "event": {},
     })]
 
 
@@ -1536,13 +1559,16 @@ async def test_project_speak_can_skip_text_mirror_for_frontend_arbiter(monkeypat
 
     assert result["ok"] is True
     assert mgr.spoken == [("只播放语音", {
+        "metadata": {
+            "source": "game_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {"kind": "soccer", "session_id": "match_1", "event": {}},
+        },
         "request_id": "req-voice",
-        "game_type": "soccer",
-        "session_id": "match_1",
         "mirror_text": False,
-        "emit_turn_end": False,
+        "emit_turn_end_after": False,
         "interrupt_audio": False,
-        "event": {},
     })]
 
 
@@ -1567,13 +1593,16 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
 
     assert result["ok"] is True
     assert mgr.spoken == [("先听我说完", {
+        "metadata": {
+            "source": "game_route",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {"kind": "soccer", "session_id": "match_1", "event": {}},
+        },
         "request_id": "req-interrupt",
-        "game_type": "soccer",
-        "session_id": "match_1",
         "mirror_text": False,
-        "emit_turn_end": False,
+        "emit_turn_end_after": False,
         "interrupt_audio": True,
-        "event": {},
     })]
 
 
@@ -1598,12 +1627,14 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
     assert result["ok"] is True
     assert result["method"] == "project_text_mirror"
     assert mgr.assistant_mirrored == [("文字先进入主聊天窗", {
+        "metadata": {
+            "source": "game-llm-result",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {"kind": "soccer", "session_id": "match_1", "event": {}},
+        },
         "request_id": "req-mirror",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "game-llm-result",
         "turn_id": "turn-mirror",
-        "event": {},
         "finalize_turn": False,
     })]
     assert mgr.spoken == []
@@ -1632,15 +1663,18 @@ async def test_project_mirror_assistant_finalizes_user_reply_by_default(monkeypa
 
     assert result["ok"] is True
     assert mgr.assistant_mirrored == [("听见啦，我会放慢一点。", {
-        "request_id": "req-user-reply",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "source": "game-llm-result",
-        "turn_id": None,
-        "event": {
-            "kind": "user-text",
-            "hasUserText": True,
+        "metadata": {
+            "source": "game-llm-result",
+            "kind": "soccer",
+            "session_id": "match_1",
+            "mirror": {
+                "kind": "soccer",
+                "session_id": "match_1",
+                "event": {"kind": "user-text", "hasUserText": True},
+            },
         },
+        "request_id": "req-user-reply",
+        "turn_id": None,
         "finalize_turn": True,
     })]
 
@@ -1672,16 +1706,18 @@ async def test_project_mirror_assistant_records_opening_line_in_game_log(monkeyp
     assert mgr.assistant_mirrored[0][0] == "看我这一脚"
     mirror_kwargs = mgr.assistant_mirrored[0][1]
     assert mirror_kwargs["request_id"] == "opening-1"
-    assert mirror_kwargs["game_type"] == "soccer"
-    assert mirror_kwargs["session_id"] == "match_1"
-    assert mirror_kwargs["source"] == "game-llm-result"
     assert mirror_kwargs["turn_id"] is None
     assert mirror_kwargs["finalize_turn"] is False
-    assert mirror_kwargs["event"]["kind"] == "opening-line"
-    assert mirror_kwargs["event"]["hasUserSpeech"] is False
-    assert mirror_kwargs["event"]["hasUserText"] is False
-    assert mirror_kwargs["event"]["soccerGameMemoryEventReplyEnabled"] is False
-    assert mirror_kwargs["event"]["soccer_game_memory_event_reply_enabled"] is False
+    metadata = mirror_kwargs["metadata"]
+    assert metadata["source"] == "game-llm-result"
+    assert metadata["kind"] == "soccer"
+    assert metadata["session_id"] == "match_1"
+    event = metadata["mirror"]["event"]
+    assert event["kind"] == "opening-line"
+    assert event["hasUserSpeech"] is False
+    assert event["hasUserText"] is False
+    assert event["soccerGameMemoryEventReplyEnabled"] is False
+    assert event["soccer_game_memory_event_reply_enabled"] is False
     assert state["game_dialog_log"] == [{
         "id": "glog_0001",
         "type": "assistant",
@@ -1877,9 +1913,9 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert result["postgame"]["nudge_scheduled"] is True
     await asyncio.wait_for(mgr.voice_nudge_event.wait(), timeout=1.0)
     assert mgr.voice_nudge_calls == 1
-    assert mgr.voice_nudge_kwargs[0]["qwen_manual_commit"] is True
-    assert "游戏模块赛后主动搭话" in mgr.voice_nudge_kwargs[0]["instruction"]
-    assert "不要继续扮演游戏仍在进行" in mgr.voice_nudge_kwargs[0]["instruction"]
+    # qwen_manual_commit/instruction surface was removed; the postgame nudge
+    # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
+    # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True

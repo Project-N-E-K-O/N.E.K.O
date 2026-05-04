@@ -3,8 +3,6 @@ from unittest.mock import Mock
 import pytest
 
 from main_logic.core import LLMSessionManager
-from main_routers import game_router
-from utils import game_route_state
 
 
 class _AsyncNullLock:
@@ -74,6 +72,9 @@ def _make_manager():
     mgr.tts_thread = None
     mgr.tts_pending_chunks = []
     mgr.tts_cache_lock = _AsyncNullLock()
+    mgr.tts_handler_task = None
+    mgr._takeover_active = False
+    mgr._takeover_input_dispatcher = None
     mgr.sent_responses = []
     mgr.user_activity = []
 
@@ -89,12 +90,12 @@ def _make_manager():
             "request_id": _kwargs.get("request_id"),
         })
 
-    async def ensure_game_tts_runtime():
-        return False
+    async def ensure_tts_pipeline_alive():
+        return None
 
     mgr.send_user_activity = send_user_activity
     mgr.send_lanlan_response = send_lanlan_response
-    mgr._ensure_game_tts_runtime = ensure_game_tts_runtime
+    mgr.ensure_tts_pipeline_alive = ensure_tts_pipeline_alive
     return mgr
 
 
@@ -107,22 +108,35 @@ def _make_transcript_manager():
     return mgr
 
 
+def _soccer_mirror_meta(event):
+    return {
+        "source": "game_route",
+        "kind": "soccer",
+        "session_id": "match_1",
+        "mirror": {
+            "kind": "soccer",
+            "session_id": "match_1",
+            "event": event,
+        },
+    }
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_speak_game_line_text_mirror_carries_game_route_metadata():
+async def test_mirror_assistant_speech_text_mirror_carries_metadata():
     mgr = _make_manager()
+    event = {
+        "kind": "opening-line",
+        "hasUserSpeech": False,
+        "hasUserText": False,
+    }
+    metadata = _soccer_mirror_meta(event)
 
-    result = await LLMSessionManager.speak_game_line(
+    result = await LLMSessionManager.mirror_assistant_speech(
         mgr,
         "看我这一脚",
+        metadata=metadata,
         request_id="req-1",
-        game_type="soccer",
-        session_id="match_1",
-        event={
-            "kind": "opening-line",
-            "hasUserSpeech": False,
-            "hasUserText": False,
-        },
     )
 
     assert result["ok"] is True
@@ -131,42 +145,27 @@ async def test_speak_game_line_text_mirror_carries_game_route_metadata():
     assert mgr.user_activity == []
     assert mgr.audio_resampler.cleared is False
     assert mgr.sent_responses[0]["request_id"] == "req-1"
-    assert mgr.sent_responses[0]["metadata"] == {
-        "source": "game_route",
-        "game_type": "soccer",
-        "session_id": "match_1",
-        "game_route": {
-            "game_type": "soccer",
-            "session_id": "match_1",
-            "event": {
-                "kind": "opening-line",
-                "hasUserSpeech": False,
-                "hasUserText": False,
-            },
-        },
-    }
+    assert mgr.sent_responses[0]["metadata"] == metadata
     assert mgr.sync_message_queue.messages == [{
         "type": "system",
         "data": "turn end",
         "request_id": "req-1",
-        "meta": mgr.sent_responses[0]["metadata"],
+        "meta": metadata,
     }]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_speak_game_line_can_leave_turn_end_to_text_mirror():
+async def test_mirror_assistant_speech_can_leave_turn_end_to_text_mirror():
     mgr = _make_manager()
 
-    result = await LLMSessionManager.speak_game_line(
+    result = await LLMSessionManager.mirror_assistant_speech(
         mgr,
         "只播放语音",
+        metadata=_soccer_mirror_meta({"kind": "user-text", "hasUserText": True}),
         request_id="req-voice",
-        game_type="soccer",
-        session_id="match_1",
         mirror_text=False,
-        emit_turn_end=False,
-        event={"kind": "user-text", "hasUserText": True},
+        emit_turn_end_after=False,
     )
 
     assert result["ok"] is True
@@ -180,19 +179,17 @@ async def test_speak_game_line_can_leave_turn_end_to_text_mirror():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_speak_game_line_interrupt_audio_triggers_existing_interrupt_path():
+async def test_mirror_assistant_speech_interrupt_audio_triggers_existing_interrupt_path():
     mgr = _make_manager()
 
-    result = await LLMSessionManager.speak_game_line(
+    result = await LLMSessionManager.mirror_assistant_speech(
         mgr,
         "先听我说完",
+        metadata=_soccer_mirror_meta({"kind": "user-text", "hasUserText": True}),
         request_id="req-interrupt",
-        game_type="soccer",
-        session_id="match_1",
         mirror_text=False,
-        emit_turn_end=False,
+        emit_turn_end_after=False,
         interrupt_audio=True,
-        event={"kind": "user-text", "hasUserText": True},
     )
 
     assert result["ok"] is True
@@ -203,69 +200,50 @@ async def test_speak_game_line_interrupt_audio_triggers_existing_interrupt_path(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_mirror_game_assistant_text_can_finalize_user_reply_turn():
+async def test_mirror_assistant_output_can_finalize_user_reply_turn():
     mgr = _make_manager()
+    event = {"kind": "user-text", "hasUserText": True}
+    metadata = _soccer_mirror_meta(event)
 
-    result = await LLMSessionManager.mirror_game_assistant_text(
+    result = await LLMSessionManager.mirror_assistant_output(
         mgr,
         "听见啦，我会放慢一点。",
+        metadata=metadata,
         request_id="req-user",
-        game_type="soccer",
-        session_id="match_1",
-        source="game-llm-result",
         turn_id="turn-user",
-        event={"kind": "user-text", "hasUserText": True},
         finalize_turn=True,
     )
 
     assert result["ok"] is True
     assert result["turn_finalized"] is True
     assert mgr.sent_responses[0]["request_id"] == "req-user"
-    assert mgr.sent_responses[0]["metadata"]["game_route"]["event"] == {
-        "kind": "user-text",
-        "hasUserText": True,
-    }
+    assert mgr.sent_responses[0]["metadata"]["mirror"]["event"] == event
     assert mgr.sync_message_queue.messages == [{
         "type": "system",
         "data": "turn end",
         "request_id": "req-user",
-        "meta": {
-            "source": "game_route",
-            "game_type": "soccer",
-            "session_id": "match_1",
-            "game_route": {
-                "game_type": "soccer",
-                "session_id": "match_1",
-                "event": {"kind": "user-text", "hasUserText": True},
-            },
-        },
+        "meta": metadata,
     }]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(monkeypatch):
+async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_user_context():
     mgr = _make_transcript_manager()
     routed = []
 
-    async def fake_route(lanlan_name, text, *, request_id, game_type=None, session_id=None):
-        routed.append((lanlan_name, text, request_id, game_type, session_id))
+    async def fake_dispatcher(lanlan_name, text, *, request_id):
+        routed.append((lanlan_name, text, request_id))
         return True
 
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_route_state, "_get_active_game_route_state", lambda lanlan_name: {
-        "game_type": "soccer",
-        "session_id": "match_1",
-    })
-    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fake_route)
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = fake_dispatcher
 
     await LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
 
     assert routed and routed[0][0] == "Lan"
     assert routed[0][1] == "我要射门了"
     assert routed[0][2].startswith("realtime-stt-")
-    assert routed[0][3] == "soccer"
-    assert routed[0][4] == "match_1"
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
@@ -275,10 +253,8 @@ async def test_game_route_voice_transcript_handled_skips_ordinary_user_context(m
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_inactive_voice_transcript_uses_ordinary_flow(monkeypatch):
+async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr = _make_transcript_manager()
-
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: False)
 
     await LLMSessionManager.handle_input_transcript(mgr, "  普通语音  ", is_voice_source=True)
 
@@ -297,10 +273,8 @@ async def test_inactive_voice_transcript_uses_ordinary_flow(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_non_voice_transcript_reuse_keeps_existing_ordinary_flow(monkeypatch):
+async def test_no_takeover_non_voice_transcript_reuse_keeps_existing_ordinary_flow():
     mgr = _make_transcript_manager()
-
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: False)
 
     await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 
@@ -316,14 +290,14 @@ async def test_non_voice_transcript_reuse_keeps_existing_ordinary_flow(monkeypat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_non_voice_transcript_reuse_does_not_enter_active_game_route(monkeypatch):
+async def test_takeover_dispatcher_does_not_intercept_non_voice_transcript_reuse():
     mgr = _make_transcript_manager()
 
-    async def fail_route(*_args, **_kwargs):
-        raise AssertionError("non-voice transcript reuse must not route through game voice")
+    async def fail_dispatcher(*_args, **_kwargs):
+        raise AssertionError("non-voice transcript reuse must not route through takeover dispatcher")
 
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fail_route)
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = fail_dispatcher
 
     await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 
@@ -339,24 +313,18 @@ async def test_non_voice_transcript_reuse_does_not_enter_active_game_route(monke
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route_outcome", ["false", "exception"])
-async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch, route_outcome):
+@pytest.mark.parametrize("dispatcher_outcome", ["false", "exception"])
+async def test_takeover_dispatcher_falls_back_when_unhandled(dispatcher_outcome):
     mgr = _make_transcript_manager()
 
-    async def fake_route(_lanlan_name, _text, *, request_id, game_type=None, session_id=None):
+    async def fake_dispatcher(_lanlan_name, _text, *, request_id):
         assert request_id.startswith("realtime-stt-")
-        assert game_type == "soccer"
-        assert session_id == "match_1"
-        if route_outcome == "exception":
-            raise RuntimeError("route failed")
+        if dispatcher_outcome == "exception":
+            raise RuntimeError("dispatcher failed")
         return False
 
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
-    monkeypatch.setattr(game_route_state, "_get_active_game_route_state", lambda lanlan_name: {
-        "game_type": "soccer",
-        "session_id": "match_1",
-    })
-    monkeypatch.setattr(game_route_state, "route_external_voice_transcript", fake_route)
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = fake_dispatcher
 
     await LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)
 
@@ -375,14 +343,13 @@ async def test_game_route_voice_transcript_falls_back_when_unhandled(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_route_response_complete_clears_interrupted_ordinary_turn(monkeypatch):
+async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     mgr = _make_manager()
     mgr._active_text_request_id = "req-old"
     mgr._pending_turn_meta = {"source": "ordinary"}
-    mgr._current_ai_turn_text = "ordinary text before game"
+    mgr._current_ai_turn_text = "ordinary text before takeover"
     mgr.tts_pending_chunks = [("sid-old", "queued text")]
-
-    monkeypatch.setattr(LLMSessionManager, "_is_game_route_active", lambda self: True)
+    mgr._takeover_active = True
 
     await LLMSessionManager.handle_response_complete(mgr)
 
