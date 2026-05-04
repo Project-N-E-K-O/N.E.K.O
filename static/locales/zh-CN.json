@@ -1634,8 +1634,8 @@
     "storage": {
         "bootstrapError": "无法读取存储位置初始化信息，请重试。",
         "blockingGeneric": "当前无法使用所选存储位置，请换一个位置或稍后重试。",
-        "blockingInsufficientSpace": "目标卷剩余空间不足，无法安全迁移。",
-        "blockingTargetNotWritable": "目标路径当前不可写，无法开始迁移流程。",
+        "blockingInsufficientSpace": "目标卷剩余空间不足，无法安全执行关闭后的迁移。",
+        "blockingTargetNotWritable": "目标路径当前不可写，无法开始关闭后的迁移流程。",
         "cleanupRetainedRoot": "清理旧数据目录",
         "cleanupRetainedRootConfirm": "这会删除当前保留的旧数据目录，且不会影响当前已经生效的新目录。要继续吗？",
         "cleanupRetainedRootDone": "旧数据目录已清理，当前仅保留新的运行目录。",

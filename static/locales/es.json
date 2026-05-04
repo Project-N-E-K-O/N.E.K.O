@@ -1634,7 +1634,7 @@
     "storage": {
         "bootstrapError": "No se pudo cargar la información de inicialización del almacenamiento. Inténtalo de nuevo.",
         "blockingGeneric": "La ubicación de almacenamiento seleccionada no se puede usar ahora mismo. Elige otra ubicación o vuelve a intentarlo más tarde.",
-        "blockingInsufficientSpace": "El volumen de destino no tiene espacio libre suficiente para migrar con seguridad.",
+        "blockingInsufficientSpace": "El volumen de destino no tiene espacio libre suficiente para una migración segura.",
         "blockingTargetNotWritable": "La ruta de destino no tiene permiso de escritura, así que no se puede iniciar la migración.",
         "cleanupRetainedRoot": "Limpiar directorio de datos antiguo",
         "cleanupRetainedRootConfirm": "Esto eliminará el directorio de datos antiguo que se conservó y no afectará al nuevo directorio activo. ¿Continuar?",
