@@ -17,6 +17,7 @@ class PluginSpec:
     version: str = "0.1.0"
     author_name: str = ""
     author_email: str = ""
+    entry_point_override: str = ""
 
     # Extension-specific
     host_plugin_id: str = ""
@@ -47,6 +48,8 @@ class PluginSpec:
 
     @property
     def entry_point(self) -> str:
+        if self.entry_point_override:
+            return self.entry_point_override
         return f"plugin.plugins.{self.plugin_id}:{self.class_name}"
 
     @property
@@ -109,6 +112,73 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         workflow_path = workflow_dir / "verify.yml"
         workflow_path.write_text(_render_verify_workflow(spec), encoding="utf-8", newline="\n")
         created.append(workflow_path)
+
+    return created
+
+
+def generate_repo_support_files(
+    spec: PluginSpec,
+    target_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> list[Path]:
+    """Generate repository support files for an existing plugin directory."""
+    if not target_dir.is_dir():
+        raise FileNotFoundError(f"plugin directory not found: {target_dir}")
+
+    created: list[Path] = []
+
+    if spec.create_readme:
+        _write_support_file(
+            target_dir / "README.md",
+            _render_readme_md(spec),
+            created=created,
+            overwrite=overwrite,
+        )
+
+    if spec.create_tests:
+        tests_dir = target_dir / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        _write_support_file(
+            tests_dir / "test_smoke.py",
+            _render_smoke_test(spec),
+            created=created,
+            overwrite=overwrite,
+        )
+
+    if spec.create_gitignore:
+        _write_support_file(
+            target_dir / ".gitignore",
+            _render_gitignore(),
+            created=created,
+            overwrite=overwrite,
+        )
+
+    if spec.create_vscode:
+        vscode_dir = target_dir / ".vscode"
+        vscode_dir.mkdir(parents=True, exist_ok=True)
+        _write_support_file(
+            vscode_dir / "settings.json",
+            _render_vscode_settings(),
+            created=created,
+            overwrite=overwrite,
+        )
+        _write_support_file(
+            vscode_dir / "tasks.json",
+            _render_vscode_tasks(spec),
+            created=created,
+            overwrite=overwrite,
+        )
+
+    if spec.create_github_actions:
+        workflow_dir = target_dir / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        _write_support_file(
+            workflow_dir / "verify.yml",
+            _render_verify_workflow(spec),
+            created=created,
+            overwrite=overwrite,
+        )
 
     return created
 
@@ -629,3 +699,10 @@ jobs:
 
 def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _write_support_file(path: Path, content: str, *, created: list[Path], overwrite: bool) -> None:
+    if path.exists() and not overwrite:
+        return
+    path.write_text(content, encoding="utf-8", newline="\n")
+    created.append(path)

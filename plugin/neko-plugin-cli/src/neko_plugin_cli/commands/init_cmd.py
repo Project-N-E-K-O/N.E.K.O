@@ -16,7 +16,8 @@ import sys
 from pathlib import Path
 
 from ..paths import CliDefaults
-from ..templates.generator import PluginSpec, generate_plugin
+from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
+from ..core.plugin_source import load_plugin_source
 from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
 
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -55,6 +56,24 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     repo_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     repo_parser.set_defaults(handler=handle_init_repo, _defaults=defaults)
 
+    setup_parser = subparsers.add_parser(
+        "setup-repo",
+        help="Add repository support files to an existing plugin",
+    )
+    setup_parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
+    setup_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
+    setup_parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
+    setup_parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    setup_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
+    setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
+    setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
+    setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
+    setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
+    setup_parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
+    setup_parser.add_argument("--no-gitignore", action="store_true", help="Do not generate .gitignore")
+    setup_parser.add_argument("--no-vscode", action="store_true", help="Do not generate VSCode settings and tasks")
+    setup_parser.set_defaults(handler=handle_setup_repo, _defaults=defaults)
+
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
@@ -91,6 +110,52 @@ def handle_init_repo(args: argparse.Namespace) -> int:
         no_vscode=False,
     )
     return _handle_non_interactive(init_args, defaults=defaults)
+
+
+def handle_setup_repo(args: argparse.Namespace) -> int:
+    defaults: CliDefaults = args._defaults
+    if args.remote and not args.git:
+        print("[FAIL] --remote requires --git", file=sys.stderr)
+        return 1
+
+    try:
+        plugin_dir = _resolve_existing_plugin_dir(args.plugin, args=args, defaults=defaults)
+        source = load_plugin_source(plugin_dir)
+        spec = PluginSpec(
+            plugin_id=source.plugin_id,
+            name=source.name,
+            plugin_type=source.package_type,
+            description=source.description,
+            version=source.version,
+            author_name=source.author_name,
+            author_email=source.author_email,
+            entry_point_override=source.entry_point,
+            quick_start=True,
+            create_pyproject=False,
+            create_readme=not args.no_readme,
+            create_tests=not args.no_tests,
+            create_gitignore=not args.no_gitignore,
+            create_vscode=not args.no_vscode,
+            create_github_actions=args.github_actions,
+            neko_repository=args.neko_repo,
+            neko_ref=args.neko_ref,
+        )
+        created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
+        if args.git:
+            _initialize_git_repo(plugin_dir, remote=args.remote)
+    except Exception as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\n[OK] 已配置 {plugin_dir}/")
+    if created:
+        for path in created:
+            print(f"  └── {path.relative_to(plugin_dir)}")
+    else:
+        print("  support files already exist; use --overwrite to regenerate them")
+    print(f"\n  plugin: {source.plugin_id}")
+    print(f"  entry:  {source.entry_point}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +385,19 @@ def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) ->
     if plugins_root:
         return Path(plugins_root).expanduser().resolve()
     return defaults.plugins_root
+
+
+def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults: CliDefaults) -> Path:
+    candidate = Path(raw).expanduser()
+    if candidate.exists():
+        plugin_dir = candidate.resolve()
+    else:
+        plugin_dir = (_resolve_plugins_root(args, defaults=defaults) / raw).resolve()
+
+    plugin_toml = plugin_dir / "plugin.toml"
+    if not plugin_toml.is_file():
+        raise FileNotFoundError(f"plugin.toml not found for plugin '{raw}': {plugin_toml}")
+    return plugin_dir
 
 
 def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> None:

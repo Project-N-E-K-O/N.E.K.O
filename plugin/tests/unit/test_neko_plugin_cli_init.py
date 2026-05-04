@@ -13,7 +13,7 @@ _SRC_DIR = str(CLI_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from neko_plugin_cli.templates.generator import PluginSpec, generate_plugin
+from neko_plugin_cli.templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -31,6 +31,14 @@ def test_plugin_spec_class_name() -> None:
 def test_plugin_spec_entry_point() -> None:
     spec = PluginSpec(plugin_id="web_search")
     assert spec.entry_point == "plugin.plugins.web_search:WebSearchPlugin"
+
+
+def test_plugin_spec_entry_point_override() -> None:
+    spec = PluginSpec(
+        plugin_id="lifekit",
+        entry_point_override="plugin.plugins.lifekit:LifeKitPlugin",
+    )
+    assert spec.entry_point == "plugin.plugins.lifekit:LifeKitPlugin"
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +154,37 @@ def test_generate_plugin_without_vscode(tmp_path: Path) -> None:
 
     assert not (target / ".vscode" / "settings.json").exists()
     assert not (target / ".vscode" / "tasks.json").exists()
+
+
+def test_generate_repo_support_files_preserves_existing_core_files(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "existing_plugin"
+    plugin_dir.mkdir()
+    plugin_toml = plugin_dir / "plugin.toml"
+    init_py = plugin_dir / "__init__.py"
+    plugin_toml.write_text("[plugin]\nid = \"existing_plugin\"\n", encoding="utf-8")
+    init_py.write_text("ORIGINAL = True\n", encoding="utf-8")
+
+    created = generate_repo_support_files(
+        PluginSpec(plugin_id="existing_plugin", name="Existing Plugin", create_github_actions=True),
+        plugin_dir,
+    )
+
+    assert plugin_toml.read_text(encoding="utf-8") == "[plugin]\nid = \"existing_plugin\"\n"
+    assert init_py.read_text(encoding="utf-8") == "ORIGINAL = True\n"
+    assert plugin_dir / "README.md" in created
+    assert plugin_dir / ".github" / "workflows" / "verify.yml" in created
+    assert (plugin_dir / ".vscode" / "tasks.json").is_file()
+
+
+def test_generate_repo_support_files_skips_existing_without_overwrite(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "existing_plugin"
+    plugin_dir.mkdir()
+    readme = plugin_dir / "README.md"
+    readme.write_text("custom\n", encoding="utf-8")
+
+    generate_repo_support_files(PluginSpec(plugin_id="existing_plugin"), plugin_dir)
+
+    assert readme.read_text(encoding="utf-8") == "custom\n"
 
 
 def test_generate_repo_verification_workflow_when_requested(tmp_path: Path) -> None:
@@ -321,6 +360,74 @@ def test_cli_init_repo_rejects_remote_without_git(tmp_path: Path, capsys) -> Non
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "--remote requires git initialization" in captured.err
+
+
+def test_cli_setup_repo_adds_support_files_to_existing_plugin(tmp_path: Path) -> None:
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = plugins_root / "existing_life"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                'id = "existing_life"',
+                'name = "Existing Life"',
+                'description = "Existing plugin"',
+                'version = "0.2.0"',
+                'entry = "plugin.plugins.existing_life:ExistingLifePlugin"',
+                "",
+                "[plugin.author]",
+                'name = "Tester"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text("ORIGINAL = True\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "setup-repo",
+            "existing_life",
+            "--plugins-root",
+            str(plugins_root),
+            "--github-actions",
+            "--neko-repo",
+            "neko-org/N.E.K.O",
+            "--neko-ref",
+            "v1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (plugin_dir / "__init__.py").read_text(encoding="utf-8") == "ORIGINAL = True\n"
+    assert (plugin_dir / "README.md").is_file()
+    assert (plugin_dir / ".vscode" / "tasks.json").is_file()
+    workflow_text = (plugin_dir / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+    assert "PLUGIN_ID: existing_life" in workflow_text
+    assert "NEKO_REF: v1" in workflow_text
+    smoke_text = (plugin_dir / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+    assert 'entry = "plugin.plugins.existing_life:ExistingLifePlugin"' in smoke_text
+
+
+def test_cli_setup_repo_skips_existing_support_files_without_overwrite(tmp_path: Path) -> None:
+    from neko_plugin_cli.cli import main
+
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = plugins_root / "existing_skip"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "existing_skip"\nname = "Existing Skip"\nversion = "0.1.0"\nentry = "plugin.plugins.existing_skip:ExistingSkipPlugin"\n',
+        encoding="utf-8",
+    )
+    (plugin_dir / "README.md").write_text("custom\n", encoding="utf-8")
+
+    exit_code = main(["setup-repo", "existing_skip", "--plugins-root", str(plugins_root)])
+
+    assert exit_code == 0
+    assert (plugin_dir / "README.md").read_text(encoding="utf-8") == "custom\n"
 
 
 # ---------------------------------------------------------------------------
