@@ -15,8 +15,13 @@ import math
 import random
 import re
 import time
+from collections import OrderedDict
 from typing import Any, Dict
 from urllib.parse import urlparse
+
+
+_EXTERNAL_VOICE_DEDUP_TTL_SECONDS = 30.0
+_EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
 
 from fastapi import APIRouter, Request
 
@@ -1846,7 +1851,7 @@ def _archive_game_context_degraded(archive: dict) -> bool:
 def _build_game_archive_memory_text(archive: dict) -> str:
     degraded = _archive_game_context_degraded(archive)
     lines = [
-        "[游戏模块记忆记录]",
+        "[Game Module Memory Record]",
         "说明: 这是游戏模块写入给记忆系统的赛后记录，不是玩家逐字说出的新聊天。",
         f"游戏: {archive.get('game_type') or 'game'}",
         f"会话: {archive.get('session_id') or 'default'}",
@@ -2218,7 +2223,7 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         tail_count if tail_count is not None else archive.get("game_memory_tail_count")
     )
     lines = [
-        "游戏模块赛后记录：这是游戏模块归档，不是玩家逐字发言。",
+        "Game Module Postgame Record: this is a game-module archive, not a verbatim player utterance.",
     ]
     if score_text:
         lines.append(f"官方结果：{score_text}。口头让步不改官方结果。")
@@ -2409,7 +2414,7 @@ def _build_game_postgame_context_text(archive: dict) -> str:
         highlights = _normalize_game_archive_memory_highlights(_fallback_game_archive_memory_highlights(archive))
 
     lines = [
-        "[游戏模块赛后上下文]",
+        "[Game Module Postgame Context]",
         "说明: 这是静默上下文，不是玩家新说的话；不要因为注入本身立刻开口。",
         "用途: 如果随后收到玩家语音/文字或主动搭话触发，自然接上刚才这局游戏；不要复述日志，不要把这局游戏说成仍在进行。",
         f"游戏: {archive.get('game_type') or 'game'}",
@@ -2475,7 +2480,7 @@ def _build_game_postgame_realtime_nudge_instruction(archive: dict, options: dict
     max_chars = int(options.get("max_chars") or 60)
     degraded = _archive_game_context_degraded(archive)
     lines = [
-        "[游戏模块赛后主动搭话]",
+        "[Game Module Postgame Proactive Greeting]",
         "刚才这局游戏已经结束。下一句必须自然接刚才这局游戏，不要继续扮演游戏仍在进行。",
         "不要再说任何只在游戏进行中才合理的指令或动作；不要复述日志。",
     ]
@@ -4020,32 +4025,43 @@ async def _route_external_transcript_to_game(
 
     now = time.time()
     if kind == "user-voice":
-        # Dedup on request_id when available — every transcript carries its own
-        # idempotency id, so two genuinely-distinct shouts of the same phrase
-        # (e.g. "再来！再来！") arrive with different request_ids and must both
-        # deliver. Only fall back to text+timestamp dedup when request_id is
-        # missing (legacy callers / unit-test scaffolding without one), and use
-        # a tighter 1.0s window since it only guards retransmits-of-the-same-id
-        # in that fallback path.
-        last_voice = state.get("_last_external_voice_transcript") if isinstance(state.get("_last_external_voice_transcript"), dict) else {}
-        last_request_id = str(last_voice.get("request_id") or "")
+        # Idempotency on request_id with a bounded TTL set rather than a
+        # single "last seen" slot — single-slot would let an out-of-order
+        # replay through (voice-1 → voice-2 → voice-1 retry: the second
+        # voice-1 passes because last is now voice-2). Each transcript
+        # carries its own request_id, so two genuinely-distinct shouts of
+        # the same phrase (e.g. "再来！再来！") arrive with different
+        # request_ids and both deliver.
+        #
+        # Fallback for callers that don't send request_id (legacy paths /
+        # unit-test scaffolding): synthesize a "text+1s-bucket" key so
+        # tight retransmits of the exact same line collapse, while a
+        # genuine repeat 1s+ later still delivers.
+        seen_ids = state.get("_external_voice_seen_request_ids")
+        if not isinstance(seen_ids, OrderedDict):
+            seen_ids = OrderedDict()
+            state["_external_voice_seen_request_ids"] = seen_ids
+        # Evict expired entries (TTL) and cap (LRU) before testing.
+        ttl_cutoff = now - _EXTERNAL_VOICE_DEDUP_TTL_SECONDS
+        while seen_ids:
+            oldest_id = next(iter(seen_ids))
+            if seen_ids[oldest_id] < ttl_cutoff:
+                seen_ids.pop(oldest_id, None)
+                continue
+            break
+        while len(seen_ids) >= _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES:
+            seen_ids.popitem(last=False)
         current_request_id = str(request_id or "")
-        if current_request_id and last_request_id and current_request_id == last_request_id:
-            logger.info("🎮 游戏语音转写去重(request_id): lanlan=%s text=%s", lanlan_name, text[:40])
+        idempotency_key = current_request_id or f"__no_id__:{text}:{int(now)}"
+        if idempotency_key in seen_ids:
+            logger.info(
+                "🎮 游戏语音转写去重: lanlan=%s key=%s text=%s",
+                lanlan_name, idempotency_key, text[:40],
+            )
             return True
-        if (
-            not current_request_id
-            and not last_request_id
-            and str(last_voice.get("text") or "") == text
-            and now - float(last_voice.get("ts") or 0) < 1.0
-        ):
-            logger.info("🎮 游戏语音转写去重(fallback text+ts): lanlan=%s text=%s", lanlan_name, text[:40])
-            return True
-        state["_last_external_voice_transcript"] = {
-            "text": text,
-            "ts": now,
-            "request_id": current_request_id,
-        }
+        seen_ids[idempotency_key] = now
+        # Touch order so the most-recent key sits at the LRU tail.
+        seen_ids.move_to_end(idempotency_key)
 
     mgr = get_session_manager().get(lanlan_name)
     game_type = str(state.get("game_type") or "soccer")

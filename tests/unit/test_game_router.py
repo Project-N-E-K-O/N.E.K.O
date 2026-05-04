@@ -414,7 +414,7 @@ def test_game_archive_memory_payload_uses_system_note_shape():
     assert messages[0]["content"][0]["text"] == "温柔一点"
     assert messages[1]["content"][0]["text"] == "好好好，让你踢。"
     system_text = messages[2]["content"][0]["text"]
-    assert "游戏模块归档，不是玩家逐字发言" in system_text
+    assert "Game Module Postgame Record: this is a game-module archive, not a verbatim player utterance." in system_text
     assert "soccer 游戏结束" not in system_text
     assert "官方结果：玩家 1 : 4 Lan。口头让步不改官方结果。" in system_text
     assert "官方结果永远以 finalScore / last_state.score 为准" not in system_text
@@ -696,38 +696,31 @@ def test_route_state_key_is_tuple_no_collision_no_prefix_false_match(monkeypatch
 
 
 @pytest.mark.unit
-def test_memory_review_prompt_protects_soccer_archive_records():
+def test_memory_review_prompt_protects_game_module_archive_records():
+    """All five locales' HISTORY_REVIEW_PROMPT must reference the English
+    archive tags 'Game Module Memory Record' / 'Game Module Postgame Record'
+    that the game module emits verbatim into chat history (write side at
+    main_routers.game_router._build_game_archive_memory_text /
+    _build_game_archive_memory_summary_text). The previous design used
+    Chinese-literal tags; the project standardised on English-only tags so
+    every review-LLM in any UI locale matches the same string."""
     from config.prompts_memory import get_history_review_prompt
 
-    prompt = get_history_review_prompt("zh")
-
-    assert "游戏模块归档" in prompt
-    assert "游戏模块赛后记录" in prompt
-    assert "游戏模块记忆记录" in prompt
-    assert "不同时间/会话的同一类游戏默认代表不同局" in prompt
-    assert "不要整条删除" in prompt
-
-
-@pytest.mark.unit
-def test_memory_review_prompt_carries_chinese_literal_in_all_locales():
-    """The archive tags written by the game module ('游戏模块归档' /
-    '游戏模块赛后记录' / '游戏模块记忆记录') are emitted verbatim in Chinese
-    regardless of the UI / review-LLM language. So every locale's
-    HISTORY_REVIEW_PROMPT must mention the Chinese literals so the review
-    LLM can match them, not just localized translations."""
-    from config.prompts_memory import get_history_review_prompt
-
-    expected_zh_literals = (
-        "游戏模块归档",
-        "游戏模块赛后记录",
-        "游戏模块记忆记录",
+    expected_tags = (
+        "Game Module Memory Record",
+        "Game Module Postgame Record",
     )
     for lang in ("zh", "en", "ja", "ko", "ru"):
         prompt = get_history_review_prompt(lang)
-        for literal in expected_zh_literals:
-            assert literal in prompt, (
-                f"locale={lang} HISTORY_REVIEW_PROMPT missing Chinese literal {literal!r}"
+        for tag in expected_tags:
+            assert tag in prompt, (
+                f"locale={lang} HISTORY_REVIEW_PROMPT missing archive tag {tag!r}"
             )
+
+    # zh-specific assertions retained as a localised-content check.
+    zh_prompt = get_history_review_prompt("zh")
+    assert "不同时间/会话的同一类游戏默认代表不同局" in zh_prompt
+    assert "不要整条删除" in zh_prompt
 
 
 @pytest.mark.unit
@@ -1368,10 +1361,14 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_route_external_voice_transcript_dedup_keys_on_request_id(monkeypatch):
-    """Two genuinely-distinct shouts of the same phrase with different
-    request_ids must both deliver — the (text, time<3s) heuristic was
-    swallowing rapid-fire repeats like '再来！再来！'."""
+async def test_route_external_voice_transcript_dedup_idempotent_on_request_id(monkeypatch):
+    """The dedup must be a true idempotency check on request_id, not a
+    "last seen" single slot:
+      - voice-1, voice-2 (different shouts) both deliver
+      - voice-1 retransmitted → still squashed even after voice-2 was the
+        most recent (out-of-order replay protection — the original
+        single-slot version would let this through because last==voice-2)
+    """
     mgr = _FakeGameRouteManager()
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
     state = game_router._activate_game_route("soccer", "match_1", "Lan")
@@ -1379,7 +1376,7 @@ async def test_route_external_voice_transcript_dedup_keys_on_request_id(monkeypa
     chat_calls = []
 
     async def fake_run_game_chat(game_type, session_id, event):
-        chat_calls.append(event["userVoiceText"])
+        chat_calls.append((event["userVoiceText"], event.get("requestId")))
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
 
     monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
@@ -1390,18 +1387,55 @@ async def test_route_external_voice_transcript_dedup_keys_on_request_id(monkeypa
     handled2 = await game_router.route_external_voice_transcript(
         "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
     )
+    # Out-of-order retry of voice-1 after voice-2 — must still be squashed.
+    handled3 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-1", game_type="soccer", session_id="match_1",
+    )
+    # Same request_id retransmitted right away — also squashed.
+    handled4 = await game_router.route_external_voice_transcript(
+        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
+    )
 
     assert handled1 is True
     assert handled2 is True
-    # Both shouts must have actually reached the LLM, not been silently swallowed.
-    assert chat_calls == ["再来", "再来"]
-    assert len(mgr.mirrored) == 2
-    # And the same request_id retransmitted is still squashed (idempotency).
-    handled3 = await game_router.route_external_voice_transcript(
-        "Lan", "再来", request_id="voice-2", game_type="soccer", session_id="match_1",
-    )
     assert handled3 is True
-    assert chat_calls == ["再来", "再来"]
+    assert handled4 is True
+    assert [call[0] for call in chat_calls] == ["再来", "再来"]
+    assert len(mgr.mirrored) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
+    """After the TTL window passes, the same request_id is allowed to
+    deliver again (it isn't "stuck" in the dedup set forever)."""
+    mgr = _FakeGameRouteManager()
+    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
+    state = game_router._activate_game_route("soccer", "match_1", "Lan")
+
+    async def fake_run_game_chat(game_type, session_id, event):
+        return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
+
+    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+
+    fake_now = {"t": 10_000.0}
+    monkeypatch.setattr(game_router.time, "time", lambda: fake_now["t"])
+
+    h1 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] += 0.1
+    h2 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    fake_now["t"] += 60.0
+    h3 = await game_router.route_external_voice_transcript(
+        "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
+    )
+    assert h1 is True and h2 is True and h3 is True
+    # voice-x at base and at base+60.1s both deliver (TTL=30s evicted the
+    # first entry by then); the in-window retry at base+0.1s is squashed.
+    assert len(mgr.mirrored) == 2
 
 
 @pytest.mark.unit
@@ -2010,7 +2044,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     assert session.prime_context_calls
     context_text, skipped = session.prime_context_calls[0]
     assert skipped is True
-    assert "游戏模块赛后上下文" in context_text
+    assert "[Game Module Postgame Context]" in context_text
     assert "我是不是不适合玩这个？" in context_text
 
 
@@ -2052,8 +2086,8 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert session.prompt_calls == []
     assert mgr.voice_nudge_calls == 0
     assert len(session.create_response_calls) == 1
-    assert "游戏模块赛后上下文" in session.create_response_calls[0]
-    assert "游戏模块赛后主动搭话" in session.create_response_calls[0]
+    assert "[Game Module Postgame Context]" in session.create_response_calls[0]
+    assert "[Game Module Postgame Proactive Greeting]" in session.create_response_calls[0]
     assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
 
 
