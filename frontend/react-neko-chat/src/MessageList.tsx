@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import MessageBubble from './MessageBubble';
 import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
@@ -41,32 +41,14 @@ export default function MessageList({
     [messages],
   );
 
-  const isStreaming = displayMessages.some(m => m.status === 'streaming');
-
-  const scrollToBottom = useCallback(() => {
+  // Always instant scroll: behavior:'smooth' is silently broken in our Electron
+  // host (window.scrollTo / element.scrollTo with behavior:'smooth' is a no-op),
+  // which left the chat stuck at scrollTop=0 on mount and after each new message.
+  useEffect(() => {
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
-
-    const shouldUseInstantScroll =
-      isStreaming
-      || (
-        typeof document !== 'undefined'
-        && document.body.classList.contains('yui-taking-over')
-      );
-
-    if (shouldUseInstantScroll) {
-      container.scrollTop = container.scrollHeight;
-    } else {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: 'smooth',
-      });
-    }
-  }, [isStreaming]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [displayMessages, scrollToBottom]);
+    container.scrollTop = container.scrollHeight;
+  }, [displayMessages]);
 
   useEffect(() => {
     const container = containerRef.current;
