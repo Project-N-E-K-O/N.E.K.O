@@ -838,6 +838,184 @@ async def test_postgame_text_bubble_identity_gates_close(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_postgame_session_isolated_from_concurrent_route_start_reuse(monkeypatch):
+    """codex P1 follow-up (PR #1127 r3182591852): postgame's freshly-built
+    session must live at a private cache key so a racing ``/route/start``
+    reusing the user-facing ``(lanlan, game_type, session_id)`` cannot land
+    on the same ``_game_sessions`` slot.
+
+    Pre-fix race window:
+    1. ``_complete_game_end_from_payload`` finalizes route → closes
+       original session, releases ``end_route_lock`` and supersede lock.
+    2. ``_run_game_chat(allow_postgame=True)`` builds entry_pg, registers
+       it under the user-facing key.
+    3. Postgame's text generation parks at ``finish_proactive_delivery``.
+    4. A new ``/route/start`` for the same key activates and its first
+       ``/game_chat`` calls ``_get_or_create_session`` — finds entry_pg
+       STILL CACHED, returns it (cache reuse).
+    5. Postgame's ``finally`` runs. Identity check
+       ``cache[key] is entry_pg`` STILL passes (peer reused, didn't
+       replace) → finally closes ``entry_pg['session']`` — actively in
+       use by the new route → new route's first turn dies on closed WS.
+
+    Post-fix: postgame builds its session at ``::postgame::<uuid>``-
+    suffixed cache key. The new route's ``_get_or_create_session`` for
+    the user-facing key never sees postgame's slot, builds its own
+    fresh entry. Postgame's ``finally`` evicts only its private slot.
+    """
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        state = _activate_route("Lan", "soccer", "match_postgame_reuse")
+        state["_exit_flow_started"] = True
+        state["game_route_active"] = False
+
+        captured_callback = {"fn": None}
+        constructed: list[_FakeOmniSession] = []
+
+        class _TrackingOmni:
+            def __init__(self, **kwargs):
+                captured_callback["fn"] = kwargs.get("on_text_delta")
+                self.fake = _FakeOmniSession(name=f"omni_{len(constructed)}")
+                constructed.append(self.fake)
+
+            async def connect(self, *, instructions: str = ""):
+                await self.fake.connect()
+
+            async def close(self):
+                await self.fake.close()
+
+            async def stream_text(self, text: str):
+                await self.fake.stream_text(text)
+                cb = captured_callback["fn"]
+                if cb is not None:
+                    await cb("postgame bubble line", True)
+
+            async def update_session(self, config):
+                await self.fake.update_session(config)
+
+        import main_logic.omni_offline_client as omni_module
+        monkeypatch.setattr(omni_module, "OmniOfflineClient", _TrackingOmni)
+
+        def _stub_char_info(name):
+            return {
+                "lanlan_name": "Lan",
+                "lanlan_prompt": "",
+                "model": "stub",
+                "base_url": "https://stub.example.com",
+                "api_key": "stub",
+                "master_name": "Master",
+                "user_language": "en",
+                "api_type": "openai",
+            }
+
+        monkeypatch.setattr(game_router, "_get_character_info", _stub_char_info)
+        monkeypatch.setattr(
+            game_router,
+            "_build_game_prompt",
+            lambda *args, **kwargs: "stub_prompt",
+        )
+
+        # Hook ``finish_proactive_delivery`` — runs AFTER chat finishes
+        # but BEFORE the bubble's finally — to simulate a racing peer
+        # ``/route/start`` whose first ``/game_chat`` calls
+        # ``_get_or_create_session`` for the SAME user-facing key. Any
+        # cached entry it finds there is what postgame's finally will
+        # later close. Pre-fix: postgame's entry IS at that key →
+        # peer reuses postgame's session → finally closes peer's
+        # active session.
+        peer_entry_holder: dict = {"entry": None}
+
+        class _StubManager:
+            is_active = False
+            session = None
+            current_speech_id = "speech-postgame"
+            state = None
+
+            def __init__(self):
+                self.delivered = None
+
+            async def prepare_proactive_delivery(self, *, min_idle_secs=0.0):
+                return True
+
+            async def finish_proactive_delivery(self, line, *, expected_speech_id=None):
+                # Simulate the racing peer: it activated a fresh route
+                # for the same user-facing key after postgame's bypass
+                # registered. Its first ``/game_chat`` resolves through
+                # ``_get_or_create_session(..., session_id=user-facing)``.
+                peer_entry_holder["entry"] = await game_router._get_or_create_session(
+                    "soccer", "match_postgame_reuse", "Lan",
+                )
+                self.delivered = line
+                return True
+
+            async def feed_tts_chunk(self, line, *, expected_speech_id=None):
+                pass
+
+        mgr = _StubManager()
+        archive = {
+            "lanlan_name": "Lan",
+            "summary": "",
+            "last_full_dialogues": [],
+            "last_state": {},
+            "finalScore": {},
+            "preGameContext": {},
+        }
+        options = {"enabled": True, "max_chars": 60, "include_last_dialogues": 0}
+
+        user_facing_key = game_router._game_session_key(
+            "Lan", "soccer", "match_postgame_reuse",
+        )
+
+        result = await game_router._deliver_postgame_text_bubble(
+            "soccer", "match_postgame_reuse", mgr, archive, options,
+        )
+
+        assert result.get("ok") is True, result
+        assert result.get("action") == "chat", result
+
+        # Two distinct ``OmniOfflineClient`` instances were built —
+        # postgame's at the private key, peer's at the user-facing key.
+        # Pre-fix: only ONE instance built (peer reused postgame's).
+        assert len(constructed) == 2, (
+            f"Expected postgame and peer to build separate sessions, "
+            f"but {len(constructed)} OmniOfflineClient(s) were constructed — "
+            f"peer's _get_or_create_session reused postgame's cache slot."
+        )
+
+        peer_entry = peer_entry_holder["entry"]
+        assert peer_entry is not None
+        peer_session = peer_entry.get("session")
+        assert peer_session is not None
+
+        # CRITICAL: the peer's session is still alive. Pre-fix, postgame's
+        # finally would close it (close_calls == 1) because the cache
+        # identity check still pointed at the same entry the peer was
+        # handed back from cache reuse.
+        assert peer_session.fake.close_calls == 0, (
+            "postgame finally closed the peer route's session — "
+            "cache reuse race regressed"
+        )
+
+        # Peer's entry remains cached at the user-facing key.
+        assert game_router._game_sessions.get(user_facing_key) is peer_entry, (
+            "peer route's cache entry was evicted by postgame's finally"
+        )
+
+        # Postgame's private cache slot (whatever it was) has been
+        # cleaned up. Inspecting cache: only the peer entry should remain
+        # under any key matching this game_type/lanlan.
+        leaked = [
+            k for k, v in game_router._game_sessions.items()
+            if v is not peer_entry
+            and game_router._POSTGAME_SESSION_MARKER in k
+        ]
+        assert leaked == [], (
+            f"postgame entry leaked at private key(s): {leaked}"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_b1_supersede_then_chat_does_not_revive_closed_route(monkeypatch):
     """B1: after a ``/route/start`` supersede finalizes a prior route,
     a stale chat for that prior route must not silently re-create an
