@@ -2,7 +2,12 @@
 
 These cover the audit findings B1, B2, B3, B5, B6, B8 (B4 is a defensive
 guard verified in ``test_game_context_organizer.py``; B7 was landed in
-PR #1125).
+PR #1125), plus two PR #1127 follow-up tests:
+
+- ``test_route_start_serializes_supersede_across_game_types_for_same_lanlan``
+  guards CodeRabbit's per-lanlan supersede-lock finding.
+- ``test_game_session_create_lock_evicted_with_session`` guards codex's
+  ``_game_session_create_locks`` memory-leak finding.
 """
 from __future__ import annotations
 
@@ -318,3 +323,123 @@ async def test_b1_supersede_then_chat_does_not_revive_closed_route(monkeypatch):
         # Pre-create short-circuit must trip before any client is built.
         assert construct_count["n"] == 0
         assert result.get("skipped") == "route_inactive"
+
+
+class _FakeRouteStartRequest:
+    """Minimal stand-in for ``fastapi.Request`` exposing only ``json()``."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_start_serializes_supersede_across_game_types_for_same_lanlan(monkeypatch):
+    """CodeRabbit follow-up: two concurrent /route/start calls for the same
+    ``lanlan_name`` but DIFFERENT ``game_type`` must be serialized so only
+    one active route remains for that character.
+
+    Without the per-lanlan supersede lock, each call holds a different
+    per-(lanlan, game_type) lock, both supersede scans miss the other's
+    pending activation, and both call ``_activate_game_route(...)`` —
+    leaving two active routes for the same character.
+    """
+    _stub_archive_calls(monkeypatch)
+
+    async def _fake_pregame(**_kwargs):
+        return (
+            game_router._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    monkeypatch.setattr(game_router, "_build_soccer_pregame_context", _fake_pregame)
+
+    with reset_game_route_state():
+        # Drop any leftover supersede / route locks so this test starts fresh.
+        from utils import game_route_state as grs_mod
+        grs_mod._route_supersede_locks.pop("Lan", None)
+        grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "soccer"), None)
+        grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "chess"), None)
+
+        results = await asyncio.gather(
+            game_router.game_route_start(
+                "soccer",
+                _FakeRouteStartRequest({
+                    "lanlan_name": "Lan",
+                    "session_id": "soccer_match",
+                }),
+            ),
+            game_router.game_route_start(
+                "chess",
+                _FakeRouteStartRequest({
+                    "lanlan_name": "Lan",
+                    "session_id": "chess_match",
+                }),
+            ),
+        )
+
+        assert all(r.get("ok") for r in results), results
+
+        # Exactly one active route survives for ``Lan``. The second
+        # /route/start to acquire the supersede lock finalized the first.
+        active_for_lan = [
+            (key, state)
+            for key, state in game_router._game_route_states.items()
+            if key[0] == "Lan" and state.get("game_route_active")
+        ]
+        assert len(active_for_lan) == 1, active_for_lan
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_session_create_lock_evicted_with_session():
+    """codex P2 follow-up: ``_game_session_create_locks`` must drop its
+    per-key entry when the session is closed via ``_close_and_remove_session``.
+
+    Otherwise the dict accumulates one ``asyncio.Lock`` per ever-seen
+    session_id over uptime — a memory leak in long-running processes.
+    """
+    with reset_game_route_state():
+        key = game_router._game_session_key("Lan", "soccer", "match_evict")
+        # Drop any leftover from prior runs.
+        game_router._game_session_create_locks.pop(key, None)
+
+        # Lazily create the lock as ``_get_or_create_session`` would.
+        create_lock = game_router._get_session_create_lock(key)
+        assert key in game_router._game_session_create_locks
+        assert create_lock is game_router._game_session_create_locks[key]
+
+        # Register a session with a per-entry lock so close() goes through
+        # the locked branch (mirrors the production cache shape).
+        class _Closer:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        session = _Closer()
+        game_router._game_sessions[key] = {
+            "session": session,
+            "reply_chunks": [],
+            "lanlan_name": "Lan",
+            "lanlan_prompt": "",
+            "source": {},
+            "last_activity": 0,
+            "lock": asyncio.Lock(),
+            "instructions": "",
+        }
+
+        closed = await game_router._close_and_remove_session(
+            "soccer", "match_evict", "Lan",
+        )
+
+        assert closed is True
+        assert key not in game_router._game_sessions
+        # The create lock for this evicted session must also be gone.
+        assert key not in game_router._game_session_create_locks
+        assert session.closed is True

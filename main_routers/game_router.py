@@ -42,6 +42,7 @@ from utils.game_route_state import (
     _game_route_states,
     _get_active_game_route_state,
     _get_route_lock,
+    _get_supersede_lock,
     _route_state_key,
     is_game_route_active,
     register_voice_transcript_handler,
@@ -123,8 +124,15 @@ _GAME_DEBUG_MATERIAL_LOG_LIMIT = 24000
 # ``_game_sessions[key]`` so the first ``entry`` is now an orphan: its
 # ``lock`` is held by the first ``_run_game_chat``, but the cache no
 # longer points at it, so nothing will ever ``close()`` that session.
-# Keeping these locks process-scoped (never popped) is fine — at most one
-# Lock per ever-seen game session, negligible memory.
+#
+# Lifecycle (codex P2 follow-up): the create lock for a key is only
+# meaningful while a session for that key may be created or alive. After
+# ``_close_and_remove_session`` evicts the session from
+# ``_game_sessions``, any further ``_get_or_create_session`` call for
+# the same key would build a fresh session anyway — the lock entry just
+# accumulates without protecting anything. So evict the create lock at
+# the same time as the session, otherwise the dict grows unbounded over
+# uptime as session_ids churn.
 _game_session_create_locks: Dict[str, asyncio.Lock] = {}
 
 
@@ -3570,6 +3578,16 @@ async def _close_and_remove_session(
             return False
         session = popped.get('session')
 
+    # codex P2 follow-up: drop the per-key create lock alongside the
+    # evicted session so ``_game_session_create_locks`` does not grow
+    # unbounded over uptime. After eviction the lock would only protect
+    # a fresh, unrelated build — keeping the stale Lock instance buys
+    # nothing and accumulates memory as session_ids churn. Pop is
+    # synchronous (no await) so two concurrent close callers cannot
+    # race and double-pop into a KeyError; ``pop(..., None)`` is
+    # idempotent.
+    _game_session_create_locks.pop(key, None)
+
     if session:
         try:
             await session.close()
@@ -3790,60 +3808,77 @@ async def game_route_start(game_type: str, request: Request):
     # peers see the new slot via ``_get_active_*`` helpers; holding the
     # lock for the whole pregame would block heartbeat sweep with no
     # benefit.
+    #
+    # Cross-game_type concurrency (CodeRabbit follow-up):
+    # The per-(lanlan, game_type) route lock alone is too narrow for the
+    # supersede scan, which iterates `_game_route_states` for ANY active
+    # route belonging to `lanlan_name` regardless of `game_type`. Two
+    # concurrent /route/start calls for SAME lanlan_name but DIFFERENT
+    # game_type acquire different per-key locks, so each scan misses the
+    # other's pending activation and both end up activating in parallel,
+    # breaking the "one active game route per character" invariant.
+    #
+    # Fix: take the per-lanlan_name supersede lock as the OUTER lock
+    # before the per-(lanlan, game_type) route lock. Acquisition order
+    # (documented in `utils/game_route_state.py`) is OUTER->INNER; only
+    # the start-flow goes outer->inner, never the other direction, so no
+    # deadlock with finalize/end paths that only take the inner lock.
+    supersede_lock = _get_supersede_lock(lanlan_name)
     route_lock = _get_route_lock(lanlan_name, game_type)
-    async with route_lock:
-        for old_state in [
-            candidate
-            for candidate in list(_game_route_states.values())
-            if candidate.get("game_route_active")
-            and str(candidate.get("lanlan_name") or "") == lanlan_name
-        ]:
-            old_game_type = str(old_state.get("game_type") or "")
-            old_session_id = str(old_state.get("session_id") or "default")
-            logger.warning(
-                "🎮 新游戏路由启动前发现旧 active route，先结束旧局: old_game=%s old_session=%s new_game=%s new_session=%s lanlan=%s",
-                old_game_type,
-                old_session_id,
+    async with supersede_lock:
+        async with route_lock:
+            for old_state in [
+                candidate
+                for candidate in list(_game_route_states.values())
+                if candidate.get("game_route_active")
+                and str(candidate.get("lanlan_name") or "") == lanlan_name
+            ]:
+                old_game_type = str(old_state.get("game_type") or "")
+                old_session_id = str(old_state.get("session_id") or "default")
+                logger.warning(
+                    "🎮 新游戏路由启动前发现旧 active route，先结束旧局: old_game=%s old_session=%s new_game=%s new_session=%s lanlan=%s",
+                    old_game_type,
+                    old_session_id,
+                    game_type,
+                    session_id,
+                    lanlan_name,
+                )
+                await _finalize_game_route_state(
+                    old_state,
+                    reason="superseded_by_route_start",
+                    close_game_session=True,
+                )
+
+            neko_initiated = bool(data.get("nekoInitiated"))
+            neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
+            state = _activate_game_route(
                 game_type,
                 session_id,
                 lanlan_name,
+                data.get("game_last_full_dialogue_count"),
             )
-            await _finalize_game_route_state(
-                old_state,
-                reason="superseded_by_route_start",
-                close_game_session=True,
+            # Take over the SessionManager: ordinary chat LLM output handlers must
+            # stay silent during the game, and any voice transcript that reaches
+            # the SessionManager must be redirected into route_external_voice_transcript.
+            mgr = get_session_manager().get(lanlan_name)
+            if mgr is not None:
+                async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
+                    return await route_external_voice_transcript(
+                        _lan,
+                        transcript_text,
+                        request_id=request_id,
+                        game_type=game_type,
+                        session_id=session_id,
+                    )
+                mgr._takeover_active = True
+                mgr._takeover_input_dispatcher = _takeover_dispatcher
+            state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
+                data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
-
-        neko_initiated = bool(data.get("nekoInitiated"))
-        neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
-        state = _activate_game_route(
-            game_type,
-            session_id,
-            lanlan_name,
-            data.get("game_last_full_dialogue_count"),
-        )
-        # Take over the SessionManager: ordinary chat LLM output handlers must
-        # stay silent during the game, and any voice transcript that reaches
-        # the SessionManager must be redirected into route_external_voice_transcript.
-        mgr = get_session_manager().get(lanlan_name)
-        if mgr is not None:
-            async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
-                return await route_external_voice_transcript(
-                    _lan,
-                    transcript_text,
-                    request_id=request_id,
-                    game_type=game_type,
-                    session_id=session_id,
-                )
-            mgr._takeover_active = True
-            mgr._takeover_input_dispatcher = _takeover_dispatcher
-        state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
-            data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
-        )
-        _update_game_memory_enabled_from_payload(state, data)
-        state["nekoInitiated"] = neko_initiated
-        state["nekoInviteText"] = neko_invite_text
-        _update_route_start_state_from_payload(state, data)
+            _update_game_memory_enabled_from_payload(state, data)
+            state["nekoInitiated"] = neko_initiated
+            state["nekoInviteText"] = neko_invite_text
+            _update_route_start_state_from_payload(state, data)
     if game_type == "soccer":
         state["heartbeat_enabled"] = False
         try:
