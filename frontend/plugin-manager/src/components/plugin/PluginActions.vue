@@ -8,7 +8,7 @@
       @click="handleOpenUi"
       :disabled="uiDisabled"
     >
-      {{ uiAction.label || t('plugins.ui.open') }}
+      {{ uiActionLabel }}
     </el-button>
     <!-- Extension 操作按钮 -->
     <el-button-group v-if="isExtension">
@@ -71,6 +71,7 @@ import { useI18n } from 'vue-i18n'
 import { VideoPlay, VideoPause, Refresh, SwitchButton, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
 
 interface Props {
   pluginId: string
@@ -79,7 +80,7 @@ interface Props {
 const props = defineProps<Props>()
 const pluginStore = usePluginStore()
 const router = useRouter()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const loading = ref(false)
 
@@ -99,6 +100,12 @@ const uiDisabled = computed(() => {
   if (uiAction.value.requires_running && status.value !== 'running') return true
   return false
 })
+// label 可能是 string 或 locale-keyed dict（与 backend list_action contract
+// 对齐，见 utils/i18nLabel.ts）。直接 `{{ uiAction.label }}` 在 dict 时会
+// 渲染成 "[object Object]"，必须先按当前 locale 解析。
+const uiActionLabel = computed(() =>
+  resolveLocalizedText(uiAction.value?.label, locale.value, t('plugins.ui.open')),
+)
 
 async function handleOpenUi() {
   if (!uiAction.value || uiDisabled.value) {
