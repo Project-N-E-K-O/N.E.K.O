@@ -179,6 +179,31 @@ async def test_passthrough_send_failure_is_logged_not_raised():
 
 
 @pytest.mark.unit
+async def test_passthrough_preserves_verbatim_whitespace_in_payload():
+    """Receiver-side verbatim contract: the WS payload's ``text`` field
+    must equal the input EXACTLY — leading/trailing whitespace, embedded
+    newlines, and indentation must all survive.
+
+    Codex PR #1128 r3182348366: prior code did ``clean = text.strip()``
+    and forwarded ``clean``, defeating the caller-side fix in
+    ``main_server`` (commit 0ac9e8881) that took care to pass raw_text.
+    Stripping must happen ONLY in the empty-check, never in the send path.
+    """
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+
+    raw = "  hello\n\n"
+    await mgr.passthrough_to_chat_bubble(raw, request_id="r", source="plugin")
+
+    assert ws.send_json.await_count == 1
+    payload = ws.send_json.await_args.args[0]
+    assert payload["text"] == raw, (
+        f"passthrough must NOT strip text — got {payload['text']!r}, "
+        f"expected {raw!r}"
+    )
+
+
+@pytest.mark.unit
 async def test_passthrough_synthesizes_turn_id_when_missing():
     """When neither turn_id nor request_id is provided, the method must
     synthesize a turn_id so the frontend can group chunks into one bubble.

@@ -1771,13 +1771,17 @@ class LLMSessionManager:
         This is a generic SessionManager capability; it does not assume
         any particular consumer.
         """
-        clean = str(text or "").strip()
-        if not clean:
+        # Why: caller passes raw_text deliberately (PR #1128 0ac9e8881).
+        # We empty-check on the stripped form but forward the ORIGINAL so
+        # leading/trailing whitespace, newlines, and indentation render
+        # exactly as the plugin authored them.
+        raw = str(text or "")
+        if not raw or not raw.strip():
             return
         effective_turn_id = turn_id or request_id or str(uuid4())
         message = {
             "type": "gemini_response",
-            "text": clean,
+            "text": raw,
             "isNewMessage": True,
             "turn_id": effective_turn_id,
             "request_id": request_id,
