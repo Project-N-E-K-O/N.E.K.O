@@ -41,6 +41,7 @@ from main_logic.mirror_meta import (
 from utils.game_route_state import (
     _game_route_states,
     _get_active_game_route_state,
+    _get_route_lock,
     _route_state_key,
     is_game_route_active,
     register_voice_transcript_handler,
@@ -113,6 +114,26 @@ _GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS = 2.0
 _ACCIDENTAL_GAME_ENTRY_GRACE_MS = 10_000
 _SESSION_CLEANUP_SWEEP_SECONDS = 60.0
 _GAME_DEBUG_MATERIAL_LOG_LIMIT = 24000
+
+# Per-(lanlan, game_type, session_id) creation lock for ``_get_or_create_session``.
+#
+# B6: without this, two concurrent ``_run_game_chat`` calls for the same
+# key both miss the cache, both build an ``OmniOfflineClient`` and both
+# ``await session.connect(...)``. The second insertion overwrites
+# ``_game_sessions[key]`` so the first ``entry`` is now an orphan: its
+# ``lock`` is held by the first ``_run_game_chat``, but the cache no
+# longer points at it, so nothing will ever ``close()`` that session.
+# Keeping these locks process-scoped (never popped) is fine — at most one
+# Lock per ever-seen game session, negligible memory.
+_game_session_create_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_session_create_lock(key: str) -> asyncio.Lock:
+    """Lazy-init the per-key creation lock; sync helper, never awaits."""
+    lock = _game_session_create_locks.get(key)
+    if lock is None:
+        lock = _game_session_create_locks.setdefault(key, asyncio.Lock())
+    return lock
 
 
 def _log_game_debug_material(
@@ -1301,7 +1322,20 @@ def _should_schedule_game_context_organizer(state: dict) -> bool:
 
 
 def _maybe_schedule_game_context_organizer(state: dict) -> None:
+    """Spawn the per-state organizer task at most once at any given time.
+
+    B4: ``running`` is a dict flag the audit flagged as racy. In practice,
+    on CPython this scheduler is invoked from sync code paths only — the
+    enclosing ``_append_game_dialog`` body has no ``await`` so two
+    coroutines on the same event loop cannot interleave inside it. Still,
+    we add a defensive previous-task done-check so an in-flight organizer
+    is never silently overwritten if a future change introduces an
+    ``await`` boundary in the call chain.
+    """
     if not _should_schedule_game_context_organizer(state):
+        return
+    prev = state.get("_game_context_organizer_task")
+    if prev is not None and hasattr(prev, "done") and not prev.done():
         return
     snapshot = [dict(item) for item in _game_context_pending_dialogues(state)]
     if len(snapshot) < _GAME_CONTEXT_ORGANIZE_TRIGGER_COUNT:
@@ -1319,6 +1353,13 @@ def _maybe_schedule_game_context_organizer(state: dict) -> None:
 
 
 def _append_game_dialog(state: dict, item: dict) -> None:
+    # B2: once finalize has started archiving, the snapshot of
+    # ``game_dialog_log`` has already been captured. Mutating it after
+    # that point produces entries that never reach the archive — they
+    # silently disappear when ``_game_route_states`` is eventually
+    # popped by the cleanup sweep. Drop late writes instead.
+    if state.get("_exit_flow_started"):
+        return
     item = dict(item)
     item.setdefault("ts", time.time())
     if item.get("id"):
@@ -1332,6 +1373,11 @@ def _append_game_dialog(state: dict, item: dict) -> None:
 
 
 def _append_game_output(state: dict, output: dict) -> None:
+    # B2: once finalize has started, ``pending_outputs`` will never be
+    # drained again (the route is exiting, the game page won't ``/drain``
+    # any further). Late writes accumulate into oblivion.
+    if state.get("_exit_flow_started"):
+        return
     pending = state.setdefault("pending_outputs", [])
     pending.append(output)
     del pending[:-_GAME_ROUTE_OUTPUT_LIMIT]
@@ -2940,26 +2986,32 @@ async def _finalize_game_route_state(
     reason: str,
     close_game_session: bool = False,
 ) -> dict:
-    """Run the game route exit flow once, including archive submission."""
+    """Run the game route exit flow once, including archive submission.
+
+    Concurrent-call semantics:
+
+    - The first caller spawns ``_finalize_game_route_state_inner`` and
+      shields its task. Subsequent callers ``await asyncio.shield`` the
+      same task.
+    - ``close_game_session`` uses **OR-merge** semantics across concurrent
+      callers (B5): we stash the requested value on the state under
+      ``_exit_close_session_request``, and the inner runner reads that
+      flag (not its constructor arg) when deciding whether to close.
+      Previously the second caller's ``True`` was silently dropped while
+      the first caller's ``False`` won; the second caller then redundantly
+      invoked ``_close_and_remove_session`` outside the shield, racing
+      with the inner finalize and producing double-pop / double-close.
+    """
+    if close_game_session:
+        state["_exit_close_session_request"] = True
+    elif "_exit_close_session_request" not in state:
+        state["_exit_close_session_request"] = False
+
     existing_task = state.get("_exit_task")
     if existing_task:
-        result = await asyncio.shield(existing_task)
-        if close_game_session and not result.get("game_session_closed"):
-            closed = await _close_and_remove_session(
-                str(state.get("game_type") or ""),
-                str(state.get("session_id") or "default"),
-                str(state.get("lanlan_name") or ""),
-            )
-            result["game_session_closed"] = closed
-        return result
+        return await asyncio.shield(existing_task)
 
-    task = asyncio.create_task(
-        _finalize_game_route_state_inner(
-            state,
-            reason=reason,
-            close_game_session=close_game_session,
-        )
-    )
+    task = asyncio.create_task(_finalize_game_route_state_inner(state, reason=reason))
     state["_exit_task"] = task
     return await asyncio.shield(task)
 
@@ -2968,7 +3020,6 @@ async def _finalize_game_route_state_inner(
     state: dict,
     *,
     reason: str,
-    close_game_session: bool,
 ) -> dict:
     state["_exit_flow_started"] = True
     state["exit_reason"] = reason
@@ -3027,8 +3078,12 @@ async def _finalize_game_route_state_inner(
             memory_result = await _submit_game_archive_to_memory(archive)
         state["archive_memory_result"] = memory_result
 
+    # B5: OR-merge close decision across concurrent callers (see note in
+    # ``_finalize_game_route_state``). Re-read the flag *after* awaiting
+    # the archive work so a second caller arriving mid-finalize with
+    # ``close_game_session=True`` still wins.
     session_closed = False
-    if close_game_session:
+    if state.get("_exit_close_session_request"):
         session_closed = await _close_and_remove_session(
             str(state.get("game_type") or ""),
             str(state.get("session_id") or "default"),
@@ -3045,7 +3100,20 @@ async def _finalize_game_route_state_inner(
 
 
 async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: str = "") -> dict:
-    """获取或创建游戏 session。"""
+    """获取或创建游戏 session.
+
+    B6: serialize the cache-miss → ctor → connect → cache-insert sequence
+    under a per-key ``asyncio.Lock`` so two concurrent ``_run_game_chat``
+    calls for the same ``(lanlan, game_type, session_id)`` cannot both
+    build a fresh ``OmniOfflineClient`` and overwrite each other in
+    ``_game_sessions``, leaking the loser's connection.
+
+    Note: ``lanlan_name`` may be empty on entry (caller-supplied) but
+    canonicalizes to ``char_info["lanlan_name"]`` after the cache miss.
+    The cache + lock keys must agree, so we recompute both under the
+    initial-key lock; if the canonical key differs, we re-acquire the
+    canonical lock to keep the dedup invariant.
+    """
     key = _game_session_key(lanlan_name, game_type, session_id)
 
     if key in _game_sessions:
@@ -3053,19 +3121,47 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
         entry['last_activity'] = time.time()
         return entry
 
-    # 延迟导入，避免循环依赖
+    create_lock = _get_session_create_lock(key)
+    async with create_lock:
+        if key in _game_sessions:
+            entry = _game_sessions[key]
+            entry['last_activity'] = time.time()
+            return entry
+
+        char_info = _get_character_info(lanlan_name)
+        lanlan_name = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
+        canonical_key = _game_session_key(lanlan_name, game_type, session_id)
+        if canonical_key != key:
+            canonical_lock = _get_session_create_lock(canonical_key)
+            async with canonical_lock:
+                if canonical_key in _game_sessions:
+                    entry = _game_sessions[canonical_key]
+                    entry['last_activity'] = time.time()
+                    return entry
+                return await _build_and_register_game_session(
+                    canonical_key, game_type, session_id, char_info,
+                )
+        if key in _game_sessions:
+            entry = _game_sessions[key]
+            entry['last_activity'] = time.time()
+            return entry
+        return await _build_and_register_game_session(
+            key, game_type, session_id, char_info,
+        )
+
+
+async def _build_and_register_game_session(
+    key: str,
+    game_type: str,
+    session_id: str,
+    char_info: dict,
+) -> dict:
+    """Build a fresh game session entry; caller must already hold the
+    per-key creation lock (see ``_get_or_create_session``)."""
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.token_tracker import set_call_type
 
-    char_info = _get_character_info(lanlan_name)
-    lanlan_name = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
-    key = _game_session_key(lanlan_name, game_type, session_id)
-    if key in _game_sessions:
-        entry = _game_sessions[key]
-        entry['last_activity'] = time.time()
-        return entry
-
-    # 创建回复收集器
+    lanlan_name = str(char_info.get("lanlan_name") or "").strip()
     reply_chunks: list[str] = []
 
     async def on_text_delta(text: str, is_first: bool):
@@ -3094,7 +3190,16 @@ async def _get_or_create_session(game_type: str, session_id: str, lanlan_name: s
         game_context if isinstance(game_context, dict) else None,
         char_info.get("user_language"),
     )
-    await session.connect(instructions=system_prompt)
+    try:
+        await session.connect(instructions=system_prompt)
+    except Exception:
+        # Connect failed — ensure we don't leak a half-open client. close
+        # is idempotent / tolerant of "never connected".
+        try:
+            await session.close()
+        except Exception:
+            pass
+        raise
 
     entry = {
         'session': session,
@@ -3420,23 +3525,51 @@ async def _close_and_remove_session(
     session_id: str,
     lanlan_name: str = "",
 ) -> bool:
-    """关闭并移除指定游戏 session。"""
+    """关闭并移除指定游戏 session.
+
+    B1: serialize against in-flight ``_run_game_chat`` work for the same
+    entry by acquiring ``entry['lock']`` before popping + closing. Without
+    this, a concurrent close (from ``/route/start`` finalize, heartbeat
+    sweep, or ``/route/end``) would yank the session out of the cache and
+    close it while a chat call still held a reference and was mid
+    ``stream_text``, producing reads against a closed client.
+
+    The entry-level lock keeps the wait bounded — chat work is capped by
+    the 15s ``stream_text`` timeout. New chats arriving after we set the
+    route's ``_exit_flow_started`` flag short-circuit before they ever
+    touch the entry lock.
+    """
     keys = []
     if lanlan_name:
         keys.append(_game_session_key(lanlan_name, game_type, session_id))
     keys.append(_game_session_key("", game_type, session_id))
 
+    # First locate the entry (without popping) to grab its lock, then pop
+    # under the lock. Two close callers racing here both serialize on the
+    # same lock and only one observes a non-None entry after pop.
     key = ""
     entry = None
     for candidate in keys:
         key = candidate
-        entry = _game_sessions.pop(candidate, None)
+        entry = _game_sessions.get(candidate)
         if entry:
             break
     if not entry:
         return False
 
-    session = entry.get('session')
+    entry_lock = entry.get('lock')
+    if isinstance(entry_lock, asyncio.Lock):
+        async with entry_lock:
+            popped = _game_sessions.pop(key, None)
+            if popped is None:
+                return False
+            session = popped.get('session')
+    else:
+        popped = _game_sessions.pop(key, None)
+        if popped is None:
+            return False
+        session = popped.get('session')
+
     if session:
         try:
             await session.close()
@@ -3448,7 +3581,13 @@ async def _close_and_remove_session(
 
 
 async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[str, Any]:
-    """Run A-layer game LLM for both HTTP game events and hijacked external text."""
+    """Run A-layer game LLM for both HTTP game events and hijacked external text.
+
+    B1/B2/B3: short-circuit if the route is mid-exit (or already
+    inactive). Otherwise the chat would call ``stream_text`` against a
+    session that finalize is about to close, and ``_append_game_dialog``
+    afterwards would write into an already-archived state slot.
+    """
     request_started_at = time.perf_counter()
 
     if not event:
@@ -3463,16 +3602,62 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
             event = dict(event)
             event['balanceHint'] = balance_hint
 
+    # B1/B2: pre-create short-circuit. If the route is mid-exit (or
+    # already inactive) we must not spawn a fresh ``OmniOfflineClient``
+    # — that would survive past the finalize and become a permanent leak
+    # since nothing else in the lifecycle would close it.
+    pre_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+    if isinstance(pre_state, dict) and (
+        pre_state.get("_exit_flow_started")
+        or pre_state.get("game_route_active") is False
+    ):
+        logger.info(
+            "🎮 chat short-circuit (pre-create): route exiting/inactive game=%s sid=%s lanlan=%s",
+            game_type, session_id, lanlan_name,
+        )
+        return {"line": "", "control": {}, "skipped": "route_inactive"}
+
     try:
         entry = await _get_or_create_session(game_type, session_id, lanlan_name)
     except Exception as e:
         logger.error("🎮 创建游戏 session 失败: %s", e)
         return {"error": f"创建 session 失败: {e}"}
 
+    # Re-resolve canonical lanlan_name for state lookups.
+    lanlan_name = str(entry.get("lanlan_name") or lanlan_name or "").strip()
+
     async with entry['lock']:
+        # B2: short-circuit if a finalize already kicked off (heartbeat
+        # sweep, character switch, /route/end). Without this guard the
+        # chat call below would still ``stream_text`` against an
+        # already-closed ``OmniOfflineClient`` and append to a
+        # ``pending_outputs`` / ``game_dialog_log`` slot whose archive
+        # has already been written.
+        route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+        if isinstance(route_state, dict) and (
+            route_state.get("_exit_flow_started")
+            or route_state.get("game_route_active") is False
+        ):
+            logger.info(
+                "🎮 chat short-circuit: route exiting/inactive game=%s sid=%s lanlan=%s",
+                game_type, session_id, lanlan_name,
+            )
+            return {"line": "", "control": {}, "skipped": "route_inactive"}
+
+        # B1: bail if our entry has been popped from the cache (peer
+        # creator overwrote us, or finalize closed the session while we
+        # were waiting on entry['lock']). Continuing would call
+        # ``stream_text`` on a closed client.
+        current_entry = _game_sessions.get(_game_session_key(lanlan_name, game_type, session_id))
+        if current_entry is not entry:
+            logger.info(
+                "🎮 chat short-circuit: entry no longer cached game=%s sid=%s lanlan=%s",
+                game_type, session_id, lanlan_name,
+            )
+            return {"line": "", "control": {}, "skipped": "entry_evicted"}
+
         session = entry['session']
         reply_chunks = entry['reply_chunks']
-        lanlan_name = str(entry.get("lanlan_name") or lanlan_name or "").strip()
         await _refresh_game_session_instructions(entry, game_type, session_id, lanlan_name)
 
         # 清空上一次的回复
@@ -3596,58 +3781,69 @@ async def game_route_start(game_type: str, request: Request):
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
     # 这些不带 game_type 的查询会拿到 dict 迭代顺序里"先出现"的那个 route，导致
     # 文本/语音输入归属不确定。
-    for old_state in [
-        candidate
-        for candidate in list(_game_route_states.values())
-        if candidate.get("game_route_active")
-        and str(candidate.get("lanlan_name") or "") == lanlan_name
-    ]:
-        old_game_type = str(old_state.get("game_type") or "")
-        old_session_id = str(old_state.get("session_id") or "default")
-        logger.warning(
-            "🎮 新游戏路由启动前发现旧 active route，先结束旧局: old_game=%s old_session=%s new_game=%s new_session=%s lanlan=%s",
-            old_game_type,
-            old_session_id,
+    #
+    # B1: serialize the supersede + activation block under the per-(lanlan,
+    # game_type) route lock so heartbeat-sweep finalize and /route/end
+    # finalize cannot interleave the close + activate steps. The pregame
+    # context build (network call, can take seconds) is intentionally
+    # *outside* the lock — by then the new state is already activated, so
+    # peers see the new slot via ``_get_active_*`` helpers; holding the
+    # lock for the whole pregame would block heartbeat sweep with no
+    # benefit.
+    route_lock = _get_route_lock(lanlan_name, game_type)
+    async with route_lock:
+        for old_state in [
+            candidate
+            for candidate in list(_game_route_states.values())
+            if candidate.get("game_route_active")
+            and str(candidate.get("lanlan_name") or "") == lanlan_name
+        ]:
+            old_game_type = str(old_state.get("game_type") or "")
+            old_session_id = str(old_state.get("session_id") or "default")
+            logger.warning(
+                "🎮 新游戏路由启动前发现旧 active route，先结束旧局: old_game=%s old_session=%s new_game=%s new_session=%s lanlan=%s",
+                old_game_type,
+                old_session_id,
+                game_type,
+                session_id,
+                lanlan_name,
+            )
+            await _finalize_game_route_state(
+                old_state,
+                reason="superseded_by_route_start",
+                close_game_session=True,
+            )
+
+        neko_initiated = bool(data.get("nekoInitiated"))
+        neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
+        state = _activate_game_route(
             game_type,
             session_id,
             lanlan_name,
+            data.get("game_last_full_dialogue_count"),
         )
-        await _finalize_game_route_state(
-            old_state,
-            reason="superseded_by_route_start",
-            close_game_session=True,
+        # Take over the SessionManager: ordinary chat LLM output handlers must
+        # stay silent during the game, and any voice transcript that reaches
+        # the SessionManager must be redirected into route_external_voice_transcript.
+        mgr = get_session_manager().get(lanlan_name)
+        if mgr is not None:
+            async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
+                return await route_external_voice_transcript(
+                    _lan,
+                    transcript_text,
+                    request_id=request_id,
+                    game_type=game_type,
+                    session_id=session_id,
+                )
+            mgr._takeover_active = True
+            mgr._takeover_input_dispatcher = _takeover_dispatcher
+        state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
+            data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
         )
-
-    neko_initiated = bool(data.get("nekoInitiated"))
-    neko_invite_text = _normalize_short_text(data.get("nekoInviteText"), max_chars=120) if neko_initiated else ""
-    state = _activate_game_route(
-        game_type,
-        session_id,
-        lanlan_name,
-        data.get("game_last_full_dialogue_count"),
-    )
-    # Take over the SessionManager: ordinary chat LLM output handlers must
-    # stay silent during the game, and any voice transcript that reaches
-    # the SessionManager must be redirected into route_external_voice_transcript.
-    mgr = get_session_manager().get(lanlan_name)
-    if mgr is not None:
-        async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
-            return await route_external_voice_transcript(
-                _lan,
-                transcript_text,
-                request_id=request_id,
-                game_type=game_type,
-                session_id=session_id,
-            )
-        mgr._takeover_active = True
-        mgr._takeover_input_dispatcher = _takeover_dispatcher
-    state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
-        data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
-    )
-    _update_game_memory_enabled_from_payload(state, data)
-    state["nekoInitiated"] = neko_initiated
-    state["nekoInviteText"] = neko_invite_text
-    _update_route_start_state_from_payload(state, data)
+        _update_game_memory_enabled_from_payload(state, data)
+        state["nekoInitiated"] = neko_initiated
+        state["nekoInviteText"] = neko_invite_text
+        _update_route_start_state_from_payload(state, data)
     if game_type == "soccer":
         state["heartbeat_enabled"] = False
         try:
@@ -4023,6 +4219,22 @@ async def _route_external_transcript_to_game(
     if not text:
         return True
 
+    # B3: state may have flipped to exiting/inactive between the caller's
+    # active-check and this call (the SessionManager dispatcher path in
+    # ``main_logic/core.py`` checks once at the dispatcher gate, then
+    # awaits us). Re-check here and short-circuit cleanly with no
+    # side-effects on a half-archived state. We treat short-circuit as
+    # "handled=True" (return True) so the caller does not also drive the
+    # transcript through the ordinary chat flow — the route was active at
+    # the dispatch gate, so the right semantic is "drop on the floor with
+    # no ordinary mirror" not "fall back to ordinary chat".
+    if state.get("_exit_flow_started") or state.get("game_route_active") is False:
+        logger.info(
+            "🎮 transcript short-circuit: route exiting/inactive lanlan=%s mode=%s kind=%s",
+            lanlan_name, mode, kind,
+        )
+        return True
+
     now = time.time()
     if kind == "user-voice":
         # Idempotency on request_id with a bounded TTL set rather than a
@@ -4226,6 +4438,62 @@ async def route_external_voice_transcript(
 # can call ``utils.game_route_state.route_external_voice_transcript`` instead
 # of importing from ``main_routers``.
 register_voice_transcript_handler(route_external_voice_transcript)
+
+
+async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:
+    """Finalize every active game route for ``old_lanlan_name`` synchronously.
+
+    B8: when the user switches the active character via
+    ``POST /api/characters/current_catgirl``, the previous character may
+    still own an active game route. Without this hook, the route's heartbeat
+    keeps the slot live for up to 10-60s while the now-irrelevant
+    ``OmniOfflineClient`` keeps consuming events (and the stale
+    SessionManager takeover keeps muting the new character's ordinary
+    chat output). Finalizing immediately at switch time releases the
+    takeover and closes the LLM session.
+
+    Returns the number of routes finalized.
+    """
+    target = str(old_lanlan_name or "")
+    if not target:
+        return 0
+    candidates = [
+        candidate
+        for candidate in list(_game_route_states.values())
+        if candidate.get("game_route_active")
+        and str(candidate.get("lanlan_name") or "") == target
+    ]
+    finalized_count = 0
+    for old_state in candidates:
+        old_game_type = str(old_state.get("game_type") or "")
+        logger.warning(
+            "🎮 角色切换前结束旧角色游戏路由: lanlan=%s game=%s session=%s",
+            target,
+            old_game_type,
+            old_state.get("session_id") or "",
+        )
+        route_lock = _get_route_lock(target, old_game_type)
+        try:
+            async with route_lock:
+                if not old_state.get("game_route_active"):
+                    if old_state.get("_exit_task"):
+                        await asyncio.shield(old_state["_exit_task"])
+                    continue
+                await _finalize_game_route_state(
+                    old_state,
+                    reason="character_switch",
+                    close_game_session=True,
+                )
+                finalized_count += 1
+        except Exception as exc:
+            logger.warning(
+                "🎮 角色切换收尾失败: lanlan=%s game=%s err=%s",
+                target,
+                old_game_type,
+                exc,
+                exc_info=True,
+            )
+    return finalized_count
 
 
 async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
@@ -4439,7 +4707,18 @@ async def _complete_game_end_from_payload(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
         _update_game_memory_enabled_from_payload(state, data)
-        finalized = await _finalize_game_route_state(state, reason=exit_reason)
+        # B1: serialize against /route/start supersede + heartbeat sweep
+        # finalize. ``_finalize_game_route_state`` itself dedupes via the
+        # state-attached ``_exit_task``, but acquiring the lock first
+        # guarantees that a fresh ``/route/start`` waits for our archive
+        # to land before activating a new state slot.
+        end_route_lock = _get_route_lock(lanlan_name, game_type)
+        async with end_route_lock:
+            finalized = await _finalize_game_route_state(
+                state,
+                reason=exit_reason,
+                close_game_session=True,
+            )
         archive = finalized["archive"]
         archive_memory = finalized["archive_memory"]
         if _soccer_game_memory_postgame_context_enabled(archive) is False:
@@ -4453,8 +4732,18 @@ async def _complete_game_end_from_payload(
             archive,
             postgame_options,
         )
-
-    closed = await _close_and_remove_session(game_type, session_id, lanlan_name)
+        # B5: closing the LLM session is the inner finalize's job (now
+        # that ``close_game_session=True`` reliably propagates via
+        # OR-merge). Calling ``_close_and_remove_session`` again here
+        # would race a finalize-from-heartbeat-sweep at the same key and
+        # double-close the underlying ``OmniOfflineClient``.
+        closed = bool(finalized.get("game_session_closed"))
+    else:
+        # No active route matched — fall through to the legacy direct close
+        # so an out-of-sync ``/game_end`` (e.g. page reloaded after the
+        # backend already finalized via heartbeat sweep) still cleans up a
+        # lingering LLM session if one exists.
+        closed = await _close_and_remove_session(game_type, session_id, lanlan_name)
     result = {
         "ok": True,
         "closed": closed,
@@ -4638,12 +4927,27 @@ async def cleanup_expired_sessions():
                 now - last_heartbeat,
                 now - last_activity,
             )
+            # B2: serialize against any concurrent /route/start (which may
+            # be supersede-finalizing this same slot) under the per-slot
+            # route lock so we don't double-finalize or interleave with
+            # an incoming route activation.
+            sweep_lanlan = str(state.get("lanlan_name") or "")
+            sweep_game_type = str(state.get("game_type") or "")
+            sweep_lock = _get_route_lock(sweep_lanlan, sweep_game_type)
             try:
-                await _finalize_game_route_state(
-                    state,
-                    reason="heartbeat_timeout",
-                    close_game_session=True,
-                )
+                async with sweep_lock:
+                    # Peer (e.g. /route/start supersede or /route/end) may
+                    # have already finalized the slot while we waited for
+                    # the lock; recheck and skip if so.
+                    if not state.get("game_route_active") or state.get("_exit_task"):
+                        if state.get("_exit_task"):
+                            await asyncio.shield(state["_exit_task"])
+                        continue
+                    await _finalize_game_route_state(
+                        state,
+                        reason="heartbeat_timeout",
+                        close_game_session=True,
+                    )
             except Exception as e:
                 logger.warning("🎮 游戏页心跳超时退出兜底失败: key=%s err=%s", key, e, exc_info=True)
 
