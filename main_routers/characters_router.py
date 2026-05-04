@@ -117,8 +117,9 @@ CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> None:
     try:
         await mark_new_character_greeting_pending(config_manager, character_name, source=source)
-    except Exception as exc:
-        logger.warning("mark new character greeting pending failed: %s (%s)", character_name, exc)
+    except Exception:
+        logger.exception("mark new character greeting pending failed: %s", character_name)
+        raise
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -1870,6 +1871,8 @@ async def rename_catgirl(old_name: str, request: Request):
                     },
                     status_code=500,
                 )
+
+            await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -1900,11 +1903,6 @@ async def rename_catgirl(old_name: str, request: Request):
             logger.info(f"已向 {old_name} 发送重命名通知")
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
-
-    try:
-        await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
-    except Exception as exc:
-        logger.warning("rename new character greeting pending failed: %s -> %s (%s)", old_name, new_name, exc)
 
     return {
         "success": True,
@@ -2585,6 +2583,7 @@ async def delete_catgirl(name: str):
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
+            await remove_new_character_greeting_pending(_config_manager, name)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -2616,11 +2615,6 @@ async def delete_catgirl(name: str):
                 },
                 status_code=500,
             )
-
-    try:
-        await remove_new_character_greeting_pending(_config_manager, name)
-    except Exception as exc:
-        logger.warning("remove new character greeting pending failed: %s (%s)", name, exc)
 
     return {"success": True, "memory_server_reloaded": memory_server_reloaded}
 
