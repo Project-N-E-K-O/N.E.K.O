@@ -1980,7 +1980,16 @@
         }
         return false;
     }
+    function _isHomeTutorialPage() {
+        if (window.location && typeof window.location.pathname === 'string') {
+            var path = window.location.pathname || '/';
+            return path === '/' || path === '/index.html';
+        }
+        var manager = window.universalTutorialManager || null;
+        return !!(manager && manager.currentPage === 'home');
+    }
     function _isTutorialBlockingGreeting() {
+        if (!_isHomeTutorialPage()) return false;
         try {
             if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function'
                     && window.isNekoHomeTutorialBlockingGreeting() === true) {
