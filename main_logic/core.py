@@ -868,8 +868,15 @@ class LLMSessionManager:
             )
 
     async def _clear_tts_pipeline(self):
-        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。
+
+        Gate is on worker liveness, not ``self.use_tts``: mirror channel
+        (e.g. ``mirror_assistant_speech``) feeds the project TTS pipeline
+        regardless of ``use_tts``, so a Realtime native voice session
+        (``use_tts=False``) can still have a live worker that needs
+        interrupting on ``interrupt_audio``.
+        """
+        if self.tts_thread and self.tts_thread.is_alive():
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
@@ -1794,8 +1801,11 @@ class LLMSessionManager:
             async with self.lock:
                 interrupted_speech_id = self.current_speech_id
             self.audio_resampler.clear()
-            if self.use_tts:
-                await self._clear_tts_pipeline()
+            # Mirror channel feeds the project TTS pipeline regardless of
+            # ``self.use_tts``, so always clear it on interrupt — the inner
+            # liveness gate inside ``_clear_tts_pipeline`` makes this safe
+            # when no worker is actually running.
+            await self._clear_tts_pipeline()
             # Realtime native voice: also tell the provider to stop generating
             # so further audio.delta / output_audio.delta won't keep streaming
             # past the interruption point.  Local takeover guards drop these
@@ -4293,6 +4303,13 @@ class LLMSessionManager:
         # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+        # ── 守卫：takeover 期间跳过 greeting ──
+        # 与 trigger_voice_proactive_nudge / trigger_agent_callbacks 对偶。
+        # takeover 时 ordinary chat 输出在 handler 层会被静音，跑 greeting
+        # 只会白消耗节日 budget + 写一份永远到不了用户的 LLM 回复。
+        if self._takeover_active:
+            logger.info("[%s] trigger_greeting: session takeover active, skipping", self.lanlan_name)
             return
 
         # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
