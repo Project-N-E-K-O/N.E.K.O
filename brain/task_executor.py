@@ -1150,8 +1150,10 @@ class DirectTaskExecutor:
     async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
         """
         Two-stage plugin assessment:
-        - Stage 2 only (< 4000 chars): full LLM assessment with all plugins
-        - Stage 1 + 2 (>= 4000 chars): BM25 + LLM coarse screen + keyword → filtered → Stage 2
+        - Stage 2 only (plugins_desc <= AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
+          full LLM assessment with all active plugins
+        - Stage 1 + 2 (plugins_desc > AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
+          BM25 + LLM coarse screen + keyword -> filtered candidates -> Stage 2
         """
         # 如果没有插件，快速返回
         try:
@@ -1247,8 +1249,9 @@ class DirectTaskExecutor:
                 selected_ids = bm25_ids | llm_id_set | set(keyword_hit_ids)
 
                 if not selected_ids:
-                    logger.info("[UserPlugin] Stage 1: no plugins selected, falling back to full list for stage 2")
-                    stage2_plugins = plugin_list
+                    logger.info("[UserPlugin] Stage 1: no plugins selected; stage 2 will receive no plugin candidates")
+                    stage2_plugins = []
+                    plugins_desc = "No plugins available."
                 else:
                     stage2_plugins = [p for p in plugin_list if p.get("id") in selected_ids]
                     lines = self._build_plugin_desc_lines(stage2_plugins)
@@ -1374,11 +1377,14 @@ class DirectTaskExecutor:
                 d_pid = decision.get("plugin_id")
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
-                # Build lookup from ALL plugins (including pre-filtered ones) so error reasons
-                # can distinguish "no visible entries" from "plugin not found".
+                # Build the executable lookup from the plugins actually shown in this
+                # Stage 2 prompt. In large plugin lists, Stage 1 may filter every
+                # plugin out; a hallucinated id from the full registry must not pass
+                # validation just because the plugin exists globally.
                 valid_entries_map: Dict[str, List[str]] = {}
+                all_entries_map: Dict[str, List[str]] = {}
                 try:
-                    for p in all_plugin_list:
+                    for p in plugins:
                         pid = p.get("id") if isinstance(p, dict) else None
                         if not pid:
                             continue
@@ -1386,6 +1392,15 @@ class DirectTaskExecutor:
                         valid_entries_map[pid] = eids
                 except Exception:
                     valid_entries_map = {}
+                try:
+                    for p in all_plugin_list:
+                        pid = p.get("id") if isinstance(p, dict) else None
+                        if not pid:
+                            continue
+                        eids = [str(e.get("id")) for e in self._agent_visible_plugin_entries(p) if e.get("id")]
+                        all_entries_map[pid] = eids
+                except Exception:
+                    all_entries_map = {}
 
                 # Normalize numeric plugin_id (LLM may return int instead of str)
                 if isinstance(d_pid, int):
@@ -1398,7 +1413,10 @@ class DirectTaskExecutor:
                     if not d_pid:
                         correction_hint = f"plugin_id is required when has_task/can_execute are true. Available plugins: {list(valid_entries_map.keys())}"
                     elif d_pid not in valid_entries_map:
-                        correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
+                        if all_entries_map.get(d_pid) == []:
+                            correction_hint = f"plugin '{d_pid}' has no Agent-visible entries."
+                        else:
+                            correction_hint = f"plugin_id '{d_pid}' is not available in the current candidate set. Available plugins: {list(valid_entries_map.keys())}"
                     elif visible_entries == []:
                         correction_hint = f"plugin '{d_pid}' has no Agent-visible entries."
                     elif not d_eid and valid_entries_map.get(d_pid):
@@ -1444,10 +1462,13 @@ class DirectTaskExecutor:
                 if final_has and final_can:
                     final_visible = valid_entries_map.get(final_pid)
                     if final_pid not in valid_entries_map:
-                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
+                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' is not in current candidate set, forcing can_execute=false", final_pid)
                         final_can = False
                         decision["can_execute"] = False
-                        decision["reason"] = f"plugin_id '{final_pid}' not found"
+                        if all_entries_map.get(final_pid) == []:
+                            decision["reason"] = "no_agent_visible_entries"
+                        else:
+                            decision["reason"] = f"plugin_id '{final_pid}' not available in current candidates"
                     elif final_visible == []:
                         logger.warning(
                             "[UserPlugin Assessment] Final check: plugin_id '%s' has no Agent-visible entries, forcing can_execute=false",
