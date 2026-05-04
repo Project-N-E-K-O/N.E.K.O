@@ -1747,6 +1747,55 @@ class LLMSessionManager:
             "turn_finalized": bool(finalize_turn),
         }
 
+    async def passthrough_to_chat_bubble(
+        self,
+        text: str,
+        *,
+        request_id: str | None = None,
+        turn_id: str | None = None,
+        source: str = "passthrough",
+    ) -> None:
+        """Render external text verbatim into the chat bubble WITHOUT
+        entering chat-LLM context.
+
+        Distinct from :meth:`mirror_assistant_output`: that writes to
+        ``sync_message_queue`` (so cross_server may add an AIMessage to
+        chat history). ``passthrough_to_chat_bubble`` skips
+        ``sync_message_queue`` entirely — frontend sees the bubble, but
+        the chat LLM never sees it in the next turn.
+
+        Use case: plugin / agent_server pushes verbatim with
+        ``visibility=["chat"] + ai_behavior="blind"`` — operator wants
+        the user to read it but the LLM should remain ignorant.
+
+        This is a generic SessionManager capability; it does not assume
+        any particular consumer.
+        """
+        clean = str(text or "").strip()
+        if not clean:
+            return
+        effective_turn_id = turn_id or request_id or str(uuid4())
+        message = {
+            "type": "gemini_response",
+            "text": clean,
+            "isNewMessage": True,
+            "turn_id": effective_turn_id,
+            "request_id": request_id,
+            "metadata": {"source": source, "passthrough": True},
+        }
+        try:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json(message)
+        except Exception as e:
+            logger.warning(
+                "[%s] passthrough_to_chat_bubble WS send failed: %s",
+                self.lanlan_name, e,
+            )
+
     async def emit_mirror_turn_end(
         self,
         *,

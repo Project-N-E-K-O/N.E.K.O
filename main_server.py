@@ -785,6 +785,38 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
                         event_type,
                     )
+
+                # v2 chat+blind passthrough: render verbatim into chat
+                # bubble WITHOUT entering chat-LLM context. Distinct from
+                # mirror_assistant_output (which writes to sync_message_queue
+                # so cross_server may add an AIMessage). Both this branch
+                # and the HUD agent_notification below can fire when
+                # visibility=["chat","hud"] — they're orthogonal sinks.
+                #
+                # Gated on visibility containing "chat" AND ai_behavior=="blind"
+                # because non-blind ai_behavior already enqueues the LLM
+                # callback above and the AI's own response is what the
+                # user should see in the chat bubble.
+                _vis = event.get("visibility") or []
+                if (
+                    "chat" in _vis
+                    and event.get("ai_behavior") == "blind"
+                    and hasattr(mgr, "passthrough_to_chat_bubble")
+                ):
+                    try:
+                        await mgr.passthrough_to_chat_bubble(
+                            text,
+                            request_id=event.get("task_id") or None,
+                            source=event.get("source_kind") or "plugin",
+                        )
+                        logger.info(
+                            "[EventBus] passthrough_to_chat_bubble dispatched (text_len=%d, source=%s)",
+                            len(text), event.get("source_kind") or "plugin",
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] passthrough_to_chat_bubble failed: %s", e,
+                        )
                 ws = getattr(mgr, "websocket", None)
                 if _is_websocket_connected(ws):
                     try:
