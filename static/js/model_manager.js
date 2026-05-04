@@ -609,6 +609,19 @@ function markModelChangedForCardFacePrompt() {
     window._modelManagerModelChangedSinceSave = true;
 }
 
+function isSuppressedModelManagerChangeEvent(event) {
+    return !!(event && event._suppressModelManagerChange);
+}
+
+function dispatchModelManagerChange(target, options = {}) {
+    if (!target) return false;
+    const event = new Event('change', { bubbles: true });
+    if (options.suppress || window._suppressModelManagerChange) {
+        event._suppressModelManagerChange = true;
+    }
+    return target.dispatchEvent(event);
+}
+
 async function suppressModelManagerChange(fn) {
     const previous = window._suppressModelManagerChange;
     window._suppressModelManagerChange = true;
@@ -3305,7 +3318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (modelName) {
                             // 触发 change 事件，让 change 事件处理程序统一处理加载逻辑
                             // 这样 currentModelInfo 也会被正确更新
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                            dispatchModelManagerChange(modelSelect);
                         }
                     }
 
@@ -3353,7 +3366,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -3373,7 +3386,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -3587,7 +3600,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         mmdModelSelect.value = mmdPath;
                     }
                     // 触发 MMD 模型选择的 change 事件来加载模型
-                    mmdModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    dispatchModelManagerChange(mmdModelSelect, {
+                        suppress: isSuppressedModelManagerChangeEvent(e)
+                    });
                 }
 
                 // 保存 currentModelInfo 用于保存配置
@@ -3598,9 +3613,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     type: 'mmd'
                 };
 
-                if (savePositionBtn) savePositionBtn.disabled = false;
-                window.hasUnsavedChanges = true;
-                markModelChangedForCardFacePrompt();
+                if (!isSuppressedModelManagerChangeEvent(e)) {
+                    if (savePositionBtn) savePositionBtn.disabled = false;
+                    window.hasUnsavedChanges = true;
+                    markModelChangedForCardFacePrompt();
+                }
                 return;
             }
 
@@ -3786,9 +3803,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 标记为有未保存更改
-            window.hasUnsavedChanges = true;
-            markModelChangedForCardFacePrompt();
-            console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            if (!isSuppressedModelManagerChangeEvent(e)) {
+                window.hasUnsavedChanges = true;
+                markModelChangedForCardFacePrompt();
+                console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            }
 
             try {
                 showStatus(t('live2d.loadingVRMModel', `正在加载 VRM 模型...`));
@@ -4699,7 +4718,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (matchedOption) {
             vrmModelSelect.value = matchedOption.value;
-            vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            dispatchModelManagerChange(vrmModelSelect);
             console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
             return true;
         }
@@ -6605,9 +6624,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadModel(modelName, currentModelInfo, modelSteamId);
 
         // 不自动保存模型到角色，改为标记为有未保存更改，用户需手动点击"保存设置"
-        window.hasUnsavedChanges = true;
-        markModelChangedForCardFacePrompt();
-        console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        if (!isSuppressedModelManagerChangeEvent(e)) {
+            window.hasUnsavedChanges = true;
+            markModelChangedForCardFacePrompt();
+            console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        }
     });
 
     // 加载模型的函数
@@ -7307,7 +7328,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const modelFullySaved = positionSuccess && modelStatus === 'ok';
+            const modelFullySaved = modelStatus === 'ok';
             const shouldOfferCardFace = modelFullySaved
                 && (
                     window._modelManagerModelChangedSinceSave
@@ -8866,7 +8887,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        dispatchModelManagerChange(vrmModelSelect);
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
                         selectDefaultLive3DModel();
@@ -8976,7 +8997,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        dispatchModelManagerChange(vrmModelSelect);
                     } else {
                         console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
                         selectDefaultLive3DModel();

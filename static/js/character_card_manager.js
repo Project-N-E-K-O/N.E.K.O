@@ -3006,11 +3006,17 @@ function handleExternalCardFaceUpdated(data) {
 }
 
 (function initCardFaceUpdateEvents() {
-    window.addEventListener('message', event => handleExternalCardFaceUpdated(event.data));
+    window.addEventListener('message', event => {
+        if (event.origin !== window.location.origin) return;
+        handleExternalCardFaceUpdated(event.data);
+    });
     if (typeof BroadcastChannel === 'function') {
         try {
             const channel = new BroadcastChannel('neko-card-face-events');
-            channel.onmessage = event => handleExternalCardFaceUpdated(event.data);
+            channel.onmessage = event => {
+                if (event.origin !== window.location.origin) return;
+                handleExternalCardFaceUpdated(event.data);
+            };
         } catch (_) {}
     }
     window.addEventListener('storage', event => {
@@ -3058,6 +3064,7 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
     if (!window._openSettingsWindows) window._openSettingsWindows = {};
     const existingWindow = window._openSettingsWindows[url];
     if (existingWindow && !existingWindow.closed) {
+        if (form && form._autoCreated) form._autoCreatedDependentPopup = existingWindow;
         existingWindow.focus();
         return;
     }
@@ -3071,12 +3078,21 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
     }
 
     window._openSettingsWindows[url] = popup;
+    if (form && form._autoCreated) form._autoCreatedDependentPopup = popup;
     popup.moveTo(0, 0);
     popup.resizeTo(screen.availWidth, screen.availHeight);
     const timer = setInterval(() => {
-        if (!popup.closed) return;
+        if (!popup.closed) {
+            if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+            return;
+        }
         clearInterval(timer);
         if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
+        if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;
+        if (form && form._autoCreatedDependentPopup === popup) form._autoCreatedDependentPopup = null;
+        if (form && form._autoCreatedRollbackWhenDependentCloses && !form._autoCreatedDependentPopupSaved) {
+            rollbackAutoCreatedCatgirl(form).catch(e => console.warn('[角色面板] 延迟回滚临时角色失败:', e));
+        }
         if (typeof loadCharacterCards === 'function') {
             loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
         }
@@ -4497,6 +4513,8 @@ async function rollbackAutoCreatedCatgirl(form) {
         form._autoCreated = false;
         form._autoCreatedName = '';
         form._autoCreatedDetachedName = '';
+        form._autoCreatedRollbackWhenDependentCloses = false;
+        form._autoCreatedDependentPopupSaved = false;
         if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
         if (window._cardMetas) delete window._cardMetas[tempName];
         if (typeof loadCharacterCards === 'function') {
@@ -4505,6 +4523,11 @@ async function rollbackAutoCreatedCatgirl(form) {
     } catch (e) {
         console.warn('[角色面板] 回滚临时角色请求失败:', tempName, e);
     }
+}
+
+function hasOpenAutoCreatedDependentPopup(form) {
+    const popup = form && form._autoCreatedDependentPopup;
+    return !!(popup && !popup.closed);
 }
 
 async function closeCatgirlPanel() {
@@ -4518,7 +4541,11 @@ async function closeCatgirlPanel() {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
     }
-    await rollbackAutoCreatedCatgirl(currentForm);
+    if (hasOpenAutoCreatedDependentPopup(currentForm)) {
+        currentForm._autoCreatedRollbackWhenDependentCloses = true;
+    } else {
+        await rollbackAutoCreatedCatgirl(currentForm);
+    }
 
     // 取消所有预览加载：包括尚未完成的 Live2D/VRM/MMD 异步加载，避免清理后又把预览建回来
     if (typeof cancelWorkshopPreviewLoads === 'function') {
@@ -5377,6 +5404,18 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     }
 }
 
+async function rebuildSavedCatgirlPanel(form, catgirlName) {
+    const container = form?.parentNode;
+    if (!container || !catgirlName) return;
+    try {
+        const freshData = await loadCharacterData();
+        const rawData = freshData?.['猫娘']?.[catgirlName] || {};
+        buildCatgirlDetailForm(catgirlName, rawData, false, container);
+    } catch (e) {
+        console.warn('[角色面板] 切换到已创建角色状态失败:', e);
+    }
+}
+
 async function saveCatgirlFromPanel(form, originalName, isNew) {
     // 防止重复提交
     if (form.dataset.submitting === 'true') {
@@ -5529,6 +5568,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 );
                 if (!makerWindow) {
                     await showAlertDialog(window.t ? window.t('character.cardMakerPopupBlocked') : '卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。', { type: 'warning' });
+                    await rebuildSavedCatgirlPanel(form, catgirlName);
                 } else {
                     closeCatgirlPanel();
                 }
