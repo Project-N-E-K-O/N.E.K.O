@@ -2849,7 +2849,14 @@ async def _deliver_postgame_text_bubble(
             lanlan_name=str(archive.get("lanlan_name") or ""),
             source="game_end",
         )
-        llm_result = await _run_game_chat(game_type, session_id, event)
+        # Why: postgame runs AFTER ``_finalize_game_route_state`` flips the
+        # route to inactive, so the standard B1/B2 short-circuits would
+        # silently drop this designed teardown step. ``allow_postgame``
+        # opts out of those route-active gates; we own the lifecycle of
+        # any session built here and close it in the ``finally`` below.
+        llm_result = await _run_game_chat(
+            game_type, session_id, event, allow_postgame=True,
+        )
         line = str(llm_result.get("line") or "").strip()
         if not line:
             return {
@@ -2902,6 +2909,22 @@ async def _deliver_postgame_text_bubble(
                 await state_machine.fire(SessionEvent.PROACTIVE_DONE)
         except Exception as exc:
             logger.debug("🎮 赛后文本气泡状态机收尾失败: %s", exc, exc_info=True)
+        # Why: ``_run_game_chat(..., allow_postgame=True)`` may have built
+        # a fresh ``OmniOfflineClient`` after finalize already evicted
+        # the prior session. No other lifecycle hook will close it once
+        # the route is gone — we must do it here to avoid a permanent
+        # leak (the very risk that motivated the B1/B2 short-circuits).
+        try:
+            postgame_lanlan = str(archive.get("lanlan_name") or "")
+            if postgame_lanlan:
+                await _close_and_remove_session(
+                    game_type, session_id, postgame_lanlan,
+                )
+        except Exception as exc:
+            logger.debug(
+                "🎮 赛后文本气泡 session 清理失败: game=%s session=%s err=%s",
+                game_type, session_id, exc, exc_info=True,
+            )
 
 
 async def _deliver_game_postgame(
@@ -3600,13 +3623,25 @@ async def _close_and_remove_session(
     return True
 
 
-async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[str, Any]:
+async def _run_game_chat(
+    game_type: str,
+    session_id: str,
+    event: Any,
+    *,
+    allow_postgame: bool = False,
+) -> Dict[str, Any]:
     """Run A-layer game LLM for both HTTP game events and hijacked external text.
 
     B1/B2/B3: short-circuit if the route is mid-exit (or already
     inactive). Otherwise the chat would call ``stream_text`` against a
     session that finalize is about to close, and ``_append_game_dialog``
     afterwards would write into an already-archived state slot.
+
+    ``allow_postgame=True`` is the legitimate exception: postgame text
+    bubble runs *after* finalize on purpose (designed teardown step).
+    The caller (``_deliver_postgame_text_bubble``) is responsible for
+    closing the freshly-built session afterwards via
+    ``_close_and_remove_session`` so the bypass doesn't leak a client.
     """
     request_started_at = time.perf_counter()
 
@@ -3626,16 +3661,17 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
     # already inactive) we must not spawn a fresh ``OmniOfflineClient``
     # — that would survive past the finalize and become a permanent leak
     # since nothing else in the lifecycle would close it.
-    pre_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-    if isinstance(pre_state, dict) and (
-        pre_state.get("_exit_flow_started")
-        or pre_state.get("game_route_active") is False
-    ):
-        logger.info(
-            "🎮 chat short-circuit (pre-create): route exiting/inactive game=%s sid=%s lanlan=%s",
-            game_type, session_id, lanlan_name,
-        )
-        return {"line": "", "control": {}, "skipped": "route_inactive"}
+    if not allow_postgame:
+        pre_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+        if isinstance(pre_state, dict) and (
+            pre_state.get("_exit_flow_started")
+            or pre_state.get("game_route_active") is False
+        ):
+            logger.info(
+                "🎮 chat short-circuit (pre-create): route exiting/inactive game=%s sid=%s lanlan=%s",
+                game_type, session_id, lanlan_name,
+            )
+            return {"line": "", "control": {}, "skipped": "route_inactive"}
 
     try:
         entry = await _get_or_create_session(game_type, session_id, lanlan_name)
@@ -3653,16 +3689,17 @@ async def _run_game_chat(game_type: str, session_id: str, event: Any) -> Dict[st
         # already-closed ``OmniOfflineClient`` and append to a
         # ``pending_outputs`` / ``game_dialog_log`` slot whose archive
         # has already been written.
-        route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
-        if isinstance(route_state, dict) and (
-            route_state.get("_exit_flow_started")
-            or route_state.get("game_route_active") is False
-        ):
-            logger.info(
-                "🎮 chat short-circuit: route exiting/inactive game=%s sid=%s lanlan=%s",
-                game_type, session_id, lanlan_name,
-            )
-            return {"line": "", "control": {}, "skipped": "route_inactive"}
+        if not allow_postgame:
+            route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+            if isinstance(route_state, dict) and (
+                route_state.get("_exit_flow_started")
+                or route_state.get("game_route_active") is False
+            ):
+                logger.info(
+                    "🎮 chat short-circuit: route exiting/inactive game=%s sid=%s lanlan=%s",
+                    game_type, session_id, lanlan_name,
+                )
+                return {"line": "", "control": {}, "skipped": "route_inactive"}
 
         # B1: bail if our entry has been popped from the cache (peer
         # creator overwrote us, or finalize closed the session while we
