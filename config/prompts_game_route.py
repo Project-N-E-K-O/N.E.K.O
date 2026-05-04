@@ -105,6 +105,14 @@ GAME_CONTEXT_ORGANIZER_USER_PROMPTS = {
     "ru": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
 }
 
+GAME_CHAT_EVENT_USER_PROMPTS = {
+    "zh": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    "en": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    "ja": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    "ko": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    "ru": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+}
+
 
 GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS = {
     "zh": """\
@@ -731,6 +739,10 @@ def get_game_context_organizer_system_prompt(lang: str | None = None) -> str:
 
 def get_game_context_organizer_user_prompt(lang: str | None = None) -> str:
     return _localized_template(GAME_CONTEXT_ORGANIZER_USER_PROMPTS, lang)
+
+
+def get_game_chat_event_user_prompt(lang: str | None = None) -> str:
+    return _localized_template(GAME_CHAT_EVENT_USER_PROMPTS, lang)
 
 
 def get_game_archive_memory_highlighter_system_prompt(lang: str | None = None) -> str:

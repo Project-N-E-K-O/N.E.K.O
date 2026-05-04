@@ -39,6 +39,7 @@ from config.prompts_game import (
 from config.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
+    get_game_chat_event_user_prompt,
     get_game_archive_highlight_source_labels,
     get_game_archive_memory_highlighter_system_prompt,
     get_game_archive_memory_highlighter_user_prompt,
@@ -4048,9 +4049,10 @@ async def _run_game_chat(
             # 格式化事件为文本发送给 LLM
             import json as _json
             if isinstance(event, dict):
-                event_text = _json.dumps(event, ensure_ascii=False)
+                event_payload = _json.dumps(event, ensure_ascii=False)
             else:
-                event_text = str(event)
+                event_payload = str(event)
+            event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
 
             llm_started_at = time.perf_counter()
             try:

@@ -728,6 +728,46 @@ def test_game_route_helper_llm_info_uses_summary_tier(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_chat_event_user_turn_keeps_watermark(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.last_text = ""
+
+        async def stream_text(self, text):
+            self.last_text = text
+
+        async def update_session(self, _config):
+            return None
+
+    fake_session = FakeSession()
+    key = game_router._game_session_key("Lan", "soccer", "match_1")
+    game_router._game_sessions[key] = {
+        "session": fake_session,
+        "reply_chunks": [],
+        "lanlan_name": "Lan",
+        "lanlan_prompt": "",
+        "user_language": "en",
+        "game_type": "soccer",
+        "session_id": "match_1",
+        "last_activity": 0,
+        "lock": asyncio.Lock(),
+        "instructions": "stub",
+    }
+    monkeypatch.setattr(game_router, "_refresh_game_session_instructions", AsyncMock())
+
+    result = await game_router._run_game_chat(
+        "soccer",
+        "match_1",
+        {"kind": "goal-scored", "lanlan_name": "Lan"},
+    )
+
+    assert result["line"] == ""
+    assert "======以上为游戏事件输入======" in fake_session.last_text
+    assert '"kind": "goal-scored"' in fake_session.last_text
+
+
+@pytest.mark.unit
 def test_route_state_key_is_tuple_no_collision_no_prefix_false_match(monkeypatch):
     """The previous f"{lanlan}:{game_type}" string key collided when a
     lanlan_name contained a literal ':' and the prefix-style lookup

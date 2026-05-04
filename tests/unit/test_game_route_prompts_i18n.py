@@ -7,6 +7,7 @@ from config.prompts_game_route import (
     get_game_archive_memory_highlighter_user_prompt,
     get_game_archive_memory_summary_labels,
     get_game_archive_memory_text_labels,
+    get_game_chat_event_user_prompt,
     get_game_context_formatter_labels,
     get_game_context_organizer_system_prompt,
     get_game_context_organizer_user_prompt,
@@ -26,6 +27,7 @@ LEGACY_SIGNAL_GROUP_KEYS = ("玩家信号", "关系互动信号", "猫娘信号"
 def test_game_route_prompt_getters_return_locale_content(locale):
     assert get_game_context_organizer_system_prompt(locale)
     assert get_game_context_organizer_user_prompt(locale)
+    assert get_game_chat_event_user_prompt(locale)
     assert get_game_archive_memory_highlighter_system_prompt(locale)
 
     label_getters = (
@@ -58,9 +60,11 @@ def test_game_context_organizer_schema_keys_are_english_wire_format(locale):
 @pytest.mark.parametrize("locale", LOCALES)
 def test_naked_game_route_user_prompts_keep_chinese_watermark(locale):
     organizer_prompt = get_game_context_organizer_user_prompt(locale).format(payload="{}")
+    game_chat_prompt = get_game_chat_event_user_prompt(locale).format(event="{}")
     highlighter_prompt = get_game_archive_memory_highlighter_user_prompt(locale).format(source="材料")
 
     assert "======以上为游戏上下文整理输入======" in organizer_prompt
+    assert "======以上为游戏事件输入======" in game_chat_prompt
     assert "======以上为赛后记忆筛选材料======" in highlighter_prompt
 
 

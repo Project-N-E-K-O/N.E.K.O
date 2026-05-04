@@ -311,6 +311,8 @@ SOCCER_SYSTEM_PROMPTS = {
     "ru": _SOCCER_SYSTEM_PROMPT_RU,
 }
 
+SOCCER_SYSTEM_PROMPT_WATERMARK = "\n======以上为足球游戏会话系统提示======\n"
+
 _SOCCER_QUICK_LINES_PROMPT_EN = """\
 You are {name}, {personality}
 
@@ -685,7 +687,7 @@ SOCCER_ANGER_PRESSURE_CAP_REASONS = {
 
 
 def get_soccer_system_prompt(lang: str | None = None) -> str:
-    return _localized_template(SOCCER_SYSTEM_PROMPTS, lang)
+    return _localized_template(SOCCER_SYSTEM_PROMPTS, lang) + SOCCER_SYSTEM_PROMPT_WATERMARK
 
 
 def get_soccer_quick_lines_prompt(lang: str | None = None) -> str:
