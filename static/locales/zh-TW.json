@@ -583,7 +583,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM連接失敗（{{error_type}}），已重試{{max_retries}}次: {{error}}",
         "TEXT_GEN_ERROR": "💥 文字生成異常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未回傳任何回覆，請檢查API連接和配置",
-        "PROACTIVE_GEN_FAILED": "💥 主動回覆生成失敗: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一個終端...",
         "RELOAD_PAGE": "語音已更新，頁面即將刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自動關閉鍵鼠控制: $t(agent.precheck.{{reason_code}})",

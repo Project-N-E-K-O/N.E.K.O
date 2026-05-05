@@ -583,7 +583,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 Falha na conexão LLM ({{error_type}}), tentativas esgotadas de {{max_retries}}: {{error}}",
         "TEXT_GEN_ERROR": "💥 Erro de geração de texto: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM não retornou resposta. Verifique sua conexão e configuração da API.",
-        "PROACTIVE_GEN_FAILED": "💥 Falha na geração de resposta proativa: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} está indo para outro terminal...",
         "RELOAD_PAGE": "Voz atualizada, a página será atualizada em breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Controle de teclado/mouse desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
