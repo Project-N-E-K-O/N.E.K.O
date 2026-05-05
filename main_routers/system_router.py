@@ -75,6 +75,7 @@ from config import (
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
     MINI_GAME_INVITE_ENABLED,
+    MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
     MINI_GAME_INVITE_COOLDOWN_SECONDS,
     MINI_GAME_INVITE_COOLDOWN_CHATS,
@@ -2307,11 +2308,14 @@ async def _maybe_deliver_mini_game_invite(
     activity_snapshot,
     invite_lang: str,
     master_name: str,
+    user_toggle_enabled: bool = True,
 ) -> dict | None:
     """命中即投递 mini-game 邀请、返回 _end_proactive 用的 JSON dict；未命中返 None。
 
     短路条件（任一不满足即返 None，由 caller 继续走原 Phase1/2 流水线）：
-      - MINI_GAME_INVITE_ENABLED=False
+      - MINI_GAME_INVITE_ENABLED=False（全局 kill switch，生产侧的总开关）
+      - user_toggle_enabled=False（用户在前端 CHAT_MODE_CONFIG 关掉了
+        ``proactiveMiniGameInviteEnabled`` toggle）
       - activity_snapshot is None（隐私模式 / tracker 不可用——保守不发）
       - propensity == 'restricted_screen_only'（focused_work / non-casual gaming）
       - state == 'away'（用户离场，邀请没人接）
@@ -2320,6 +2324,11 @@ async def _maybe_deliver_mini_game_invite(
         restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
       - _mini_game_invite_in_cooldown
       - 非 force-first 路径下 random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+
+    调试旗标：``config.MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开除
+    ``MINI_GAME_INVITE_ENABLED`` 之外的所有 gate（含用户 toggle、cooldown、
+    probability、unfinished_thread、snapshot None / propensity / away、force-first
+    判定），把 game_type 钉到旗标值上。仅供本地手测，生产应保持 None。
 
     Force-first 分支：当
       ``state.delivered_at is None`` 且
@@ -2333,54 +2342,78 @@ async def _maybe_deliver_mini_game_invite(
     game_type 从 ``MINI_GAME_INVITE_AVAILABLE_GAMES`` random.choice。"""
     if not MINI_GAME_INVITE_ENABLED:
         return None
-    if activity_snapshot is None:
-        return None
-    propensity = getattr(activity_snapshot, 'propensity', None)
-    state_label = getattr(activity_snapshot, 'state', None)
-    if propensity == 'restricted_screen_only':
-        return None
-    if state_label == 'away':
-        return None
-    # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
-    # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
-    # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
-    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
-        return None
-    if _mini_game_invite_in_cooldown(lanlan_name):
-        return None
 
-    # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
-    # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
-    # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
-    # 一回，邀请密度抖。
-    #
-    # "is new user" 必须查持久化的 ever_delivered，不能查 in-memory 的
-    # ``state.delivered_at is None``——后者会被 PR-B「回头再说」reset，且重启清零；
-    # codex review (P1) 指出，没这条 force-first 在每次重启后都会把已邀请过的
-    # 用户当新用户重新强制邀请。
-    await _ensure_proactive_chat_totals_loaded()
-    never_delivered = not _was_invite_ever_delivered(lanlan_name)
-    total_so_far = _get_proactive_chat_total(lanlan_name)
-    force_first = (
-        never_delivered
-        and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
-    )
-
-    if not force_first:
-        import random as _random
-        if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+    # 调试旗标短路：非 None 时跳过所有用户/snapshot/cooldown/概率 gate，把 game_type
+    # 钉到旗标值上。仍然要求该 game_type 有对应文案；非法值 warn + 退出而不 raise，
+    # 避免在配置抖动时把整个 proactive 流水线带挂。Force-first 标记成 True 让 caller
+    # 路径与正常 first-time 邀请等价（不影响 ever_delivered 持久化）。
+    force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
+    debug_force = bool(force_game)
+    if debug_force:
+        if force_game not in MINI_GAME_INVITE_LINES_BY_GAME:
+            logger.warning(
+                "[%s] MINI_GAME_INVITE_FORCE_GAME_TYPE=%r is not in "
+                "MINI_GAME_INVITE_LINES_BY_GAME=%r — skipping invite. "
+                "Set the flag to a valid key or back to None.",
+                lanlan_name, force_game, list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
+            )
+            return None
+        await _ensure_proactive_chat_totals_loaded()
+        game_type = force_game
+        # 让下面 success-log 共用同一字段；调试旗标语义上等同于 "强制走 first-time
+        # 路径"，print 出来好认。
+        force_first = True
+    else:
+        if not user_toggle_enabled:
+            return None
+        if activity_snapshot is None:
+            return None
+        propensity = getattr(activity_snapshot, 'propensity', None)
+        state_label = getattr(activity_snapshot, 'state', None)
+        if propensity == 'restricted_screen_only':
+            return None
+        if state_label == 'away':
+            return None
+        # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
+        # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
+        # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
+        if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
+            return None
+        if _mini_game_invite_in_cooldown(lanlan_name):
             return None
 
-    game_type = _pick_mini_game_type()
-    if game_type is None:
-        logger.warning(
-            "[%s] mini-game invite skipped: no game_type available "
-            "(MINI_GAME_INVITE_AVAILABLE_GAMES=%r, LINES keys=%r)",
-            lanlan_name,
-            MINI_GAME_INVITE_AVAILABLE_GAMES,
-            list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
+        # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
+        # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
+        # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
+        # 一回，邀请密度抖。
+        #
+        # "is new user" 必须查持久化的 ever_delivered，不能查 in-memory 的
+        # ``state.delivered_at is None``——后者会被 PR-B「回头再说」reset，且重启清零；
+        # codex review (P1) 指出，没这条 force-first 在每次重启后都会把已邀请过的
+        # 用户当新用户重新强制邀请。
+        await _ensure_proactive_chat_totals_loaded()
+        never_delivered = not _was_invite_ever_delivered(lanlan_name)
+        total_so_far = _get_proactive_chat_total(lanlan_name)
+        force_first = (
+            never_delivered
+            and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
-        return None
+
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
+
+        game_type = _pick_mini_game_type()
+        if game_type is None:
+            logger.warning(
+                "[%s] mini-game invite skipped: no game_type available "
+                "(MINI_GAME_INVITE_AVAILABLE_GAMES=%r, LINES keys=%r)",
+                lanlan_name,
+                MINI_GAME_INVITE_AVAILABLE_GAMES,
+                list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
+            )
+            return None
     template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
@@ -4182,6 +4215,15 @@ async def proactive_chat(request: Request):
                 action=_text_advance_outcome.get('action', 'suppress'),
             )
 
+        # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
+        # 上游早退 gate（closed / skip_probability / restricted_screen_only），
+        # 让 ``_maybe_deliver_mini_game_invite`` 能稳定接到本轮调用——契约是
+        # "开启后主动搭话必定触发特定小游戏"。仅本地手测使用；生产
+        # ``MINI_GAME_INVITE_ENABLED`` 总开关 + 旗标默认 None 双保险。
+        # CodeRabbit Major 指出：这条不在 ``_maybe_deliver_mini_game_invite``
+        # 内部加是因为那时已经过了上游 gate，旗标做不到"必定"。
+        _debug_force_invite = MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
         # main_logic/activity/snapshot.py). Skip everything — no LLM,
@@ -4190,7 +4232,11 @@ async def proactive_chat(request: Request):
         # look. Bypassed for the unfinished_thread override is
         # deliberate: if the AI just asked a question, hanging on it
         # mid-private is rude. closed > thread.
-        if activity_snapshot is not None and activity_snapshot.propensity == 'closed':
+        if (
+            not _debug_force_invite
+            and activity_snapshot is not None
+            and activity_snapshot.propensity == 'closed'
+        ):
             print(f"[{lanlan_name}] propensity=closed (state={activity_snapshot.state}), 跳过本轮 proactive")
             return await _end_proactive(JSONResponse({
                 "success": True,
@@ -4211,7 +4257,8 @@ async def proactive_chat(request: Request):
         # how silenced the user wanted us. The thread mechanism's
         # 2-followup hard cap already prevents harassment.
         if (
-            activity_snapshot is not None
+            not _debug_force_invite
+            and activity_snapshot is not None
             and activity_snapshot.skip_probability > 0
             and activity_snapshot.unfinished_thread is None
         ):
@@ -4233,9 +4280,13 @@ async def proactive_chat(request: Request):
                 }))
 
         # ========== 解析 enabled_modes ==========
-        enabled_modes = data.get('enabled_modes', [])
-        # 兼容旧版前端
-        if not enabled_modes:
+        # 兼容旧版前端：``enabled_modes`` 字段缺席 → 根据其它字段推断；显式传 ``[]``
+        # 表示新版客户端"用户把所有 source toggle 都关了"，不能再走 BC fallback
+        # 退化到 home/trending（否则 mini-game 邀请 toggle 单独开启的场景下 dice
+        # miss 会让 home 兜底打破 toggle 契约——codex P1）。
+        if 'enabled_modes' in data:
+            enabled_modes = data.get('enabled_modes') or []
+        else:
             content_type = data.get('content_type', None)
             screenshot_data = data.get('screenshot_data')
             if screenshot_data and isinstance(screenshot_data, str):
@@ -4264,7 +4315,11 @@ async def proactive_chat(request: Request):
         # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
         # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
         # 也允许跑下去，跟进上一个问题不需要外部素材。
-        if activity_snapshot is not None and activity_snapshot.propensity == 'restricted_screen_only':
+        if (
+            not _debug_force_invite
+            and activity_snapshot is not None
+            and activity_snapshot.propensity == 'restricted_screen_only'
+        ):
             if 'vision' in enabled_modes:
                 enabled_modes = ['vision']
                 print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
@@ -4296,15 +4351,35 @@ async def proactive_chat(request: Request):
             )
         except Exception:
             invite_lang = 'zh'
+        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
+        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
+        # 旧客户端（未携带该字段时维持现有行为）。MINI_GAME_INVITE_ENABLED 全局
+        # kill switch 仍是更上游的一道。
+        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
         invite_outcome = await _maybe_deliver_mini_game_invite(
             lanlan_name=lanlan_name,
             mgr=mgr,
             activity_snapshot=activity_snapshot,
             invite_lang=invite_lang,
             master_name=master_name_current,
+            user_toggle_enabled=_user_invite_toggle,
         )
         if invite_outcome is not None:
             return await _end_proactive(JSONResponse(invite_outcome))
+
+        # 用户把所有 source toggle 都关了（仅留 mini-game 邀请独立 toggle 触发本轮
+        # 请求），mini-game 短路又没命中：没什么可聊。直接 pass 而不是落到下面源
+        # picking 走空 list / 撞 "所有信息源获取失败" 500 分支。例外：仍然有未收尾
+        # 话题 → 让 Phase 2 走 text-only 跟进路径（与 sources={} 但 thread 在的兜
+        # 底语义对齐）。codex P1 指出：BC fallback 已经按 "字段缺席 vs 显式 []" 分
+        # 流，这里对显式空清晰退出。
+        if not enabled_modes and not _has_unfinished_thread:
+            print(f"[{lanlan_name}] enabled_modes 空 + mini-game miss + 无 unfinished_thread → pass")
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "no source modes enabled and mini-game invite did not fire",
+            }))
 
         # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
         # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。

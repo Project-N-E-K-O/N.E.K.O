@@ -1359,6 +1359,17 @@ MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
 ``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
 会带上 ``?lanlan_name=...&session_id=...`` query。新 mini-game 加新 entry 即可。"""
 
+MINI_GAME_INVITE_FORCE_GAME_TYPE: str | None = None
+"""【调试用临时旗标】非 None 时，每次合格的主动搭话都强制走 mini-game 邀请短路，
+且使用此值作为 game_type，跳过 activity_snapshot / propensity / away /
+unfinished_thread / cooldown / probability / force-first / 用户级 toggle 等所有
+gate；仅 ``MINI_GAME_INVITE_ENABLED`` 总开关仍生效作为最后 kill switch。
+- 取值约定：None 关闭（生产默认）；'soccer' 等 ``MINI_GAME_INVITE_LINES_BY_GAME``
+  里存在的合法 key。非法 key 会在投递时 warn + 跳过。
+- 用途：本地手测三 context UI 时，不想等 force-first 凑齐 N-1 次主动搭话、也不
+  想反复重启 fixture 调 cooldown。线上不要打开。
+- 上游：``main_routers/system_router._maybe_deliver_mini_game_invite``。"""
+
 PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
 """主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
 - 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
@@ -1658,6 +1669,7 @@ __all__ = [
     'MINI_GAME_INVITE_AVAILABLE_GAMES',
     'MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS',
     'MINI_GAME_LAUNCH_URL_BY_GAME',
+    'MINI_GAME_INVITE_FORCE_GAME_TYPE',
     'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
     'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
     'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',
