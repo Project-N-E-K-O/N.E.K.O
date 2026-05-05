@@ -1391,7 +1391,7 @@ export default function App({
     if (composerHidden || composerDisabled) {
       clearActiveCursorToolSelection();
     }
-  }, [activeCursorToolId, clearActiveCursorToolSelection, composerHidden, composerDisabled]);
+  }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
 
   useEffect(() => {
     function handleDeactivate() {

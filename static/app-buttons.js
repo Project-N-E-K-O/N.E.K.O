@@ -174,6 +174,11 @@
         input.addEventListener('change', function (event) {
             var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
             if (!files.length) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                input.value = '';
+                return;
+            }
 
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
@@ -920,8 +925,13 @@
             return mod.openImageImportPicker();
         });
         host.setOnComposerScreenshot(function () {
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
                 window.nekoScreenshotProxy.request();
+                return true;
             } else {
                 return mod.captureScreenshotToPendingList();
             }
