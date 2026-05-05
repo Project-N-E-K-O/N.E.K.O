@@ -23,14 +23,20 @@ def _ensure_yui_origin_unpacked():
     if marker.exists() and marker.stat().st_mtime >= archive.stat().st_mtime:
         return
     import shutil
+    import sys
     import tarfile
     if target_dir.exists():
         shutil.rmtree(target_dir)
     with tarfile.open(archive, "r:gz") as tf:
-        try:
+        # filter='data' added in Python 3.12; archive ships in-repo (trusted).
+        if sys.version_info >= (3, 12):
             tf.extractall(target_root, filter="data")
-        except TypeError:
+        else:
             tf.extractall(target_root)
+    # tarfile preserves archived member mtimes by default, so the marker would
+    # stay older than the archive's filesystem mtime → freshness gate above
+    # would re-extract on every session. Refresh marker so subsequent runs skip.
+    marker.touch()
 
 
 _ensure_yui_origin_unpacked()
