@@ -948,6 +948,26 @@ def test_keyword_matcher_no_false_positive_on_chong_substring():
     assert sr._match_mini_game_invite_keyword('来吧') == 'accept'
 
 
+def test_keyword_matcher_no_false_positive_on_keyi_negation():
+    """codex P2 回归保护：'可以' 已从 zh accept 删除（"不可以" 含 substring
+    '可以'，decline 没 '不可以' 时 priority 救不了）。同时 '不可以' 加进 decline
+    list 双保险——以防未来误把 '可以' 加回 accept。"""
+    # "不可以" 必须命中 decline，绝不能 accept
+    assert sr._match_mini_game_invite_keyword('不可以') == 'decline'
+    assert sr._match_mini_game_invite_keyword('不可以的') == 'decline'
+    # 单独 "可以" 不再命中（用户表达接受意图请改用 '好啊'/'行啊'/'来吧' 等）
+    assert sr._match_mini_game_invite_keyword('可以') is None
+
+
+def test_keyword_matcher_no_false_positive_on_korean_eung():
+    """codex P2 回归保护：单字 '응' 已从 ko accept 删除——"적응" / "반응" /
+    "응답" 等含 '응' 子串的常规韩语词不应命中 accept。"""
+    assert sr._match_mini_game_invite_keyword('적응 중이야') is None
+    assert sr._match_mini_game_invite_keyword('반응이 좋네') is None
+    # 双字 phrase '좋아' 仍命中
+    assert sr._match_mini_game_invite_keyword('좋아') == 'accept'
+
+
 def test_keyword_matcher_accept_does_not_match_negation():
     """关键词列表配合 priority 双保险：'不好'/'我不行' 不能被 accept 误命中。
     accept 现在用「好啊/好的/行啊」短语，'不好' 不含 substring '好啊'；同时

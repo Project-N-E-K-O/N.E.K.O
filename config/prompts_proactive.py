@@ -2402,16 +2402,18 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
 # 扫一遍而不是只看 active locale。
 MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     'zh': {
-        # accept 必须用**短语 / 双字以上**避免和 decline 子串重叠：
-        # - 单字 '好' '行' 会被 "不好" / "我不行" / "不好玩" 当 substring 命中。
+        # accept 必须用**短语 / 双字以上**且**不被任何 decline 短语作 substring
+        # 包含**——CJK 走 substring 没 word boundary 兜底，priority 仅在 decline
+        # 也命中时救场，"不可以" 这种 decline list 没列的 negation phrase 完全
+        # 救不了。设计原则：accept 短语必须保证「decline phrase 不含它」。
+        # - 单字 '好' '行' 被 "不好" / "我不行" / "不好玩" 包含。
         # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
-        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡" 这种普通对话会被 CJK
-        #   substring 误命中（codex P2 指出）。
-        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确表达。CodeRabbit Major
-        # 指出，配合 _match_mini_game_invite_keyword 的 negation-priority
-        # （decline > later > accept）双保险。
-        'accept': ['好啊', '好的', '可以', '行啊', '来吧', '一起玩'],
-        'decline': ['不要', '不行', '不好', '不想', '算了', '拒绝', '不玩', '没空'],
+        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡"（codex P2 指出）。
+        # - 双字 '可以' 被 "不可以" 包含——decline list 又没 '不可以'，
+        #   priority 救不了（codex P2 指出后删）。
+        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确接受 phrase。
+        'accept': ['好啊', '好的', '行啊', '来吧', '一起玩'],
+        'decline': ['不要', '不行', '不好', '不想', '不可以', '算了', '拒绝', '不玩', '没空'],
         'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
     },
     'en': {
@@ -2432,7 +2434,9 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
     'ko': {
         # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
-        'accept': ['좋아', '응', '그래', '가자', 'ㅇㅇ'],
+        # 单字 '응' 也宽——"적응" / "반응" 等含子串命中。codex P2 指出后删；
+        # 留 '좋아' / '그래' / '가자' / 'ㅇㅇ' 已 cover 接受意图。
+        'accept': ['좋아', '그래', '가자', 'ㅇㅇ'],
         'decline': ['싫어', '아니', '됐어', '안 해'],
         'later': ['나중', '이따', '잠시', '잠깐만'],
     },
