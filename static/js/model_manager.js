@@ -679,6 +679,12 @@ function openCardMakerFromModelManager(lanlanName, options = {}) {
         name: lanlanName,
         mode: 'maker'
     });
+    if (options.fallbackDefaultOnClose) {
+        params.set('fallback_default_on_close', '1');
+    }
+    if (options.fallbackToken) {
+        params.set('fallback_token', options.fallbackToken);
+    }
     const url = `/card_maker?${params.toString()}`;
     const features = 'width=1200,height=800';
 
@@ -727,6 +733,158 @@ function notifyCardFaceUpdatedFromModelManager(name) {
         localStorage.setItem('neko_card_face_event', JSON.stringify(message));
         localStorage.removeItem('neko_card_face_event');
     } catch (_) {}
+}
+
+function createCardMakerFallbackToken() {
+    try {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+    } catch (_) {}
+    return `card-maker-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function postCardMakerFallbackEvent(message) {
+    try {
+        const channel = new BroadcastChannel('neko-card-maker-fallback-events');
+        channel.postMessage(message);
+        channel.close();
+    } catch (_) {}
+
+    try {
+        localStorage.setItem('neko_card_maker_fallback_event', JSON.stringify(message));
+        localStorage.removeItem('neko_card_maker_fallback_event');
+    } catch (_) {}
+}
+
+function notifyCardMakerFallbackOwnerClosing() {
+    const active = window._modelManagerActiveCardMakerFallback;
+    if (!active || active.cardFaceSaved || !active.lanlanName || !active.token) return;
+
+    const message = {
+        type: 'model-manager-card-maker-fallback-owner-closing',
+        name: active.lanlanName,
+        token: active.token,
+        timestamp: Date.now()
+    };
+
+    try {
+        active.makerWindow?.postMessage(message, window.location.origin);
+    } catch (_) {}
+    postCardMakerFallbackEvent(message);
+}
+
+function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = {}, options = {}) {
+    if (!makerWindow || !lanlanName) return;
+
+    if (typeof window._modelManagerCardMakerFallbackCleanup === 'function') {
+        window._modelManagerCardMakerFallbackCleanup();
+    }
+
+    const startedAt = Date.now();
+    const fallbackToken = options.fallbackToken || '';
+    let cardFaceSaved = false;
+    let fallbackRunning = false;
+    let closeTimer = 0;
+    let channel = null;
+    window._modelManagerActiveCardMakerFallback = {
+        makerWindow,
+        lanlanName,
+        token: fallbackToken,
+        cardFaceSaved: false
+    };
+
+    const matchesCardFaceUpdate = (data) => {
+        if (!data || data.type !== 'card-face-updated') return false;
+        if (data.name !== lanlanName) return false;
+        const timestamp = Number(data.timestamp || 0);
+        return !Number.isFinite(timestamp) || timestamp === 0 || timestamp >= startedAt - 2000;
+    };
+
+    const cleanup = () => {
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
+        }
+        window.removeEventListener('message', handleMessage);
+        window.removeEventListener('storage', handleStorage);
+        if (channel) {
+            try { channel.close(); } catch (_) {}
+            channel = null;
+        }
+        if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+            window._modelManagerCardMakerFallbackCleanup = null;
+        }
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback = null;
+        }
+    };
+
+    const markCardFaceSaved = (data) => {
+        if (!matchesCardFaceUpdate(data)) return;
+        cardFaceSaved = true;
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback.cardFaceSaved = true;
+        }
+        cleanup();
+    };
+
+    function handleMessage(event) {
+        if (event.origin !== window.location.origin) return;
+        markCardFaceSaved(event.data);
+    }
+
+    function handleStorage(event) {
+        if (event.key !== 'neko_card_face_event' || !event.newValue) return;
+        try {
+            markCardFaceSaved(JSON.parse(event.newValue));
+        } catch (_) {}
+    }
+
+    async function generateFallbackDefaultCardFace() {
+        if (fallbackRunning || cardFaceSaved) return;
+        fallbackRunning = true;
+        try {
+            await generateDefaultCardFaceFromModelManager(lanlanName, state);
+            await notifyMainPageModelReload();
+        } catch (error) {
+            console.error('[模型管理] 卡面制作关闭后的默认卡面兜底生成失败:', error);
+            setModelManagerStatusText(
+                error && error.message
+                    ? error.message
+                    : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+            );
+        }
+    }
+
+    function checkClosed() {
+        let isClosed = false;
+        try {
+            isClosed = makerWindow.closed === true;
+        } catch (_) {
+            isClosed = true;
+        }
+        if (!isClosed) return;
+
+        cleanup();
+        if (!cardFaceSaved) {
+            generateFallbackDefaultCardFace();
+        }
+    }
+
+    window.addEventListener('message', handleMessage);
+    window.addEventListener('storage', handleStorage);
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            channel = new BroadcastChannel('neko-card-face-events');
+            channel.onmessage = event => markCardFaceSaved(event.data);
+        } catch (_) {
+            channel = null;
+        }
+    }
+
+    closeTimer = setInterval(checkClosed, 800);
+    window._modelManagerCardMakerFallbackCleanup = cleanup;
 }
 
 function canvasToPngBlob(canvas) {
@@ -1064,10 +1222,16 @@ async function offerCardFaceAfterModelSave(state = {}) {
         });
 
         if (cardFaceChoice === 'edit') {
-            const makerWindow = openCardMakerFromModelManager(lanlanName);
+            const fallbackToken = createCardMakerFallbackToken();
+            const makerWindow = openCardMakerFromModelManager(lanlanName, {
+                fallbackDefaultOnClose: true,
+                fallbackToken
+            });
             if (!makerWindow) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
+            } else {
+                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
             }
         } else if (cardFaceChoice === 'default') {
             try {
@@ -9233,6 +9397,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
+    notifyCardMakerFallbackOwnerClosing();
+
     // 尝试退出全屏
     if (isFullscreen()) {
         try {
