@@ -149,6 +149,14 @@ class MMDManager {
                 this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
             }
 
+            // 兜底：模型加载成功后再 setup 一次浮动按钮（与 VRM 对齐）。
+            // init() 阶段虽然也会调用，但若彼时 lanlan_config 还没切到 mmd（早期启动 / 跨模型切换），
+            // 守卫会让 setup 静默退出，且不会再有第二次机会。loadModel 成功后必然处于 mmd 模式，
+            // 在此补一刀确保按钮始终存在。
+            if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+                try { this.setupFloatingButtons(); } catch (_) {}
+            }
+
             // 派发模型加载完成事件
             window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
                 detail: { modelInfo, modelPath }
@@ -186,6 +194,11 @@ class MMDManager {
 
                     if (this.cursorFollow) {
                         this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
+                    }
+
+                    // 兜底：回退模型加载成功后也补一次 setupFloatingButtons（与 VRM 对齐）
+                    if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+                        try { this.setupFloatingButtons(); } catch (_) {}
                     }
 
                     window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
