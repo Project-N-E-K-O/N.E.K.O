@@ -125,8 +125,11 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
 
     (source_root / "config").mkdir(parents=True, exist_ok=True)
     (source_root / "memory" / "A").mkdir(parents=True, exist_ok=True)
+    (source_root / "card_faces").mkdir(parents=True, exist_ok=True)
     (source_root / "config" / "characters.json").write_text('{"current":"A"}', encoding="utf-8")
     (source_root / "memory" / "A" / "recent.json").write_text('[{"role":"user","content":"hi"}]', encoding="utf-8")
+    (source_root / "card_faces" / "YUI.png").write_bytes(b"fake-png")
+    (source_root / "card_faces" / "YUI.json").write_text('{"origin":"self"}', encoding="utf-8")
 
     create_pending_storage_migration(
         config_manager,
@@ -144,6 +147,8 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
     assert result["payload"]["retained_source_mode"] == "manual_retention"
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == '{"current":"A"}'
     assert (target_root / "memory" / "A" / "recent.json").read_text(encoding="utf-8") == '[{"role":"user","content":"hi"}]'
+    assert (target_root / "card_faces" / "YUI.png").read_bytes() == b"fake-png"
+    assert (target_root / "card_faces" / "YUI.json").read_text(encoding="utf-8") == '{"origin":"self"}'
 
     policy_payload = load_storage_policy(config_manager, anchor_root=tmp_path / "anchor-base" / "N.E.K.O")
     assert policy_payload["selected_root"] == str(target_root.resolve())

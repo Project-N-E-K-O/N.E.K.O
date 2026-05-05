@@ -37,6 +37,10 @@ def _make_mgr() -> LLMSessionManager:
     mgr.tts_thread = MagicMock()
     mgr.tts_thread.is_alive.return_value = True
     mgr.tts_ready = True
+    mgr.core_api_type = "qwen"
+    mgr.voice_id = "voice-a"
+    mgr._is_free_preset_voice = False
+    mgr._tts_runtime_key = LLMSessionManager._build_tts_runtime_key(mgr)
     mgr.current_speech_id = None
     mgr._tts_done_queued_for_turn = False
     mgr.lanlan_name = "Test"
@@ -52,6 +56,8 @@ def _make_mgr() -> LLMSessionManager:
     mgr._tts_bracket_stripper.flush.return_value = ""
     mgr._tts_norm_speech_id = None
     mgr.send_lanlan_response = AsyncMock()
+    mgr._takeover_active = False
+    mgr._takeover_input_dispatcher = None
     # 状态机：finish_proactive_delivery / handle_new_message 会 fire 事件，
     # 所以测试 mgr 也要有真实 SM 实例（轻量、无外部依赖）。
     mgr.state = SessionStateMachine(lanlan_name="Test")
@@ -117,6 +123,35 @@ async def test_feed_tts_chunk_drop_is_atomic_with_enqueue():
     # 绝不会出现 "check 过了但 enqueue 时 sid 已变" 的脏数据。
     if enqueue_calls:
         assert enqueue_calls[0][0] == "s_proactive"
+
+
+def test_can_preserve_tts_ready_for_live_worker():
+    mgr = _make_mgr()
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = True
+
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is True
+
+
+def test_cannot_preserve_tts_ready_for_dead_or_unready_worker():
+    mgr = _make_mgr()
+
+    mgr.tts_ready = False
+    mgr.tts_thread.is_alive.return_value = True
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = False
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
+
+
+def test_cannot_preserve_tts_ready_when_runtime_identity_changed():
+    mgr = _make_mgr()
+    mgr.tts_ready = True
+    mgr.tts_thread.is_alive.return_value = True
+    mgr.voice_id = "voice-b"
+
+    assert LLMSessionManager._can_preserve_tts_ready_for_session_start(mgr) is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

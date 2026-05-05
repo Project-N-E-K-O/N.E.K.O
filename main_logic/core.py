@@ -12,7 +12,7 @@ import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 
 # Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
@@ -219,6 +219,7 @@ NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
+
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -360,6 +361,7 @@ class LLMSessionManager:
         self.tts_request_queue = Queue()  # TTS request (线程队列)
         self.tts_response_queue = Queue()  # TTS response (线程队列)
         self.tts_thread = None  # TTS线程
+        self._tts_runtime_key = None
         # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
         # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
         # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。
@@ -385,6 +387,9 @@ class LLMSessionManager:
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
         self.current_speech_id = None
+        self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
+        self._last_speech_output_time = 0.0
+        self._last_speech_output_bytes = 0
         self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
@@ -457,6 +462,18 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
+        # ── Session takeover ──────────────────────────────────────────
+        # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
+        # （text/audio delta、output transcript、response.complete、
+        # new-message 通知）都要静音；语音转写也要先丢给外部 dispatcher
+        # 处理，处理过的不再走本地 chat 路径。
+        # SessionManager 不知道 takeover 是谁、为什么——只认这两个 flag。
+        # 当前唯一消费者：main_routers.game_router；未来 plugin/agent 想完
+        # 全接管 chat 的场景也走同一套接口。
+        self._takeover_active: bool = False
+        self._takeover_input_dispatcher: Optional[
+            Callable[..., Awaitable[bool]]
+        ] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -806,9 +823,61 @@ class LLMSessionManager:
         except Exception:
             return False
 
+    def _can_preserve_tts_ready_for_session_start(self) -> bool:
+        """A live, previously-ready TTS worker will not emit __ready__ again."""
+        current_key = self._build_tts_runtime_key()
+        worker_key = getattr(self, "_tts_runtime_key", None)
+        return bool(
+            self.tts_ready
+            and self.tts_thread is not None
+            and self.tts_thread.is_alive()
+            and current_key == worker_key
+        )
+
+    def _build_tts_runtime_key(self) -> tuple:
+        """Return the effective TTS worker identity for ready-state reuse."""
+        try:
+            core_config = self._config_manager.get_core_config()
+            if core_config.get('DISABLE_TTS', False):
+                return ("disabled",)
+            has_custom = self._has_custom_tts()
+            _, api_key_override, provider_key = get_tts_worker(
+                core_api_type=self.core_api_type,
+                has_custom_voice=has_custom,
+                voice_id=self.voice_id or '',
+            )
+            tts_config = self._config_manager.get_model_api_config(
+                'tts_custom' if has_custom else 'tts_default'
+            )
+            api_key = api_key_override or tts_config.get('api_key', '')
+            return (
+                provider_key,
+                self.core_api_type,
+                self.voice_id or '',
+                bool(getattr(self, "_is_free_preset_voice", False)),
+                bool(has_custom),
+                tts_config.get('base_url', ''),
+                tts_config.get('model', ''),
+                api_key,
+            )
+        except Exception:
+            return (
+                "fallback",
+                getattr(self, "core_api_type", ""),
+                getattr(self, "voice_id", ""),
+                bool(getattr(self, "_is_free_preset_voice", False)),
+            )
+
     async def _clear_tts_pipeline(self):
-        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。
+
+        Gate is on worker liveness, not ``self.use_tts``: mirror channel
+        (e.g. ``mirror_assistant_speech``) feeds the project TTS pipeline
+        regardless of ``use_tts``, so a Realtime native voice session
+        (``use_tts=False``) can still have a live worker that needs
+        interrupting on ``interrupt_audio``.
+        """
+        if self.tts_thread and self.tts_thread.is_alive():
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
@@ -831,8 +900,35 @@ class LLMSessionManager:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
 
+    @property
+    def is_tts_pipeline_ready(self) -> bool:
+        """Light health check: TTS worker thread alive and ready, no orchestration."""
+        return bool(
+            self.tts_thread
+            and self.tts_thread.is_alive()
+            and self.tts_ready
+        )
+
+    async def ensure_tts_pipeline_alive(self) -> None:
+        """Light TTS startup helper: spawn worker + handler task if not alive.
+
+        Does NOT wait for ``__ready__`` — callers that need confirmed-ready
+        must poll :attr:`is_tts_pipeline_ready` themselves.  Callers that
+        only need ``tts_pending_chunks`` to eventually drain do not need
+        to wait at all (the handler picks up pending chunks once
+        ``tts_ready`` flips).
+        """
+        if not (self.tts_thread and self.tts_thread.is_alive()):
+            self._start_tts_thread()
+        if self.tts_handler_task is None or self.tts_handler_task.done():
+            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
+            return
+
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
@@ -860,6 +956,9 @@ class LLMSessionManager:
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+            return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
         # contextvar。若其与 current_speech_id 不一致，说明用户已在 proactive
@@ -989,6 +1088,14 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
+            await self._clear_tts_pipeline()
+            self._pending_turn_meta = None
+            self._current_ai_turn_text = ""
+            self._active_text_request_id = None
+            return
+
         active_request_id = self._active_text_request_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
@@ -1250,6 +1357,9 @@ class LLMSessionManager:
 
     async def handle_audio_data(self, audio_data: bytes):
         """Qwen音频回调：推送音频到WebSocket前端"""
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime audio bytes=%d", self.lanlan_name, len(audio_data or b""))
+            return
         if not self.use_tts:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 # 这里假设audio_data为PCM16字节流，使用流式重采样器处理
@@ -1322,10 +1432,38 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
+        transcript_text = transcript.strip()
+        if (
+            is_voice_source
+            and transcript_text
+            and self._takeover_input_dispatcher is not None
+        ):
+            try:
+                handled = await self._takeover_input_dispatcher(
+                    self.lanlan_name,
+                    transcript_text,
+                    request_id=f"realtime-stt-{uuid4()}",
+                )
+                logger.info(
+                    "[%s] session takeover dispatcher: realtime STT transcript routed handled=%s len=%d",
+                    self.lanlan_name, handled, len(transcript_text),
+                )
+                if handled:
+                    if isinstance(self.session, OmniRealtimeClient):
+                        try:
+                            await self.session.cancel_response()
+                            logger.info("[%s] session takeover: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
+                        except Exception as cancel_exc:
+                            logger.debug("[%s] session takeover: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
+                    return
+            except Exception as exc:
+                logger.warning("[%s] session takeover dispatcher failed: %s", self.lanlan_name, exc)
+
+        if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
             # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
-            if transcript.strip():
+            if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
@@ -1339,7 +1477,7 @@ class LLMSessionManager:
             # at `_process_stream_data_internal` has already recorded the
             # user message. We still need the queue/cache plumbing below
             # to work normally, so just bypass the tracker block.
-            if transcript.strip():
+            if transcript_text:
                 self._session_turn_count += 1
 
         # 推送到同步消息队列
@@ -1382,6 +1520,10 @@ class LLMSessionManager:
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
+            return
+
         # 同 handle_text_data：proactive 路径设置的 sid 期望值若与 current 不符，
         # 丢弃本 chunk，避免 proactive 文本被错插进用户新轮次。
         expected_sid = _proactive_expected_sid.get()
@@ -1418,7 +1560,11 @@ class LLMSessionManager:
         text: str,
         is_first_chunk: bool = False,
         turn_id: str | None = None,
+        *,
+        metadata: dict | None = None,
         request_id: Any = _REQUEST_ID_UNSET,
+        track_ai_turn: bool = True,
+        cache_for_new_session: bool = True,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
 
@@ -1437,7 +1583,8 @@ class LLMSessionManager:
         # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
         # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
-        self._current_ai_turn_text += text_clean
+        if track_ai_turn:
+            self._current_ai_turn_text += text_clean
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1451,13 +1598,15 @@ class LLMSessionManager:
             "turn_id": effective_turn_id,
             "request_id": effective_request_id,
         }
+        if metadata:
+            message["metadata"] = metadata
 
         # 无论 WS 发送成功与否，始终将消息写入 sync_message_queue 和 message_cache，
         # 确保 cross_server 历史组装不因 WS 断连而丢失 assistant 内容。
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
         self.sync_message_queue.put({"type": "json", "data": message})
-        if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
+        if cache_for_new_session and hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
             if not hasattr(self, 'message_cache_for_new_session'):
                 self.message_cache_for_new_session = []
             # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
@@ -1495,7 +1644,302 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
             return False
-        
+
+    # ------------------------------------------------------------------
+    # Mirror channel (chat-bubble passthrough that enters context as
+    # AIMessage; user-side inputs intentionally do NOT enter chat history
+    # as UserMessage — see ``main_logic.mirror_meta``).
+    # ------------------------------------------------------------------
+
+    async def mirror_user_input(
+        self,
+        text: str,
+        *,
+        metadata: dict,
+        request_id: str | None = None,
+        input_type: str | None = None,
+        send_to_frontend: bool = False,
+    ) -> None:
+        """Record an external-controller user input into the sync stream.
+
+        The text is logged for monitor/display purposes but does not
+        flush into ``chat_history`` as a UserMessage (cross_server skips
+        ``input_type`` values listed in ``mirror_meta.MIRROR_USER_INPUT_TYPES``).
+        Use this when an external controller (e.g. a game route) has
+        captured what the user said but the ordinary chat LLM should not
+        see it.
+        """
+        from main_logic.mirror_meta import MIRROR_USER_TEXT_INPUT_TYPE
+
+        clean = str(text or "").strip()
+        if not clean:
+            return
+        resolved_input_type = input_type or MIRROR_USER_TEXT_INPUT_TYPE
+        source = str(metadata.get("source") or "mirror") if isinstance(metadata, dict) else "mirror"
+        self.last_user_activity_time = time.time()
+        self.sync_message_queue.put({
+            "type": "user",
+            "data": {
+                "input_type": resolved_input_type,
+                "data": clean,
+                "source": source,
+                "metadata": metadata if isinstance(metadata, dict) else {},
+                "request_id": request_id or "",
+            },
+        })
+        if (
+            send_to_frontend
+            and self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            try:
+                await self.websocket.send_json({
+                    "type": "user_transcript",
+                    "text": clean,
+                    "source": source,
+                    "request_id": request_id,
+                })
+            except Exception as e:
+                logger.error(f"⚠️ mirror_user_input frontend dispatch failed: {e}")
+
+    async def mirror_assistant_output(
+        self,
+        text: str,
+        *,
+        metadata: dict,
+        request_id: str | None = None,
+        turn_id: str | None = None,
+        finalize_turn: bool = False,
+    ) -> dict:
+        """Push an external-controller assistant line into the chat bubble.
+
+        Reuses the ordinary :meth:`send_lanlan_response` path with
+        ``track_ai_turn=False`` and ``cache_for_new_session=False`` so
+        the line shows on frontend + sync stream as an AIMessage but
+        doesn't pollute activity-tracker / hot-swap caches.
+        """
+        clean = str(text or "").strip()
+        if not clean:
+            return {"ok": False, "reason": "missing_line", "mirrored": False}
+
+        effective_turn_id = turn_id or request_id or str(uuid4())
+        await self.send_lanlan_response(
+            clean,
+            is_first_chunk=True,
+            turn_id=effective_turn_id,
+            metadata=metadata,
+            request_id=request_id,
+            track_ai_turn=False,
+            cache_for_new_session=False,
+        )
+        if finalize_turn:
+            await self.emit_mirror_turn_end(
+                metadata=metadata,
+                request_id=request_id,
+                log_context="mirror assistant",
+            )
+        return {
+            "ok": True,
+            "mirrored": True,
+            "turn_id": effective_turn_id,
+            "request_id": request_id or "",
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "turn_finalized": bool(finalize_turn),
+        }
+
+    async def passthrough_to_chat_bubble(
+        self,
+        text: str,
+        *,
+        request_id: str | None = None,
+        turn_id: str | None = None,
+        source: str = "passthrough",
+    ) -> bool:
+        """Render external text verbatim into the chat bubble WITHOUT
+        entering chat-LLM context.
+
+        Distinct from :meth:`mirror_assistant_output`: that writes to
+        ``sync_message_queue`` (so cross_server may add an AIMessage to
+        chat history). ``passthrough_to_chat_bubble`` skips
+        ``sync_message_queue`` entirely — frontend sees the bubble, but
+        the chat LLM never sees it in the next turn.
+
+        Use case: plugin / agent_server pushes verbatim with
+        ``visibility=["chat"] + ai_behavior="blind"`` — operator wants
+        the user to read it but the LLM should remain ignorant.
+
+        This is a generic SessionManager capability; it does not assume
+        any particular consumer.
+
+        Returns ``True`` iff a ``gemini_response`` frame was actually
+        handed to ``send_json`` without raising. ``False`` covers every
+        no-op path: empty/whitespace text, websocket missing or
+        disconnected, and ``send_json`` failures swallowed below. Callers
+        that open an assistant-turn lifecycle on the frontend (e.g.
+        ``main_server`` chat-blind) MUST gate their turn-end emit on this
+        flag — a swallowed send means the frontend never opened a turn,
+        so emitting turn-end would close a lifecycle that never started.
+        """
+        # Why: caller passes raw_text deliberately (PR #1128 0ac9e8881).
+        # We empty-check on the stripped form but forward the ORIGINAL so
+        # leading/trailing whitespace, newlines, and indentation render
+        # exactly as the plugin authored them.
+        raw = str(text or "")
+        if not raw or not raw.strip():
+            return False
+        effective_turn_id = turn_id or request_id or str(uuid4())
+        message = {
+            "type": "gemini_response",
+            "text": raw,
+            "isNewMessage": True,
+            "turn_id": effective_turn_id,
+            "request_id": request_id,
+            "metadata": {"source": source, "passthrough": True},
+        }
+        if not (
+            self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json(message)
+        except Exception as e:
+            logger.warning(
+                "[%s] passthrough_to_chat_bubble WS send failed: %s",
+                self.lanlan_name, e,
+            )
+            return False
+        return True
+
+    async def emit_mirror_turn_end(
+        self,
+        *,
+        metadata: dict,
+        request_id: str | None = None,
+        log_context: str = "",
+    ) -> None:
+        """Emit a turn-end carrying mirror metadata (cross_server uses
+        the metadata to decide whether to fold the turn into ordinary
+        chat memory or skip it)."""
+        turn_end_msg = {
+            "type": "system",
+            "data": "turn end",
+            "request_id": request_id,
+            "meta": metadata if isinstance(metadata, dict) else {},
+        }
+        self.sync_message_queue.put(turn_end_msg)
+        try:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json(turn_end_msg)
+        except Exception as e:
+            logger.warning("[%s] %s turn_end send failed: %s", self.lanlan_name, log_context or "mirror", e)
+
+    async def mirror_assistant_speech(
+        self,
+        line: str,
+        *,
+        metadata: dict,
+        request_id: str | None = None,
+        mirror_text: bool = True,
+        emit_turn_end_after: bool = True,
+        interrupt_audio: bool = False,
+    ) -> dict:
+        """Mirror an assistant line + play it through the project TTS pipeline.
+
+        Combines :meth:`mirror_assistant_output` with TTS chunk
+        enqueue.  TTS pipeline is started lazily via
+        :meth:`ensure_tts_pipeline_alive`; if the worker isn't ready
+        yet, the chunk is buffered in ``tts_pending_chunks`` and the
+        handler picks it up when ``__ready__`` arrives.
+        """
+        clean = str(line or "").strip()
+        if not clean:
+            return {"ok": False, "reason": "missing_line", "audio_sent": False}
+
+        interrupted_speech_id = None
+        if interrupt_audio:
+            async with self.lock:
+                interrupted_speech_id = self.current_speech_id
+            self.audio_resampler.clear()
+            # Mirror channel feeds the project TTS pipeline regardless of
+            # ``self.use_tts``, so always clear it on interrupt — the inner
+            # liveness gate inside ``_clear_tts_pipeline`` makes this safe
+            # when no worker is actually running.
+            await self._clear_tts_pipeline()
+            # Realtime native voice: also tell the provider to stop generating
+            # so further audio.delta / output_audio.delta won't keep streaming
+            # past the interruption point.  Local takeover guards drop these
+            # at handler level too, but cancelling on the wire avoids wasted
+            # tokens and stale audio still in the wire buffer.
+            if isinstance(self.session, OmniRealtimeClient):
+                try:
+                    await self.session.cancel_response()
+                except Exception as cancel_exc:
+                    logger.debug(
+                        "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
+                        self.lanlan_name, cancel_exc,
+                    )
+            await self.send_user_activity(interrupted_speech_id)
+
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
+            self._tts_done_pending_until_ready = False
+            turn_id = self.current_speech_id
+            self.state.mark_user_input_preempt()
+        await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
+
+        if mirror_text:
+            await self.send_lanlan_response(
+                clean,
+                is_first_chunk=True,
+                turn_id=turn_id,
+                metadata=metadata,
+                request_id=request_id,
+                track_ai_turn=False,
+                cache_for_new_session=False,
+            )
+
+        await self.ensure_tts_pipeline_alive()
+        audio_queued = False
+        if self.tts_thread and self.tts_thread.is_alive():
+            async with self.tts_cache_lock:
+                if self.tts_ready:
+                    self._enqueue_tts_text_chunk(turn_id, clean)
+                else:
+                    self.tts_pending_chunks.append((turn_id, clean))
+                status = self._request_tts_done_locked()
+                audio_queued = status in {"queued", "deferred", "already"}
+
+        if emit_turn_end_after:
+            await self.emit_mirror_turn_end(
+                metadata=metadata,
+                request_id=request_id,
+                log_context="mirror speech",
+            )
+
+        return {
+            "ok": True,
+            "method": "project_tts",
+            "speech_id": turn_id,
+            "audio_sent": audio_queued,
+            "audio_queued": audio_queued,
+            "turn_end_emitted": bool(emit_turn_end_after),
+            "interrupt_audio": bool(interrupt_audio),
+            "voice_source": {
+                "provider": "project_tts",
+                "method": "project_tts",
+                "use_existing_send_speech": True,
+            },
+        }
+
+
     async def handle_silence_timeout(self, *, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""
         try:
@@ -1877,6 +2321,7 @@ class LLMSessionManager:
         """
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
+        self._tts_runtime_key = None
 
         # 检查是否禁用了 TTS
         core_config = self._config_manager.get_core_config()
@@ -1916,6 +2361,7 @@ class LLMSessionManager:
             args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
             daemon=True,
         )
+        self._tts_runtime_key = self._build_tts_runtime_key()
         self.tts_thread.start()
 
     def _reset_tts_retry_state(self):
@@ -2385,9 +2831,13 @@ class LLMSessionManager:
             logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
             logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - _diag_start:.2f}秒)")
         
-            # 重置TTS缓存状态
+            # 重置 TTS 缓存状态。若 TTS worker 已经存活且此前确认 ready，
+            # 这里只清空待播文本，不要把 ready 状态抹掉；存活 worker 不会
+            # 因为新 text session 再发一次 __ready__，否则赛后一次性文本会
+            # 永远停在 pending chunks 里。
+            preserve_tts_ready = self._can_preserve_tts_ready_for_session_start()
             async with self.tts_cache_lock:
-                self.tts_ready = False
+                self.tts_ready = preserve_tts_ready
                 self.tts_pending_chunks.clear()
         
             # 重置输入缓存状态
@@ -3335,6 +3785,9 @@ class LLMSessionManager:
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
+        if self._takeover_active:
+            logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
+            return False
         if self.is_hot_swap_imminent:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
@@ -3749,6 +4202,15 @@ class LLMSessionManager:
         )
         if not self.pending_agent_callbacks:
             return
+        # 与 handle_text_data / handle_response_complete 等输出 handler 对偶：
+        # takeover 期间普通 chat LLM 输出会被静音，所以现在派发会被吞掉、callback
+        # 内容白丢。把入口卡住，callback 留在队列里等 takeover 释放。
+        if self._takeover_active:
+            logger.info(
+                "[%s] trigger_agent_callbacks deferred: session takeover active, keeping %d callback(s) for next attempt",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
+            return
 
         # Hard delivery contract: trigger_agent_callbacks ONLY consumes
         # proactive callbacks. Passive ones must remain in the queue and
@@ -3908,6 +4370,13 @@ class LLMSessionManager:
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
+        # ── 守卫：takeover 期间跳过 greeting ──
+        # 与 trigger_voice_proactive_nudge / trigger_agent_callbacks 对偶。
+        # takeover 时 ordinary chat 输出在 handler 层会被静音，跑 greeting
+        # 只会白消耗节日 budget + 写一份永远到不了用户的 LLM 回复。
+        if self._takeover_active:
+            logger.info("[%s] trigger_greeting: session takeover active, skipping", self.lanlan_name)
+            return
 
         # 复用 internal_http_client 单例：session 启动路径，避开 AsyncClient 构造开销
         # （Windows idle 157ms，事件循环压力下可达 1.1s，详见 utils/internal_http_client.py）
@@ -4032,6 +4501,110 @@ class LLMSessionManager:
                     await asyncio.to_thread(commit_holiday_or_weekend_hint, self.lanlan_name, _holiday_token)
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
+    async def trigger_new_character_greeting(self) -> None:
+        from config.prompts_proactive import get_new_character_greeting_prompt
+        from utils.new_character_greeting_state import has_pending, remove_pending
+
+        config_manager = get_config_manager()
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: no pending intent", self.lanlan_name)
+            return
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+
+        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+        template = get_new_character_greeting_prompt(_lang)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session check, skipping", self.lanlan_name)
+            return
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            if not self._has_connected_websocket():
+                logger.warning("[%s] trigger_new_character_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_new_character_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_new_character_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_new_character_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: pending intent already consumed", self.lanlan_name)
+            return
+
+        instruction = template.format(name=self.lanlan_name, master=self.master_name)
+        print(f"[trigger_new_character_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_new_character_greeting: delivering", self.lanlan_name)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_new_character_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        delivered = False
+        proactive_sid = None
+        history_len = None
+        appended_snapshot = None
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_new_character_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_new_character_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                history = getattr(self.session, "_conversation_history", None)
+                if isinstance(history, list):
+                    history_len = len(history)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                if history_len is not None and isinstance(history, list) and len(history) > history_len:
+                    appended_snapshot = list(history[history_len:])
+                logger.info("[%s] trigger_new_character_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            try:
+                interrupted = bool(proactive_sid) and self.current_speech_id != proactive_sid
+                if (not delivered or interrupted) and history_len is not None:
+                    history = getattr(self.session, "_conversation_history", None)
+                    if isinstance(history, list) and appended_snapshot:
+                        suffix_len = len(appended_snapshot)
+                        if suffix_len <= len(history) and history[-suffix_len:] == appended_snapshot:
+                            del history[-suffix_len:]
+                if delivered and not interrupted:
+                    try:
+                        await remove_pending(config_manager, self.lanlan_name)
+                    except Exception as exc:
+                        logger.warning("[%s] trigger_new_character_greeting: remove pending failed: %s", self.lanlan_name, exc)
+            finally:
+                await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
@@ -4953,6 +5526,9 @@ class LLMSessionManager:
                 })
                 await self.websocket.send_bytes(tts_audio)
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
+                self._speech_output_total += 1
+                self._last_speech_output_time = time.time()
+                self._last_speech_output_bytes = len(tts_audio)
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None

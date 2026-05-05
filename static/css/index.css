@@ -1439,7 +1439,15 @@ body.react-chat-window-dragging {
 .avatar-cropper-buttons {
     display: flex;
     gap: 10px;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.avatar-cropper-decision-buttons {
+    display: flex;
+    gap: 10px;
     justify-content: flex-end;
+    align-items: center;
 }
 
 .avatar-cropper-btn {
@@ -1456,6 +1464,10 @@ body.react-chat-window-dragging {
 .avatar-cropper-btn:hover {
     background: rgba(68, 183, 254, 0.14);
     border-color: rgba(68, 183, 254, 0.38);
+}
+.avatar-cropper-btn:disabled {
+    opacity: 0.55;
+    cursor: progress;
 }
 .avatar-cropper-btn.primary {
     background: rgba(68, 183, 254, 0.22);

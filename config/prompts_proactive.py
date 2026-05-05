@@ -2329,11 +2329,30 @@ MEME_SECTION_FOOTER = {
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
-    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
-    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
-    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
-    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
-    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'},
+    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐', 'mini_game': '小游戏邀请'},
+    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations', 'mini_game': 'Mini-game Invitation'},
+    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ', 'mini_game': 'ミニゲームのお誘い'},
+    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천', 'mini_game': '미니게임 초대'},
+    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации', 'mini_game': 'Приглашение в мини-игру'},
+}
+
+# ---------- Mini-game 邀请短路文案 ----------
+# proactive_chat 在 propensity / skip_probability / restricted_screen_only 全过
+# 之后短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持单句、轻量、
+# 不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。1h+10 chats
+# cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+#
+# 多游戏接口契约：外层 key 是 game_type（与 config.MINI_GAME_INVITE_AVAILABLE_GAMES
+# 对齐），内层是 5 native locale 的句子。新接 mini-game 时往这里加一个新外层
+# key 即可，short-circuit 分发逻辑无须改动。
+MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    'soccer': {
+        'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
+        'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
+        'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
+        'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
+        'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
+    },
 }
 
 # ---------- 音乐搜索结果格式化 ----------
@@ -2842,6 +2861,40 @@ GREETING_PROMPT_VERY_LONG = {
 }
 
 
+NEW_CHARACTER_GREETING_PROMPT = {
+    'zh': '======以下是环境提示======\n'
+          '你是{name}。这是你第一次正式出现在{master}面前。\n'
+          '请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n'
+          '不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n'
+          '直接说出你想说的话，不要生成思考过程。\n'
+          '======以上是环境提示======',
+    'en': '======Below is Environment Notice======\n'
+          'You are {name}. This is the first time you formally appear in front of {master}.\n'
+          'Give {master} a brief, natural first greeting in a way that fits your personality.\n'
+          'Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n'
+          'Just say what you want to say. Do not generate thinking process.\n'
+          '======Above is Environment Notice======',
+    'ja': '======以下は環境通知======\n'
+          'あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n'
+          '自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n'
+          'システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n'
+          '言いたいことをそのまま言って。思考プロセスは生成しないで。\n'
+          '======以上は環境通知======',
+    'ko': '======아래는 환경 알림======\n'
+          '너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n'
+          '너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n'
+          '방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n'
+          '하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n'
+          '======위는 환경 알림======',
+    'ru': '======Ниже Уведомление======\n'
+          'Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n'
+          'Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n'
+          'Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n'
+          'Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n'
+          '======Выше Уведомление======',
+}
+
+
 def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     """根据对话间隔时长选择对应的主动搭话引导词。
 
@@ -2861,6 +2914,14 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
     return table.get(lang_key, table.get('en', table['zh']))
+
+
+def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
+    lang_key = _normalize_prompt_language(lang)
+    return NEW_CHARACTER_GREETING_PROMPT.get(
+        lang_key,
+        NEW_CHARACTER_GREETING_PROMPT.get('en', NEW_CHARACTER_GREETING_PROMPT['zh']),
+    )
 
 
 # ── 节日 / 周末提示模板 ─────────────────────────────────────────────

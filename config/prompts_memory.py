@@ -425,6 +425,7 @@ HISTORY_REVIEW_PROMPT = {
 <要点2> 请以删除为主，除非不得已、不要直接修改内容。</要点2>
 <要点3> 如果对话历史中包含"先前对话的备忘录"，你可以修改它，但不允许删除它。你必须保留这一项。修改备忘录时，应该将其中过度重复的词汇替换为代词（如"它"、"其"、"该"等）以提高可读性和自然度。</要点3>
 <要点4> 请保留时间戳。 </要点4>
+<要点5> 如果对话历史中包含 "Game Module Memory Record" 或 "Game Module Postgame Record"，这是游戏模块写入的赛后记忆，不是普通聊天，也不是错误的系统消息。不同时间/会话的同一类游戏默认代表不同局，不要因为最终结果不同就判定互相矛盾；可以精简、合并到"先前对话的备忘录"，但不要整条删除，至少保留最终结果、重要互动/事件和最后对话。 </要点5>
 
 ======以下为对话历史======
 %s
@@ -464,6 +465,7 @@ Important notes:
 <Point2> Prefer deletion over direct modification unless absolutely necessary. </Point2>
 <Point3> If the history contains a "previous conversation memo", you may edit it but must NOT delete it. When editing, replace overused vocabulary with pronouns for readability. </Point3>
 <Point4> Preserve timestamps. </Point4>
+<Point5> If the history contains "Game Module Memory Record" or "Game Module Postgame Record", it is postgame memory written by the game module, not ordinary chat and not an erroneous system message. Different times/sessions of the same game module should be treated as separate plays by default, not contradictions just because the final results differ. You may condense or merge them into the "previous conversation memo", but do not delete the whole entry; keep at least the final result, important interactions/events, and the last dialogue. </Point5>
 
 ======以下为对话历史======
 %s
@@ -503,6 +505,7 @@ Notes:
 <要点2> 直接的な修正よりも削除を優先してください。</要点2>
 <要点3> 会話履歴に「以前の会話メモ」がある場合、編集可能ですが削除は禁止です。編集時は過度に繰り返される語彙を代名詞に置き換えてください。</要点3>
 <要点4> タイムスタンプは保持してください。</要点4>
+<要点5> 会話履歴に "Game Module Memory Record" または "Game Module Postgame Record" が含まれる場合、それはゲームモジュールが書き込んだ試合後の記憶であり、通常のチャットでも誤ったシステムメッセージでもありません。同じゲームモジュールの異なる時刻/セッションは既定で別々のプレイとして扱い、最終結果が違うだけで矛盾と判定しないでください。「以前の会話メモ」へ要約・統合しても構いませんが、項目全体を削除せず、少なくとも最終結果、重要なやり取り/出来事、最後の会話を残してください。</要点5>
 
 ======以下为对话历史======
 %s
@@ -534,6 +537,7 @@ Notes:
 <요점2> 직접 수정보다 삭제를 우선하세요.</요점2>
 <요점3> 대화 기록에 "이전 대화 메모"가 포함된 경우 편집은 가능하지만 삭제는 금지입니다. 편집 시 과도하게 반복되는 어휘를 대명사로 대체하세요.</요점3>
 <요점4> 타임스탬프를 보존하세요.</요점4>
+<요점5> 대화 기록에 "Game Module Memory Record" 또는 "Game Module Postgame Record"가 포함된 경우, 이는 게임 모듈이 작성한 게임 후 기억이며 일반 채팅도 잘못된 시스템 메시지도 아닙니다. 같은 게임 모듈의 서로 다른 시간/세션은 기본적으로 별개의 플레이로 취급하고, 최종 결과가 다르다는 이유만으로 모순으로 판단하지 마세요. "이전 대화 메모"로 요약하거나 병합할 수는 있지만 항목 전체를 삭제하지 말고, 최소한 최종 결과, 중요한 상호작용/사건, 마지막 대화는 보존하세요.</요점5>
 
 ======以下为对话历史======
 %s
@@ -565,6 +569,7 @@ Notes:
 <Пункт2> Предпочитайте удаление, а не прямое редактирование, если это не абсолютно необходимо.</Пункт2>
 <Пункт3> Если история содержит «заметки предыдущего разговора», их можно редактировать, но НЕЛЬЗЯ удалять. При редактировании замените чрезмерно повторяющуюся лексику местоимениями.</Пункт3>
 <Пункт4> Сохраняйте временные метки.</Пункт4>
+<Пункт5> Если история содержит "Game Module Memory Record" или "Game Module Postgame Record", это послеигровая память, записанная игровым модулем, а не обычный чат и не ошибочное системное сообщение. Разные моменты времени/сессии одного и того же игрового модуля по умолчанию относятся к разным заходам; не считайте их противоречием только из-за разного итогового результата. Запись можно сократить или объединить с «заметками предыдущего разговора», но нельзя удалять целиком: сохраните как минимум итоговый результат, важные взаимодействия/события и последний диалог.</Пункт5>
 
 ======以下为对话历史======
 %s

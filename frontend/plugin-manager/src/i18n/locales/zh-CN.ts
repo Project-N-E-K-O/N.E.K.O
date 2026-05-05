@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: '打开界面',
+      title: '界面',
       panel: '面板',
       guide: '教程',
       loading: '加载插件界面中...',

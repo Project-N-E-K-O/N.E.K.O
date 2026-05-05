@@ -17,6 +17,8 @@
     const S = window.appState;
     const C = window.appConst;
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
+    const GREETING_CHECK_RETRY_BASE_MS = 800;
+    const GREETING_CHECK_RETRY_MAX_MS = 5000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
 
@@ -574,6 +576,7 @@
             console.log(window.t('console.heartbeatStarted'));
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            _resetGreetingCheckRetry(true);
             S._greetingCheckPending = true;
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
@@ -607,6 +610,11 @@
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     var isNewMessage = response.isNewMessage || false;
+                    if (response.metadata && response.metadata.game_route) {
+                        var gameMeta = response.metadata.game_route;
+                        var gameEvent = gameMeta.event || {};
+                        console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
+                    }
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
@@ -972,10 +980,97 @@
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;
+                    var statusPayload = null;
+                    var statusDetails = null;
                     try {
-                        var parsed = JSON.parse(response.message);
-                        if (parsed && parsed.code) statusCode = parsed.code;
+                        statusPayload = JSON.parse(response.message);
+                        if (statusPayload && statusPayload.code) statusCode = statusPayload.code;
+                        if (statusPayload && statusPayload.details && typeof statusPayload.details === 'object') {
+                            statusDetails = statusPayload.details;
+                        }
                     } catch (_) { }
+
+                    if (statusCode === 'GAME_ROUTE_ENDED') {
+                        var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
+                        var realtimeRestore = statusDetails && statusDetails.realtime_restore;
+                        var wasRecording = !!S.isRecording;
+                        // Stale-event guard: a delayed GAME_ROUTE_ENDED for a previous
+                        // session can arrive AFTER /route/start has finalized that one
+                        // and activated a new session_id. Without this check the handler
+                        // would unconditionally clear S.gameRoute* state and tear down
+                        // the freshly-activated STT gate. We keep an empty current
+                        // session_id permissive (legacy fallback) so events that
+                        // genuinely lack a session_id still process.
+                        var endedSessionId = (statusDetails && statusDetails.session_id) || '';
+                        var currentSessionId = S.gameRouteSessionId || '';
+                        if (endedSessionId && currentSessionId && endedSessionId !== currentSessionId) {
+                            console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_session=${endedSessionId} current_session=${currentSessionId}`);
+                            return;
+                        }
+                        S.gameRouteActive = false;
+                        S.gameRouteGameType = '';
+                        S.gameRouteLanlanName = '';
+                        S.gameRouteSessionId = '';
+                        console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
+                        if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
+                            console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
+                        }
+                        if (typeof window.stopGameVoiceSttGate === 'function') {
+                            window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+                        } else {
+                            S.gameVoiceSttGateActive = false;
+                            S.gameVoiceSttGameType = '';
+                            S.gameVoiceSttSessionId = '';
+                        }
+                        if (shouldResumeAudio && wasRecording && !S.isMicMuted) {
+                            var micPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
+                            if (!micPipelineAlive && typeof window.startMicCapture === 'function') {
+                                Promise.resolve(window.startMicCapture()).catch(function (error) {
+                                    console.warn('[GameVoiceSTT] 游戏退出后恢复普通语音采集失败:', error);
+                                });
+                            }
+                        }
+                        if (S.proactiveChatWasStoppedByGameRoute && S.proactiveChatEnabled && typeof window.scheduleProactiveChat === 'function') {
+                            window.scheduleProactiveChat();
+                        }
+                        S.proactiveChatWasStoppedByGameRoute = false;
+                        return;
+                    }
+
+                    if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {
+                        var sttProvider = (statusDetails && statusDetails.stt_provider) || 'browser';
+                        S.gameRouteActive = true;
+                        S.gameRouteGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameRouteLanlanName = (statusDetails && statusDetails.lanlan_name) || '';
+                        S.gameRouteSessionId = (statusDetails && statusDetails.session_id) || '';
+                        S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameVoiceSttSessionId = (statusDetails && statusDetails.session_id) || '';
+                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
+                        if (S._voiceSessionInitialTimer) {
+                            clearTimeout(S._voiceSessionInitialTimer);
+                            S._voiceSessionInitialTimer = null;
+                        }
+                        if (typeof window.stopProactiveChatSchedule === 'function') {
+                            S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
+                            window.stopProactiveChatSchedule();
+                        }
+                        if (sttProvider === 'realtime') {
+                            if (typeof window.stopGameVoiceSttGate === 'function') {
+                                window.stopGameVoiceSttGate();
+                            } else {
+                                S.gameVoiceSttGateActive = false;
+                            }
+                            console.log('[GameVoiceSTT] 复用原 Realtime STT，继续发送普通麦克风音频，普通回复由后端丢弃');
+                            return;
+                        }
+                        S.gameVoiceSttGateActive = true;
+                        if (typeof window.startGameVoiceSttGate === 'function') {
+                            window.startGameVoiceSttGate();
+                        } else {
+                            console.warn('[GameVoiceSTT] startGameVoiceSttGate unavailable');
+                        }
+                        return;
+                    }
 
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
@@ -1594,7 +1689,7 @@
                     }, 500);
 
                     // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
-                    if (response.input_mode !== 'text' && S.proactiveChatEnabled) {
+                    if (response.input_mode !== 'text' && S.proactiveChatEnabled && !S.gameRouteActive) {
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                         }
@@ -1962,9 +2057,87 @@
     // ========================  Greeting check (after model loaded)  ========================
     // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，
     // 无论哪个先就绪都由后到的那个触发。
+    function _isElementVisible(el) {
+        if (!el || el.hidden) return false;
+        var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+            return false;
+        }
+        var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        return !rect || rect.width > 0 || rect.height > 0;
+    }
+    function _hasVisibleGreetingBlocker(selectors) {
+        for (var i = 0; i < selectors.length; i += 1) {
+            var nodes = document.querySelectorAll(selectors[i]);
+            for (var j = 0; j < nodes.length; j += 1) {
+                if (_isElementVisible(nodes[j])) return true;
+            }
+        }
+        return false;
+    }
+    function _isHomeTutorialPage() {
+        if (window.location && typeof window.location.pathname === 'string') {
+            var path = window.location.pathname || '/';
+            return path === '/' || path === '/index.html';
+        }
+        var manager = window.universalTutorialManager || null;
+        return !!(manager && manager.currentPage === 'home');
+    }
+    function _isTutorialBlockingGreeting() {
+        if (!_isHomeTutorialPage()) return false;
+        try {
+            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function'
+                    && window.isNekoHomeTutorialBlockingGreeting() === true) {
+                return true;
+            }
+        } catch (_) {}
+        return window.isInTutorial === true
+            || !!(window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning);
+    }
+    function _isGreetingCheckBlocked() {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return true;
+        if (_isTutorialBlockingGreeting()) return true;
+        if (S.isRecording || S.isPlaying) return true;
+        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        if (S.assistantTurnAwaitingBubble || S.assistantSpeechActiveTurnId) return true;
+        return _hasVisibleGreetingBlocker([
+            '#prominent-notice-overlay',
+            '.modal-overlay',
+            '.modal-dialog',
+            '.driver-popover',
+            '.driver-overlay',
+            '.storage-location-completion-card',
+            '#storage-location-overlay',
+            '.storage-location-modal'
+        ]);
+    }
+    function _resetGreetingCheckRetry(clearTimer) {
+        S._greetingCheckRetryDelay = 0;
+        if (clearTimer && S._greetingCheckRetryTimer) {
+            clearTimeout(S._greetingCheckRetryTimer);
+            S._greetingCheckRetryTimer = 0;
+        }
+    }
+    function _scheduleGreetingCheckRetry() {
+        if (S._greetingCheckRetryTimer) {
+            clearTimeout(S._greetingCheckRetryTimer);
+        }
+        var delay = Number(S._greetingCheckRetryDelay) || GREETING_CHECK_RETRY_BASE_MS;
+        S._greetingCheckRetryDelay = Math.min(delay * 2, GREETING_CHECK_RETRY_MAX_MS);
+        S._greetingCheckRetryTimer = setTimeout(function () {
+            S._greetingCheckRetryTimer = 0;
+            _sendGreetingCheckIfReady();
+        }, delay);
+    }
     function _sendGreetingCheckIfReady() {
-        if (!S._greetingCheckPending || !S._modelReady) return;
-        S._greetingCheckPending = false;
+        if (!S._greetingCheckPending || !S._modelReady) {
+            if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
+            return;
+        }
+        if (_isGreetingCheckBlocked()) {
+            _scheduleGreetingCheckRetry();
+            return;
+        }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({
@@ -1972,10 +2145,13 @@
                     is_switch: !!S._greetingCheckIsSwitch,
                     language: (window.i18next && window.i18next.language) || ''
                 }));
+                S._greetingCheckPending = false;
+                _resetGreetingCheckRetry(true);
                 console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
+            _scheduleGreetingCheckRetry();
         }
     }
     function _onModelReady() {
