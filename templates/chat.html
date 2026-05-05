@@ -1231,8 +1231,19 @@
             var snap = _gameMinimizeSnap;
             _gameMinimizeSnap = null;
             if (snap.wasCollapsed) {
-                // 进游戏前本来就是球态 → 球搬回原坐标即可，savedWH 还原成进游戏
-                // 之前的展开尺寸（不是当前游戏期间窗口尺寸的副本）
+                if (!collapsed) {
+                    // codex P2：进游戏前球态 + 用户在 game 期间手动点球展开了
+                    // → 当前是展开态，DOM 已 hdr/wrap/tia 显示。如果还按 snap.bounds
+                    // (BALL × BALL) setBounds，窗口被压成 82×82 但 DOM 仍展开 →
+                    // 内容裁切，UI broken 直到用户再次手动恢复。尊重用户当前展开
+                    // 意图，不强行复位窗口尺寸；只恢复 savedWHBefore（让用户下次
+                    // 主动 collapse 时尺寸是进游戏前那个，而不是 game 期 collapseChat
+                    // 写入的中间值）。
+                    if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                    return;
+                }
+                // 进游戏前球态 + 现在仍是球态 → 球搬回原坐标即可，savedWH 还原
+                // 成进游戏之前的展开尺寸（不是当前游戏期间窗口尺寸的副本）
                 W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
                 if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
                 return;
