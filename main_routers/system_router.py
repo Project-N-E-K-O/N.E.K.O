@@ -2147,13 +2147,35 @@ async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
     """一次性置 True + 持久化。已经是 True 时跳过写盘节省 IO。
 
     与 ``_increment_proactive_chat_total`` 共用 ``_proactive_chat_totals_lock``
-    确保并发 update 时 totals + ever_delivered 一起原子写。"""
+    确保并发 update 时 totals + ever_delivered 一起原子写。
+
+    ⚠️ 邀请投递路径不要分开调 ``_increment_proactive_chat_total +
+    _mark_invite_ever_delivered``——两次 await 之间 lock 释放，进程在中间挂掉
+    会留下 ``totals: N+1, ever_delivered: 旧`` 的磁盘中间态，重启后 force-first
+    还会再 fire 一次。用 ``_record_invite_delivery_persistent`` 一把锁内原子写。"""
     await _ensure_proactive_chat_totals_loaded()
     async with _proactive_chat_totals_lock:
         if _invite_ever_delivered.get(lanlan_name):
             return
         _invite_ever_delivered[lanlan_name] = True
         await _persist_totals_unlocked()
+
+
+async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
+    """成功投递一次 mini-game 邀请的原子持久化记录：counter +1 + ever_delivered=True
+    一把锁内一次性写盘。返回新的 total。
+
+    存在的理由：先 +1 再 mark 两步分开 await，lock 在中间释放，进程崩溃 / 协程
+    cancel 都可能让磁盘留 ``totals: N+1, ever_delivered: 旧`` 的中间态——重启后
+    ``_was_invite_ever_delivered`` 看到旧的 false，force-first 又会 fire 一次。
+    CodeRabbit Major review 指出。"""
+    await _ensure_proactive_chat_totals_loaded()
+    async with _proactive_chat_totals_lock:
+        new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
+        _proactive_chat_totals[lanlan_name] = new_value
+        _invite_ever_delivered[lanlan_name] = True
+        await _persist_totals_unlocked()
+    return new_value
 
 
 def _mini_game_invite_advance_response(
@@ -2364,12 +2386,10 @@ async def _maybe_deliver_mini_game_invite(
     _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
     _mini_game_invite_record_delivered(lanlan_name)
     _mini_game_invite_get_state(lanlan_name)['last_game_type'] = game_type
-    # 邀请本身也算一次"成功投递的主动搭话"——counter +1。
-    await _increment_proactive_chat_total(lanlan_name)
-    # 持久化 ever_delivered 标记：这是 force-first 的"是否新用户"基础，必须跨重启
-    # 保留。一旦 True 就不再翻——即便 PR-B「回头再说」reset 了 in-memory 的
-    # state.delivered_at，ever_delivered 仍 True，下次 proactive 不会再 force。
-    await _mark_invite_ever_delivered(lanlan_name)
+    # counter +1 + ever_delivered=True 一把锁内原子写盘。两份持久化数据必须
+    # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
+    # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
+    await _record_invite_delivery_persistent(lanlan_name)
     print(
         f"[{lanlan_name}] Mini-game invite delivered "
         f"(game={game_type}, force_first={force_first}): {invite_text[:60]}…"

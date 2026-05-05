@@ -98,9 +98,17 @@ def _stub_persistent_counter(monkeypatch):
     async def _mark_only(lanlan_name: str) -> None:
         sr._invite_ever_delivered[lanlan_name] = True
 
+    async def _record_delivery_only(lanlan_name: str) -> int:
+        # 模拟原子写盘——bump counter + 置 ever_delivered，单次状态更新。
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        sr._invite_ever_delivered[lanlan_name] = True
+        return n
+
     monkeypatch.setattr(sr, '_ensure_proactive_chat_totals_loaded', _noop_load)
     monkeypatch.setattr(sr, '_increment_proactive_chat_total', _bump_only)
     monkeypatch.setattr(sr, '_mark_invite_ever_delivered', _mark_only)
+    monkeypatch.setattr(sr, '_record_invite_delivery_persistent', _record_delivery_only)
     sr._proactive_chat_totals_loaded = False  # 强制每个 test 走 _noop_load 一次
 
 
@@ -631,6 +639,61 @@ async def test_invite_marks_ever_delivered_persistent(monkeypatch):
     assert out is not None
     assert sr._was_invite_ever_delivered(LANLAN), (
         "投递成功但 ever_delivered 没置 True——下次 force-first 会重复触发"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_delivery_uses_atomic_persistence_helper(monkeypatch):
+    """关键回归：邀请投递必须走 _record_invite_delivery_persistent 一把锁原子
+    写盘，不能拆成 _increment_proactive_chat_total + _mark_invite_ever_delivered
+    两次独立 await——两次 await 之间 lock 释放，进程崩溃会留下 totals 已 +1 但
+    ever_delivered 旧值的中间态，重启后 force-first 重复 fire。CodeRabbit Major
+    review 指出。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+
+    increment_calls: list[str] = []
+    mark_calls: list[str] = []
+    record_calls: list[str] = []
+
+    async def _counting_increment(lanlan_name: str) -> int:
+        increment_calls.append(lanlan_name)
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        return n
+
+    async def _counting_mark(lanlan_name: str) -> None:
+        mark_calls.append(lanlan_name)
+        sr._invite_ever_delivered[lanlan_name] = True
+
+    async def _counting_record(lanlan_name: str) -> int:
+        record_calls.append(lanlan_name)
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        sr._invite_ever_delivered[lanlan_name] = True
+        return n
+
+    monkeypatch.setattr(sr, '_increment_proactive_chat_total', _counting_increment)
+    monkeypatch.setattr(sr, '_mark_invite_ever_delivered', _counting_mark)
+    monkeypatch.setattr(sr, '_record_invite_delivery_persistent', _counting_record)
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+
+    assert record_calls == [LANLAN], (
+        f"_record_invite_delivery_persistent should be called once, "
+        f"got {record_calls}"
+    )
+    assert increment_calls == [], (
+        f"_increment_proactive_chat_total should NOT be called from invite "
+        f"delivery, got {increment_calls}——拆成两步的 racy pattern 被复活了"
+    )
+    assert mark_calls == [], (
+        f"_mark_invite_ever_delivered should NOT be called from invite "
+        f"delivery, got {mark_calls}——拆成两步的 racy pattern 被复活了"
     )
 
 
