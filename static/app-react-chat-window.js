@@ -1679,6 +1679,13 @@
         state.messages = [];
         _sortKeySeq = 0;
         invalidatePendingGalgameRequest();
+        // 角色切换 / cloud reload 等触发 clearMessages 的路径也必须清掉 mini-game
+        // invite prompt——否则旧角色的按钮残留在新 context 里，用户点了 endpoint
+        // 会按新 lanlan_name 查旧 session_id 直接 expired。dedupe set 也清，防止
+        // 上一会话的 launched 标记错误地阻断新会话同 session_id 的 launch（虽然
+        // session_id 是 uuid 实际撞概率几乎 0，对偶清理更干净）。codex P2 指出。
+        state.choicePrompt = null;
+        state._launchedMiniGameSessionIds = Object.create(null);
         renderWindow();
     }
 
