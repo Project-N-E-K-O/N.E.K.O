@@ -72,6 +72,5 @@
   "install.dxcam.ok": "DXcam 安装完成",
   "install.dxcam.fail": "DXcam 安装失败",
   "errors.not_configured": "galgame_plugin 未配置",
-  "errors.install_in_progress": "{component} 安装正在进行中",
-  "errors.action_in_progress": "{action} 正在进行中"
+  "errors.install_in_progress": "{component} 安装正在进行中"
 }

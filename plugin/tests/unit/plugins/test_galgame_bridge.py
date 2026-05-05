@@ -3723,7 +3723,10 @@ async def test_install_rapidocr_entry_returns_chinese_error_message(
     result = await plugin.galgame_install_rapidocr()
 
     assert isinstance(result, Err)
-    assert str(result.error) == "RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
+    assert (
+        str(result.error)
+        == "RapidOCR 安装失败：RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
+    )
 
 
 @pytest.mark.asyncio

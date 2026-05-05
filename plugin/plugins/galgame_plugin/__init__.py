@@ -839,8 +839,6 @@ class GalgamePlugin(NekoPluginBase):
         )
         if not message:
             return prefix
-        if message.startswith(prefix):
-            return message
         return f"{prefix}：{message}"
 
     def _update_memory_reader_text_freshness(
