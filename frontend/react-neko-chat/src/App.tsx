@@ -1388,10 +1388,10 @@ export default function App({
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
   useEffect(() => {
-    if ((composerHidden || composerDisabled) && activeCursorToolId) {
+    if (composerHidden || composerDisabled) {
       clearActiveCursorToolSelection();
     }
-  }, [activeCursorToolId, composerHidden, composerDisabled]);
+  }, [activeCursorToolId, clearActiveCursorToolSelection, composerHidden, composerDisabled]);
 
   useEffect(() => {
     function handleDeactivate() {
@@ -1706,7 +1706,13 @@ export default function App({
                     className="composer-attachment-remove"
                     type="button"
                     aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
-                    onClick={() => onComposerRemoveAttachment?.(attachment.id)}
+                    aria-disabled={composerDisabled}
+                    disabled={composerDisabled}
+                    onClick={() => {
+                      if (!composerDisabled) {
+                        onComposerRemoveAttachment?.(attachment.id);
+                      }
+                    }}
                   >
                     ×
                   </button>

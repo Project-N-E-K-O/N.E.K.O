@@ -131,6 +131,26 @@ describe('App', () => {
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
   });
 
+  it('keeps pending composer attachments locked while the composer is disabled', () => {
+    const onComposerRemoveAttachment = vi.fn();
+
+    render(
+      <App
+        composerDisabled
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+        onComposerRemoveAttachment={onComposerRemoveAttachment}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton).toBeDisabled();
+    fireEvent.click(removeButton);
+
+    expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
+  });
+
   it('only emits avatar interactions when the pointer hits the avatar range', () => {
     const onAvatarInteraction = vi.fn();
     const live2dContainer = document.createElement('div');

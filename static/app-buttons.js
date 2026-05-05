@@ -983,11 +983,17 @@
         var lastTextCompositionEndAt = 0;
         var homeTutorialLockedSnapshot = null;
 
-        function setElementTutorialLocked(element, locked) {
+        function setElementTutorialLocked(element, locked, baseDisabledOverride) {
             if (!element) return;
             if (locked) {
                 if (element.dataset.nekoHomeTutorialLocked !== 'true') {
-                    element.dataset.nekoHomeTutorialPrevDisabled = element.disabled ? 'true' : 'false';
+                    element.dataset.nekoHomeTutorialPrevDisabled = typeof baseDisabledOverride === 'boolean'
+                        ? (baseDisabledOverride ? 'true' : 'false')
+                        : (element.disabled ? 'true' : 'false');
+                } else if (typeof baseDisabledOverride === 'boolean') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = baseDisabledOverride ? 'true' : 'false';
+                } else if (element.disabled === false) {
+                    element.dataset.nekoHomeTutorialPrevDisabled = 'false';
                 }
                 element.dataset.nekoHomeTutorialLocked = 'true';
                 element.disabled = true;
@@ -997,6 +1003,22 @@
             element.disabled = element.dataset.nekoHomeTutorialPrevDisabled === 'true';
             delete element.dataset.nekoHomeTutorialLocked;
             delete element.dataset.nekoHomeTutorialPrevDisabled;
+        }
+
+        function refreshHomeTutorialLockedControls(baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(textSendButton, true, baseDisabled);
+            setElementTutorialLocked(textInputBox, true, baseDisabled);
+            setElementTutorialLocked(screenshotButton, true, baseDisabled);
+        }
+
+        function refreshHomeTutorialLockedElement(element, baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(element, true, baseDisabled);
         }
 
         function applyHomeTutorialInteractionLock(reason) {
@@ -1293,6 +1315,7 @@
                 textSendButton.disabled = false;
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 muteButton.disabled = true;
                 screenButton.disabled = true;
@@ -1447,6 +1470,7 @@
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
                 resetSessionButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 // Disable voice control buttons
                 muteButton.disabled = true;
@@ -1608,6 +1632,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
                 } catch (error) {
@@ -1630,6 +1655,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
                     return; // Don't send if session start failed
@@ -2365,7 +2391,7 @@
                 window.showStatusToast(errorMsg, 5000);
             } finally {
                 if (isHomeTutorialInteractionLocked()) {
-                    setElementTutorialLocked(screenshotButton, true);
+                    refreshHomeTutorialLockedElement(screenshotButton, false);
                 } else {
                     screenshotButton.disabled = false;
                 }
