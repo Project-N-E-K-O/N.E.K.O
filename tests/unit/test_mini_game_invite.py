@@ -430,10 +430,43 @@ def test_invite_line_covers_all_native_locales():
         assert 5 <= len(line) <= 200, f"{lang} 模板长度异常: {len(line)}"
 
 
-def test_source_label_covers_mini_game():
-    """PROACTIVE_SOURCE_LABELS 必须为 mini_game 通道补齐 5 个 native locale 标签。"""
-    from config.prompts_proactive import PROACTIVE_SOURCE_LABELS
+def test_format_recent_proactive_chats_renders_mini_game_channel():
+    """Runtime 渲染契约：成功投递的 mini_game 邀请被 _record_proactive_chat
+    写进 _proactive_chat_history 后，下一轮 proactive 的 prompt 由
+    _format_recent_proactive_chats 拼出近期搭话段——这条记录必须能渲染出
+    可读的「时间 · 通道」标签，并且至少在 5 个 native locale 下不崩。
+
+    通道 label 走 RECENT_PROACTIVE_CHANNEL_LABELS（不是 PROACTIVE_SOURCE_LABELS！
+    后者只在 Phase 1 web 聚合时用，mini_game 短路在 Phase 1 之前不会触达）。
+    现 dict 只为 vision/web 提供翻译，music/meme/news/video/home/personal/
+    window/mini_game 这些都走 ``cl.get(ch, ch)`` raw-key fallback，所以期望
+    输出里直接出现 'mini_game' 字面量——和 music/meme 现状一致。"""
+    sample = "{master_name}, ".format(master_name=MASTER) + "要不要踢一会儿足球？"
+    sr._proactive_chat_history[LANLAN] = __import__('collections').deque(
+        [(time.time() - 30, sample, 'mini_game')], maxlen=10,
+    )
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
-        assert 'mini_game' in PROACTIVE_SOURCE_LABELS[lang], \
-            f"{lang} 缺 mini_game 标签"
-        assert PROACTIVE_SOURCE_LABELS[lang]['mini_game'].strip()
+        rendered = sr._format_recent_proactive_chats(LANLAN, lang)
+        assert rendered, f"{lang} 渲染输出空"
+        assert sample in rendered, f"{lang} 渲染丢了消息正文"
+        assert 'mini_game' in rendered, (
+            f"{lang} 渲染丢了 channel 标记——"
+            f"应至少用 raw-key fallback 暴露 mini_game"
+        )
+
+
+@pytest.mark.asyncio
+async def test_invite_e2e_renders_in_recent_chats(monkeypatch):
+    """端到端：_maybe_deliver_mini_game_invite 投出来的内容立刻被
+    _format_recent_proactive_chats 拼回来，确认整条链路跑通且 channel 标签生效。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+    rendered = sr._format_recent_proactive_chats(LANLAN, 'zh')
+    assert MASTER in rendered
+    assert 'mini_game' in rendered
