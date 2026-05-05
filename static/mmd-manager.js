@@ -154,7 +154,11 @@ class MMDManager {
             // 守卫会让 setup 静默退出，且不会再有第二次机会。loadModel 成功后必然处于 mmd 模式，
             // 在此补一刀确保按钮始终存在。
             if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
-                try { this.setupFloatingButtons(); } catch (_) {}
+                try {
+                    this.setupFloatingButtons();
+                } catch (err) {
+                    console.warn('[MMD Manager] setupFloatingButtons 失败 (loadModel success path):', err);
+                }
             }
 
             // 派发模型加载完成事件
@@ -198,7 +202,11 @@ class MMDManager {
 
                     // 兜底：回退模型加载成功后也补一次 setupFloatingButtons（与 VRM 对齐）
                     if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
-                        try { this.setupFloatingButtons(); } catch (_) {}
+                        try {
+                            this.setupFloatingButtons();
+                        } catch (err) {
+                            console.warn('[MMD Manager] setupFloatingButtons 失败 (fallback model path):', err);
+                        }
                     }
 
                     window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
