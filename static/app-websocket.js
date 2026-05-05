@@ -581,6 +581,44 @@
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
+
+            // ── game-window-state 重连兜底（codex P2）──
+            // game_window_state_change 是 edge-triggered WS 事件——只在 activate
+            // / finalize 那一瞬推。WS 在 game 期间断开 + 期间 close 事件丢失 →
+            // _gameWindowActive 卡在 true，UI 永远停在收缩态。onopen 同时覆盖
+            // 首次连接和重连，主动查 /api/game/route/active 拿当前权威状态，
+            // dispatch 对应 CustomEvent 让既有 listener 走正常 minimize / restore
+            // 路径。idempotent：active=true + 已 minimize → _gameMinimizeForGame
+            // 早返回；active=false + 无 snap → _gameRestoreAfterGame 早返回。
+            (function syncGameWindowStateOnWsConnect() {
+                var lan = '';
+                try {
+                    if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                        lan = window.appState.lanlan_name;
+                    }
+                    if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                        lan = window.lanlan_config.lanlan_name;
+                    }
+                } catch (_) {}
+                if (!lan) return; // greeting 流水线还没解析角色 → 跳过本次，下次 onopen 再来
+                fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                    .then(function (resp) { return resp && resp.ok ? resp.json() : null; })
+                    .then(function (data) {
+                        if (!data) return;
+                        var action = data.active ? 'opened' : 'closed';
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                                detail: {
+                                    action: action,
+                                    lanlanName: data.lanlan_name || lan,
+                                    gameType: data.game_type || '',
+                                    sessionId: data.session_id || ''
+                                }
+                            }));
+                        } catch (_) {}
+                    })
+                    .catch(function () {});
+            })();
         };
 
         // ---- onmessage ----
@@ -1930,6 +1968,26 @@
                             gameType: response.game_type || '',
                             url: response.game_url || '',
                         });
+                    }
+
+                // -------- game_window_state_change --------
+                // 后端 game_route_start 激活后推 'opened'，_finalize 翻 inactive
+                // 后推 'closed'。前端把它转成 DOM 自定义事件让 chat.html / pet
+                // index.html 各自挂监听做布局联动（chat.html → 触发内部 collapse
+                // + 移到左下角；index.html → 加 body class 隐藏 live2d/vrm/mmd
+                // 容器）。多窗口模式下 RAW_MESSAGE forwarding 把同一条 WS 转给
+                // chat.html，两边监听同一个 DOM 事件名即可。
+                } else if (response.type === 'game_window_state_change') {
+                    try {
+                        var detail = {
+                            action: response.action || '',
+                            lanlanName: response.lanlan_name || '',
+                            gameType: response.game_type || '',
+                            sessionId: response.session_id || ''
+                        };
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                    } catch (gwErr) {
+                        console.warn('[GameWindow] dispatch failed:', gwErr);
                     }
                 }
 

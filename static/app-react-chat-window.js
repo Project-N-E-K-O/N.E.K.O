@@ -1542,6 +1542,17 @@
             gameType: String(payload.gameType || ''),
             options: cleanedOptions
         };
+        // mini-game invite 占用 composer 底部 slot 视觉位 → galgame options
+        // 让位（App.tsx 已把 galgame slot 在 choicePromptHasOptions 下不挂树）。
+        // 这里同步 abort 任何 in-flight / pending wait 的 galgame fetch + 清掉
+        // 残留 loading/options state：
+        //   1) 不再浪费 summary tier 推理（proactive invite 文本基本是
+        //      sudden-context，galgame option 生成大概率 timeout / unparseable
+        //      → 全是 fallback，纯浪费）
+        //   2) 防止 fetch 在 invite 解决前才返回，写回 state.galgameOptions
+        //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
+        //      文本生成的，与后续对话无关）
+        invalidatePendingGalgameRequest();
         renderWindow();
     }
 

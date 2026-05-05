@@ -1137,6 +1137,197 @@
             scrollToBottom(false);
         }
 
+        // ===================== 游戏窗口联动（收缩 → 还原）=====================
+        // mini-game 路由激活时把 chat.html 收成呼吸球（复用已有 collapseChat
+        // 动画+样式，等同于用户点击右上角最小化按钮的效果）并搬到工作区左下角；
+        // 路由结束时按之前的 (bounds, collapsed?) 快照还原。
+        //
+        // 单一事件源：app-websocket.js 收到 ``game_window_state_change`` 后
+        // dispatch ``neko-game-window-state-change``，多窗口模式 RAW_MESSAGE
+        // forwarding 自动转给 chat.html follower。closed 路径覆盖率与
+        // ``is_game_route_active`` 同源（_finalize 翻 false 时一并推 closed），
+        // 不会出现"游戏已结束但 UI 仍锁着球态"的孤岛。
+        var _gameMinimizeSnap = null;
+        // "用户当前是否仍应处于游戏最小化态"的目标态。所有异步分支（getBounds
+        // / rAF / collapseChat 700ms 落定 / restore 100ms 展开）都拿这个 flag
+        // 跟事件入口对照来判定 stale。
+        //
+        // 修两条 race：
+        // (1) codex P2：原版只在异步回调里写 _gameMinimizeSnap。opened →
+        //     getBounds pending 期间收到 closed → restore 因 snap=null 早返
+        //     → getBounds 落地把 snap 写出来 + 收成球态搬左下角 → 无 closed
+        //     抵消 → UI 永远卡球态。
+        // (2) CodeRabbit Major：closed 撞上 collapseChat() 进行中时，原版
+        //     restore 走 fallback setBounds 回原 bounds，但 doCollapse 内部
+        //     的 getWorkArea+setBounds 在动画 transitionend 后才跑，会把窗口
+        //     再 setBounds 到 ball 位 → 用户看到游戏已结束但聊天框已经被收
+        //     成球态、停在原始底部。
+        //
+        // 修法：
+        // - opened 设 active=true 后调 _gameMinimizeForGame，每条 await 出口
+        //   都 re-check active；closed 同理设 active=false 后调 restore。
+        // - restore 看到 animating=true 时 rAF 重试到动画落定再消费快照——避
+        //   开 doCollapse / expandChat 内部 setBounds 与 restore setBounds 抢位。
+        var _gameWindowActive = false;
+
+        function _moveBallToWorkAreaBottomLeft() {
+            return W.getWorkArea().then(function(wa) {
+                if (!wa) return;
+                if (!collapsed) return; // 状态在异步等待期变了 → 放弃，避免把展开窗口吸到 BALL 尺寸
+                // codex P1：getWorkArea pending 期间 closed 可能已到 → restore
+                // 已经把窗口搬回原 bounds；此时再 setBounds 到工作区左下角会
+                // 把刚还原的位置又覆盖掉，留个孤儿球在屏幕角。recheck 游戏态
+                // flag 与 snap 双双健在才搬位。
+                if (!_gameWindowActive || !_gameMinimizeSnap) return;
+                W.setBounds(wa.x, wa.y + wa.height - BALL, BALL, BALL);
+            });
+        }
+
+        function _gameMinimizeForGame() {
+            if (!_gameWindowActive || _gameMinimizeSnap) return;
+            if (animating) {
+                // 正在收/展过程中 → 等下一帧重试；rAF callback 自身仍 re-check
+                // active，closed 在 rAF 期间到达会让重试 noop
+                requestAnimationFrame(_gameMinimizeForGame);
+                return;
+            }
+            W.getBounds().then(function(b0) {
+                if (!b0 || !_gameWindowActive || _gameMinimizeSnap) return;
+                _gameMinimizeSnap = {
+                    bounds: { x: b0.x, y: b0.y, width: b0.width, height: b0.height },
+                    wasCollapsed: collapsed,
+                    // savedWH 是 collapseChat 折叠时记的展开尺寸；如果用户进游戏前
+                    // 已经手动折叠过一次，这个值非空，要原样保留以便 closed 还原后
+                    // 再用户手点展开时尺寸不变。
+                    savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null
+                };
+                if (collapsed) {
+                    _moveBallToWorkAreaBottomLeft();
+                } else {
+                    collapseChat();
+                    // collapseChat → doCollapse 内部链路：transitionend / 200ms timeout
+                    // 之后 collapsed=true、animating=false。这里给一个保守 700ms
+                    // 缓冲（400ms 折叠动画 + 200ms ball-show + 100ms IPC 余量），
+                    // 折叠真落定后再搬位置。
+                    setTimeout(function() {
+                        if (!_gameWindowActive || !_gameMinimizeSnap) return;
+                        if (collapsed && !animating) _moveBallToWorkAreaBottomLeft();
+                    }, 700);
+                }
+            });
+        }
+
+        function _gameRestoreAfterGame() {
+            if (_gameWindowActive || !_gameMinimizeSnap) return;
+            if (animating) {
+                // collapseChat / expandChat 进行中时不能立刻消费快照——doCollapse
+                // 的 getWorkArea+setBounds（或 expandChat 的对偶链）会在动画
+                // transitionend 后跑、把窗口拉到自己的目标位，覆盖 restore
+                // setBounds。等 animating 落定后再走 restore 主链路。
+                requestAnimationFrame(_gameRestoreAfterGame);
+                return;
+            }
+            // snap 一旦在本帧消费就 null 出去，避免 rAF 重入二次消费
+            var snap = _gameMinimizeSnap;
+            _gameMinimizeSnap = null;
+            if (snap.wasCollapsed) {
+                if (!collapsed) {
+                    // codex P2：进游戏前球态 + 用户在 game 期间手动点球展开了
+                    // → 当前是展开态，DOM 已 hdr/wrap/tia 显示。如果还按 snap.bounds
+                    // (BALL × BALL) setBounds，窗口被压成 82×82 但 DOM 仍展开 →
+                    // 内容裁切，UI broken 直到用户再次手动恢复。尊重用户当前展开
+                    // 意图，不强行复位窗口尺寸；只恢复 savedWHBefore（让用户下次
+                    // 主动 collapse 时尺寸是进游戏前那个，而不是 game 期 collapseChat
+                    // 写入的中间值）。
+                    if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                    return;
+                }
+                // 进游戏前球态 + 现在仍是球态 → 球搬回原坐标即可，savedWH 还原
+                // 成进游戏之前的展开尺寸（不是当前游戏期间窗口尺寸的副本）
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            // 进游戏前是展开态、当前是球态 → 把 expandChat 的目标尺寸钉到原 bounds
+            // 让动画展开到原大小；球先搬到原 bounds 的底部对齐位（与 expandChat
+            // 内部 newY = b.y + BALL - h 推算的"展开后还原原顶端"语义一致）。
+            if (!collapsed) {
+                // 异常态（用户在 game 期间手动展开了？）—— 至少 setBounds 回去，
+                // 不动画，不再调 expandChat（会被 animating guard 拦住）。注：
+                // animating 在此分支已被入口的 rAF 等待保证为 false，不需要再
+                // OR 一遍（github-code-quality bot 指出原版 `|| animating` 永
+                // 远为 false 是 dead branch）。
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            var b = snap.bounds;
+            W.setBounds(b.x, b.y + b.height - BALL, BALL, BALL);
+            setTimeout(function() {
+                // 100ms 内若 opened 又来（race：closed → restore → opened，
+                // 100ms 期间 active 翻 true），不再 expand 让新 opened 链路接手
+                if (_gameWindowActive) return;
+                if (!collapsed || animating) return;
+                savedWH = { w: b.width, h: b.height };
+                expandChat();
+            }, 100);
+        }
+
+        window.addEventListener('neko-game-window-state-change', function(ev) {
+            var detail = ev && ev.detail ? ev.detail : {};
+            if (detail.action === 'opened') {
+                _gameWindowActive = true;
+                _gameMinimizeForGame();
+            } else if (detail.action === 'closed') {
+                _gameWindowActive = false;
+                _gameRestoreAfterGame();
+            }
+        });
+
+        // Bootstrap reconciliation：edge-triggered 的 game_window_state_change WS
+        // 事件只在 activate / finalize 推送，订阅者初次加载时若 route 已经在
+        // active 状态会听不到历史 opened（chat.html 是后开起来的窗口，可能
+        // game 已经先跑起来了）。init 路径主动查 /api/game/route/active，
+        // active 就自己 dispatch opened 让 UI 对齐。codex P1。
+        // closed 不需要 sync——初始 _gameWindowActive=false / snap=null 就是
+        // idle 状态，已对齐。
+        // WS reconnect 后 missing closed 的还原是更复杂的 case（需要订阅
+        // reconnect 事件 + 主动检查），本 PR 暂不覆盖。
+        (function syncGameWindowStateOnInit() {
+            var lan = '';
+            try {
+                if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                    lan = window.appState.lanlan_name;
+                }
+                if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                    lan = window.lanlan_config.lanlan_name;
+                }
+            } catch (_) {}
+            if (!lan) {
+                // lanlan_name 还没解析出来 → 100ms 后重试一次（chat.html 通常
+                // 在 appState 已就绪后才挂这个 IIFE，但 storage barrier 等可能
+                // 让 appState 滞后，给一次 retry 兜底）
+                setTimeout(syncGameWindowStateOnInit, 100);
+                return;
+            }
+            fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
+                .then(function(data) {
+                    if (!data || !data.active) return;
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                            detail: {
+                                action: 'opened',
+                                lanlanName: data.lanlan_name || lan,
+                                gameType: data.game_type || '',
+                                sessionId: data.session_id || ''
+                            }
+                        }));
+                    } catch (_) {}
+                })
+                .catch(function() { /* 静默 —— bootstrap 失败不影响普通态 UI */ });
+        })();
+
         // ===================== 边界检测与回弹 =====================
         var _bounceAnim = null;
         var _bouncing = false;
