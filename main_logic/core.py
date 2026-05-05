@@ -2506,18 +2506,22 @@ class LLMSessionManager:
                 # 的"硬撕 voice → 重建 text"自动切换路径，把刚 ready 的 voice
                 # session 撕成 CHARACTER_LEFT / "角色离开"——这是用户在切音色
                 # 后开语音、麦启动期打字的典型 race。这里只防御 text → voice
-                # 这一条不对偶的路径；audio 在 _stream_data_now 缓存阶段已经
+                # 这一条不对偶的路径；screen / camera 等 vision 输入会在
+                # _process_stream_data_internal 里路由到
+                # OmniRealtimeClient.stream_image（5262-5278），是 voice session
+                # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
                 # 直接 return 不缓存，pending_input_data 不会出现 audio。
                 is_voice_session = isinstance(self.session, OmniRealtimeClient)
                 dropped_text_for_voice = 0
                 for message in self.pending_input_data:
+                    msg_input_type = message.get("input_type")
                     try:
                         # 重新调用stream_data处理缓存的数据
                         # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        if message.get("input_type") == "audio":
+                        if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
-                            if is_voice_session:
+                            if is_voice_session and msg_input_type == "text":
                                 dropped_text_for_voice += 1
                                 continue
                             await self._process_stream_data_internal(message)
