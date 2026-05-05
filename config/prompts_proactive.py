@@ -2430,10 +2430,16 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         # 'not okay' 时 priority 救不了（codex P2 指出）。其它单词 accept ('sure'
         # /'yes'/'yeah'/'yep') 同类风险靠 decline list 加 'not sure' / 'not yet'
         # 等 negation phrase 双保险拦截。
-        'accept': ['yes', 'sure', "let's", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
+        # accept："let's" 单字太宽（"let's not play" 命中），改 "let's play"
+        # 更具体；'wanna play' 同样被 "I don't wanna play" 命中，priority 兜底
+        # 不可靠（之前规则已加 "don't want"），但仍保留 'wanna play' 作 accept
+        # phrase——decline list 同步加 "don't wanna" / "let's not" 双保险
+        # （CodeRabbit Major 指出后调整）。
+        'accept': ['yes', 'sure', "let's play", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
         'decline': [
             'no thanks', 'nope', 'pass', 'skip',
-            'not now', 'not really', 'maybe not', "don't want",
+            'not now', 'not really', 'maybe not', "don't want", "don't wanna",
+            "let's not",
             'not okay', 'not sure', 'not yet',
         ],
         'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],

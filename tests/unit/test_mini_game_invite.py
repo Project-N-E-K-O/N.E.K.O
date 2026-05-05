@@ -980,10 +980,21 @@ def test_keyword_matcher_accept_does_not_match_negation():
 
 def test_keyword_matcher_accept_en():
     assert sr._match_mini_game_invite_keyword('yes please') == 'accept'
-    assert sr._match_mini_game_invite_keyword("Let's go!") == 'accept'
-    # 'okay' 已从 accept 删（codex P2：'not okay' substring 命中）；用户表达
-    # 接受改用 yes / sure / let's / yeah / yep 等仍在 list 内的 phrase。
+    # "let's go!" 不再命中（"let's" 单字已改成 "let's play"，"go" 不在 list）；
+    # "let's play" / "i'll play" 等 phrase 才命中——CodeRabbit Major 指出后收紧。
+    assert sr._match_mini_game_invite_keyword("let's play this") == 'accept'
     assert sr._match_mini_game_invite_keyword('Yeah!') == 'accept'
+    assert sr._match_mini_game_invite_keyword('i wanna play') == 'accept'
+
+
+def test_keyword_matcher_decline_negated_let_and_wanna():
+    """CodeRabbit Major：accept "let's play" / "wanna play" 仍可能被否定句
+    "let's not play" / "I don't wanna play" 包含 substring 命中——decline list
+    必须加 "let's not" + "don't wanna" 进 priority 兜底。"""
+    assert sr._match_mini_game_invite_keyword("let's not play") == 'decline'
+    assert sr._match_mini_game_invite_keyword("I don't wanna play") == 'decline'
+    # 仍接受 positive phrase
+    assert sr._match_mini_game_invite_keyword("yeah let's play") == 'accept'
 
 
 def test_keyword_matcher_no_false_positive_on_negated_accept_phrases():
