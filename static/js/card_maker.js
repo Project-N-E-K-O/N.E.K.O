@@ -66,9 +66,11 @@
     const closeAfterAutoSave = _urlParams.get('close_on_save') === '1';
     const fallbackDefaultOnClose = _urlParams.get('fallback_default_on_close') === '1';
     const fallbackToken = _urlParams.get('fallback_token') || '';
+    const fallbackPageName = _urlParams.get('name') || _urlParams.get('lanlan_name') || '';
     let cardFaceSaved = false;
     let fallbackDefaultSaving = false;
     let fallbackDefaultPromise = null;
+    let fallbackEventChannel = null;
     let pendingFallbackDefaultSave = false;
 
     // ====== 初始化 ======
@@ -106,7 +108,7 @@
         const name = params.get('name') || params.get('lanlan_name');
         if (name) {
             await onCharacterSelected(name);
-            if (pendingFallbackDefaultSave) {
+            if (pendingFallbackDefaultSave && !autoSaveDefaultCardFace) {
                 await saveModelSaveFallbackDefaultCardFace('pending-owner-close');
             }
             if (autoSaveDefaultCardFace) {
@@ -144,10 +146,7 @@
             else { doExport('full'); }
         });
         backBtn.addEventListener('click', () => {
-            closeCardMakerPage().catch(() => {
-                if (window.opener) { window.close(); }
-                else { window.history.back(); }
-            });
+            closeCardMakerPage();
         });
 
         // 标签页切换
@@ -232,9 +231,14 @@
     }
 
     async function closeCardMakerPage() {
-        await saveModelSaveFallbackDefaultCardFace('card-maker-close');
-        if (window.opener) { window.close(); }
-        else { window.history.back(); }
+        try {
+            await saveModelSaveFallbackDefaultCardFace('card-maker-close');
+        } catch (error) {
+            console.error('[CardMaker] 关闭前默认卡面兜底失败:', error);
+        } finally {
+            if (window.opener) { window.close(); }
+            else { window.history.back(); }
+        }
     }
 
     function shouldSaveFallbackDefaultCardFace() {
@@ -253,6 +257,11 @@
         if (fallbackToken && data.token !== fallbackToken) {
             return false;
         }
+        if (!fallbackToken) {
+            const eventName = String(data.name || '').trim();
+            const expectedName = String(currentCharaName || fallbackPageName || '').trim();
+            return !!eventName && !!expectedName && eventName === expectedName;
+        }
         return !currentCharaName || !data.name || data.name === currentCharaName;
     }
 
@@ -268,13 +277,9 @@
         pendingFallbackDefaultSave = false;
         fallbackDefaultSaving = true;
         fallbackDefaultPromise = (async () => {
-            if (exportFullBtn) {
-                exportFullBtn.disabled = true;
-                exportFullBtn.textContent = t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
-            }
             await waitForCondition(() => isModelLoaded, 10000, '模型加载');
             await new Promise(resolve => setTimeout(resolve, 200));
-            await doSaveCardFace({
+            const saveResult = await doSaveCardFace({
                 silent: true,
                 statusText: t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'),
                 renderOptions: {
@@ -282,8 +287,12 @@
                     composition: { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 }
                 }
             });
-            console.log('[CardMaker] 已生成模型保存流程的默认卡面兜底:', reason || 'unknown');
-            return true;
+            if (saveResult?.status === 'partial') {
+                console.warn('[CardMaker] 模型保存流程默认卡面兜底部分成功:', reason || 'unknown');
+            } else if (saveResult?.status === 'ok') {
+                console.log('[CardMaker] 已生成模型保存流程的默认卡面兜底:', reason || 'unknown');
+            }
+            return saveResult?.status === 'ok' || saveResult?.status === 'partial';
         })();
 
         try {
@@ -313,8 +322,8 @@
 
         if (typeof BroadcastChannel === 'function') {
             try {
-                const channel = new BroadcastChannel('neko-card-maker-fallback-events');
-                channel.onmessage = event => handleFallbackEvent(event.data);
+                fallbackEventChannel = new BroadcastChannel('neko-card-maker-fallback-events');
+                fallbackEventChannel.onmessage = event => handleFallbackEvent(event.data);
             } catch (_) {}
         }
 
@@ -324,6 +333,17 @@
                 handleFallbackEvent(JSON.parse(event.newValue));
             } catch (_) {}
         });
+
+        const cleanupFallbackChannel = () => {
+            if (!fallbackEventChannel) return;
+            try {
+                fallbackEventChannel.onmessage = null;
+                fallbackEventChannel.close();
+            } catch (_) {}
+            fallbackEventChannel = null;
+        };
+        window.addEventListener('pagehide', cleanupFallbackChannel, { once: true });
+        window.addEventListener('beforeunload', cleanupFallbackChannel, { once: true });
     }
 
     // ====== 角色加载 ======
@@ -602,7 +622,7 @@
             sy = (srcCanvas.height - sh) / 2;
         }
 
-        const activeComposition = compositionOverride || composition;
+        const activeComposition = compositionOverride;
         const scale = activeComposition.scale / 100;
         const drawW = outW * scale;
         const drawH = outH * scale;
@@ -821,21 +841,23 @@
                 exportFullBtn.disabled = false;
                 cardFaceSaved = true;
                 notifyCardFaceUpdated(currentCharaName);
-                return;
+                return { status: 'partial', error: respJson.error || '' };
             }
 
             cardFaceSaved = true;
             notifyCardFaceUpdated(currentCharaName);
 
             exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');
+            const saveResult = { status: 'ok' };
             if (options.closeAfterSave) {
                 setTimeout(() => window.close(), 300);
-                return;
+                return saveResult;
             }
             setTimeout(() => {
                 exportFullBtn.disabled = false;
                 exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             }, 1500);
+            return saveResult;
         } catch (e) {
             console.error('[CardMaker] 保存卡面失败:', e);
             if (!options.silent) {
@@ -873,6 +895,9 @@
             name,
             timestamp: Date.now()
         };
+        if (fallbackDefaultOnClose && fallbackToken) {
+            message.fallbackToken = fallbackToken;
+        }
 
         if (window.opener) {
             try {
@@ -942,7 +967,7 @@
             await drawStickerList(ctx, belowStickers, outW, outH);
         }
 
-        drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition || composition);
+        drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition);
 
         if (aboveStickers.length > 0) {
             await drawStickerList(ctx, aboveStickers, outW, outH);

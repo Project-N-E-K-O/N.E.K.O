@@ -797,6 +797,10 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     const matchesCardFaceUpdate = (data) => {
         if (!data || data.type !== 'card-face-updated') return false;
         if (data.name !== lanlanName) return false;
+        if (fallbackToken) {
+            const eventToken = data.fallbackToken || data.fallback_token || data.token || '';
+            if (eventToken !== fallbackToken) return false;
+        }
         const timestamp = Number(data.timestamp || 0);
         return !Number.isFinite(timestamp) || timestamp === 0 || timestamp >= startedAt - 2000;
     };
@@ -2675,7 +2679,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         currentModelInfo.name !== 'undefined' &&
                         currentModelInfo.name !== 'null' &&
                         !currentModelInfo.name.toLowerCase().includes('undefined')) {
-                        const isMmdFallback = currentLive3dSubType === 'mmd' ||
+                        const isMmdFallback = effectiveLive3dSubType === 'mmd' ||
                             (currentModelInfo.type === 'mmd') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmx') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmd');
@@ -2711,7 +2715,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const selectedOpt = vrmModelSelect && vrmModelSelect.options[vrmModelSelect.selectedIndex];
                 const subType = selectedOpt ? selectedOpt.getAttribute('data-sub-type') : null;
                 const modelExt = modelName ? modelName.toLowerCase() : '';
-                const isMmdModel = currentLive3dSubType === 'mmd' ||
+                const isMmdModel = effectiveLive3dSubType === 'mmd' ||
                     subType === 'mmd' ||
                     modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
                     (currentModelInfo && currentModelInfo.type === 'mmd');
@@ -2810,7 +2814,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const main = document.getElementById('main-light-slider');
 
             // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
-            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            const isVrmSubTypeForSave = currentModelType === 'live3d' && effectiveLive3dSubType !== 'mmd';
             if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 const fillSlider = document.getElementById('fill-light-slider');
                 const rimSlider = document.getElementById('rim-light-slider');
@@ -2859,7 +2863,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 5. 如果是 MMD 模式，保存MMD专属设置
             let mmdSettingsResult = null;
-            if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
+            if (currentModelType === 'live3d' && effectiveLive3dSubType === 'mmd') {
                 try {
                     if (_mmdSettingsLoadPromise) {
                         await _mmdSettingsLoadPromise;
@@ -5004,6 +5008,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (matchedOption) {
             vrmModelSelect.value = matchedOption.value;
+            window._modelManagerLoadedFallbackModel = true;
             if (options.suppressChange) {
                 suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
             } else {
