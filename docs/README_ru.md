@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [日本語](README_ja.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**Проактивный ИИ-компаньон — слышит ваше настроение, видит ваш мир и вместе с вами открывает больше того, что вам нравится.**
+# Project N.E.K.O. :kissing_cat: <br>**Расслышать ваше настроение. Увидеть ваш мир.<br>Вместе открыть больше того, что вам по душе.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (Сетевой Эмоциональный Познающий Организм)
 >
