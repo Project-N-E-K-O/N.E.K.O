@@ -53,6 +53,32 @@ const galgameOptionSchema = z.object({
   text: z.string().min(1),
 });
 
+// Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
+//
+// 当前 source：
+//   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
+//                           保留 BC，本框架不替换它，作为渐进迁移目标）
+//   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
+//
+// 未来扩展：
+//   - 'tutorial_step' / 'plugin_action' / ...
+//   - 当需要"对话框 + avatar 旁边同步显示"时，加 placement: 'composer' | 'avatar'
+//     | 'both'，不破坏 wire-format。
+//
+// option.choice 是后端 wire-format 标识符（accept/decline/later 之类），点击
+// 时回传给 onChoiceSelect；UI 显示用 option.label。
+const choiceOptionSchema = z.object({
+  choice: z.string().min(1),  // wire id (accept/decline/later/...)
+  label: z.string().min(1),   // 显示文本
+});
+
+const choicePromptSchema = z.object({
+  source: z.enum(['galgame', 'mini_game_invite']),
+  options: z.array(choiceOptionSchema).min(1),
+  sessionId: z.string().optional(),
+  gameType: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -228,6 +254,12 @@ export const chatWindowPropsSchema = z.object({
     .args(galgameOptionSchema)
     .returns(z.void())
     .optional(),
+  // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
+  choicePrompt: choicePromptSchema.optional(),
+  onChoiceSelect: z.function()
+    .args(choiceOptionSchema, z.string())  // (option, source)
+    .returns(z.void())
+    .optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];
@@ -239,6 +271,9 @@ export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
+export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
+export type ChoicePromptSource = ChoicePrompt['source'];
 export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
 export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;

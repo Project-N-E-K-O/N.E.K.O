@@ -1898,6 +1898,38 @@
                         ? window.t('app.repetitionDetected', { name: response.name })
                         : ('检测到高重复度对话。建议您终止对话，让' + response.name + '休息片刻。');
                     if (typeof window.showStatusToast === 'function') window.showStatusToast(warningMessage, 8000);
+
+                // -------- mini_game_invite_options --------
+                // 后端投递 mini-game 邀请时跟 invite text 一起 push 这条 options。
+                // 通用 ChoicePrompt 抽象，前端 ChoiceWindow 渲染三按钮（accept /
+                // decline / later）。多窗口模式下消息走 RAW_MESSAGE forwarding 自然
+                // 转给 chat.html，无需新 IPC channel。
+                } else if (response.type === 'mini_game_invite_options') {
+                    if (window.reactChatWindowHost
+                            && typeof window.reactChatWindowHost.setMiniGameInvitePrompt === 'function') {
+                        window.reactChatWindowHost.setMiniGameInvitePrompt({
+                            sessionId: response.session_id || '',
+                            gameType: response.game_type || '',
+                            options: Array.isArray(response.options) ? response.options : [],
+                        });
+                    }
+
+                // -------- mini_game_launch --------
+                // 关键词文本兜底（用户没点按钮自己打字"好啊"）命中 accept 时由
+                // 后端 push。任何 page 收到都尝试 window.open(game_url)——主进程
+                // setWindowOpenHandler 拦截开独立 BrowserWindow（普通浏览器是新
+                // tab）。dedupe 由 launched session_id 保护：同一 session 再来一条
+                // 不重复 open；按钮路径 endpoint 直接 open 后也注册到 launched 集合。
+                } else if (response.type === 'mini_game_launch') {
+                    if (window.reactChatWindowHost
+                            && typeof window.reactChatWindowHost.launchMiniGame === 'function') {
+                        window.reactChatWindowHost.launchMiniGame({
+                            sessionId: response.session_id || '',
+                            gameType: response.game_type || '',
+                            url: response.game_url || '',
+                            source: response.source || 'ws',
+                        });
+                    }
                 }
 
             } catch (parseError) {

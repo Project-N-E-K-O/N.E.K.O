@@ -2355,6 +2355,85 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
 }
 
+# ---------- Mini-game 邀请三选项按钮 ----------
+# choice 是 wire-format 标识符（accept/decline/later），不进 UI；UI label 由
+# MINI_GAME_INVITE_OPTION_LABELS 按 locale 渲染。前端 ChoicePrompt 组件读
+# label 直接展示，点击发 ``choice`` 给 endpoint。文案设计：accept 热情但不
+# 过度、decline 客气不冷漠、later 自然不催促，三者语义清晰互不重叠。
+MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
+    'zh': {
+        'accept': '来一局！',
+        'decline': '现在不想玩',
+        'later': '等一会儿',
+    },
+    'en': {
+        'accept': "Let's play!",
+        'decline': 'Not feeling it',
+        'later': 'Maybe later',
+    },
+    'ja': {
+        'accept': 'やろう！',
+        'decline': '今はパス',
+        'later': 'あとでね',
+    },
+    'ko': {
+        'accept': '좋아, 가자!',
+        'decline': '지금은 됐어',
+        'later': '좀 이따',
+    },
+    'ru': {
+        'accept': 'Давай сыграем!',
+        'decline': 'Сейчас нет настроения',
+        'later': 'Чуть позже',
+    },
+}
+
+# ---------- Mini-game 邀请回应关键词（文本兜底匹配）----------
+# 用户没点按钮、自己打字时（"好啊"/"不要"/"晚点说"），后端 message handler 入口
+# 扫一遍这份关键词表：命中即触发对应 action（accept / decline / later），不吃掉
+# 用户消息（继续走普通 chat 流水线）。
+#
+# 匹配规则：消息**全文小写后包含任一关键词**视为命中；多类同时命中则按优先级
+# accept > later > decline（"好的不过等下" 这种倾向 accept-with-delay 当 later
+# 处理可能更尴尬，简单 accept-priority 兜底）。匹配在 main_routers.system_router
+# 的 helper 内做 —— 关键词列表本身放这里集中维护。
+#
+# 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
+# 扫一遍而不是只看 active locale。
+MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    'zh': {
+        # 注意：'玩' / '走' 这种过宽的字不能进 accept——会把 "不想玩" / "走开"
+        # 这种含 negation 的话误判成 accept（priority accept > decline）。
+        # 'ok' 也省掉，全字符串匹配下任何 "okayy" 都会命中 en branch。
+        'accept': ['好', '可以', '行', '来', '一起', '冲'],
+        'decline': ['不要', '不行', '不好', '不想', '算了', '拒绝', '不玩', '没空'],
+        'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
+    },
+    'en': {
+        # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
+        'accept': ['yes', 'sure', 'okay', "let's", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
+        'decline': ['no', 'nope', 'pass', 'skip', 'not now', 'not really', 'maybe not'],
+        'later': ['later', 'in a bit', 'in a minute', 'after', 'in a moment'],
+    },
+    'ja': {
+        # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
+        'accept': ['やろう', 'いいよ', 'うん', 'はい', 'やるよ', 'やります'],
+        'decline': ['パス', '嫌', 'いいえ', 'やめる', 'いやだ'],
+        'later': ['あとで', '今度', 'また今度', 'もうちょい', 'ちょっと待って'],
+    },
+    'ko': {
+        # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
+        'accept': ['좋아', '응', '그래', '가자', 'ㅇㅇ'],
+        'decline': ['싫어', '아니', '됐어', '안 해'],
+        'later': ['나중', '이따', '잠시', '잠깐만'],
+    },
+    'ru': {
+        'accept': ['да', 'давай', 'конечно', 'хорошо', 'ок'],
+        'decline': ['нет', 'не хочу', 'откажусь', 'пас'],
+        'later': ['потом', 'позже', 'попозже', 'не сейчас'],
+    },
+}
+
 # ---------- 音乐搜索结果格式化 ----------
 MUSIC_SEARCH_RESULT_TEXTS = {
     'zh': {

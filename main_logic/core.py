@@ -5035,6 +5035,43 @@ class LLMSessionManager:
                         is_voice_source=False,
                     )
 
+                    # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
+                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按
+                    # 钮）→ 扫关键词命中就触发对应 state 转换。**不吃掉消息**：
+                    # 继续走普通 chat 流水线，AI 仍然会回应这条话——AI 收到的
+                    # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
+                    # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
+                    # 推一条 mini_game_launch WS 让前端 window.open 游戏。
+                    try:
+                        from main_routers.system_router import _maybe_apply_mini_game_invite_keyword
+                        _kw_outcome = _maybe_apply_mini_game_invite_keyword(
+                            self.lanlan_name,
+                            data if isinstance(data, str) else '',
+                        )
+                    except Exception as _kw_err:
+                        logger.debug(
+                            f"[{self.lanlan_name}] mini-game invite keyword "
+                            f"matcher hook failed: {_kw_err}",
+                        )
+                        _kw_outcome = None
+                    if _kw_outcome and _kw_outcome.get('action') == 'open_game':
+                        try:
+                            if (self.websocket
+                                    and hasattr(self.websocket, 'send_json')):
+                                ws_state = getattr(self.websocket, 'client_state', None)
+                                if ws_state is None or ws_state == ws_state.CONNECTED:
+                                    await self.websocket.send_json({
+                                        'type': 'mini_game_launch',
+                                        'game_type': _kw_outcome.get('game_type'),
+                                        'game_url': _kw_outcome.get('game_url'),
+                                        'source': 'keyword',
+                                    })
+                        except Exception as _push_err:
+                            logger.warning(
+                                f"[{self.lanlan_name}] mini-game launch "
+                                f"WS push failed: {_push_err}",
+                            )
+
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
                         handed_off = await self._dispatch_openclaw_handoff(data, openclaw_messages)

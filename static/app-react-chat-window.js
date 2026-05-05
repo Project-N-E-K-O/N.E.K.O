@@ -52,7 +52,14 @@
         galgameOptions: [],
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
-        _galgameRequestSeq: 0
+        _galgameRequestSeq: 0,
+        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
+        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        choicePrompt: null,
+        // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
+        // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
+        _launchedMiniGameSessionIds: Object.create(null)
     };
 
     function readGalgameModePreference() {
@@ -524,6 +531,7 @@
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
+            choicePrompt: state.choicePrompt || null,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -535,7 +543,8 @@
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
-            onGalgameOptionSelect: handleGalgameOptionSelect
+            onGalgameOptionSelect: handleGalgameOptionSelect,
+            onChoiceSelect: handleChoiceSelect
         });
     }
 
@@ -1351,6 +1360,106 @@
         };
         handleComposerSubmit(detail);
         dispatchHostEvent('galgame-option-select', detail);
+    }
+
+    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
+    // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
+    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+
+    function handleChoiceSelect(option, source) {
+        if (!option || typeof option.choice !== 'string') return;
+        if (source === 'galgame') {
+            // Forward to legacy galgame handler if it shows up here
+            if (typeof option.text === 'string') {
+                handleGalgameOptionSelect(option);
+            }
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            handleMiniGameInviteChoice(option);
+            return;
+        }
+    }
+
+    function handleMiniGameInviteChoice(option) {
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'mini_game_invite') return;
+        var sessionId = prompt.sessionId || '';
+        // 立刻清掉 prompt 让按钮消失，防止用户连点 / 等 endpoint 慢响应时重复触发
+        state.choicePrompt = null;
+        renderWindow();
+
+        var lanlanName = '';
+        try {
+            lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        } catch (_) {}
+
+        var requestBody = {
+            lanlan_name: lanlanName,
+            choice: option.choice,
+            session_id: sessionId
+        };
+        fetch('/api/mini_game/invite/respond', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        }).then(function (resp) {
+            return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status));
+        }).then(function (data) {
+            if (!data || data.action !== 'open_game' || !data.game_url) return;
+            // accept 路径直接 window.open；dedupe 让后续 ws push 同 session 不重开
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: data.game_type || prompt.gameType || '',
+                url: data.game_url,
+                source: 'button'
+            });
+        }).catch(function (err) {
+            console.warn('[MiniGameInvite] respond endpoint failed:', err);
+        });
+    }
+
+    function setMiniGameInvitePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        // 已经为该 session 开过游戏了 → 忽略 stale options（罕见：邀请 push 比
+        // 用户键盘/按钮路径慢，但为了对偶仍 guard 一下）
+        if (state._launchedMiniGameSessionIds[sessionId]) return;
+        var options = Array.isArray(payload.options) ? payload.options : [];
+        if (!options.length) return;
+        state.choicePrompt = {
+            source: 'mini_game_invite',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || ''),
+            options: options.map(function (o) {
+                return {
+                    choice: String(o.choice || ''),
+                    label: String(o.label || '')
+                };
+            }).filter(function (o) { return o.choice && o.label; })
+        };
+        renderWindow();
+    }
+
+    function launchMiniGameInternal(payload) {
+        if (!payload || !payload.url) return;
+        var sessionId = String(payload.sessionId || '');
+        // 同一 session 只 open 一次：endpoint 路径先 open 后，可能 backend 又 push
+        // mini_game_launch（keyword fallback 同时命中等情形）；不 dedupe 会双开窗口。
+        if (sessionId && state._launchedMiniGameSessionIds[sessionId]) return;
+        if (sessionId) state._launchedMiniGameSessionIds[sessionId] = true;
+        // window.open 在 Electron 模式下被主进程 setWindowOpenHandler 拦截开独立
+        // BrowserWindow；普通浏览器是新 tab。'_blank' target 让浏览器治理一致。
+        try {
+            var w = window.open(payload.url, '_blank');
+            if (!w) {
+                console.warn('[MiniGameInvite] window.open returned null (popup blocked?)');
+            }
+        } catch (err) {
+            console.warn('[MiniGameInvite] window.open failed:', err);
+        }
     }
 
     function setViewProps(nextViewProps) {
@@ -2482,6 +2591,9 @@
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
+        // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
+        setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        launchMiniGame: launchMiniGameInternal,
         isMounted: function () { return mounted; }
     };
 })();

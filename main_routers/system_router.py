@@ -35,6 +35,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
+from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -79,6 +80,8 @@ from config import (
     MINI_GAME_INVITE_COOLDOWN_CHATS,
     MINI_GAME_INVITE_NEW_USER_FORCE_AT,
     MINI_GAME_INVITE_AVAILABLE_GAMES,
+    MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS,
+    MINI_GAME_LAUNCH_URL_BY_GAME,
     PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
     PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
     PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
@@ -118,6 +121,8 @@ from config.prompts_proactive import (
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
     MINI_GAME_INVITE_LINES_BY_GAME,
+    MINI_GAME_INVITE_OPTION_LABELS,
+    MINI_GAME_INVITE_KEYWORDS,
     build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
@@ -2045,6 +2050,12 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'responded_at': None,
             'chats_since_response': 0,
             'last_game_type': None,
+            # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
+            # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
+            'pending_session_id': None,
+            # D2「回头再说」短期抑制：reset 后不允许下一次 proactive 立刻又掷骰。
+            # _in_cooldown 多查一道这个 gate。秒级 epoch；None = 不抑制。
+            'suppressed_until': None,
         }
         _mini_game_invite_state[lanlan_name] = state
     return state
@@ -2215,12 +2226,18 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     """是否处于冷却期。True = 本轮不该掷骰。
 
     覆盖：
+      - D2「回头再说」短期抑制（suppressed_until > now）→ True
       - pending（投递了但 responded_at=None）→ True
-      - 已回应但 24h 或 10 chats 任一未跨过 → True
+      - 已回应但 1h 或 10 chats 任一未跨过 → True
       - 从未投递 / 已完整跨过两道 → False
     """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state['delivered_at'] is None:
+    if not state:
+        return False
+    suppressed_until = state.get('suppressed_until')
+    if suppressed_until is not None and time.time() < float(suppressed_until):
+        return True
+    if state['delivered_at'] is None:
         return False
     if state['responded_at'] is None:
         return True
@@ -2231,12 +2248,20 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     )
 
 
-def _mini_game_invite_record_delivered(lanlan_name: str) -> None:
-    """记录一次成功投递的邀请。重置 responded/counter 进入新一轮 pending。"""
+def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> None:
+    """记录一次成功投递的邀请。重置 responded/counter 进入新一轮 pending。
+
+    session_id 来自 caller（``_maybe_deliver_mini_game_invite`` 投递时生成的
+    uuid），endpoint 验证用户回应是否匹配当前 pending。新一次投递会刷新这个
+    id——上一次投递留下的过期 session_id 在 endpoint 端会被识别为 stale 拒绝。"""
     state = _mini_game_invite_get_state(lanlan_name)
     state['delivered_at'] = time.time()
     state['responded_at'] = None
     state['chats_since_response'] = 0
+    state['pending_session_id'] = session_id
+    # 新邀请投递清掉 D2 的 short-suppression：本来是「上次回头再说」的窗口，
+    # 既然现在又投了新邀请说明那个窗口已过期，没必要保留。
+    state['suppressed_until'] = None
 
 
 def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
@@ -2383,16 +2408,42 @@ async def _maybe_deliver_mini_game_invite(
             "action": "pass",
             "message": "mini-game invite skipped: user took over before delivery",
         }
+    # 给本次邀请生成独立 session_id，前端按钮点击 / 文本关键词命中走 endpoint 时
+    # 必须带回这个 id 给后端校验：避免 stale 邀请的延迟回应被错算成响应当前 pending。
+    invite_session_id = str(uuid4())
+
     _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
-    _mini_game_invite_record_delivered(lanlan_name)
+    _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
     _mini_game_invite_get_state(lanlan_name)['last_game_type'] = game_type
     # counter +1 + ever_delivered=True 一把锁内原子写盘。两份持久化数据必须
     # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
     await _record_invite_delivery_persistent(lanlan_name)
+
+    # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
+    # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
+    # galgame mode 开关。Pet 主窗收到后通过现有 RAW_MESSAGE IPC forwarding 自动
+    # 转给 chat.html，不需要新 IPC channel。
+    options_payload = _build_mini_game_invite_options_payload(
+        invite_lang=invite_lang,
+        game_type=game_type,
+        session_id=invite_session_id,
+    )
+    try:
+        if mgr.websocket and hasattr(mgr.websocket, 'send_json'):
+            client_state = getattr(mgr.websocket, 'client_state', None)
+            if client_state is None or client_state == client_state.CONNECTED:
+                await mgr.websocket.send_json(options_payload)
+    except Exception as exc:
+        logger.warning(
+            "[%s] mini-game invite options WS push failed: %s",
+            lanlan_name, exc,
+        )
+
     print(
         f"[{lanlan_name}] Mini-game invite delivered "
-        f"(game={game_type}, force_first={force_first}): {invite_text[:60]}…"
+        f"(game={game_type}, force_first={force_first}, "
+        f"session_id={invite_session_id[:8]}…): {invite_text[:60]}…"
     )
     return {
         "success": True,
@@ -2403,6 +2454,34 @@ async def _maybe_deliver_mini_game_invite(
         "force_first": force_first,
         "lanlan_name": lanlan_name,
         "turn_id": proactive_sid,
+        "invite_session_id": invite_session_id,
+    }
+
+
+def _build_mini_game_invite_options_payload(
+    *,
+    invite_lang: str,
+    game_type: str,
+    session_id: str,
+) -> dict[str, Any]:
+    """构造前端 ChoicePrompt 用的 WS payload。
+
+    label 走 i18n（accept/decline/later 三选项），choice 是 wire-format 标识符
+    （前端按钮点击发回 endpoint 时用），不变。"""
+    labels = MINI_GAME_INVITE_OPTION_LABELS.get(
+        invite_lang,
+        MINI_GAME_INVITE_OPTION_LABELS.get('zh', {}),
+    )
+    options = [
+        {'choice': 'accept', 'label': labels.get('accept', 'Yes')},
+        {'choice': 'decline', 'label': labels.get('decline', 'No')},
+        {'choice': 'later', 'label': labels.get('later', 'Later')},
+    ]
+    return {
+        'type': 'mini_game_invite_options',
+        'session_id': session_id,
+        'game_type': game_type,
+        'options': options,
     }
 
 
@@ -5681,6 +5760,202 @@ async def proactive_chat(request: Request):
 
 
 
+
+
+def _apply_mini_game_invite_choice(
+    lanlan_name: str, choice: str, *, source: str,
+) -> dict[str, Any]:
+    """处理 mini-game 邀请的三选项 state 转换。返回结构化结果给 endpoint /
+    keyword matcher 共用。
+
+    - accept：mark responded（启动 1h+10 chats 冷却）+ 返回 game_url
+    - decline：mark responded（同上冷却，但不开游戏）
+    - later (D2)：reset state（delivered_at=None，让 force-first / 普通 10% 都
+      恢复正常）+ 加 ``suppressed_until = now + 5min`` 防止下一次 proactive
+      立刻又掷骰
+
+    state 必须 already-pending（delivered_at != None and responded_at is None）；
+    否则当作 stale，返回 ``action='ignored'``，caller 自己决定是否反馈用户。"""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state.get('delivered_at') is None:
+        return {'action': 'ignored', 'reason': 'no_pending_invite'}
+    if state.get('responded_at') is not None:
+        return {'action': 'ignored', 'reason': 'already_responded'}
+
+    now = time.time()
+    if choice == 'accept':
+        state['responded_at'] = now
+        state['chats_since_response'] = 0
+        # source_id 进 game_url query，后端 game_router 后续可能用来对账
+        game_type = state.get('last_game_type') or 'soccer'
+        url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
+        if not url_template:
+            logger.warning(
+                "[%s] accept invite but no launch URL for game_type=%r; "
+                "fallback /soccer_demo", lanlan_name, game_type,
+            )
+            url_template = '/soccer_demo'
+        from urllib.parse import urlencode as _urlencode
+        query = _urlencode({
+            'lanlan_name': lanlan_name,
+            'session_id': state.get('pending_session_id') or '',
+        })
+        game_url = f"{url_template}?{query}"
+        logger.info(
+            "[%s] mini-game invite accepted via %s -> %s",
+            lanlan_name, source, url_template,
+        )
+        return {
+            'action': 'open_game',
+            'game_type': game_type,
+            'game_url': game_url,
+        }
+    if choice == 'decline':
+        state['responded_at'] = now
+        state['chats_since_response'] = 0
+        logger.info(
+            "[%s] mini-game invite declined via %s; cooldown started",
+            lanlan_name, source,
+        )
+        return {'action': 'cooldown'}
+    if choice == 'later':
+        # D2：完全 reset 但加短期 suppression。reset 之后 force-first 仍受
+        # ever_delivered（持久化）压制——已经被邀请过的用户即便 state 清掉也
+        # 不会被当成新用户重邀。
+        state['delivered_at'] = None
+        state['responded_at'] = None
+        state['chats_since_response'] = 0
+        state['pending_session_id'] = None
+        state['suppressed_until'] = now + MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS
+        logger.info(
+            "[%s] mini-game invite deferred via %s; suppressed for %.0fs",
+            lanlan_name, source, float(MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS),
+        )
+        return {'action': 'suppress'}
+    return {'action': 'ignored', 'reason': f'unknown_choice:{choice}'}
+
+
+@router.post('/mini_game/invite/respond')
+async def mini_game_invite_respond(request: Request):
+    """前端按钮点击 → 三选项 state 转换 endpoint。
+
+    Body：
+        {
+          "lanlan_name": str,                   // 当前角色（前端从 host 拿）
+          "choice": "accept" | "decline" | "later",
+          "session_id": str | null,             // 投递时由 backend 生成的 uuid；
+                                                // 必须与 state.pending_session_id
+                                                // 匹配，否则当 stale 处理
+        }
+
+    Response：
+        - accept：``{success, action: 'open_game', game_type, game_url}``——前端
+          收到后调 ``window.open(game_url)`` 让 Electron 主进程的
+          setWindowOpenHandler 拦截开独立窗口。
+        - decline：``{success, action: 'cooldown'}``
+        - later：``{success, action: 'suppress'}``
+        - 过期 / 状态不匹配：``{success: true, action: 'expired', message}``——前端
+          应停止显示选项按钮（邀请已过期）。
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "error": "invalid body"}, status_code=400)
+    try:
+        config_manager = get_config_manager()
+        _, her_name_default, _, _, _, _, _, _, _ = await config_manager.aget_character_data()
+    except Exception:
+        her_name_default = ''
+    lanlan_name = (data.get('lanlan_name') or her_name_default or '').strip()
+    if not lanlan_name:
+        return JSONResponse({"success": False, "error": "lanlan_name missing"}, status_code=400)
+    choice = (data.get('choice') or '').strip().lower()
+    if choice not in ('accept', 'decline', 'later'):
+        return JSONResponse(
+            {"success": False, "error": f"choice must be accept/decline/later, got {choice!r}"},
+            status_code=400,
+        )
+    session_id = (data.get('session_id') or '').strip() or None
+
+    state = _mini_game_invite_state.get(lanlan_name)
+    pending_sid = state.get('pending_session_id') if state else None
+    if session_id and pending_sid and session_id != pending_sid:
+        # 用户点的是过期邀请的按钮（典型场景：浮窗里的旧邀请没刷新就被点）。
+        # 不报错，告诉前端 expired，让 UI 停掉旧 prompt。
+        return JSONResponse({
+            "success": True,
+            "action": "expired",
+            "message": "invite session expired; a newer invite or no pending invite exists",
+        })
+
+    result = _apply_mini_game_invite_choice(lanlan_name, choice, source='button')
+    if result['action'] == 'ignored':
+        return JSONResponse({
+            "success": True,
+            "action": "expired",
+            "message": result.get('reason') or 'no pending invite',
+        })
+    return JSONResponse({"success": True, **result, "lanlan_name": lanlan_name})
+
+
+def _match_mini_game_invite_keyword(text: str) -> str | None:
+    """扫一遍用户文本（小写 + strip），命中 accept/decline/later 关键词返
+    choice，未命中返 None。
+
+    所有 native locale 的关键词列表全扫一遍——用户可能切了 UI 语言但仍用
+    原语言打字。优先级：accept > later > decline（暧昧文本如「好的不过等下」
+    倾向 accept-with-delay 当 accept 处理而不是 later，spec 偏向"用户表达
+    了正面意愿就当接受"）。空 text / 命中无视为 None。"""
+    if not text:
+        return None
+    norm = text.lower().strip()
+    if not norm:
+        return None
+    hit_accept = False
+    hit_decline = False
+    hit_later = False
+    for lang_kw in MINI_GAME_INVITE_KEYWORDS.values():
+        if not hit_accept and any(kw and kw in norm for kw in lang_kw.get('accept', [])):
+            hit_accept = True
+        if not hit_later and any(kw and kw in norm for kw in lang_kw.get('later', [])):
+            hit_later = True
+        if not hit_decline and any(kw and kw in norm for kw in lang_kw.get('decline', [])):
+            hit_decline = True
+    if hit_accept:
+        return 'accept'
+    if hit_later:
+        return 'later'
+    if hit_decline:
+        return 'decline'
+    return None
+
+
+def _maybe_apply_mini_game_invite_keyword(
+    lanlan_name: str, text: str,
+) -> dict[str, Any] | None:
+    """文本入口（core.py user message handler）调一次。pending invite 时尝试
+    关键词匹配；命中即触发对应 state 转换，返回 dict 给 caller 决定是否要做
+    side effect（如 push WS message 让前端 window.open 游戏）。
+
+    **不吃掉用户消息**——caller 应继续走普通 chat 流水线，AI 仍然会回应这条
+    话。仅做 state side effect。
+
+    - 没 pending invite / 文本空 / 没命中 → None
+    - 命中 accept → ``{action: 'open_game', game_type, game_url}``
+    - 命中 decline / later → ``{action: 'cooldown' | 'suppress'}``
+    """
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
+        return None  # 没 pending
+    choice = _match_mini_game_invite_keyword(text)
+    if choice is None:
+        return None
+    result = _apply_mini_game_invite_choice(lanlan_name, choice, source='keyword')
+    if result.get('action') == 'ignored':
+        return None
+    return result
 
 
 @router.post('/proactive/music_played_through')

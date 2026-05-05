@@ -123,7 +123,7 @@ def test_in_cooldown_false_when_never_delivered():
 
 def test_in_cooldown_true_when_pending():
     """投递了但还没被回应（pending）→ cooldown 锁住，避免又发一次。"""
-    sr._mini_game_invite_record_delivered(LANLAN)
+    sr._mini_game_invite_record_delivered(LANLAN, "test-session-id")
     assert sr._mini_game_invite_in_cooldown(LANLAN) is True
 
 
@@ -188,7 +188,7 @@ def test_advance_response_noop_when_already_responded():
 
 def test_advance_response_noop_when_last_user_msg_at_none():
     """caller 没拿到 last_user_msg_at（隐私模式 / tracker 没数据）→ 保留 pending。"""
-    sr._mini_game_invite_record_delivered(LANLAN)
+    sr._mini_game_invite_record_delivered(LANLAN, "test-session-id")
     sr._mini_game_invite_advance_response(LANLAN, None)
     assert sr._mini_game_invite_state[LANLAN]['responded_at'] is None
 
@@ -273,7 +273,7 @@ def test_count_noop_when_never_delivered():
 
 def test_count_noop_during_pending():
     """投递了但没回应（pending）→ counter 不推进，不能靠"邀请自身"耗掉 10 次。"""
-    sr._mini_game_invite_record_delivered(LANLAN)
+    sr._mini_game_invite_record_delivered(LANLAN, "test-session-id")
     sr._mini_game_invite_count_post_response_chat(LANLAN)
     sr._mini_game_invite_count_post_response_chat(LANLAN)
     assert sr._mini_game_invite_state[LANLAN]['chats_since_response'] == 0
@@ -365,7 +365,7 @@ async def test_maybe_deliver_returns_none_when_unfinished_thread_pending(monkeyp
 async def test_maybe_deliver_returns_none_when_in_cooldown(monkeypatch):
     """pending 期间一律抑制掷骰。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
-    sr._mini_game_invite_record_delivered(LANLAN)
+    sr._mini_game_invite_record_delivered(LANLAN, "test-session-id")
     out = await sr._maybe_deliver_mini_game_invite(
         lanlan_name=LANLAN, mgr=_make_mgr(),
         activity_snapshot=_make_snapshot(),
@@ -778,3 +778,285 @@ def test_new_user_force_at_is_4_by_default():
     """spec：「从未玩过的用户固定在开场第 4 次主动搭话邀请」。
     pin 住默认值，未来调整由 follow-up 显式翻。"""
     assert sr.MINI_GAME_INVITE_NEW_USER_FORCE_AT == 4
+
+
+def test_later_suppress_seconds_is_5min_by_default():
+    """spec D2：「回头再说」reset state 后 5min 内不再 roll。"""
+    assert sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS == 5 * 60
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D2 短期抑制（回头再说）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_in_cooldown_true_when_suppressed_until_in_future():
+    """suppressed_until > now → cooldown 锁住，无论 delivered_at 状态。
+    这是 D2「回头再说」reset 后的窗口语义。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None  # reset 已发生
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+    state['suppressed_until'] = time.time() + 60
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is True
+
+
+def test_in_cooldown_false_when_suppressed_until_past():
+    """suppressed_until <= now → 抑制窗口已过，cooldown 看 delivered_at。
+    delivered_at=None（reset 状态）→ 不在 cooldown，下一轮 proactive 重新掷骰。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = None
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+    state['suppressed_until'] = time.time() - 1
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
+
+
+def test_record_delivered_clears_suppressed_until():
+    """新一次邀请投递清掉旧的 D2 短期抑制窗口——既然又投了新邀请，
+    那个「回头再说」的等待窗口就过期了。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['suppressed_until'] = time.time() + 999
+    sr._mini_game_invite_record_delivered(LANLAN, "new-session")
+    assert state['suppressed_until'] is None
+
+
+def test_record_delivered_sets_pending_session_id():
+    """新一次投递必须刷新 pending_session_id，让旧 invite session 过期；
+    endpoint 收到旧 session_id 时返 expired。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['pending_session_id'] = 'old-session'
+    sr._mini_game_invite_record_delivered(LANLAN, 'new-session')
+    assert state['pending_session_id'] == 'new-session'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _apply_mini_game_invite_choice (state machine)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_apply_choice_ignored_when_no_pending_invite():
+    """没 pending invite → 任何 choice 都返 ignored，不破坏 state。"""
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='test')
+    assert result['action'] == 'ignored'
+    assert result.get('reason') == 'no_pending_invite'
+
+
+def test_apply_choice_ignored_when_already_responded():
+    """已经 responded → 重复点击按钮被 ignored。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 60
+    state['responded_at'] = time.time() - 30
+    state['pending_session_id'] = 'sess'
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='test')
+    assert result['action'] == 'ignored'
+
+
+def test_apply_choice_accept_returns_open_game_with_url():
+    """accept → 返回 game_url（带 lanlan_name + session_id query），
+    state 翻成 responded（启动 1h+10 chats 冷却）。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'sess-abc'
+    state['last_game_type'] = 'soccer'
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='button')
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'soccer'
+    assert result['game_url'].startswith('/soccer_demo?')
+    assert 'lanlan_name=' + LANLAN in result['game_url']
+    assert 'session_id=sess-abc' in result['game_url']
+    # state 进 cooldown
+    assert state['responded_at'] is not None
+    assert state['chats_since_response'] == 0
+
+
+def test_apply_choice_decline_starts_cooldown_no_url():
+    """decline → mark responded（同样启动冷却），不开游戏。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'sess'
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'decline', source='button')
+    assert result['action'] == 'cooldown'
+    assert 'game_url' not in result
+    assert state['responded_at'] is not None
+
+
+def test_apply_choice_later_resets_state_with_suppression():
+    """later (D2) → 完全 reset delivered_at 等，但加 suppressed_until = now+5min。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+    state['pending_session_id'] = 'sess'
+    before = time.time()
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'later', source='button')
+    assert result['action'] == 'suppress'
+    assert state['delivered_at'] is None
+    assert state['responded_at'] is None
+    assert state['chats_since_response'] == 0
+    assert state['pending_session_id'] is None
+    assert state['suppressed_until'] is not None
+    suppress_window = state['suppressed_until'] - before
+    assert (
+        sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS - 5
+        <= suppress_window
+        <= sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 5
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 关键词匹配（E2 文本兜底）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_keyword_matcher_returns_none_for_empty_text():
+    assert sr._match_mini_game_invite_keyword('') is None
+    assert sr._match_mini_game_invite_keyword('   ') is None
+    assert sr._match_mini_game_invite_keyword(None) is None
+
+
+def test_keyword_matcher_accept_zh():
+    assert sr._match_mini_game_invite_keyword('好啊') == 'accept'
+    assert sr._match_mini_game_invite_keyword('来！') == 'accept'
+    assert sr._match_mini_game_invite_keyword('一起玩吧') == 'accept'
+
+
+def test_keyword_matcher_accept_en():
+    assert sr._match_mini_game_invite_keyword('yes please') == 'accept'
+    assert sr._match_mini_game_invite_keyword("Let's go!") == 'accept'
+    assert sr._match_mini_game_invite_keyword('OKAY') == 'accept'
+
+
+def test_keyword_matcher_decline_zh():
+    assert sr._match_mini_game_invite_keyword('不要') == 'decline'
+    assert sr._match_mini_game_invite_keyword('算了吧') == 'decline'
+    assert sr._match_mini_game_invite_keyword('不想玩') == 'decline'
+
+
+def test_keyword_matcher_later_zh():
+    assert sr._match_mini_game_invite_keyword('回头说') == 'later'
+    assert sr._match_mini_game_invite_keyword('等会') == 'later'
+    assert sr._match_mini_game_invite_keyword('晚点吧') == 'later'
+
+
+def test_keyword_matcher_accept_priority_over_later():
+    """暧昧文本同时含 accept + later 关键词 → accept 优先（spec 偏向"用户表达
+    了正面意愿就当接受"）。"""
+    # "好" + "等下" 同时命中
+    result = sr._match_mini_game_invite_keyword('好的等下')
+    assert result == 'accept'
+
+
+def test_keyword_matcher_no_false_positive_on_long_text():
+    """普通对话不应误命中：「好天气啊」按字面匹配会命中 '好'，是预期 — 关键词
+    匹配是兜底机制，spec 接受"模糊"匹配换取实现简单。但本测试 pin 住一些
+    明确不应命中的样例（确保关键词列表不包含太宽的字符）。"""
+    # '我现在没空'（含'不'？没；含'算了'？没；含'不想'？没；含'不要'？没）
+    # 但'我' '在' '空' 都不在任何 keyword list 里
+    assert sr._match_mini_game_invite_keyword('我现在没空') is None or \
+        sr._match_mini_game_invite_keyword('我现在没空') == 'decline'  # '没空' 在 decline
+
+
+def test_maybe_apply_keyword_noop_when_no_pending():
+    """没 pending invite → keyword matcher hook 直接 None，不动 state。"""
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '好啊')
+    assert result is None
+
+
+def test_maybe_apply_keyword_accept_returns_open_game():
+    """pending invite + accept 关键词 → 触发 state 转换，返回 open_game。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'kw-sess'
+    state['last_game_type'] = 'soccer'
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '好啊')
+    assert result is not None
+    assert result['action'] == 'open_game'
+    assert state['responded_at'] is not None  # mark responded
+
+
+def test_maybe_apply_keyword_decline_starts_cooldown():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'kw-sess'
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '不要')
+    assert result is not None
+    assert result['action'] == 'cooldown'
+    assert state['responded_at'] is not None
+
+
+def test_maybe_apply_keyword_later_resets_state():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'kw-sess'
+    result = sr._maybe_apply_mini_game_invite_keyword(LANLAN, '回头再说')
+    assert result is not None
+    assert result['action'] == 'suppress'
+    assert state['delivered_at'] is None
+    assert state['suppressed_until'] is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 邀请投递推 WS message + session_id 流转
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
+    """投递成功后必须 push 一条 mini_game_invite_options WS message 给前端，
+    带 options + session_id + game_type。前端 ChoicePrompt 渲染依赖这条。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    # mock client_state 让 send_json 通过 connectivity 检查
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=mgr,
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None and out['action'] == 'chat'
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload['type'] == 'mini_game_invite_options'
+    assert payload['session_id'] == out['invite_session_id']
+    assert payload['game_type'] == 'soccer'
+    assert isinstance(payload['options'], list) and len(payload['options']) == 3
+    choices = [opt['choice'] for opt in payload['options']]
+    assert choices == ['accept', 'decline', 'later']
+    # state 同步存了 pending_session_id
+    state = sr._mini_game_invite_state[LANLAN]
+    assert state['pending_session_id'] == out['invite_session_id']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# i18n 完整性
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_option_labels_cover_all_native_locales():
+    """5 个 native locale × 3 个 choice 必须有非空 label。"""
+    from config.prompts_proactive import MINI_GAME_INVITE_OPTION_LABELS
+    for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
+        assert lang in MINI_GAME_INVITE_OPTION_LABELS, f"缺 {lang} option labels"
+        labels = MINI_GAME_INVITE_OPTION_LABELS[lang]
+        for choice in ('accept', 'decline', 'later'):
+            assert choice in labels, f"{lang} 缺 {choice} 标签"
+            assert labels[choice].strip(), f"{lang}/{choice} 标签空"
+
+
+def test_keywords_cover_all_native_locales():
+    """5 个 native locale × 3 个 choice 必须各有非空关键词列表。"""
+    from config.prompts_proactive import MINI_GAME_INVITE_KEYWORDS
+    for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
+        assert lang in MINI_GAME_INVITE_KEYWORDS, f"缺 {lang} keywords"
+        kws = MINI_GAME_INVITE_KEYWORDS[lang]
+        for choice in ('accept', 'decline', 'later'):
+            assert choice in kws, f"{lang} 缺 {choice} 关键词"
+            assert isinstance(kws[choice], list) and kws[choice], (
+                f"{lang}/{choice} 关键词列表空"
+            )

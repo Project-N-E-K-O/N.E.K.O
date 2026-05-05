@@ -1344,6 +1344,21 @@ MINI_GAME_INVITE_COOLDOWN_CHATS = 10
 - 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
 - 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
 
+MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
+"""用户选择「回头再说」后的短期再掷骰抑制秒数（默认 5min）。
+- D2 语义：reset state（delivered_at/responded_at/chats_since_response 都清零，
+  让 force-first 与普通 10% 掷骰都恢复正常）但加一个 ``suppressed_until`` 软门，
+  这段时间内 ``_mini_game_invite_in_cooldown`` 仍返回 True 防止下一次 proactive
+  立刻又邀请，体感上像"等等再问我"。过了这个窗口下次 proactive 才重新走骰子。
+- 上游：endpoint /api/mini_game/invite/respond 的 'later' action。"""
+
+MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
+    'soccer': '/soccer_demo',
+}
+"""game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
+``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
+会带上 ``?lanlan_name=...&session_id=...`` query。新 mini-game 加新 entry 即可。"""
+
 PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
 """主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
 - 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
@@ -1641,6 +1656,8 @@ __all__ = [
     'MINI_GAME_INVITE_COOLDOWN_CHATS',
     'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
     'MINI_GAME_INVITE_AVAILABLE_GAMES',
+    'MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS',
+    'MINI_GAME_LAUNCH_URL_BY_GAME',
     'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
     'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
     'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',
