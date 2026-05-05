@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
@@ -33,7 +33,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたが好きそうな新しい話題を届けます</td>
+<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたの好きな新しい話題を届けます</td>
 <td align="center" width="25%">🎙️<br><b>リアルタイム音声・テキスト・視覚理解</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、リアルタイム視覚理解に対応</td>
 <td align="center" width="25%">🧠<br><b>五次元メモリシステム</b><br>作業記憶 / 直近記憶 / 事実記憶 / 反省記憶 / 人格記憶で、使うほどあなたを理解していきます</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
@@ -69,7 +69,7 @@
 * **クリエイター：** アーティスト、Live2D/3Dモデラー、声優、ライター——「彼女」に魂を与えます。
 * **ドリーマー：** あなたのフィードバックと支持は貴重な貢献です。
 
-**Discord**：[参加する](https://discord.gg/5kgHfepNJr) | **QQグループ**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**：[参加する](https://discord.gg/5kgHfepNJr) | **QQグループ**：995414391
 
 ## クイックスタート
 
@@ -401,7 +401,7 @@ uv run python agent_server.py
 # 5. http://localhost:48911 にアクセスしてAPI Keyを設定し、使用開始
 ```
 
-開発者はQQグループ 1022939659 への参加をお勧めします。
+開発者はQQグループ 995414391 への参加をお勧めします。
 
 </details>
 
@@ -413,7 +413,7 @@ uv run python agent_server.py
 
 追加機能のためにサードパーティAIサービスを設定できます：
 
-- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。推奨：*Gemini*、*OpenAI*、*StepFun*、または*Alibaba Cloud*。
+- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。推奨：*Alibaba Cloud*。
 - **アシストAPI**（記憶/感情/視覚等）：標準ChatCompletionインターフェースに対応。14以上のプロバイダーが利用可能。
 
 `http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。

@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Документация-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
@@ -33,7 +33,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>Проактивное сопровождение</b><br>Понимание экрана, тренды соцсетей, личные обновления, музыка и мемы — она сама начинает разговор и делится свежим, что может вам понравиться</td>
+<td align="center" width="25%">💬<br><b>Проактивное сопровождение</b><br>Понимание экрана, тренды соцсетей, личные обновления, музыка и мемы — она сама начинает разговор и делится свежим, что вам нравится</td>
 <td align="center" width="25%">🎙️<br><b>Голос, текст и зрение в реальном времени</b><br>Голос в реальном времени (Realtime API) + текстовый чат (ChatCompletion) с живым визуальным пониманием</td>
 <td align="center" width="25%">🧠<br><b>Пятимерная система памяти</b><br>Рабочая / Недавняя / Фактическая / Рефлексивная / Персональная память, чтобы со временем она понимала вас лучше</td>
 <td align="center" width="25%">🎭<br><b>Мультиформатный Аватар</b><br>Live2D / VRM / MMD с захватом движений и отслеживанием в полноэкранном режиме</td>
@@ -69,7 +69,7 @@
 * **Создатели:** Художники, Live2D/3D моделлеры, актёры озвучки, сценаристы — вы даёте «ей» душу.
 * **Мечтатели:** Ваша обратная связь и поддержка — бесценный вклад.
 
-**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: 995414391
 
 ## Быстрый старт
 
@@ -401,7 +401,7 @@ uv run python agent_server.py
 # 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```
 
-Разработчикам рекомендуется присоединиться к QQ-группе 1022939659.
+Разработчикам рекомендуется присоединиться к QQ-группе 995414391.
 
 </details>
 
@@ -413,7 +413,7 @@ uv run python agent_server.py
 
 Настройте сторонние ИИ-сервисы для дополнительных функций:
 
-- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Gemini*, *OpenAI*, *StepFun* или *Alibaba Cloud*.
+- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Alibaba Cloud*.
 - **Assist API** (память/эмоции/зрение): Поддерживает стандартный интерфейс ChatCompletion. Доступно 14+ провайдеров.
 
 Перейдите на `http://localhost:48911/api_key` для настройки через веб-интерфейс.

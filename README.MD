@@ -13,14 +13,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
 **:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
 
-:newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎直接入库，顺手给个好评~**
+:newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎喜加一，顺手给个好评~**
 
 *Project N.E.K.O.，喵宇宙！*
 
@@ -32,7 +32,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你可能喜欢的新鲜事</td>
+<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你喜欢的新鲜事</td>
 <td align="center" width="25%">🎙️<br><b>实时语音、文字与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
 <td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
@@ -68,7 +68,7 @@
 * **创作者：** 画师、Live2D/3D建模师、配音演员、文案写手——你们赋予"她"灵魂。
 * **梦想家：** 你的反馈和传播也是宝贵的贡献。
 
-**QQ群**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW) | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
+**QQ群**：995414391 | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
 
 ## 快速开始
 
@@ -466,7 +466,7 @@ uv run python agent_server.py
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
-开发者建议加入企鹅群 1022939659 交流。
+开发者建议加入企鹅群 995414391 交流。
 
 </details>
 
@@ -478,7 +478,7 @@ uv run python agent_server.py
 
 当你想要通过配置自己的API来获得额外功能时，您可以配置第三方AI服务。
 
-- **核心 API**（实时语音对话）：必须支持 Realtime API。推荐使用 *阶跃星辰* 或 *阿里云*。
+- **核心 API**（实时语音对话）：必须支持 Realtime API。推荐使用 *阿里云*。
 - **辅助 API**（记忆/情感/视觉等）：支持标准 ChatCompletion 接口。支持 14+ 服务商。
 
 通过访问`http://localhost:48911/api_key`可以在Web界面中直接配置。

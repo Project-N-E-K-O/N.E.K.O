@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
@@ -33,7 +33,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you might like</td>
+<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you love</td>
 <td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
 <td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
@@ -69,7 +69,7 @@
 * **Creators:** Artists, Live2D/3D modelers, voice actors, writers — you give "her" a soul.
 * **Dreamers:** Your feedback and advocacy are invaluable contributions.
 
-**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: 995414391
 
 ## Quick Start
 
@@ -409,7 +409,7 @@ uv run python agent_server.py
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
-Developers are encouraged to join QQ group 1022939659.
+Developers are encouraged to join QQ group 995414391.
 
 </details>
 
@@ -421,7 +421,7 @@ Developers are encouraged to join QQ group 1022939659.
 
 Configure third-party AI services for additional features:
 
-- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*.
+- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Alibaba Cloud*.
 - **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
 
 Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
