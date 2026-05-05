@@ -103,6 +103,8 @@
             width: 32px;
             height: 32px;
             object-fit: contain;
+            -webkit-user-drag: none;
+            user-select: none;
         }
 
         .header h1 {
@@ -623,7 +625,7 @@
                 <p data-i18n="emotionManager.subtitle">配置不同情绪下的动作和表情</p>
             </div>
             <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="common.close">
-                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
             </button>
         </div>
 
