@@ -151,8 +151,14 @@ def test_advance_response_noop_when_seconds_since_user_msg_none():
 
 
 def test_advance_response_flips_when_user_spoke_after_invite():
-    """用户在 delivered_at 之后说过话 → 标记已回应、计数清零。"""
-    delivered_at = time.time() - 30
+    """用户在 delivered_at 之后说过话 → 标记已回应、计数清零。
+
+    `responded_at` 必须 anchor 到 *真实* 回应时间（now - seconds_since_user_msg），
+    而不是「检测到回应的此刻」。advance_response 只在下次 proactive_chat 才跑，
+    user 回完到下次 proactive 可能隔几小时；anchor 用 now 会让 24h 冷却被这段
+    间隔白白拉长。"""
+    now_at_call = time.time()
+    delivered_at = now_at_call - 30
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = delivered_at
     state['responded_at'] = None
@@ -165,6 +171,39 @@ def test_advance_response_flips_when_user_spoke_after_invite():
     assert state['responded_at'] is not None
     assert state['responded_at'] >= delivered_at
     assert state['chats_since_response'] == 0
+    # Anchor 必须落在 last_user_msg_at（≈ now - 5s）附近，不是 now。
+    # 给 1.5s 容差，覆盖 advance_response 内部 time.time() 与 test 抓的
+    # now_at_call 之间的微秒级漂移；远小于"5s vs 0s"的分辨率。
+    assert state['responded_at'] < now_at_call - 3.0, (
+        f"responded_at={state['responded_at']:.3f} 没有 anchor 到用户实际回应时间"
+        f"（应 ≈ {now_at_call - 5:.3f}），疑似回归到了 now"
+    )
+
+
+def test_advance_response_anchors_even_when_proactive_runs_long_after_reply():
+    """关键回归保护：用户回完话后过 2 小时才跑下一次 proactive_chat，
+    `responded_at` 必须 anchor 到 ~2 小时前的回应时刻，而不是 now。否则
+    24h 冷却会被这段静默期白吃，整体冷却变成 ~26 小时，违背 spec。"""
+    now_at_call = time.time()
+    # 模拟：邀请投递在 2h+10s 前；用户 2h 前回过话；之后一直没动；现在
+    # 第二次 proactive_chat 进来终于把 advance 跑上。
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = now_at_call - 2 * 3600 - 10
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+
+    sr._mini_game_invite_advance_response(
+        LANLAN, _make_snapshot(seconds_since_user_msg=2 * 3600.0)
+    )
+    assert state['responded_at'] is not None
+    # responded_at 必须落在 ~2h 前，绝不能是 now。容差给 5s，覆盖 time.time()
+    # 漂移 + 整数化误差。
+    expected = now_at_call - 2 * 3600
+    assert abs(state['responded_at'] - expected) < 5.0, (
+        f"responded_at={state['responded_at']:.1f} 偏离用户实际回应时间 "
+        f"{expected:.1f}（now={now_at_call:.1f}），24h 冷却会被多锁约 "
+        f"{(state['responded_at'] - expected) / 3600:.2f}h"
+    )
 
 
 def test_advance_response_does_not_flip_when_last_user_msg_predates_invite():

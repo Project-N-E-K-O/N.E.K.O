@@ -2038,7 +2038,11 @@ def _mini_game_invite_advance_response(lanlan_name: str, activity_snapshot) -> N
     now = time.time()
     last_user_msg_at = now - float(secs)
     if last_user_msg_at > state['delivered_at']:
-        state['responded_at'] = now
+        # Anchor 到用户实际回应时间戳，而不是"我们注意到的时刻"。advance_response
+        # 只在每次新一轮 proactive_chat 跑时被调，user 回完到下次 proactive 之间
+        # 可能隔几小时；用 now 会让 24h 冷却窗口被这段间隔白白拉长，违背 spec
+        # 「回应之后 24 小时」的字面含义。
+        state['responded_at'] = last_user_msg_at
         state['chats_since_response'] = 0
         logger.info(
             "[%s] mini-game invite responded "
