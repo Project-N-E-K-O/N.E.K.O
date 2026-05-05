@@ -1174,6 +1174,11 @@
             return W.getWorkArea().then(function(wa) {
                 if (!wa) return;
                 if (!collapsed) return; // 状态在异步等待期变了 → 放弃，避免把展开窗口吸到 BALL 尺寸
+                // codex P1：getWorkArea pending 期间 closed 可能已到 → restore
+                // 已经把窗口搬回原 bounds；此时再 setBounds 到工作区左下角会
+                // 把刚还原的位置又覆盖掉，留个孤儿球在屏幕角。recheck 游戏态
+                // flag 与 snap 双双健在才搬位。
+                if (!_gameWindowActive || !_gameMinimizeSnap) return;
                 W.setBounds(wa.x, wa.y + wa.height - BALL, BALL, BALL);
             });
         }

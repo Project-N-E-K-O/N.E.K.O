@@ -4252,14 +4252,29 @@ async def proactive_chat(request: Request):
                 action=_text_advance_outcome.get('action', 'suppress'),
             )
 
+        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
+        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
+        # 旧客户端。提到 _debug_force_invite 计算之前——把 user toggle 关同时
+        # 服务端开了调试旗标的场景下，下游早退 gate（closed / skip_probability）
+        # 也维持原有抑制语义；不能因为旗标开了就把 gate 一并 bypass 掉。
+        # CodeRabbit Major review 指出原版只在 _maybe_deliver_mini_game_invite
+        # 入口拦 user toggle，旗标已经把上游 gate 绕过 → 进 _maybe_deliver
+        # 又被 toggle 拦 None → caller 走普通 source picking，封禁场景仍然漏过。
+        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
+
         # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
         # 上游早退 gate（closed / skip_probability / restricted_screen_only），
         # 让 ``_maybe_deliver_mini_game_invite`` 能稳定接到本轮调用——契约是
         # "开启后主动搭话必定触发特定小游戏"。仅本地手测使用；生产
         # ``MINI_GAME_INVITE_ENABLED`` 总开关 + 旗标默认 None 双保险。
+        # 用户 toggle 关时旗标无效（与 _maybe_deliver_mini_game_invite 入口
+        # 的 toggle 检查同语义，单一事实源在前端 toggle）。
         # CodeRabbit Major 指出：这条不在 ``_maybe_deliver_mini_game_invite``
         # 内部加是因为那时已经过了上游 gate，旗标做不到"必定"。
-        _debug_force_invite = MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+        _debug_force_invite = (
+            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+            and _user_invite_toggle
+        )
 
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
@@ -4382,11 +4397,8 @@ async def proactive_chat(request: Request):
             invite_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             invite_lang = 'zh'
-        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
-        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
-        # 旧客户端（未携带该字段时维持现有行为）。MINI_GAME_INVITE_ENABLED 全局
-        # kill switch 仍是更上游的一道。
-        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
+        # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
+        # toggle 关时旗标也连带禁用，保证早退 gate 不被绕过。
         invite_outcome = await _maybe_deliver_mini_game_invite(
             lanlan_name=lanlan_name,
             mgr=mgr,
