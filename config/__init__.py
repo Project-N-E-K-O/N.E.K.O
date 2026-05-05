@@ -1313,10 +1313,31 @@ MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.1
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
 
-MINI_GAME_INVITE_COOLDOWN_SECONDS = 24 * 3600
-"""一次邀请被回应后的最小静默秒数（默认 24h）。
+MINI_GAME_INVITE_COOLDOWN_SECONDS = 3600
+"""一次邀请被回应后的最小静默秒数（默认 1h）。
 - 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
-- 上游：_mini_game_invite_in_cooldown 时间侧判定。"""
+- 上游：_mini_game_invite_in_cooldown 时间侧判定。
+- 历史：原 24h，PR follow-up #1 改成 1h —— 24h 太长、用户日常重启或重新打开
+  app 都可能跨进过该窗口又被首次打开计数器骗回 force-trigger，体感邀请密度
+  反而抖动；1h 是「一次会话内不重复打扰」的合理平衡。"""
+
+MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
+"""新用户在第 N 次「成功投递的主动搭话」时强制触发 mini-game 邀请。
+- 「新用户」= ``state.delivered_at is None``（角色级，从未发过 invite）。
+- N 是整数，>=1；当持久化计数 ``proactive_chat_total >= N - 1`` 时，
+  本次投递走 force-trigger（绕开 10% 骰子，但仍尊重 propensity / 工作状态 /
+  unfinished_thread / cooldown 等其它 gate）。
+- 默认 4 = 用户成功收到 3 条普通主动搭话后，第 4 条强制变成游戏邀请；让
+  从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
+- 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
+
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
+"""mini-game 邀请可选的 game_type 列表。
+- 命中后从该列表 random.choice 选一个，文案从
+  config.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
+- 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
+  分发逻辑无须改动。
+- 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
 """一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
@@ -1618,6 +1639,8 @@ __all__ = [
     'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
     'MINI_GAME_INVITE_COOLDOWN_SECONDS',
     'MINI_GAME_INVITE_COOLDOWN_CHATS',
+    'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
+    'MINI_GAME_INVITE_AVAILABLE_GAMES',
     'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
     'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
     'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',

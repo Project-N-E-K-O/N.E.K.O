@@ -3838,6 +3838,11 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "ゲームを終了",
+            "ending": "ラウンドを終了中…",
+            "ended": "ゲーム終了、戻ります…"
+        },
         "startScreen": {
             "readyToStart": "準備完了 — クリックで開始",
             "ready": "準備完了"

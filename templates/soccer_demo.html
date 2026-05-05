@@ -233,7 +233,7 @@
     <div id="voice-status">调试 STT：隐藏</div>
   </div>
 </div>
-<button id="exit-to-start-button" type="button" hidden>结束游戏（调试）</button>
+<button id="exit-to-start-button" type="button" hidden data-i18n-key="soccer.exitGame.button">退出游戏</button>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
@@ -3549,22 +3549,45 @@
     _deliverPendingOpeningLine();
   }
 
+  // 把 HTML 字面量"退出游戏"换成当前 locale。window.t 在 i18n init 之前可能
+  // 还不可用——保留 HTML 兜底文案就是为这种顺序。
+  if (exitToStartButton && typeof window.t === 'function') {
+    const localized = window.t('soccer.exitGame.button');
+    if (localized && localized !== 'soccer.exitGame.button') {
+      exitToStartButton.textContent = localized;
+    }
+  }
+
   let _manualEndInFlight = false;
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
     if (exitToStartButton) exitToStartButton.disabled = true;
+    const _t = (key, fallback) =>
+      typeof window.t === 'function' ? window.t(`soccer.${key}`) : fallback;
     try {
-      window.__SoccerLoading?.ending?.('正在结束本局…');
+      window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
-        reason: 'manual_debug_exit',
+        reason: 'manual_user_exit',
         postgameProactive: false,
       });
     } finally {
-      // 这个按钮是测试/调试退出入口。结束后必须停在结束状态，不自动准备下一局，
-      // 避免后续接手者误以为这里是游戏内“重开”流程。
-      window.__SoccerLoading?.ended?.();
+      window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
+      // 退出后：先尝试 window.close()（适用于 main app 用 window.open 弹的子窗口
+      // 与 Electron 多窗口）；浏览器无脚本权限关闭时 fall back 到主聊天 SPA 的
+      // 根路径。短延迟让用户看到 "正在返回..." 文本，避免页面瞬间消失。
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (_) {}
+        // 如果 close 没生效（普通 tab / 用户手敲 URL），跳回 /
+        setTimeout(() => {
+          if (!window.closed) {
+            window.location.assign('/');
+          }
+        }, 150);
+      }, 600);
     }
   }
 
