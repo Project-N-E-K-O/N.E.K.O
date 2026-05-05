@@ -134,7 +134,7 @@ def test_in_cooldown_false_when_both_thresholds_passed():
 
 def test_advance_response_noop_when_never_delivered():
     """没投递过，advance 是 no-op。"""
-    sr._mini_game_invite_advance_response(LANLAN, _make_snapshot(seconds_since_user_msg=1.0))
+    sr._mini_game_invite_advance_response(LANLAN, time.time() - 1.0)
     assert LANLAN not in sr._mini_game_invite_state
 
 
@@ -146,33 +146,22 @@ def test_advance_response_noop_when_already_responded():
     state['responded_at'] = original_responded
     state['chats_since_response'] = 3
 
-    sr._mini_game_invite_advance_response(
-        LANLAN, _make_snapshot(seconds_since_user_msg=10.0)
-    )
+    sr._mini_game_invite_advance_response(LANLAN, time.time() - 10.0)
     assert state['responded_at'] == original_responded
     assert state['chats_since_response'] == 3
 
 
-def test_advance_response_noop_when_snapshot_none():
-    """activity_snapshot 缺失 → 保留 pending。"""
+def test_advance_response_noop_when_last_user_msg_at_none():
+    """caller 没拿到 last_user_msg_at（隐私模式 / tracker 没数据）→ 保留 pending。"""
     sr._mini_game_invite_record_delivered(LANLAN)
     sr._mini_game_invite_advance_response(LANLAN, None)
-    assert sr._mini_game_invite_state[LANLAN]['responded_at'] is None
-
-
-def test_advance_response_noop_when_seconds_since_user_msg_none():
-    """活动 tracker 没记录用户最后一句话 → 保留 pending。"""
-    sr._mini_game_invite_record_delivered(LANLAN)
-    sr._mini_game_invite_advance_response(
-        LANLAN, _make_snapshot(seconds_since_user_msg=None)
-    )
     assert sr._mini_game_invite_state[LANLAN]['responded_at'] is None
 
 
 def test_advance_response_flips_when_user_spoke_after_invite(monkeypatch):
     """用户在 delivered_at 之后说过话 → 标记已回应、计数清零。
 
-    `responded_at` 必须 anchor 到 *真实* 回应时间（now - seconds_since_user_msg），
+    `responded_at` 必须 anchor 到 *真实* 回应时间（last_user_msg_at），
     而不是「检测到回应的此刻」。advance_response 只在下次 proactive_chat 才跑，
     user 回完到下次 proactive 可能隔几小时；anchor 用 now 会让 24h 冷却被这段
     间隔白白拉长。
@@ -188,9 +177,7 @@ def test_advance_response_flips_when_user_spoke_after_invite(monkeypatch):
     state['chats_since_response'] = 0
 
     # 用户 5s 前说了话 → 落在 delivered_at 之后
-    sr._mini_game_invite_advance_response(
-        LANLAN, _make_snapshot(seconds_since_user_msg=5.0)
-    )
+    sr._mini_game_invite_advance_response(LANLAN, fixed_now - 5.0)
     assert state['responded_at'] is not None
     assert state['chats_since_response'] == 0
     # Anchor 精确等于 last_user_msg_at = fixed_now - 5；冻结时钟下没有漂移，
@@ -217,9 +204,7 @@ def test_advance_response_anchors_even_when_proactive_runs_long_after_reply(monk
     state['responded_at'] = None
     state['chats_since_response'] = 0
 
-    sr._mini_game_invite_advance_response(
-        LANLAN, _make_snapshot(seconds_since_user_msg=2 * 3600.0)
-    )
+    sr._mini_game_invite_advance_response(LANLAN, fixed_now - 2 * 3600)
     assert state['responded_at'] is not None
     # 冻结时钟下应精确等于 fixed_now - 2h；回归到 now 会让 24h 冷却被多锁 2h。
     expected = fixed_now - 2 * 3600
@@ -231,15 +216,14 @@ def test_advance_response_anchors_even_when_proactive_runs_long_after_reply(monk
 
 def test_advance_response_does_not_flip_when_last_user_msg_predates_invite():
     """用户 last msg 早于邀请投递时间（投完一直没说话）→ 保留 pending。"""
-    delivered_at = time.time() - 5
+    now = time.time()
+    delivered_at = now - 5
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = delivered_at
     state['responded_at'] = None
 
     # 用户 100s 前说了话，远早于 5s 前的投递
-    sr._mini_game_invite_advance_response(
-        LANLAN, _make_snapshot(seconds_since_user_msg=100.0)
-    )
+    sr._mini_game_invite_advance_response(LANLAN, now - 100.0)
     assert state['responded_at'] is None
 
 

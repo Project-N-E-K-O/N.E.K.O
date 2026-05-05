@@ -2019,35 +2019,36 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
     return state
 
 
-def _mini_game_invite_advance_response(lanlan_name: str, activity_snapshot) -> None:
+def _mini_game_invite_advance_response(
+    lanlan_name: str, last_user_msg_at: float | None,
+) -> None:
     """如果有 pending 邀请且用户已经在 delivered_at 之后说过话，标记为已回应。
 
-    每次进 proactive_chat 都调一次。activity_snapshot 可能为 None（隐私模式 /
-    tracker 不可用），或 seconds_since_user_msg 为 None（进程内 user 从未说过
-    话）——任一缺失都按"未回应"保留 pending，不主动 flip。"""
+    每次进 proactive_chat（含 voice fast path 与 text path 两条）都调一次。
+    last_user_msg_at 是「用户最后一次活动的时间戳」——caller 负责从合适来源
+    解出来：text path 用 activity_snapshot.seconds_since_user_msg 反推；voice
+    path 直接用 mgr.last_user_activity_time（voice 不走 activity tracker，但
+    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都按"未回应"保留
+    pending，不主动 flip。
+
+    Anchor 到 last_user_msg_at 而不是"检测到的此刻"——advance 只在新一轮
+    proactive_chat 跑时被调，user 回完到下次 proactive 之间可能隔几小时，
+    用 now 会让 24h 冷却被这段间隔白白拉长。"""
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
         return
     if state['delivered_at'] is None or state['responded_at'] is not None:
         return
-    if activity_snapshot is None:
+    if last_user_msg_at is None:
         return
-    secs = getattr(activity_snapshot, 'seconds_since_user_msg', None)
-    if secs is None:
-        return
-    now = time.time()
-    last_user_msg_at = now - float(secs)
     if last_user_msg_at > state['delivered_at']:
-        # Anchor 到用户实际回应时间戳，而不是"我们注意到的时刻"。advance_response
-        # 只在每次新一轮 proactive_chat 跑时被调，user 回完到下次 proactive 之间
-        # 可能隔几小时；用 now 会让 24h 冷却窗口被这段间隔白白拉长，违背 spec
-        # 「回应之后 24 小时」的字面含义。
-        state['responded_at'] = last_user_msg_at
+        state['responded_at'] = float(last_user_msg_at)
         state['chats_since_response'] = 0
+        now = time.time()
         logger.info(
             "[%s] mini-game invite responded "
             "(delivered_at=%.1fs ago, last user msg=%.1fs ago)",
-            lanlan_name, now - state['delivered_at'], float(secs),
+            lanlan_name, now - state['delivered_at'], now - float(last_user_msg_at),
         )
 
 
@@ -3742,6 +3743,14 @@ async def proactive_chat(request: Request):
         # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
+            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
+            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
+            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
+            # 永久抑制；CodeRabbit Major review 指出。
+            _mini_game_invite_advance_response(
+                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+            )
             if not mgr.state.can_start_proactive(session=probe_session):
                 return JSONResponse({
                     "success": False,
@@ -3750,6 +3759,10 @@ async def proactive_chat(request: Request):
                     "state": mgr.state.snapshot(),
                 }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
+            if delivered:
+                # 24h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
+                # 与 text path 在 _record_proactive_chat 之后调 count 对称。
+                _mini_game_invite_count_post_response_chat(lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -3832,8 +3845,15 @@ async def proactive_chat(request: Request):
 
         # 进 proactive_chat 后第一时间推进 mini-game invite 的"已回应"判定：
         # 即便本轮不发邀请，pending 的上一次邀请也得在用户已说话时翻成已回应，
-        # 否则 cooldown 永远卡在 pending。
-        _mini_game_invite_advance_response(lanlan_name, activity_snapshot)
+        # 否则 cooldown 永远卡在 pending。Text path 从 activity_snapshot 反推
+        # last_user_msg_at；voice fast path 在上面的 voice block 内独立调一次
+        # （用 mgr.last_user_activity_time），两边对称。
+        _text_last_user_msg_at: float | None = None
+        if activity_snapshot is not None:
+            _secs = getattr(activity_snapshot, 'seconds_since_user_msg', None)
+            if _secs is not None:
+                _text_last_user_msg_at = time.time() - float(_secs)
+        _mini_game_invite_advance_response(lanlan_name, _text_last_user_msg_at)
 
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
