@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import pytest
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_dir, resolve_i18n_refs, tr
-
 
 _EXPECTED_ENTRY_IDS = [
     "galgame_get_status",
@@ -51,6 +51,8 @@ _EXPECTED_RUNTIME_KEYS = [
     "errors.install_in_progress",
 ]
 
+_EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko"]
+
 
 def _assert_bundle_has_key(i18n, locale: str, key: str) -> None:
     bundle = i18n.messages.get(locale) or {}
@@ -58,24 +60,15 @@ def _assert_bundle_has_key(i18n, locale: str, key: str) -> None:
     assert isinstance(bundle[key], str) and bundle[key]
 
 
-def test_i18n_zh_cn_has_all_keys(galgame_i18n_dir) -> None:
+@pytest.mark.parametrize("locale", _EXPECTED_LOCALES)
+def test_i18n_all_locales_have_all_keys(galgame_i18n_dir, locale) -> None:
     i18n = load_plugin_i18n_from_dir(galgame_i18n_dir)
     for entry_id in _EXPECTED_ENTRY_IDS:
-        _assert_bundle_has_key(i18n, "zh-CN", f"entries.{entry_id}.name")
-        _assert_bundle_has_key(i18n, "zh-CN", f"entries.{entry_id}.description")
+        _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.name")
+        _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.description")
     for key in _EXPECTED_RUNTIME_KEYS:
-        _assert_bundle_has_key(i18n, "zh-CN", key)
-    assert len(i18n.messages["zh-CN"]) == 74
-
-
-def test_i18n_en_has_all_keys(galgame_i18n_dir) -> None:
-    i18n = load_plugin_i18n_from_dir(galgame_i18n_dir)
-    for entry_id in _EXPECTED_ENTRY_IDS:
-        _assert_bundle_has_key(i18n, "en", f"entries.{entry_id}.name")
-        _assert_bundle_has_key(i18n, "en", f"entries.{entry_id}.description")
-    for key in _EXPECTED_RUNTIME_KEYS:
-        _assert_bundle_has_key(i18n, "en", key)
-    assert len(i18n.messages["en"]) == 74
+        _assert_bundle_has_key(i18n, locale, key)
+    assert len(i18n.messages[locale]) == 74
 
 
 def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:
