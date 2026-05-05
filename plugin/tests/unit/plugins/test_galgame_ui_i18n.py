@@ -24,7 +24,12 @@ def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
 
     assert len(expected_keys) >= 100
     for locale, bundle in bundles.items():
-        assert set(bundle) == expected_keys, locale
+        bundle_keys = set(bundle)
+        missing = sorted(expected_keys - bundle_keys)
+        extra = sorted(bundle_keys - expected_keys)
+        assert bundle_keys == expected_keys, (
+            f"{locale}: missing={missing[:20]} extra={extra[:20]}"
+        )
         assert all(isinstance(value, str) and value for value in bundle.values())
 
 

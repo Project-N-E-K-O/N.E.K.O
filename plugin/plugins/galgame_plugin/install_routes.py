@@ -30,6 +30,7 @@ _INSTALL_PLUGIN_IDS = {"galgame_plugin"}
 _STALE_INSTALL_STATUS = "failed"
 _STALE_INSTALL_PHASE = "failed"
 _UI_I18N_DIR = Path(__file__).resolve().parent / "i18n" / "ui"
+_ALLOWED_UI_LOCALES = {"zh-CN", "en", "ja", "ru", "ko"}
 
 
 class InstallStartPayload(BaseModel):
@@ -42,7 +43,7 @@ async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
     try:
         from utils.language_utils import get_global_language_full
 
-        locale = str(get_global_language_full() or "zh-CN")
+        locale = _normalize_ui_locale(str(get_global_language_full() or "zh-CN"))
     except Exception:
         locale = "zh-CN"
     return JSONResponse({"locale": locale})
@@ -54,10 +55,27 @@ async def get_galgame_ui_i18n(plugin_id: str, locale: str) -> Response:
     normalized = str(locale or "").strip()
     if ".." in normalized or "/" in normalized or "\\" in normalized:
         return Response(status_code=404)
+    if normalized not in _ALLOWED_UI_LOCALES:
+        return Response(status_code=404)
     file = _UI_I18N_DIR / f"{normalized}.json"
     if not file.is_file():
         return Response(status_code=404)
     return FileResponse(file)
+
+
+def _normalize_ui_locale(locale: str) -> str:
+    normalized = str(locale or "").strip().replace("_", "-").lower()
+    if normalized == "zh" or normalized.startswith("zh-"):
+        return "zh-CN"
+    if normalized.startswith("en"):
+        return "en"
+    if normalized.startswith("ja"):
+        return "ja"
+    if normalized.startswith("ru"):
+        return "ru"
+    if normalized.startswith("ko"):
+        return "ko"
+    return "zh-CN"
 
 
 def _get_install_kind_spec(kind: str) -> dict[str, str]:

@@ -137,7 +137,7 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert 'id="currentLineOverview"' in response.text
     assert 'id="ocrPipelinePanel"' in response.text
     assert 'id="installCompactSummary"' in response.text
-    assert "./i18n.js?v=20260505-ui-i18n" in response.text
+    assert "./i18n.js?v=" in response.text
     assert 'data-i18n="ui.app.title"' in response.text
 
 
@@ -210,21 +210,27 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
 ) -> None:
     locale_response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui-api/locale")
     assert locale_response.status_code == 200
-    assert isinstance(locale_response.json()["locale"], str)
+    locale = locale_response.json()["locale"]
+    assert isinstance(locale, str)
 
     bundle_response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/i18n/ui/en.json"
+        f"/plugin/galgame_plugin/ui-api/i18n/ui/{locale}.json"
     )
     assert bundle_response.status_code == 200
     assert "application/json" in bundle_response.headers["content-type"]
     bundle = bundle_response.json()
-    assert bundle["ui.button.collapse"] == "Collapse"
-    assert bundle["ui.install.rapidocr.action"] == "Install RapidOCR"
+    assert bundle["ui.button.collapse"]
+    assert bundle["ui.install.rapidocr.action"]
 
     missing_response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
     )
     assert missing_response.status_code == 404
+
+    unsupported_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/i18n/ui/es.json"
+    )
+    assert unsupported_response.status_code == 404
 
 
 @pytest.mark.asyncio

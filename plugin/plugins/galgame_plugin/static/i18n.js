@@ -32,8 +32,9 @@ const I18n = {
   },
 
   async init(pluginId) {
+    const encodedPluginId = encodeURIComponent(pluginId || 'galgame_plugin');
     try {
-      const resp = await fetch(`/plugin/${pluginId}/ui-api/locale`, { cache: 'no-store' });
+      const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
       if (resp.ok) {
         const data = await resp.json();
         this._lang = data.locale || 'zh-CN';
@@ -44,7 +45,7 @@ const I18n = {
 
     for (const locale of this._localeCandidates(this._lang)) {
       try {
-        const resp = await fetch(`/plugin/${pluginId}/ui-api/i18n/ui/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
+        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/ui/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
         if (resp.ok) {
           this._bundle = await resp.json();
           this._lang = locale;
