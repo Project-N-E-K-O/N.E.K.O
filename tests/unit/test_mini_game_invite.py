@@ -60,10 +60,12 @@ def _clear_mini_game_state():
     sr._mini_game_invite_state.clear()
     sr._proactive_chat_history.clear()
     sr._proactive_chat_totals.clear()
+    sr._invite_ever_delivered.clear()
     yield
     sr._mini_game_invite_state.clear()
     sr._proactive_chat_history.clear()
     sr._proactive_chat_totals.clear()
+    sr._invite_ever_delivered.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -82,8 +84,9 @@ def _force_invite_enabled_default(monkeypatch):
 @pytest.fixture(autouse=True)
 def _stub_persistent_counter(monkeypatch):
     """单测不初始化 shared_state.config_manager，真路径 ``_proactive_chat_totals_path``
-    会 RuntimeError。把 load / increment 替换成纯内存版本，断言能直接读 / 写
-    ``sr._proactive_chat_totals[lanlan]`` 来 setup / verify 计数。"""
+    会 RuntimeError。把 load / increment / mark-ever-delivered 都替换成纯内存版
+    本，断言能直接读 / 写 ``sr._proactive_chat_totals[lanlan]`` 与
+    ``sr._invite_ever_delivered[lanlan]`` 来 setup / verify。"""
     async def _noop_load():
         sr._proactive_chat_totals_loaded = True
 
@@ -92,8 +95,12 @@ def _stub_persistent_counter(monkeypatch):
         sr._proactive_chat_totals[lanlan_name] = n
         return n
 
+    async def _mark_only(lanlan_name: str) -> None:
+        sr._invite_ever_delivered[lanlan_name] = True
+
     monkeypatch.setattr(sr, '_ensure_proactive_chat_totals_loaded', _noop_load)
     monkeypatch.setattr(sr, '_increment_proactive_chat_total', _bump_only)
+    monkeypatch.setattr(sr, '_mark_invite_ever_delivered', _mark_only)
     sr._proactive_chat_totals_loaded = False  # 强制每个 test 走 _noop_load 一次
 
 
@@ -567,15 +574,13 @@ async def test_force_first_skipped_when_total_below_threshold(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_force_first_skipped_when_already_delivered_before(monkeypatch):
-    """state.delivered_at != None（之前发过邀请，无论被回应没）→
-    force-first 不再生效，回归普通 10% 掷骰路径。"""
+async def test_force_first_skipped_when_ever_delivered_persistent_flag_set(monkeypatch):
+    """``_invite_ever_delivered`` 持久化标记一旦置 True → force-first 不再生效，
+    回归普通 10% 掷骰路径。这是 "is new user" 的真正判定，跟 in-memory 的
+    ``state.delivered_at`` 完全独立。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
-    state = sr._mini_game_invite_get_state(LANLAN)
-    state['delivered_at'] = time.time() - 86400  # 老早发过
-    state['responded_at'] = time.time() - 86400
-    state['chats_since_response'] = 100  # 冷却完了
+    sr._invite_ever_delivered[LANLAN] = True  # 历史上发过邀请
     sr._proactive_chat_totals[LANLAN] = 99
 
     out = await sr._maybe_deliver_mini_game_invite(
@@ -584,6 +589,49 @@ async def test_force_first_skipped_when_already_delivered_before(monkeypatch):
         invite_lang='zh', master_name=MASTER,
     )
     assert out is None  # 老用户 + dice=0 → 不发
+
+
+@pytest.mark.asyncio
+async def test_force_first_skipped_after_simulated_restart(monkeypatch):
+    """关键回归：codex P1 / CodeRabbit Major 指出的 cross-restart bug——
+    重启后 ``_mini_game_invite_state`` 是空 dict，但 ``_proactive_chat_totals``
+    与 ``_invite_ever_delivered`` 都从持久化文件加载回来。已经被邀请过的用户
+    不应再被 force-first 当新用户重新强制邀请。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    # 模拟"重启后"的状态：state 空（in-memory 清零），但持久化两份都还在
+    sr._mini_game_invite_state.clear()
+    sr._proactive_chat_totals[LANLAN] = 99
+    sr._invite_ever_delivered[LANLAN] = True  # 重启前已发过
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None, (
+        "重启后已邀请过的用户被 force-first 重新邀请——"
+        "force-first 检查必须基于持久化的 _invite_ever_delivered，"
+        "不能基于 in-memory 的 state.delivered_at"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_marks_ever_delivered_persistent(monkeypatch):
+    """成功投递后必须把 _invite_ever_delivered 置 True（持久化），用于
+    跨重启识别"已邀请过的用户"防止 force-first 重复触发。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    assert not sr._was_invite_ever_delivered(LANLAN)
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+    assert sr._was_invite_ever_delivered(LANLAN), (
+        "投递成功但 ever_delivered 没置 True——下次 force-first 会重复触发"
+    )
 
 
 @pytest.mark.asyncio

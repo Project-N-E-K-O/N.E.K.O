@@ -3563,8 +3563,14 @@
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
     if (exitToStartButton) exitToStartButton.disabled = true;
-    const _t = (key, fallback) =>
-      typeof window.t === 'function' ? window.t(`soccer.${key}`) : fallback;
+    const _t = (key, fallback) => {
+      // i18next 在 key 缺失时返回 key 字面量本身——必须等值比对回 fallback，
+      // 否则 UI 会出现 "soccer.exitGame.ending" 这种 key 字符串。
+      if (typeof window.t !== 'function') return fallback;
+      const fullKey = `soccer.${key}`;
+      const v = window.t(fullKey);
+      return (v && v !== fullKey) ? v : fallback;
+    };
     try {
       window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
