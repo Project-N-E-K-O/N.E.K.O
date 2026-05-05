@@ -104,6 +104,11 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
+# 7b. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
+#     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
+RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
+    test -f static/yui-origin/yui-origin.moc3
+
 # 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"

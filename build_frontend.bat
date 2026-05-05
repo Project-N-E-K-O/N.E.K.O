@@ -33,6 +33,10 @@ if "%YUI_NEED_EXTRACT%"=="1" (
     echo [build_frontend] yui-origin unpack failed
     exit /b 1
   )
+  if not exist "%YUI_MARKER%" (
+    echo [build_frontend] yui-origin marker missing after unpack: %YUI_MARKER%
+    exit /b 1
+  )
   echo [build_frontend] yui-origin done: %YUI_DIR%
 ) else (
   echo [build_frontend] yui-origin up to date, skip
