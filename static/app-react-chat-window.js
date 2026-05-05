@@ -1512,10 +1512,19 @@
         // 任一 outcome（open_game / cooldown / suppress）都 dismiss 当前 prompt——
         // 跨窗口一致性。即便本 page 不是触发方，也保持 UI 同步。
         dismissChoicePromptIfMatches(sessionId);
-        // accept outcome 兼当 launch 信号 window.open；dedupe 由 launched session
-        // 集合保护，按钮 endpoint 路径同步推 WS 时不会双开（前者已在 launch set
-        // 注册）。
+        // launch path（仅 keyword 触发会带 game_url，button path backend 已不推
+        // game_url）：多窗口 Electron 模式下 backend 通过 RAW_MESSAGE IPC 把
+        // event 转给所有 page (pet + chat.html mirrors)，每个 page 都执行此函数。
+        // 不分 ownership 直接 window.open 会让所有 page 各自开一个 game 窗口
+        // （codex P2 指出，per-page _launchedMiniGameSessionIds 跨 page 不 dedupe）。
+        // 约定：only **non-follower** owner page (pet / 单窗口) 处理 WS-trigger
+        // launch；chat.html follower (window.__NEKO_MULTI_WINDOW__ === true) 仅
+        // dismiss UI。Button path 不走这条 WS launch（HTTP 响应里 chat.html 自己
+        // launch），所以不会双开。
         if (payload.action === 'open_game' && payload.url) {
+            if (window.__NEKO_MULTI_WINDOW__) {
+                return;  // chat.html follower：let pet leader 处理 launch
+            }
             launchMiniGameInternal({
                 sessionId: sessionId,
                 gameType: String(payload.gameType || ''),

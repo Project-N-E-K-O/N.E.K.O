@@ -5940,6 +5940,11 @@ async def mini_game_invite_respond(request: Request):
     # 推一条 mini_game_invite_resolved 给所有可能在显示 prompt 的 page（pet 主窗
     # + chat.html 多窗口同时打开），让 cross-window 一致地 dismiss 选项 UI。
     # 单窗口模式只有一个监听者也无害（idempotent）。
+    #
+    # ⚠️ 故意不传 game_url / game_type —— button path 由触发 page（chat.html
+    # 收到 HTTP 响应后）自己 window.open；如果这里 push 的 WS 也带 game_url，
+    # pet 主窗（非 follower）也会 launch，多窗口下双开窗口（codex P2 指出）。
+    # WS broadcast 在 button path 里只承担 cross-window dismiss prompt 职责。
     try:
         mgr = get_session_manager().get(lanlan_name)
         if mgr is not None:
@@ -5947,8 +5952,7 @@ async def mini_game_invite_respond(request: Request):
                 mgr,
                 session_id=session_id,
                 action=result['action'],
-                game_url=result.get('game_url'),
-                game_type=result.get('game_type'),
+                # 故意不传 game_url / game_type
             )
     except Exception as exc:
         logger.warning(
