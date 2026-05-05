@@ -1409,6 +1409,34 @@
             choice: option.choice,
             session_id: sessionId
         };
+
+        // accept 路径预开 popup（**仍在用户点击的同步上下文**）保留 user-gesture
+        // 上下文。后续 fetch resolve 后再 window.open 会被浏览器 popup blocker
+        // 识别为非手势触发拦截——pre-open 后 .location.href 注入 URL 不会被拦
+        // （codex P2 指出原版 fetch 后 window.open 失败时 state 已 responded
+        // 用户失去重试入口）。decline / later 路径不开窗口，无此处理。
+        var preOpenedWindow = null;
+        if (option.choice === 'accept') {
+            try {
+                preOpenedWindow = window.open('', '_blank');
+                if (preOpenedWindow) {
+                    // 给个临时占位文本免得用户看到 about:blank 一闪
+                    try {
+                        preOpenedWindow.document.write(
+                            '<title>Loading…</title><body style="background:#111;color:#888;font:14px sans-serif;padding:20px">Loading mini-game…</body>'
+                        );
+                    } catch (_) {}
+                }
+            } catch (_) {
+                preOpenedWindow = null;
+            }
+        }
+        var closePreOpened = function () {
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try { preOpenedWindow.close(); } catch (_) {}
+            }
+        };
+
         // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request
         // 拒绝缺 token 的请求，否则所有合法点击都会被 403 reject、prompt 已清掉
         // 但 invite state 没更新 —— codex P1 指出。沿用 nekoLocalMutationSecurity
@@ -1444,8 +1472,28 @@
         }).then(function (resp) {
             return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status));
         }).then(function (data) {
-            if (!data || data.action !== 'open_game' || !data.game_url) return;
-            // accept 路径直接 window.open；dedupe 让后续 ws push 同 session 不重开
+            if (!data || data.action !== 'open_game' || !data.game_url) {
+                // 非 accept outcome（cooldown / suppress / expired）→ 关掉占位 popup
+                closePreOpened();
+                return;
+            }
+            // accept：优先注入 URL 进 pre-opened popup（保留用户手势上下文，
+            // 浏览器 popup blocker 不拦）；pre-open 失败时 fallback 调
+            // launchMiniGameInternal（可能被拦但留个 console.warn 兜底）。
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try {
+                    preOpenedWindow.location.href = data.game_url;
+                    if (sessionId) {
+                        state._launchedMiniGameSessionIds[sessionId] = true;
+                    }
+                    return;
+                } catch (err) {
+                    console.warn('[MiniGameInvite] pre-opened window navigation failed:', err);
+                    closePreOpened();
+                }
+            }
+            // pre-open 失败 fallback：直接 window.open（有被 popup blocker 拦
+            // 的风险，但 accept-path-via-pre-open 已是主路径，到此处罕见）。
             launchMiniGameInternal({
                 sessionId: sessionId,
                 gameType: data.game_type || rollbackPrompt.gameType || '',
@@ -1454,6 +1502,7 @@
             });
         }).catch(function (err) {
             console.warn('[MiniGameInvite] respond endpoint failed:', err);
+            closePreOpened();
             // 网络/服务异常 → 回滚 prompt 让用户能再试。但只在当前 prompt 仍是
             // null（即用户没在 fetch 期间触发新 prompt）且会话仍未被 launch 过的
             // 情况下回滚——否则强复活旧 UI 可能撞新邀请。
