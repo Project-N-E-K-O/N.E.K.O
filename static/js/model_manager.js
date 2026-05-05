@@ -1373,9 +1373,9 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 );
                 return;
             }
-        } else {
-            return;
         }
+        // 用户关闭选择弹窗（cardFaceChoice 不是 edit/default）时，模型本身已经保存成功，
+        // 仍然要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
 
         window.hasUnsavedChanges = false;
         await notifyMainPageModelReload();
