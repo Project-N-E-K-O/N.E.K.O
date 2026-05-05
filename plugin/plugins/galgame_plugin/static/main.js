@@ -28,60 +28,83 @@ const PIPELINE_ZOOM_DEFAULT = 13;
 const PIPELINE_COLLAPSED_KEY = 'galgame_pipeline_collapsed';
 const OCR_WINDOW_COLLAPSED_KEY = 'galgame_ocr_window_collapsed';
 
-const INSTALL_UI = {
-  rapidocr: {
-    kind: 'rapidocr',
-    label: 'RapidOCR',
-    url: RAPIDOCR_INSTALL_URL,
-    storageKey: `${PLUGIN_ID}:rapidocr_install_task_id`,
-    domPrefix: 'rapidocr',
-    actionText: '一键安装 RapidOCR',
-    retryText: '重试安装 RapidOCR',
-    runningText: '后台安装中...',
-    queuedFlash: '已创建后台安装任务，接下来会安装插件隔离的 RapidOCR 运行时，并通过 SSE 推送实时进度。',
-    successFlash: 'RapidOCR 安装完成',
-    failureFlash: 'RapidOCR 安装失败',
-  },
-  dxcam: {
-    kind: 'dxcam',
-    label: 'DXcam',
-    url: DXCAM_INSTALL_URL,
-    storageKey: `${PLUGIN_ID}:dxcam_install_task_id`,
-    domPrefix: 'dxcam',
-    actionText: '一键安装 DXcam',
-    retryText: '重试安装 DXcam',
-    runningText: '后台安装中...',
-    queuedFlash: '已创建后台安装任务，接下来会安装 DXcam 截图依赖，并通过 SSE 推送实时进度。',
-    successFlash: 'DXcam 安装完成',
-    failureFlash: 'DXcam 安装失败',
-  },
-  tesseract: {
-    kind: 'tesseract',
-    label: 'Tesseract',
-    url: TESSERACT_INSTALL_URL,
-    storageKey: `${PLUGIN_ID}:tesseract_install_task_id`,
-    domPrefix: 'tesseract',
-    actionText: '一键安装 Tesseract',
-    retryText: '重试安装 Tesseract',
-    runningText: '后台安装中...',
-    queuedFlash: '已创建后台安装任务，接下来会通过 HTTPS 下载 Tesseract 和语言包，并通过 SSE 推送实时进度。',
-    successFlash: 'Tesseract 安装完成',
-    failureFlash: 'Tesseract 安装失败',
-  },
-  textractor: {
-    kind: 'textractor',
-    label: 'Textractor',
-    url: TEXTRACTOR_INSTALL_URL,
-    storageKey: `${PLUGIN_ID}:textractor_install_task_id`,
-    domPrefix: 'textractor',
-    actionText: '一键安装 Textractor',
-    retryText: '重试安装 Textractor',
-    runningText: '后台安装中...',
-    queuedFlash: '已创建后台安装任务，接下来会通过 HTTPS 下载 Textractor，并通过 SSE 推送实时进度。',
-    successFlash: 'Textractor 安装完成',
-    failureFlash: 'Textractor 安装失败',
-  },
-};
+function uiT(key, fallback) {
+  return window.I18n && typeof window.I18n.t === 'function'
+    ? window.I18n.t(key, fallback)
+    : (fallback || key);
+}
+
+function uiTf(key, fallback, values = {}) {
+  const template = uiT(key, fallback);
+  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+    Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+  ));
+}
+
+function uiDynamicT(prefix, key, fallback) {
+  const normalized = String(key || '').trim();
+  if (!normalized) {
+    return fallback || '';
+  }
+  return uiT(`${prefix}.${normalized}`, fallback || normalized);
+}
+
+function getInstallUIConfig() {
+  return {
+    rapidocr: {
+      kind: 'rapidocr',
+      label: 'RapidOCR',
+      url: RAPIDOCR_INSTALL_URL,
+      storageKey: `${PLUGIN_ID}:rapidocr_install_task_id`,
+      domPrefix: 'rapidocr',
+      actionText: uiT('ui.install.rapidocr.action', '一键安装 RapidOCR'),
+      retryText: uiT('ui.install.rapidocr.retry', '重试安装 RapidOCR'),
+      runningText: uiT('ui.install.running', '后台安装中...'),
+      queuedFlash: uiT('ui.install.rapidocr.queued', '已创建后台安装任务，接下来会安装插件隔离的 RapidOCR 运行时，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.rapidocr.success', 'RapidOCR 安装完成'),
+      failureFlash: uiT('ui.install.rapidocr.failure', 'RapidOCR 安装失败'),
+    },
+    dxcam: {
+      kind: 'dxcam',
+      label: 'DXcam',
+      url: DXCAM_INSTALL_URL,
+      storageKey: `${PLUGIN_ID}:dxcam_install_task_id`,
+      domPrefix: 'dxcam',
+      actionText: uiT('ui.install.dxcam.action', '一键安装 DXcam'),
+      retryText: uiT('ui.install.dxcam.retry', '重试安装 DXcam'),
+      runningText: uiT('ui.install.running', '后台安装中...'),
+      queuedFlash: uiT('ui.install.dxcam.queued', '已创建后台安装任务，接下来会安装 DXcam 截图依赖，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.dxcam.success', 'DXcam 安装完成'),
+      failureFlash: uiT('ui.install.dxcam.failure', 'DXcam 安装失败'),
+    },
+    tesseract: {
+      kind: 'tesseract',
+      label: 'Tesseract',
+      url: TESSERACT_INSTALL_URL,
+      storageKey: `${PLUGIN_ID}:tesseract_install_task_id`,
+      domPrefix: 'tesseract',
+      actionText: uiT('ui.install.tesseract.action', '一键安装 Tesseract'),
+      retryText: uiT('ui.install.tesseract.retry', '重试安装 Tesseract'),
+      runningText: uiT('ui.install.running', '后台安装中...'),
+      queuedFlash: uiT('ui.install.tesseract.queued', '已创建后台安装任务，接下来会通过 HTTPS 下载 Tesseract 和语言包，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.tesseract.success', 'Tesseract 安装完成'),
+      failureFlash: uiT('ui.install.tesseract.failure', 'Tesseract 安装失败'),
+    },
+    textractor: {
+      kind: 'textractor',
+      label: 'Textractor',
+      url: TEXTRACTOR_INSTALL_URL,
+      storageKey: `${PLUGIN_ID}:textractor_install_task_id`,
+      domPrefix: 'textractor',
+      actionText: uiT('ui.install.textractor.action', '一键安装 Textractor'),
+      retryText: uiT('ui.install.textractor.retry', '重试安装 Textractor'),
+      runningText: uiT('ui.install.running', '后台安装中...'),
+      queuedFlash: uiT('ui.install.textractor.queued', '已创建后台安装任务，接下来会通过 HTTPS 下载 Textractor，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.textractor.success', 'Textractor 安装完成'),
+      failureFlash: uiT('ui.install.textractor.failure', 'Textractor 安装失败'),
+    },
+  };
+}
 
 function createInstallRuntimeState() {
   return {
@@ -149,8 +172,12 @@ function applyPipelineCollapsed(on) {
   }
   const button = document.getElementById('ocrPipelineCollapseToggle');
   if (button) {
-    button.textContent = collapsed ? '展开' : '隐藏';
-    button.title = collapsed ? '展开 OCR 链路步骤' : '隐藏 OCR 链路步骤';
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.title = collapsed
+      ? uiT('ui.ocr.pipeline.expand_title', '展开 OCR 链路步骤')
+      : uiT('ui.ocr.pipeline.collapse_title', '隐藏 OCR 链路步骤');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
   localStorage.setItem(PIPELINE_COLLAPSED_KEY, collapsed ? '1' : '0');
@@ -171,8 +198,12 @@ function applyCurrentLineCollapsed(on) {
   });
   const button = document.getElementById('currentLineCollapseToggle');
   if (button) {
-    button.textContent = collapsed ? '展开' : '隐藏';
-    button.title = collapsed ? '展开当前台词内容' : '隐藏当前台词内容';
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.title = collapsed
+      ? uiT('ui.current_line.expand_title', '展开当前台词内容')
+      : uiT('ui.current_line.collapse_title', '隐藏当前台词内容');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
   localStorage.setItem(CL_COLLAPSED_KEY, collapsed ? '1' : '0');
@@ -236,8 +267,12 @@ function applyOcrWindowCollapsed(on) {
 
   const button = document.getElementById('ocrWindowCollapseToggle');
   if (button) {
-    button.textContent = collapsed ? '展开' : '隐藏';
-    button.title = collapsed ? '展开窗口选择内容' : '隐藏窗口选择内容';
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.title = collapsed
+      ? uiT('ui.ocr.window.expand_title', '展开窗口选择内容')
+      : uiT('ui.ocr.window.collapse_title', '隐藏窗口选择内容');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
@@ -271,9 +306,25 @@ const OCR_PROFILE_STAGE_LABELS_ZH = {
   minigame_stage: '小游戏',
   game_over_stage: 'Game Over',
 };
+const OCR_PROFILE_STAGE_I18N_KEYS = {
+  default: 'ui.stage.default',
+  dialogue_stage: 'ui.stage.dialogue',
+  menu_stage: 'ui.stage.menu',
+  title_stage: 'ui.stage.title',
+  save_load_stage: 'ui.stage.save_load',
+  config_stage: 'ui.stage.config',
+  transition_stage: 'ui.stage.transition',
+  gallery_stage: 'ui.stage.gallery',
+  minigame_stage: 'ui.stage.minigame',
+  game_over_stage: 'ui.stage.game_over',
+};
 const OCR_CAPTURE_SAVE_SCOPE_LABELS_ZH = {
   window_bucket: '当前窗口分辨率',
   process_fallback: '进程通用回退',
+};
+const OCR_CAPTURE_SAVE_SCOPE_I18N_KEYS = {
+  window_bucket: 'ui.capture_profile.save_scope.window_bucket',
+  process_fallback: 'ui.capture_profile.save_scope.process_fallback',
 };
 const OCR_CAPTURE_MATCH_SOURCE_LABELS_ZH = {
   bucket_exact: '当前窗口精确命中',
@@ -281,6 +332,13 @@ const OCR_CAPTURE_MATCH_SOURCE_LABELS_ZH = {
   process_fallback: '进程通用回退',
   builtin_preset: '内建预设',
   config_default: '插件默认配置',
+};
+const OCR_CAPTURE_MATCH_SOURCE_I18N_KEYS = {
+  bucket_exact: 'ui.capture_profile.match_source.bucket_exact',
+  bucket_aspect_nearest: 'ui.capture_profile.match_source.bucket_aspect_nearest',
+  process_fallback: 'ui.capture_profile.match_source.process_fallback',
+  builtin_preset: 'ui.capture_profile.match_source.builtin_preset',
+  config_default: 'ui.capture_profile.match_source.config_default',
 };
 const AIHONG_CAPTURE_PRESETS = {
   dialogue_stage: {
@@ -546,7 +604,77 @@ const READER_MODE_LABELS_ZH = {
   ocr_reader: 'OCR',
 };
 
-let latestAgentReply = '暂无交互';
+const ACTION_LABELS_ZH = {
+  refresh_all: '刷新全部',
+  debug_details: '查看调试详情',
+  refresh_ocr_windows: '刷新窗口',
+  select_ocr_window: '选择游戏窗口',
+  focus_game: '切回游戏窗口',
+  capture_backend: '切换截图方式',
+  recalibrate_ocr: '重新截图校准',
+  line_details: '查看识别详情',
+  choice_advisor: '切换到自动推进模式',
+  install_rapidocr: '一键安装 RapidOCR',
+  refresh_status: '刷新状态',
+  start_recognition: '开始自动识别',
+};
+
+function mapLabel(i18nKeys, labels, key, fallback = '') {
+  const normalized = String(key || '').trim();
+  const fallbackText = labels[normalized] || fallback || normalized;
+  const i18nKey = i18nKeys[normalized];
+  return i18nKey ? uiT(i18nKey, fallbackText) : fallbackText;
+}
+
+function fieldLabel(key) {
+  return uiDynamicT('ui.field', key, FIELD_LABELS_ZH[key] || key);
+}
+
+function agentUserStatusLabel(key, fallback = '') {
+  return uiDynamicT('ui.agent_status', key, AGENT_USER_STATUS_LABELS_ZH[key] || fallback || key);
+}
+
+function ocrProfileStageLabel(key, fallback = '') {
+  return mapLabel(OCR_PROFILE_STAGE_I18N_KEYS, OCR_PROFILE_STAGE_LABELS_ZH, key, fallback);
+}
+
+function ocrCaptureMatchSourceLabel(key, fallback = '') {
+  return mapLabel(OCR_CAPTURE_MATCH_SOURCE_I18N_KEYS, OCR_CAPTURE_MATCH_SOURCE_LABELS_ZH, key, fallback);
+}
+
+function ocrCaptureSaveScopeLabel(key, fallback = '') {
+  return mapLabel(OCR_CAPTURE_SAVE_SCOPE_I18N_KEYS, OCR_CAPTURE_SAVE_SCOPE_LABELS_ZH, key, fallback);
+}
+
+function connectionStateLabel(key, fallback = '') {
+  return uiDynamicT('ui.connection_state', key, CONNECTION_STATE_LABELS_ZH[key] || fallback || key);
+}
+
+function modeLabel(key, fallback = '') {
+  return uiDynamicT('ui.mode_label', key, MODE_LABELS_ZH[key] || fallback || key);
+}
+
+function advanceSpeedLabel(key, fallback = '') {
+  return uiDynamicT('ui.speed_label', key, ADVANCE_SPEED_LABELS_ZH[key] || fallback || key);
+}
+
+function dataSourceLabel(key, fallback = '') {
+  return uiDynamicT('ui.data_source', key, DATA_SOURCE_LABELS_ZH[key] || fallback || key);
+}
+
+function readerModeLabel(key, fallback = '') {
+  return uiDynamicT('ui.reader_mode', key, READER_MODE_LABELS_ZH[key] || fallback || key);
+}
+
+function primaryActionLabel(id, fallback = '') {
+  return uiDynamicT('ui.action', id, ACTION_LABELS_ZH[id] || fallback || id);
+}
+
+function diagnosisAction(id, fallback = '') {
+  return { id, label: primaryActionLabel(id, fallback || id) };
+}
+
+let latestAgentReply = uiT('ui.agent.no_interaction', '暂无交互');
 let latestAgentStatus = null;
 let latestStatus = null;
 let latestSnapshotData = null;
@@ -589,7 +717,7 @@ const latestInsights = {
 };
 
 function getInstallConfig(kind) {
-  const config = INSTALL_UI[kind];
+  const config = getInstallUIConfig()[kind];
   if (!config) {
     throw new Error(`unsupported install kind: ${kind}`);
   }
@@ -638,13 +766,13 @@ async function createRun(entryId, args = {}) {
   });
 
   if (!createResp.ok) {
-    throw new Error(`创建任务失败: HTTP ${createResp.status}`);
+    throw new Error(uiTf('ui.error.run_create_failed', '创建任务失败: HTTP {status}', { status: createResp.status }));
   }
 
   const createData = await createResp.json();
   const runId = createData.run_id || createData.id;
   if (!runId) {
-    throw new Error('未获取到 run_id');
+    throw new Error(uiT('ui.error.run_id_missing', '未获取到 run_id'));
   }
   return runId;
 }
@@ -659,7 +787,7 @@ async function exportRunResult(runId) {
   const resultItem = items.find((item) => item.type === 'json' && item.json) || items[0];
   const pluginResponse = resultItem ? (resultItem.json || {}) : {};
   if (pluginResponse.success === false || pluginResponse.error) {
-    throw new Error(pluginResponse.error?.message || pluginResponse.message || '插件调用失败');
+    throw new Error(pluginResponse.error?.message || pluginResponse.message || uiT('ui.error.plugin_call_failed', '插件调用失败'));
   }
   return pluginResponse.data || {};
 }
@@ -690,7 +818,7 @@ async function callPlugin(entryId, args = {}, { timeoutMs } = {}) {
     }
   }
 
-  throw new Error('插件调用超时');
+  throw new Error(uiT('ui.error.plugin_call_timeout', '插件调用超时'));
 }
 
 async function safeCall(entryId, args = {}, fallback = {}) {
@@ -749,11 +877,11 @@ function updateSettingsDirtyHint(message = '') {
   }
   if (settingsSaveInFlight) {
     hint.hidden = false;
-    hint.textContent = message || '正在保存...';
+    hint.textContent = message || uiT('ui.settings.saving_hint', '正在保存...');
     return;
   }
   hint.hidden = !settingsDirty;
-  hint.textContent = message || '有未保存设置';
+  hint.textContent = message || uiT('ui.settings.dirty', '有未保存设置');
 }
 
 function shouldOfferRapidOcrInstall(status = {}) {
@@ -772,7 +900,7 @@ function withRapidOcrInstallAction(diagnosis, status = {}) {
   return {
     ...diagnosis,
     actions: [
-      { id: 'install_rapidocr', label: '一键安装 RapidOCR' },
+      diagnosisAction('install_rapidocr'),
       ...actions,
     ],
   };
@@ -844,61 +972,61 @@ function getCurrentLineTexts(status = {}) {
 
 function formatStableBlockReason(reason) {
   const mapping = {
-    waiting_for_repeat: '刚读到新文字，正在确认是不是同一句台词',
-    duplicate_stable_text: '这句台词已经显示过',
-    duplicate_raw_text: '识别结果和上一轮相同，暂不重复写入',
-    duplicate_observed_text: '候选台词和上一轮相同，正在等待变化',
-    duplicate_candidate_text: '候选台词和上一轮相同，正在等待变化',
-    empty_text: '文字识别暂时没有读到有效文本',
-    no_text: '文字识别暂时没有读到有效文本',
-    no_valid_text: '文字识别暂时没有读到有效文本',
-    low_confidence: '文字识别置信度较低，暂不写入台词',
-    overlay_text: '识别结果像系统界面文字，暂不写入台词',
-    game_overlay_text: '识别结果像游戏菜单或系统界面，暂不写入台词',
-    waiting_for_change: '画面文字没有变化，正在等待新台词',
-    waiting_for_new_text: '正在等待新台词出现',
-    capture_failed: '截图或识别失败，暂时不能确认台词',
+    waiting_for_repeat: uiT('ui.reason.stable.waiting_for_repeat', '刚读到新文字，正在确认是不是同一句台词'),
+    duplicate_stable_text: uiT('ui.reason.stable.duplicate_stable_text', '这句台词已经显示过'),
+    duplicate_raw_text: uiT('ui.reason.stable.duplicate_raw_text', '识别结果和上一轮相同，暂不重复写入'),
+    duplicate_observed_text: uiT('ui.reason.stable.duplicate_observed_text', '候选台词和上一轮相同，正在等待变化'),
+    duplicate_candidate_text: uiT('ui.reason.stable.duplicate_candidate_text', '候选台词和上一轮相同，正在等待变化'),
+    empty_text: uiT('ui.reason.stable.empty_text', '文字识别暂时没有读到有效文本'),
+    no_text: uiT('ui.reason.stable.no_text', '文字识别暂时没有读到有效文本'),
+    no_valid_text: uiT('ui.reason.stable.no_valid_text', '文字识别暂时没有读到有效文本'),
+    low_confidence: uiT('ui.reason.stable.low_confidence', '文字识别置信度较低，暂不写入台词'),
+    overlay_text: uiT('ui.reason.stable.overlay_text', '识别结果像系统界面文字，暂不写入台词'),
+    game_overlay_text: uiT('ui.reason.stable.game_overlay_text', '识别结果像游戏菜单或系统界面，暂不写入台词'),
+    waiting_for_change: uiT('ui.reason.stable.waiting_for_change', '画面文字没有变化，正在等待新台词'),
+    waiting_for_new_text: uiT('ui.reason.stable.waiting_for_new_text', '正在等待新台词出现'),
+    capture_failed: uiT('ui.reason.stable.capture_failed', '截图或识别失败，暂时不能确认台词'),
   };
   const normalized = textValue(reason);
-  return mapping[normalized] || normalized;
+  return uiDynamicT('ui.reason.stable', normalized, mapping[normalized] || normalized);
 }
 
 function formatOcrTickBlockReason(reason) {
   const mapping = {
-    ocr_reader_unavailable: 'OCR Reader 尚不可用',
-    ocr_reader_not_allowed: '当前读取模式不允许 OCR',
-    reader_mode_memory_only: '当前为仅内存读取模式',
-    memory_reader_recent_text: '内存读取已有近期文本，暂不轮询 OCR',
-    memory_reader_default_unavailable: '默认内存读取目标尚不可用，未主动切到 OCR',
-    waiting_pending_advance_delay: '等待推进后的延迟采集窗口',
-    trigger_mode_after_advance_waiting_for_input: '点击对白后识别模式正在等待游戏推进',
-    trigger_mode_after_advance_waiting_for_refresh: '点击对白后识别模式正在等待刷新条件',
-    tick_gate_closed: 'OCR 轮询门控未打开',
-    plugin_config_missing: '插件配置尚未就绪',
-    ocr_reader_manager_missing: 'OCR Reader 管理器尚未就绪',
-    ocr_fast_loop_started: 'OCR Fast Loop 已接管本轮采集',
-    ocr_tick_lock_busy: '上一轮 OCR tick 仍在执行',
-    tick_gate_timeout: '推进采集等待门控超时，已清理',
-    trigger_mode_not_after_advance: '当前不是点击对白后识别模式',
-    refresh_method_missing: '前台刷新方法不可用',
-    refresh_failed: '前台刷新失败',
-    target_missing: '目标游戏窗口不存在',
-    target_minimized: '目标游戏窗口已最小化',
-    target_not_visible: '目标游戏窗口不可见',
-    target_not_foreground: '目标游戏窗口不是前台焦点',
-    capture_failed: '截图或文字识别失败',
-    stale_capture_backend: '截图画面没有更新',
+    ocr_reader_unavailable: uiT('ui.reason.tick.ocr_reader_unavailable', 'OCR Reader 尚不可用'),
+    ocr_reader_not_allowed: uiT('ui.reason.tick.ocr_reader_not_allowed', '当前读取模式不允许 OCR'),
+    reader_mode_memory_only: uiT('ui.reason.tick.reader_mode_memory_only', '当前为仅内存读取模式'),
+    memory_reader_recent_text: uiT('ui.reason.tick.memory_reader_recent_text', '内存读取已有近期文本，暂不轮询 OCR'),
+    memory_reader_default_unavailable: uiT('ui.reason.tick.memory_reader_default_unavailable', '默认内存读取目标尚不可用，未主动切到 OCR'),
+    waiting_pending_advance_delay: uiT('ui.reason.tick.waiting_pending_advance_delay', '等待推进后的延迟采集窗口'),
+    trigger_mode_after_advance_waiting_for_input: uiT('ui.reason.tick.trigger_mode_after_advance_waiting_for_input', '点击对白后识别模式正在等待游戏推进'),
+    trigger_mode_after_advance_waiting_for_refresh: uiT('ui.reason.tick.trigger_mode_after_advance_waiting_for_refresh', '点击对白后识别模式正在等待刷新条件'),
+    tick_gate_closed: uiT('ui.reason.tick.tick_gate_closed', 'OCR 轮询门控未打开'),
+    plugin_config_missing: uiT('ui.reason.tick.plugin_config_missing', '插件配置尚未就绪'),
+    ocr_reader_manager_missing: uiT('ui.reason.tick.ocr_reader_manager_missing', 'OCR Reader 管理器尚未就绪'),
+    ocr_fast_loop_started: uiT('ui.reason.tick.ocr_fast_loop_started', 'OCR Fast Loop 已接管本轮采集'),
+    ocr_tick_lock_busy: uiT('ui.reason.tick.ocr_tick_lock_busy', '上一轮 OCR tick 仍在执行'),
+    tick_gate_timeout: uiT('ui.reason.tick.tick_gate_timeout', '推进采集等待门控超时，已清理'),
+    trigger_mode_not_after_advance: uiT('ui.reason.tick.trigger_mode_not_after_advance', '当前不是点击对白后识别模式'),
+    refresh_method_missing: uiT('ui.reason.tick.refresh_method_missing', '前台刷新方法不可用'),
+    refresh_failed: uiT('ui.reason.tick.refresh_failed', '前台刷新失败'),
+    target_missing: uiT('ui.reason.tick.target_missing', '目标游戏窗口不存在'),
+    target_minimized: uiT('ui.reason.tick.target_minimized', '目标游戏窗口已最小化'),
+    target_not_visible: uiT('ui.reason.tick.target_not_visible', '目标游戏窗口不可见'),
+    target_not_foreground: uiT('ui.reason.tick.target_not_foreground', '目标游戏窗口不是前台焦点'),
+    capture_failed: uiT('ui.reason.tick.capture_failed', '截图或文字识别失败'),
+    stale_capture_backend: uiT('ui.reason.tick.stale_capture_backend', '截图画面没有更新'),
   };
   const normalized = textValue(reason);
-  return mapping[normalized] || normalized;
+  return uiDynamicT('ui.reason.tick', normalized, mapping[normalized] || normalized);
 }
 
 function formatOcrEmitBlockReason(reason) {
   const mapping = {
-    capture_failed: '截图或文字识别失败',
-    stale_capture_backend: '截图画面没有更新',
-    screen_classification_skipped_dialogue: '画面被判定为非对白界面',
-    no_dialogue_text: '没有可写入的对白文本',
+    capture_failed: uiT('ui.reason.emit.capture_failed', '截图或文字识别失败'),
+    stale_capture_backend: uiT('ui.reason.emit.stale_capture_backend', '截图画面没有更新'),
+    screen_classification_skipped_dialogue: uiT('ui.reason.emit.screen_classification_skipped_dialogue', '画面被判定为非对白界面'),
+    no_dialogue_text: uiT('ui.reason.emit.no_dialogue_text', '没有可写入的对白文本'),
     ...{
       waiting_for_repeat: formatStableBlockReason('waiting_for_repeat'),
       duplicate_stable_text: formatStableBlockReason('duplicate_stable_text'),
@@ -916,21 +1044,21 @@ function formatOcrEmitBlockReason(reason) {
     },
   };
   const normalized = textValue(reason);
-  return mapping[normalized] || formatStableBlockReason(normalized);
+  return uiDynamicT('ui.reason.emit', normalized, mapping[normalized] || formatStableBlockReason(normalized));
 }
 
 function formatOcrBackgroundState(state) {
   const mapping = {
-    background_polling: '后台轮询中',
-    foreground_resume_pending: '等待前台恢复',
-    visible_background_readable: '可见后台可读',
-    capture_backend_blocked: '截图后端受阻',
-    target_unavailable: '目标窗口不可用',
-    foreground_active: '前台可采集',
-    idle: '未激活',
+    background_polling: uiT('ui.ocr.background_state.background_polling', '后台轮询中'),
+    foreground_resume_pending: uiT('ui.ocr.background_state.foreground_resume_pending', '等待前台恢复'),
+    visible_background_readable: uiT('ui.ocr.background_state.visible_background_readable', '可见后台可读'),
+    capture_backend_blocked: uiT('ui.ocr.background_state.capture_backend_blocked', '截图后端受阻'),
+    target_unavailable: uiT('ui.ocr.background_state.target_unavailable', '目标窗口不可用'),
+    foreground_active: uiT('ui.ocr.background_state.foreground_active', '前台可采集'),
+    idle: uiT('ui.ocr.background_state.idle', '未激活'),
   };
   const normalized = textValue(state);
-  return mapping[normalized] || normalized;
+  return uiDynamicT('ui.ocr.background_state', normalized, mapping[normalized] || normalized);
 }
 
 function normalizePrimaryDiagnosis(diagnosis) {
@@ -960,7 +1088,7 @@ function normalizePrimaryDiagnosis(diagnosis) {
     : [];
   return {
     severity: ['ok', 'info', 'warning', 'error'].includes(severity) ? severity : 'info',
-    title: title || '运行诊断',
+    title: title || uiT('ui.diag.default_title', '运行诊断'),
     body,
     actions,
   };
@@ -1008,10 +1136,10 @@ function buildPrimaryDiagnosis(status = {}) {
   if (connectionState === 'plugin_not_started') {
     return diagnose({
       severity: 'info',
-      title: '插件尚未启动',
-      body: '请在插件管理页面点击"启动"按钮，启动完成后数据会自动刷新。',
+      title: uiT('ui.diag.plugin_not_started.title', '插件尚未启动'),
+      body: uiT('ui.diag.plugin_not_started.body', '请在插件管理页面点击"启动"按钮，启动完成后数据会自动刷新。'),
       actions: [
-        { id: 'refresh_all', label: '刷新全部' },
+        diagnosisAction('refresh_all'),
       ],
     });
   }
@@ -1019,11 +1147,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (lastError) {
     return diagnose({
       severity: 'error',
-      title: '插件运行出错',
-      body: `${lastError}。可以先刷新状态；如果仍然出现，请查看调试详情。`,
+      title: uiT('ui.diag.plugin_error.title', '插件运行出错'),
+      body: uiTf('ui.diag.plugin_error.body', '{error}。可以先刷新状态；如果仍然出现，请查看调试详情。', { error: lastError }),
       actions: [
-        { id: 'refresh_all', label: '刷新全部' },
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('refresh_all'),
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1031,33 +1159,34 @@ function buildPrimaryDiagnosis(status = {}) {
   if (detail === 'memory_reader_window_minimized' || lastExcludeReason === 'excluded_minimized_window') {
     return diagnose({
       severity: 'warning',
-      title: '游戏窗口最小化了',
-      body: '检测到游戏，但窗口最小化，文字识别不能截图。请恢复游戏窗口后继续。',
+      title: uiT('ui.diag.window_minimized.title', '游戏窗口最小化了'),
+      body: uiT('ui.diag.window_minimized.body', '检测到游戏，但窗口最小化，文字识别不能截图。请恢复游戏窗口后继续。'),
       actions: [
-        { id: 'refresh_ocr_windows', label: '我已恢复，刷新窗口' },
-        { id: 'select_ocr_window', label: '选择游戏窗口' },
+        diagnosisAction('refresh_ocr_windows'),
+        diagnosisAction('select_ocr_window'),
       ],
     });
   }
 
   if (contextState === 'capture_failed' || lastCaptureError) {
+    const captureFailure = lastCaptureError || uiT('ui.diag.capture_failed.default_error', '截图或识别后端返回错误，新台词不会更新。');
     return diagnose({
       severity: 'error',
-      title: '截图或文字识别失败',
+      title: uiT('ui.diag.capture_failed.title', '截图或文字识别失败'),
       body: intervalBackgroundBlocked
-        ? `${lastCaptureError || '截图或识别后端返回错误，新台词不会更新。'}当前为定时 OCR 后台读取，请确认窗口可见且未最小化；如果仍失败，切换截图方式或重新选择 OCR 窗口。`
-        : lastCaptureError || '截图或识别后端返回错误，新台词不会更新。',
+        ? uiTf('ui.diag.capture_failed.interval_body', '{error}当前为定时 OCR 后台读取，请确认窗口可见且未最小化；如果仍失败，切换截图方式或重新选择 OCR 窗口。', { error: captureFailure })
+        : captureFailure,
       actions: intervalBackgroundBlocked
         ? [
-          { id: 'focus_game', label: '切回游戏窗口' },
-          { id: 'capture_backend', label: '切换截图方式' },
-          { id: 'select_ocr_window', label: '选择游戏窗口' },
-          { id: 'debug_details', label: '查看调试详情' },
+          diagnosisAction('focus_game'),
+          diagnosisAction('capture_backend'),
+          diagnosisAction('select_ocr_window'),
+          diagnosisAction('debug_details'),
         ]
         : [
-          { id: 'recalibrate_ocr', label: '重新截图校准' },
-          { id: 'capture_backend', label: '切换截图方式' },
-          { id: 'debug_details', label: '查看调试详情' },
+          diagnosisAction('recalibrate_ocr'),
+          diagnosisAction('capture_backend'),
+          diagnosisAction('debug_details'),
         ],
     });
   }
@@ -1065,20 +1194,20 @@ function buildPrimaryDiagnosis(status = {}) {
   if (runtime.stale_capture_backend) {
     return diagnose({
       severity: 'warning',
-      title: '截图画面没有更新',
+      title: uiT('ui.diag.stale_capture.title', '截图画面没有更新'),
       body: intervalBackgroundBlocked
-        ? '定时 OCR 后台读取时截图画面没有更新。请确认游戏窗口可见且未最小化；如果仍停在旧画面，请切换截图方式或重新选择 OCR 窗口。'
-        : '当前截图源可能停在旧画面。请切回游戏窗口，或切换截图方式后再试。',
+        ? uiT('ui.diag.stale_capture.interval_body', '定时 OCR 后台读取时截图画面没有更新。请确认游戏窗口可见且未最小化；如果仍停在旧画面，请切换截图方式或重新选择 OCR 窗口。')
+        : uiT('ui.diag.stale_capture.body', '当前截图源可能停在旧画面。请切回游戏窗口，或切换截图方式后再试。'),
       actions: intervalBackgroundBlocked
         ? [
-          { id: 'focus_game', label: '切回游戏窗口' },
-          { id: 'capture_backend', label: '切换截图方式' },
-          { id: 'select_ocr_window', label: '选择游戏窗口' },
+          diagnosisAction('focus_game'),
+          diagnosisAction('capture_backend'),
+          diagnosisAction('select_ocr_window'),
         ]
         : [
-          { id: 'focus_game', label: '切回游戏窗口' },
-          { id: 'capture_backend', label: '切换 DXcam' },
-          { id: 'refresh_ocr_windows', label: '刷新窗口' },
+          diagnosisAction('focus_game'),
+          diagnosisAction('capture_backend'),
+          diagnosisAction('refresh_ocr_windows'),
         ],
     });
   }
@@ -1086,11 +1215,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (tickBlockReason === 'trigger_mode_after_advance_waiting_for_input') {
     return diagnose({
       severity: 'info',
-      title: 'OCR 正在等待游戏推进',
-      body: '当前为点击对白后识别模式，上一轮已经完成；点击、滚轮向下或按推进键后才会重新采集。',
+      title: uiT('ui.diag.waiting_advance.title', 'OCR 正在等待游戏推进'),
+      body: uiT('ui.diag.waiting_advance.body', '当前为点击对白后识别模式，上一轮已经完成；点击、滚轮向下或按推进键后才会重新采集。'),
       actions: [
-        { id: 'focus_game', label: '切回游戏窗口' },
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('focus_game'),
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1098,10 +1227,10 @@ function buildPrimaryDiagnosis(status = {}) {
   if (tickBlockReason === 'memory_reader_recent_text') {
     return diagnose({
       severity: 'info',
-      title: '内存读取正在优先提供文本',
-      body: '自动模式检测到内存读取仍有近期文本，因此暂时不主动轮询 OCR。',
+      title: uiT('ui.diag.memory_priority.title', '内存读取正在优先提供文本'),
+      body: uiT('ui.diag.memory_priority.body', '自动模式检测到内存读取仍有近期文本，因此暂时不主动轮询 OCR。'),
       actions: [
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1109,11 +1238,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (tickBlockReason) {
     return diagnose({
       severity: 'info',
-      title: 'OCR 轮询暂未执行',
+      title: uiT('ui.diag.ocr_tick_blocked.title', 'OCR 轮询暂未执行'),
       body: formatOcrTickBlockReason(tickBlockReason),
       actions: [
-        { id: 'refresh_all', label: '刷新全部' },
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('refresh_all'),
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1121,11 +1250,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (emitBlockReason === 'screen_classification_skipped_dialogue') {
     return diagnose({
       severity: 'warning',
-      title: 'OCR 画面被判定为非对白界面',
-      body: '截图和识别已执行，但屏幕分类判断当前画面不适合写入对白。',
+      title: uiT('ui.diag.non_dialogue.title', 'OCR 画面被判定为非对白界面'),
+      body: uiT('ui.diag.non_dialogue.body', '截图和识别已执行，但屏幕分类判断当前画面不适合写入对白。'),
       actions: [
-        { id: 'recalibrate_ocr', label: '重新截图校准' },
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('recalibrate_ocr'),
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1133,11 +1262,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (['duplicate_stable_text', 'waiting_for_repeat', 'no_dialogue_text'].includes(emitBlockReason)) {
     return diagnose({
       severity: 'info',
-      title: 'OCR 已执行但没有新台词',
+      title: uiT('ui.diag.no_new_line.title', 'OCR 已执行但没有新台词'),
       body: formatOcrEmitBlockReason(emitBlockReason),
       actions: [
-        { id: 'line_details', label: '查看识别详情' },
-        { id: 'debug_details', label: '查看调试详情' },
+        diagnosisAction('line_details'),
+        diagnosisAction('debug_details'),
       ],
     });
   }
@@ -1148,11 +1277,11 @@ function buildPrimaryDiagnosis(status = {}) {
   ) {
     return diagnose({
       severity: 'warning',
-      title: '没找到能识别的游戏窗口',
-      body: '游戏可能未启动、被最小化，或当前窗口不是游戏。请确认游戏窗口可见后刷新。',
+      title: uiT('ui.diag.no_window.title', '没找到能识别的游戏窗口'),
+      body: uiT('ui.diag.no_window.body', '游戏可能未启动、被最小化，或当前窗口不是游戏。请确认游戏窗口可见后刷新。'),
       actions: [
-        { id: 'refresh_ocr_windows', label: '刷新窗口' },
-        { id: 'select_ocr_window', label: '选择游戏窗口' },
+        diagnosisAction('refresh_ocr_windows'),
+        diagnosisAction('select_ocr_window'),
       ],
     });
   }
@@ -1160,11 +1289,11 @@ function buildPrimaryDiagnosis(status = {}) {
   if (detail === 'foreground_window_needs_manual_confirmation' || detail === 'auto_detect_needs_manual_fallback') {
     return diagnose({
       severity: 'warning',
-      title: '需要手动选择游戏窗口',
-      body: '自动检测不够确定。手动选择一次可以避免识别到插件页面或其他窗口。',
+      title: uiT('ui.diag.manual_window.title', '需要手动选择游戏窗口'),
+      body: uiT('ui.diag.manual_window.body', '自动检测不够确定。手动选择一次可以避免识别到插件页面或其他窗口。'),
       actions: [
-        { id: 'select_ocr_window', label: '选择游戏窗口' },
-        { id: 'refresh_ocr_windows', label: '刷新窗口' },
+        diagnosisAction('select_ocr_window'),
+        diagnosisAction('refresh_ocr_windows'),
       ],
     });
   }
@@ -1172,10 +1301,10 @@ function buildPrimaryDiagnosis(status = {}) {
   if (observedKey && observedKey !== stableKey) {
     return diagnose({
       severity: 'info',
-      title: '刚读到新文字',
-      body: '文字识别已经看到候选台词，正在确认这是不是同一句台词。',
+      title: uiT('ui.diag.observed_new.title', '刚读到新文字'),
+      body: uiT('ui.diag.observed_new.body', '文字识别已经看到候选台词，正在确认这是不是同一句台词。'),
       actions: [
-        { id: 'line_details', label: '查看识别详情' },
+        diagnosisAction('line_details'),
       ],
     });
   }
@@ -1183,10 +1312,10 @@ function buildPrimaryDiagnosis(status = {}) {
   if (agentPauseKind === 'window_not_foreground' || agentUserStatus === 'paused_window_not_foreground') {
     return diagnose({
       severity: 'info',
-      title: '游戏不在前台',
-      body: '自动推进已暂停。切回游戏窗口后会继续，伴读信息仍会刷新。',
+      title: uiT('ui.diag.not_foreground.title', '游戏不在前台'),
+      body: uiT('ui.diag.not_foreground.body', '自动推进已暂停。切回游戏窗口后会继续，伴读信息仍会刷新。'),
       actions: [
-        { id: 'focus_game', label: '切回游戏窗口' },
+        diagnosisAction('focus_game'),
       ],
     });
   }
@@ -1194,10 +1323,10 @@ function buildPrimaryDiagnosis(status = {}) {
   if (agentPauseKind === 'read_only' || agentUserStatus === 'read_only') {
     return diagnose({
       severity: 'info',
-      title: '当前是伴读模式',
-      body: '会显示台词和建议，但不会自动点击。需要自动推进时请切换模式。',
+      title: uiT('ui.diag.read_only.title', '当前是伴读模式'),
+      body: uiT('ui.diag.read_only.body', '会显示台词和建议，但不会自动点击。需要自动推进时请切换模式。'),
       actions: [
-        { id: 'choice_advisor', label: '切换到自动推进模式' },
+        diagnosisAction('choice_advisor'),
       ],
     });
   }
@@ -1206,21 +1335,23 @@ function buildPrimaryDiagnosis(status = {}) {
     const target = formatOcrTargetForUser(status);
     return diagnose({
       severity: 'ok',
-      title: '正在识别台词',
-      body: target ? `当前目标：${target}。已读到台词，页面会持续刷新。` : '已读到台词，页面会持续刷新。',
+      title: uiT('ui.diag.recognizing.title', '正在识别台词'),
+      body: target
+        ? uiTf('ui.diag.recognizing.body_with_target', '当前目标：{target}。已读到台词，页面会持续刷新。', { target })
+        : uiT('ui.diag.recognizing.body', '已读到台词，页面会持续刷新。'),
       actions: [
-        { id: 'refresh_all', label: '刷新全部' },
+        diagnosisAction('refresh_all'),
       ],
     });
   }
 
   return diagnose({
     severity: 'info',
-    title: '等待游戏状态',
-    body: status.summary || '暂时没有足够信息判断当前卡点。请先打开游戏，或刷新窗口列表。',
+    title: uiT('ui.diag.waiting_game.title', '等待游戏状态'),
+    body: status.summary || uiT('ui.diag.waiting_game.body', '暂时没有足够信息判断当前卡点。请先打开游戏，或刷新窗口列表。'),
     actions: [
-      { id: 'refresh_all', label: '刷新全部' },
-      { id: 'select_ocr_window', label: '选择游戏窗口' },
+      diagnosisAction('refresh_all'),
+      diagnosisAction('select_ocr_window'),
     ],
   });
 }
@@ -1236,12 +1367,12 @@ function renderPrimaryDiagnosis(status = {}) {
   const body = document.getElementById('primaryDiagnosisBody');
   const actions = document.getElementById('primaryDiagnosisActions');
   node.className = `primary-diagnosis ${diagnosis.severity || 'info'}`;
-  kicker.textContent = '运行诊断';
+  kicker.textContent = uiT('ui.diag.kicker', '运行诊断');
   title.textContent = diagnosis.title;
   body.textContent = diagnosis.body;
   actions.innerHTML = (diagnosis.actions || []).map((action, index) => `
     <button class="${index === 0 ? 'primary' : 'secondary'}" data-primary-action="${escapeHtml(action.id)}">
-      ${escapeHtml(action.label)}
+      ${escapeHtml(primaryActionLabel(action.id, action.label))}
     </button>
   `).join('');
 }
@@ -1281,23 +1412,31 @@ function buildFirstRunSteps(status = {}) {
   return [
     {
       done: hasGame,
-      title: '启动或恢复游戏',
-      body: hasGame ? '已发现游戏状态。' : '打开游戏，并停在有文字的画面。',
+      title: uiT('ui.first_run.start_game.title', '启动或恢复游戏'),
+      body: hasGame
+        ? uiT('ui.first_run.start_game.done', '已发现游戏状态。')
+        : uiT('ui.first_run.start_game.pending', '打开游戏，并停在有文字的画面。'),
     },
     {
       done: hasWindow,
-      title: '刷新窗口',
-      body: hasWindow ? '已找到可检查的窗口。' : '回到插件页，点击“刷新窗口”。',
+      title: uiT('ui.first_run.refresh_window.title', '刷新窗口'),
+      body: hasWindow
+        ? uiT('ui.first_run.refresh_window.done', '已找到可检查的窗口。')
+        : uiT('ui.first_run.refresh_window.pending', '回到插件页，点击“刷新窗口”。'),
     },
     {
       done: hasConfirmedWindow,
-      title: '选择游戏窗口',
-      body: hasConfirmedWindow ? '已确认识别窗口。' : '如果没有自动选中，请手动选择游戏窗口。',
+      title: uiT('ui.first_run.select_window.title', '选择游戏窗口'),
+      body: hasConfirmedWindow
+        ? uiT('ui.first_run.select_window.done', '已确认识别窗口。')
+        : uiT('ui.first_run.select_window.pending', '如果没有自动选中，请手动选择游戏窗口。'),
     },
     {
       done: hasLine,
-      title: '开始识别',
-      body: hasLine ? '已读到台词。' : '开始自动识别，或在游戏中推进到下一句台词。',
+      title: uiT('ui.first_run.recognize.title', '开始识别'),
+      body: hasLine
+        ? uiT('ui.first_run.recognize.done', '已读到台词。')
+        : uiT('ui.first_run.recognize.pending', '开始自动识别，或在游戏中推进到下一句台词。'),
     },
   ];
 }
@@ -1329,7 +1468,7 @@ function renderFirstRunGuide(status = {}) {
   const firstIncompleteIndex = steps.findIndex((step) => !step.done);
   stepsNode.innerHTML = steps.map((step, index) => {
     const stateClass = step.done ? 'done' : (index === firstIncompleteIndex ? 'active' : 'pending');
-    const marker = step.done ? '完成' : String(index + 1);
+    const marker = step.done ? uiT('ui.first_run.done_marker', '完成') : String(index + 1);
     return `
       <article class="first-run-step ${stateClass}">
         <span class="first-run-step-marker">${escapeHtml(marker)}</span>
@@ -1350,15 +1489,15 @@ function renderFirstRunGuide(status = {}) {
     const firstIncomplete = steps[firstIncompleteIndex];
     const actions = [];
     if (firstIncompleteIndex === 1) {
-      actions.push('<button class="primary" data-first-run-action="install_rapidocr">一键安装 RapidOCR</button>');
+      actions.push(`<button class="primary" data-first-run-action="install_rapidocr">${escapeHtml(primaryActionLabel('install_rapidocr'))}</button>`);
     }
     if (!steps[2].done) {
-      actions.push('<button class="primary" data-first-run-action="select_ocr_window">选择游戏窗口</button>');
-      actions.push('<button class="secondary" data-first-run-action="refresh_ocr_windows">刷新窗口</button>');
+      actions.push(`<button class="primary" data-first-run-action="select_ocr_window">${escapeHtml(primaryActionLabel('select_ocr_window'))}</button>`);
+      actions.push(`<button class="secondary" data-first-run-action="refresh_ocr_windows">${escapeHtml(primaryActionLabel('refresh_ocr_windows'))}</button>`);
     }
     if (!steps[3].done && steps[2].done) {
-      actions.push('<button class="primary" data-first-run-action="choice_advisor">开始自动识别</button>');
-      actions.push('<button class="secondary" data-first-run-action="refresh_all">刷新状态</button>');
+      actions.push(`<button class="primary" data-first-run-action="choice_advisor">${escapeHtml(primaryActionLabel('start_recognition'))}</button>`);
+      actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(primaryActionLabel('refresh_status'))}</button>`);
     }
     onboardingActions.innerHTML = actions.join('');
   }
@@ -1385,41 +1524,43 @@ function renderCurrentLineOverview(status = {}) {
   node.classList.toggle('waiting', !rawText && !observedText && !displayStable);
   statusChip.className = 'status-chip';
   if (hasMismatch) {
-    title.textContent = '刚读到新文字';
-    statusChip.textContent = '确认中';
+    title.textContent = uiT('ui.current_line.new_text_title', '刚读到新文字');
+    statusChip.textContent = uiT('ui.current_line.confirming_status', '确认中');
     statusChip.classList.add('warning');
-    hint.textContent = blockReason || `正在确认这是不是同一句台词${repeatCount ? `，已连续看到 ${repeatCount} 次` : ''}。`;
+    hint.textContent = blockReason || (repeatCount
+      ? uiTf('ui.current_line.confirming_repeat_hint', '正在确认这是不是同一句台词，已连续看到 {count} 次。', { count: repeatCount })
+      : uiT('ui.current_line.confirming_hint', '正在确认这是不是同一句台词。'));
   } else if (displayStable) {
-    title.textContent = '已确认当前台词';
-    statusChip.textContent = '已确认';
+    title.textContent = uiT('ui.current_line.confirmed_title', '已确认当前台词');
+    statusChip.textContent = uiT('ui.current_line.confirmed_status', '已确认');
     statusChip.classList.add('active');
-    hint.textContent = '这句台词已经进入正式上下文，后续建议会以它为基础更新。';
+    hint.textContent = uiT('ui.current_line.confirmed_hint', '这句台词已经进入正式上下文，后续建议会以它为基础更新。');
   } else if (rawText || observedText) {
-    title.textContent = '正在筛选识别结果';
-    statusChip.textContent = '筛选中';
+    title.textContent = uiT('ui.current_line.filtering_title', '正在筛选识别结果');
+    statusChip.textContent = uiT('ui.current_line.filtering_status', '筛选中');
     statusChip.classList.add('warning');
-    hint.textContent = blockReason || '文字识别已有结果，但还没有写入正式台词。';
+    hint.textContent = blockReason || uiT('ui.current_line.filtering_hint', '文字识别已有结果，但还没有写入正式台词。');
   } else {
-    title.textContent = '等待识别结果';
-    statusChip.textContent = '等待刷新';
+    title.textContent = uiT('ui.current_line.waiting_result', '等待识别结果');
+    statusChip.textContent = uiT('ui.current_line.waiting_refresh', '等待刷新');
     hint.textContent = buildOcrMissingLineDiagnostic(status);
   }
 
   const rows = [
     {
-      label: '最新 OCR 原文',
+      label: uiT('ui.current_line.raw_ocr_label', '最新 OCR 原文'),
       value: rawText,
-      empty: '还没有 OCR 原文',
+      empty: uiT('ui.current_line.no_raw_ocr', '还没有 OCR 原文'),
     },
     {
-      label: '刚读到的候选台词',
+      label: uiT('ui.current_line.observed_label', '刚读到的候选台词'),
       value: observedText,
-      empty: '还没有候选台词',
+      empty: uiT('ui.current_line.no_observed', '还没有候选台词'),
     },
     {
-      label: '已确认台词',
+      label: uiT('ui.current_line.stable_label', '已确认台词'),
       value: displayStable,
-      empty: '还没有已确认台词',
+      empty: uiT('ui.current_line.no_stable', '还没有已确认台词'),
     },
   ];
 
@@ -1464,12 +1605,12 @@ function renderCurrentLineOverview(status = {}) {
 
 function pipelineStateLabel(state) {
   const mapping = {
-    ok: '正常',
-    info: '等待',
-    warning: '注意',
-    error: '异常',
+    ok: uiT('ui.pipeline_state.ok', '正常'),
+    info: uiT('ui.pipeline_state.info', '等待'),
+    warning: uiT('ui.pipeline_state.warning', '注意'),
+    error: uiT('ui.pipeline_state.error', '异常'),
   };
-  return mapping[state] || '等待';
+  return uiDynamicT('ui.pipeline_state', state, mapping[state] || mapping.info);
 }
 
 function buildOcrPipelineSteps(status = {}) {
@@ -1497,40 +1638,42 @@ function buildOcrPipelineSteps(status = {}) {
   let windowStep = {
     key: 'window',
     state: 'info',
-    title: '等待游戏窗口',
-    body: '等待目标窗口进入可识别状态。',
+    title: uiT('ui.pipeline.window.waiting_title', '等待游戏窗口'),
+    body: uiT('ui.pipeline.window.waiting_body', '等待目标窗口进入可识别状态。'),
     meta: detail ? formatOcrWindowSelectionDetail(detail) : '',
   };
   if (detail === 'memory_reader_window_minimized' || lastExcludeReason === 'excluded_minimized_window') {
     windowStep = {
       key: 'window',
       state: 'warning',
-      title: '游戏窗口最小化',
-      body: '窗口阶段需要处理。',
+      title: uiT('ui.pipeline.window.minimized_title', '游戏窗口最小化'),
+      body: uiT('ui.pipeline.window.needs_attention_body', '窗口阶段需要处理。'),
       meta: formatOcrWindowReason(lastExcludeReason || 'excluded_minimized_window'),
     };
   } else if (textValue(runtime.effective_window_key)) {
     windowStep = {
       key: 'window',
       state: 'ok',
-      title: '已确认游戏窗口',
-      body: '窗口阶段正常。',
-      meta: runtime.target_is_foreground ? '前台窗口' : '非前台窗口',
+      title: uiT('ui.pipeline.window.confirmed_title', '已确认游戏窗口'),
+      body: uiT('ui.pipeline.window.ok_body', '窗口阶段正常。'),
+      meta: runtime.target_is_foreground
+        ? uiT('ui.pipeline.window.foreground_meta', '前台窗口')
+        : uiT('ui.pipeline.window.not_foreground_meta', '非前台窗口'),
     };
   } else if (Number(runtime.candidate_count || 0) > 0) {
     windowStep = {
       key: 'window',
       state: 'info',
-      title: '发现候选窗口',
-      body: '窗口阶段等待确认。',
-      meta: '需要时可手动选择',
+      title: uiT('ui.pipeline.window.candidate_title', '发现候选窗口'),
+      body: uiT('ui.pipeline.window.waiting_confirm_body', '窗口阶段等待确认。'),
+      meta: uiT('ui.pipeline.window.manual_if_needed_meta', '需要时可手动选择'),
     };
   } else if (detail === 'no_eligible_window' || Object.prototype.hasOwnProperty.call(runtime, 'candidate_count')) {
     windowStep = {
       key: 'window',
       state: 'warning',
-      title: '没有可识别窗口',
-      body: '窗口阶段需要处理。',
+      title: uiT('ui.pipeline.window.none_title', '没有可识别窗口'),
+      body: uiT('ui.pipeline.window.needs_attention_body', '窗口阶段需要处理。'),
       meta: formatOcrWindowSelectionDetail(detail),
     };
   }
@@ -1538,32 +1681,32 @@ function buildOcrPipelineSteps(status = {}) {
   let captureStep = {
     key: 'capture',
     state: 'info',
-    title: '等待截图',
-    body: '截图阶段等待窗口确认。',
+    title: uiT('ui.pipeline.capture.waiting_title', '等待截图'),
+    body: uiT('ui.pipeline.capture.waiting_body', '截图阶段等待窗口确认。'),
     meta: captureBackend,
   };
   if (contextState === 'capture_failed' || lastCaptureError) {
     captureStep = {
       key: 'capture',
       state: 'error',
-      title: '截图失败',
-      body: '截图阶段异常，处理入口在运行诊断。',
+      title: uiT('ui.pipeline.capture.failed_title', '截图失败'),
+      body: uiT('ui.pipeline.stage_error_body', '阶段异常，处理入口在运行诊断。'),
       meta: captureBackend,
     };
   } else if (runtime.stale_capture_backend) {
     captureStep = {
       key: 'capture',
       state: 'warning',
-      title: '截图画面未更新',
-      body: '截图阶段需要处理。',
-      meta: `${captureBackend}${runtime.consecutive_same_capture_frames ? ` | 连续 ${runtime.consecutive_same_capture_frames} 帧相同` : ''}`,
+      title: uiT('ui.pipeline.capture.stale_title', '截图画面未更新'),
+      body: uiT('ui.pipeline.capture.needs_attention_body', '截图阶段需要处理。'),
+      meta: `${captureBackend}${runtime.consecutive_same_capture_frames ? ` | ${uiTf('ui.pipeline.capture.same_frames_meta', '连续 {count} 帧相同', { count: runtime.consecutive_same_capture_frames })}` : ''}`,
     };
   } else if (runtime.last_capture_completed_at || runtime.last_capture_image_hash || runtime.capture_backend_kind) {
     captureStep = {
       key: 'capture',
       state: 'ok',
-      title: '截图后端可用',
-      body: '截图阶段正常。',
+      title: uiT('ui.pipeline.capture.available_title', '截图后端可用'),
+      body: uiT('ui.pipeline.capture.ok_body', '截图阶段正常。'),
       meta: captureBackend,
     };
   }
@@ -1571,16 +1714,16 @@ function buildOcrPipelineSteps(status = {}) {
   let ocrStep = {
     key: 'ocr',
     state: 'info',
-    title: '等待文字识别',
-    body: '识别阶段等待截图输入。',
+    title: uiT('ui.pipeline.ocr.waiting_title', '等待文字识别'),
+    body: uiT('ui.pipeline.ocr.waiting_body', '识别阶段等待截图输入。'),
     meta: ocrBackend,
   };
   if (!status.ocr_reader_enabled) {
     ocrStep = {
       key: 'ocr',
       state: 'warning',
-      title: 'OCR Reader 未启用',
-      body: '识别阶段未启用。',
+      title: uiT('ui.pipeline.ocr.disabled_title', 'OCR Reader 未启用'),
+      body: uiT('ui.pipeline.ocr.disabled_body', '识别阶段未启用。'),
       meta: ocrBackend,
     };
   } else if (tickBlockReason) {
@@ -1589,48 +1732,48 @@ function buildOcrPipelineSteps(status = {}) {
       state: ['ocr_reader_unavailable', 'ocr_reader_not_allowed', 'reader_mode_memory_only'].includes(tickBlockReason)
         ? 'warning'
         : 'info',
-      title: 'OCR 轮询暂未执行',
-      body: formattedTickBlockReason || '轮询阶段等待条件满足。',
+      title: uiT('ui.pipeline.ocr.tick_blocked_title', 'OCR 轮询暂未执行'),
+      body: formattedTickBlockReason || uiT('ui.pipeline.ocr.tick_waiting_body', '轮询阶段等待条件满足。'),
       meta: ocrBackend,
     };
   } else if (runtime.backend_detail === 'backend_unavailable' || runtime.detail === 'backend_unavailable') {
     ocrStep = {
       key: 'ocr',
       state: 'error',
-      title: 'OCR 后端不可用',
-      body: '识别阶段异常，处理入口在运行诊断。',
+      title: uiT('ui.pipeline.ocr.backend_unavailable_title', 'OCR 后端不可用'),
+      body: uiT('ui.pipeline.ocr.error_body', '识别阶段异常，处理入口在运行诊断。'),
       meta: ocrBackend,
     };
   } else if (runtime.detail === 'self_ui_guard_blocked' || lastRejectedReason) {
     ocrStep = {
       key: 'ocr',
       state: 'warning',
-      title: 'OCR 已拒绝非游戏文本',
-      body: '识别阶段已执行但没有写入新台词。',
+      title: uiT('ui.pipeline.ocr.rejected_title', 'OCR 已拒绝非游戏文本'),
+      body: uiT('ui.pipeline.ocr.no_write_body', '识别阶段已执行但没有写入新台词。'),
       meta: lastRejectedReason || ocrBackend,
     };
   } else if (emitBlockReason) {
     ocrStep = {
       key: 'ocr',
       state: emitBlockReason === 'screen_classification_skipped_dialogue' ? 'warning' : 'info',
-      title: 'OCR 已执行',
-      body: formattedEmitBlockReason || '识别已执行但没有写入新台词。',
+      title: uiT('ui.pipeline.ocr.executed_title', 'OCR 已执行'),
+      body: formattedEmitBlockReason || uiT('ui.pipeline.ocr.executed_no_write_body', '识别已执行但没有写入新台词。'),
       meta: ocrBackend,
     };
   } else if (runtime.backend_kind || rawText || observedText || displayStable) {
     ocrStep = {
       key: 'ocr',
       state: 'ok',
-      title: '文字识别可用',
-      body: '识别阶段正常。',
+      title: uiT('ui.pipeline.ocr.available_title', '文字识别可用'),
+      body: uiT('ui.pipeline.ocr.ok_body', '识别阶段正常。'),
       meta: ocrBackend,
     };
   } else if (!rapidocr.installed && !tesseract.installed) {
     ocrStep = {
       key: 'ocr',
       state: 'warning',
-      title: 'OCR 组件可能缺失',
-      body: '识别阶段需要处理。',
+      title: uiT('ui.pipeline.ocr.missing_components_title', 'OCR 组件可能缺失'),
+      body: uiT('ui.pipeline.ocr.needs_attention_body', '识别阶段需要处理。'),
       meta: ocrBackend,
     };
   }
@@ -1639,15 +1782,25 @@ function buildOcrPipelineSteps(status = {}) {
     ? {
       key: 'observed',
       state: hasObservedMismatch ? 'warning' : 'ok',
-      title: hasObservedMismatch ? '候选台词确认中' : '已读到候选台词',
-      body: hasObservedMismatch ? '候选台词等待稳定确认。' : '候选台词读取正常。',
-      meta: hasObservedMismatch ? (formattedEmitBlockReason || blockReason || '等待稳定确认') : '候选与已确认台词一致',
+      title: hasObservedMismatch
+        ? uiT('ui.pipeline.observed.confirming_title', '候选台词确认中')
+        : uiT('ui.pipeline.observed.read_title', '已读到候选台词'),
+      body: hasObservedMismatch
+        ? uiT('ui.pipeline.observed.confirming_body', '候选台词等待稳定确认。')
+        : uiT('ui.pipeline.observed.ok_body', '候选台词读取正常。'),
+      meta: hasObservedMismatch
+        ? (formattedEmitBlockReason || blockReason || uiT('ui.pipeline.observed.waiting_stable_meta', '等待稳定确认'))
+        : uiT('ui.pipeline.observed.same_as_stable_meta', '候选与已确认台词一致'),
     }
     : {
       key: 'observed',
       state: rawText ? 'info' : 'warning',
-      title: rawText ? '正在筛选 OCR 原文' : '还没有候选台词',
-      body: rawText ? '候选阶段正在筛选。' : '候选阶段等待有效文字。',
+      title: rawText
+        ? uiT('ui.pipeline.observed.filtering_raw_title', '正在筛选 OCR 原文')
+        : uiT('ui.pipeline.observed.no_candidate_title', '还没有候选台词'),
+      body: rawText
+        ? uiT('ui.pipeline.observed.filtering_body', '候选阶段正在筛选。')
+        : uiT('ui.pipeline.observed.waiting_text_body', '候选阶段等待有效文字。'),
       meta: formattedEmitBlockReason || blockReason || formattedTickBlockReason || '',
     };
 
@@ -1655,64 +1808,68 @@ function buildOcrPipelineSteps(status = {}) {
     ? {
       key: 'stable',
       state: 'ok',
-      title: '已确认台词',
-      body: '确认阶段正常。',
+      title: uiT('ui.pipeline.stable.confirmed_title', '已确认台词'),
+      body: uiT('ui.pipeline.stable.ok_body', '确认阶段正常。'),
       meta: status.effective_current_line?.source || runtime.last_stable_line?.source || '',
     }
     : {
       key: 'stable',
       state: observedText ? 'warning' : 'info',
-      title: observedText ? '等待稳定确认' : '还没有已确认台词',
-      body: observedText ? '确认阶段等待稳定。' : '确认阶段等待候选台词。',
+      title: observedText
+        ? uiT('ui.pipeline.stable.waiting_title', '等待稳定确认')
+        : uiT('ui.pipeline.stable.no_stable_title', '还没有已确认台词'),
+      body: observedText
+        ? uiT('ui.pipeline.stable.waiting_body', '确认阶段等待稳定。')
+        : uiT('ui.pipeline.stable.waiting_candidate_body', '确认阶段等待候选台词。'),
       meta: formattedEmitBlockReason || blockReason || formattedTickBlockReason || '',
     };
 
   let agentStep = {
     key: 'agent',
     state: 'info',
-    title: '等待 Agent 状态',
-    body: 'Agent 会根据模式决定是否自动推进。',
+    title: uiT('ui.pipeline.agent.waiting_title', '等待 Agent 状态'),
+    body: uiT('ui.pipeline.agent.waiting_body', 'Agent 会根据模式决定是否自动推进。'),
     meta: status.mode || '',
   };
   if (status.agent_user_status === 'error') {
     agentStep = {
       key: 'agent',
       state: 'error',
-      title: 'Agent 异常',
-      body: status.agent_reason || status.agent_diagnostic || 'Agent 返回错误状态。',
+      title: uiT('ui.pipeline.agent.error_title', 'Agent 异常'),
+      body: status.agent_reason || status.agent_diagnostic || uiT('ui.pipeline.agent.error_body', 'Agent 返回错误状态。'),
       meta: status.agent_pause_kind || '',
     };
   } else if (status.agent_pause_kind === 'window_not_foreground' || status.agent_user_status === 'paused_window_not_foreground') {
     agentStep = {
       key: 'agent',
       state: 'warning',
-      title: '游戏不在前台',
-      body: status.agent_pause_message || '自动推进已暂停，切回游戏后继续。',
-      meta: AGENT_USER_STATUS_LABELS_ZH[status.agent_user_status] || status.agent_user_status || '',
+      title: uiT('ui.pipeline.agent.not_foreground_title', '游戏不在前台'),
+      body: status.agent_pause_message || uiT('ui.pipeline.agent.not_foreground_body', '自动推进已暂停，切回游戏后继续。'),
+      meta: agentUserStatusLabel(status.agent_user_status, status.agent_user_status || ''),
     };
   } else if (status.agent_pause_kind === 'screen_safety' || status.agent_user_status === 'screen_safety_pause') {
     agentStep = {
       key: 'agent',
       state: 'warning',
-      title: '安全暂停',
-      body: status.agent_pause_message || '当前画面不适合自动推进。',
-      meta: AGENT_USER_STATUS_LABELS_ZH[status.agent_user_status] || status.agent_user_status || '',
+      title: uiT('ui.pipeline.agent.safety_pause_title', '安全暂停'),
+      body: status.agent_pause_message || uiT('ui.pipeline.agent.safety_pause_body', '当前画面不适合自动推进。'),
+      meta: agentUserStatusLabel(status.agent_user_status, status.agent_user_status || ''),
     };
   } else if (status.agent_pause_kind === 'read_only' || status.agent_user_status === 'read_only') {
     agentStep = {
       key: 'agent',
       state: 'info',
-      title: '伴读模式',
-      body: '会显示台词和建议，但不会自动点击。',
-      meta: AGENT_USER_STATUS_LABELS_ZH[status.agent_user_status] || '',
+      title: uiT('ui.pipeline.agent.read_only_title', '伴读模式'),
+      body: uiT('ui.pipeline.agent.read_only_body', '会显示台词和建议，但不会自动点击。'),
+      meta: agentUserStatusLabel(status.agent_user_status, ''),
     };
   } else if (status.agent_user_status || status.agent_status) {
     agentStep = {
       key: 'agent',
       state: 'ok',
-      title: 'Agent 状态正常',
-      body: status.agent_activity || status.agent_reason || '按当前模式运行。',
-      meta: AGENT_USER_STATUS_LABELS_ZH[status.agent_user_status] || status.agent_user_status || status.agent_status || '',
+      title: uiT('ui.pipeline.agent.ok_title', 'Agent 状态正常'),
+      body: status.agent_activity || status.agent_reason || uiT('ui.pipeline.agent.ok_body', '按当前模式运行。'),
+      meta: agentUserStatusLabel(status.agent_user_status, status.agent_user_status || status.agent_status || ''),
     };
   }
 
@@ -1736,12 +1893,12 @@ function renderOcrPipelinePanel(status = {}) {
         : 'info';
   summaryNode.className = `status-chip ${worstState === 'ok' ? 'active' : worstState}`;
   summaryNode.textContent = worstState === 'ok'
-    ? '链路正常'
+    ? uiT('ui.ocr.pipeline.summary_ok', '链路正常')
     : worstState === 'error'
-      ? '链路异常'
+      ? uiT('ui.ocr.pipeline.summary_error', '链路异常')
       : worstState === 'warning'
-        ? '需要处理'
-        : '等待状态';
+        ? uiT('ui.ocr.pipeline.summary_warning', '需要处理')
+        : uiT('ui.ocr.pipeline.summary_waiting', '等待状态');
   stepsNode.innerHTML = steps.map((step) => `
     <article class="ocr-pipeline-step ${escapeHtml(step.state)}">
       <span class="ocr-pipeline-dot">${escapeHtml(pipelineStateLabel(step.state))}</span>
@@ -1761,21 +1918,21 @@ function installTaskDisplayState(kind) {
   if (state?.inProgress) {
     return {
       state: 'running',
-      labelText: '安装中',
+      labelText: uiT('ui.install.summary.installing', '安装中'),
       needsAttention: true,
     };
   }
   if (task.status === 'failed') {
     return {
       state: 'failed',
-      labelText: '安装失败',
+      labelText: uiT('ui.install.summary.failed', '安装失败'),
       needsAttention: true,
     };
   }
   if (task.status === 'completed') {
     return {
       state: 'installed',
-      labelText: '已安装',
+      labelText: uiT('ui.install.summary.installed', '已安装'),
       needsAttention: false,
     };
   }
@@ -1795,42 +1952,42 @@ function dependencySummaryItem(kind, status = {}) {
   if (kind === 'rapidocr') {
     const rapidocr = status.rapidocr || {};
     if (!rapidocr.install_supported) {
-      return { kind, label: 'RapidOCR', state: 'neutral', labelText: '不支持自动安装', needsAttention: false };
+      return { kind, label: 'RapidOCR', state: 'neutral', labelText: uiT('ui.install.summary.unsupported_auto_install', '不支持自动安装'), needsAttention: false };
     }
     return rapidocr.installed
-      ? { kind, label: 'RapidOCR', state: 'installed', labelText: '已安装', needsAttention: false }
-      : { kind, label: 'RapidOCR', state: 'missing', labelText: '未安装', needsAttention: true };
+      ? { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
+      : { kind, label: 'RapidOCR', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
   }
 
   if (kind === 'dxcam') {
     const dxcam = status.dxcam || {};
     return dxcam.installed
-      ? { kind, label: 'DXcam', state: 'installed', labelText: '已安装', needsAttention: false }
-      : { kind, label: 'DXcam', state: 'missing', labelText: '未安装', needsAttention: true };
+      ? { kind, label: 'DXcam', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
+      : { kind, label: 'DXcam', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
   }
 
   if (kind === 'tesseract') {
     const tesseract = status.tesseract || {};
     const missingLanguages = Array.isArray(tesseract.missing_languages) ? tesseract.missing_languages : [];
     if (tesseract.installed && !missingLanguages.length) {
-      return { kind, label: 'Tesseract', state: 'installed', labelText: '已安装', needsAttention: false };
+      return { kind, label: 'Tesseract', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false };
     }
     if (tesseract.installed && missingLanguages.length) {
       return {
         kind,
         label: 'Tesseract',
         state: 'warning',
-        labelText: `缺少语言包 ${missingLanguages.join(', ')}`,
+        labelText: uiTf('ui.install.summary.missing_languages', '缺少语言包 {languages}', { languages: missingLanguages.join(', ') }),
         needsAttention: true,
       };
     }
-    return { kind, label: 'Tesseract', state: 'missing', labelText: '未安装', needsAttention: true };
+    return { kind, label: 'Tesseract', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
   }
 
   const textractor = status.textractor || {};
   return textractor.installed
-    ? { kind, label: 'Textractor', state: 'installed', labelText: '已安装', needsAttention: false }
-    : { kind, label: 'Textractor', state: 'optional', labelText: '未安装（可选）', needsAttention: false };
+    ? { kind, label: 'Textractor', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
+    : { kind, label: 'Textractor', state: 'optional', labelText: uiT('ui.install.summary.missing_optional', '未安装（可选）'), needsAttention: false };
 }
 
 function renderInstallCompactSummary(status = {}) {
@@ -1852,7 +2009,7 @@ function renderInstallCompactSummary(status = {}) {
   `;
   summary.innerHTML = [
     renderGroup('OCR', ocrItems),
-    renderGroup('内存', memoryItems),
+    renderGroup(uiT('ui.install.summary.memory_group', '内存'), memoryItems),
   ].join('');
 }
 
@@ -1880,16 +2037,16 @@ function syncAgentResumeButton(status = {}) {
   const pauseKind = status.agent_pause_kind || '';
   button.disabled = false;
   if (status.agent_can_resume_by_button || userStatus === 'paused_by_user') {
-    button.textContent = '恢复活跃';
+    button.textContent = uiT('ui.button.standby_off', '恢复活跃');
     button.dataset.resumeAction = 'standby';
   } else if (pauseKind === 'window_not_foreground' || userStatus === 'paused_window_not_foreground') {
-    button.textContent = '请切回游戏窗口';
+    button.textContent = uiT('ui.agent.resume.focus_game', '请切回游戏窗口');
     button.dataset.resumeAction = 'focus';
   } else if (pauseKind === 'read_only' || userStatus === 'read_only') {
-    button.textContent = '只读模式';
+    button.textContent = uiT('ui.agent.resume.read_only', '只读模式');
     button.dataset.resumeAction = 'read_only';
   } else {
-    button.textContent = '恢复活跃';
+    button.textContent = uiT('ui.button.standby_off', '恢复活跃');
     button.dataset.resumeAction = 'noop';
   }
 }
@@ -1929,28 +2086,28 @@ function renderAgentUserNotice(status = {}) {
   const target = document.getElementById('agentUserNoticeTarget');
   const userStatus = status.agent_user_status || '';
   const pauseKind = status.agent_pause_kind || 'none';
-  const label = AGENT_USER_STATUS_LABELS_ZH[userStatus] || userStatus || '等待状态';
+  const label = agentUserStatusLabel(userStatus, userStatus || uiT('ui.agent.waiting_status', '等待状态'));
   const targetText = formatOcrTargetForUser(status);
   const mode = status.mode || '';
   const waitingInAutoMode = userStatus === 'read_only' && mode === 'choice_advisor';
-  const displayLabel = waitingInAutoMode ? '等待可操作状态' : label;
+  const displayLabel = waitingInAutoMode ? uiT('ui.agent.waiting_actionable_status', '等待可操作状态') : label;
   const displayPauseMessage = waitingInAutoMode && !status.agent_pause_message
-    ? '自动推进已开启，正在等待游戏会话、OCR 台词或目标窗口进入可操作状态。'
+    ? uiT('ui.agent.notice.waiting_actionable', '自动推进已开启，正在等待游戏会话、OCR 台词或目标窗口进入可操作状态。')
     : status.agent_pause_message;
 
   node.hidden = false;
   title.textContent = displayLabel;
   body.textContent = displayPauseMessage
     || (userStatus === 'read_only' && status.mode === 'companion'
-      ? '游戏窗口已在前台，但伴读模式不会自动推进。需要自动推进时请切到自动推进模式。'
+      ? uiT('ui.agent.notice.companion_no_advance', '游戏窗口已在前台，但伴读模式不会自动推进。需要自动推进时请切到自动推进模式。')
       : '')
     || (userStatus === 'running' && status.mode === 'choice_advisor'
-      ? '游戏窗口已在前台，Agent 会按自动推进模式继续。OCR 会在后台持续刷新。'
+      ? uiT('ui.agent.notice.auto_advance_running', '游戏窗口已在前台，Agent 会按自动推进模式继续。OCR 会在后台持续刷新。')
       : '')
     || (userStatus === 'running'
-      ? 'Agent 正在按当前模式运行。OCR 会在后台持续刷新。'
-      : 'Agent 状态会随游戏窗口、OCR 和模式设置自动更新。');
-  target.textContent = targetText ? `目标窗口：${targetText}` : '';
+      ? uiT('ui.agent.notice.running', 'Agent 正在按当前模式运行。OCR 会在后台持续刷新。')
+      : uiT('ui.agent.notice.default', 'Agent 状态会随游戏窗口、OCR 和模式设置自动更新。'));
+  target.textContent = targetText ? uiTf('ui.agent.notice.target_window', '目标窗口：{target}', { target: targetText }) : '';
 
   node.className = 'agent-user-notice neutral';
   if (
@@ -1972,8 +2129,8 @@ function buildOcrMissingLineDiagnostic(status = {}) {
   const rapidocr = status.rapidocr || {};
   const parts = [
     status.ocr_capture_diagnostic_required
-      ? 'OCR 截图区/窗口目标可能异常'
-      : 'OCR 尚未读到可用台词',
+      ? uiT('ui.ocr.missing_line.capture_target_abnormal', 'OCR 截图区/窗口目标可能异常')
+      : uiT('ui.ocr.missing_line.no_available_line', 'OCR 尚未读到可用台词'),
   ];
   if (status.ocr_capture_diagnostic) {
     parts.push(status.ocr_capture_diagnostic);
@@ -2072,7 +2229,9 @@ function normalizeLineText(value = '') {
 }
 
 function formatOcrTriggerMode(value = '') {
-  return value === 'after_advance' ? '点击对白后识别' : '按间隔识别';
+  return value === 'after_advance'
+    ? uiT('ui.settings.trigger_after_advance', '点击对白后识别')
+    : uiT('ui.settings.trigger_interval', '按间隔识别');
 }
 
 function formatFixedNumber(value, digits = 1) {
@@ -2290,8 +2449,8 @@ function exitPanelFullscreen() {
     panel.classList.remove('panel-fullscreen');
     const button = panel.querySelector('.panel-fullscreen-toggle');
     if (button) {
-      button.textContent = '全屏';
-      button.setAttribute('aria-label', '全屏');
+      button.textContent = uiT('ui.button.fullscreen', '全屏');
+      button.setAttribute('aria-label', uiT('ui.button.fullscreen', '全屏'));
     }
   });
   document.body.classList.remove('panel-fullscreen-active');
@@ -2311,8 +2470,8 @@ function togglePanelFullscreen(panel) {
   document.body.classList.add('panel-fullscreen-active');
   const button = panel.querySelector('.panel-fullscreen-toggle');
   if (button) {
-    button.textContent = '退出全屏';
-    button.setAttribute('aria-label', '退出全屏');
+    button.textContent = uiT('ui.button.exit_fullscreen', '退出全屏');
+    button.setAttribute('aria-label', uiT('ui.button.exit_fullscreen', '退出全屏'));
   }
 }
 
@@ -2325,8 +2484,8 @@ function initializePanelFullscreenControls() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'panel-fullscreen-toggle';
-    button.textContent = '全屏';
-    button.setAttribute('aria-label', '全屏');
+    button.textContent = uiT('ui.button.fullscreen', '全屏');
+    button.setAttribute('aria-label', uiT('ui.button.fullscreen', '全屏'));
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2374,7 +2533,7 @@ function renderGrid(nodeId, rows) {
 function renderDataRows(rows) {
   return rows.map((row) => `
     <div class="data-row">
-      <dt>${escapeHtml(FIELD_LABELS_ZH[row.label] || row.label)}</dt>
+      <dt>${escapeHtml(fieldLabel(row.label))}</dt>
       <dd>${escapeHtml(row.value)}</dd>
     </div>
   `).join('');
@@ -2390,8 +2549,8 @@ function renderStatusGrid(rows, debugRows) {
       </dl>
       <details class="status-debug-panel"${debugWasOpen ? ' open' : ''}>
         <summary>
-          <span>高级调试</span>
-          <small>${escapeHtml(String(debugRows.length))} 项内部状态</small>
+          <span>${escapeHtml(uiT('ui.status.debug_title', '高级调试'))}</span>
+          <small>${escapeHtml(uiTf('ui.status.debug_count', '{count} 项内部状态', { count: debugRows.length }))}</small>
         </summary>
         <dl class="data-grid">
           ${renderDataRows(debugRows)}
@@ -2406,7 +2565,7 @@ function renderStackList(nodeId, items, formatter) {
   if (!items.length) {
     renderPreservingScroll(node, () => {
       node.className = 'stack-list scroll-region empty-state';
-      node.textContent = '暂无数据';
+      node.textContent = uiT('ui.empty.no_data', '暂无数据');
     });
     return;
   }
@@ -2529,18 +2688,18 @@ function formatBytes(value) {
 function formatInstallPhase(phase) {
   const normalized = String(phase || '').trim();
   const mapping = {
-    queued: '排队中',
-    metadata: '获取安装信息',
-    downloading: 'HTTPS 下载中',
-    installing: '安装器执行中',
-    extracting: '解压安装中',
-    languages: '下载语言包中',
-    verifying: '校验安装中',
-    completed: '安装完成',
-    failed: '安装失败',
-    canceled: '已取消',
+    queued: uiT('ui.install.phase.queued', '排队中'),
+    metadata: uiT('ui.install.phase.metadata', '获取安装信息'),
+    downloading: uiT('ui.install.phase.downloading', 'HTTPS 下载中'),
+    installing: uiT('ui.install.phase.installing', '安装器执行中'),
+    extracting: uiT('ui.install.phase.extracting', '解压安装中'),
+    languages: uiT('ui.install.phase.languages', '下载语言包中'),
+    verifying: uiT('ui.install.phase.verifying', '校验安装中'),
+    completed: uiT('ui.install.phase.completed', '安装完成'),
+    failed: uiT('ui.install.phase.failed', '安装失败'),
+    canceled: uiT('ui.install.phase.canceled', '已取消'),
   };
-  return mapping[normalized] || normalized || '等待中';
+  return uiDynamicT('ui.install.phase', normalized, mapping[normalized] || normalized || uiT('ui.install.phase.waiting', '等待中'));
 }
 
 function formatCaptureProfile(profile) {
@@ -2749,7 +2908,7 @@ function renderInstallTaskState(kind) {
     card.style.display = '';
     button.hidden = false;
     button.disabled = false;
-    statusText.textContent = `等待 ${label} 安装任务`;
+    statusText.textContent = uiTf('ui.install.task.waiting', '等待 {label} 安装任务', { label });
     percentText.textContent = '0%';
     messageText.textContent = '';
     detailText.textContent = '';
@@ -2766,7 +2925,7 @@ function renderInstallTaskState(kind) {
     details.push(formatBytes(state.downloaded_bytes));
   }
   if (state.resume_from) {
-    details.push(`续传自 ${formatBytes(state.resume_from)}`);
+    details.push(uiTf('ui.install.task.resume_from', '续传自 {size}', { size: formatBytes(state.resume_from) }));
   }
   if (state.asset_name) {
     details.push(state.asset_name);
@@ -2794,20 +2953,21 @@ function renderInstallTaskState(kind) {
 
 function renderPluginUnavailable(error) {
   latestStatus = null;
-  const message = error instanceof Error ? error.message : String(error || '插件尚未启动');
-  document.getElementById('summaryText').textContent = '插件尚未启动';
+  const pluginNotStarted = uiT('ui.diag.plugin_not_started.title', '插件尚未启动');
+  const message = error instanceof Error ? error.message : String(error || pluginNotStarted);
+  document.getElementById('summaryText').textContent = pluginNotStarted;
   renderPrimaryDiagnosis({
     connection_state: 'plugin_not_started',
     last_error: null,
     primary_diagnosis: {
       severity: 'info',
-      title: '插件尚未启动',
-      message: '请在插件管理页面点击"启动"按钮，启动完成后数据会自动刷新。',
+      title: pluginNotStarted,
+      message: uiT('ui.diag.plugin_not_started.body', '请在插件管理页面点击"启动"按钮，启动完成后数据会自动刷新。'),
       actions: [
-        { id: 'refresh_all', label: '刷新全部' },
+        diagnosisAction('refresh_all'),
       ],
     },
-    summary: '插件尚未启动',
+    summary: pluginNotStarted,
   });
   renderFirstRunGuide({});
   renderCurrentLineOverview({});
@@ -2815,14 +2975,14 @@ function renderPluginUnavailable(error) {
   renderInstallCompactSummary({});
   renderStatusGrid([
     { label: 'connection_state', value: 'plugin_not_started' },
-    { label: 'status', value: '插件尚未启动' },
+    { label: 'status', value: pluginNotStarted },
     { label: 'last_error', value: message },
   ], []);
   renderGrid('ocrRuntimeGrid', [
-    { label: 'status', value: '插件尚未启动' },
+    { label: 'status', value: pluginNotStarted },
   ]);
   renderGrid('snapshotGrid', [
-    { label: 'status', value: '插件尚未启动' },
+    { label: 'status', value: pluginNotStarted },
   ]);
 
   for (const kind of ['rapidocr', 'dxcam', 'tesseract', 'textractor']) {
@@ -2835,8 +2995,8 @@ function renderPluginUnavailable(error) {
     const path = document.getElementById(`${config.domPrefix}PathText`);
     banner.className = `install-banner install-banner-${kind} neutral`;
     kicker.textContent = config.label;
-    title.textContent = '插件尚未启动';
-    body.textContent = '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。';
+    title.textContent = pluginNotStarted;
+    body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
     path.textContent = message;
     card.hidden = true;
     card.style.display = 'none';
@@ -2899,7 +3059,10 @@ async function fetchInstallTaskState(kind, taskId) {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`读取 ${getInstallConfig(kind).label} 安装状态失败: HTTP ${response.status}`);
+    throw new Error(uiTf('ui.error.install_state_read_failed', '读取 {label} 安装状态失败: HTTP {status}', {
+      label: getInstallConfig(kind).label,
+      status: response.status,
+    }));
   }
   return await response.json();
 }
@@ -2910,7 +3073,10 @@ async function fetchLatestInstallTaskState(kind) {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`读取最近 ${getInstallConfig(kind).label} 安装状态失败: HTTP ${response.status}`);
+    throw new Error(uiTf('ui.error.latest_install_state_read_failed', '读取最近 {label} 安装状态失败: HTTP {status}', {
+      label: getInstallConfig(kind).label,
+      status: response.status,
+    }));
   }
   return await response.json();
 }
@@ -3153,24 +3319,25 @@ function renderStatus(status) {
   const suggestSection = document.getElementById('suggestPanelSection');
   const suggestPanel = document.getElementById('suggestPanel');
   if (suggestSection && suggestPanel) {
-    const hasContent = suggestPanel.textContent.trim() && suggestPanel.textContent.trim() !== '暂无数据';
+    const noDataText = uiT('ui.empty.no_data', '暂无数据');
+    const hasContent = suggestPanel.textContent.trim() && suggestPanel.textContent.trim() !== noDataText;
     suggestSection.hidden = !hasContent;
   }
 
   const userStatusRows = [
     { label: 'connection_state', value: status.connection_state || '' },
     { label: 'active_data_source', value: status.active_data_source || '' },
-    { label: 'reader_mode', value: READER_MODE_LABELS_ZH[status.reader_mode] || status.reader_mode || 'auto' },
+    { label: 'reader_mode', value: readerModeLabel(status.reader_mode, status.reader_mode || 'auto') },
     { label: 'mode', value: status.mode || '' },
     {
       label: 'agent_user_status',
-      value: AGENT_USER_STATUS_LABELS_ZH[status.agent_user_status] || status.agent_user_status || '',
+      value: agentUserStatusLabel(status.agent_user_status, status.agent_user_status || ''),
     },
     { label: 'agent_pause_message', value: status.agent_pause_message || '' },
     { label: 'push_notifications', value: String(Boolean(status.push_notifications)) },
-    { label: 'advance_speed', value: ADVANCE_SPEED_LABELS_ZH[status.advance_speed] || status.advance_speed || 'medium' },
-    { label: 'bound_game_id', value: status.bound_game_id || '(auto)' },
-    { label: 'available_game_ids', value: (status.available_game_ids || []).join(', ') || '(none)' },
+    { label: 'advance_speed', value: advanceSpeedLabel(status.advance_speed, status.advance_speed || 'medium') },
+    { label: 'bound_game_id', value: status.bound_game_id || uiT('ui.common.auto_value', '(auto)') },
+    { label: 'available_game_ids', value: (status.available_game_ids || []).join(', ') || uiT('ui.common.none_value', '(none)') },
     { label: 'performance_cpu_percent', value: `${formatFixedNumber(performance.cpu_percent, 1)}%` },
     { label: 'performance_memory_mb', value: `${formatFixedNumber(performance.memory_mb, 1)} MB` },
     { label: 'ocr_reader_enabled', value: String(Boolean(status.ocr_reader_enabled)) },
@@ -3335,23 +3502,25 @@ function renderGameBinding(status) {
   const boundGameId = String(status.bound_game_id || '').trim();
   const gameIds = Array.isArray(status.available_game_ids) ? status.available_game_ids : [];
   const boundDescription = describeGameBindingId(boundGameId);
-  currentNode.textContent = boundGameId ? `已固定：${boundDescription.title}` : '自动选择游戏窗口';
+  currentNode.textContent = boundGameId
+    ? uiTf('ui.game.binding.fixed_title', '已固定：{title}', { title: boundDescription.title })
+    : uiT('ui.game.binding.auto_title', '自动选择游戏窗口');
   if (detailNode) {
     detailNode.textContent = boundGameId
-      ? `${boundDescription.detail}。点“恢复自动”后，插件会重新按当前可用目标选择。`
-      : '插件会优先选择当前可用目标。需要固定目标时，点击下面的候选项。';
+      ? uiTf('ui.game.binding.fixed_detail', '{detail}。点“恢复自动”后，插件会重新按当前可用目标选择。', { detail: boundDescription.detail })
+      : uiT('ui.game.binding.auto_detail', '插件会优先选择当前可用目标。需要固定目标时，点击下面的候选项。');
   }
 
   if (!gameIds.length) {
     listNode.className = 'binding-chip-row empty-inline';
-    listNode.textContent = '未发现可绑定游戏。请确认 Bridge/OCR/Memory Reader 已连接到游戏窗口。';
+    listNode.textContent = uiT('ui.game.binding.no_games', '未发现可绑定游戏。请确认 Bridge/OCR/Memory Reader 已连接到游戏窗口。');
     return;
   }
 
   const normalizedGameIds = gameIds.map((gameId) => String(gameId || '').trim()).filter(Boolean);
   if (!normalizedGameIds.length) {
     listNode.className = 'binding-chip-row empty-inline';
-    listNode.textContent = '可用游戏 ID 为空。';
+    listNode.textContent = uiT('ui.game.binding.empty_ids', '可用游戏 ID 为空。');
     return;
   }
 
@@ -3367,7 +3536,9 @@ function renderGameBinding(status) {
         button.disabled = active;
         const title = document.createElement('span');
         title.className = 'binding-chip-title';
-        title.textContent = active ? `当前：${description.title}` : description.title;
+        title.textContent = active
+          ? uiTf('ui.game.binding.current_title', '当前：{title}', { title: description.title })
+          : description.title;
         const detail = document.createElement('span');
         detail.className = 'binding-chip-detail';
         detail.textContent = description.detail;
@@ -3379,7 +3550,7 @@ function renderGameBinding(status) {
   listNode.querySelectorAll('[data-game-id]').forEach((button) => {
     button.addEventListener('click', () => {
       const gameId = button.getAttribute('data-game-id') || '';
-      withButtonPending(button, '绑定中...', () => bindGame(gameId)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.binding', '绑定中...'), () => bindGame(gameId)).catch((error) => { console.error('[galgame] async action failed', error); });
     });
   });
 }
@@ -3388,48 +3559,48 @@ function describeGameBindingId(gameId) {
   const normalized = String(gameId || '').trim();
   if (!normalized) {
     return {
-      title: '自动选择游戏窗口',
-      detail: '插件会优先选择当前可用目标',
+      title: uiT('ui.game.binding.auto_title', '自动选择游戏窗口'),
+      detail: uiT('ui.game.binding.auto_short_detail', '插件会优先选择当前可用目标'),
     };
   }
   const [prefix, ...rest] = normalized.split('-');
   const suffix = rest.join('-') || normalized;
   if (prefix === 'mem') {
     return {
-      title: '内存读取目标',
+      title: uiT('ui.game.binding.memory_target', '内存读取目标'),
       detail: `ID ${suffix}`,
     };
   }
   if (prefix === 'ocr') {
     return {
-      title: 'OCR 窗口目标',
+      title: uiT('ui.game.binding.ocr_target', 'OCR 窗口目标'),
       detail: `ID ${suffix}`,
     };
   }
   return {
-    title: '游戏目标',
+    title: uiT('ui.game.binding.game_target', '游戏目标'),
     detail: normalized,
   };
 }
 
 function formatConnectionStateZh(value) {
   const normalized = String(value || '').trim();
-  return CONNECTION_STATE_LABELS_ZH[normalized] || normalized || '未知';
+  return connectionStateLabel(normalized, normalized || uiT('ui.common.unknown', '未知'));
 }
 
 function formatModeZh(value) {
   const normalized = String(value || '').trim();
-  return MODE_LABELS_ZH[normalized] || normalized || '未知模式';
+  return modeLabel(normalized, normalized || uiT('ui.common.unknown_mode', '未知模式'));
 }
 
 function formatDataSourceZh(value) {
   const normalized = String(value || '').trim();
-  return DATA_SOURCE_LABELS_ZH[normalized] || normalized || '未知来源';
+  return dataSourceLabel(normalized, normalized || uiT('ui.common.unknown_source', '未知来源'));
 }
 
 function buildStatusSummaryText(status) {
   if (!status || typeof status !== 'object') {
-    return '无摘要';
+    return uiT('ui.summary.none', '无摘要');
   }
 
   const source = String(status.active_data_source || '').trim();
@@ -3444,42 +3615,44 @@ function buildStatusSummaryText(status) {
 
   let prefix = '';
   if (source === 'ocr_reader' && sessionId) {
-    prefix = '已通过 OCR 读取连接（降级模式）';
+    prefix = uiT('ui.summary.connected_ocr', '已通过 OCR 读取连接（降级模式）');
   } else if (source === 'memory_reader' && sessionId) {
-    prefix = '已通过内存读取连接（降级模式）';
+    prefix = uiT('ui.summary.connected_memory', '已通过内存读取连接（降级模式）');
   } else if (source === 'bridge_sdk' && sessionId) {
-    prefix = '已通过 Bridge SDK 连接';
+    prefix = uiT('ui.summary.connected_bridge', '已通过 Bridge SDK 连接');
   } else if (status.connection_state === 'stale') {
-    prefix = '当前桥接快照已过期';
+    prefix = uiT('ui.summary.stale_snapshot', '当前桥接快照已过期');
   } else if (status.connection_state === 'active') {
-    prefix = '当前桥接链路运行中';
+    prefix = uiT('ui.summary.bridge_active', '当前桥接链路运行中');
   } else {
-    prefix = `当前数据源：${formatDataSourceZh(source)}`;
+    prefix = uiTf('ui.summary.current_source', '当前数据源：{source}', { source: formatDataSourceZh(source) });
   }
 
   const parts = [
-    `状态：${connectionState}`,
-    `模式：${mode}`,
+    uiTf('ui.summary.state_part', '状态：{state}', { state: connectionState }),
+    uiTf('ui.summary.mode_part', '模式：{mode}', { mode }),
   ];
 
   if (boundGameId) {
-    parts.push(`绑定：${boundGameId}`);
+    parts.push(uiTf('ui.summary.bound_part', '绑定：{gameId}', { gameId: boundGameId }));
   }
   if (sessionId) {
-    parts.push(`会话：${sessionId}`);
+    parts.push(uiTf('ui.summary.session_part', '会话：{sessionId}', { sessionId }));
   }
-  parts.push(`最新序号：${lastSeq}`);
+  parts.push(uiTf('ui.summary.seq_part', '最新序号：{seq}', { seq: lastSeq }));
 
   if (warningMessage) {
-    parts.push(`告警：${warningMessage}`);
+    parts.push(uiTf('ui.summary.warning_part', '告警：{warning}', { warning: warningMessage }));
   }
   if (status.ocr_capture_diagnostic_required) {
-    parts.push(`OCR诊断：${status.ocr_context_state || ocrRuntimeState(status) || '截图区/窗口目标可能异常'}`);
+    parts.push(uiTf('ui.summary.ocr_diagnostic_part', 'OCR诊断：{diagnostic}', {
+      diagnostic: status.ocr_context_state || ocrRuntimeState(status) || uiT('ui.ocr.missing_line.capture_target_abnormal', '截图区/窗口目标可能异常'),
+    }));
   }
   if (status.agent_diagnostic_required || status.agent_reason) {
     const agentText = status.agent_diagnostic || status.agent_reason || status.agent_status || '';
     if (agentText) {
-      parts.push(`Agent：${agentText}`);
+      parts.push(uiTf('ui.summary.agent_part', 'Agent：{agent}', { agent: agentText }));
     }
   }
 
@@ -3550,16 +3723,16 @@ function renderOcrRuntime(status) {
     { label: 'ocr_background_polling', value: String(Boolean(status.ocr_background_polling || backgroundStatus.background_polling)) },
     { label: 'ocr_foreground_resume_pending', value: String(Boolean(status.ocr_foreground_resume_pending || backgroundStatus.foreground_resume_pending)) },
     { label: 'ocr_capture_backend_blocked', value: String(Boolean(status.ocr_capture_backend_blocked || backgroundStatus.capture_backend_blocked)) },
-    { label: 'capture_stage', value: OCR_PROFILE_STAGE_LABELS_ZH[captureStage] || captureStage || '通用区域' },
+    { label: 'capture_stage', value: ocrProfileStageLabel(captureStage, captureStage || uiT('ui.stage.default', '通用区域')) },
     { label: 'capture_profile', value: formatCaptureProfile(captureProfile) || '(default)' },
     {
       label: 'capture_profile_match_source',
-      value: OCR_CAPTURE_MATCH_SOURCE_LABELS_ZH[captureProfileMatchSource] || captureProfileMatchSource || '',
+      value: ocrCaptureMatchSourceLabel(captureProfileMatchSource, captureProfileMatchSource || ''),
     },
     { label: 'capture_profile_bucket_key', value: fromCapture('profile_bucket_key', 'capture_profile_bucket_key') || '' },
     {
       label: 'recommended_capture_profile_stage',
-      value: OCR_PROFILE_STAGE_LABELS_ZH[fromProfile('recommended_capture_profile_stage')]
+      value: ocrProfileStageLabel(fromProfile('recommended_capture_profile_stage'))
         || fromProfile('recommended_capture_profile_stage')
         || '',
     },
@@ -3598,7 +3771,7 @@ function renderOcrRuntime(status) {
     },
     { label: 'consecutive_no_text_polls', value: String(fromOcr('consecutive_no_text_polls') || 0) },
     { label: 'last_observed_at', value: fromOcr('last_observed_at') || '' },
-    { label: 'last_capture_stage', value: OCR_PROFILE_STAGE_LABELS_ZH[lastCaptureStage] || lastCaptureStage || '' },
+    { label: 'last_capture_stage', value: ocrProfileStageLabel(lastCaptureStage, lastCaptureStage || '') },
     { label: 'last_capture_profile', value: formatCaptureProfile(lastCaptureProfile) || '' },
     { label: 'ocr_context_state', value: fromOcr('context_state', 'ocr_context_state') || '' },
     { label: 'ocr_tick_gate_allowed', value: String(Boolean(runtime.ocr_tick_gate_allowed)) },
@@ -3776,26 +3949,26 @@ function renderOcrRuntime(status) {
 
 function formatMemoryReaderSelectionDetail(detail) {
   const mapping = {
-    auto_candidate_scan: '正在自动检测游戏进程',
-    manual_target_active: '手动锁定已启用',
-    manual_target_exact: '命中手动锁定进程',
-    manual_target_rebound: '已按 exe 路径和进程名重新绑定',
-    manual_target_unavailable: '手动进程不可用，请重新选择',
-    manual_pid_unimplemented: 'auto_detect=false 但尚未锁定手动目标',
-    no_detected_game_process: '未检测到可用游戏进程',
-    detected_kirikiri_xp3: '通过 xp3 资源识别为 KiriKiri',
-    detected_kirikiri_common_xp3: '通过常见 xp3 资源识别为 KiriKiri',
-    detected_kirikiri_startup_tjs: '通过 startup.tjs 识别为 KiriKiri',
-    detected_kirikiri_module: '通过 krkr.dll 识别为 KiriKiri',
-    detected_kirikiri_process_name: '通过进程名识别为 KiriKiri',
-    detected_kirikiri_preset_senren_banka: '通过千恋万花内建签名识别为 KiriKiri',
-    detected_unity_module: '通过 Unity 模块识别',
-    detected_unity_name_or_cmdline: '通过 Unity 进程信息识别',
-    detected_renpy_module: '通过 RenPy 模块识别',
-    detected_renpy_cmdline: '通过 RenPy 命令行识别',
-    unknown_engine: '未知引擎',
+    auto_candidate_scan: uiT('ui.memory.detail.auto_candidate_scan', '正在自动检测游戏进程'),
+    manual_target_active: uiT('ui.memory.detail.manual_target_active', '手动锁定已启用'),
+    manual_target_exact: uiT('ui.memory.detail.manual_target_exact', '命中手动锁定进程'),
+    manual_target_rebound: uiT('ui.memory.detail.manual_target_rebound', '已按 exe 路径和进程名重新绑定'),
+    manual_target_unavailable: uiT('ui.memory.detail.manual_target_unavailable', '手动进程不可用，请重新选择'),
+    manual_pid_unimplemented: uiT('ui.memory.detail.manual_pid_unimplemented', 'auto_detect=false 但尚未锁定手动目标'),
+    no_detected_game_process: uiT('ui.memory.detail.no_detected_game_process', '未检测到可用游戏进程'),
+    detected_kirikiri_xp3: uiT('ui.memory.detail.detected_kirikiri_xp3', '通过 xp3 资源识别为 KiriKiri'),
+    detected_kirikiri_common_xp3: uiT('ui.memory.detail.detected_kirikiri_common_xp3', '通过常见 xp3 资源识别为 KiriKiri'),
+    detected_kirikiri_startup_tjs: uiT('ui.memory.detail.detected_kirikiri_startup_tjs', '通过 startup.tjs 识别为 KiriKiri'),
+    detected_kirikiri_module: uiT('ui.memory.detail.detected_kirikiri_module', '通过 krkr.dll 识别为 KiriKiri'),
+    detected_kirikiri_process_name: uiT('ui.memory.detail.detected_kirikiri_process_name', '通过进程名识别为 KiriKiri'),
+    detected_kirikiri_preset_senren_banka: uiT('ui.memory.detail.detected_kirikiri_preset_senren_banka', '通过千恋万花内建签名识别为 KiriKiri'),
+    detected_unity_module: uiT('ui.memory.detail.detected_unity_module', '通过 Unity 模块识别'),
+    detected_unity_name_or_cmdline: uiT('ui.memory.detail.detected_unity_name_or_cmdline', '通过 Unity 进程信息识别'),
+    detected_renpy_module: uiT('ui.memory.detail.detected_renpy_module', '通过 RenPy 模块识别'),
+    detected_renpy_cmdline: uiT('ui.memory.detail.detected_renpy_cmdline', '通过 RenPy 命令行识别'),
+    unknown_engine: uiT('ui.memory.detail.unknown_engine', '未知引擎'),
   };
-  return mapping[detail] || detail || '';
+  return uiDynamicT('ui.memory.detail', detail, mapping[detail] || detail || '');
 }
 
 function renderMemoryReaderTargetStatus(status) {
@@ -3812,17 +3985,17 @@ function renderMemoryReaderTargetStatus(status) {
   const detail = formatMemoryReaderSelectionDetail(runtime.target_selection_detail || runtime.detection_reason || '');
   if (modeText) {
     modeText.textContent = mode === 'manual'
-      ? `当前模式: manual${target.process_name ? ` | 锁定 ${target.process_name}` : ''}`
-      : '当前模式: 自动检测优先';
+      ? `${uiT('ui.window.current_mode', '当前模式')}: manual${target.process_name ? ` | ${uiT('ui.window.locked', '锁定')} ${target.process_name}` : ''}`
+      : `${uiT('ui.window.current_mode', '当前模式')}: ${uiT('ui.window.auto_detect_first', '自动检测优先')}`;
   }
   if (hint) {
     const parts = [
-      processName ? `当前目标: ${processName}${pid ? ` (${pid})` : ''}` : '',
+      processName ? `${uiT('ui.window.current_target', '当前目标')}: ${processName}${pid ? ` (${pid})` : ''}` : '',
       engine ? `engine=${engine}` : '',
       detail,
       runtime.hook_code_detail ? `hook=${runtime.hook_code_detail} (${runtime.hook_code_count || 0})` : '',
     ].filter(Boolean);
-    hint.textContent = parts.join(' | ') || 'Memory Reader 会优先检测 RenPy / Unity / KiriKiri；自动失败时可手动选择进程。';
+    hint.textContent = parts.join(' | ') || uiT('ui.memory.auto_hint', 'Memory Reader 会优先检测 RenPy / Unity / KiriKiri；自动失败时可手动选择进程。');
   }
   if (autoButton) {
     autoButton.disabled = mode !== 'manual';
@@ -3847,11 +4020,11 @@ function renderLockedMemoryProcess(status) {
   if (mode === 'manual' && (processName || exePath || pid)) {
     card.innerHTML = `
       <div class="locked-window-info">
-        <p class="list-kicker">${escapeHtml(processName || '未知进程')}${pid ? ` · PID ${escapeHtml(pid)}` : ''}</p>
+        <p class="list-kicker">${escapeHtml(processName || uiT('ui.window.unknown_process', '未知进程'))}${pid ? ` · PID ${escapeHtml(pid)}` : ''}</p>
         <h3>${escapeHtml(engine || 'unknown')}</h3>
         <p class="result-note mono">${escapeHtml(exePath || target.process_key || '')}</p>
         <div class="window-candidate-meta" style="margin-top:8px;">
-          <span class="status-chip active">手动锁定</span>
+          <span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>
           ${detail ? `<span class="status-chip">${escapeHtml(detail)}</span>` : ''}
         </div>
       </div>
@@ -3861,14 +4034,14 @@ function renderLockedMemoryProcess(status) {
       <div class="locked-window-info">
         <p class="list-kicker">${escapeHtml(runtime.process_name)}${runtime.pid ? ` · PID ${escapeHtml(runtime.pid)}` : ''}</p>
         <h3>${escapeHtml(runtime.engine || 'unknown')}</h3>
-        <p class="result-note">${escapeHtml(detail || '自动检测到 Memory Reader 目标')}</p>
+        <p class="result-note">${escapeHtml(detail || uiT('ui.memory.auto_detected_target', '自动检测到 Memory Reader 目标'))}</p>
         <div class="window-candidate-meta" style="margin-top:8px;">
-          <span class="status-chip active">自动检测</span>
+          <span class="status-chip active">${escapeHtml(uiT('ui.window.auto_detected', '自动检测'))}</span>
         </div>
       </div>
     `;
   } else {
-    card.innerHTML = '<div class="locked-window-empty">尚未确认 Memory Reader 目标进程。自动识别失败时，请点击“选择进程”手动锁定。</div>';
+    card.innerHTML = `<div class="locked-window-empty">${escapeHtml(uiT('ui.memory.no_locked_target', '尚未确认 Memory Reader 目标进程。自动识别失败时，请点击“选择进程”手动锁定。'))}</div>`;
   }
 }
 
@@ -3876,23 +4049,23 @@ function renderMemoryProcessListToNode(node, processes) {
   renderPreservingScroll(node, () => {
     if (!processes.length) {
       node.className = 'stack-list scroll-region empty-state window-candidate-list';
-      node.textContent = '暂无候选进程';
+      node.textContent = uiT('ui.modal.no_process', '暂无候选进程');
     } else {
       node.className = 'stack-list scroll-region window-candidate-list';
       node.innerHTML = processes.map((item) => {
         const chips = [
-          item.is_attached ? '<span class="status-chip active">当前附着</span>' : '',
-          item.is_manual_target ? '<span class="status-chip active">手动锁定</span>' : '',
+          item.is_attached ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.attached', '当前附着'))}</span>` : '',
+          item.is_manual_target ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>` : '',
           item.engine || item.detected_engine ? `<span class="status-chip">${escapeHtml(item.engine || item.detected_engine)}</span>` : '',
         ].filter(Boolean).join('');
         return `
           <article class="list-card compact">
             <div class="window-candidate-header">
               <div class="window-candidate-summary">
-                <p class="list-kicker">${escapeHtml(item.process_name || '未知进程')} · pid ${escapeHtml(item.pid || 0)}</p>
+                <p class="list-kicker">${escapeHtml(item.process_name || uiT('ui.window.unknown_process', '未知进程'))} · pid ${escapeHtml(item.pid || 0)}</p>
                 <h3>${escapeHtml(formatMemoryReaderSelectionDetail(item.detection_reason || '') || item.detection_reason || 'unknown_engine')}</h3>
               </div>
-              <button class="secondary" data-memory-process-key="${escapeHtml(item.process_key || '')}">锁定此进程</button>
+              <button class="secondary" data-memory-process-key="${escapeHtml(item.process_key || '')}">${escapeHtml(uiT('ui.window.lock_process', '锁定此进程'))}</button>
             </div>
             <p class="result-note mono">${escapeHtml(item.exe_path || item.process_key || '')}</p>
             <div class="window-candidate-actions">
@@ -3906,7 +4079,7 @@ function renderMemoryProcessListToNode(node, processes) {
   node.querySelectorAll('[data-memory-process-key]').forEach((button) => {
     button.addEventListener('click', () => {
       const key = button.getAttribute('data-memory-process-key') || '';
-      withButtonPending(button, '锁定中...', () => setMemoryProcessTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setMemoryProcessTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
     });
   });
 }
@@ -3923,42 +4096,42 @@ function renderMemoryProcessTargetSnapshot(snapshot, status = latestStatus) {
 
 function formatOcrWindowReason(reason) {
   const mapping = {
-    excluded_self_window: '已排除 N.E.K.O 自身窗口',
-    excluded_overlay_window: '已排除 overlay / launcher / helper',
-    excluded_helper_window: '已排除系统或宿主辅助窗口',
-    excluded_small_or_hidden_window: '已排除过小或不可用窗口',
-    excluded_minimized_window: '游戏窗口已最小化，OCR 不能截图，请恢复窗口',
-    excluded_non_game_process: '非游戏进程，已忽略',
+    excluded_self_window: uiT('ui.ocr.window.reason.excluded_self_window', '已排除 N.E.K.O 自身窗口'),
+    excluded_overlay_window: uiT('ui.ocr.window.reason.excluded_overlay_window', '已排除 overlay / launcher / helper'),
+    excluded_helper_window: uiT('ui.ocr.window.reason.excluded_helper_window', '已排除系统或宿主辅助窗口'),
+    excluded_small_or_hidden_window: uiT('ui.ocr.window.reason.excluded_small_or_hidden_window', '已排除过小或不可用窗口'),
+    excluded_minimized_window: uiT('ui.ocr.window.reason.excluded_minimized_window', '游戏窗口已最小化，OCR 不能截图，请恢复窗口'),
+    excluded_non_game_process: uiT('ui.ocr.window.reason.excluded_non_game_process', '非游戏进程，已忽略'),
   };
-  return mapping[reason] || reason || 'unknown';
+  return uiDynamicT('ui.ocr.window.reason', reason, mapping[reason] || reason || 'unknown');
 }
 
 function formatOcrWindowSelectionDetail(detail) {
   const mapping = {
-    auto_candidate_scan: '正在自动检测游戏窗口',
-    manual_target_active: '手动锁定已启用',
-    manual_target_exact: '命中手动锁定窗口',
-    manual_target_rebound: '已按签名重新绑定手动窗口',
-    manual_target_unavailable_fallback_to_auto: '手动窗口不可用，请重新锁定窗口',
-    waiting_for_manual_window_target: '自动检测失败，请手动锁定 OCR 目标窗口',
-    auto_detect_needs_manual_fallback: '未找到可信自动目标，请手动选择游戏窗口',
-    foreground_window_needs_manual_confirmation: '当前前台窗口不像游戏，请手动选择游戏窗口',
-    no_eligible_window: '当前没有可用游戏窗口',
-    memory_reader_window_minimized: '游戏窗口已最小化，OCR 不能截图，请恢复窗口',
-    memory_reader_minimized_overridden_by_foreground: '窗口标记为最小化但实际在前台，已自动恢复',
-    memory_reader_pid: '优先沿用 Memory Reader 命中的 PID',
-    memory_reader_process: '优先沿用 Memory Reader 命中的进程',
-    manual_target_overridden_by_memory_reader: 'Memory Reader 目标与 OCR 手动目标不一致，已优先使用 Memory Reader',
-    manual_target_overridden_by_memory_reader_pid: 'OCR 手动目标已过期，已按 Memory Reader PID 切回当前游戏',
-    manual_target_overridden_by_memory_reader_process: 'OCR 手动目标已过期，已按 Memory Reader 进程切回当前游戏',
-    manual_target_overridden_by_memory_reader_unavailable: 'Memory Reader 已切到其他游戏，OCR 暂不继续读旧窗口',
-    memory_reader_target_unavailable: 'Memory Reader 目标窗口不可用，OCR 暂停以避免读错窗口',
-    attached_hwnd: '优先复用当前已附着窗口',
-    attached_pid: '优先复用当前已附着进程',
-    foreground_window: '优先使用当前前台候选窗口',
-    scored_candidate: '按候选排序选择窗口',
+    auto_candidate_scan: uiT('ui.ocr.window.detail.auto_candidate_scan', '正在自动检测游戏窗口'),
+    manual_target_active: uiT('ui.ocr.window.detail.manual_target_active', '手动锁定已启用'),
+    manual_target_exact: uiT('ui.ocr.window.detail.manual_target_exact', '命中手动锁定窗口'),
+    manual_target_rebound: uiT('ui.ocr.window.detail.manual_target_rebound', '已按签名重新绑定手动窗口'),
+    manual_target_unavailable_fallback_to_auto: uiT('ui.ocr.window.detail.manual_target_unavailable_fallback_to_auto', '手动窗口不可用，请重新锁定窗口'),
+    waiting_for_manual_window_target: uiT('ui.ocr.window.detail.waiting_for_manual_window_target', '自动检测失败，请手动锁定 OCR 目标窗口'),
+    auto_detect_needs_manual_fallback: uiT('ui.ocr.window.detail.auto_detect_needs_manual_fallback', '未找到可信自动目标，请手动选择游戏窗口'),
+    foreground_window_needs_manual_confirmation: uiT('ui.ocr.window.detail.foreground_window_needs_manual_confirmation', '当前前台窗口不像游戏，请手动选择游戏窗口'),
+    no_eligible_window: uiT('ui.ocr.window.detail.no_eligible_window', '当前没有可用游戏窗口'),
+    memory_reader_window_minimized: uiT('ui.ocr.window.detail.memory_reader_window_minimized', '游戏窗口已最小化，OCR 不能截图，请恢复窗口'),
+    memory_reader_minimized_overridden_by_foreground: uiT('ui.ocr.window.detail.memory_reader_minimized_overridden_by_foreground', '窗口标记为最小化但实际在前台，已自动恢复'),
+    memory_reader_pid: uiT('ui.ocr.window.detail.memory_reader_pid', '优先沿用 Memory Reader 命中的 PID'),
+    memory_reader_process: uiT('ui.ocr.window.detail.memory_reader_process', '优先沿用 Memory Reader 命中的进程'),
+    manual_target_overridden_by_memory_reader: uiT('ui.ocr.window.detail.manual_target_overridden_by_memory_reader', 'Memory Reader 目标与 OCR 手动目标不一致，已优先使用 Memory Reader'),
+    manual_target_overridden_by_memory_reader_pid: uiT('ui.ocr.window.detail.manual_target_overridden_by_memory_reader_pid', 'OCR 手动目标已过期，已按 Memory Reader PID 切回当前游戏'),
+    manual_target_overridden_by_memory_reader_process: uiT('ui.ocr.window.detail.manual_target_overridden_by_memory_reader_process', 'OCR 手动目标已过期，已按 Memory Reader 进程切回当前游戏'),
+    manual_target_overridden_by_memory_reader_unavailable: uiT('ui.ocr.window.detail.manual_target_overridden_by_memory_reader_unavailable', 'Memory Reader 已切到其他游戏，OCR 暂不继续读旧窗口'),
+    memory_reader_target_unavailable: uiT('ui.ocr.window.detail.memory_reader_target_unavailable', 'Memory Reader 目标窗口不可用，OCR 暂停以避免读错窗口'),
+    attached_hwnd: uiT('ui.ocr.window.detail.attached_hwnd', '优先复用当前已附着窗口'),
+    attached_pid: uiT('ui.ocr.window.detail.attached_pid', '优先复用当前已附着进程'),
+    foreground_window: uiT('ui.ocr.window.detail.foreground_window', '优先使用当前前台候选窗口'),
+    scored_candidate: uiT('ui.ocr.window.detail.scored_candidate', '按候选排序选择窗口'),
   };
-  return mapping[detail] || detail || '';
+  return uiDynamicT('ui.ocr.window.detail', detail, mapping[detail] || detail || '');
 }
 
 function renderOcrWindowTargetStatus(status) {
@@ -3974,29 +4147,29 @@ function renderOcrWindowTargetStatus(status) {
   const detail = formatOcrWindowSelectionDetail(runtime.target_selection_detail || '');
   let captureHint = '';
   if (runtime.capture_backend_kind === 'dxcam') {
-    captureHint = '使用 DXcam 截图后端';
+    captureHint = uiT('ui.ocr.window.capture_dxcam', '使用 DXcam 截图后端');
   } else if (runtime.capture_backend_detail === 'dxcam_unavailable_fallback') {
-    captureHint = '未安装 DXcam，正在使用兼容截图；可安装 dxcam 降低遮挡或旧帧影响';
+    captureHint = uiT('ui.ocr.window.capture_dxcam_unavailable', '未安装 DXcam，正在使用兼容截图；可安装 dxcam 降低遮挡或旧帧影响');
   } else if (runtime.capture_backend_detail === 'dxcam_failed_fallback') {
-    captureHint = 'DXcam 截图失败，已自动切到兼容截图';
+    captureHint = uiT('ui.ocr.window.capture_dxcam_failed', 'DXcam 截图失败，已自动切到兼容截图');
   } else if (runtime.capture_backend_kind) {
-    captureHint = `使用 ${runtime.capture_backend_kind} 兼容截图`;
+    captureHint = `${uiT('ui.ocr.window.capture_compat_prefix', '使用')} ${runtime.capture_backend_kind} ${uiT('ui.ocr.window.capture_compat_suffix', '兼容截图')}`;
   }
   if (runtime.stale_capture_backend) {
-    captureHint = '截图源没有更新，请切回游戏窗口或切换 DXcam 截图后端';
+    captureHint = uiT('ui.ocr.window.capture_stale', '截图源没有更新，请切回游戏窗口或切换 DXcam 截图后端');
   }
   const hintParts = [
-    effectiveProcess ? `当前目标: ${effectiveProcess}${runtime.pid ? ` (${runtime.pid})` : ''}` : '',
-    effectiveTitle ? `窗口: ${effectiveTitle}` : '',
+    effectiveProcess ? `${uiT('ui.window.current_target', '当前目标')}: ${effectiveProcess}${runtime.pid ? ` (${runtime.pid})` : ''}` : '',
+    effectiveTitle ? `${uiT('ui.window.window_label', '窗口')}: ${effectiveTitle}` : '',
     captureHint,
     detail,
-    runtime.last_exclude_reason ? `最近排除: ${formatOcrWindowReason(runtime.last_exclude_reason)}` : '',
+    runtime.last_exclude_reason ? `${uiT('ui.ocr.window.last_excluded', '最近排除')}: ${formatOcrWindowReason(runtime.last_exclude_reason)}` : '',
   ].filter(Boolean);
 
   modeText.textContent = mode === 'manual'
-    ? `当前模式: manual${manualTarget.process_name ? ` | 锁定 ${manualTarget.process_name}` : ''}`
-    : '当前模式: 自动检测优先';
-  hint.textContent = hintParts.join(' | ') || '插件会先尝试当前前台/已绑定游戏窗口；无法可信识别时，请手动选择游戏窗口。';
+    ? `${uiT('ui.window.current_mode', '当前模式')}: manual${manualTarget.process_name ? ` | ${uiT('ui.window.locked', '锁定')} ${manualTarget.process_name}` : ''}`
+    : `${uiT('ui.window.current_mode', '当前模式')}: ${uiT('ui.window.auto_detect_first', '自动检测优先')}`;
+  hint.textContent = hintParts.join(' | ') || uiT('ui.ocr.window.auto_hint', '插件会先尝试当前前台/已绑定游戏窗口；无法可信识别时，请手动选择游戏窗口。');
   autoButton.disabled = mode !== 'manual';
 }
 
@@ -4017,10 +4190,10 @@ function renderLockedWindow(status) {
     card.innerHTML = `
       <div class="locked-window-info">
         <p class="list-kicker">${escapeHtml(processName)}${pid ? ` · PID ${escapeHtml(pid)}` : ''}</p>
-        <h3>${escapeHtml(title || '未命名窗口')}</h3>
+        <h3>${escapeHtml(title || uiT('ui.window.untitled', '未命名窗口'))}</h3>
         <p class="result-note mono">${escapeHtml(windowKey)}</p>
         <div class="window-candidate-meta" style="margin-top:8px;">
-          <span class="status-chip active">手动锁定</span>
+          <span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>
         </div>
       </div>
     `;
@@ -4028,17 +4201,17 @@ function renderLockedWindow(status) {
     const detail = formatOcrWindowSelectionDetail(runtime.target_selection_detail || '');
     card.innerHTML = `
       <div class="locked-window-info">
-        <p class="list-kicker">${escapeHtml(effectiveProcess || '自动检测目标')}${runtime.pid ? ` · PID ${escapeHtml(runtime.pid)}` : ''}</p>
-        <h3>${escapeHtml(effectiveTitle || '未命名窗口')}</h3>
-        <p class="result-note">${escapeHtml(detail || '自动检测到可信游戏窗口')}</p>
+        <p class="list-kicker">${escapeHtml(effectiveProcess || uiT('ui.window.auto_detect_target', '自动检测目标'))}${runtime.pid ? ` · PID ${escapeHtml(runtime.pid)}` : ''}</p>
+        <h3>${escapeHtml(effectiveTitle || uiT('ui.window.untitled', '未命名窗口'))}</h3>
+        <p class="result-note">${escapeHtml(detail || uiT('ui.ocr.window.auto_detected_target', '自动检测到可信游戏窗口'))}</p>
         <div class="window-candidate-meta" style="margin-top:8px;">
-          <span class="status-chip active">自动检测</span>
-          ${runtime.target_is_foreground ? '<span class="status-chip active">前台窗口</span>' : '<span class="status-chip warning">非前台</span>'}
+          <span class="status-chip active">${escapeHtml(uiT('ui.window.auto_detected', '自动检测'))}</span>
+          ${runtime.target_is_foreground ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.foreground', '前台窗口'))}</span>` : `<span class="status-chip warning">${escapeHtml(uiT('ui.window.not_foreground', '非前台'))}</span>`}
         </div>
       </div>
     `;
   } else {
-    card.innerHTML = '<div class="locked-window-empty">尚未确认 OCR 目标窗口。插件会优先尝试前台/已绑定游戏窗口；如果仍没有读到台词，请点击“选择识别窗口”手动锁定。</div>';
+    card.innerHTML = `<div class="locked-window-empty">${escapeHtml(uiT('ui.ocr.window.no_locked_target', '尚未确认 OCR 目标窗口。插件会优先尝试前台/已绑定游戏窗口；如果仍没有读到台词，请点击“选择识别窗口”手动锁定。'))}</div>`;
   }
 }
 
@@ -4046,23 +4219,23 @@ function renderOcrWindowListToNode(node, windows) {
   renderPreservingScroll(node, () => {
     if (!windows.length) {
       node.className = 'stack-list scroll-region empty-state window-candidate-list';
-      node.textContent = '暂无可用游戏窗口';
+      node.textContent = uiT('ui.ocr.window.no_available_window', '暂无可用游戏窗口');
     } else {
       node.className = 'stack-list scroll-region window-candidate-list';
       node.innerHTML = windows.map((item) => {
         const chips = [
-          item.is_attached ? '<span class="status-chip active">当前附着</span>' : '',
-          item.is_foreground ? '<span class="status-chip">前台窗口</span>' : '',
-          item.is_manual_target ? '<span class="status-chip active">手动锁定</span>' : '',
+          item.is_attached ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.attached', '当前附着'))}</span>` : '',
+          item.is_foreground ? `<span class="status-chip">${escapeHtml(uiT('ui.window.foreground', '前台窗口'))}</span>` : '',
+          item.is_manual_target ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>` : '',
         ].filter(Boolean).join('');
         return `
           <article class="list-card compact">
             <div class="window-candidate-header">
               <div class="window-candidate-summary">
-                <p class="list-kicker">${escapeHtml(item.process_name || '未知进程')} · pid ${escapeHtml(item.pid || 0)}</p>
-                <h3>${escapeHtml(item.title || '未命名窗口')}</h3>
+                <p class="list-kicker">${escapeHtml(item.process_name || uiT('ui.window.unknown_process', '未知进程'))} · pid ${escapeHtml(item.pid || 0)}</p>
+                <h3>${escapeHtml(item.title || uiT('ui.window.untitled', '未命名窗口'))}</h3>
               </div>
-              <button class="secondary" data-window-key="${escapeHtml(item.window_key || '')}">锁定此窗口</button>
+              <button class="secondary" data-window-key="${escapeHtml(item.window_key || '')}">${escapeHtml(uiT('ui.window.lock_window', '锁定此窗口'))}</button>
             </div>
             <p class="result-note mono">${escapeHtml(item.window_key || '')}</p>
             <div class="window-candidate-actions">
@@ -4076,7 +4249,7 @@ function renderOcrWindowListToNode(node, windows) {
   node.querySelectorAll('[data-window-key]').forEach((button) => {
     button.addEventListener('click', () => {
       const key = button.getAttribute('data-window-key') || '';
-      withButtonPending(button, '锁定中...', () => setOcrWindowTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setOcrWindowTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
     });
   });
 }
@@ -4100,13 +4273,13 @@ function renderOcrWindowTargetSnapshot(snapshot, status = latestStatus) {
   renderPreservingScroll(excludedNode, () => {
     if (!excludedWindows.length) {
       excludedNode.className = 'stack-list scroll-region empty-state window-candidate-list';
-      excludedNode.textContent = '暂无排除窗口';
+      excludedNode.textContent = uiT('ui.ocr.window.no_excluded', '暂无排除窗口');
     } else {
       excludedNode.className = 'stack-list scroll-region window-candidate-list';
       excludedNode.innerHTML = excludedWindows.map((item) => `
         <article class="list-card compact">
-          <p class="list-kicker">${escapeHtml(item.process_name || '未知进程')} · ${escapeHtml(formatOcrWindowReason(item.exclude_reason || ''))}</p>
-          <h3>${escapeHtml(item.title || '未命名窗口')}</h3>
+          <p class="list-kicker">${escapeHtml(item.process_name || uiT('ui.window.unknown_process', '未知进程'))} · ${escapeHtml(formatOcrWindowReason(item.exclude_reason || ''))}</p>
+          <h3>${escapeHtml(item.title || uiT('ui.window.untitled', '未命名窗口'))}</h3>
           <p class="result-note mono">${escapeHtml(item.window_key || '')}</p>
         </article>
       `).join('');
@@ -4135,13 +4308,19 @@ function renderRapidOcr(status) {
   configureUseButton('rapidocrUseBtn', {
     active: selectedBackend === 'rapidocr',
     disabled: !installed,
-    text: selectedBackend === 'rapidocr' ? '正在使用 RapidOCR' : '使用 RapidOCR',
-    title: installed ? '强制 OCR Reader 使用 RapidOCR' : '请先安装 RapidOCR',
+    text: selectedBackend === 'rapidocr'
+      ? uiT('ui.install.rapidocr.using', '正在使用 RapidOCR')
+      : uiT('ui.install.rapidocr.use', '使用 RapidOCR'),
+    title: installed
+      ? uiT('ui.install.rapidocr.force_title', '强制 OCR Reader 使用 RapidOCR')
+      : uiT('ui.install.rapidocr.install_first_title', '请先安装 RapidOCR'),
   });
   configureUseButton('ocrBackendAutoBtn', {
     active: selectedBackend === 'auto',
-    text: selectedBackend === 'auto' ? 'OCR 自动选择中' : 'OCR 自动',
-    title: '按 RapidOCR 优先、Tesseract 兜底自动选择 OCR 后端',
+    text: selectedBackend === 'auto'
+      ? uiT('ui.install.ocr_auto.using', 'OCR 自动选择中')
+      : uiT('ui.install.ocr_auto', 'OCR 自动'),
+    title: uiT('ui.install.ocr_auto.title', '按 RapidOCR 优先、Tesseract 兜底自动选择 OCR 后端'),
   });
 
   banner.className = 'install-banner install-banner-rapidocr';
@@ -4153,9 +4332,9 @@ function renderRapidOcr(status) {
 
   if (!rapidocr.install_supported) {
     banner.classList.add('neutral');
-    kicker.textContent = 'OCR 主后端';
-    title.textContent = '当前平台暂不支持自动安装 RapidOCR';
-    body.textContent = 'RapidOCR 主后端目前只支持 Windows 本地运行时安装。';
+    kicker.textContent = uiT('ui.install.rapidocr.kicker', 'OCR 主后端');
+    title.textContent = uiT('ui.install.rapidocr.unsupported_title', '当前平台暂不支持自动安装 RapidOCR');
+    body.textContent = uiT('ui.install.rapidocr.unsupported_body', 'RapidOCR 主后端目前只支持 Windows 本地运行时安装。');
     path.textContent = '';
     button.hidden = true;
     renderInstallTaskState('rapidocr');
@@ -4164,65 +4343,67 @@ function renderRapidOcr(status) {
 
   if (installed) {
     banner.classList.add(usingRapidOcr ? 'success' : 'neutral');
-    kicker.textContent = usingRapidOcr ? 'OCR 主后端已接管' : 'OCR 主后端已就绪';
+    kicker.textContent = usingRapidOcr
+      ? uiT('ui.install.rapidocr.kicker_active', 'OCR 主后端已接管')
+      : uiT('ui.install.rapidocr.kicker_ready', 'OCR 主后端已就绪');
     title.textContent = usingRapidOcr
-      ? 'RapidOCR 已接管当前 OCR Reader'
-      : 'RapidOCR 已就绪，等待作为 OCR 主后端工作';
+      ? uiT('ui.install.rapidocr.active_title', 'RapidOCR 已接管当前 OCR Reader')
+      : uiT('ui.install.rapidocr.ready_title', 'RapidOCR 已就绪，等待作为 OCR 主后端工作');
     body.textContent = usingRapidOcr
-      ? `后端: ${runtime.backend_kind || 'rapidocr'}\n模型: ${runtime.backend_model || rapidocr.selected_model || ''}`
+      ? `${uiT('ui.install.backend_label', '后端')}: ${runtime.backend_kind || 'rapidocr'}\n${uiT('ui.install.model_label', '模型')}: ${runtime.backend_model || rapidocr.selected_model || ''}`
       : usingFallback
-        ? `RapidOCR 已安装，但本帧 OCR 回退到了 Tesseract。原因: ${runtime.backend_detail || rapidocr.detail || '未知'}。`
-        : 'RapidOCR 已安装完成。无 SDK 且无有效内存文本时，它会优先于 Tesseract 作为 OCR Reader 的主后端。';
+        ? `${uiT('ui.install.rapidocr.fallback_body', 'RapidOCR 已安装，但本帧 OCR 回退到了 Tesseract。原因')}: ${runtime.backend_detail || rapidocr.detail || uiT('ui.status.unknown', '未知')}。`
+        : uiT('ui.install.rapidocr.ready_body', 'RapidOCR 已安装完成。无 SDK 且无有效内存文本时，它会优先于 Tesseract 作为 OCR Reader 的主后端。');
     path.textContent = [
-      rapidocr.detected_path ? `检测路径: ${rapidocr.detected_path}` : '',
-      rapidocr.model_cache_dir ? `模型目录: ${rapidocr.model_cache_dir}` : '',
+      rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
+      rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
     ].filter(Boolean).join('\n');
     button.hidden = true;
   } else if (rapidocr.detail === 'missing_models') {
     banner.classList.add('warning');
-    kicker.textContent = 'OCR 主后端缺少模型';
-    title.textContent = 'RapidOCR 运行时存在，但模型状态不完整';
-    body.textContent = 'RapidOCR 包已存在，但缺少安装完成状态或模型缓存标记。重新安装会执行预热校验并修复状态。';
-    path.textContent = rapidocr.target_dir ? `目标目录: ${rapidocr.target_dir}` : '';
+    kicker.textContent = uiT('ui.install.rapidocr.kicker_missing_models', 'OCR 主后端缺少模型');
+    title.textContent = uiT('ui.install.rapidocr.missing_models_title', 'RapidOCR 运行时存在，但模型状态不完整');
+    body.textContent = uiT('ui.install.rapidocr.missing_models_body', 'RapidOCR 包已存在，但缺少安装完成状态或模型缓存标记。重新安装会执行预热校验并修复状态。');
+    path.textContent = rapidocr.target_dir ? `${uiT('ui.install.target_dir', '目标目录')}: ${rapidocr.target_dir}` : '';
   } else if (rapidocr.detail === 'broken_runtime') {
     banner.classList.add('warning');
-    kicker.textContent = 'OCR 主后端异常';
-    title.textContent = 'RapidOCR 运行时已损坏或导入失败';
-    body.textContent = '建议重新执行一键安装。安装流程会重新落地插件隔离运行时，并在完成后做一次空白图推理自检。';
+    kicker.textContent = uiT('ui.install.rapidocr.kicker_broken', 'OCR 主后端异常');
+    title.textContent = uiT('ui.install.rapidocr.broken_title', 'RapidOCR 运行时已损坏或导入失败');
+    body.textContent = uiT('ui.install.rapidocr.broken_body', '建议重新执行一键安装。安装流程会重新落地插件隔离运行时，并在完成后做一次空白图推理自检。');
     path.textContent = rapidocr.detected_path
-      ? `检测路径: ${rapidocr.detected_path}`
+      ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}`
       : '';
   } else {
     banner.classList.add('warning');
-    kicker.textContent = 'OCR 主后端未就绪';
-    title.textContent = 'RapidOCR 尚未就绪';
-    body.textContent = 'RapidOCR 现在是 OCR Reader 的内部主后端。安装完成后会优先于 Tesseract 参与 OCR，Tesseract 仅保留为兼容兜底。';
+    kicker.textContent = uiT('ui.install.rapidocr.kicker_not_ready', 'OCR 主后端未就绪');
+    title.textContent = uiT('ui.install.rapidocr.not_ready_title', 'RapidOCR 尚未就绪');
+    body.textContent = uiT('ui.install.rapidocr.not_ready_body', 'RapidOCR 现在是 OCR Reader 的内部主后端。安装完成后会优先于 Tesseract 参与 OCR，Tesseract 仅保留为兼容兜底。');
     path.textContent = rapidocr.target_dir
-      ? `预期安装位置: ${rapidocr.target_dir}`
+      ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${rapidocr.target_dir}`
       : '';
   }
 
   if (installState && !isInstallTaskTerminal(installState)) {
     banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = 'RapidOCR 安装';
-    title.textContent = 'RapidOCR 正在后台安装';
-    body.textContent = '页面会通过 SSE 接收实时安装进度。安装完成后会自动刷新插件状态，并优先切回 RapidOCR 主后端。';
+    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
+    title.textContent = uiT('ui.install.rapidocr.installing_title', 'RapidOCR 正在后台安装');
+    body.textContent = uiT('ui.install.rapidocr.installing_body', '页面会通过 SSE 接收实时安装进度。安装完成后会自动刷新插件状态，并优先切回 RapidOCR 主后端。');
     button.hidden = false;
     button.disabled = true;
     button.textContent = getInstallConfig('rapidocr').runningText;
   } else if (installState && installState.status === 'failed' && installable) {
     banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = 'RapidOCR 安装';
-    title.textContent = 'RapidOCR 安装失败，可直接重试';
-    body.textContent = installState.error || installState.message || '后台安装任务失败，你可以再次点击按钮重试。';
+    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
+    title.textContent = uiT('ui.install.rapidocr.failed_title', 'RapidOCR 安装失败，可直接重试');
+    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
     button.hidden = false;
     button.disabled = false;
     button.textContent = getInstallConfig('rapidocr').retryText;
   } else if (installState && installState.status === 'completed' && !installed) {
     banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = 'RapidOCR 安装';
-    title.textContent = 'RapidOCR 安装已完成，正在刷新 OCR 状态';
-    body.textContent = installState.message || '安装任务已结束，正在等待插件状态刷新。';
+    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
+    title.textContent = uiT('ui.install.rapidocr.completed_refresh_title', 'RapidOCR 安装已完成，正在刷新 OCR 状态');
+    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
   }
 
   if (installed) {
@@ -4248,34 +4429,46 @@ function renderDxcam(status) {
   const usingDxcam = runtime.capture_backend_kind === 'dxcam';
   const captureBackendText = runtime.capture_backend_kind || (
     selectedCaptureBackend === 'dxcam'
-      ? 'DXcam 已选择，等待下一次 OCR 截图确认'
-      : '未知'
+      ? uiT('ui.install.dxcam.selected_waiting', 'DXcam 已选择，等待下一次 OCR 截图确认')
+      : uiT('ui.status.unknown', '未知')
   );
   configureUseButton('smartCaptureUseBtn', {
     active: selectedCaptureBackend === 'smart',
-    text: selectedCaptureBackend === 'smart' ? '正在使用 Smart' : '使用 Smart',
-    title: '前台优先 DXcam，后台只尝试 PrintWindow，避免读到被遮挡的可见屏幕像素',
+    text: selectedCaptureBackend === 'smart'
+      ? uiT('ui.install.smart.using', '正在使用 Smart')
+      : uiT('ui.install.smart.use', '使用 Smart'),
+    title: uiT('ui.install.smart.title', '前台优先 DXcam，后台只尝试 PrintWindow，避免读到被遮挡的可见屏幕像素'),
   });
   configureUseButton('dxcamUseBtn', {
     active: selectedCaptureBackend === 'dxcam',
     disabled: !installed,
-    text: selectedCaptureBackend === 'dxcam' ? '正在使用 DXcam' : '使用 DXcam',
-    title: installed ? '强制截图后端使用 DXcam' : '请先安装 DXcam',
+    text: selectedCaptureBackend === 'dxcam'
+      ? uiT('ui.install.dxcam.using', '正在使用 DXcam')
+      : uiT('ui.install.dxcam.use', '使用 DXcam'),
+    title: installed
+      ? uiT('ui.install.dxcam.force_title', '强制截图后端使用 DXcam')
+      : uiT('ui.install.dxcam.install_first_title', '请先安装 DXcam'),
   });
   configureUseButton('captureBackendAutoBtn', {
     active: selectedCaptureBackend === 'auto',
-    text: selectedCaptureBackend === 'auto' ? '截图自动选择中' : '截图自动',
-    title: '兼容旧策略：按 DXcam 优先、ImageGrab/PrintWindow 兜底自动选择截图后端',
+    text: selectedCaptureBackend === 'auto'
+      ? uiT('ui.install.capture_auto.using', '截图自动选择中')
+      : uiT('ui.install.capture_auto', '截图自动'),
+    title: uiT('ui.install.capture_auto.title', '兼容旧策略：按 DXcam 优先、ImageGrab/PrintWindow 兜底自动选择截图后端'),
   });
   configureUseButton('imagegrabUseBtn', {
     active: selectedCaptureBackend === 'imagegrab',
-    text: selectedCaptureBackend === 'imagegrab' ? '正在使用 ImageGrab' : '使用 ImageGrab',
-    title: '使用系统截图兼容后端，游戏窗口需要可见',
+    text: selectedCaptureBackend === 'imagegrab'
+      ? uiT('ui.install.imagegrab.using', '正在使用 ImageGrab')
+      : uiT('ui.install.imagegrab.use', '使用 ImageGrab'),
+    title: uiT('ui.install.imagegrab.title', '使用系统截图兼容后端，游戏窗口需要可见'),
   });
   configureUseButton('printwindowUseBtn', {
     active: selectedCaptureBackend === 'printwindow',
-    text: selectedCaptureBackend === 'printwindow' ? '正在使用 PrintWindow' : '使用 PrintWindow',
-    title: '使用 Win32 PrintWindow 兜底，DirectX/Unity 游戏可能旧帧',
+    text: selectedCaptureBackend === 'printwindow'
+      ? uiT('ui.install.printwindow.using', '正在使用 PrintWindow')
+      : uiT('ui.install.printwindow.use', '使用 PrintWindow'),
+    title: uiT('ui.install.printwindow.title', '使用 Win32 PrintWindow 兜底，DirectX/Unity 游戏可能旧帧'),
   });
 
   banner.className = 'install-banner install-banner-dxcam';
@@ -4287,9 +4480,9 @@ function renderDxcam(status) {
 
   if (!dxcam.install_supported) {
     banner.classList.add('neutral');
-    kicker.textContent = '截图依赖';
-    title.textContent = '当前平台暂不支持自动安装 DXcam';
-    body.textContent = 'DXcam 截图后端仅用于 Windows 桌面捕获；当前平台会继续使用兼容截图方案。';
+    kicker.textContent = uiT('ui.install.dxcam.kicker', '截图依赖');
+    title.textContent = uiT('ui.install.dxcam.unsupported_title', '当前平台暂不支持自动安装 DXcam');
+    body.textContent = uiT('ui.install.dxcam.unsupported_body', 'DXcam 截图后端仅用于 Windows 桌面捕获；当前平台会继续使用兼容截图方案。');
     path.textContent = '';
     button.hidden = true;
     renderInstallTaskState('dxcam');
@@ -4298,46 +4491,48 @@ function renderDxcam(status) {
 
   if (installed) {
     banner.classList.add(usingDxcam ? 'success' : 'neutral');
-    kicker.textContent = usingDxcam ? '截图依赖已接管' : '截图依赖已就绪';
+    kicker.textContent = usingDxcam
+      ? uiT('ui.install.dxcam.kicker_active', '截图依赖已接管')
+      : uiT('ui.install.dxcam.kicker_ready', '截图依赖已就绪');
     title.textContent = usingDxcam
-      ? 'DXcam 正在作为截图后端工作'
+      ? uiT('ui.install.dxcam.active_title', 'DXcam 正在作为截图后端工作')
       : selectedCaptureBackend === 'dxcam'
-        ? 'DXcam 已选择，等待下一次 OCR 截图确认'
-        : 'DXcam 已安装，等待 OCR Reader 自动使用';
+        ? uiT('ui.install.dxcam.selected_waiting', 'DXcam 已选择，等待下一次 OCR 截图确认')
+        : uiT('ui.install.dxcam.ready_title', 'DXcam 已安装，等待 OCR Reader 自动使用');
     body.textContent = usingDxcam
-      ? '当前截图后端使用 DXcam。它仍要求游戏窗口前台可见，不做后台捕获或绕过。'
-      : `DXcam 已安装。当前截图后端: ${captureBackendText}。`;
-    path.textContent = dxcam.detected_path ? `检测路径: ${dxcam.detected_path}` : '';
+      ? uiT('ui.install.dxcam.active_body', '当前截图后端使用 DXcam。它仍要求游戏窗口前台可见，不做后台捕获或绕过。')
+      : `${uiT('ui.install.dxcam.ready_body_prefix', 'DXcam 已安装。当前截图后端')}: ${captureBackendText}。`;
+    path.textContent = dxcam.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${dxcam.detected_path}` : '';
     button.hidden = true;
   } else {
     banner.classList.add('warning');
-    kicker.textContent = '截图依赖未就绪';
-    title.textContent = '未检测到 DXcam';
-    body.textContent = '安装 DXcam 后，auto 截图后端会优先使用 GPU Desktop Duplication 截取前台游戏画面，降低插件页遮挡或 PrintWindow 旧帧问题。';
-    path.textContent = '安装位置: 当前插件 Python 环境';
+    kicker.textContent = uiT('ui.install.dxcam.kicker_not_ready', '截图依赖未就绪');
+    title.textContent = uiT('ui.install.dxcam.not_ready_title', '未检测到 DXcam');
+    body.textContent = uiT('ui.install.dxcam.not_ready_body', '安装 DXcam 后，auto 截图后端会优先使用 GPU Desktop Duplication 截取前台游戏画面，降低插件页遮挡或 PrintWindow 旧帧问题。');
+    path.textContent = `${uiT('ui.install.install_location', '安装位置')}: ${uiT('ui.install.current_plugin_python', '当前插件 Python 环境')}`;
   }
 
   if (installState && !isInstallTaskTerminal(installState)) {
     banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = 'DXcam 安装';
-    title.textContent = 'DXcam 正在后台安装';
-    body.textContent = '页面会通过 SSE 接收实时安装进度。安装完成后会刷新 OCR 截图后端状态。';
+    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
+    title.textContent = uiT('ui.install.dxcam.installing_title', 'DXcam 正在后台安装');
+    body.textContent = uiT('ui.install.dxcam.installing_body', '页面会通过 SSE 接收实时安装进度。安装完成后会刷新 OCR 截图后端状态。');
     button.hidden = false;
     button.disabled = true;
     button.textContent = getInstallConfig('dxcam').runningText;
   } else if (installState && installState.status === 'failed' && installable) {
     banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = 'DXcam 安装';
-    title.textContent = 'DXcam 安装失败，可直接重试';
-    body.textContent = installState.error || installState.message || '后台安装任务失败，你可以再次点击按钮重试。';
+    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
+    title.textContent = uiT('ui.install.dxcam.failed_title', 'DXcam 安装失败，可直接重试');
+    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
     button.hidden = false;
     button.disabled = false;
     button.textContent = getInstallConfig('dxcam').retryText;
   } else if (installState && installState.status === 'completed' && !installed) {
     banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = 'DXcam 安装';
-    title.textContent = 'DXcam 安装已完成，正在刷新截图状态';
-    body.textContent = installState.message || '安装任务已结束，正在等待插件状态刷新。';
+    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
+    title.textContent = uiT('ui.install.dxcam.completed_refresh_title', 'DXcam 安装已完成，正在刷新截图状态');
+    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
   }
 
   if (installed) {
@@ -4364,8 +4559,12 @@ function renderTesseract(status) {
   configureUseButton('tesseractUseBtn', {
     active: selectedBackend === 'tesseract',
     disabled: !installed,
-    text: selectedBackend === 'tesseract' ? '正在使用 Tesseract' : '使用 Tesseract',
-    title: installed ? '强制 OCR Reader 使用 Tesseract' : '请先安装 Tesseract 和所需语言包',
+    text: selectedBackend === 'tesseract'
+      ? uiT('ui.install.tesseract.using', '正在使用 Tesseract')
+      : uiT('ui.install.tesseract.use', '使用 Tesseract'),
+    title: installed
+      ? uiT('ui.install.tesseract.force_title', '强制 OCR Reader 使用 Tesseract')
+      : uiT('ui.install.tesseract.install_first_title', '请先安装 Tesseract 和所需语言包'),
   });
 
   banner.className = 'install-banner install-banner-tesseract';
@@ -4377,9 +4576,9 @@ function renderTesseract(status) {
 
   if (!tesseract.install_supported) {
     banner.classList.add('neutral');
-    kicker.textContent = 'OCR 兼容兜底';
-    title.textContent = '当前平台暂不支持自动安装 Tesseract';
-    body.textContent = 'Tesseract 目前只保留为 OCR Reader 的兼容兜底，本地自动安装也只在 Windows 上提供。';
+    kicker.textContent = uiT('ui.install.tesseract.kicker', 'OCR 兼容兜底');
+    title.textContent = uiT('ui.install.tesseract.unsupported_title', '当前平台暂不支持自动安装 Tesseract');
+    body.textContent = uiT('ui.install.tesseract.unsupported_body', 'Tesseract 目前只保留为 OCR Reader 的兼容兜底，本地自动安装也只在 Windows 上提供。');
     path.textContent = '';
     button.hidden = true;
     renderInstallTaskState('tesseract');
@@ -4388,56 +4587,56 @@ function renderTesseract(status) {
 
   if (installed) {
     banner.classList.add('success');
-    kicker.textContent = 'OCR 兼容兜底';
+    kicker.textContent = uiT('ui.install.tesseract.kicker', 'OCR 兼容兜底');
     title.textContent = runtime.backend_kind === 'tesseract'
-      ? 'Tesseract 正在作为兼容兜底工作'
-      : 'Tesseract 已就绪，等待必要时回退';
+      ? uiT('ui.install.tesseract.active_title', 'Tesseract 正在作为兼容兜底工作')
+      : uiT('ui.install.tesseract.ready_title', 'Tesseract 已就绪，等待必要时回退');
     body.textContent = runtime.backend_kind === 'tesseract'
-      ? `当前 OCR Reader 使用 Tesseract。原因: ${runtime.backend_detail || runtime.detail || '兼容兜底'}.`
-      : '本地 Tesseract 与默认语言包 chi_sim+jpn+eng 已齐全。它会在 RapidOCR 缺失、损坏或运行时异常时接管 OCR。';
+      ? `${uiT('ui.install.tesseract.active_body_prefix', '当前 OCR Reader 使用 Tesseract。原因')}: ${runtime.backend_detail || runtime.detail || uiT('ui.install.compat_fallback', '兼容兜底')}.`
+      : uiT('ui.install.tesseract.ready_body', '本地 Tesseract 与默认语言包 chi_sim+jpn+eng 已齐全。它会在 RapidOCR 缺失、损坏或运行时异常时接管 OCR。');
     path.textContent = tesseract.detected_path
-      ? `检测路径: ${tesseract.detected_path}`
+      ? `${uiT('ui.install.detected_path', '检测路径')}: ${tesseract.detected_path}`
       : '';
     button.hidden = true;
   } else if (tesseract.detail === 'missing_languages') {
     banner.classList.add('warning');
-    kicker.textContent = '兜底语言缺失';
-    title.textContent = '已检测到 Tesseract，但兼容兜底语言包不完整';
-    body.textContent = `当前缺少 ${(missingLanguages || []).join(', ') || '语言包'}。安装流程会按默认语言 chi_sim+jpn+eng 补齐兼容兜底所需文件。`;
+    kicker.textContent = uiT('ui.install.tesseract.kicker_missing_languages', '兜底语言缺失');
+    title.textContent = uiT('ui.install.tesseract.missing_languages_title', '已检测到 Tesseract，但兼容兜底语言包不完整');
+    body.textContent = `${uiT('ui.install.tesseract.missing_languages_body_prefix', '当前缺少')} ${(missingLanguages || []).join(', ') || uiT('ui.install.language_pack', '语言包')}。${uiT('ui.install.tesseract.missing_languages_body_suffix', '安装流程会按默认语言 chi_sim+jpn+eng 补齐兼容兜底所需文件。')}`;
     path.textContent = tesseract.tessdata_dir
-      ? `tessdata 目录: ${tesseract.tessdata_dir}`
+      ? `${uiT('ui.install.tessdata_dir', 'tessdata 目录')}: ${tesseract.tessdata_dir}`
       : '';
   } else {
     banner.classList.add('warning');
-    kicker.textContent = '兼容兜底未就绪';
-    title.textContent = '未检测到 Tesseract，兼容兜底尚未就绪';
-    body.textContent = '这不会阻止 RapidOCR 作为主后端工作，但当 RapidOCR 缺失或运行异常时，将无法自动回退到本地 Tesseract。';
+    kicker.textContent = uiT('ui.install.tesseract.kicker_not_ready', '兼容兜底未就绪');
+    title.textContent = uiT('ui.install.tesseract.not_ready_title', '未检测到 Tesseract，兼容兜底尚未就绪');
+    body.textContent = uiT('ui.install.tesseract.not_ready_body', '这不会阻止 RapidOCR 作为主后端工作，但当 RapidOCR 缺失或运行异常时，将无法自动回退到本地 Tesseract。');
     path.textContent = tesseract.expected_executable_path
-      ? `预期安装位置: ${tesseract.expected_executable_path}`
+      ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${tesseract.expected_executable_path}`
       : '';
   }
 
   if (installState && !isInstallTaskTerminal(installState)) {
     banner.className = 'install-banner install-banner-tesseract neutral';
-    kicker.textContent = 'Tesseract 安装';
-    title.textContent = 'Tesseract 正在后台安装';
-    body.textContent = '安装器和语言包下载都通过 HTTPS 进行，当前页面会通过 SSE 接收实时进度；即使刷新页面，也会尝试恢复最近的安装状态。';
+    kicker.textContent = uiT('ui.install.tesseract.install_kicker', 'Tesseract 安装');
+    title.textContent = uiT('ui.install.tesseract.installing_title', 'Tesseract 正在后台安装');
+    body.textContent = uiT('ui.install.tesseract.installing_body', '安装器和语言包下载都通过 HTTPS 进行，当前页面会通过 SSE 接收实时进度；即使刷新页面，也会尝试恢复最近的安装状态。');
     button.hidden = false;
     button.disabled = true;
     button.textContent = getInstallConfig('tesseract').runningText;
   } else if (installState && installState.status === 'failed' && installable) {
     banner.className = 'install-banner install-banner-tesseract neutral';
-    kicker.textContent = 'Tesseract 安装';
-    title.textContent = 'Tesseract 安装失败，可直接重试';
-    body.textContent = installState.error || installState.message || '后台安装任务失败，你可以再次点击按钮重试。';
+    kicker.textContent = uiT('ui.install.tesseract.install_kicker', 'Tesseract 安装');
+    title.textContent = uiT('ui.install.tesseract.failed_title', 'Tesseract 安装失败，可直接重试');
+    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
     button.hidden = false;
     button.disabled = false;
     button.textContent = getInstallConfig('tesseract').retryText;
   } else if (installState && installState.status === 'completed' && !installed) {
     banner.className = 'install-banner install-banner-tesseract neutral';
-    kicker.textContent = 'Tesseract 安装';
-    title.textContent = 'Tesseract 安装已完成，正在刷新 OCR 状态';
-    body.textContent = installState.message || '安装任务已结束，正在等待插件状态刷新。';
+    kicker.textContent = uiT('ui.install.tesseract.install_kicker', 'Tesseract 安装');
+    title.textContent = uiT('ui.install.tesseract.completed_refresh_title', 'Tesseract 安装已完成，正在刷新 OCR 状态');
+    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
   }
 
   if (installed) {
@@ -4470,9 +4669,9 @@ function renderTextractor(status) {
 
   if (!textractor.install_supported) {
     banner.classList.add('neutral');
-    kicker.textContent = '实验性兜底';
-    title.textContent = '当前平台无需 Textractor 自动安装';
-    body.textContent = 'Textractor 读内存兜底仅在 Windows 上启用，而且当前优先级已经低于 OCR Reader。';
+    kicker.textContent = uiT('ui.install.textractor.kicker', '实验性兜底');
+    title.textContent = uiT('ui.install.textractor.unsupported_title', '当前平台无需 Textractor 自动安装');
+    body.textContent = uiT('ui.install.textractor.unsupported_body', 'Textractor 读内存兜底仅在 Windows 上启用，而且当前优先级已经低于 OCR Reader。');
     path.textContent = '';
     button.hidden = true;
     renderInstallTaskState('textractor');
@@ -4481,50 +4680,50 @@ function renderTextractor(status) {
 
   if (installed) {
     banner.classList.add('success');
-    kicker.textContent = '实验性兜底';
+    kicker.textContent = uiT('ui.install.textractor.kicker', '实验性兜底');
     title.textContent = runtimeBlocked
-      ? 'Textractor 已安装，等待 Memory Reader 手动/实验性接管'
-      : 'Textractor 已就绪，但仅作为实验性兜底';
+      ? uiT('ui.install.textractor.ready_blocked_title', 'Textractor 已安装，等待 Memory Reader 手动/实验性接管')
+      : uiT('ui.install.textractor.ready_title', 'Textractor 已就绪，但仅作为实验性兜底');
     body.textContent = runtimeBlocked
-      ? '当前已检测到 TextractorCLI.exe。它仍保留在链路中，但优先级固定低于 OCR Reader，不再是当前首发主验收线。'
-      : 'TextractorCLI.exe 已检测到';
-    path.textContent = textractor.detected_path ? `检测路径: ${textractor.detected_path}` : '';
+      ? uiT('ui.install.textractor.ready_blocked_body', '当前已检测到 TextractorCLI.exe。它仍保留在链路中，但优先级固定低于 OCR Reader，不再是当前首发主验收线。')
+      : uiT('ui.install.textractor.ready_body', 'TextractorCLI.exe 已检测到');
+    path.textContent = textractor.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${textractor.detected_path}` : '';
     button.hidden = true;
   } else {
     banner.classList.add('neutral');
-    kicker.textContent = '实验性兜底';
+    kicker.textContent = uiT('ui.install.textractor.kicker', '实验性兜底');
     title.textContent = runtimeBlocked
-      ? '未检测到 Textractor，Memory Reader 实验性兜底暂不可用'
-      : '尚未检测到 Textractor';
+      ? uiT('ui.install.textractor.missing_blocked_title', '未检测到 Textractor，Memory Reader 实验性兜底暂不可用')
+      : uiT('ui.install.textractor.missing_title', '尚未检测到 Textractor');
     body.textContent = runtimeBlocked
-      ? '如果你后续仍想继续尝试 Memory Reader，可以在这里补装 Textractor；但当前正式主兜底仍然是 OCR Reader。'
-      : 'Textractor 仅影响实验性 Memory Reader 链路，不影响当前 Bridge SDK > OCR Reader 的正式运行顺序。';
+      ? uiT('ui.install.textractor.missing_blocked_body', '如果你后续仍想继续尝试 Memory Reader，可以在这里补装 Textractor；但当前正式主兜底仍然是 OCR Reader。')
+      : uiT('ui.install.textractor.missing_body', 'Textractor 仅影响实验性 Memory Reader 链路，不影响当前 Bridge SDK > OCR Reader 的正式运行顺序。');
     path.textContent = textractor.expected_executable_path
-      ? `预期安装位置: ${textractor.expected_executable_path}`
+      ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${textractor.expected_executable_path}`
       : '';
   }
 
   if (installState && !isInstallTaskTerminal(installState)) {
     banner.className = 'install-banner install-banner-textractor neutral';
-    kicker.textContent = 'Textractor 安装';
-    title.textContent = 'Textractor 正在后台安装';
-    body.textContent = '下载通过 HTTPS 进行，页面会通过 SSE 接收实时进度。Textractor 完成后只会补强实验性 Memory Reader 路径。';
+    kicker.textContent = uiT('ui.install.textractor.install_kicker', 'Textractor 安装');
+    title.textContent = uiT('ui.install.textractor.installing_title', 'Textractor 正在后台安装');
+    body.textContent = uiT('ui.install.textractor.installing_body', '下载通过 HTTPS 进行，页面会通过 SSE 接收实时进度。Textractor 完成后只会补强实验性 Memory Reader 路径。');
     button.hidden = false;
     button.disabled = true;
     button.textContent = getInstallConfig('textractor').runningText;
   } else if (installState && installState.status === 'failed' && installable) {
     banner.className = 'install-banner install-banner-textractor neutral';
-    kicker.textContent = 'Textractor 安装';
-    title.textContent = 'Textractor 安装失败，可直接重试';
-    body.textContent = installState.error || installState.message || '后台安装任务失败，你可以再次点击按钮重试。';
+    kicker.textContent = uiT('ui.install.textractor.install_kicker', 'Textractor 安装');
+    title.textContent = uiT('ui.install.textractor.failed_title', 'Textractor 安装失败，可直接重试');
+    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
     button.hidden = false;
     button.disabled = false;
     button.textContent = getInstallConfig('textractor').retryText;
   } else if (installState && installState.status === 'completed' && !installed) {
     banner.className = 'install-banner install-banner-textractor neutral';
-    kicker.textContent = 'Textractor 安装';
-    title.textContent = 'Textractor 安装已完成，正在刷新插件状态';
-    body.textContent = installState.message || '安装任务已结束，正在等待插件状态刷新。';
+    kicker.textContent = uiT('ui.install.textractor.install_kicker', 'Textractor 安装');
+    title.textContent = uiT('ui.install.textractor.completed_refresh_title', 'Textractor 安装已完成，正在刷新插件状态');
+    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
   }
 
   if (installed) {
@@ -4560,13 +4759,13 @@ function renderOcrProfile(status) {
   const autoApplyInput = document.getElementById('ocrProfileAutoApplyRecommendedInput');
   let autoRecalibrateReason = '';
   if (!Boolean(runtime.enabled)) {
-    autoRecalibrateReason = 'OCR Reader 未启用';
+    autoRecalibrateReason = uiT('ui.ocr_profile.auto_recalibrate.disabled_reader', 'OCR Reader 未启用');
   } else if (runtime.detail === 'unsupported_platform') {
-    autoRecalibrateReason = '当前平台不是 Windows';
+    autoRecalibrateReason = uiT('ui.ocr_profile.auto_recalibrate.unsupported_platform', '当前平台不是 Windows');
   } else if (runtime.detail === 'capture_backend_unavailable') {
-    autoRecalibrateReason = '当前截图后端不可用';
+    autoRecalibrateReason = uiT('ui.ocr_profile.auto_recalibrate.capture_backend_unavailable', '当前截图后端不可用');
   } else if (!runtime.process_name || !Number(runtime.width || 0) || !Number(runtime.height || 0)) {
-    autoRecalibrateReason = '当前没有已附着的 OCR 目标窗口';
+    autoRecalibrateReason = uiT('ui.ocr_profile.auto_recalibrate.no_target_window', '当前没有已附着的 OCR 目标窗口');
   }
   const recommendedProfile = runtime.recommended_capture_profile
     || runtime.profile?.recommended_capture_profile
@@ -4585,37 +4784,61 @@ function renderOcrProfile(status) {
     || runtime.profile?.recommended_capture_profile_manual_present,
   );
   const recommendedHint = recommendedProfile && Object.keys(recommendedProfile).length
-    ? `建议校准: ${OCR_PROFILE_STAGE_LABELS_ZH[recommendedStage] || recommendedStage || '对白区'} ${formatCaptureProfile(recommendedProfile)} (${recommendedReason || 'auto'}, confidence=${formatFixedNumber(recommendedConfidence, 2)}, manual=${recommendedManualPresent ? 'yes' : 'no'})`
+    ? uiTf(
+      'ui.ocr_profile.recommended_hint',
+      '建议校准: {stage} {profile} ({reason}, confidence={confidence}, manual={manual})',
+      {
+        stage: ocrProfileStageLabel(recommendedStage, recommendedStage || uiT('ui.stage.dialogue', '对白区')),
+        profile: formatCaptureProfile(recommendedProfile),
+        reason: recommendedReason || 'auto',
+        confidence: formatFixedNumber(recommendedConfidence, 2),
+        manual: recommendedManualPresent ? uiT('ui.common.yes_code', 'yes') : uiT('ui.common.no_code', 'no'),
+      },
+    )
     : '';
   const rollbackReason = runtime.capture_profile_last_rollback_reason || '';
   const pendingRollback = Boolean(runtime.capture_profile_pending_rollback);
 
   if (runtime.process_name) {
     hint.textContent = [
-      `当前 OCR 目标: ${runtime.process_name} (${runtime.pid || 0})`,
-      runtime.window_title ? `窗口: ${runtime.window_title}` : '',
-      runtime.width && runtime.height ? `尺寸: ${runtime.width}x${runtime.height}` : '',
+      uiTf('ui.ocr_profile.current_target', '当前 OCR 目标: {process} ({pid})', {
+        process: runtime.process_name,
+        pid: runtime.pid || 0,
+      }),
+      runtime.window_title ? uiTf('ui.ocr_profile.window_title', '窗口: {title}', { title: runtime.window_title }) : '',
+      runtime.width && runtime.height ? uiTf('ui.ocr_profile.window_size', '尺寸: {width}x{height}', {
+        width: runtime.width,
+        height: runtime.height,
+      }) : '',
       runtime.capture_stage
-        ? `运行阶段: ${OCR_PROFILE_STAGE_LABELS_ZH[runtime.capture_stage] || runtime.capture_stage}`
+        ? uiTf('ui.ocr_profile.runtime_stage', '运行阶段: {stage}', {
+          stage: ocrProfileStageLabel(runtime.capture_stage, runtime.capture_stage),
+        })
         : '',
       runtime.capture_profile_match_source
-        ? `命中来源: ${OCR_CAPTURE_MATCH_SOURCE_LABELS_ZH[runtime.capture_profile_match_source] || runtime.capture_profile_match_source}`
+        ? uiTf('ui.ocr_profile.match_source', '命中来源: {source}', {
+          source: ocrCaptureMatchSourceLabel(runtime.capture_profile_match_source, runtime.capture_profile_match_source),
+        })
         : '',
-      runtime.capture_profile_bucket_key ? `命中桶: ${runtime.capture_profile_bucket_key}` : '',
-      runtime.detail ? `状态: ${runtime.detail}` : '',
-      runtime.takeover_reason ? `接管原因: ${runtime.takeover_reason}` : '',
+      runtime.capture_profile_bucket_key ? uiTf('ui.ocr_profile.bucket', '命中桶: {bucket}', { bucket: runtime.capture_profile_bucket_key }) : '',
+      runtime.detail ? uiTf('ui.ocr_profile.status', '状态: {status}', { status: runtime.detail }) : '',
+      runtime.takeover_reason ? uiTf('ui.ocr_profile.takeover_reason', '接管原因: {reason}', { reason: runtime.takeover_reason }) : '',
       recommendedHint,
-      pendingRollback ? `推荐回滚观察中: ${runtime.capture_profile_rollback_failure_count || 0}/2` : '',
-      rollbackReason ? `推荐回滚状态: ${rollbackReason}` : '',
-      `自动重校准: ${autoRecalibrateReason || '可用'}`,
+      pendingRollback ? uiTf('ui.ocr_profile.rollback_observing', '推荐回滚观察中: {count}/2', {
+        count: runtime.capture_profile_rollback_failure_count || 0,
+      }) : '',
+      rollbackReason ? uiTf('ui.ocr_profile.rollback_status', '推荐回滚状态: {reason}', { reason: rollbackReason }) : '',
+      uiTf('ui.ocr_profile.auto_recalibrate_status', '自动重校准: {status}', {
+        status: autoRecalibrateReason || uiT('ui.ocr_profile.available', '可用'),
+      }),
       isAihongProcessName(currentProcessName || runtime.process_name)
-        ? '哀鸿支持按对白区 / 菜单区分别保存'
+        ? uiT('ui.ocr_profile.aihong_stage_hint', '哀鸿支持按对白区 / 菜单区分别保存')
         : '',
     ].filter(Boolean).join(' | ');
   } else {
     hint.textContent = isAihongProcessName(currentProcessName)
-      ? '当前还没有附着的 OCR 目标进程。你可以先手动填写 TheLamentingGeese.exe，并分别预存哀鸿的对白区 / 菜单区截图范围。自动重校准需要先附着到真实游戏窗口。'
-      : '当前还没有附着的 OCR 目标进程。你也可以先手动填写 process_name，把截图校准预先存起来。自动重校准需要先附着到真实游戏窗口。';
+      ? uiT('ui.ocr_profile.no_target_aihong_hint', '当前还没有附着的 OCR 目标进程。你可以先手动填写 TheLamentingGeese.exe，并分别预存哀鸿的对白区 / 菜单区截图范围。自动重校准需要先附着到真实游戏窗口。')
+      : uiT('ui.ocr_profile.no_target_hint', '当前还没有附着的 OCR 目标进程。你也可以先手动填写 process_name，把截图校准预先存起来。自动重校准需要先附着到真实游戏窗口。');
   }
 
   if (!processInput.value || document.activeElement !== processInput) {
@@ -4629,19 +4852,23 @@ function renderOcrProfile(status) {
   setInputValueIfIdle(topInput, profileValues.top);
   setInputValueIfIdle(bottomInput, profileValues.bottom);
   autoRecalibrateButton.disabled = Boolean(autoRecalibrateReason);
-  autoRecalibrateButton.title = autoRecalibrateReason || '使用当前附着窗口自动重校准对白区';
+  autoRecalibrateButton.title = autoRecalibrateReason || uiT('ui.ocr_profile.auto_recalibrate.title', '使用当前附着窗口自动重校准对白区');
   if (applyRecommendedButton) {
     const applyBlocked = !recommendedProfile
       || !Object.keys(recommendedProfile).length
       || recommendedManualPresent;
     applyRecommendedButton.disabled = applyBlocked;
     applyRecommendedButton.title = recommendedManualPresent
-      ? '已有手动 profile，推荐不会自动覆盖；可直接手动保存校准。'
-      : (applyBlocked ? '当前没有可应用的推荐 profile' : '应用当前推荐 profile，并保留自动回滚点');
+      ? uiT('ui.ocr_profile.apply_recommended.manual_present_title', '已有手动 profile，推荐不会自动覆盖；可直接手动保存校准。')
+      : (applyBlocked
+        ? uiT('ui.ocr_profile.apply_recommended.blocked_title', '当前没有可应用的推荐 profile')
+        : uiT('ui.ocr_profile.apply_recommended.title', '应用当前推荐 profile，并保留自动回滚点'));
   }
   if (rollbackButton) {
     rollbackButton.disabled = !pendingRollback;
-    rollbackButton.title = pendingRollback ? '回滚最近一次推荐 profile 应用' : '当前没有待回滚的推荐 profile';
+    rollbackButton.title = pendingRollback
+      ? uiT('ui.ocr_profile.rollback.title', '回滚最近一次推荐 profile 应用')
+      : uiT('ui.ocr_profile.rollback.blocked_title', '当前没有待回滚的推荐 profile');
   }
   if (autoApplyInput && document.activeElement !== autoApplyInput) {
     autoApplyInput.checked = Boolean(runtime.capture_profile_auto_apply_enabled);
@@ -4674,14 +4901,14 @@ function renderHistory(history) {
     stability: 'diagnostic',
     line_id: runtime.last_poll_completed_at || runtime.last_capture_completed_at || '',
     text: runtime.last_raw_ocr_text
-      ? `最近 raw OCR：${runtime.last_raw_ocr_text}`
+      ? uiTf('ui.history.last_raw_ocr', '最近 raw OCR：{text}', { text: runtime.last_raw_ocr_text })
       : buildOcrMissingLineDiagnostic(latestStatus || {}),
     is_diagnostic: true,
   }];
   renderStackList('linesList', fallbackItems, (item) => `
     <article class="list-card">
-      <p class="list-kicker">${escapeHtml(item.is_diagnostic ? 'OCR 诊断' : (item.speaker || '旁白'))} · ${escapeHtml(item.scene_id || '')} · ${escapeHtml(item.stability || '')}</p>
-      <h3>${escapeHtml(item.is_diagnostic ? '未写入稳定台词' : (item.line_id || ''))}</h3>
+      <p class="list-kicker">${escapeHtml(item.is_diagnostic ? uiT('ui.history.ocr_diagnostic', 'OCR 诊断') : (item.speaker || uiT('ui.history.narrator', '旁白')))} · ${escapeHtml(item.scene_id || '')} · ${escapeHtml(item.stability || '')}</p>
+      <h3>${escapeHtml(item.is_diagnostic ? uiT('ui.history.no_stable_line', '未写入稳定台词') : (item.line_id || ''))}</h3>
       <p>${escapeHtml(item.text || '')}</p>
     </article>
   `);
@@ -4707,8 +4934,13 @@ function formatInsightMeta(payload) {
   const inputSource = payload.input_source || (latestStatus && latestStatus.active_data_source) || 'unknown';
   const semantic = payload.semantic_granularity
     || (payload.semantic_degraded ? 'weaker_than_bridge_sdk' : 'bridge_sdk_level');
-  const fallback = payload.fallback_used ? '是' : '否';
-  return `输入源=${inputSource} | degraded=${Boolean(payload.degraded)} | 语义粒度=${semantic} | 使用回退=${fallback}`;
+  const fallback = payload.fallback_used ? uiT('ui.common.yes', '是') : uiT('ui.common.no', '否');
+  return uiTf('ui.suggest.meta', '输入源={inputSource} | degraded={degraded} | 语义粒度={semantic} | 使用回退={fallback}', {
+    inputSource,
+    degraded: Boolean(payload.degraded),
+    semantic,
+    fallback,
+  });
 }
 
 function renderAgentStatus(payload) {
@@ -4747,7 +4979,7 @@ function renderAgentStatus(payload) {
   renderAgentStatusGrid([
     {
       label: 'agent_user_status',
-      value: AGENT_USER_STATUS_LABELS_ZH[payload.agent_user_status] || payload.agent_user_status || '',
+      value: agentUserStatusLabel(payload.agent_user_status, payload.agent_user_status || ''),
     },
     { label: 'status', value: payload.status || 'standby' },
     { label: 'activity', value: payload.activity || 'idle' },
@@ -4799,8 +5031,8 @@ function renderAgentStatusGrid(rows, summaryRows) {
       ${renderDataRows(rows)}
       <details class="status-debug-panel"${debugWasOpen ? ' open' : ''}>
         <summary>
-          <span>Summary 调试</span>
-          <small>${escapeHtml(String(summaryRows.length))} 项内部状态</small>
+          <span>${escapeHtml(uiT('ui.agent.summary_debug', 'Summary 调试'))}</span>
+          <small>${escapeHtml(uiTf('ui.agent.summary_debug_count', '{count} 项内部状态', { count: summaryRows.length }))}</small>
         </summary>
         <dl class="data-grid">
           ${renderDataRows(summaryRows)}
@@ -4867,7 +5099,7 @@ function renderSuggest(payload) {
 async function refreshInsights(snapshot, { force = false, history = {}, status = {} } = {}) {
   const mode = String(status.mode || '').trim();
   if (mode === 'silent') {
-    const diagnostic = '静默模式：不自动生成建议。';
+    const diagnostic = uiT('ui.suggest.silent_diagnostic', '静默模式：不自动生成建议。');
     const suggest = buildSuggestFallback('', diagnostic);
     latestInsights.suggestKey = 'silent';
     latestInsights.suggestPayload = suggest;
@@ -4897,7 +5129,7 @@ async function refreshInsights(snapshot, { force = false, history = {}, status =
       : Promise.resolve(latestInsights.suggestPayload)
     : Promise.resolve(buildSuggestFallback(
       currentSceneId,
-      visibleChoiceMenu ? '伴读模式：不自动生成选项建议。' : 'no visible choices',
+      visibleChoiceMenu ? uiT('ui.suggest.companion_diagnostic', '伴读模式：不自动生成选项建议。') : 'no visible choices',
     ));
 
   const suggest = await suggestPromise;
@@ -4910,7 +5142,7 @@ async function refreshInsights(snapshot, { force = false, history = {}, status =
   restoreRefreshScrollState(scrollState);
 }
 
-function renderInsightsPending(message = '选项建议正在后台刷新...') {
+function renderInsightsPending(message = uiT('ui.suggest.pending', '选项建议正在后台刷新...')) {
   const scrollState = captureRefreshScrollState();
   renderSuggest(buildSuggestFallback('', message));
   restoreRefreshScrollState(scrollState);
@@ -5190,7 +5422,7 @@ async function refreshAll(options = {}) {
         return false;
       }
       if (isPluginNotStartedError(error)) {
-        setFlash('插件尚未启动。请在插件管理页面点击"启动"按钮。', 'info');
+        setFlash(uiT('ui.flash.plugin_not_started', '插件尚未启动。请在插件管理页面点击"启动"按钮。'), 'info');
       } else {
         setFlash(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -5253,14 +5485,14 @@ async function startInstall(kind, force = false) {
     task_id: '',
     status: 'queued',
     phase: 'queued',
-    message: `正在创建 ${config.label} 后台安装任务...`,
+    message: uiTf('ui.install.task.creating', '正在创建 {label} 后台安装任务...', { label: config.label }),
     progress: 0.01,
     updated_at: Date.now() / 1000,
   };
   closeInstallStream(kind);
   clearInstallReconnectTimer(kind);
   button.disabled = true;
-  button.textContent = '准备安装...';
+  button.textContent = uiT('ui.pending.installing', '准备安装...');
   if (latestStatus) {
     renderStatus(latestStatus);
   } else {
@@ -5275,13 +5507,16 @@ async function startInstall(kind, force = false) {
       body: JSON.stringify({ force }),
     });
     if (!response.ok) {
-      throw new Error(`创建 ${config.label} 安装任务失败: HTTP ${response.status}`);
+      throw new Error(uiTf('ui.error.install_task_create_failed', '创建 {label} 安装任务失败: HTTP {status}', {
+        label: config.label,
+        status: response.status,
+      }));
     }
 
     const payload = await response.json();
     const taskId = payload.task_id || payload.run_id;
     if (!taskId) {
-      throw new Error(`未获取到 ${config.label} 安装 task_id`);
+      throw new Error(uiTf('ui.error.install_task_id_missing', '未获取到 {label} 安装 task_id', { label: config.label }));
     }
 
     state.currentTaskId = taskId;
@@ -5342,12 +5577,12 @@ async function setOcrBackendSelection({ backendSelection = null, captureBackend 
     args.capture_backend = captureBackend;
   }
   const label = backendSelection
-    ? `OCR 后端切换为 ${backendSelection}`
-    : `截图后端切换为 ${captureBackend}`;
+    ? uiTf('ui.ocr.backend_selection_label', 'OCR 后端切换为 {backend}', { backend: backendSelection })
+    : uiTf('ui.ocr.capture_backend_selection_label', '截图后端切换为 {backend}', { backend: captureBackend });
   try {
-    setFlash(`正在${label}...`, 'info');
+    setFlash(uiTf('ui.flash.saving_named_setting', '正在{label}...', { label }), 'info');
     await callPlugin('galgame_set_ocr_backend', args);
-    setFlash(`${label} 已保存`, 'success');
+    setFlash(uiTf('ui.flash.named_setting_saved', '{label} 已保存', { label }), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5388,25 +5623,25 @@ async function saveMode({ auto = false } = {}) {
   const visionMaxRaw = document.getElementById('llmVisionMaxImagePxInput')?.value || '';
   const visionMaxImagePx = Number(visionMaxRaw || 768);
   if (!['auto', 'memory_reader', 'ocr_reader'].includes(readerMode)) {
-    setFlash('文本读取模式无效。', 'error');
+    setFlash(uiT('ui.flash.invalid_reader_mode', '文本读取模式无效。'), 'error');
     return;
   }
   if (!Number.isFinite(ocrPollInterval) || ocrPollInterval < 0.5 || ocrPollInterval > 10) {
-    setFlash('OCR/DXcam 识别间隔必须在 0.5 到 10 秒之间。', 'error');
+    setFlash(uiT('ui.flash.invalid_ocr_interval', 'OCR/DXcam 识别间隔必须在 0.5 到 10 秒之间。'), 'error');
     return;
   }
   if (!['interval', 'after_advance'].includes(ocrTriggerMode)) {
-    setFlash('OCR 触发方式无效。', 'error');
+    setFlash(uiT('ui.flash.invalid_ocr_trigger', 'OCR 触发方式无效。'), 'error');
     return;
   }
   if (!Number.isFinite(visionMaxImagePx) || visionMaxImagePx < 64 || visionMaxImagePx > 2048) {
-    setFlash('Vision 最大边长必须在 64 到 2048 之间。', 'error');
+    setFlash(uiT('ui.flash.invalid_vision_max', 'Vision 最大边长必须在 64 到 2048 之间。'), 'error');
     return;
   }
   try {
     settingsSaveInFlight = true;
-    updateSettingsDirtyHint(auto ? '正在自动保存...' : '正在保存...');
-    setFlash(auto ? '正在自动保存设置...' : '正在保存设置...', 'info');
+    updateSettingsDirtyHint(auto ? uiT('ui.pending.auto_saving', '正在自动保存...') : uiT('ui.pending.saving', '保存中...'));
+    setFlash(auto ? uiT('ui.flash.auto_saving_settings', '正在自动保存设置...') : uiT('ui.flash.saving_settings', '正在保存设置...'), 'info');
     await callPlugin('galgame_set_mode', {
       mode,
       push_notifications: pushNotifications,
@@ -5422,7 +5657,7 @@ async function saveMode({ auto = false } = {}) {
       vision_enabled: visionEnabled,
       vision_max_image_px: Math.round(visionMaxImagePx),
     });
-    setFlash(auto ? '设置已自动保存' : '设置已保存', 'success');
+    setFlash(auto ? uiT('ui.flash.settings_auto_saved', '设置已自动保存') : uiT('ui.flash.settings_saved', '设置已保存'), 'success');
     settingsDirty = false;
     settingsSaveInFlight = false;
     updateSettingsDirtyHint();
@@ -5442,12 +5677,12 @@ async function saveOcrScreenTemplates() {
   }
   try {
     const templates = readOcrScreenTemplatesInput();
-    setFlash('正在保存屏幕模板...', 'info');
+    setFlash(uiT('ui.flash.screen_templates_saving', '正在保存屏幕模板...'), 'info');
     const payload = await callPlugin('galgame_set_ocr_screen_templates', {
       screen_templates: templates,
     });
     input.value = formatScreenTemplatesForInput(payload.screen_templates || []);
-    setFlash(payload.summary || '屏幕模板已保存', 'success');
+    setFlash(payload.summary || uiT('ui.flash.screen_templates_saved', '屏幕模板已保存'), 'success');
     await refreshAll({ preserveFlash: true, forceRefresh: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5460,10 +5695,12 @@ function readOcrScreenTemplatesInput() {
   try {
     templates = JSON.parse(input?.value || '[]');
   } catch (error) {
-    throw new Error(error instanceof Error ? `模板 JSON 解析失败：${error.message}` : '模板 JSON 解析失败。');
+    throw new Error(error instanceof Error
+      ? `${uiT('ui.error.template_json_parse_failed', '模板 JSON 解析失败')}：${error.message}`
+      : uiT('ui.error.template_json_parse_failed_sentence', '模板 JSON 解析失败。'));
   }
   if (!Array.isArray(templates)) {
-    throw new Error('模板 JSON 必须是数组。');
+    throw new Error(uiT('ui.error.template_json_must_be_array', '模板 JSON 必须是数组。'));
   }
   return templates;
 }
@@ -5477,13 +5714,13 @@ async function buildOcrScreenTemplateDraft() {
     const templates = readOcrScreenTemplatesInput();
     const payload = await callPlugin('galgame_build_ocr_screen_template_draft', {});
     if (!payload.template || typeof payload.template !== 'object') {
-      throw new Error('插件未返回可用模板草稿。');
+      throw new Error(uiT('ui.error.no_template_draft_returned', '插件未返回可用模板草稿。'));
     }
     ocrScreenTemplatesUndoValue = input.value;
     setOcrScreenTemplatesUndoAvailable(true);
     templates.push(payload.template);
     input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || '已生成屏幕模板草稿，可编辑后保存。', 'success');
+    setFlash(payload.summary || uiT('ui.flash.screen_template_draft_created', '已生成屏幕模板草稿，可编辑后保存。'), 'success');
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -5498,7 +5735,7 @@ async function validateOcrScreenTemplates() {
     const classification = payload.classification || {};
     const screenType = classification.screen_type || 'default';
     const confidence = Number(classification.screen_confidence || 0).toFixed(2);
-    setFlash(payload.summary || `模板验证结果: ${screenType} (${confidence})`, 'success');
+    setFlash(payload.summary || `${uiT('ui.flash.template_validation_result', '模板验证结果')}: ${screenType} (${confidence})`, 'success');
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -5512,7 +5749,7 @@ function undoOcrScreenTemplateDraft() {
   input.value = ocrScreenTemplatesUndoValue;
   ocrScreenTemplatesUndoValue = '';
   setOcrScreenTemplatesUndoAvailable(false);
-  setFlash('已撤销上一次模板草稿。', 'info');
+  setFlash(uiT('ui.flash.screen_template_draft_undone', '已撤销上一次模板草稿。'), 'info');
 }
 
 function getOcrRegionNodes() {
@@ -5562,8 +5799,8 @@ function renderOcrRegionSelection() {
     box.hidden = true;
     if (hint) {
       hint.textContent = ocrRegionSnapshot
-        ? '在截图上拖拽框选区域。'
-        : '加载最近 OCR 屏幕感知截图后，拖拽框选区域。';
+        ? uiT('ui.screen_templates.drag_region_hint', '在截图上拖拽框选区域。')
+        : uiT('ui.screen_templates.region_hint', '加载最近 OCR 屏幕感知截图后，拖拽框选区域。');
     }
     return;
   }
@@ -5580,7 +5817,7 @@ function renderOcrRegionSelection() {
   box.style.width = `${widthPx}px`;
   box.style.height = `${heightPx}px`;
   if (hint) {
-    hint.textContent = `区域: left=${region.left.toFixed(3)}, top=${region.top.toFixed(3)}, right=${region.right.toFixed(3)}, bottom=${region.bottom.toFixed(3)}`;
+    hint.textContent = `${uiT('ui.screen_templates.region_label', '区域')}: left=${region.left.toFixed(3)}, top=${region.top.toFixed(3)}, right=${region.right.toFixed(3)}, bottom=${region.bottom.toFixed(3)}`;
   }
 }
 
@@ -5591,7 +5828,7 @@ async function loadOcrRegionSnapshot() {
     const snapshot = payload.snapshot || {};
     const imageBase64 = snapshot.vision_image_base64 || '';
     if (!imageBase64) {
-      throw new Error('当前没有可用截图。请先开启 Vision，并等待 OCR 完成一次全画面感知。');
+      throw new Error(uiT('ui.error.no_ocr_snapshot', '当前没有可用截图。请先开启 Vision，并等待 OCR 完成一次全画面感知。'));
     }
     ocrRegionSnapshot = snapshot;
     ocrRegionSelection = null;
@@ -5604,10 +5841,10 @@ async function loadOcrRegionSnapshot() {
       empty.hidden = true;
     }
     if (hint) {
-      hint.textContent = payload.summary || '截图已加载，可拖拽框选区域。';
+      hint.textContent = payload.summary || uiT('ui.screen_templates.snapshot_loaded_hint', '截图已加载，可拖拽框选区域。');
     }
     renderOcrRegionSelection();
-    setFlash(payload.summary || 'OCR 屏幕感知截图已加载', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_snapshot_loaded', 'OCR 屏幕感知截图已加载'), 'success');
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -5615,7 +5852,7 @@ async function loadOcrRegionSnapshot() {
 
 async function buildOcrRegionTemplateDraft() {
   if (!ocrRegionSelection) {
-    setFlash('请先在截图上框选区域。', 'error');
+    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
     return;
   }
   const input = document.getElementById('ocrScreenTemplatesInput');
@@ -5637,7 +5874,7 @@ async function buildOcrRegionTemplateDraft() {
     setOcrScreenTemplatesUndoAvailable(true);
     templates.push(payload.template);
     input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || '已根据框选区域生成模板草稿。', 'success');
+    setFlash(payload.summary || uiT('ui.flash.region_template_draft_created', '已根据框选区域生成模板草稿。'), 'success');
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -5645,7 +5882,7 @@ async function buildOcrRegionTemplateDraft() {
 
 function applyOcrRegionToCaptureProfileForm() {
   if (!ocrRegionSelection) {
-    setFlash('请先在截图上框选区域。', 'error');
+    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
     return;
   }
   const region = normalizeOcrRegion(ocrRegionSelection);
@@ -5670,7 +5907,7 @@ function applyOcrRegionToCaptureProfileForm() {
   if (bottomInput) {
     bottomInput.value = Math.max(0, 1 - region.bottom).toFixed(2);
   }
-  setFlash('已将框选区域套用到 OCR 截图校准表单，确认后可保存。', 'success');
+  setFlash(uiT('ui.flash.region_applied_to_profile', '已将框选区域套用到 OCR 截图校准表单，确认后可保存。'), 'success');
 }
 
 function startOcrRegionDrag(event) {
@@ -5727,9 +5964,13 @@ function finishOcrRegionDrag(event) {
 async function bindGame(gameId = '') {
   const normalized = String(gameId || '').trim();
   try {
-    setFlash(normalized ? `正在绑定 ${normalized}...` : '正在恢复自动选择...', 'info');
+    setFlash(normalized
+      ? uiTf('ui.flash.binding_game', '正在绑定 {gameId}...', { gameId: normalized })
+      : uiT('ui.flash.restoring_auto_select', '正在恢复自动选择...'), 'info');
     await callPlugin('galgame_bind_game', { game_id: normalized });
-    setFlash(normalized ? `已绑定 ${normalized}` : '已恢复自动选择', 'success');
+    setFlash(normalized
+      ? uiTf('ui.flash.game_bound', '已绑定 {gameId}', { gameId: normalized })
+      : uiT('ui.flash.auto_select_restored', '已恢复自动选择'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5738,13 +5979,13 @@ async function bindGame(gameId = '') {
 
 async function setStandby(standby) {
   try {
-    setFlash(standby ? '正在进入待机...' : '正在恢复活跃...', 'info');
+    setFlash(standby ? uiT('ui.flash.entering_standby', '正在进入待机...') : uiT('ui.flash.resuming_active', '正在恢复活跃...'), 'info');
     const payload = await callPlugin('galgame_agent_command', {
       action: 'set_standby',
       standby,
     });
     latestAgentReply = payload.result || latestAgentReply;
-    setFlash(standby ? '已切换到待机' : '已恢复活跃', 'success');
+    setFlash(standby ? uiT('ui.flash.standby_enabled', '已切换到待机') : uiT('ui.flash.active_resumed', '已恢复活跃'), 'success');
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
       console.warn('[galgame_plugin ui] refresh after standby change failed', error);
     });
@@ -5756,16 +5997,16 @@ async function setStandby(standby) {
 async function resumeAgentFromButton() {
   const action = document.getElementById('standbyOffBtn').dataset.resumeAction || 'noop';
   if (action === 'focus') {
-    setFlash('当前是窗口失焦暂停。请切回游戏窗口，Agent 会自动继续；恢复活跃只解除手动待机。', 'info');
+    setFlash(uiT('ui.flash.resume_focus_pause', '当前是窗口失焦暂停。请切回游戏窗口，Agent 会自动继续；恢复活跃只解除手动待机。'), 'info');
     refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
     return;
   }
   if (action === 'read_only') {
-    setFlash('当前为伴读/静默模式，不会自动点击。需要自动推进时请切到“自动推进”。', 'info');
+    setFlash(uiT('ui.flash.resume_read_only_mode', '当前为伴读/静默模式，不会自动点击。需要自动推进时请切到“自动推进”。'), 'info');
     return;
   }
   if (action === 'noop') {
-    setFlash('Agent 当前没有手动待机。', 'info');
+    setFlash(uiT('ui.flash.no_manual_standby', 'Agent 当前没有手动待机。'), 'info');
     return;
   }
   await setStandby(false);
@@ -5774,20 +6015,20 @@ async function resumeAgentFromButton() {
 async function askAgent(action) {
   const prompt = document.getElementById('agentPromptInput').value.trim();
   if (!prompt) {
-    setFlash('请输入要发送给 Agent 的文本', 'error');
+    setFlash(uiT('ui.flash.agent_prompt_required', '请输入要发送给 Agent 的文本'), 'error');
     return;
   }
 
   try {
-    setFlash(action === 'query_context' ? '正在查询上下文...' : '正在发送给 Agent...', 'info');
+    setFlash(action === 'query_context' ? uiT('ui.flash.querying_context', '正在查询上下文...') : uiT('ui.flash.sending_agent', '正在发送给 Agent...'), 'info');
     const payload = await callPlugin(
       'galgame_agent_command',
       action === 'query_context'
         ? { action, context_query: prompt }
         : { action, message: prompt },
     );
-    latestAgentReply = payload.result || 'Agent 未返回文本';
-    setFlash('Agent 已响应', 'success');
+    latestAgentReply = payload.result || uiT('ui.agent.no_reply', 'Agent 未返回文本');
+    setFlash(uiT('ui.flash.agent_responded', 'Agent 已响应'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5798,13 +6039,13 @@ function readProfileNumber(id, label) {
   const raw = document.getElementById(id).value.trim();
   const value = Number(raw);
   if (!raw) {
-    throw new Error(`${label} 不能为空`);
+    throw new Error(uiTf('ui.error.field_required', '{field} 不能为空', { field: label }));
   }
   if (!Number.isFinite(value)) {
-    throw new Error(`${label} 必须是数字`);
+    throw new Error(uiTf('ui.error.field_must_be_number', '{field} 必须是数字', { field: label }));
   }
   if (value < 0 || value >= 1) {
-    throw new Error(`${label} 必须在 0.00 到 0.99 之间`);
+    throw new Error(uiTf('ui.error.field_range_0_099', '{field} 必须在 0.00 到 0.99 之间', { field: label }));
   }
   return value;
 }
@@ -5830,7 +6071,7 @@ async function saveOcrCaptureProfile() {
       bottom_inset_ratio: bottomInsetRatio,
       clear: false,
     });
-    setFlash(payload.summary || 'OCR 截图校准已保存', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_profile_saved', 'OCR 截图校准已保存'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5850,7 +6091,7 @@ async function clearOcrCaptureProfile() {
       save_scope: saveScope,
       clear: true,
     });
-    setFlash(payload.summary || 'OCR 截图校准已清空', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_profile_cleared', 'OCR 截图校准已清空'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5861,7 +6102,7 @@ async function autoRecalibrateOcrDialogueProfile() {
   try {
     const payload = await callPlugin('galgame_auto_recalibrate_ocr_dialogue_profile', {});
     const sampleText = String(payload.sample_text || '').trim();
-    const summary = payload.summary || 'OCR 对白区已自动重校准';
+    const summary = payload.summary || uiT('ui.flash.ocr_dialogue_auto_recalibrated', 'OCR 对白区已自动重校准');
     setFlash(sampleText ? `${summary} | ${sampleText}` : summary, 'success');
     const saveScopeSelect = document.getElementById('ocrProfileSaveScopeSelect');
     saveScopeSelect.value = 'window_bucket';
@@ -5879,7 +6120,7 @@ async function applyRecommendedOcrCaptureProfile() {
       enable_auto_apply: Boolean(autoApplyInput?.checked),
       allow_manual_override: false,
     });
-    setFlash(payload.summary || 'OCR 推荐截图校准已应用', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_recommended_profile_applied', 'OCR 推荐截图校准已应用'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5891,7 +6132,7 @@ async function rollbackOcrCaptureProfileRecommendation() {
     const payload = await callPlugin('galgame_rollback_ocr_capture_profile', {
       confirm: true,
     });
-    setFlash(payload.summary || 'OCR 推荐截图校准已回滚', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_recommended_profile_rolled_back', 'OCR 推荐截图校准已回滚'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -5921,7 +6162,7 @@ async function openMemoryProcessModal() {
   modal.hidden = false;
   renderPreservingScroll(modalList, () => {
     modalList.className = 'stack-list scroll-region empty-state window-candidate-list';
-    modalList.textContent = '正在加载可用进程...';
+    modalList.textContent = uiT('ui.memory.loading_processes', '正在加载可用进程...');
   });
   const refreshed = await refreshMemoryProcessTargetsIfNeeded({
     reason: 'open_memory_process_modal',
@@ -5929,7 +6170,7 @@ async function openMemoryProcessModal() {
     silent: false,
   });
   if (!refreshed && !latestMemoryProcessSnapshot) {
-    setFlash('Memory Reader 进程列表刷新失败，请稍后重试。', 'warning');
+    setFlash(uiT('ui.flash.memory_process_refresh_failed', 'Memory Reader 进程列表刷新失败，请稍后重试。'), 'warning');
   }
   const snapshot = latestMemoryProcessSnapshot || {};
   renderMemoryProcessListToNode(modalList, snapshot.processes || []);
@@ -5942,13 +6183,15 @@ function closeMemoryProcessModal() {
 
 async function setMemoryProcessTarget(processKey) {
   try {
-    setFlash('正在锁定 Memory Reader 进程...', 'info');
+    setFlash(uiT('ui.flash.locking_memory_process', '正在锁定 Memory Reader 进程...'), 'info');
     const payload = await callPlugin('galgame_set_memory_reader_target', {
       process_key: processKey,
       clear: false,
     });
     const target = payload.process_target || {};
-    setFlash(`已锁定 Memory Reader 进程：${target.process_name || processKey || '目标进程'}`, 'success');
+    setFlash(uiTf('ui.flash.memory_process_locked', '已锁定 Memory Reader 进程：{process}', {
+      process: target.process_name || processKey || uiT('ui.memory.target_process', '目标进程'),
+    }), 'success');
     closeMemoryProcessModal();
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
       console.warn('[galgame_plugin ui] refresh after Memory Reader process lock failed', error);
@@ -5965,9 +6208,9 @@ async function setMemoryProcessTarget(processKey) {
 
 async function clearMemoryProcessTarget() {
   try {
-    setFlash('正在清除 Memory Reader 手动进程锁定...', 'info');
+    setFlash(uiT('ui.flash.clearing_memory_process_lock', '正在清除 Memory Reader 手动进程锁定...'), 'info');
     await callPlugin('galgame_set_memory_reader_target', { clear: true });
-    setFlash('Memory Reader 已恢复自动进程检测', 'success');
+    setFlash(uiT('ui.flash.memory_process_auto_restored', 'Memory Reader 已恢复自动进程检测'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
     refreshMemoryProcessTargetsIfNeeded({
       reason: 'clear_memory_process',
@@ -6003,7 +6246,7 @@ async function openOcrWindowModal() {
   modal.hidden = false;
   renderPreservingScroll(modalList, () => {
     modalList.className = 'stack-list scroll-region empty-state window-candidate-list';
-    modalList.textContent = '正在加载可用游戏窗口...';
+    modalList.textContent = uiT('ui.ocr.window.loading_windows', '正在加载可用游戏窗口...');
   });
   const refreshed = await refreshOcrWindowTargetsIfNeeded({
     reason: 'open_window_modal',
@@ -6011,7 +6254,7 @@ async function openOcrWindowModal() {
     silent: false,
   });
   if (!refreshed && !latestOcrWindowSnapshot) {
-    setFlash('OCR 窗口列表刷新失败，请稍后重试。', 'warning');
+    setFlash(uiT('ui.flash.ocr_window_refresh_failed', 'OCR 窗口列表刷新失败，请稍后重试。'), 'warning');
   }
   const snapshot = latestOcrWindowSnapshot || {};
   renderOcrWindowListToNode(modalList, snapshot.windows || []);
@@ -6024,14 +6267,16 @@ function closeOcrWindowModal() {
 
 async function setOcrWindowTarget(windowKey) {
   try {
-    setFlash('正在锁定 OCR 识别窗口...', 'info');
+    setFlash(uiT('ui.flash.locking_ocr_window', '正在锁定 OCR 识别窗口...'), 'info');
     const payload = await callPlugin('galgame_set_ocr_window_target', {
       window_key: windowKey,
       clear: false,
     });
     const target = payload.window_target || {};
-    const targetName = target.process_name || target.normalized_title || '目标窗口';
-    setFlash(`已锁定 OCR 识别窗口：${targetName}。后台正在刷新识别状态。`, 'success');
+    const targetName = target.process_name || target.normalized_title || uiT('ui.ocr.window.target_window', '目标窗口');
+    setFlash(uiTf('ui.flash.ocr_window_locked', '已锁定 OCR 识别窗口：{target}。后台正在刷新识别状态。', {
+      target: targetName,
+    }), 'success');
     closeOcrWindowModal();
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
       console.warn('[galgame_plugin ui] refresh after OCR window lock failed', error);
@@ -6048,11 +6293,11 @@ async function setOcrWindowTarget(windowKey) {
 
 async function clearOcrWindowTarget() {
   try {
-    setFlash('正在清除 OCR 目标窗口...', 'info');
+    setFlash(uiT('ui.flash.clearing_ocr_window', '正在清除 OCR 目标窗口...'), 'info');
     const payload = await callPlugin('galgame_set_ocr_window_target', {
       clear: true,
     });
-    setFlash(payload.summary || '已清除 OCR 目标窗口。插件会重新尝试自动检测；识别不到时再手动选择。', 'success');
+    setFlash(payload.summary || uiT('ui.flash.ocr_window_cleared', '已清除 OCR 目标窗口。插件会重新尝试自动检测；识别不到时再手动选择。'), 'success');
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
       console.warn('[galgame_plugin ui] refresh after OCR target clear failed', error);
     });
@@ -6067,7 +6312,7 @@ async function clearOcrWindowTarget() {
 }
 
 async function clearOcrWindowTargetWithFeedback() {
-  await withButtonPending('ocrWindowAutoBtn', '清除中...', clearOcrWindowTarget);
+  await withButtonPending('ocrWindowAutoBtn', uiT('ui.pending.clearing', '清除中...'), clearOcrWindowTarget);
 }
 
 function expandAndScrollTo(elementId) {
@@ -6096,7 +6341,7 @@ function revealCaptureBackendSettings() {
 }
 
 async function refreshStatusAndWindowsFromAction() {
-  setFlash('正在刷新状态和窗口列表...', 'info');
+  setFlash(uiT('ui.flash.refreshing_status_and_windows', '正在刷新状态和窗口列表...'), 'info');
   const loaded = await refreshAll({ preserveFlash: true, forceInsights: true, showInsightPending: true });
   const windowsLoaded = loaded
     ? await refreshOcrWindowTargetsIfNeeded({
@@ -6107,8 +6352,10 @@ async function refreshStatusAndWindowsFromAction() {
     : false;
   setFlash(
     loaded
-      ? (windowsLoaded ? '状态和窗口列表已刷新。' : '状态已刷新；窗口列表刷新失败，请稍后重试。')
-      : '状态刷新失败，请稍后重试。',
+      ? (windowsLoaded
+        ? uiT('ui.flash.status_and_windows_refreshed', '状态和窗口列表已刷新。')
+        : uiT('ui.flash.status_refreshed_windows_failed', '状态已刷新；窗口列表刷新失败，请稍后重试。'))
+      : uiT('ui.flash.status_refresh_failed', '状态刷新失败，请稍后重试。'),
     loaded && windowsLoaded ? 'success' : 'warning',
   );
 }
@@ -6134,11 +6381,11 @@ async function handleDiagnosisAction(action) {
       break;
     case 'debug_details':
       revealDebugDetails();
-      setFlash('已展开 OCR 运行时调试详情。', 'info');
+      setFlash(uiT('ui.flash.debug_details_expanded', '已展开 OCR 运行时调试详情。'), 'info');
       break;
     case 'line_details':
       revealLineDetails();
-      setFlash('已定位到当前台词识别详情。', 'info');
+      setFlash(uiT('ui.flash.line_details_revealed', '已定位到当前台词识别详情。'), 'info');
       break;
     case 'recalibrate_ocr':
       await autoRecalibrateOcrDialogueProfile();
@@ -6148,16 +6395,16 @@ async function handleDiagnosisAction(action) {
       break;
     case 'capture_backend':
       revealCaptureBackendSettings();
-      setFlash('已定位到截图方式设置。可以切换 DXcam、ImageGrab 或 PrintWindow。', 'info');
+      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、ImageGrab 或 PrintWindow。'), 'info');
       break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
       break;
     case 'focus_game':
-      setFlash('请切回游戏窗口。窗口回到前台后，插件会在下一轮刷新中继续识别。', 'info');
+      setFlash(uiT('ui.flash.focus_game_window', '请切回游戏窗口。窗口回到前台后，插件会在下一轮刷新中继续识别。'), 'info');
       break;
     default:
-      setFlash('这个操作暂时不可用。', 'warning');
+      setFlash(uiT('ui.flash.action_unavailable', '这个操作暂时不可用。'), 'warning');
       break;
   }
 }
@@ -6204,11 +6451,11 @@ async function initialize() {
   } catch (error) {
     console.warn('[galgame_plugin ui] clear cached state failed', error);
   }
-  renderInsightsPending('等待首轮状态刷新；选项建议会在后台更新。');
-  setFlash('正在加载插件状态...', 'info');
+  renderInsightsPending(uiT('ui.suggest.initial_pending', '等待首轮状态刷新；选项建议会在后台更新。'));
+    setFlash(uiT('ui.flash.loading_status', '正在加载插件状态...'), 'info');
   const loaded = await refreshAll({ forceInsights: false, showInsightPending: true });
   if (loaded) {
-    setFlash('插件状态已加载；窗口列表、依赖状态和选项建议正在后台更新。', 'success');
+    setFlash(uiT('ui.flash.loaded_status', '插件状态已加载；窗口列表、依赖状态和选项建议正在后台更新。'), 'success');
   }
   runBackgroundTask('refresh Memory Reader processes', () => (
     refreshMemoryProcessTargetsIfNeeded({
@@ -6234,8 +6481,8 @@ async function initialize() {
 }
 
 document.getElementById('refreshBtn').addEventListener('click', async () => {
-  await withButtonPending('refreshBtn', '刷新中...', async () => {
-    setFlash('正在刷新插件状态...', 'info');
+  await withButtonPending('refreshBtn', uiT('ui.pending.refreshing', '刷新中...'), async () => {
+    setFlash(uiT('ui.flash.refreshing_plugin_status', '正在刷新插件状态...'), 'info');
     const loaded = await refreshAll({ forceInsights: true, showInsightPending: true });
     if (loaded) {
       refreshMemoryProcessTargetsIfNeeded({
@@ -6254,8 +6501,8 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
     if (loaded) {
       setFlash(
         windowsLoaded
-          ? '状态和窗口列表已刷新；选项建议在后台更新。'
-          : '状态已刷新；窗口列表刷新失败，请稍后重试。',
+          ? uiT('ui.flash.status_windows_refreshed_insights_pending', '状态和窗口列表已刷新；选项建议在后台更新。')
+          : uiT('ui.flash.status_refreshed_windows_failed', '状态已刷新；窗口列表刷新失败，请稍后重试。'),
         windowsLoaded ? 'success' : 'warning',
       );
     }
@@ -6268,7 +6515,7 @@ document.getElementById('primaryDiagnosisPanel').addEventListener('click', (even
     return;
   }
   const action = button.getAttribute('data-primary-action') || '';
-  withButtonPending(button, '处理中...', () => handleDiagnosisAction(action)).catch((error) => {
+  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
@@ -6279,28 +6526,28 @@ document.getElementById('firstRunGuide').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, '处理中...', () => handleDiagnosisAction(action)).catch((error) => {
+  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
 document.getElementById('saveModeBtn').addEventListener('click', () => {
-  withButtonPending('saveModeBtn', '保存中...', saveMode).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('saveModeBtn', uiT('ui.pending.saving', '保存中...'), saveMode).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrScreenTemplatesSaveBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesSaveBtn', '保存中...', saveOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('ocrScreenTemplatesSaveBtn', uiT('ui.pending.saving', '保存中...'), saveOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrScreenTemplatesDraftBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesDraftBtn', '生成中...', buildOcrScreenTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('ocrScreenTemplatesDraftBtn', uiT('ui.pending.generating', '生成中...'), buildOcrScreenTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrScreenTemplatesValidateBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesValidateBtn', '验证中...', validateOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('ocrScreenTemplatesValidateBtn', uiT('ui.pending.validating', '验证中...'), validateOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrScreenTemplatesUndoBtn').addEventListener('click', undoOcrScreenTemplateDraft);
 document.getElementById('ocrRegionSnapshotBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionSnapshotBtn', '加载中...', loadOcrRegionSnapshot).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('ocrRegionSnapshotBtn', uiT('ui.pending.loading', '加载中...'), loadOcrRegionSnapshot).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrRegionTemplateBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionTemplateBtn', '生成中...', buildOcrRegionTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('ocrRegionTemplateBtn', uiT('ui.pending.generating', '生成中...'), buildOcrRegionTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('ocrRegionCaptureBtn').addEventListener('click', applyOcrRegionToCaptureProfileForm);
 document.getElementById('ocrRegionEditor').addEventListener('pointerdown', startOcrRegionDrag);
@@ -6325,19 +6572,19 @@ SETTINGS_CONTROL_IDS.forEach((id) => {
   node.addEventListener('change', markDirty);
 });
 document.getElementById('clearBindBtn').addEventListener('click', async () => {
-  await withButtonPending('clearBindBtn', '恢复中...', () => bindGame(''));
+  await withButtonPending('clearBindBtn', uiT('ui.pending.restoring', '恢复中...'), () => bindGame(''));
 });
 document.getElementById('standbyOnBtn').addEventListener('click', () => {
-  withButtonPending('standbyOnBtn', '切换中...', () => setStandby(true)).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('standbyOnBtn', uiT('ui.pending.switching', '切换中...'), () => setStandby(true)).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('standbyOffBtn').addEventListener('click', () => {
-  withButtonPending('standbyOffBtn', '处理中...', resumeAgentFromButton).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('standbyOffBtn', uiT('ui.pending.processing', '处理中...'), resumeAgentFromButton).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('queryContextBtn').addEventListener('click', () => {
-  withButtonPending('queryContextBtn', '查询中...', () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('sendMessageBtn').addEventListener('click', () => {
-  withButtonPending('sendMessageBtn', '发送中...', () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('rapidocrInstallBtn').addEventListener('click', () => installRapidOcr(false));
 document.getElementById('dxcamInstallBtn').addEventListener('click', () => installDxcam(false));
@@ -6358,7 +6605,7 @@ document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () 
     silent: false,
   }).then((refreshed) => {
     if (!refreshed) {
-      setFlash('Memory Reader 进程列表刷新失败，请稍后重试。', 'warning');
+      setFlash(uiT('ui.flash.memory_process_refresh_failed', 'Memory Reader 进程列表刷新失败，请稍后重试。'), 'warning');
     }
   }).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -6381,7 +6628,7 @@ document.getElementById('ocrWindowRefreshBtn').addEventListener('click', () => {
     silent: false,
   }).then((refreshed) => {
     if (!refreshed) {
-      setFlash('OCR 窗口列表刷新失败，请稍后重试。', 'warning');
+      setFlash(uiT('ui.flash.ocr_window_refresh_failed', 'OCR 窗口列表刷新失败，请稍后重试。'), 'warning');
     }
   }).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -6493,7 +6740,7 @@ document.getElementById('onboardingView').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, '处理中...', () => handleDiagnosisAction(action)).catch((error) => {
+  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
@@ -6504,7 +6751,9 @@ if (advancedToggleBtn) {
     const el = document.getElementById('advancedSettings');
     if (el) {
       el.classList.toggle('open');
-      advancedToggleBtn.textContent = el.classList.contains('open') ? '收起高级设置' : '高级设置';
+      advancedToggleBtn.textContent = el.classList.contains('open')
+        ? uiT('ui.advanced.collapse_settings', '收起高级设置')
+        : uiT('ui.advanced.settings', '高级设置');
       if (el.classList.contains('open')) {
         const firstRunGuide = document.getElementById('firstRunGuide');
         if (firstRunGuide) {
@@ -6527,6 +6776,12 @@ window.addEventListener('focus', () => {
   refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
   refreshMemoryProcessTargetsIfNeeded({ reason: 'page_focus', silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
   refreshOcrWindowsOnPageFocus();
+});
+
+window.addEventListener('i18n-ready', () => {
+  if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
+    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+  }
 });
 
 initialize();
