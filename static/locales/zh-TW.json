@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
             "proactiveMemeChat": "表情包分享",
             "proactiveMemeChatTooltip": "使用有趣表情包進行搭話",
+            "proactiveMiniGameInviteChat": "小遊戲邀請",
+            "proactiveMiniGameInviteChatTooltip": "符合條件時邀請你一起玩小遊戲",
             "agentMaster": "貓爪總開關",
             "keyboardControl": "鍵鼠控製",
             "userPlugin": "用戶插件",

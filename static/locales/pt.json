@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "Use músicas recomendadas para bate-papo proativo",
             "proactiveMemeChat": "Compartilhamento de memes",
             "proactiveMemeChatTooltip": "Compartilhe memes engraçados para um bate-papo proativo",
+            "proactiveMiniGameInviteChat": "Convites para minijogos",
+            "proactiveMiniGameInviteChatTooltip": "Convidar você para um minijogo quando as condições forem ideais",
             "agentMaster": "Interruptor mestre NekoClaw",
             "keyboardControl": "Controle de teclado/mouse",
             "userPlugin": "Plug-in do usuário",

@@ -400,6 +400,85 @@ async def test_maybe_deliver_returns_none_when_dice_misses(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_maybe_deliver_returns_none_when_user_toggle_disabled(monkeypatch):
+    """用户在前端 CHAT_MODE_CONFIG 关掉了 mini-game 邀请开关 →
+    `_maybe_deliver_mini_game_invite(user_toggle_enabled=False)` 即使其它 gate
+    全过、骰子必中也不投递。这是 PR 的核心契约，对偶其它 source 的可独立 toggle。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=False,
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_user_toggle_default_true_keeps_bc(monkeypatch):
+    """旧客户端不发 ``mini_game_invite_enabled`` 字段 → caller 传 default=True →
+    fall through 到原 eligibility 路径不退化。pin 默认值契约。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(sid='sid-bc'),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        # 故意不传 user_toggle_enabled，让 default 生效
+    )
+    assert out is not None
+    assert out["action"] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_force_game_type_overrides_all_gates(monkeypatch):
+    """``MINI_GAME_INVITE_FORCE_GAME_TYPE='soccer'`` 时，即使 user_toggle 关、
+    snapshot 是 None、cooldown 在期内、骰子必失，也强制走邀请投递。
+    仅 ``MINI_GAME_INVITE_ENABLED=False`` 才能拦住。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'soccer')
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    sr._mini_game_invite_record_delivered(LANLAN, "stale-session")
+    mgr = _make_mgr(sid='sid-forced')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=mgr,
+        activity_snapshot=None,
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=False,
+    )
+    assert out is not None
+    assert out["action"] == "chat"
+    assert out.get("game_type") == 'soccer'
+
+
+@pytest.mark.asyncio
+async def test_force_game_type_invalid_value_warns_and_skips(monkeypatch):
+    """旗标设成 ``MINI_GAME_INVITE_LINES_BY_GAME`` 里没有的 key → warn + 返 None
+    而不是 raise；保证配置抖动不带挂 proactive 流水线。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'definitely_not_a_game')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=True,
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_force_game_type_still_respects_global_kill_switch(monkeypatch):
+    """``MINI_GAME_INVITE_ENABLED=False`` + 调试旗标都开 → 总开关 wins。
+    pin "总开关是终极 kill switch" 契约。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_ENABLED', False)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'soccer')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=True,
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
 async def test_maybe_deliver_chat_when_eligible(monkeypatch):
     """全部 eligibility 通过 + 必中骰子 → 走 prepare → feed_tts → finish 投递；
     state 翻成 pending；写入 _proactive_chat_history。"""

@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
             "proactiveMemeChat": "Мемы",
             "proactiveMemeChatTooltip": "Делиться смешными мемами для проактивного чата",
+            "proactiveMiniGameInviteChat": "Приглашения в мини-игры",
+            "proactiveMiniGameInviteChatTooltip": "Приглашать тебя в мини-игру, когда подходящие условия",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",

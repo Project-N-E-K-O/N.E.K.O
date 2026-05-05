@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "おすすめの音楽を提案しながら話しかける",
             "proactiveMemeChat": "ミーム共有",
             "proactiveMemeChatTooltip": "面白いミームを共有して話しかける",
+            "proactiveMiniGameInviteChat": "ミニゲームへのお誘い",
+            "proactiveMiniGameInviteChatTooltip": "条件が整ったときミニゲームに誘って話しかける",
             "agentMaster": "ネコクローマスタースイッチ",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",

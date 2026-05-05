@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "추천 음악을 사용하여 채팅",
             "proactiveMemeChat": "밈 공유",
             "proactiveMemeChatTooltip": "재미있는 밈을 공유하여 채팅",
+            "proactiveMiniGameInviteChat": "미니게임 초대",
+            "proactiveMiniGameInviteChatTooltip": "조건이 맞을 때 미니게임에 초대하여 말걸기",
             "agentMaster": "네코클로 마스터 스위치",
             "keyboardControl": "키보드/마우스 제어",
             "userPlugin": "사용자 플러그인",

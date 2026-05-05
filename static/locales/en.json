@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "proactiveMemeChat": "Meme Sharing",
             "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
+            "proactiveMiniGameInviteChat": "Mini-game Invites",
+            "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
