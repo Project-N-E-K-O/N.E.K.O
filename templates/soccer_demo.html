@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Soccer MVP (VRM sister 接入验证)</title>
+<title>Soccer MVP (VRM sensei 接入验证)</title>
 
 <!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
 <script>window.VRM_DEFAULT_LIGHTING = Object.freeze({{ vrm_defaults | tojson }});</script>
@@ -34,7 +34,7 @@
   // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
   window.mouseTrackingEnabled = true;
   window.live2dFullscreenTrackingEnabled = false;
-  // 阻止 vrm-init.js 自动加载 sister 到默认 #vrm-container（id 对不上会出事），
+  // 阻止 vrm-init.js 自动加载默认模型到 #vrm-container（id 对不上会出事），
   // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
   window._cardExportPage = true;
 </script>
@@ -477,7 +477,7 @@
       'player-vrm-canvas', 'player-vrm-container', null, { embed: true }
     );
     console.log('[soccer_demo] core.init done; scene children BEFORE load:', window.vrmManager.scene?.children?.length);
-    setStatus('loading sister1.0.vrm…');
+    setStatus('loading sensei.vrm…');
     // 绕开 core.loadModel（它里面有 3 帧 rAF 等待，在 headless/背景 tab 下会 hang），
     // 直接用 GLTFLoader + VRMLoaderPlugin 加载，手动 scene.add。
     const [{ GLTFLoader }, vrmModule] = await Promise.all([
@@ -486,14 +486,14 @@
     ]);
     const loader = new GLTFLoader();
     loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sister1.0.vrm', res, null, rej));
+    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sensei.vrm', res, null, rej));
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error('Loaded file is not a valid VRM');
     console.log('[soccer_demo] VRM parsed');
     // 把模型放进 manager 的 scene，交给 core.init 已经设置好的 renderer/camera 渲染
     window.vrmManager.scene.add(vrm.scene);
     // 让 three-vrm 的更新发生——挂到 clock/render loop 上
-    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sister1.0.vrm' };
+    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sensei.vrm' };
     vrm.scene.visible = true;
 
     // 相机自适应：测出 bbox，把模型脚底放到 y=0、水平居中，再把相机拉到够远能装下整个人
