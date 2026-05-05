@@ -2634,6 +2634,7 @@
         "serverNotReturnedValidJSON": "サーバーが有効な JSON データを返しませんでした"
     },
     "tutorial": {
+        "homeInteractionLocked": "チュートリアル中です。まず案内に沿って現在の手順を完了してください。",
         "step1": {
             "title": "👋 N.E.K.O へようこそ",
             "desc": "あなたのネコです！これから各機能を紹介します~"

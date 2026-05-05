@@ -554,6 +554,7 @@ export default function App({
   messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerHidden = false,
+  composerDisabled = false,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -645,7 +646,7 @@ export default function App({
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
-  const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const canSubmit = !composerDisabled && (draft.trim().length > 0 || composerAttachments.length > 0);
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
@@ -1394,10 +1395,10 @@ export default function App({
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
   useEffect(() => {
-    if (composerHidden && activeCursorToolId) {
+    if (composerHidden || composerDisabled) {
       clearActiveCursorToolSelection();
     }
-  }, [activeCursorToolId, composerHidden]);
+  }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
 
   useEffect(() => {
     function handleDeactivate() {
@@ -1412,6 +1413,7 @@ export default function App({
   }, []);
 
   function submitDraft() {
+    if (composerDisabled) return;
     if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
@@ -1433,6 +1435,7 @@ export default function App({
       aria-label={resolvedTranslateAriaLabel}
       aria-pressed={translateEnabled}
       title={translateButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onTranslateToggle?.()}
     >
       <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
@@ -1445,6 +1448,7 @@ export default function App({
       type="button"
       aria-label={jukeboxButtonAriaLabel}
       title={jukeboxButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onJukeboxClick?.()}
     >
       <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -1458,6 +1462,7 @@ export default function App({
       aria-label={resolvedGalgameAriaLabel}
       aria-pressed={galgameModeEnabled}
       title={galgameToggleButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onGalgameModeToggle?.()}
     >
       <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
@@ -1473,6 +1478,7 @@ export default function App({
         title={selectedEmojiButtonAriaLabel}
         aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
         aria-expanded={toolMenuOpen}
+        disabled={composerDisabled}
         onClick={() => {
           if (activeToolItem) {
             clearActiveCursorToolSelection();
@@ -1496,6 +1502,7 @@ export default function App({
           type="button"
           aria-label={clearCursorToolAriaLabel}
           title={clearCursorToolAriaLabel}
+          disabled={composerDisabled}
           onClick={(event) => {
             event.stopPropagation();
             setIsCursorInsideHostWindow(true);
@@ -1527,6 +1534,7 @@ export default function App({
               aria-pressed={activeCursorToolId === item.id}
               aria-label={itemLabel}
               title={itemLabel}
+              disabled={composerDisabled}
               onClick={(event) => {
                 latestPointerPositionRef.current = {
                   x: event.clientX,
@@ -1705,7 +1713,13 @@ export default function App({
                     className="composer-attachment-remove"
                     type="button"
                     aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
-                    onClick={() => onComposerRemoveAttachment?.(attachment.id)}
+                    aria-disabled={composerDisabled}
+                    disabled={composerDisabled}
+                    onClick={() => {
+                      if (!composerDisabled) {
+                        onComposerRemoveAttachment?.(attachment.id);
+                      }
+                    }}
                   >
                     ×
                   </button>
@@ -1724,6 +1738,8 @@ export default function App({
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
+                readOnly={composerDisabled}
+                disabled={composerDisabled}
                 onChange={(event) => { setDraft(event.target.value); }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
@@ -1755,7 +1771,7 @@ export default function App({
                             type="button"
                             className="composer-galgame-option"
                             title={option.text}
-                            disabled={galgameOptionsLoading}
+                            disabled={composerDisabled || galgameOptionsLoading}
                             tabIndex={galgameOptionsVisible ? 0 : -1}
                             onClick={() => {
                               if (submittingRef.current) return;
@@ -1813,6 +1829,7 @@ export default function App({
                         type="button"
                         className="composer-galgame-option composer-choice-option"
                         title={option.label}
+                        disabled={composerDisabled}
                         onClick={() => {
                           if (submittingRef.current) return;
                           submittingRef.current = true;
@@ -1838,6 +1855,7 @@ export default function App({
                     type="button"
                     aria-label={resolvedImportImageAriaLabel}
                     title={importImageButtonLabel}
+                    disabled={composerDisabled}
                     onClick={() => onComposerImportImage?.()}
                   >
                     <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -1848,6 +1866,7 @@ export default function App({
                     type="button"
                     aria-label={resolvedScreenshotAriaLabel}
                     title={screenshotButtonLabel}
+                    disabled={composerDisabled}
                     onClick={() => onComposerScreenshot?.()}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -1887,6 +1906,7 @@ export default function App({
                         title={overflowMenuAriaLabel}
                         aria-haspopup="true"
                         aria-expanded={overflowMenuOpen}
+                        disabled={composerDisabled}
                         onClick={() => setOverflowMenuOpen(open => !open)}
                       >
                         <svg

@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('disables composer submission while the home tutorial owns interaction', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App composerDisabled onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
     const onComposerSubmit = vi.fn();
     render(<App onComposerSubmit={onComposerSubmit} />);
@@ -116,6 +129,26 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
+  });
+
+  it('keeps pending composer attachments locked while the composer is disabled', () => {
+    const onComposerRemoveAttachment = vi.fn();
+
+    render(
+      <App
+        composerDisabled
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+        onComposerRemoveAttachment={onComposerRemoveAttachment}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton).toBeDisabled();
+    fireEvent.click(removeButton);
+
+    expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
   });
 
   it('only emits avatar interactions when the pointer hits the avatar range', () => {

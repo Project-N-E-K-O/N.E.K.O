@@ -2634,6 +2634,7 @@
         "serverNotReturnedValidJSON": "服务器未返回有效的 JSON 数据"
     },
     "tutorial": {
+        "homeInteractionLocked": "新手引导进行中，请先按引导完成当前步骤",
         "step1": {
             "title": "👋 欢迎来到 N.E.K.O",
             "desc": "这是你的猫娘！接下来我会带你熟悉各项功能~"
