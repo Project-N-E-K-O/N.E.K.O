@@ -1914,20 +1914,21 @@
                         });
                     }
 
-                // -------- mini_game_launch --------
-                // 关键词文本兜底（用户没点按钮自己打字"好啊"）命中 accept 时由
-                // 后端 push。任何 page 收到都尝试 window.open(game_url)——主进程
-                // setWindowOpenHandler 拦截开独立 BrowserWindow（普通浏览器是新
-                // tab）。dedupe 由 launched session_id 保护：同一 session 再来一条
-                // 不重复 open；按钮路径 endpoint 直接 open 后也注册到 launched 集合。
-                } else if (response.type === 'mini_game_launch') {
+                // -------- mini_game_invite_resolved --------
+                // 邀请被 resolve（任一 outcome：accept / cooldown / suppress）→
+                // 前端 dismiss prompt UI（cross-window 一致性，pet + chat.html
+                // 多窗口同时显示 prompt 时全部清掉）。accept 时 payload 同时带
+                // game_url 当 launch 信号——前端 window.open 让 Electron 主进程
+                // setWindowOpenHandler 拦截开独立 BrowserWindow，dedupe 由
+                // launched session_id 保护防止双开。
+                } else if (response.type === 'mini_game_invite_resolved') {
                     if (window.reactChatWindowHost
-                            && typeof window.reactChatWindowHost.launchMiniGame === 'function') {
-                        window.reactChatWindowHost.launchMiniGame({
+                            && typeof window.reactChatWindowHost.handleMiniGameInviteResolved === 'function') {
+                        window.reactChatWindowHost.handleMiniGameInviteResolved({
                             sessionId: response.session_id || '',
+                            action: response.action || '',
                             gameType: response.game_type || '',
                             url: response.game_url || '',
-                            source: response.source || 'ws',
                         });
                     }
                 }

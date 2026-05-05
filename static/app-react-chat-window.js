@@ -1386,7 +1386,10 @@
         var prompt = state.choicePrompt;
         if (!prompt || prompt.source !== 'mini_game_invite') return;
         var sessionId = prompt.sessionId || '';
-        // 立刻清掉 prompt 让按钮消失，防止用户连点 / 等 endpoint 慢响应时重复触发
+        // 暂存原 prompt 用于失败回滚——网络异常时让用户能再点一次（CodeRabbit
+        // Major 指出原版 fetch fail 仅 console.warn，用户看着空 UI 不知道发生
+        // 啥）。立即清 prompt 防连点；fail catch 里恢复。
+        var rollbackPrompt = prompt;
         state.choicePrompt = null;
         renderWindow();
 
@@ -1439,12 +1442,21 @@
             // accept 路径直接 window.open；dedupe 让后续 ws push 同 session 不重开
             launchMiniGameInternal({
                 sessionId: sessionId,
-                gameType: data.game_type || prompt.gameType || '',
+                gameType: data.game_type || rollbackPrompt.gameType || '',
                 url: data.game_url,
                 source: 'button'
             });
         }).catch(function (err) {
             console.warn('[MiniGameInvite] respond endpoint failed:', err);
+            // 网络/服务异常 → 回滚 prompt 让用户能再试。但只在当前 prompt 仍是
+            // null（即用户没在 fetch 期间触发新 prompt）且会话仍未被 launch 过的
+            // 情况下回滚——否则强复活旧 UI 可能撞新邀请。
+            if (state.choicePrompt === null
+                    && sessionId
+                    && !state._launchedMiniGameSessionIds[sessionId]) {
+                state.choicePrompt = rollbackPrompt;
+                renderWindow();
+            }
         });
     }
 
@@ -1455,27 +1467,63 @@
         // 已经为该 session 开过游戏了 → 忽略 stale options（罕见：邀请 push 比
         // 用户键盘/按钮路径慢，但为了对偶仍 guard 一下）
         if (state._launchedMiniGameSessionIds[sessionId]) return;
-        var options = Array.isArray(payload.options) ? payload.options : [];
-        if (!options.length) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        // map → filter，再 recheck 长度——后端数据异常导致全部 filter 掉时不
+        // 渲染空按钮 prompt（CodeRabbit Minor 指出原版只检 raw 长度漏了这条）。
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[MiniGameInvite] all options filtered out, skipping render', payload);
+            return;
+        }
         state.choicePrompt = {
             source: 'mini_game_invite',
             sessionId: sessionId,
             gameType: String(payload.gameType || ''),
-            options: options.map(function (o) {
-                return {
-                    choice: String(o.choice || ''),
-                    label: String(o.label || '')
-                };
-            }).filter(function (o) { return o.choice && o.label; })
+            options: cleanedOptions
         };
         renderWindow();
+    }
+
+    function dismissChoicePromptIfMatches(sessionId) {
+        if (!sessionId) return;
+        if (state.choicePrompt
+                && state.choicePrompt.source === 'mini_game_invite'
+                && state.choicePrompt.sessionId === sessionId) {
+            state.choicePrompt = null;
+            renderWindow();
+        }
+    }
+
+    function handleMiniGameInviteResolved(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        // 任一 outcome（open_game / cooldown / suppress）都 dismiss 当前 prompt——
+        // 跨窗口一致性。即便本 page 不是触发方，也保持 UI 同步。
+        dismissChoicePromptIfMatches(sessionId);
+        // accept outcome 兼当 launch 信号 window.open；dedupe 由 launched session
+        // 集合保护，按钮 endpoint 路径同步推 WS 时不会双开（前者已在 launch set
+        // 注册）。
+        if (payload.action === 'open_game' && payload.url) {
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: String(payload.gameType || ''),
+                url: payload.url,
+                source: 'ws'
+            });
+        }
     }
 
     function launchMiniGameInternal(payload) {
         if (!payload || !payload.url) return;
         var sessionId = String(payload.sessionId || '');
-        // 同一 session 只 open 一次：endpoint 路径先 open 后，可能 backend 又 push
-        // mini_game_launch（keyword fallback 同时命中等情形）；不 dedupe 会双开窗口。
+        // 同一 session 只 open 一次：按钮 endpoint 直接 open 后，backend 还会 push
+        // mini_game_invite_resolved（cross-window 一致性广播）；不 dedupe 会双开。
         if (sessionId && state._launchedMiniGameSessionIds[sessionId]) return;
         if (sessionId) state._launchedMiniGameSessionIds[sessionId] = true;
         // window.open 在 Electron 模式下被主进程 setWindowOpenHandler 拦截开独立
@@ -2621,7 +2669,11 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
-        launchMiniGame: launchMiniGameInternal,
+        // unified resolved handler：accept 兼 launch / decline / suppress 都通过
+        // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
+        // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
+        // dismiss 一致性能 cover decline / later 路径。
+        handleMiniGameInviteResolved: handleMiniGameInviteResolved,
         isMounted: function () { return mounted; }
     };
 })();

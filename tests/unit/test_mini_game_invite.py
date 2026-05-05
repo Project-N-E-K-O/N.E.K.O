@@ -1031,6 +1031,101 @@ def test_maybe_apply_keyword_later_resets_state():
     assert state['suppressed_until'] is not None
 
 
+def test_keyword_matcher_no_false_positive_on_substring_words():
+    """codex P1：英文短词 'yes' / 'no' / 'okay' 必须 word-boundary 匹配，不能
+    被 'yesterday' / 'no idea' / 'book' 这种 substring 凑巧命中。"""
+    # 'yes' 不该命中 'yesterday'
+    assert sr._match_mini_game_invite_keyword('yesterday i talked to him') is None
+    # 'no' 不该命中 'no idea' —— '"no idea"' 的 'no' 是单独 token，应该命中 decline
+    # 让我们换个例子：'know' 含 'no' 子串，但 'no' 应该 word-boundary 不命中 'know'
+    assert sr._match_mini_game_invite_keyword('i know what you mean') is None
+    # 'sure' 是单独词时命中 accept
+    assert sr._match_mini_game_invite_keyword('sure thing') == 'accept'
+    # 'sure' 不应命中 'pressure' 这种含 substring 的（虽 'sure' 在 'pressure' 中）
+    assert sr._match_mini_game_invite_keyword('feeling pressure') is None
+
+
+@pytest.mark.asyncio
+async def test_button_endpoint_pushes_resolved_ws_for_all_actions(monkeypatch):
+    """codex P2：endpoint 处理 accept / decline / later 都必须 push
+    mini_game_invite_resolved WS event让所有 page 同步 dismiss prompt
+    UI（cross-window 一致性）。原版只对 accept push mini_game_launch，
+    decline / later 用户在另一窗口看着按钮挂着。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 30
+    state['responded_at'] = None
+    state['pending_session_id'] = 'btn-sess'
+    state['last_game_type'] = 'soccer'
+
+    # 模拟 mgr + websocket
+    mgr = MagicMock()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+
+    await sr._push_mini_game_invite_resolved(
+        mgr, session_id='btn-sess', action='cooldown',
+    )
+    mgr.websocket.send_json.assert_awaited_once()
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload['type'] == 'mini_game_invite_resolved'
+    assert payload['session_id'] == 'btn-sess'
+    assert payload['action'] == 'cooldown'
+    # cooldown 不带 game_url
+    assert 'game_url' not in payload
+
+
+@pytest.mark.asyncio
+async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
+    """accept outcome 的 resolved WS 同时带 game_url——前端按 action=='open_game'
+    + game_url 决定 window.open。单一 event 兼当 lifecycle dismiss + launch 信号。"""
+    mgr = MagicMock()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    fake_state = MagicMock()
+    fake_state.CONNECTED = fake_state
+    mgr.websocket.client_state = fake_state
+
+    await sr._push_mini_game_invite_resolved(
+        mgr,
+        session_id='accept-sess',
+        action='open_game',
+        game_url='/soccer_demo?lanlan_name=foo&session_id=accept-sess',
+        game_type='soccer',
+    )
+    payload = mgr.websocket.send_json.await_args.args[0]
+    assert payload['action'] == 'open_game'
+    assert payload['game_url'].startswith('/soccer_demo?')
+    assert payload['game_type'] == 'soccer'
+
+
+@pytest.mark.asyncio
+async def test_push_resolved_noop_without_session_id():
+    """空 session_id → no-op（防止误广播过期 invite）。"""
+    mgr = MagicMock()
+    mgr.websocket = MagicMock()
+    mgr.websocket.send_json = AsyncMock()
+    await sr._push_mini_game_invite_resolved(mgr, session_id='', action='cooldown')
+    mgr.websocket.send_json.assert_not_awaited()
+
+
+def test_advance_response_returns_outcome_for_caller_ws_push():
+    """advance_response 不再仅 mutate state，要 return result dict 让 caller
+    push WS（用户隐式 dismiss 也要 cross-window 通知）。"""
+    fixed_now = 1_700_020_000.0
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = fixed_now - 60
+    state['responded_at'] = None
+    state['pending_session_id'] = 'adv-sess'
+
+    result = sr._mini_game_invite_advance_response(LANLAN, fixed_now - 30)
+    assert result is not None
+    assert result['action'] == 'suppress'
+    assert result['session_id'] == 'adv-sess'
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 邀请投递推 WS message + session_id 流转
 # ─────────────────────────────────────────────────────────────────────────────

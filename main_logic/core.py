@@ -5054,25 +5054,30 @@ class LLMSessionManager:
                             f"matcher hook failed: {_kw_err}",
                         )
                         _kw_outcome = None
-                    if _kw_outcome and _kw_outcome.get('action') == 'open_game':
+                    # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
+                    # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
+                    # 不让按钮挂着——codex P2 指出，原版只对 accept 推，
+                    # decline/later keyword 命中后前端 prompt 不消失，用户后续点
+                    # 按钮会被 endpoint 当 expired，state 早变了。
+                    if _kw_outcome and _kw_outcome.get('action'):
                         try:
                             if (self.websocket
                                     and hasattr(self.websocket, 'send_json')):
                                 ws_state = getattr(self.websocket, 'client_state', None)
                                 if ws_state is None or ws_state == ws_state.CONNECTED:
-                                    # 必须带 session_id：前端 _launchedMiniGameSessionIds
-                                    # dedupe 跨路径（按钮 endpoint / keyword WS）共享键，
-                                    # 缺 id 会让两路同时触发时双开窗口（codex P2 指出）。
-                                    await self.websocket.send_json({
-                                        'type': 'mini_game_launch',
+                                    payload = {
+                                        'type': 'mini_game_invite_resolved',
                                         'session_id': _kw_outcome.get('session_id') or '',
-                                        'game_type': _kw_outcome.get('game_type'),
-                                        'game_url': _kw_outcome.get('game_url'),
-                                        'source': 'keyword',
-                                    })
+                                        'action': _kw_outcome['action'],
+                                    }
+                                    if _kw_outcome.get('game_url'):
+                                        payload['game_url'] = _kw_outcome['game_url']
+                                    if _kw_outcome.get('game_type'):
+                                        payload['game_type'] = _kw_outcome['game_type']
+                                    await self.websocket.send_json(payload)
                         except Exception as _push_err:
                             logger.warning(
-                                f"[{self.lanlan_name}] mini-game launch "
+                                f"[{self.lanlan_name}] mini_game_invite_resolved "
                                 f"WS push failed: {_push_err}",
                             )
 
