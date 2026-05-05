@@ -1284,6 +1284,50 @@
             }
         });
 
+        // Bootstrap reconciliation：edge-triggered 的 game_window_state_change WS
+        // 事件只在 activate / finalize 推送，订阅者初次加载时若 route 已经在
+        // active 状态会听不到历史 opened（chat.html 是后开起来的窗口，可能
+        // game 已经先跑起来了）。init 路径主动查 /api/game/route/active，
+        // active 就自己 dispatch opened 让 UI 对齐。codex P1。
+        // closed 不需要 sync——初始 _gameWindowActive=false / snap=null 就是
+        // idle 状态，已对齐。
+        // WS reconnect 后 missing closed 的还原是更复杂的 case（需要订阅
+        // reconnect 事件 + 主动检查），本 PR 暂不覆盖。
+        (function syncGameWindowStateOnInit() {
+            var lan = '';
+            try {
+                if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                    lan = window.appState.lanlan_name;
+                }
+                if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                    lan = window.lanlan_config.lanlan_name;
+                }
+            } catch (_) {}
+            if (!lan) {
+                // lanlan_name 还没解析出来 → 100ms 后重试一次（chat.html 通常
+                // 在 appState 已就绪后才挂这个 IIFE，但 storage barrier 等可能
+                // 让 appState 滞后，给一次 retry 兜底）
+                setTimeout(syncGameWindowStateOnInit, 100);
+                return;
+            }
+            fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
+                .then(function(data) {
+                    if (!data || !data.active) return;
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                            detail: {
+                                action: 'opened',
+                                lanlanName: data.lanlan_name || lan,
+                                gameType: data.game_type || '',
+                                sessionId: data.session_id || ''
+                            }
+                        }));
+                    } catch (_) {}
+                })
+                .catch(function() { /* 静默 —— bootstrap 失败不影响普通态 UI */ });
+        })();
+
         // ===================== 边界检测与回弹 =====================
         var _bounceAnim = null;
         var _bouncing = false;

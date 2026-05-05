@@ -4389,6 +4389,31 @@ async def game_route_state(game_type: str, lanlan_name: str = ""):
     return {"ok": True, "state": _public_route_state(state)}
 
 
+@router.get("/route/active")
+async def game_route_any_active(lanlan_name: str = ""):
+    """Bootstrap reconciliation endpoint：返回当前 lanlan_name 是否有任意活跃
+    game_route，给 chat.html / pet 等 game_window_state_change 事件订阅者用。
+
+    场景：edge-triggered 的 game_window_state_change WS 事件只在 activate /
+    finalize 那一瞬间推；订阅者初次加载（或 WS reconnect）时若 route 已经在
+    active，听不到历史 opened，UI 永远停在普通态。订阅者在 init 路径调本
+    endpoint，发现 active 就自己 dispatch 一次 opened DOM 事件，UI 与后端
+    state 对齐。codex P1。
+
+    单 GET、参数仅 lanlan_name、无副作用——不需要 CSRF 防护。"""
+    resolved = _resolve_lanlan_name(lanlan_name)
+    state = _get_active_game_route_state(resolved) if resolved else None
+    if state is None:
+        return {"ok": True, "active": False}
+    return {
+        "ok": True,
+        "active": True,
+        "game_type": str(state.get("game_type") or ""),
+        "session_id": str(state.get("session_id") or ""),
+        "lanlan_name": str(state.get("lanlan_name") or ""),
+    }
+
+
 @router.post("/{game_type}/route/drain")
 async def game_route_drain(game_type: str, request: Request):
     """Drain backend outputs caused by hijacked main-window input for the game page."""
