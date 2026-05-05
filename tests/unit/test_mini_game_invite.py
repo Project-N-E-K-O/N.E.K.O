@@ -27,13 +27,19 @@ LANLAN = "test_lanlan"
 MASTER = "小明"
 
 
-def _make_snapshot(state="casual_browsing", propensity="open", seconds_since_user_msg=None):
+def _make_snapshot(
+    state="casual_browsing",
+    propensity="open",
+    seconds_since_user_msg=None,
+    unfinished_thread=None,
+):
     """构造一个 ActivitySnapshot duck-typed 替身——只用到 .state /
-    .propensity / .seconds_since_user_msg 三个字段。"""
+    .propensity / .seconds_since_user_msg / .unfinished_thread 四个字段。"""
     return types.SimpleNamespace(
         state=state,
         propensity=propensity,
         seconds_since_user_msg=seconds_since_user_msg,
+        unfinished_thread=unfinished_thread,
     )
 
 
@@ -296,6 +302,24 @@ async def test_maybe_deliver_returns_none_when_away(monkeypatch):
     out = await sr._maybe_deliver_mini_game_invite(
         lanlan_name=LANLAN, mgr=_make_mgr(),
         activity_snapshot=_make_snapshot(state='away', propensity='open'),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_deliver_returns_none_when_unfinished_thread_pending(monkeypatch):
+    """AI 刚抛了问题用户还没接 → 跟进 thread 优先于 mini-game 邀请。
+    与 skip_probability / restricted_screen_only 对 unfinished_thread 的优先级
+    约定对齐——promised follow-up 永远不让外部 source / 邀请抢走。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    fake_thread = types.SimpleNamespace(
+        text='你今天准备几点出发?', age_seconds=60.0,
+        follow_up_count=0, max_follow_ups=2,
+    )
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(unfinished_thread=fake_thread),
         invite_lang='zh', master_name=MASTER,
     )
     assert out is None

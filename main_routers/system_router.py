@@ -2106,6 +2106,9 @@ async def _maybe_deliver_mini_game_invite(
       - activity_snapshot is None（隐私模式 / tracker 不可用——保守不发）
       - propensity == 'restricted_screen_only'（focused_work / non-casual gaming）
       - state == 'away'（用户离场，邀请没人接）
+      - activity_snapshot.unfinished_thread is not None（AI 刚抛了问题用户
+        还没接，跟进 thread 优先于换话题；与 skip_probability /
+        restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
       - _mini_game_invite_in_cooldown
       - random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
 
@@ -2121,6 +2124,11 @@ async def _maybe_deliver_mini_game_invite(
     if propensity == 'restricted_screen_only':
         return None
     if state_label == 'away':
+        return None
+    # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
+    # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
+    # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
+    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
         return None
     if _mini_game_invite_in_cooldown(lanlan_name):
         return None
