@@ -2,6 +2,7 @@
     "common": {
         "load": "Cargar",
         "minimize": "Minimizar",
+        "maximize": "Maximizar",
         "expand": "Expandir",
         "close": "Cerca",
         "save": "Guardar",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AGX",
         "toneMappingNeutral": "Neutro",
         "loadFailed": "Error de carga"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Modelo predeterminado restaurado",
+        "resetToDefaultFailed": "No se pudo restaurar el modelo predeterminado"
     },
     "autostartPrompt": {
         "title": "¿Quieres que N.E.K.O se lance al inicio?",
@@ -1103,6 +1108,7 @@
         "noMotion": "Sin Movimiento",
         "noExpression": "Sin Expresión",
         "noMotionFiles": "Sin archivos de movimiento",
+        "noExpressionFiles": "No hay archivos de expresión",
         "touchAnim": {
             "title": "Toque Configuración de animación",
             "selectMotion": "Vincular movimiento",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "Error al actualizar el autor: {{error}}",
         "saveMasterSuccess": "Perfil de maestro guardado correctamente",
         "editCardFace": "Editar cara de la tarjeta",
+        "cardFaceModelSettings": "Ajustes del modelo de tarjeta",
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "No se pudo cargar la lista Live2D:",
         "getLanlanNameFailed": "No se pudo obtener nombre_lanlan:",
         "updateParameterEditorLinkFailed": "No se pudo actualizar el enlace del editor de parámetros:",
+        "editCardFaceAfterModelSaveTitle": "Editar cara de la tarjeta",
+        "editCardFaceAfterModelSaveMessage": "La configuración del modelo se ha guardado. ¿Quieres editar la cara de la tarjeta ahora?",
+        "editCardFaceNow": "Editar cara",
+        "createDefaultCardFace": "Generar cara predeterminada",
         "invalidVRMPathDetected": "[Administrador de modelos] Se detectó una ruta de modelo VRM no válida y se intentó realizar una reparación automática:",
         "saveModelSettingsFailed": "No se pudo guardar la configuración del modelo:",
         "vrmCleanupWarning": "[Model Manager] Advertencia durante la limpieza de VRM:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "La ventana emergente fue bloqueada. Permita las ventanas emergentes e inténtelo de nuevo.",
         "saveCardFace": "Guardar cara de la tarjeta",
         "savingCardFace": "Guardando...",
+        "autoSavingDefaultCardFace": "Generando cara predeterminada...",
+        "autoSaveDefaultCardFaceFailed": "No se pudo generar la cara predeterminada",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
         "saveCardFaceFailed": "Error al guardar: {{error}}",
         "saveCardFacePartialSuccess": "PNG guardado, pero la escritura de metadatos falló: {{error}}",

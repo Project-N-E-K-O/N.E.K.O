@@ -2,6 +2,7 @@
     "common": {
         "load": "読み込み",
         "minimize": "最小化",
+        "maximize": "最大化",
         "expand": "展開",
         "close": "閉じる",
         "save": "保存",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "読み込みに失敗しました"
+    },
+    "model": {
+        "resetToDefaultSuccess": "既定のモデルに戻しました",
+        "resetToDefaultFailed": "既定のモデルに戻せませんでした"
     },
     "autostartPrompt": {
         "title": "N.E.K.O を起動時に自動起動しますか？",
@@ -1103,6 +1108,7 @@
         "noMotion": "モーションなし",
         "noExpression": "表情なし",
         "noMotionFiles": "モーションファイルなし",
+        "noExpressionFiles": "表情ファイルがありません",
         "touchAnim": {
             "title": "タッチアニメ設定",
             "selectMotion": "モーション割り当て",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
         "saveMasterSuccess": "マスタープロフィールを保存しました",
         "editCardFace": "カードフェイスを編集",
+        "cardFaceModelSettings": "カードモデル設定",
         "cardMakerPopupBlocked": "カード作成ページを自動的に開けませんでした。ブラウザのポップアップを許可して再試行するか、カードエリアをクリックして手動で開いてください。"
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "Live2D リストの読み込みに失敗しました:",
         "getLanlanNameFailed": "lanlan_name の取得に失敗しました:",
         "updateParameterEditorLinkFailed": "パラメータエディタリンクの更新に失敗しました:",
+        "editCardFaceAfterModelSaveTitle": "カードフェイスを編集",
+        "editCardFaceAfterModelSaveMessage": "モデル設定を保存しました。今すぐカードフェイスを編集しますか？",
+        "editCardFaceNow": "カードフェイスを編集",
+        "createDefaultCardFace": "既定カードを生成",
         "invalidVRMPathDetected": "[Model Manager] 無効な VRM モデルパスが検出されました。自動修正を試みています:",
         "saveModelSettingsFailed": "モデル設定の保存に失敗しました:",
         "vrmCleanupWarning": "[Model Manager] VRM クリーンアップ中に警告が発生しました:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "ポップアップがブロックされました。ポップアップを許可してから再試行してください。",
         "saveCardFace": "カードフェイスを保存",
         "savingCardFace": "保存中...",
+        "autoSavingDefaultCardFace": "既定のカードフェイスを生成中...",
+        "autoSaveDefaultCardFaceFailed": "既定のカードフェイスを生成できませんでした",
         "saveCardFaceSuccess": "保存しました！",
         "saveCardFaceFailed": "保存に失敗しました: {{error}}",
         "saveCardFacePartialSuccess": "PNGは保存されましたが、メタデータの書き込みに失敗しました: {{error}}",

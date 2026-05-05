@@ -2,6 +2,7 @@
     "common": {
         "load": "Load",
         "minimize": "Minimize",
+        "maximize": "Maximize",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "Load failed"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Restored default model",
+        "resetToDefaultFailed": "Failed to restore default model"
     },
     "autostartPrompt": {
         "title": "Want N.E.K.O to launch at startup?",
@@ -1103,6 +1108,7 @@
         "noMotion": "No Motion",
         "noExpression": "No Expression",
         "noMotionFiles": "No motion files",
+        "noExpressionFiles": "No expression files",
         "touchAnim": {
             "title": "Touch Anim Config",
             "selectMotion": "Bind Motion",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
         "editCardFace": "Edit Card Face",
+        "cardFaceModelSettings": "Card Model Settings",
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "Failed to load Live2D list:",
         "getLanlanNameFailed": "Failed to get lanlan_name:",
         "updateParameterEditorLinkFailed": "Failed to update parameter editor link:",
+        "editCardFaceAfterModelSaveTitle": "Edit card face",
+        "editCardFaceAfterModelSaveMessage": "Model settings have been saved. Edit the card face now?",
+        "editCardFaceNow": "Edit card face",
+        "createDefaultCardFace": "Generate default card face",
         "invalidVRMPathDetected": "[Model Manager] Detected invalid VRM model path, attempting auto-fix:",
         "saveModelSettingsFailed": "Failed to save model settings:",
         "vrmCleanupWarning": "[Model Manager] Warning during VRM cleanup:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "Popup was blocked. Please allow popups and try again.",
         "saveCardFace": "Save Card Face",
         "savingCardFace": "Saving...",
+        "autoSavingDefaultCardFace": "Generating default card face...",
+        "autoSaveDefaultCardFaceFailed": "Failed to generate default card face",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
         "saveCardFacePartialSuccess": "PNG saved, but metadata write failed: {{error}}",

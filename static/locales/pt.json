@@ -2,6 +2,7 @@
     "common": {
         "load": "Carregar",
         "minimize": "Minimizar",
+        "maximize": "Maximizar",
         "expand": "Expandir",
         "close": "Fechar",
         "save": "Salvar",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutro",
         "loadFailed": "Falha no carregamento"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Modelo padrão restaurado",
+        "resetToDefaultFailed": "Falha ao restaurar o modelo padrão"
     },
     "autostartPrompt": {
         "title": "Quer que o N.E.K.O seja lançado na inicialização?",
@@ -1103,6 +1108,7 @@
         "noMotion": "Sem Movimento",
         "noExpression": "Sem Expressão",
         "noMotionFiles": "Nenhum arquivo de movimento",
+        "noExpressionFiles": "Nenhum arquivo de expressão",
         "touchAnim": {
             "title": "Toque em Configuração do Anim",
             "selectMotion": "Vincular movimento",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
         "saveMasterSuccess": "Perfil do mestre salvo com sucesso",
         "editCardFace": "Editar rosto do cartão",
+        "cardFaceModelSettings": "Configurações do modelo do cartão",
         "cardMakerPopupBlocked": "A página do criador de cartões não pôde ser aberta automaticamente. Permita pop-ups e tente novamente, ou clique na área do cartão para abri-la manualmente."
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "Falha ao carregar a lista Live2D:",
         "getLanlanNameFailed": "Falha ao obter lanlan_name:",
         "updateParameterEditorLinkFailed": "Falha ao atualizar o link do editor de parâmetros:",
+        "editCardFaceAfterModelSaveTitle": "Editar rosto do cartão",
+        "editCardFaceAfterModelSaveMessage": "As configurações do modelo foram salvas. Editar o rosto do cartão agora?",
+        "editCardFaceNow": "Editar rosto",
+        "createDefaultCardFace": "Gerar rosto padrão",
         "invalidVRMPathDetected": "[Model Manager] Detectado caminho de modelo VRM inválido, tentando correção automática:",
         "saveModelSettingsFailed": "Falha ao salvar as configurações do modelo:",
         "vrmCleanupWarning": "[Model Manager] Aviso durante a limpeza do VRM:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente.",
         "saveCardFace": "Salvar rosto do cartão",
         "savingCardFace": "Salvando...",
+        "autoSavingDefaultCardFace": "Gerando rosto padrão do cartão...",
+        "autoSaveDefaultCardFaceFailed": "Falha ao gerar o rosto padrão do cartão",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: {{error}}",
         "saveCardFacePartialSuccess": "PNG salvo, mas a escrita de metadados falhou: {{error}}",

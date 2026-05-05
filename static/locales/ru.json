@@ -2,6 +2,7 @@
     "common": {
         "load": "Загрузить",
         "minimize": "Свернуть",
+        "maximize": "Развернуть",
         "expand": "Развернуть",
         "close": "Закрыть",
         "save": "Сохранить",
@@ -44,6 +45,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Нейтральная",
         "loadFailed": "Ошибка загрузки"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Модель по умолчанию восстановлена",
+        "resetToDefaultFailed": "Не удалось восстановить модель по умолчанию"
     },
     "autostartPrompt": {
         "title": "Включить автозапуск N.E.K.O. при входе в систему?",
@@ -1103,6 +1108,7 @@
         "noMotion": "Без анимации",
         "noExpression": "Без выражения",
         "noMotionFiles": "Нет файлов анимации",
+        "noExpressionFiles": "Нет файлов выражений",
         "touchAnim": {
             "title": "Настройка касаний",
             "selectMotion": "Привязать анимацию",
@@ -1891,6 +1897,7 @@
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
         "saveMasterSuccess": "Профиль хозяина сохранён",
         "editCardFace": "Редактировать обложку",
+        "cardFaceModelSettings": "Настройки модели карточки",
         "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
     },
     "app": {
@@ -2544,6 +2551,10 @@
         "loadLive2DListFailed": "Не удалось загрузить список Live2D:",
         "getLanlanNameFailed": "Не удалось получить lanlan_name:",
         "updateParameterEditorLinkFailed": "Не удалось обновить ссылку редактора параметров:",
+        "editCardFaceAfterModelSaveTitle": "Редактировать обложку",
+        "editCardFaceAfterModelSaveMessage": "Настройки модели сохранены. Редактировать обложку сейчас?",
+        "editCardFaceNow": "Редактировать обложку",
+        "createDefaultCardFace": "Создать обложку по умолчанию",
         "invalidVRMPathDetected": "[Model Manager] Обнаружен недействительный путь к VRM-модели, попытка автоматического исправления:",
         "saveModelSettingsFailed": "Не удалось сохранить настройки модели:",
         "vrmCleanupWarning": "[Model Manager] Предупреждение при очистке VRM:",
@@ -3670,6 +3681,8 @@
         "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку.",
         "saveCardFace": "Сохранить обложку",
         "savingCardFace": "Сохранение...",
+        "autoSavingDefaultCardFace": "Создание обложки по умолчанию...",
+        "autoSaveDefaultCardFaceFailed": "Не удалось создать обложку по умолчанию",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
         "saveCardFacePartialSuccess": "PNG сохранён, но запись метаданных не удалась: {{error}}",

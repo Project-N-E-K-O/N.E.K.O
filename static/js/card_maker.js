@@ -62,6 +62,8 @@
     // ====== maker 模式检测 ======
     const _urlParams = new URLSearchParams(window.location.search);
     const isMakerMode = _urlParams.get('mode') === 'maker';
+    const autoSaveDefaultCardFace = _urlParams.get('auto_save_default') === '1';
+    const closeAfterAutoSave = _urlParams.get('close_on_save') === '1';
 
     // ====== 初始化 ======
     document.addEventListener('DOMContentLoaded', async () => {
@@ -97,6 +99,9 @@
         const name = params.get('name') || params.get('lanlan_name');
         if (name) {
             await onCharacterSelected(name);
+            if (autoSaveDefaultCardFace) {
+                await doAutoSaveDefaultCardFace();
+            }
         }
     });
 
@@ -123,7 +128,9 @@
         resetBtn.addEventListener('click', resetComposition);
         refreshBtn.addEventListener('click', () => refreshPreview());
         exportFullBtn.addEventListener('click', () => {
-            if (isMakerMode) { doSaveCardFace(); }
+            if (isMakerMode) {
+                doSaveCardFace().catch(() => {});
+            }
             else { doExport('full'); }
         });
         backBtn.addEventListener('click', () => {
@@ -675,12 +682,12 @@
     }
 
     // ====== 保存卡面（maker 模式专用） ======
-    async function doSaveCardFace() {
+    async function doSaveCardFace(options = {}) {
         if (!currentCharaName) return;
 
         try {
             exportFullBtn.disabled = true;
-            exportFullBtn.textContent = t('cardExport.savingCardFace', '保存中...');
+            exportFullBtn.textContent = options.statusText || t('cardExport.savingCardFace', '保存中...');
 
             const cardBlob = await renderFullCard();
             if (!cardBlob) {
@@ -704,42 +711,88 @@
             if (respJson.partial_success) {
                 exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
                 exportFullBtn.disabled = false;
+                notifyCardFaceUpdated(currentCharaName);
                 return;
             }
 
-            // 通知父窗口更新卡面
-            if (window.opener) {
-                try {
-                    window.opener.postMessage({
-                        type: 'card-face-updated',
-                        name: currentCharaName,
-                        timestamp: Date.now()
-                    }, window.location.origin);
-                } catch (_) {}
-
-                // 额外触发父窗口刷新列表，确保跨窗口场景下也能立刻看到新卡面
-                try {
-                    const loadCharacterCards = window.opener.loadCharacterCards;
-                    if (typeof loadCharacterCards === 'function') {
-                        const refreshResult = loadCharacterCards.call(window.opener);
-                        if (refreshResult && typeof refreshResult.catch === 'function') {
-                            refreshResult.catch(() => {});
-                        }
-                    }
-                } catch (_) {}
-            }
+            notifyCardFaceUpdated(currentCharaName);
 
             exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');
+            if (options.closeAfterSave) {
+                setTimeout(() => window.close(), 300);
+                return;
+            }
             setTimeout(() => {
                 exportFullBtn.disabled = false;
                 exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             }, 1500);
         } catch (e) {
             console.error('[CardMaker] 保存卡面失败:', e);
-            alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
+            if (!options.silent) {
+                alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
+            }
             exportFullBtn.disabled = false;
             exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
+            throw e;
         }
+    }
+
+    async function doAutoSaveDefaultCardFace() {
+        try {
+            resetComposition();
+            clearAllStickers();
+            exportFullBtn.disabled = true;
+            exportFullBtn.textContent = t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
+            await waitForCondition(() => isModelLoaded, 10000, '模型加载');
+            await new Promise(resolve => setTimeout(resolve, 300));
+            await doSaveCardFace({
+                closeAfterSave: closeAfterAutoSave,
+                silent: true,
+                statusText: t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...')
+            });
+        } catch (e) {
+            console.error('[CardMaker] 自动生成默认卡面失败:', e);
+            exportFullBtn.disabled = false;
+            exportFullBtn.textContent = t('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败');
+        }
+    }
+
+    function notifyCardFaceUpdated(name) {
+        const message = {
+            type: 'card-face-updated',
+            name,
+            timestamp: Date.now()
+        };
+
+        if (window.opener) {
+            try {
+                window.opener.postMessage(message, window.location.origin);
+            } catch (_) {}
+            try {
+                window.opener.opener?.postMessage(message, window.location.origin);
+            } catch (_) {}
+
+            try {
+                const loadCharacterCards = window.opener.loadCharacterCards;
+                if (typeof loadCharacterCards === 'function') {
+                    const refreshResult = loadCharacterCards.call(window.opener);
+                    if (refreshResult && typeof refreshResult.catch === 'function') {
+                        refreshResult.catch(() => {});
+                    }
+                }
+            } catch (_) {}
+        }
+
+        try {
+            const channel = new BroadcastChannel('neko-card-face-events');
+            channel.postMessage(message);
+            channel.close();
+        } catch (_) {}
+
+        try {
+            localStorage.setItem('neko_card_face_event', JSON.stringify(message));
+            localStorage.removeItem('neko_card_face_event');
+        } catch (_) {}
     }
 
     /**
