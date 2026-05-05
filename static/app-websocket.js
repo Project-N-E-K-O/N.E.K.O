@@ -581,6 +581,44 @@
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
+
+            // ── game-window-state 重连兜底（codex P2）──
+            // game_window_state_change 是 edge-triggered WS 事件——只在 activate
+            // / finalize 那一瞬推。WS 在 game 期间断开 + 期间 close 事件丢失 →
+            // _gameWindowActive 卡在 true，UI 永远停在收缩态。onopen 同时覆盖
+            // 首次连接和重连，主动查 /api/game/route/active 拿当前权威状态，
+            // dispatch 对应 CustomEvent 让既有 listener 走正常 minimize / restore
+            // 路径。idempotent：active=true + 已 minimize → _gameMinimizeForGame
+            // 早返回；active=false + 无 snap → _gameRestoreAfterGame 早返回。
+            (function syncGameWindowStateOnWsConnect() {
+                var lan = '';
+                try {
+                    if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                        lan = window.appState.lanlan_name;
+                    }
+                    if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                        lan = window.lanlan_config.lanlan_name;
+                    }
+                } catch (_) {}
+                if (!lan) return; // greeting 流水线还没解析角色 → 跳过本次，下次 onopen 再来
+                fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                    .then(function (resp) { return resp && resp.ok ? resp.json() : null; })
+                    .then(function (data) {
+                        if (!data) return;
+                        var action = data.active ? 'opened' : 'closed';
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                                detail: {
+                                    action: action,
+                                    lanlanName: data.lanlan_name || lan,
+                                    gameType: data.game_type || '',
+                                    sessionId: data.session_id || ''
+                                }
+                            }));
+                        } catch (_) {}
+                    })
+                    .catch(function () {});
+            })();
         };
 
         // ---- onmessage ----
