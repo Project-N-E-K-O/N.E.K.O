@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "おすすめの音楽を提案しながら話しかける",
             "proactiveMemeChat": "ミーム共有",
             "proactiveMemeChatTooltip": "面白いミームを共有して話しかける",
+            "proactiveMiniGameInviteChat": "ミニゲームへのお誘い",
+            "proactiveMiniGameInviteChatTooltip": "条件が整ったときミニゲームに誘って話しかける",
             "agentMaster": "ネコクローマスタースイッチ",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
@@ -3841,14 +3843,22 @@
         "exitGame": {
             "button": "ゲームを終了",
             "ending": "ラウンドを終了中…",
-            "ended": "ゲーム終了、戻ります…"
+            "ended": "ゲーム終了、戻ります…",
+            "endingDefault": "本試合を終了中…",
+            "endedDefault": "ゲーム終了。ページを閉じてください。再度プレイするにはページを開き直してください。"
         },
         "startScreen": {
             "readyToStart": "準備完了 — クリックで開始",
-            "ready": "準備完了"
+            "ready": "準備完了",
+            "startButton": "開始"
+        },
+        "hint": {
+            "controls": "マウス = プレイヤー誘導 · 左クリック長押し = チャージ、離す = シュート（ボールから 90px 以内で発動）· R = リセット",
+            "aiMood": "1-6 = AI の気分（平静/嬉しい/怒り/リラックス/悲しい/驚き）· ゴール後に難易度が自動で上がります"
         },
         "loading": {
             "beginStartDefault": "開幕コンテキストを分析中…",
+            "initializingMiniGame": "サッカーミニゲームを初期化中…",
             "assetsDone": "モデルの読み込みが完了しました",
             "assetsFailed": "モデルの初期化に失敗しました。ゲームを続行します",
             "routeDone": "開幕コンテキストの準備が完了しました",
@@ -3873,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "離して送信",
             "idle": "デバッグ音声"
+        },
+        "memoryOption": {
+            "label": "今回の試合内容を記憶に保存（デフォルトはオフ）",
+            "hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
         }
     }
 }

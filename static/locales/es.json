@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "Utilice música recomendada para un chat proactivo",
             "proactiveMemeChat": "Compartir memes",
             "proactiveMemeChatTooltip": "Comparte memes divertidos para un chat proactivo",
+            "proactiveMiniGameInviteChat": "Invitaciones a minijuegos",
+            "proactiveMiniGameInviteChatTooltip": "Invitarte a un minijuego cuando se cumplan las condiciones",
             "agentMaster": "Interruptor maestro NekoClaw",
             "keyboardControl": "Control de teclado/ratón",
             "userPlugin": "Complemento de usuario",
@@ -3841,14 +3843,22 @@
         "exitGame": {
             "button": "Salir del juego",
             "ending": "Finalizando la ronda…",
-            "ended": "Juego terminado, volviendo…"
+            "ended": "Juego terminado, volviendo…",
+            "endingDefault": "Terminando este partido…",
+            "endedDefault": "Partido terminado. Cierra esta página. Para volver a jugar, ábrela de nuevo."
         },
         "startScreen": {
             "readyToStart": "Listo — haz clic para empezar",
-            "ready": "Listo"
+            "ready": "Listo",
+            "startButton": "Iniciar"
+        },
+        "hint": {
+            "controls": "Ratón = guiar al jugador · Mantén clic izquierdo = cargar, suelta = disparo (se activa a ≤90px del balón) · R = reset",
+            "aiMood": "1-6 = humor de la IA (tranquila / feliz / enfadada / relajada / triste / sorprendida) · La dificultad sube tras cada gol"
         },
         "loading": {
             "beginStartDefault": "Analizando contexto de inicio…",
+            "initializingMiniGame": "Inicializando minijuego de fútbol…",
             "assetsDone": "Modelo cargado",
             "assetsFailed": "Error al inicializar el modelo, continuando",
             "routeDone": "Contexto de inicio listo",
@@ -3873,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "Suelta para enviar",
             "idle": "Voz de depuración"
+        },
+        "memoryOption": {
+            "label": "Guardar este partido en la memoria (desactivado por defecto)",
+            "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
     }
 }

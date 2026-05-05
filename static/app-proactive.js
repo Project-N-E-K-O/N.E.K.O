@@ -245,7 +245,8 @@
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-            S.proactiveMusicEnabled || S.proactiveMemeEnabled;
+            S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
+            S.proactiveMiniGameInviteEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -323,21 +324,24 @@
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
             return false;
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
             return S.proactiveVisionEnabled;
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
+            !S.proactiveMiniGameInviteEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -627,7 +631,10 @@
                     body: JSON.stringify({
                         lanlan_name: lanlanName,
                         enabled_modes: voiceModes,
-                        voice_mode: true
+                        voice_mode: true,
+                        // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
+                        // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                        mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                     })
                 });
                 requestSent = true;
@@ -688,21 +695,46 @@
                 availableModes.push('meme');
             }
 
-            // 如果没有选择任何搭话方式，跳过本次搭话
+            // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
+            // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
-                console.log('未选择任何搭话方式，跳过本次搭话');
-                return;
+                if (!S.proactiveMiniGameInviteEnabled) {
+                    console.log('未选择任何搭话方式，跳过本次搭话');
+                    return;
+                }
+                console.log('availableModes 为空但 mini-game 邀请开着，让请求过去走短路通道');
             }
 
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
+            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
+            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
+            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
+            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
+            // ``mgr.user_language`` / 全局缓存。
+            var i18nLanguage = '';
+            try {
+                if (window.i18next && typeof window.i18next.language === 'string') {
+                    i18nLanguage = window.i18next.language;
+                } else if (typeof localStorage !== 'undefined') {
+                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
+                }
+                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
+                    i18nLanguage = navigator.language;
+                }
+            } catch (_) { i18nLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null,
-                music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false
+                music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
+                // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
+                // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
+                i18n_language: i18nLanguage
             };
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval

@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
             "proactiveMemeChat": "表情包分享",
             "proactiveMemeChatTooltip": "使用有趣表情包進行搭話",
+            "proactiveMiniGameInviteChat": "小遊戲邀請",
+            "proactiveMiniGameInviteChatTooltip": "符合條件時邀請你一起玩小遊戲",
             "agentMaster": "貓爪總開關",
             "keyboardControl": "鍵鼠控製",
             "userPlugin": "用戶插件",
@@ -3841,14 +3843,22 @@
         "exitGame": {
             "button": "退出遊戲",
             "ending": "正在退出本局…",
-            "ended": "遊戲已結束，正在返回…"
+            "ended": "遊戲已結束，正在返回…",
+            "endingDefault": "正在結束本局…",
+            "endedDefault": "遊戲已結束，請關閉頁面。重新進入請重新打開頁面。"
         },
         "startScreen": {
             "readyToStart": "準備完成，點擊開始",
-            "ready": "準備完成"
+            "ready": "準備完成",
+            "startButton": "開始"
+        },
+        "hint": {
+            "controls": "滑鼠 = 引導玩家 · 按住左鍵 = 蓄力，鬆開 = 射門（離球 ≤90px 觸發）· R 復位",
+            "aiMood": "1-6 = AI 心情（平靜/開心/生氣/放鬆/悲傷/驚訝）· 進球後自動切換難度檔"
         },
         "loading": {
             "beginStartDefault": "分析開局上下文…",
+            "initializingMiniGame": "初始化足球小遊戲…",
             "assetsDone": "模型載入完成",
             "assetsFailed": "模型初始化失敗，繼續進入遊戲",
             "routeDone": "開局上下文準備完成",
@@ -3873,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "鬆開提交",
             "idle": "除錯語音"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不啟用）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
     }
 }

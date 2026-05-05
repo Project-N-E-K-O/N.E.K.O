@@ -23,6 +23,8 @@ deploy still works end-to-end.
 from __future__ import annotations
 
 import asyncio
+import base64
+
 import pytest
 
 from memory.embeddings import (
@@ -31,11 +33,13 @@ from memory.embeddings import (
     EmbeddingState,
     _coerce_dim,
     _embedding_text_sha256,
+    _encode_vector_fp16,
     _resolve_quantization,
     _select_model_dir,
     build_model_id,
     clear_embedding_fields,
     cosine_similarity,
+    decode_embedding,
     is_cached_embedding_valid,
     resolve_dim_for_ram,
     stamp_embedding_fields,
@@ -120,6 +124,79 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
         _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=False)
         == "int8"
     )
+
+
+def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
+    """Codex review PR #1147: ``parse_dim_from_model_id`` must anchor on
+    the trailing ``-<dim>d-<quant>`` segment that ``build_model_id``
+    emits, not the first ``-<n>d-`` it encounters.  If a profile name
+    itself contains a ``-Nd-`` segment (e.g. an upstream variant like
+    ``model-384d-v2``), a non-anchored parser would pick the profile
+    dim (384) instead of the runtime dim (256), and
+    ``is_cached_embedding_valid`` would reject every freshly stamped
+    vector forever.  Lock the contract here."""
+    from memory.embeddings import build_model_id, parse_dim_from_model_id
+
+    ambiguous_id = build_model_id("model-384d-v2", 256, "int8")
+    assert ambiguous_id == "model-384d-v2-256d-int8"
+    assert parse_dim_from_model_id(ambiguous_id) == 256
+    # Same with fp32 quant (the other valid suffix):
+    assert (
+        parse_dim_from_model_id(build_model_id("foo-128d-bar", 64, "fp32"))
+        == 64
+    )
+    # Unparseable / unknown shape returns None — caller falls back to
+    # whatever signal it can find without crashing.
+    assert parse_dim_from_model_id(None) is None
+    assert parse_dim_from_model_id("") is None
+    assert parse_dim_from_model_id("not-a-model-id") is None
+    # Trailing form without a recognised quant suffix → None (so a
+    # future quantization keyword opts out gracefully rather than
+    # silently mis-extracting).
+    assert parse_dim_from_model_id("local-text-retrieval-v1-256d-fp16") is None
+
+
+def test_decode_vector_fp16_rejects_corrupt_payloads():
+    """CodeRabbit review PR #1147: ``_decode_vector_fp16`` must reject
+    payloads with non-base64 suffix bytes, odd raw byte counts, and
+    non-finite values.
+
+    ``base64.b64decode(..., validate=False)`` (the previous default)
+    silently skips characters outside the alphabet, so an attacker /
+    bit-rot scenario that appends garbage would still decode to a
+    plausible-looking vector. An odd byte count means truncation
+    (fp16 is a 2-byte cell). NaN / ±Inf in any element would
+    propagate through every dot product — a single corrupt cache
+    row poisoning the entire recall score distribution."""
+    from memory.embeddings import _decode_vector_fp16, _encode_vector_fp16
+    import numpy as np
+
+    good = _encode_vector_fp16([0.1, 0.2, 0.3, 0.4])
+    # Sanity: the well-formed payload still decodes.
+    decoded = _decode_vector_fp16(good)
+    assert decoded is not None and decoded.size == 4
+
+    # Suffix garbage (! is not in the base64 alphabet) → reject.
+    assert _decode_vector_fp16(good + "!!!!") is None
+    assert _decode_vector_fp16("not base 64 at all") is None
+
+    # Odd-length raw buffer (truncation): emit 3 bytes and base64
+    # them — the decoder must refuse rather than reinterpret the
+    # last byte as a half-cell.
+    odd_b64 = base64.b64encode(b"\x01\x02\x03").decode("ascii")
+    assert _decode_vector_fp16(odd_b64) is None
+
+    # NaN element: hand-build a payload where one fp16 cell is NaN.
+    # Without the isfinite gate, the decoded array would carry NaN
+    # straight into downstream dot products.
+    nan_payload = np.array([0.1, np.nan, 0.3, 0.4], dtype=np.float16).tobytes()
+    nan_b64 = base64.b64encode(nan_payload).decode("ascii")
+    assert _decode_vector_fp16(nan_b64) is None
+
+    # +Inf element rejected too.
+    inf_payload = np.array([np.inf, 0.2, 0.3, 0.4], dtype=np.float16).tobytes()
+    inf_b64 = base64.b64encode(inf_payload).decode("ascii")
+    assert _decode_vector_fp16(inf_b64) is None
 
 
 def test_build_model_id_encodes_axes():
@@ -502,35 +579,128 @@ def test_infer_uses_last_token_pooling_and_matryoshka_truncation():
 
 
 def test_cosine_similarity_dot_product_for_unit_vectors():
-    """Service emits L2-normalized vectors → cosine = dot product."""
+    """Service emits L2-normalized vectors → cosine = dot product.
+    Accepts both legacy ``list[float]`` and the canonical base64
+    string form on either side, so fact-dedup and tests can pass in
+    raw fp32 vectors without round-tripping through stamp."""
     a = [1.0, 0.0, 0.0]
     b = [1.0, 0.0, 0.0]
     c = [0.0, 1.0, 0.0]
     assert cosine_similarity(a, b) == pytest.approx(1.0)
     assert cosine_similarity(a, c) == pytest.approx(0.0)
+    # Mixed: encoded string ↔ raw list must agree within fp16 cast
+    # noise (essentially lossless at L2-normalized scale).
+    encoded_a = _encode_vector_fp16(a)
+    assert cosine_similarity(encoded_a, b) == pytest.approx(1.0, abs=1e-3)
+    assert cosine_similarity(encoded_a, _encode_vector_fp16(c)) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_cosine_similarity_safe_on_missing_or_mismatched_inputs():
     """Caller supplies vectors from arbitrary entries — None / empty /
-    dim mismatch must yield 0.0 rather than raising. Stale dim is the
-    likely real-world cause (entry from a previous model_id)."""
+    dim mismatch / corrupt base64 must yield 0.0 rather than raising.
+    Stale dim is the likely real-world cause (entry from a previous
+    model_id)."""
     assert cosine_similarity(None, [1.0]) == 0.0
     assert cosine_similarity([1.0], None) == 0.0
     assert cosine_similarity([], [1.0]) == 0.0
     assert cosine_similarity([1.0, 0.0], [1.0]) == 0.0
+    # Empty / corrupt base64 both fall through to 0.0 instead of
+    # raising up into the retrieval / dedup loops.
+    assert cosine_similarity("", _encode_vector_fp16([1.0, 0.0])) == 0.0
+    assert cosine_similarity("not-base64!!!", _encode_vector_fp16([1.0, 0.0])) == 0.0
+
+
+def test_encode_vector_fp16_round_trip_within_tolerance():
+    """The base64+fp16 wire format must decode essentially losslessly
+    for L2-normalized vectors (per-axis magnitudes well under fp16's
+    dynamic range, so cast roundoff is the only error source).
+    Locks the format so a future encoder change doesn't silently
+    widen the cosine error past what callers tolerate."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed=0xDEADBEEF)
+    # L2-normalized fp32 vector, 256d — matches the default Matryoshka
+    # level on a 16+ GB machine.
+    vec = rng.standard_normal(256).astype(np.float32)
+    vec = vec / float(np.linalg.norm(vec))
+
+    encoded = _encode_vector_fp16(vec)
+    assert isinstance(encoded, str) and encoded
+    decoded = decode_embedding(encoded)
+    assert decoded is not None and decoded.shape == (256,)
+    # Per-dim error bounded by half an fp16 mantissa step at the
+    # element's magnitude. For values around 1/√256 ≈ 0.0625 the
+    # step is 2⁻¹⁴ ≈ 6e-5; cumulative cosine error after 256-dim
+    # sum is < 1e-3, far below LLM-rerank perceptibility.
+    assert np.max(np.abs(decoded - vec)) <= 1e-3
+    cos = float(np.dot(decoded, vec) / (
+        np.linalg.norm(decoded) * np.linalg.norm(vec)
+    ))
+    assert cos >= 0.9999
+
+
+def test_encode_vector_fp16_handles_zero_and_empty():
+    """Degenerate inputs — empty list, all-zero vector — must not crash
+    the stamp path. An upstream embed() should never return these, but
+    a defence is cheap and keeps the encoder total.
+
+    Empty input round-trips to None (the empty-payload string falls
+    through ``decode_embedding``'s "no embedding" gate, which is the
+    same fallback callers use for missing cache rows). All-zero is
+    a valid non-empty encoding and round-trips losslessly."""
+    import numpy as np
+    encoded_empty = _encode_vector_fp16([])
+    # Empty input → empty base64 string → treated as "no embedding"
+    # at the decode entry point. This is the contract the validity
+    # check relies on — no special "size==0" handling downstream.
+    assert decode_embedding(encoded_empty) is None
+
+    encoded_zero = _encode_vector_fp16([0.0] * 8)
+    decoded_zero = decode_embedding(encoded_zero)
+    assert decoded_zero is not None
+    assert np.allclose(decoded_zero, np.zeros(8, dtype=np.float32))
+
+
+def test_decode_embedding_accepts_legacy_list_and_numpy():
+    """The decode helper is the single entry point used by recall and
+    by cosine_similarity — it must accept all three live shapes:
+    canonical base64 string, legacy list[float], and an already-
+    decoded numpy array (so the matmul path can pass through values
+    it produced earlier in the same call)."""
+    import numpy as np
+
+    raw = [0.5, 0.5, 0.5, 0.5]
+    via_list = decode_embedding(raw)
+    assert via_list is not None
+    assert via_list.tolist() == pytest.approx(raw)
+
+    via_str = decode_embedding(_encode_vector_fp16(raw))
+    assert via_str is not None and via_str.shape == (4,)
+    # fp16 cast roundoff at magnitude 0.5 is ~2⁻¹², well under 1e-3.
+    assert via_str.tolist() == pytest.approx(raw, abs=1e-3)
+
+    via_np = decode_embedding(np.asarray(raw, dtype=np.float32))
+    assert via_np is not None
+    assert via_np.tolist() == pytest.approx(raw)
+
+    assert decode_embedding(None) is None
+    assert decode_embedding("") is None
+    assert decode_embedding([]) is None
 
 
 def test_is_cached_embedding_valid_full_match():
-    """Vector + sha + model_id all match → valid."""
+    """Vector + sha + model_id all match → valid.  Vector length must
+    match the dim segment of model_id (3 here) or the strengthened
+    validity check rejects it as a wrong-dim payload."""
     text = "主人喜欢猫"
     entry = {
         "text": text,
-        "embedding": [0.1, 0.2, 0.3],
+        "embedding": _encode_vector_fp16([0.1, 0.2, 0.3]),
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-3d-int8",
     }
     assert is_cached_embedding_valid(
-        entry, text, "local-text-retrieval-v1-128d-int8",
+        entry, text, "local-text-retrieval-v1-3d-int8",
     )
 
 
@@ -539,7 +709,7 @@ def test_is_cached_embedding_valid_text_mismatch():
     invalidate so the next sweep re-embeds the new text."""
     entry = {
         "text": "new",
-        "embedding": [0.1, 0.2],
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256("old"),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -554,7 +724,7 @@ def test_is_cached_embedding_valid_model_id_mismatch():
     text = "x"
     entry = {
         "text": text,
-        "embedding": [0.1, 0.2],
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -579,9 +749,65 @@ def test_is_cached_embedding_valid_missing_or_empty_embedding():
         "local-text-retrieval-v1-128d-int8",
     )
     assert not is_cached_embedding_valid(
-        {**base, "embedding": []},
+        {**base, "embedding": ""},
         text,
         "local-text-retrieval-v1-128d-int8",
+    )
+
+
+def test_is_cached_embedding_valid_corrupt_base64_invalidates():
+    """Codex review PR #1147 P1: a row whose ``embedding`` is a non-empty
+    string but doesn't actually decode must be treated as invalid so
+    the worker re-stamps it.  Without this, corrupt cache values stick
+    forever (typeof check passes, worker skips) while recall/dedup
+    silently treat them as missing — a permanent retrieval-quality
+    regression for affected entries."""
+    text = "x"
+    entry = {
+        "text": text,
+        "embedding": "this-is-not-valid-base64-!!!",
+        "embedding_text_sha256": _embedding_text_sha256(text),
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+    }
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
+    )
+
+
+def test_is_cached_embedding_valid_wrong_dim_payload_invalidates():
+    """A truncated or mis-quantized payload that decodes successfully
+    but to the wrong length must also invalidate. ``model_id`` encodes
+    dim by construction (build_model_id) so we can verify the decoded
+    length without re-running the model."""
+    text = "x"
+    # Encode at 4d but claim 128d via model_id — simulates a payload
+    # written under one config and read under another.
+    entry = {
+        "text": text,
+        "embedding": _encode_vector_fp16([0.1, 0.2, 0.3, 0.4]),
+        "embedding_text_sha256": _embedding_text_sha256(text),
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+    }
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
+    )
+
+
+def test_is_cached_embedding_valid_legacy_list_form_invalidates():
+    """Pre-quantization persisted shape is ``list[float]``. We treat
+    those as invalid so the warmup worker re-stamps them in the new
+    base64+int8 form on its next sweep — otherwise a mixed-shape
+    corpus would persist forever, and downstream code paths would
+    have to handle two on-disk schemas indefinitely."""
+    text = "x"
+    entry = {
+        "text": text,
+        "embedding": [0.1, 0.2, 0.3],
+        "embedding_text_sha256": _embedding_text_sha256(text),
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+    }
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
     )
 
 
@@ -592,7 +818,7 @@ def test_is_cached_embedding_valid_disabled_service_never_valid():
     text = "x"
     entry = {
         "text": text,
-        "embedding": [0.1, 0.2],
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -603,7 +829,7 @@ def test_clear_embedding_fields_in_place():
     """clear() wipes the whole triple — half-cleared state would look
     like a legacy entry on the next read and trigger an unwanted reload."""
     entry = {
-        "embedding": [0.1, 0.2],
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": "abc",
         "embedding_model_id": "x",
     }
@@ -615,7 +841,9 @@ def test_clear_embedding_fields_in_place():
 
 def test_stamp_embedding_fields_writes_full_triple():
     """stamp() must set vector + sha + model_id atomically (from the
-    callsite's POV) — partial writes break is_cached_embedding_valid."""
+    callsite's POV) — partial writes break is_cached_embedding_valid.
+    The on-disk vector form is base64 (canonical), and the helper
+    decodes back to the original values within fp16 cast tolerance."""
     entry: dict = {}
     stamp_embedding_fields(
         entry,
@@ -623,23 +851,30 @@ def test_stamp_embedding_fields_writes_full_triple():
         "hello",
         "local-text-retrieval-v1-128d-int8",
     )
-    assert entry["embedding"] == [0.1, 0.2, 0.3]
+    assert isinstance(entry["embedding"], str) and entry["embedding"]
+    decoded = decode_embedding(entry["embedding"])
+    assert decoded is not None and decoded.shape == (3,)
+    assert decoded.tolist() == pytest.approx([0.1, 0.2, 0.3], abs=1e-3)
     assert entry["embedding_text_sha256"] == _embedding_text_sha256("hello")
     assert (
         entry["embedding_model_id"]
         == "local-text-retrieval-v1-128d-int8"
     )
-    # Vector list is copied, not aliased — mutating the source after
-    # stamping must not corrupt the stored cache.
+    # Source isn't aliased through to disk — mutating after stamp must
+    # not corrupt the cache (the encode pass copies into a numpy buffer).
     src = [9.0, 9.0]
     stamp_embedding_fields(entry, src, "hello", "x")
     src.append(99.0)
-    assert entry["embedding"] == [9.0, 9.0]
+    decoded2 = decode_embedding(entry["embedding"])
+    assert decoded2 is not None and decoded2.shape == (2,)
 
 
 def test_stamp_then_check_round_trips():
     text = "round-trip text"
-    model_id = "local-text-retrieval-v1-256d-fp32"
+    # Vector dim and model_id's dim segment must agree under the
+    # strengthened validity check — use a 3d model_id to match the
+    # 3d test vector.
+    model_id = "local-text-retrieval-v1-3d-fp32"
     entry: dict = {"text": text}
     stamp_embedding_fields(entry, [1.0, 0.0, 0.0], text, model_id)
     assert is_cached_embedding_valid(entry, text, model_id)

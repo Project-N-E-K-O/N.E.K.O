@@ -2294,6 +2294,8 @@
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "proactiveMemeChat": "Meme Sharing",
             "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
+            "proactiveMiniGameInviteChat": "Mini-game Invites",
+            "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
@@ -3841,14 +3843,22 @@
         "exitGame": {
             "button": "Exit Game",
             "ending": "Ending the round…",
-            "ended": "Game ended, returning…"
+            "ended": "Game ended, returning…",
+            "endingDefault": "Ending this match…",
+            "endedDefault": "Game over. Please close this page. To play again, reopen it."
         },
         "startScreen": {
             "readyToStart": "Ready — click to start",
-            "ready": "Ready"
+            "ready": "Ready",
+            "startButton": "Start"
+        },
+        "hint": {
+            "controls": "Mouse = guide the player · Hold left click = charge, release = shoot (triggers within 90px of the ball) · R = reset",
+            "aiMood": "1-6 = AI mood (calm / happy / angry / relaxed / sad / surprised) · Difficulty steps up after each goal"
         },
         "loading": {
             "beginStartDefault": "Analyzing pregame context…",
+            "initializingMiniGame": "Initializing soccer mini-game…",
             "assetsDone": "Model loaded",
             "assetsFailed": "Model init failed, continuing",
             "routeDone": "Pregame context ready",
@@ -3873,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "Release to submit",
             "idle": "Debug voice"
+        },
+        "memoryOption": {
+            "label": "Save this match to memory (off by default)",
+            "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
     }
 }
