@@ -352,9 +352,16 @@ async def test_sweep_skips_entries_with_valid_cache():
 @pytest.mark.asyncio
 async def test_sweep_re_embeds_when_model_id_flipped():
     """Same text + valid sha but a different model_id ⇒ stale cache;
-    must re-embed under the new id. Mirrors the dim/quant flip case."""
+    must re-embed under the new id. Mirrors the dim/quant flip case.
+
+    The fake's vector_factory returns a 4-d vector by default, so the
+    new model_id must declare 4d as well — otherwise the worker would
+    write a 4-d payload under a model_id claiming a different dim and
+    is_cached_embedding_valid would reject it on the very next read,
+    pinning the worker into a re-embed loop. CodeRabbit review
+    PR #1147."""
     service = _FakeService(
-        available=True, model_id="fake-256d-fp32",
+        available=True, model_id="fake-4d-fp32",
     )
     persona = _PersonaStub()
     text = "stable text"
@@ -378,7 +385,12 @@ async def test_sweep_re_embeds_when_model_id_flipped():
     processed = await w._sweep_once()
     assert processed == 1
     entry = persona.store["小天"]["master"]["facts"][0]
-    assert entry["embedding_model_id"] == "fake-256d-fp32"
+    assert entry["embedding_model_id"] == "fake-4d-fp32"
+    # Decoded payload length must agree with the new model_id's dim,
+    # otherwise the next sweep would treat it as stale and loop —
+    # CodeRabbit's "rewritten cache must be consumable" point.
+    decoded = decode_embedding(entry["embedding"])
+    assert decoded is not None and decoded.size == 4
 
 
 @pytest.mark.asyncio

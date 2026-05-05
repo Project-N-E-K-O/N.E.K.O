@@ -23,6 +23,8 @@ deploy still works end-to-end.
 from __future__ import annotations
 
 import asyncio
+import base64
+
 import pytest
 
 from memory.embeddings import (
@@ -122,6 +124,77 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
         _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=False)
         == "int8"
     )
+
+
+def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
+    """Codex review PR #1147: ``parse_dim_from_model_id`` must anchor on
+    the trailing ``-<dim>d-<quant>`` segment that ``build_model_id``
+    emits, not the first ``-<n>d-`` it encounters.  If a profile name
+    itself contains a ``-Nd-`` segment (e.g. an upstream variant like
+    ``model-384d-v2``), a non-anchored parser would pick the profile
+    dim (384) instead of the runtime dim (256), and
+    ``is_cached_embedding_valid`` would reject every freshly stamped
+    vector forever.  Lock the contract here."""
+    from memory.embeddings import build_model_id, parse_dim_from_model_id
+
+    ambiguous_id = build_model_id("model-384d-v2", 256, "int8")
+    assert ambiguous_id == "model-384d-v2-256d-int8"
+    assert parse_dim_from_model_id(ambiguous_id) == 256
+    # Same with fp32 quant (the other valid suffix):
+    assert (
+        parse_dim_from_model_id(build_model_id("foo-128d-bar", 64, "fp32"))
+        == 64
+    )
+    # Unparseable / unknown shape returns None — caller falls back to
+    # whatever signal it can find without crashing.
+    assert parse_dim_from_model_id(None) is None
+    assert parse_dim_from_model_id("") is None
+    assert parse_dim_from_model_id("not-a-model-id") is None
+    # Trailing form without a recognised quant suffix → None (so a
+    # future quantization keyword opts out gracefully rather than
+    # silently mis-extracting).
+    assert parse_dim_from_model_id("local-text-retrieval-v1-256d-fp16") is None
+
+
+def test_decode_vector_int8_rejects_garbage_suffix_and_nan_scale():
+    """CodeRabbit review PR #1147: ``_decode_vector_int8`` must reject
+    payloads with non-base64 suffix bytes and non-finite scales.
+
+    ``base64.b64decode(..., validate=False)`` (the previous default)
+    silently skips characters outside the alphabet, so an attacker /
+    bit-rot scenario that appends garbage would still decode to a
+    plausible-looking vector. ``np.frombuffer(...)`` on a bad scale
+    can produce NaN or ±Inf, which then propagates through every dot
+    product — a single corrupt cache row poisoning the entire recall
+    score distribution."""
+    from memory.embeddings import _decode_vector_int8, _encode_vector_int8
+    import numpy as np
+
+    good = _encode_vector_int8([0.1, 0.2, 0.3, 0.4])
+    # Sanity: the well-formed payload still decodes.
+    assert _decode_vector_int8(good) is not None
+
+    # Suffix garbage (! is not in the base64 alphabet) → reject.
+    assert _decode_vector_int8(good + "!!!!") is None
+    assert _decode_vector_int8("not base 64 at all") is None
+
+    # NaN scale: hand-build the wire format with the canonical scale
+    # bytes replaced by NaN bits in fp16. Without the isfinite gate,
+    # decoding would return an array full of NaN.
+    nan_payload = (
+        np.array([np.nan], dtype=np.float16).tobytes()
+        + np.array([1, 2, 3, 4], dtype=np.int8).tobytes()
+    )
+    nan_b64 = base64.b64encode(nan_payload).decode("ascii")
+    assert _decode_vector_int8(nan_b64) is None
+
+    # +Inf scale rejected too.
+    inf_payload = (
+        np.array([np.inf], dtype=np.float16).tobytes()
+        + np.array([1, 2, 3, 4], dtype=np.int8).tobytes()
+    )
+    inf_b64 = base64.b64encode(inf_payload).decode("ascii")
+    assert _decode_vector_int8(inf_b64) is None
 
 
 def test_build_model_id_encodes_axes():

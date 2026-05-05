@@ -173,15 +173,24 @@ def _decode_vector_int8(encoded: str):
     Returns None on any decoding failure — corrupt cache fields fall
     through to the "no embedding" path rather than raising up into the
     retrieval/dedup loops.
+
+    Strict-validate the base64 payload (CodeRabbit review PR #1147):
+    ``validate=False`` would silently skip non-alphabet bytes, so a
+    payload with garbage suffix passes decoding and yields wrong but
+    plausible-looking values. Likewise reject non-finite scale (NaN /
+    ±Inf), which otherwise propagates through every dot product the
+    decoded vector touches.
     """
     import numpy as np
     try:
-        raw = base64.b64decode(encoded, validate=False)
+        raw = base64.b64decode(encoded, validate=True)
     except Exception:  # noqa: BLE001 — malformed base64 → treat as missing
         return None
     if len(raw) < 2:
         return None
     scale = float(np.frombuffer(raw[:2], dtype=np.float16)[0])
+    if not np.isfinite(scale):
+        return None
     quantized = np.frombuffer(raw[2:], dtype=np.int8)
     if quantized.size == 0:
         return np.zeros(0, dtype=np.float32)
@@ -218,11 +227,17 @@ def decode_embedding(emb: Any):
     return None
 
 
-# Match the ``-<dim>d-`` segment of an ``embedding_model_id`` like
-# ``local-text-retrieval-v1-256d-int8``.  Anchored on both sides with
-# ``-`` so we don't confuse the dim segment with a profile-name fragment
-# that happens to contain a digit.
-_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-")
+# Anchor on the trailing ``-<dim>d-<quant>`` form emitted by
+# :func:`build_model_id` (e.g. ``local-text-retrieval-v1-256d-int8``).
+# Anchoring at end-of-string + a known quantization keyword guards
+# against profile names that happen to contain their own ``-Nd-``
+# segment (e.g. an upstream profile like ``model-384d-v2``); without
+# the anchor, ``re.search`` would pick the *first* match (384) rather
+# than the actual runtime dim (256), and is_cached_embedding_valid
+# would reject every freshly stamped vector forever (size mismatch),
+# pinning the worker into an infinite re-embed loop. Codex review
+# PR #1147.
+_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)$")
 
 
 def parse_dim_from_model_id(model_id: str | None) -> int | None:
@@ -230,13 +245,10 @@ def parse_dim_from_model_id(model_id: str | None) -> int | None:
     id can't be parsed.
 
     ``embedding_model_id`` is built by :func:`build_model_id` and always
-    has the shape ``<profile>-<dim>d-<quant>`` (see commit history of
-    P2). We parse it here so :func:`is_cached_embedding_valid` and
-    :func:`MemoryRecallReranker._coarse_rank` can both validate
-    decoded vector shape against the *expected* dim — without this,
-    corrupt or wrong-length payloads would still pass the typeof
-    check and either stick forever (worker won't re-stamp) or poison
-    the batched matmul with a single bad row.
+    has the shape ``<profile>-<dim>d-<quant>`` where ``quant`` is a
+    fixed enum (``int8`` / ``fp32``). The regex anchors on that
+    trailing form so a profile name that itself contains ``-Nd-``
+    can't shadow the runtime dim segment.
     """
     if not model_id or not isinstance(model_id, str):
         return None
