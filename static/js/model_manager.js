@@ -3632,8 +3632,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     type: 'mmd'
                 };
 
+                // 选择模型后立即启用保存按钮（即使是页面初始化的 suppressed 事件，
+                // 否则进入页面后只调属性时按钮会一直保持 HTML 模板里的 disabled）
+                if (savePositionBtn) {
+                    savePositionBtn.disabled = false;
+                }
+
                 if (!isSuppressedModelManagerChangeEvent(e)) {
-                    if (savePositionBtn) savePositionBtn.disabled = false;
                     window.hasUnsavedChanges = true;
                     markModelChangedForCardFacePrompt();
                 }
