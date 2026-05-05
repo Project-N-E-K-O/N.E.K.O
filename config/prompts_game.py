@@ -138,7 +138,7 @@ SOCCER_PREGAME_CONTEXT_PROMPT = """\
 决策规则：
 - 证据不足时，gameStance 必须是 neutral_play。
 - neutral_play 表示普通陪玩，不是关系修复，不是惩罚局。
-- neutral_play 的默认难度应当是 lv2 或 lv3；不要用 max。
+- neutral_play 的默认难度是 lv2；想轻一档放水可用 lv3，不要用 max。
 - punishing 才能在开局直接 max，但必须有近期记录中的强证据支持。
 - 生气 + max 难度下，默认普通能力 NEKO 基本不可能被多次得分；不要把“玩家多次得分”当作常规哄好条件。
 - 低落/自闭时，玩家专注陪 NEKO 玩本身可以轻微缓解；即使双方都没进球，也可视为陪伴证据。
@@ -446,7 +446,7 @@ Constraints:
 Decision rules:
 - With insufficient evidence, gameStance must be neutral_play.
 - neutral_play means ordinary play, not relationship repair or punishment.
-- neutral_play should default to lv2 or lv3, not max.
+- neutral_play should default to lv2; lv3 is fine if you want one notch softer; do not use max.
 - Only punishing may start directly at max, and it requires strong evidence in recent history.
 - In angry + max difficulty, a normal NEKO should not be easy for the player to score against repeatedly; do not treat "player scored many times" as the standard calming condition.
 - When NEKO is low or withdrawn, the player's focused companionship in the game may slightly soften her even without goals.
@@ -495,7 +495,7 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_JA = """\
 判断ルール：
 - 証拠不足なら gameStance は必ず neutral_play。
 - neutral_play は普通の陪玩であり、関係修復でも罰ゲームでもない。
-- neutral_play の初期難易度は lv2 または lv3。max は使わない。
+- neutral_play の初期難易度は lv2。一段階手加減したいなら lv3 も可。max は使わない。
 - punishing の時だけ開局 max が可能で、最近の記録に強い証拠が必要。
 - 低落や引きこもり気味の時、プレイヤーが集中して一緒に遊ぶこと自体が少し和らげる証拠になる。
 - 楽しい/普通の開局でも局内対話で不満に傾くことはある。これは関係修復失敗ではない。
@@ -543,7 +543,7 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_KO = """\
 판단 규칙:
 - 증거가 부족하면 gameStance 는 반드시 neutral_play.
 - neutral_play 는 일반적인 함께 놀기이며 관계 회복이나 처벌이 아닙니다.
-- neutral_play 기본 난이도는 lv2 또는 lv3 이며 max 를 쓰지 않습니다.
+- neutral_play 기본 난이도는 lv2 입니다. 한 단계 더 봐주고 싶다면 lv3 도 가능하며 max 는 쓰지 않습니다.
 - punishing 만 시작부터 max 가 가능하며 최근 기록의 강한 증거가 필요합니다.
 - NEKO 가 우울하거나 위축되어 있을 때, 플레이어가 집중해서 함께 놀아주는 것 자체가 약한 완화 증거가 될 수 있습니다.
 - 즐겁거나 평범한 시작도 게임 중 상호작용으로 불만 쪽으로 기울 수 있습니다. 이는 관계 회복 실패가 아닙니다.
@@ -591,7 +591,7 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_RU = """\
 Правила решений:
 - Если доказательств недостаточно, gameStance обязан быть neutral_play.
 - neutral_play означает обычную совместную игру, не восстановление отношений и не наказание.
-- Для neutral_play начальная сложность должна быть lv2 или lv3, не max.
+- Для neutral_play начальная сложность должна быть lv2; lv3 допустим, если хочешь поддаться на одну ступень больше; max не используй.
 - Только punishing может начинать сразу с max, и для этого нужны сильные доказательства в недавней истории.
 - Если NEKO подавлена или замкнута, сосредоточенное совместное участие игрока в игре может слегка смягчить ее даже без голов.
 - Радостное или обычное начало может в процессе игры перейти к недовольству; это не провал восстановления отношений.

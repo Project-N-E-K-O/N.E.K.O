@@ -1162,19 +1162,19 @@
 
   function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
 
-  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认从 lv2/lv3 开局，后续由 LLM 控制。
+  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认 lv2 起手，后续由 LLM 控制。
+  // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
+  // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
+  // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
+  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
     { name: 'lv3', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: true },
     { name: 'lv4', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: false },
   ];
-  function randomDefaultDifficultyIndex() {
-    const name = Math.random() < 0.5 ? 'lv2' : 'lv3';
-    const idx = DIFFICULTY.findIndex(d => d.name === name);
-    return idx >= 0 ? idx : 1;
-  }
-  let difficultyIdx = randomDefaultDifficultyIndex();
+  const DEFAULT_DIFFICULTY_INDEX = DIFFICULTY.findIndex(d => d.name === 'lv2');
+  let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
   }
@@ -2096,7 +2096,7 @@
     unstickCd = 0;
     GAME_EVENTS.length = 0;
 
-    difficultyIdx = randomDefaultDifficultyIndex();
+    difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
     __setMoodBase('calm');
     if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];

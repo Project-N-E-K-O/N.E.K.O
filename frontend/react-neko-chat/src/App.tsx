@@ -678,10 +678,17 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  // ChoicePrompt（mini-game invite 等）和 galgame options 共用 composer 底部
+  // 同一块 slot 视觉位。两者同时活跃会渲染出 6 个按钮挤一起；invite 是少见
+  // 且需要用户即时响应的 transient event，galgame options 是常驻 mode →
+  // invite 优先，galgame slot 临时让位。invite resolve 后下一轮 assistant
+  // turn-end 会重新触发 galgame fetch，自然回归。
+  const choicePromptHasOptions = !!(choicePrompt && choicePrompt.options.length > 0);
   // 模式开启 ≠ 选项实际占位。光开开关、还没收到 AI 新一轮时 slot 不撑开；
   // 选项到位（loading 占位也算）才让 slot 长出来，输入壳跟着自然变高。
   const galgameOptionsVisible =
-    galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0);
+    galgameModeEnabled && !choicePromptHasOptions
+    && (galgameOptionsLoading || galgameOptions.length > 0);
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -1726,10 +1733,12 @@ export default function App({
                   }
                 }}
               />
-              {galgameModeEnabled ? (
+              {galgameModeEnabled && !choicePromptHasOptions ? (
                 // Slot 始终挂在树上，开/关靠 is-open（max-height + opacity 过渡）。
                 // 这样选项进/出时输入壳跟着自然长/缩，bottom-bar 锚在 panel 底
                 // 不动，textarea 顶端跟着 shell-top 上抬，视觉上是从下往上展开。
+                // mini-game invite 等 ChoicePrompt 占位时整块 slot 不挂树，避免
+                // 与下面 composer-choice-slot 视觉撞车（参见 choicePromptHasOptions）。
                 <div
                   className={`composer-galgame-slot${galgameOptionsVisible ? ' is-open' : ''}`}
                   aria-hidden={!galgameOptionsVisible}

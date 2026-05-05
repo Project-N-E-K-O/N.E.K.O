@@ -321,6 +321,15 @@ button * {
     visibility: hidden;
 }
 
+/* 游戏路由激活期间隐藏所有 avatar 容器（live2d / vrm / mmd 三家），让 pet 透明
+   窗口在 mini-game 进行时不抢屏。chat.html 收缩 + pet 隐藏由后端
+   game_window_state_change WS 事件统一驱动，game_route_end 时同步还原。 */
+body.neko-game-active #live2d-container,
+body.neko-game-active #vrm-container,
+body.neko-game-active #mmd-container {
+    display: none !important;
+}
+
 /* 看板娘VR模型画布样式 */
 #vrm-canvas {
     right: 0;

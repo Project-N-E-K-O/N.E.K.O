@@ -1931,6 +1931,26 @@
                             url: response.game_url || '',
                         });
                     }
+
+                // -------- game_window_state_change --------
+                // 后端 game_route_start 激活后推 'opened'，_finalize 翻 inactive
+                // 后推 'closed'。前端把它转成 DOM 自定义事件让 chat.html / pet
+                // index.html 各自挂监听做布局联动（chat.html → 触发内部 collapse
+                // + 移到左下角；index.html → 加 body class 隐藏 live2d/vrm/mmd
+                // 容器）。多窗口模式下 RAW_MESSAGE forwarding 把同一条 WS 转给
+                // chat.html，两边监听同一个 DOM 事件名即可。
+                } else if (response.type === 'game_window_state_change') {
+                    try {
+                        var detail = {
+                            action: response.action || '',
+                            lanlanName: response.lanlan_name || '',
+                            gameType: response.game_type || '',
+                            sessionId: response.session_id || ''
+                        };
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                    } catch (gwErr) {
+                        console.warn('[GameWindow] dispatch failed:', gwErr);
+                    }
                 }
 
             } catch (parseError) {

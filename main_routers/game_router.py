@@ -91,6 +91,55 @@ _SOCCER_QUICK_LINE_KEYS = {
 
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
+
+
+async def _push_game_window_state_change(
+    mgr,
+    *,
+    action: str,
+    lanlan_name: str,
+    game_type: str,
+    session_id: str = "",
+) -> None:
+    """Broadcast 'game window opened/closed' WS event so chat.html / pet 多窗口
+    能联动收缩 / 还原（用户级 UX 联动，不参与任何 game-route 状态判定，单纯
+    驱动前端布局）。
+
+    单一事实源：``game_route_start`` 激活后推 ``opened``，
+    ``_finalize_game_route_state_inner`` 把 state 翻 inactive 之后推 ``closed``。
+    所有 finalize 路径（/route/end / heartbeat sweep / supersede）都走 inner，
+    覆盖率与 ``is_game_route_active`` 同步——前端不会出现"游戏已结束但 UI 仍
+    锁着收缩态"的孤岛。
+
+    多窗口转发依赖现有 ``WS_PROXY_CHANNELS.RAW_MESSAGE`` IPC（pet 主窗收 WS →
+    forwarder 转给 chat.html），与 mini_game_invite_resolved 走同一条总线，
+    无需新 IPC channel。
+    """
+    if not mgr or not lanlan_name:
+        return
+    payload: dict[str, Any] = {
+        "type": "game_window_state_change",
+        "action": action,
+        "lanlan_name": lanlan_name,
+        "game_type": game_type,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    try:
+        ws = getattr(mgr, "websocket", None)
+        if ws is None or not hasattr(ws, "send_json"):
+            return
+        client_state = getattr(ws, "client_state", None)
+        if client_state is not None and client_state != client_state.CONNECTED:
+            return
+        await ws.send_json(payload)
+    except Exception as exc:
+        logger.warning(
+            "game_window_state_change WS push failed (action=%s, game=%s, lanlan=%s): %s",
+            action, game_type, lanlan_name, exc,
+        )
+
+
 _DEFAULT_SOCCER_GAME_MEMORY_ENABLED = False
 _SOCCER_GAME_MEMORY_POLICY_FIELDS = (
     "soccer_game_memory_enabled",
@@ -3197,6 +3246,16 @@ async def _finalize_game_route_state_inner(
     state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
+    # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
+    # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
+    await _push_game_window_state_change(
+        mgr,
+        action="closed",
+        lanlan_name=lanlan_name,
+        game_type=str(state.get("game_type") or ""),
+        session_id=str(state.get("session_id") or ""),
+    )
     # Release the SessionManager-level takeover so ordinary chat handlers come
     # back online; chat LLM may produce auto-replies again, but the player has
     # exited the game so that's the desired behavior.
@@ -4270,6 +4329,20 @@ async def game_route_start(game_type: str, request: Request):
             state["nekoInitiated"] = neko_initiated
             state["nekoInviteText"] = neko_invite_text
             _update_route_start_state_from_payload(state, data)
+    # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
+    # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
+    # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
+    # 还原。注意：要在 supersede + activate 锁外推送，避免阻塞锁；soccer
+    # pregame 上下文构建可能耗几秒，那段期间前端已经看到游戏窗口在加载，
+    # 越早收缩越平滑——所以放在 pregame build 之前。
+    mgr_for_ws = get_session_manager().get(lanlan_name)
+    await _push_game_window_state_change(
+        mgr_for_ws,
+        action="opened",
+        lanlan_name=lanlan_name,
+        game_type=game_type,
+        session_id=session_id,
+    )
     if game_type == "soccer":
         state["heartbeat_enabled"] = False
         try:

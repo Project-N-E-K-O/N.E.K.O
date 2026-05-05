@@ -1137,6 +1137,98 @@
             scrollToBottom(false);
         }
 
+        // ===================== 游戏窗口联动（收缩 → 还原）=====================
+        // mini-game 路由激活时把 chat.html 收成呼吸球（复用已有 collapseChat
+        // 动画+样式，等同于用户点击右上角最小化按钮的效果）并搬到工作区左下角；
+        // 路由结束时按之前的 (bounds, collapsed?) 快照还原。
+        //
+        // 单一事件源：app-websocket.js 收到 ``game_window_state_change`` 后
+        // dispatch ``neko-game-window-state-change``，多窗口模式 RAW_MESSAGE
+        // forwarding 自动转给 chat.html follower。closed 路径覆盖率与
+        // ``is_game_route_active`` 同源（_finalize 翻 false 时一并推 closed），
+        // 不会出现"游戏已结束但 UI 仍锁着球态"的孤岛。
+        var _gameMinimizeSnap = null;
+
+        function _moveBallToWorkAreaBottomLeft() {
+            return W.getWorkArea().then(function(wa) {
+                if (!wa) return;
+                if (!collapsed) return; // 状态在异步等待期变了 → 放弃，避免把展开窗口吸到 BALL 尺寸
+                W.setBounds(wa.x, wa.y + wa.height - BALL, BALL, BALL);
+            });
+        }
+
+        function _gameMinimizeForGame() {
+            if (_gameMinimizeSnap) return; // 重入保护：opened 重复来不再叠写 snap
+            if (animating) {
+                // 正在收/展过程中 → 等下一帧重试，避免把动画期 bounds 当原始尺寸抓拍
+                requestAnimationFrame(_gameMinimizeForGame);
+                return;
+            }
+            W.getBounds().then(function(b0) {
+                if (!b0) return;
+                _gameMinimizeSnap = {
+                    bounds: { x: b0.x, y: b0.y, width: b0.width, height: b0.height },
+                    wasCollapsed: collapsed,
+                    // savedWH 是 collapseChat 折叠时记的展开尺寸；如果用户进游戏前
+                    // 已经手动折叠过一次，这个值非空，要原样保留以便 closed 还原后
+                    // 再用户手点展开时尺寸不变。
+                    savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null
+                };
+                if (collapsed) {
+                    _moveBallToWorkAreaBottomLeft();
+                } else {
+                    collapseChat();
+                    // collapseChat → doCollapse 内部链路：transitionend / 200ms timeout
+                    // 之后 collapsed=true、animating=false。这里给一个保守 700ms
+                    // 缓冲（400ms 折叠动画 + 200ms ball-show + 100ms IPC 余量），
+                    // 折叠真落定后再搬位置。
+                    setTimeout(function() {
+                        if (!_gameMinimizeSnap) return;
+                        if (collapsed && !animating) _moveBallToWorkAreaBottomLeft();
+                    }, 700);
+                }
+            });
+        }
+
+        function _gameRestoreAfterGame() {
+            if (!_gameMinimizeSnap) return;
+            var snap = _gameMinimizeSnap;
+            _gameMinimizeSnap = null;
+            if (snap.wasCollapsed) {
+                // 进游戏前本来就是球态 → 球搬回原坐标即可，savedWH 还原成进游戏
+                // 之前的展开尺寸（不是当前游戏期间窗口尺寸的副本）
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            // 进游戏前是展开态、当前是球态 → 把 expandChat 的目标尺寸钉到原 bounds
+            // 让动画展开到原大小；球先搬到原 bounds 的底部对齐位（与 expandChat
+            // 内部 newY = b.y + BALL - h 推算的"展开后还原原顶端"语义一致）。
+            if (!collapsed || animating) {
+                // 异常态（用户在 game 期间手动展开了？）—— 至少 setBounds 回去，
+                // 不动画，不再调 expandChat（会被 animating guard 拦住）
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            var b = snap.bounds;
+            W.setBounds(b.x, b.y + b.height - BALL, BALL, BALL);
+            setTimeout(function() {
+                if (!collapsed || animating) return;
+                savedWH = { w: b.width, h: b.height };
+                expandChat();
+            }, 100);
+        }
+
+        window.addEventListener('neko-game-window-state-change', function(ev) {
+            var detail = ev && ev.detail ? ev.detail : {};
+            if (detail.action === 'opened') {
+                _gameMinimizeForGame();
+            } else if (detail.action === 'closed') {
+                _gameRestoreAfterGame();
+            }
+        });
+
         // ===================== 边界检测与回弹 =====================
         var _bounceAnim = null;
         var _bouncing = false;
