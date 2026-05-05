@@ -1854,6 +1854,12 @@
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(reloadMsg || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
                     }
+                    // 后端在发 reload_page 之前已经 end_session，前端 2.5s 后才真
+                    // reload。这 2.5s 内 isTextSessionActive 若残留 true，用户敲
+                    // 文字会绕过 start_session action 直接送 stream_data，错过
+                    // websocket_router 的 reset_session_start_circuit 守卫，触发
+                    // 后端"未指定 ↔ 免费 音色切换后概率连接失败"那条路径。
+                    S.isTextSessionActive = false;
                     setTimeout(function () {
                         console.log(window.t('console.reloadPageStarting'));
                         if (window.closeAllSettingsWindows) window.closeAllSettingsWindows();

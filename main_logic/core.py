@@ -2498,20 +2498,43 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             if not self.pending_input_data:
                 return
-            
+
             if self.session and self.is_active:
+                # 缓存阶段（_stream_data_now）不知道 session 最终是 voice 还是
+                # text。如果最终启好的是 voice session，缓存里的 text 输入若
+                # 直接 flush 进 _process_stream_data_internal，会触发 4977-4995
+                # 的"硬撕 voice → 重建 text"自动切换路径，把刚 ready 的 voice
+                # session 撕成 CHARACTER_LEFT / "角色离开"——这是用户在切音色
+                # 后开语音、麦启动期打字的典型 race。这里只防御 text → voice
+                # 这一条不对偶的路径；screen / camera 等 vision 输入会在
+                # _process_stream_data_internal 里路由到
+                # OmniRealtimeClient.stream_image（5262-5278），是 voice session
+                # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
+                # 直接 return 不缓存，pending_input_data 不会出现 audio。
+                is_voice_session = isinstance(self.session, OmniRealtimeClient)
+                dropped_text_for_voice = 0
                 for message in self.pending_input_data:
+                    msg_input_type = message.get("input_type")
                     try:
                         # 重新调用stream_data处理缓存的数据
                         # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        if message.get("input_type") == "audio":
+                        if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
+                            if is_voice_session and msg_input_type == "text":
+                                dropped_text_for_voice += 1
+                                continue
                             await self._process_stream_data_internal(message)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
-            
+                if dropped_text_for_voice:
+                    logger.info(
+                        "[%s] _flush_pending_input_data: dropped %d cached text "
+                        "message(s) because final session is voice mode",
+                        self.lanlan_name, dropped_text_for_voice,
+                    )
+
             # 清空缓存
             self.pending_input_data.clear()
     
@@ -4491,7 +4514,26 @@ class LLMSessionManager:
                 await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
                 try:
-                    delivered = await self.session.prompt_ephemeral(instruction)
+                    # 防御 stale session: 4429 start_session 之后到这里又过了
+                    # 多次 await（holiday hint / try_start_proactive /
+                    # _proactive_write_lock / self.lock / state.fire ×2），
+                    # 期间 cleanup / disconnected_by_server / 切音色重建路径
+                    # 都可能把 self.session 置 None 或换为 OmniRealtimeClient。
+                    # 直接 self.session.prompt_ephemeral 会触发 AttributeError
+                    # 把 trigger_greeting task 整个挂掉（参考切音色后并发
+                    # session 重建期间 trigger_greeting 撞 self.session=None
+                    # 的崩溃 trace）。先快照本地引用 + 类型校验，stale 时
+                    # 静默 skip，外层 finally 会 fire PROACTIVE_DONE 让 SM
+                    # 不卡在 PHASE2 / CLAIM。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
                 finally:
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)

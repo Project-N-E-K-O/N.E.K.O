@@ -1683,7 +1683,11 @@ async def update_catgirl_voice_id(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-    
+            # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
+            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
+            session_manager[name].reset_session_start_circuit()
+
     # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
     if is_current_catgirl:
         # 3. 重新加载配置，让新的voice_id生效
@@ -1959,6 +1963,9 @@ async def unregister_voice(name: str):
                     logger.info(f"{name} 的session已结束")
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
+                # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                session_manager[name].reset_session_start_circuit()
 
         # 自动重新加载配置
         if is_current_catgirl:
@@ -2522,6 +2529,9 @@ async def update_catgirl(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
+            # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
             # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
@@ -3008,6 +3018,9 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+                    # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
                     await asyncio.gather(
