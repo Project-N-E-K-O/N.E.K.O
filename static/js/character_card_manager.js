@@ -2972,7 +2972,12 @@ function applyCardFaceUpdated(name, timestamp) {
                     panelImg.alt = '角色卡面';
                     cardImage.insertBefore(panelImg, placeholder || cardImage.firstChild);
                 }
-                if (placeholder) placeholder.style.display = 'none';
+                panelImg.onload = () => {
+                    if (placeholder) placeholder.style.display = 'none';
+                };
+                panelImg.onerror = () => {
+                    if (placeholder) placeholder.style.display = '';
+                };
                 panelImg.src = newSrc;
             }
         }
@@ -2995,7 +3000,12 @@ function applyCardFaceUpdated(name, timestamp) {
                 gridAvatar.appendChild(gridImg);
             }
         }
-        if (gridPlaceholder) gridPlaceholder.style.display = 'none';
+        gridImg.onload = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = 'none';
+        };
+        gridImg.onerror = () => {
+            if (gridPlaceholder) gridPlaceholder.style.display = '';
+        };
         gridImg.src = newSrc;
     });
 }
