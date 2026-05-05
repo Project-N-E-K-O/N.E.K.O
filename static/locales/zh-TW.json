@@ -1778,6 +1778,7 @@
         "personalityModuleUnavailable": "人格選擇模組尚未載入",
         "manageModel": "點擊管理模型",
         "fillProfileNameFirst": "請先填寫貓娘檔案名，然後再設置模型",
+        "fillProfileNameFirstForCardFace": "請先填寫貓娘檔案名，然後再設置卡面",
         "registerNewVoice": "注冊新聲音",
         "systemPrompt": "系統指令（謹慎修改）",
         "systemPromptWarning": "系統指令 - 修改可能導致角色行為異常，後果自負",

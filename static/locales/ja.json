@@ -1778,6 +1778,7 @@
         "personalityModuleUnavailable": "性格選択モジュールがまだ読み込まれていません",
         "manageModel": "クリックしてモデルを管理",
         "fillProfileNameFirst": "まず neko プロフィール名を入力してから、モデルを設定してください",
+        "fillProfileNameFirstForCardFace": "まず neko プロフィール名を入力してから、カード面を設定してください",
         "registerNewVoice": "新しいボイスを登録",
         "systemPrompt": "システムプロンプト（注意して編集してください）",
         "systemPromptWarning": "システムプロンプト - 変更により予期しない動作が発生する可能性があります。自己責任で編集してください。",

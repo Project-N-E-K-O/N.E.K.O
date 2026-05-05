@@ -1778,6 +1778,7 @@
         "personalityModuleUnavailable": "성격 선택 모듈이 아직 로드되지 않았습니다",
         "manageModel": "모델을 관리하려면 클릭하세요.",
         "fillProfileNameFirst": "먼저 neko 프로필 이름을 입력한 다음 모델을 설정하세요.",
+        "fillProfileNameFirstForCardFace": "먼저 neko 프로필 이름을 입력한 다음 카드 이미지를 설정하세요.",
         "registerNewVoice": "새 음성 등록",
         "systemPrompt": "시스템 프롬프트(주의해서 편집)",
         "systemPromptWarning": "시스템 프롬프트 - 수정으로 인해 예기치 않은 동작이 발생할 수 있습니다. 편집에 따른 책임은 본인에게 있습니다.",

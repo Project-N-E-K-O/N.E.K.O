@@ -3038,9 +3038,9 @@ function handleExternalCardFaceUpdated(data) {
 })();
 
 async function openModelManagerForCharacterForm(form, fallbackName) {
-    let catgirlName = form?.querySelector?.('[name="档案名"]')?.value || fallbackName;
+    let catgirlName = getProfileNameFromCharacterForm(form, fallbackName);
     if (!catgirlName) {
-        showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+        await showProfileNameRequiredDialog();
         return;
     }
 
@@ -3111,6 +3111,19 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
             loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
         }
     }, 500);
+}
+
+function getProfileNameFromCharacterForm(form, fallbackName) {
+    return String(form?.querySelector?.('[name="档案名"]')?.value || fallbackName || '').trim();
+}
+
+async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFirst', fallback = '请先填写猫娘档案名，然后再设置模型') {
+    const message = window.t ? window.t(key) : fallback;
+    if (typeof showAlertDialog === 'function') {
+        await showAlertDialog(message, { type: 'warning' });
+        return;
+    }
+    showMessage(message, 'warning');
 }
 
 // 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
@@ -4101,12 +4114,15 @@ function openCatgirlPanel(card, originEl) {
         img.src = cardFaceUrl + '?t=' + Date.now();
     }
 
-    const openCardMaker = () => {
+    const openCardMaker = async () => {
         // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        const currentName = getProfileNameFromCharacterForm(form, name);
         if (!currentName) {
-            showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+            await showProfileNameRequiredDialog(
+                'character.fillProfileNameFirstForCardFace',
+                '请先填写猫娘档案名，然后再设置卡面'
+            );
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
@@ -4123,10 +4139,10 @@ function openCatgirlPanel(card, originEl) {
         event.stopPropagation();
         openCardMaker();
     });
-    modelSettingsAction.addEventListener('click', (event) => {
+    modelSettingsAction.addEventListener('click', async (event) => {
         event.stopPropagation();
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        openModelManagerForCharacterForm(form, name);
+        await openModelManagerForCharacterForm(form, name);
     });
 
     // 监听角色卡制作页面的保存消息
