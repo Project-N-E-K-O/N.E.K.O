@@ -18,9 +18,9 @@
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: 零配置开箱即用，我奶奶都能玩转的赛博猫娘！**
+**:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)已上架！UI完全改版、并添加开箱即用的专属免费模型（感谢阶跃星辰赞助）。快点加入愿望单吧~**
+:newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎直接入库，顺手给个好评~**
 
 *Project N.E.K.O.，喵宇宙！*
 
@@ -32,7 +32,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，推荐你会喜欢的内容</td>
+<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你可能喜欢的新鲜事</td>
 <td align="center" width="25%">🎙️<br><b>实时语音、文字与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
 <td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>

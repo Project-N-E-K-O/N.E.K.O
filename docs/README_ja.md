@@ -19,9 +19,9 @@
 
 [![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: ゼロコンフィグで即座に使える、おばあちゃんでも使いこなせるサイバー猫娘！**
+**:older_woman: ゼロコンフィグですぐ使える、おばあちゃんでも気軽に目覚めさせられるサイバー猫娘！**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)版がリリースされました！UI完全刷新、専用無料モデルを標準搭載（StepFunの提供に感謝）。今すぐウィッシュリストに追加してください~**
+:newspaper: **[Steam版](https://store.steampowered.com/app/4099310/__NEKO/)は無料で配信中！気に入ったらライブラリに追加して、よければレビューもお願いします~**
 
 *Project N.E.K.O.、ニャー宇宙！*
 
@@ -33,7 +33,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたの「好き」をおすすめします</td>
+<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたが好きそうな新しい話題を届けます</td>
 <td align="center" width="25%">🎙️<br><b>リアルタイム音声・テキスト・視覚理解</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、リアルタイム視覚理解に対応</td>
 <td align="center" width="25%">🧠<br><b>五次元メモリシステム</b><br>作業記憶 / 直近記憶 / 事実記憶 / 反省記憶 / 人格記憶で、使うほどあなたを理解していきます</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>

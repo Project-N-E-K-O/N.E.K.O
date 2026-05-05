@@ -19,9 +19,9 @@
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
+**:older_woman: Zero-configuration and ready to use — a cyber catgirl even my grandma can wake up with ease!**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/) version has been released! Complete UI overhaul and added out-of-the-box exclusive free model (thanks to StepFun for sponsoring this project). Add it to your wishlist now~**
+:newspaper: **The [Steam version](https://store.steampowered.com/app/4099310/__NEKO/) is available for free! If you like her, add her to your library and leave a kind review~**
 
 *Project N.E.K.O., NekoVerse!*
 
@@ -33,7 +33,7 @@
 
 <table>
 <tr>
-<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and recommends what you may love</td>
+<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you might like</td>
 <td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
 <td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
