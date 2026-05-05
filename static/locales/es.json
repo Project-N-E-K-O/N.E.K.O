@@ -1777,6 +1777,7 @@
         "personalityModuleUnavailable": "El módulo de selección de personalidad aún no está cargado",
         "manageModel": "Haga clic para administrar el modelo",
         "fillProfileNameFirst": "Primero complete el nombre del perfil de Neko y luego configure el modelo.",
+        "fillProfileNameFirstForCardFace": "Primero complete el nombre del perfil de Neko y luego configure la imagen de la tarjeta.",
         "registerNewVoice": "Registrar nueva voz",
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",

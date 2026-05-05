@@ -1777,6 +1777,7 @@
         "personalityModuleUnavailable": "人格选择模块尚未加载",
         "manageModel": "点击管理模型",
         "fillProfileNameFirst": "请先填写猫娘档案名，然后再设置模型",
+        "fillProfileNameFirstForCardFace": "请先填写猫娘档案名，然后再设置卡面",
         "registerNewVoice": "注册新声音",
         "systemPrompt": "系统指令（谨慎修改）",
         "systemPromptWarning": "系统指令 - 修改可能导致角色行为异常，后果自负",

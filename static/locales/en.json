@@ -1777,6 +1777,7 @@
         "personalityModuleUnavailable": "The personality selection module is not loaded yet",
         "manageModel": "Click to manage model",
         "fillProfileNameFirst": "Please fill in the neko profile name first, then set the model",
+        "fillProfileNameFirstForCardFace": "Please fill in the neko profile name first, then set the card face",
         "registerNewVoice": "Register New Voice",
         "systemPrompt": "System Prompt (Edit with caution)",
         "systemPromptWarning": "System Prompt - Modifications may cause unexpected behavior. Edit at your own risk.",
