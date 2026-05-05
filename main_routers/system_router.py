@@ -4215,6 +4215,15 @@ async def proactive_chat(request: Request):
                 action=_text_advance_outcome.get('action', 'suppress'),
             )
 
+        # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
+        # 上游早退 gate（closed / skip_probability / restricted_screen_only），
+        # 让 ``_maybe_deliver_mini_game_invite`` 能稳定接到本轮调用——契约是
+        # "开启后主动搭话必定触发特定小游戏"。仅本地手测使用；生产
+        # ``MINI_GAME_INVITE_ENABLED`` 总开关 + 旗标默认 None 双保险。
+        # CodeRabbit Major 指出：这条不在 ``_maybe_deliver_mini_game_invite``
+        # 内部加是因为那时已经过了上游 gate，旗标做不到"必定"。
+        _debug_force_invite = MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
         # main_logic/activity/snapshot.py). Skip everything — no LLM,
@@ -4223,7 +4232,11 @@ async def proactive_chat(request: Request):
         # look. Bypassed for the unfinished_thread override is
         # deliberate: if the AI just asked a question, hanging on it
         # mid-private is rude. closed > thread.
-        if activity_snapshot is not None and activity_snapshot.propensity == 'closed':
+        if (
+            not _debug_force_invite
+            and activity_snapshot is not None
+            and activity_snapshot.propensity == 'closed'
+        ):
             print(f"[{lanlan_name}] propensity=closed (state={activity_snapshot.state}), 跳过本轮 proactive")
             return await _end_proactive(JSONResponse({
                 "success": True,
@@ -4244,7 +4257,8 @@ async def proactive_chat(request: Request):
         # how silenced the user wanted us. The thread mechanism's
         # 2-followup hard cap already prevents harassment.
         if (
-            activity_snapshot is not None
+            not _debug_force_invite
+            and activity_snapshot is not None
             and activity_snapshot.skip_probability > 0
             and activity_snapshot.unfinished_thread is None
         ):
@@ -4266,9 +4280,13 @@ async def proactive_chat(request: Request):
                 }))
 
         # ========== 解析 enabled_modes ==========
-        enabled_modes = data.get('enabled_modes', [])
-        # 兼容旧版前端
-        if not enabled_modes:
+        # 兼容旧版前端：``enabled_modes`` 字段缺席 → 根据其它字段推断；显式传 ``[]``
+        # 表示新版客户端"用户把所有 source toggle 都关了"，不能再走 BC fallback
+        # 退化到 home/trending（否则 mini-game 邀请 toggle 单独开启的场景下 dice
+        # miss 会让 home 兜底打破 toggle 契约——codex P1）。
+        if 'enabled_modes' in data:
+            enabled_modes = data.get('enabled_modes') or []
+        else:
             content_type = data.get('content_type', None)
             screenshot_data = data.get('screenshot_data')
             if screenshot_data and isinstance(screenshot_data, str):
@@ -4297,7 +4315,11 @@ async def proactive_chat(request: Request):
         # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
         # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
         # 也允许跑下去，跟进上一个问题不需要外部素材。
-        if activity_snapshot is not None and activity_snapshot.propensity == 'restricted_screen_only':
+        if (
+            not _debug_force_invite
+            and activity_snapshot is not None
+            and activity_snapshot.propensity == 'restricted_screen_only'
+        ):
             if 'vision' in enabled_modes:
                 enabled_modes = ['vision']
                 print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
@@ -4344,6 +4366,20 @@ async def proactive_chat(request: Request):
         )
         if invite_outcome is not None:
             return await _end_proactive(JSONResponse(invite_outcome))
+
+        # 用户把所有 source toggle 都关了（仅留 mini-game 邀请独立 toggle 触发本轮
+        # 请求），mini-game 短路又没命中：没什么可聊。直接 pass 而不是落到下面源
+        # picking 走空 list / 撞 "所有信息源获取失败" 500 分支。例外：仍然有未收尾
+        # 话题 → 让 Phase 2 走 text-only 跟进路径（与 sources={} 但 thread 在的兜
+        # 底语义对齐）。codex P1 指出：BC fallback 已经按 "字段缺席 vs 显式 []" 分
+        # 流，这里对显式空清晰退出。
+        if not enabled_modes and not _has_unfinished_thread:
+            print(f"[{lanlan_name}] enabled_modes 空 + mini-game miss + 无 unfinished_thread → pass")
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "no source modes enabled and mini-game invite did not fire",
+            }))
 
         # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
         # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。

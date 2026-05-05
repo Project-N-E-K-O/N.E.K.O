@@ -70,15 +70,23 @@ def _clear_mini_game_state():
 
 @pytest.fixture(autouse=True)
 def _force_invite_enabled_default(monkeypatch):
-    """每个 test 默认强制 MINI_GAME_INVITE_ENABLED=True。
+    """每个 test 默认强制 MINI_GAME_INVITE_ENABLED=True、调试 force-game-type
+    flag=None。
 
-    本测试套件大部分用例都假定 invite 通道开着、然后验证某条 gate 是否生效。
-    如果哪天 module 默认值被翻成 False（例如灰度阶段），这些 deliver / gate
-    测试都会静默退化成「ENABLED 短路全部命中」，无法捕获真正的 gate 退化。
+    - ENABLED=True：本测试套件大部分用例都假定 invite 通道开着、然后验证某条
+      gate 是否生效。如果哪天 module 默认值被翻成 False（例如灰度阶段），这些
+      deliver / gate 测试都会静默退化成「ENABLED 短路全部命中」，无法捕获真正
+      的 gate 退化。
+    - FORCE_GAME_TYPE=None：开发者本地手测时常把 ``MINI_GAME_INVITE_FORCE_
+      GAME_TYPE`` 翻成 'soccer'（设计就是 dev override），未 reset 时会让所有
+      gate 测试都被旗标短路，导致 cooldown / dice-miss / propensity 等用例假
+      性失败。autouse 拉回 None 让 gate 路径在测试里始终 deterministic。
+
     autouse 把契约前置：测试断言「此通道开着且 X gate 生效」，要测 disabled
-    分支的用例（test_maybe_deliver_returns_none_when_disabled）自己 setattr
-    回 False。"""
+    分支的用例（test_maybe_deliver_returns_none_when_disabled）或 force-game
+    分支自己 setattr 回 False / 'soccer'。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_ENABLED', True)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', None)
 
 
 @pytest.fixture(autouse=True)
