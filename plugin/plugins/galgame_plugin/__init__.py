@@ -22,6 +22,7 @@ from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     timer_interval,
+    tr,
 )
 
 from .game_llm_agent import GameLLMAgent
@@ -133,16 +134,6 @@ from .screen_awareness_training import (
     evaluate_screen_awareness_model,
     train_screen_awareness_model,
 )
-
-
-def _format_install_entry_error(label: str, exc: Exception) -> str:
-    message = str(exc or "").strip()
-    prefix = f"{label} 安装失败"
-    if not message:
-        return prefix
-    if message.startswith(prefix):
-        return message
-    return f"{prefix}：{message}"
 
 
 def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -> None:
@@ -821,6 +812,37 @@ class GalgamePlugin(NekoPluginBase):
         self._state_dirty = True
         self._cached_snapshot: dict[str, Any] | None = None
 
+    def _not_configured_message(self) -> str:
+        return self.i18n.t(
+            "errors.not_configured",
+            default="galgame_plugin 未配置",
+        )
+
+    def _install_in_progress_message(self, component: str) -> str:
+        return self.i18n.t(
+            "errors.install_in_progress",
+            default="{component} 安装正在进行中",
+            component=component,
+        )
+
+    def _install_ok_message(self, component_key: str, component: str) -> str:
+        return self.i18n.t(
+            f"install.{component_key}.ok",
+            default=f"{component} 安装完成",
+        )
+
+    def _format_install_entry_error(self, component_key: str, component: str, exc: Exception) -> str:
+        message = str(exc or "").strip()
+        prefix = self.i18n.t(
+            f"install.{component_key}.fail",
+            default=f"{component} 安装失败",
+        )
+        if not message:
+            return prefix
+        if message.startswith(f"{component} 安装失败"):
+            return message
+        return f"{prefix}: {message}"
+
     def _update_memory_reader_text_freshness(
         self,
         runtime: dict[str, Any],
@@ -1422,7 +1444,7 @@ class GalgamePlugin(NekoPluginBase):
         default_filename: str,
     ) -> Path:
         if self._cfg is None:
-            raise ValueError("galgame_plugin is not configured")
+            raise ValueError(self._not_configured_message())
         raw = str(raw_path or "").strip()
         if raw:
             path = Path(os.path.expandvars(os.path.expanduser(raw)))
@@ -4314,20 +4336,20 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_get_status",
-        name="获取 galgame 插件状态",
-        description="返回当前 bridge 连接状态、绑定游戏、最近错误与模式。",
+        name=tr("entries.galgame_get_status.name", default='获取 galgame 插件状态'),
+        description=tr("entries.galgame_get_status.description", default='返回当前 bridge 连接状态、绑定游戏、最近错误与模式。'),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["summary"],
     )
     async def galgame_get_status(self, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         return Ok(await self._build_status_payload_async())
 
     @plugin_entry(
         id="galgame_install_textractor",
-        name="安装 Textractor",
-        description="检测并下载安装 TextractorCLI.exe，随后刷新 galgame_plugin 的桥接与读内存状态。",
+        name=tr("entries.galgame_install_textractor.name", default='安装 Textractor'),
+        description=tr("entries.galgame_install_textractor.description", default='检测并下载安装 TextractorCLI.exe，随后刷新 galgame_plugin 的桥接与读内存状态。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4339,9 +4361,9 @@ class GalgamePlugin(NekoPluginBase):
     )
     async def galgame_install_textractor(self, force: bool = False, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not self._textractor_install_lock.acquire(blocking=False):
-            return Err(SdkError("Textractor install is already in progress"))
+            return Err(SdkError(self._install_in_progress_message("Textractor")))
         current_run_id = self._resolve_current_run_id()
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
@@ -4359,20 +4381,20 @@ class GalgamePlugin(NekoPluginBase):
             await self._poll_bridge(force=True)
             return Ok(
                 {
-                    "summary": str(install_result.get("summary") or "Textractor 安装完成"),
+                    "summary": str(install_result.get("summary") or self._install_ok_message("textractor", "Textractor")),
                     "install_result": install_result,
                     "status": await self._build_status_payload_async(),
                 }
             )
         except Exception as exc:
-            return Err(SdkError(_format_install_entry_error("Textractor", exc)))
+            return Err(SdkError(self._format_install_entry_error("textractor", "Textractor", exc)))
         finally:
             self._textractor_install_lock.release()
 
     @plugin_entry(
         id="galgame_install_tesseract",
-        name="安装 Tesseract",
-        description="检测并下载安装本地 Tesseract OCR，随后刷新 galgame_plugin 的 OCR 状态。",
+        name=tr("entries.galgame_install_tesseract.name", default='安装 Tesseract'),
+        description=tr("entries.galgame_install_tesseract.description", default='检测并下载安装本地 Tesseract OCR，随后刷新 galgame_plugin 的 OCR 状态。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4384,9 +4406,9 @@ class GalgamePlugin(NekoPluginBase):
     )
     async def galgame_install_tesseract(self, force: bool = False, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not self._tesseract_install_lock.acquire(blocking=False):
-            return Err(SdkError("Tesseract install is already in progress"))
+            return Err(SdkError(self._install_in_progress_message("Tesseract")))
         current_run_id = self._resolve_current_run_id()
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
@@ -4405,20 +4427,20 @@ class GalgamePlugin(NekoPluginBase):
             await self._poll_bridge(force=True)
             return Ok(
                 {
-                    "summary": str(install_result.get("summary") or "Tesseract 安装完成"),
+                    "summary": str(install_result.get("summary") or self._install_ok_message("tesseract", "Tesseract")),
                     "install_result": install_result,
                     "status": await self._build_status_payload_async(),
                 }
             )
         except Exception as exc:
-            return Err(SdkError(_format_install_entry_error("Tesseract", exc)))
+            return Err(SdkError(self._format_install_entry_error("tesseract", "Tesseract", exc)))
         finally:
             self._tesseract_install_lock.release()
 
     @plugin_entry(
         id="galgame_install_rapidocr",
-        name="安装 RapidOCR",
-        description="检测并下载安装插件隔离的 RapidOCR 运行时，随后刷新 galgame_plugin 的 OCR 状态。",
+        name=tr("entries.galgame_install_rapidocr.name", default='安装 RapidOCR'),
+        description=tr("entries.galgame_install_rapidocr.description", default='检测并下载安装插件隔离的 RapidOCR 运行时，随后刷新 galgame_plugin 的 OCR 状态。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4430,9 +4452,9 @@ class GalgamePlugin(NekoPluginBase):
     )
     async def galgame_install_rapidocr(self, force: bool = False, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not self._rapidocr_install_lock.acquire(blocking=False):
-            return Err(SdkError("RapidOCR install is already in progress"))
+            return Err(SdkError(self._install_in_progress_message("RapidOCR")))
         current_run_id = self._resolve_current_run_id()
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
@@ -4453,20 +4475,20 @@ class GalgamePlugin(NekoPluginBase):
             await self._poll_bridge(force=True)
             return Ok(
                 {
-                    "summary": str(install_result.get("summary") or "RapidOCR 安装完成"),
+                    "summary": str(install_result.get("summary") or self._install_ok_message("rapidocr", "RapidOCR")),
                     "install_result": install_result,
                     "status": await self._build_status_payload_async(),
                 }
             )
         except Exception as exc:
-            return Err(SdkError(_format_install_entry_error("RapidOCR", exc)))
+            return Err(SdkError(self._format_install_entry_error("rapidocr", "RapidOCR", exc)))
         finally:
             self._rapidocr_install_lock.release()
 
     @plugin_entry(
         id="galgame_install_dxcam",
-        name="安装 DXcam",
-        description="检测并安装 DXcam 截图依赖，随后刷新 galgame_plugin 的 OCR 截图后端状态。",
+        name=tr("entries.galgame_install_dxcam.name", default='安装 DXcam'),
+        description=tr("entries.galgame_install_dxcam.description", default='检测并安装 DXcam 截图依赖，随后刷新 galgame_plugin 的 OCR 截图后端状态。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4478,9 +4500,9 @@ class GalgamePlugin(NekoPluginBase):
     )
     async def galgame_install_dxcam(self, force: bool = False, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not self._dxcam_install_lock.acquire(blocking=False):
-            return Err(SdkError("DXcam install is already in progress"))
+            return Err(SdkError(self._install_in_progress_message("DXcam")))
         current_run_id = self._resolve_current_run_id()
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
@@ -4495,20 +4517,20 @@ class GalgamePlugin(NekoPluginBase):
             await self._poll_bridge(force=True)
             return Ok(
                 {
-                    "summary": str(install_result.get("summary") or "DXcam 安装完成"),
+                    "summary": str(install_result.get("summary") or self._install_ok_message("dxcam", "DXcam")),
                     "install_result": install_result,
                     "status": await self._build_status_payload_async(),
                 }
             )
         except Exception as exc:
-            return Err(SdkError(_format_install_entry_error("DXcam", exc)))
+            return Err(SdkError(self._format_install_entry_error("dxcam", "DXcam", exc)))
         finally:
             self._dxcam_install_lock.release()
 
     @plugin_entry(
         id="galgame_get_snapshot",
-        name="获取 galgame 快照",
-        description="返回当前游戏快照和 stale 状态。",
+        name=tr("entries.galgame_get_snapshot.name", default='获取 galgame 快照'),
+        description=tr("entries.galgame_get_snapshot.description", default='返回当前游戏快照和 stale 状态。'),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["snapshot"],
     )
@@ -4519,8 +4541,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_get_history",
-        name="获取 galgame 历史",
-        description="返回最近事件、稳定台词历史和选项历史。",
+        name=tr("entries.galgame_get_history.name", default='获取 galgame 历史'),
+        description=tr("entries.galgame_get_history.description", default='返回最近事件、稳定台词历史和选项历史。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4541,8 +4563,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_mode",
-        name="设置 galgame 模式",
-        description="设置 silent / companion / choice_advisor 模式，并可选更新通知开关。",
+        name=tr("entries.galgame_set_mode.name", default='设置 galgame 模式'),
+        description=tr("entries.galgame_set_mode.description", default='设置 silent / companion / choice_advisor 模式，并可选更新通知开关。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4564,7 +4586,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if mode not in MODES:
             return Err(SdkError(f"invalid galgame mode: {mode!r}"))
         if advance_speed is not None and advance_speed not in ADVANCE_SPEEDS:
@@ -4747,8 +4769,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_ocr_backend",
-        name="设置 OCR / 截图后端",
-        description="切换 OCR 文本识别后端和截图后端。只影响 OCR 读取，不改变 Agent 点击安全策略。",
+        name=tr("entries.galgame_set_ocr_backend.name", default='设置 OCR / 截图后端'),
+        description=tr("entries.galgame_set_ocr_backend.description", default='切换 OCR 文本识别后端和截图后端。只影响 OCR 读取，不改变 Agent 点击安全策略。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4771,7 +4793,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         normalized_backend = str(backend_selection or "").strip().lower() or None
         normalized_capture = str(capture_backend or "").strip().lower() or None
         if normalized_backend is None and normalized_capture is None:
@@ -4866,8 +4888,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_ocr_timing",
-        name="设置 OCR 识别时机",
-        description="设置 OCR Reader 触发模式与轮询间隔；DXcam 截图后端会随 OCR 触发。",
+        name=tr("entries.galgame_set_ocr_timing.name", default='设置 OCR 识别时机'),
+        description=tr("entries.galgame_set_ocr_timing.description", default='设置 OCR Reader 触发模式与轮询间隔；DXcam 截图后端会随 OCR 触发。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4895,7 +4917,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         try:
             normalized_interval = float(poll_interval_seconds)
         except (TypeError, ValueError):
@@ -5022,8 +5044,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_llm_vision",
-        name="设置 LLM 视觉辅助",
-        description="切换 OCR Agent 低置信度场景的截图直传，并设置图片最大边长。",
+        name=tr("entries.galgame_set_llm_vision.name", default='设置 LLM 视觉辅助'),
+        description=tr("entries.galgame_set_llm_vision.description", default='切换 OCR Agent 低置信度场景的截图直传，并设置图片最大边长。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5046,7 +5068,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         try:
             normalized_max_px = int(
                 vision_max_image_px
@@ -5106,8 +5128,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_ocr_screen_templates",
-        name="设置 OCR 屏幕模板",
-        description="保存 OCR 屏幕分类模板；模板仅影响 OCR Reader，不影响 Bridge SDK / Memory Reader。",
+        name=tr("entries.galgame_set_ocr_screen_templates.name", default='设置 OCR 屏幕模板'),
+        description=tr("entries.galgame_set_ocr_screen_templates.description", default='保存 OCR 屏幕分类模板；模板仅影响 OCR Reader，不影响 Bridge SDK / Memory Reader。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5127,7 +5149,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not isinstance(screen_templates, list):
             return Err(SdkError("screen_templates must be an array"))
         sanitized = build_config(
@@ -5172,8 +5194,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_build_ocr_screen_template_draft",
-        name="生成 OCR 屏幕模板草稿",
-        description="根据当前 OCR 运行时、窗口信息和最近识别文本生成可编辑的屏幕模板草稿。",
+        name=tr("entries.galgame_build_ocr_screen_template_draft.name", default='生成 OCR 屏幕模板草稿'),
+        description=tr("entries.galgame_build_ocr_screen_template_draft.description", default='根据当前 OCR 运行时、窗口信息和最近识别文本生成可编辑的屏幕模板草稿。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5193,7 +5215,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         try:
             payload = self._build_ocr_screen_template_draft_payload(
                 stage=stage,
@@ -5209,8 +5231,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_validate_ocr_screen_templates",
-        name="验证 OCR 屏幕模板",
-        description="用当前 OCR 运行时和最近文本回放验证屏幕模板命中结果。",
+        name=tr("entries.galgame_validate_ocr_screen_templates.name", default='验证 OCR 屏幕模板'),
+        description=tr("entries.galgame_validate_ocr_screen_templates.description", default='用当前 OCR 运行时和最近文本回放验证屏幕模板命中结果。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5230,7 +5252,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not isinstance(screen_templates, list):
             return Err(SdkError("screen_templates must be an array"))
         try:
@@ -5241,14 +5263,14 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_get_ocr_screen_awareness_snapshot",
-        name="获取 OCR 屏幕感知截图",
-        description="返回最近一次 OCR 屏幕感知截图；仅在 Vision 显式开启且短期缓存未过期时可用。",
+        name=tr("entries.galgame_get_ocr_screen_awareness_snapshot.name", default='获取 OCR 屏幕感知截图'),
+        description=tr("entries.galgame_get_ocr_screen_awareness_snapshot.description", default='返回最近一次 OCR 屏幕感知截图；仅在 Vision 显式开启且短期缓存未过期时可用。'),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["summary"],
     )
     async def galgame_get_ocr_screen_awareness_snapshot(self, **_):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         snapshot = self.latest_ocr_vision_snapshot()
         if not isinstance(snapshot, dict) or not snapshot.get("vision_image_base64"):
             return Err(SdkError("no OCR screen awareness snapshot is available; enable Vision and wait for a full-frame OCR capture"))
@@ -5263,8 +5285,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_train_ocr_screen_awareness_model",
-        name="训练 OCR 屏幕感知模型",
-        description="从已标注 JSONL 样本训练轻量原型分类器，并导出可部署 JSON 模型。",
+        name=tr("entries.galgame_train_ocr_screen_awareness_model.name", default='训练 OCR 屏幕感知模型'),
+        description=tr("entries.galgame_train_ocr_screen_awareness_model.description", default='从已标注 JSONL 样本训练轻量原型分类器，并导出可部署 JSON 模型。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5290,7 +5312,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         try:
             resolved_samples = self._resolve_screen_awareness_data_path(
                 sample_path,
@@ -5321,8 +5343,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_evaluate_ocr_screen_awareness_model",
-        name="评估 OCR 屏幕感知模型",
-        description="用已标注 JSONL 样本评估轻量屏幕感知模型，并可输出评估报告。",
+        name=tr("entries.galgame_evaluate_ocr_screen_awareness_model.name", default='评估 OCR 屏幕感知模型'),
+        description=tr("entries.galgame_evaluate_ocr_screen_awareness_model.description", default='用已标注 JSONL 样本评估轻量屏幕感知模型，并可输出评估报告。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5346,7 +5368,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         try:
             resolved_samples = self._resolve_screen_awareness_data_path(
                 sample_path,
@@ -5378,8 +5400,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_bind_game",
-        name="绑定 galgame 游戏",
-        description="绑定指定 game_id；传空字符串清除手动绑定并恢复自动选择。",
+        name=tr("entries.galgame_bind_game.name", default='绑定 galgame 游戏'),
+        description=tr("entries.galgame_bind_game.description", default='绑定指定 game_id；传空字符串清除手动绑定并恢复自动选择。'),
         input_schema={
             "type": "object",
             "properties": {"game_id": {"type": "string", "default": ""}},
@@ -5424,8 +5446,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_ocr_capture_profile",
-        name="设置 OCR 截图校准",
-        description="按进程名保存或清除 OCR Reader 的截图裁剪配置。",
+        name=tr("entries.galgame_set_ocr_capture_profile.name", default='设置 OCR 截图校准'),
+        description=tr("entries.galgame_set_ocr_capture_profile.description", default='按进程名保存或清除 OCR Reader 的截图裁剪配置。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5520,8 +5542,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_auto_recalibrate_ocr_dialogue_profile",
-        name="自动重新校准 OCR 对白区",
-        description="对当前已附着 OCR 目标窗口自动重校准对白区，并保存到当前窗口分辨率。",
+        name=tr("entries.galgame_auto_recalibrate_ocr_dialogue_profile.name", default='自动重新校准 OCR 对白区'),
+        description=tr("entries.galgame_auto_recalibrate_ocr_dialogue_profile.description", default='对当前已附着 OCR 目标窗口自动重校准对白区，并保存到当前窗口分辨率。'),
         input_schema={"type": "object", "properties": {}},
         timeout=120.0,
         llm_result_fields=["summary", "sample_text"],
@@ -5564,8 +5586,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_apply_recommended_ocr_capture_profile",
-        name="应用推荐 OCR 截图校准",
-        description="在用户确认后应用当前 OCR Reader 推荐的截图 profile，并记录回滚点。",
+        name=tr("entries.galgame_apply_recommended_ocr_capture_profile.name", default='应用推荐 OCR 截图校准'),
+        description=tr("entries.galgame_apply_recommended_ocr_capture_profile.description", default='在用户确认后应用当前 OCR Reader 推荐的截图 profile，并记录回滚点。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5585,7 +5607,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not bool(confirm):
             return Err(SdkError("confirm=true is required before applying a recommended OCR profile"))
         with self._state_lock:
@@ -5605,8 +5627,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_rollback_ocr_capture_profile",
-        name="回滚 OCR 推荐截图校准",
-        description="回滚最近一次由推荐 profile 应用产生的 OCR 截图校准。",
+        name=tr("entries.galgame_rollback_ocr_capture_profile.name", default='回滚 OCR 推荐截图校准'),
+        description=tr("entries.galgame_rollback_ocr_capture_profile.description", default='回滚最近一次由推荐 profile 应用产生的 OCR 截图校准。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5622,7 +5644,7 @@ class GalgamePlugin(NekoPluginBase):
         **_,
     ):
         if self._cfg is None:
-            return Err(SdkError("galgame_plugin is not configured"))
+            return Err(SdkError(self._not_configured_message()))
         if not bool(confirm):
             return Err(SdkError("confirm=true is required before rolling back OCR profile"))
         try:
@@ -5637,8 +5659,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_list_memory_reader_processes",
-        name="列出 Memory Reader 候选进程",
-        description="返回 Memory Reader 可选进程，包含 exe 路径、检测到的引擎和识别原因。",
+        name=tr("entries.galgame_list_memory_reader_processes.name", default='列出 Memory Reader 候选进程'),
+        description=tr("entries.galgame_list_memory_reader_processes.description", default='返回 Memory Reader 可选进程，包含 exe 路径、检测到的引擎和识别原因。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5669,8 +5691,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_memory_reader_target",
-        name="设置 Memory Reader 目标进程",
-        description="锁定或清除 Memory Reader 的手动进程目标。",
+        name=tr("entries.galgame_set_memory_reader_target.name", default='设置 Memory Reader 目标进程'),
+        description=tr("entries.galgame_set_memory_reader_target.description", default='锁定或清除 Memory Reader 的手动进程目标。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5748,8 +5770,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_list_ocr_windows",
-        name="列出 OCR 候选窗口",
-        description="返回当前 OCR Reader 的可选窗口，可选包含只读排除列表。",
+        name=tr("entries.galgame_list_ocr_windows.name", default='列出 OCR 候选窗口'),
+        description=tr("entries.galgame_list_ocr_windows.description", default='返回当前 OCR Reader 的可选窗口，可选包含只读排除列表。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5784,8 +5806,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_set_ocr_window_target",
-        name="设置 OCR 目标窗口",
-        description="锁定或清除 OCR Reader 的手动目标窗口。",
+        name=tr("entries.galgame_set_ocr_window_target.name", default='设置 OCR 目标窗口'),
+        description=tr("entries.galgame_set_ocr_window_target.description", default='锁定或清除 OCR Reader 的手动目标窗口。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5851,8 +5873,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_open_ui",
-        name="打开 galgame UI",
-        description="返回 galgame_plugin 静态 UI 的访问路径。",
+        name=tr("entries.galgame_open_ui.name", default='打开 galgame UI'),
+        description=tr("entries.galgame_open_ui.description", default='返回 galgame_plugin 静态 UI 的访问路径。'),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["message"],
     )
@@ -5865,8 +5887,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_explain_line",
-        name="解释当前或指定台词",
-        description="对当前快照或指定 line_id 对应的台词进行解释。",
+        name=tr("entries.galgame_explain_line.name", default='解释当前或指定台词'),
+        description=tr("entries.galgame_explain_line.description", default='对当前快照或指定 line_id 对应的台词进行解释。'),
         input_schema={
             "type": "object",
             "properties": {"line_id": {"type": "string", "default": ""}},
@@ -5906,8 +5928,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_summarize_scene",
-        name="总结当前场景",
-        description="总结当前场景或指定 scene_id 的最近剧情进展。",
+        name=tr("entries.galgame_summarize_scene.name", default='总结当前场景'),
+        description=tr("entries.galgame_summarize_scene.description", default='总结当前场景或指定 scene_id 的最近剧情进展。'),
         input_schema={
             "type": "object",
             "properties": {"scene_id": {"type": "string", "default": ""}},
@@ -5937,8 +5959,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_suggest_choice",
-        name="建议当前选项",
-        description="对当前可见选项给出推荐顺位与理由。",
+        name=tr("entries.galgame_suggest_choice.name", default='建议当前选项'),
+        description=tr("entries.galgame_suggest_choice.description", default='对当前可见选项给出推荐顺位与理由。'),
         input_schema={"type": "object", "properties": {}},
         timeout=45.0,
         llm_result_fields=["choices", "diagnostic"],
@@ -5967,8 +5989,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_agent_command",
-        name="向 Game LLM Agent 发送指令",
-        description="查询 Agent 状态、上下文、发送消息或控制待机。",
+        name=tr("entries.galgame_agent_command.name", default='向 Game LLM Agent 发送指令'),
+        description=tr("entries.galgame_agent_command.description", default='查询 Agent 状态、上下文、发送消息或控制待机。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -6054,8 +6076,8 @@ class GalgamePlugin(NekoPluginBase):
 
     @plugin_entry(
         id="galgame_continue_auto_advance",
-        name="继续自动推进 galgame 剧情",
-        description="切换到自动推进模式，并向 Game LLM Agent 发送继续推进消息。",
+        name=tr("entries.galgame_continue_auto_advance.name", default='继续自动推进 galgame 剧情'),
+        description=tr("entries.galgame_continue_auto_advance.description", default='切换到自动推进模式，并向 Game LLM Agent 发送继续推进消息。'),
         input_schema={
             "type": "object",
             "properties": {

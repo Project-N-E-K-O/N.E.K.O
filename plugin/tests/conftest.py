@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -86,6 +87,11 @@ def plugin_test_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(runs_router)
     return app
+
+
+@pytest.fixture(scope="session")
+def galgame_i18n_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins/galgame_plugin/i18n"
 
 
 @pytest.fixture
