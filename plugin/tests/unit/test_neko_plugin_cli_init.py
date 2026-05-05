@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 import shutil
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-_SRC_DIR = str(CLI_ROOT / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
 
-from neko_plugin_cli.templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
+from plugin.neko_plugin_cli.templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -79,8 +74,9 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "SdkError" not in init_text
 
     readme_text = (target / "README.md").read_text(encoding="utf-8")
-    assert "uv run python neko_plugin_cli/cli.py doctor quick_demo" in readme_text
-    assert "uv run python neko_plugin_cli/cli.py release-check quick_demo" in readme_text
+    assert "From the N.E.K.O repository root" in readme_text
+    assert "uv run python -m plugin.neko_plugin_cli.cli doctor quick_demo" in readme_text
+    assert "uv run python -m plugin.neko_plugin_cli.cli release-check quick_demo" in readme_text
     assert 'entry = "plugin.plugins.quick_demo:QuickDemoPlugin"' in readme_text
     assert (target / "tests" / "test_smoke.py").is_file()
     assert (target / ".vscode" / "settings.json").is_file()
@@ -90,10 +86,12 @@ def test_generate_quick_start_creates_expected_files(tmp_path: Path) -> None:
     assert "N.E.K.O: doctor quick_demo" in tasks_text
     assert "N.E.K.O: release-check quick_demo" in tasks_text
     assert "N.E.K.O: pack quick_demo" in tasks_text
-    assert "uv run python neko_plugin_cli/cli.py verify quick_demo.neko-plugin" not in tasks_text
+    assert "uv run python -m plugin.neko_plugin_cli.cli doctor quick_demo" in tasks_text
+    assert "uv run python -m plugin.neko_plugin_cli.cli pack quick_demo" in tasks_text
+    assert "uv run python neko_plugin_cli/cli.py" not in tasks_text
 
     settings_text = (target / ".vscode" / "settings.json").read_text(encoding="utf-8")
-    assert '"nekoPlugin.pluginRoot": "../.."' in settings_text
+    assert '"nekoPlugin.repoRoot": "../../.."' in settings_text
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +216,7 @@ def test_generate_repo_verification_workflow_when_requested(tmp_path: Path) -> N
 
 
 def test_cli_init_non_interactive_supports_plugins_root(tmp_path: Path, capsys) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     exit_code = main(
@@ -244,7 +242,7 @@ def test_cli_init_non_interactive_supports_plugins_root(tmp_path: Path, capsys) 
 
 
 def test_cli_init_remote_requires_git(tmp_path: Path, capsys) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     exit_code = main(
         [
@@ -267,7 +265,7 @@ def test_cli_init_can_initialize_git_repository(tmp_path: Path) -> None:
     if shutil.which("git") is None:
         pytest.skip("git executable not available")
 
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     exit_code = main(
@@ -292,7 +290,7 @@ def test_cli_init_repo_is_one_click_repo_scaffold(tmp_path: Path) -> None:
     if shutil.which("git") is None:
         pytest.skip("git executable not available")
 
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     exit_code = main(
@@ -324,7 +322,7 @@ def test_cli_init_repo_is_one_click_repo_scaffold(tmp_path: Path) -> None:
 
 
 def test_cli_init_repo_supports_no_git_and_no_actions(tmp_path: Path) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     exit_code = main(
@@ -346,7 +344,7 @@ def test_cli_init_repo_supports_no_git_and_no_actions(tmp_path: Path) -> None:
 
 
 def test_cli_init_repo_rejects_remote_without_git(tmp_path: Path, capsys) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     exit_code = main(
         [
@@ -366,7 +364,7 @@ def test_cli_init_repo_rejects_remote_without_git(tmp_path: Path, capsys) -> Non
 
 
 def test_cli_setup_repo_adds_support_files_to_existing_plugin(tmp_path: Path) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     plugin_dir = plugins_root / "existing_life"
@@ -416,7 +414,7 @@ def test_cli_setup_repo_adds_support_files_to_existing_plugin(tmp_path: Path) ->
 
 
 def test_cli_setup_repo_skips_existing_support_files_without_overwrite(tmp_path: Path) -> None:
-    from neko_plugin_cli.cli import main
+    from plugin.neko_plugin_cli.cli import main
 
     plugins_root = tmp_path / "plugins"
     plugin_dir = plugins_root / "existing_skip"
@@ -485,8 +483,8 @@ def test_generate_adapter_template(tmp_path: Path) -> None:
 def test_non_interactive_extension_requires_interactive_host_id(tmp_path: Path, capsys) -> None:
     from argparse import Namespace
 
-    from neko_plugin_cli.commands.init_cmd import _handle_non_interactive
-    from neko_plugin_cli.paths import CliDefaults
+    from plugin.neko_plugin_cli.commands.init_cmd import _handle_non_interactive
+    from plugin.neko_plugin_cli.paths import CliDefaults
 
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir()
@@ -509,7 +507,7 @@ def test_non_interactive_extension_requires_interactive_host_id(tmp_path: Path, 
 
 def test_generate_roundtrip_pack_verify(tmp_path: Path) -> None:
     """Generated plugin can be packed and verified successfully."""
-    from neko_plugin_cli.core import inspect_package, pack_plugin
+    from plugin.neko_plugin_cli.core import inspect_package, pack_plugin
 
     spec = PluginSpec(
         plugin_id="roundtrip_init",

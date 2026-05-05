@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import sys
 import unicodedata
 from pathlib import Path, PurePosixPath
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-_SRC_DIR = str(CLI_ROOT / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
 
-from neko_plugin_cli.core.normalize import (
+from plugin.neko_plugin_cli.core.normalize import (
     normalize_archive_key,
     normalize_relative_posix,
     normalize_unicode,

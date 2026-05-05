@@ -4,30 +4,35 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-import sys
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.public import (
+    analyze_bundle_plugins,
+    inspect_package,
+    pack_bundle,
+    pack_plugin,
+    unpack_package,
+)
 from plugin.server.domain.errors import ServerDomainError
-from plugin.settings import USER_PACKAGE_PROFILES_ROOT, USER_PLUGIN_CONFIG_ROOT
+from plugin.settings import (
+    USER_PACKAGE_PROFILES_ROOT,
+    USER_PLUGIN_CONFIG_ROOT,
+    USER_PLUGIN_PACKAGES_ROOT,
+)
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-_CLI_ROOT = _PLUGIN_ROOT / "neko_plugin_cli"
 # 源仓库内置插件目录：用于 list/pack（只读扫描）。
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
 # unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
 _UNPACK_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
 _UNPACK_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
-_TARGET_ROOT = _CLI_ROOT / "target"
+# pack/upload 产物落到用户可写目录，避免桌面安装在只读位置时写入失败。
+_TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Maximum upload size (200 MB)
 _UPLOAD_MAX_BYTES = 200 * 1024 * 1024
-
-if str(_CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CLI_ROOT))
-
-from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
 
 logger = get_logger("server.application.plugin_cli")
 

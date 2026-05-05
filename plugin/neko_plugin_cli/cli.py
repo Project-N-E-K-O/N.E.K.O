@@ -1,20 +1,106 @@
-"""Source-tree CLI entry point — delegates to neko_plugin_cli.cli.
+"""neko-plugin CLI entry point.
 
-Invocations like ``python plugin/neko_plugin_cli/cli.py pack ...`` work
-without installing the package first.
+Can be invoked as:
+  - ``python -m plugin.neko_plugin_cli`` from the N.E.K.O repository root
+  - ``python plugin/neko_plugin_cli/cli.py`` from the N.E.K.O repository root
+  - ``python neko_plugin_cli/cli.py`` from the N.E.K.O ``plugin/`` directory
+  - ``neko-plugin <command>`` (when installed via pip/uv with entry_points)
+
+Shell completion (requires ``shtab``)::
+
+    # zsh
+    neko-plugin --print-completion zsh > ~/.zsh/completions/_neko-plugin
+    # bash
+    neko-plugin --print-completion bash > ~/.bash_completion.d/neko-plugin
+    # fish (not yet supported by shtab)
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
+import textwrap
 from pathlib import Path
 
-# Ensure the new src/ layout is importable.
-_SRC_DIR = str(Path(__file__).resolve().parent / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocation.
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from plugin.neko_plugin_cli.commands import (  # noqa: E402
+        analyze_cmd,
+        init_cmd,
+        inspect_cmd,
+        pack_cmd,
+        release_cmd,
+        unpack_cmd,
+        validate_cmd,
+        verify_cmd,
+    )
+    from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
+else:
+    from .commands import (
+        analyze_cmd,
+        init_cmd,
+        inspect_cmd,
+        pack_cmd,
+        release_cmd,
+        unpack_cmd,
+        validate_cmd,
+        verify_cmd,
+    )
+    from .paths import resolve_default_paths
 
-from neko_plugin_cli.cli import main  # noqa: E402
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if not hasattr(args, "handler"):
+        parser.print_help()
+        return 1
+    return args.handler(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    defaults = resolve_default_paths()
+
+    parser = argparse.ArgumentParser(
+        prog="neko-plugin",
+        description="N.E.K.O plugin development, packaging, and release CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Recommended workflow:
+              neko-plugin init-repo <plugin>       Create a standalone plugin repo
+              neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
+              neko-plugin doctor <plugin>          Diagnose local repo readiness
+              neko-plugin release-check <plugin>   Run the pre-release check used by CI
+
+            Advanced/debug commands:
+              pack, inspect, verify, unpack, analyze
+            """
+        ),
+    )
+
+    # Shell completion support (optional dependency).
+    try:
+        import shtab
+        shtab.add_argument_to(parser)
+    except ImportError:
+        pass
+
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+
+    init_cmd.register(subparsers, defaults=defaults)
+    validate_cmd.register(subparsers, defaults=defaults)
+    release_cmd.register(subparsers, defaults=defaults)
+    pack_cmd.register(subparsers, defaults=defaults)
+    inspect_cmd.register(subparsers, defaults=defaults)
+    verify_cmd.register(subparsers, defaults=defaults)
+    unpack_cmd.register(subparsers, defaults=defaults)
+    analyze_cmd.register(subparsers, defaults=defaults)
+
+    return parser
 
 
 if __name__ == "__main__":

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 import zipfile
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
 
-import cli as neko_plugin_cli
+from plugin.neko_plugin_cli import cli as neko_plugin_cli
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -159,7 +155,7 @@ def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixtu
 
 
 def test_auto_bundle_id_falls_back_when_too_long(tmp_path: Path) -> None:
-    from neko_plugin_cli.commands.pack_cmd import _build_auto_bundle_id
+    from plugin.neko_plugin_cli.commands.pack_cmd import _build_auto_bundle_id
 
     plugin_dirs = [
         tmp_path / ("plugin_" + str(index).zfill(2) + "_" + "x" * 40)

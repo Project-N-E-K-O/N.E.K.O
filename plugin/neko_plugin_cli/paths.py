@@ -30,7 +30,7 @@ def resolve_default_paths(*, cli_root: Path | None = None) -> CliDefaults:
 
     When running from the source repository the layout is::
 
-        <repo>/plugin/neko_plugin_cli/src/neko_plugin_cli/paths.py
+        <repo>/plugin/neko_plugin_cli/paths.py
         <repo>/plugin/plugins/
         <repo>/plugin/.neko-package-profiles/
 
@@ -38,8 +38,7 @@ def resolve_default_paths(*, cli_root: Path | None = None) -> CliDefaults:
     the base directory.
     """
     if cli_root is None:
-        # Default: assume we're inside the repo at plugin/neko_plugin_cli/
-        cli_root = Path(__file__).resolve().parents[2]
+        cli_root = Path(__file__).resolve().parent
 
     repo_root = cli_root.parent.parent
     plugin_root = repo_root / "plugin"

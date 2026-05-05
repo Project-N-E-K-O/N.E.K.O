@@ -6,21 +6,23 @@ independent of the backward-compatible public/ shim.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-_SRC_DIR = str(CLI_ROOT / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
 
 pytestmark = pytest.mark.plugin_unit
 
 
+def test_cli_has_single_in_repo_package_identity() -> None:
+    """The in-repo CLI must live under plugin.neko_plugin_cli, not a nested src package."""
+    cli_root = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
+    assert (cli_root / "cli.py").is_file()
+    assert not (cli_root / "src" / "neko_plugin_cli").exists()
+
+
 def test_core_package_exports_all_public_functions() -> None:
-    from neko_plugin_cli.core import (
+    from plugin.neko_plugin_cli.core import (
         PackResult,
         analyze_bundle_plugins,
         inspect_package,
@@ -37,7 +39,7 @@ def test_core_package_exports_all_public_functions() -> None:
 
 
 def test_core_submodules_are_importable() -> None:
-    from neko_plugin_cli.core import normalize, archive_utils, pack_rules, plugin_source
+    from plugin.neko_plugin_cli.core import normalize, archive_utils, pack_rules, plugin_source
     assert hasattr(normalize, "validate_archive_entry_name")
     assert hasattr(archive_utils, "compute_archive_payload_hash")
     assert hasattr(pack_rules, "should_skip_path")
@@ -45,13 +47,13 @@ def test_core_submodules_are_importable() -> None:
 
 
 def test_cli_module_is_importable() -> None:
-    from neko_plugin_cli.cli import main, build_parser
+    from plugin.neko_plugin_cli.cli import main, build_parser
     assert callable(main)
     assert callable(build_parser)
 
 
 def test_paths_module_is_importable() -> None:
-    from neko_plugin_cli.paths import CliDefaults, resolve_default_paths
+    from plugin.neko_plugin_cli.paths import CliDefaults, resolve_default_paths
     assert callable(resolve_default_paths)
     defaults = resolve_default_paths()
     assert isinstance(defaults, CliDefaults)
@@ -59,7 +61,7 @@ def test_paths_module_is_importable() -> None:
 
 def test_pack_verify_roundtrip_via_new_imports(tmp_path: Path) -> None:
     """Full pack → inspect → verify roundtrip using the new import path."""
-    from neko_plugin_cli.core import inspect_package, pack_plugin
+    from plugin.neko_plugin_cli.core import inspect_package, pack_plugin
 
     plugin_dir = tmp_path / "roundtrip_plugin"
     plugin_dir.mkdir()

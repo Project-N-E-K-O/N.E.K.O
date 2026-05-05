@@ -66,6 +66,9 @@ embeddings = [
   "tokenizers",
 ]
 
+[project.scripts]
+neko-plugin = "plugin.neko_plugin_cli.cli:main"
+
 
 [tool.hatch.build.targets.wheel]
 packages = [
@@ -140,4 +143,3 @@ select = [
   "ASYNC222",  # Popen.wait / Popen.communicate
   "ASYNC251",  # time.sleep in async function
 ]
-

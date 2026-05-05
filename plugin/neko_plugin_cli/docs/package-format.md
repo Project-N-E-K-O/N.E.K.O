@@ -27,7 +27,7 @@ Both package types are standard ZIP archives and must remain compatible with nor
 `neko_plugin_cli` now uses a single CLI entry:
 
 ```bash
-uv run python plugin/neko_plugin_cli/cli.py <command> ...
+uv run python -m plugin.neko_plugin_cli.cli <command> ...
 ```
 
 Current commands:
@@ -37,15 +37,21 @@ Current commands:
 - `verify`
 - `unpack`
 - `analyze`
+- `init`
+- `init-repo`
+- `setup-repo`
+- `doctor`
+- `release-check`
+- `validate`
 
 Examples:
 
 ```bash
-uv run python plugin/neko_plugin_cli/cli.py pack qq_auto_reply
-uv run python plugin/neko_plugin_cli/cli.py inspect qq_auto_reply.neko-plugin
-uv run python plugin/neko_plugin_cli/cli.py verify qq_auto_reply.neko-plugin
-uv run python plugin/neko_plugin_cli/cli.py unpack qq_auto_reply.neko-plugin
-uv run python plugin/neko_plugin_cli/cli.py analyze qq_auto_reply mijia
+uv run python -m plugin.neko_plugin_cli.cli pack qq_auto_reply
+uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli unpack qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```
 
 ## Archive Layout

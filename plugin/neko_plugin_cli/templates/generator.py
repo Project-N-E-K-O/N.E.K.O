@@ -496,11 +496,11 @@ This repository is meant to live at:
 N.E.K.O/plugin/plugins/{spec.plugin_id}
 ```
 
-From the N.E.K.O `plugin/` directory:
+From the N.E.K.O repository root:
 
 ```bash
-uv run python neko_plugin_cli/cli.py doctor {spec.plugin_id}
-uv run python neko_plugin_cli/cli.py release-check {spec.plugin_id}
+uv run python -m plugin.neko_plugin_cli.cli doctor {spec.plugin_id}
+uv run python -m plugin.neko_plugin_cli.cli release-check {spec.plugin_id}
 ```
 
 ## Entry
@@ -543,9 +543,9 @@ build/
 
 def _render_vscode_settings() -> str:
     return '''{
-  "nekoPlugin.pluginRoot": "../..",
+  "nekoPlugin.repoRoot": "../../..",
   "python.analysis.extraPaths": [
-    "${workspaceFolder}/../.."
+    "${workspaceFolder}/../../.."
   ]
 }
 '''
@@ -558,27 +558,27 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
     {{
       "label": "N.E.K.O: doctor {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python neko_plugin_cli/cli.py doctor {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli doctor {spec.plugin_id}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+        "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
       "problemMatcher": []
     }},
     {{
       "label": "N.E.K.O: release-check {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python neko_plugin_cli/cli.py release-check {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli release-check {spec.plugin_id}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+        "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
       "problemMatcher": []
     }},
     {{
       "label": "N.E.K.O: pack {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python neko_plugin_cli/cli.py pack {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli pack {spec.plugin_id}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.pluginRoot}}"
+        "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
       "problemMatcher": []
     }}
@@ -626,17 +626,17 @@ jobs:
           cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
 
       - name: Release check
-        working-directory: neko/plugin
+        working-directory: neko
         run: |
-          mkdir -p neko_plugin_cli/target
-          uv run python neko_plugin_cli/cli.py release-check "${{PLUGIN_ID}}" | tee "neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
+          mkdir -p plugin/neko_plugin_cli/target
+          uv run python -m plugin.neko_plugin_cli.cli release-check "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
 
       - name: Write verification summary
-        working-directory: neko/plugin
+        working-directory: neko
         run: |
-          PACKAGE="neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
+          PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
           PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
-          NEKO_COMMIT="$(git -C .. rev-parse HEAD)"
+          NEKO_COMMIT="$(git rev-parse HEAD)"
 
           {{
             echo "## N.E.K.O Plugin Verification"
@@ -653,7 +653,7 @@ jobs:
             echo ""
             echo "### Release Check"
             echo '```text'
-            cat "neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
+            cat "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
             echo '```'
           }} >> "$GITHUB_STEP_SUMMARY"
 

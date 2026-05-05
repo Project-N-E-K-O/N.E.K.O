@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
-import sys
 
 import pytest
 from fastapi import FastAPI
@@ -11,11 +10,8 @@ from httpx import ASGITransport, AsyncClient
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
 
-CLI_ROOT = Path(__file__).resolve().parents[3] / "neko_plugin_cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
 
-from public import pack_plugin
+from plugin.neko_plugin_cli.public import pack_plugin
 
 pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"

@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-_SRC_DIR = str(CLI_ROOT / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
 
-from neko_plugin_cli.commands._resolve import (
+from plugin.neko_plugin_cli.commands._resolve import (
     resolve_package_path,
     resolve_plugin_dir_candidate,
     resolve_plugin_dirs,
 )
-from neko_plugin_cli.paths import CliDefaults
+from plugin.neko_plugin_cli.paths import CliDefaults
 
 pytestmark = pytest.mark.plugin_unit
 

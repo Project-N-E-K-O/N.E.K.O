@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
-import sys
 import zipfile
 
 import pytest
@@ -12,12 +11,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko_plugin_cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
 
-import cli as neko_plugin_cli
-from public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
+from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.public import analyze_bundle_plugins, inspect_package, pack_bundle, pack_plugin, unpack_package
 
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
 
