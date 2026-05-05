@@ -2634,6 +2634,7 @@
         "serverNotReturnedValidJSON": "El servidor no devolvió datos JSON válidos"
     },
     "tutorial": {
+        "homeInteractionLocked": "El tutorial está en curso. Sigue la guía para completar este paso primero.",
         "step1": {
             "title": "👋 Bienvenido a N.E.K.O",
             "desc": "¡Este es tu Neko! Déjame guiarte a través de las funciones ~"

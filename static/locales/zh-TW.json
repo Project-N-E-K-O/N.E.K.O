@@ -2634,6 +2634,7 @@
         "serverNotReturnedValidJSON": "服務器未返迴有效的 JSON 數據"
     },
     "tutorial": {
+        "homeInteractionLocked": "新手引導進行中，請先依照引導完成目前步驟",
         "step1": {
             "title": "👋 歡迎來到 N.E.K.O",
             "desc": "這是妳的貓娘！接下來我會帶妳熟悉各項功能~"
