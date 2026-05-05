@@ -35,6 +35,32 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function isHomeTutorialLockedForGreeting() {
+        try {
+            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
+                return window.isNekoHomeTutorialBlockingGreeting() === true;
+            }
+            if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
+                return window.isNekoHomeTutorialInteractionLocked() === true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function sendHomeTutorialState(reason) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'home_tutorial_state',
+                blocking_greeting: isHomeTutorialLockedForGreeting(),
+                reason: reason || 'state-sync',
+                timestamp: Date.now(),
+            }));
+        } catch (error) {
+            console.warn('[HomeTutorial] failed to sync tutorial state:', error);
+        }
+    }
+
     function normalizeAssistantTurnId(turnId) {
         if (turnId === undefined || turnId === null || turnId === '') {
             return null;
@@ -574,6 +600,8 @@
                 }
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
+
+            sendHomeTutorialState('ws-open');
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
@@ -2119,8 +2147,7 @@
     function _isTutorialBlockingGreeting() {
         if (!_isHomeTutorialPage()) return false;
         try {
-            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function'
-                    && window.isNekoHomeTutorialBlockingGreeting() === true) {
+            if (isHomeTutorialLockedForGreeting()) {
                 return true;
             }
         } catch (_) {}
@@ -2212,6 +2239,14 @@
     // VRM / MMD
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
+
+    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        sendHomeTutorialState(detail.reason || 'lock-changed');
+        if (detail.locked === false) {
+            _sendGreetingCheckIfReady();
+        }
+    });
 
     // ========================  Export module  ========================
     window.appWebSocket = mod;

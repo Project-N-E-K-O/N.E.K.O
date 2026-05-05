@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('disables composer submission while the home tutorial owns interaction', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App composerDisabled onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
     const onComposerSubmit = vi.fn();
     render(<App onComposerSubmit={onComposerSubmit} />);

@@ -52,6 +52,7 @@
         galgameOptions: [],
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
+        homeTutorialInteractionLocked: false,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
         // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -421,7 +422,8 @@
             translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
-            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…')
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
+            composerDisabled: !!state.homeTutorialInteractionLocked
         };
     }
 
@@ -787,6 +789,9 @@
     }
 
     function handleComposerSubmit(payload) {
+        if (state.homeTutorialInteractionLocked) {
+            return;
+        }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
             ? payload.requestId
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1663,6 +1668,18 @@
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function setHomeTutorialInteractionLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInteractionLocked === next) {
+            return;
+        }
+        state.homeTutorialInteractionLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            composerDisabled: next
+        });
         renderWindow();
     }
 
@@ -2712,6 +2729,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

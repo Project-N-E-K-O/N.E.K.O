@@ -13,6 +13,24 @@
     const C = window.appConst;
     const U = window.appUtils;
 
+    function isHomeTutorialInteractionLocked() {
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showHomeTutorialLockedToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('tutorial.homeInteractionLocked', '新手引导进行中，请先按引导完成当前步骤') : '新手引导进行中，请先按引导完成当前步骤',
+                2500
+            );
+        }
+    }
+
     // ======================== Screenshot helpers ========================
 
     /**
@@ -217,8 +235,13 @@
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
+        if (isHomeTutorialInteractionLocked()) {
+            showHomeTutorialLockedToast();
+            return false;
+        }
         var input = mod.ensureImportImageInput();
         input.click();
+        return true;
     };
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
@@ -912,6 +935,9 @@
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();
+        if (typeof host.setHomeTutorialInteractionLocked === 'function') {
+            host.setHomeTutorialInteractionLocked(isHomeTutorialInteractionLocked(), 'host-bound');
+        }
         return true;
     }
 
@@ -955,6 +981,37 @@
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
         var textInputComposing = false;
         var lastTextCompositionEndAt = 0;
+        var homeTutorialLockedSnapshot = null;
+
+        function setElementTutorialLocked(element, locked) {
+            if (!element) return;
+            if (locked) {
+                if (element.dataset.nekoHomeTutorialLocked !== 'true') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = element.disabled ? 'true' : 'false';
+                }
+                element.dataset.nekoHomeTutorialLocked = 'true';
+                element.disabled = true;
+                return;
+            }
+            if (element.dataset.nekoHomeTutorialLocked !== 'true') return;
+            element.disabled = element.dataset.nekoHomeTutorialPrevDisabled === 'true';
+            delete element.dataset.nekoHomeTutorialLocked;
+            delete element.dataset.nekoHomeTutorialPrevDisabled;
+        }
+
+        function applyHomeTutorialInteractionLock(reason) {
+            var locked = isHomeTutorialInteractionLocked();
+            if (homeTutorialLockedSnapshot === locked) {
+                return;
+            }
+            homeTutorialLockedSnapshot = locked;
+            setElementTutorialLocked(textSendButton, locked);
+            setElementTutorialLocked(textInputBox, locked);
+            setElementTutorialLocked(screenshotButton, locked);
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setHomeTutorialInteractionLocked === 'function') {
+                window.reactChatWindowHost.setHomeTutorialInteractionLocked(locked, reason || 'app-buttons');
+            }
+        }
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -1445,6 +1502,11 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            if (!text && !hasScreenshots) return false;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             var requestId = (typeof options.requestId === 'string' && options.requestId)
                 ? options.requestId
                 : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1457,8 +1519,6 @@
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
-
-            if (!text && !hasScreenshots) return false;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
@@ -1714,6 +1774,10 @@
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
 
             if (options.skipAvatarInteractionDeferral !== true
                     && text
@@ -2263,6 +2327,10 @@
         window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl;
 
         mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             try {
                 screenshotButton.disabled = true;
                 window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
@@ -2296,7 +2364,11 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                screenshotButton.disabled = false;
+                if (isHomeTutorialInteractionLocked()) {
+                    setElementTutorialLocked(screenshotButton, true);
+                } else {
+                    screenshotButton.disabled = false;
+                }
             }
         };
 
@@ -2330,6 +2402,7 @@
         // ----------------------------------------------------------------
         document.addEventListener('paste', function (e) {
             if (!e.clipboardData || !e.clipboardData.items) return;
+            if (isHomeTutorialInteractionLocked()) return;
             // Don't handle paste when crop overlay is open
             var cropOverlay = document.getElementById('crop-overlay');
             if (cropOverlay && cropOverlay.style.display !== 'none') return;
@@ -2360,6 +2433,11 @@
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();
+        applyHomeTutorialInteractionLock('init');
+        window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            applyHomeTutorialInteractionLock(detail.reason || 'lock-changed');
+        });
     };
 
     window.appButtons = mod;
