@@ -3875,6 +3875,10 @@
         "debugButton": {
             "holdToSubmit": "鬆開提交",
             "idle": "除錯語音"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不啟用）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
     }
 }

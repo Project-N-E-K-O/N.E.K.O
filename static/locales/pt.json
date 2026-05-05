@@ -3875,6 +3875,10 @@
         "debugButton": {
             "holdToSubmit": "Solte para enviar",
             "idle": "Voz de depuração"
+        },
+        "memoryOption": {
+            "label": "Salvar esta partida na memória (desativado por padrão)",
+            "hint": "Quando desativado, as entradas do jogador, as respostas diretas de NEKO, as reações a eventos, o resumo da partida e as conversas seguintes não são salvas nem consultadas na memória."
         }
     }
 }

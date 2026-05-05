@@ -3875,6 +3875,10 @@
         "debugButton": {
             "holdToSubmit": "Release to submit",
             "idle": "Debug voice"
+        },
+        "memoryOption": {
+            "label": "Save this match to memory (off by default)",
+            "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
     }
 }

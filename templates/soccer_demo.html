@@ -259,8 +259,8 @@
     </div>
     <div id="loading-actions" hidden>
       <button id="soccer-start-button" type="button">开始</button>
-      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> 本局进入记忆（测试期间默认不开启）</label>
-      <div id="game-memory-hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
+      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> <span id="game-memory-label" data-i18n-key="soccer.memoryOption.label">本局对话进入记忆（默认不开启）</span></label>
+      <div id="game-memory-hint" data-i18n-key="soccer.memoryOption.hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
     </div>
   </div>
 </div>
@@ -1399,8 +1399,11 @@
     if (!bubbleEl) return;
     bubbleEl.textContent = text;
     bubbleEl.setAttribute('data-mood', mood);
-    if (sourceLabel) bubbleEl.setAttribute('data-source-label', sourceLabel);
-    else bubbleEl.removeAttribute('data-source-label');
+    // 不再向用户展示 ``data-source-label``（"LLM生成 · 850ms" / "开局上下文" / "快路径
+    // 兜底" 等）。这些是开发期溯源/延迟信息，玩家看到只觉冗余、且强调"延迟"反而拉低
+    // 体验。``sourceLabel`` 仍由 caller 传进来用于 console 日志与调试，但不渲染到
+    // bubble 上方。CSS ``[data-source-label]::before`` 规则保留以备调试模式回插。
+    bubbleEl.removeAttribute('data-source-label');
     bubbleEl.classList.add('show');
     if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
     bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
@@ -3576,6 +3579,19 @@
     if (localized && localized !== 'soccer.exitGame.button') {
       exitToStartButton.textContent = localized;
     }
+  }
+
+  // 同样的兜底语义批量处理 ``data-i18n-key`` 元素：开始覆盖层里的"是否进入记忆"
+  // checkbox label + hint。i18n 未就绪时保留 HTML 字面量；就绪后把 textContent
+  // 换成当前 locale。元素只在 loading-actions 可见后才会被用户看到，所以这里
+  // 一次性更新即可（和 exit button 同一时序）。
+  if (typeof window.t === 'function') {
+    document.querySelectorAll('#loading-actions [data-i18n-key]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-key');
+      if (!key) return;
+      const v = window.t(key);
+      if (v && v !== key) el.textContent = v;
+    });
   }
 
   let _manualEndInFlight = false;
