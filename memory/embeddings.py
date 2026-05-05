@@ -51,6 +51,7 @@ import hashlib
 import logging
 import os
 import platform
+import re
 import sys
 from typing import Any
 
@@ -215,6 +216,37 @@ def decode_embedding(emb: Any):
         except (TypeError, ValueError):
             return None
     return None
+
+
+# Match the ``-<dim>d-`` segment of an ``embedding_model_id`` like
+# ``local-text-retrieval-v1-256d-int8``.  Anchored on both sides with
+# ``-`` so we don't confuse the dim segment with a profile-name fragment
+# that happens to contain a digit.
+_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-")
+
+
+def parse_dim_from_model_id(model_id: str | None) -> int | None:
+    """Extract the embedding dimension from a model_id, or None if the
+    id can't be parsed.
+
+    ``embedding_model_id`` is built by :func:`build_model_id` and always
+    has the shape ``<profile>-<dim>d-<quant>`` (see commit history of
+    P2). We parse it here so :func:`is_cached_embedding_valid` and
+    :func:`MemoryRecallReranker._coarse_rank` can both validate
+    decoded vector shape against the *expected* dim — without this,
+    corrupt or wrong-length payloads would still pass the typeof
+    check and either stick forever (worker won't re-stamp) or poison
+    the batched matmul with a single bad row.
+    """
+    if not model_id or not isinstance(model_id, str):
+        return None
+    m = _MODEL_ID_DIM_RE.search(model_id)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _embedding_text_sha256(text: str) -> str:
@@ -972,6 +1004,11 @@ def is_cached_embedding_valid(
     Match contract (mirrors ``token_count`` cache in persona.py):
       * embedding field is a non-empty base64 string (canonical form
         emitted by :func:`stamp_embedding_fields`)
+      * the payload actually decodes (corrupt base64 → invalid)
+      * decoded length matches the dim encoded in the running
+        ``model_id`` — guards against truncated payloads and against
+        a wrong-quantization payload sneaking through under the right
+        model_id string
       * sha256 of ``current_text`` matches stored ``embedding_text_sha256``
       * ``embedding_model_id`` matches the running service's id
 
@@ -979,6 +1016,12 @@ def is_cached_embedding_valid(
     so the warmup worker re-stamps them in the new compact form. The
     one-time CPU cost is bounded (small N at migration time) and avoids
     carrying two on-disk shapes forward indefinitely.
+
+    Without the decode + dim check, a corrupt cache row would pass the
+    typeof guard, never get re-stamped by the worker (it keeps
+    "validating"), and silently fall through to the unembedded pool in
+    every recall — a permanent retrieval-quality regression for that
+    entry (Codex review on PR #1147).
 
     Any mismatch → False, callers should clear the embedding fields and
     re-enqueue the entry for the warmup worker.
@@ -993,6 +1036,12 @@ def is_cached_embedding_valid(
     if entry.get("embedding_model_id") != current_model_id:
         return False
     if entry.get("embedding_text_sha256") != _embedding_text_sha256(current_text):
+        return False
+    decoded = _decode_vector_int8(emb)
+    if decoded is None or decoded.size == 0:
+        return False
+    expected_dim = parse_dim_from_model_id(current_model_id)
+    if expected_dim is not None and decoded.size != expected_dim:
         return False
     return True
 

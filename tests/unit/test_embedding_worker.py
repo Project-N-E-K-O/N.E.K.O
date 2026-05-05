@@ -44,7 +44,7 @@ class _FakeService:
     parallel-test isolation pytest-asyncio gives us."""
 
     def __init__(
-        self, *, available: bool = True, model_id: str = "fake-128d-int8",
+        self, *, available: bool = True, model_id: str = "fake-4d-int8",
         disabled: bool = False, vector_factory=None,
     ) -> None:
         self._available = available
@@ -266,7 +266,7 @@ async def test_sweep_embeds_persona_reflection_and_facts_in_place():
     run one sweep, assert every entry got the embedding triple stamped
     AND that the model_id matches the service's id (no cross-cache leak)."""
     service = _FakeService(
-        available=True, model_id="fake-128d-int8",
+        available=True, model_id="fake-4d-int8",
         vector_factory=lambda text: [float(len(text))] * 4,
     )
     persona = _PersonaStub()
@@ -304,10 +304,10 @@ async def test_sweep_embeds_persona_reflection_and_facts_in_place():
         expected = [float(len(entry["text"]))] * 4
         assert decoded is not None
         assert decoded.tolist() == pytest.approx(expected, abs=0.02)
-        assert entry["embedding_model_id"] == "fake-128d-int8"
+        assert entry["embedding_model_id"] == "fake-4d-int8"
         assert entry["embedding_text_sha256"] == _embedding_text_sha256(entry["text"])
     assert reflection.store["小天"][0]["embedding"] is not None
-    assert reflection.store["小天"][0]["embedding_model_id"] == "fake-128d-int8"
+    assert reflection.store["小天"][0]["embedding_model_id"] == "fake-4d-int8"
     assert fact.store["小天"][0]["embedding"] is not None
     assert persona.save_calls == 1
     assert reflection.save_calls == 1
@@ -320,7 +320,7 @@ async def test_sweep_skips_entries_with_valid_cache():
     service ⇒ entry is NOT re-embedded. Exercises the contract that
     lets the worker run on every poll without burning CPU."""
     service = _FakeService(
-        available=True, model_id="fake-128d-int8",
+        available=True, model_id="fake-4d-int8",
     )
     persona = _PersonaStub()
     text = "stable text"
@@ -331,7 +331,7 @@ async def test_sweep_skips_entries_with_valid_cache():
                     "text": text,
                     "embedding": _encode_vector_int8([0.9] * 4),
                     "embedding_text_sha256": _embedding_text_sha256(text),
-                    "embedding_model_id": "fake-128d-int8",
+                    "embedding_model_id": "fake-4d-int8",
                 },
             ],
         },
@@ -365,7 +365,7 @@ async def test_sweep_re_embeds_when_model_id_flipped():
                     "text": text,
                     "embedding": _encode_vector_int8([0.9] * 4),
                     "embedding_text_sha256": _embedding_text_sha256(text),
-                    "embedding_model_id": "fake-128d-int8",
+                    "embedding_model_id": "fake-4d-int8",
                 },
             ],
         },
@@ -385,7 +385,7 @@ async def test_sweep_re_embeds_when_model_id_flipped():
 async def test_sweep_respects_per_tick_budget(monkeypatch):
     """A backlog larger than MAX_ENTRIES_PER_TICK must yield after
     spending the budget. Remaining work picks up on the next sweep."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     persona = _PersonaStub()
     persona.store["小天"] = {
         "master": {
@@ -419,7 +419,7 @@ async def test_sweep_respects_per_tick_budget(monkeypatch):
 async def test_sweep_handles_empty_text_entries_gracefully():
     """Entries with empty text shouldn't be queued for embedding (no
     point) and shouldn't crash the sweep."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     persona = _PersonaStub()
     persona.store["小天"] = {
         "master": {
@@ -447,7 +447,7 @@ async def test_notify_first_process_idempotent():
     """Multiple notifications collapse to a single set — second call
     must be a no-op (event.set is idempotent but we want to be explicit
     about the contract for callers)."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     persona = _PersonaStub()
     reflection = _ReflectionStub()
     fact = _FactStub()
@@ -468,7 +468,7 @@ async def test_fact_sweep_forwards_dedup_candidates_when_resolver_present():
     Confirms the wiring step 2 added in memory_server.py — without
     this, the dedup queue stays empty even with vectors enabled."""
     service = _FakeService(
-        available=True, model_id="fake-128d-int8",
+        available=True, model_id="fake-4d-int8",
         # Force every embedding to be the same vector so cosine = 1.0
         # for every pair, guaranteed above the 0.85 threshold.
         vector_factory=lambda text: [1.0, 0.0, 0.0, 0.0],
@@ -482,7 +482,7 @@ async def test_fact_sweep_forwards_dedup_candidates_when_resolver_present():
         {"id": "e1", "text": "主人喜欢猫", "entity": "master",
          "embedding": _encode_vector_int8([1.0, 0.0, 0.0, 0.0]),
          "embedding_text_sha256": _embedding_text_sha256("主人喜欢猫"),
-         "embedding_model_id": "fake-128d-int8",
+         "embedding_model_id": "fake-4d-int8",
          "absorbed": False},
         # New row needing embedding — worker fills it in this sweep
         # and then detects the collision against e1.
@@ -510,7 +510,7 @@ async def test_fact_sweep_skips_dedup_when_resolver_is_none():
     but never calls into the dedup path. This preserves the legacy
     hash-only dedup behaviour for installations that haven't enabled
     the LLM arbitration loop yet."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     persona = _PersonaStub()
     reflection = _ReflectionStub()
     fact = _FactStub()
@@ -534,7 +534,7 @@ async def test_stop_during_warmup_skips_load():
     """Shutdown while still in warmup wait → don't trigger the model
     load. Catches the case where the FastAPI shutdown hook fires before
     the user has had a chance to /process."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     persona = _PersonaStub()
     reflection = _ReflectionStub()
     fact = _FactStub()
@@ -556,7 +556,7 @@ async def test_live_getters_observe_reload_swap():
     instances, not the snapshot captured at construction time. Locks
     in the worker exiting any "snapshot persona_manager / fact_store
     in __init__" regression."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
     state = {
         "persona": _PersonaStub(),
         "reflection": _ReflectionStub(),
@@ -608,7 +608,7 @@ async def test_save_failure_returns_zero_to_avoid_hot_loop():
     failed to persist them must report 0 progress, not N — otherwise
     the no-sleep saturated-budget branch in _run() hot-loops on a
     persistent disk error (full / RO / permission)."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
 
     class _FailingFact(_FactStub):
         async def asave_facts(self, name: str) -> None:
@@ -645,7 +645,7 @@ async def test_dedup_resolver_observed_via_live_getter():
     This test pins the getter pattern; if someone reverts to a snapshot
     on `__init__`, the second sweep would still call the old resolver
     and the assertion on `new_resolver.calls` would fail."""
-    service = _FakeService(available=True, model_id="fake-128d-int8")
+    service = _FakeService(available=True, model_id="fake-4d-int8")
 
     persona = _PersonaStub()
     reflection = _ReflectionStub()
@@ -658,10 +658,16 @@ async def test_dedup_resolver_observed_via_live_getter():
     # fresh one as a paraphrase candidate. Cosine >= 0.9 threshold;
     # identical 4-vec gives cosine 1.0.
     base_emb = [0.5, 0.5, 0.5, 0.5]
+    # ``fact-old`` is the existing-with-embedding side: encode in the
+    # canonical base64+int8 form with a matching text-sha so it
+    # survives is_cached_embedding_valid and only ``fact-new`` gets
+    # embedded this sweep — that's the dedup-resolver flow under
+    # test (CodeRabbit review PR #1147).
     state["fact"].store["小天"] = [
         {"id": "fact-old", "entity": "user", "text": "old",
-         "embedding": list(base_emb), "embedding_text_sha256": "x",
-         "embedding_model_id": "fake-128d-int8", "absorbed": False},
+         "embedding": _encode_vector_int8(base_emb),
+         "embedding_text_sha256": _embedding_text_sha256("old"),
+         "embedding_model_id": "fake-4d-int8", "absorbed": False},
         {"id": "fact-new", "entity": "user", "text": "old paraphrase",
          "embedding": None,
          "embedding_text_sha256": None, "embedding_model_id": None,
@@ -685,8 +691,9 @@ async def test_dedup_resolver_observed_via_live_getter():
     new_fact = _FactStub()
     new_fact.store["小天"] = [
         {"id": "fact-a", "entity": "user", "text": "alpha",
-         "embedding": list(base_emb), "embedding_text_sha256": "y",
-         "embedding_model_id": "fake-128d-int8", "absorbed": False},
+         "embedding": _encode_vector_int8(base_emb),
+         "embedding_text_sha256": _embedding_text_sha256("alpha"),
+         "embedding_model_id": "fake-4d-int8", "absorbed": False},
         {"id": "fact-b", "entity": "user", "text": "alpha rephrased",
          "embedding": None,
          "embedding_text_sha256": None, "embedding_model_id": None,

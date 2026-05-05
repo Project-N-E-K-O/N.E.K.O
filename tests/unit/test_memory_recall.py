@@ -33,7 +33,7 @@ class _FakeService:
     narrow so tests stay readable."""
 
     def __init__(
-        self, *, available: bool = True, model_id: str = "fake-128d-int8",
+        self, *, available: bool = True, model_id: str = "fake-2d-int8",
         vector_factory=None,
     ) -> None:
         self._available = available
@@ -69,7 +69,7 @@ def _obs(oid: str, text: str, *, score: float = 1.0,
          entity: str = "master",
          target_type: str = "persona",
          embedding: list[float] | None = None,
-         model_id: str = "fake-128d-int8",
+         model_id: str = "fake-2d-int8",
          status: str | None = None,
          suppress: bool = False,
          protected: bool = False) -> dict:
@@ -347,6 +347,53 @@ async def test_coarse_rank_unembedded_quota_picks_highest_evidence():
     # Quota=1 → only the higher-evidence un-embedded entry survives.
     assert "unemb_high" in out_ids
     assert "unemb_low" not in out_ids
+
+
+@pytest.mark.asyncio
+async def test_coarse_rank_first_wrong_dim_does_not_poison_others():
+    """Codex review PR #1147 P2: target_dim must come from the running
+    service's model_id (which encodes the dim by construction), not
+    from whichever decoded candidate appears first.  Otherwise a
+    single corrupt-but-decodable row at the head of the list would
+    push every correctly-sized candidate into the unembedded pool and
+    silently lose the cosine ranking.
+
+    Construct a model_id whose dim segment ("2d") encodes the correct
+    candidate dim, then place a wrong-dim row first.  With the fix,
+    that row is rejected (mismatches the model_id) and the remaining
+    candidates still get cosine-ranked normally.
+
+    is_cached_embedding_valid also rejects wrong-dim rows under a
+    parseable model_id, so the bad row simply won't reach the matrix
+    builder — but we keep the regression target on the recall side as
+    well to lock the model_id-driven invariant in place."""
+    svc = _FakeService(
+        available=True,
+        model_id="local-text-retrieval-v1-2d-int8",
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    # First row has the wrong dim (3d); rest are 2d. With the previous
+    # "first wins" rule, every 2d candidate would be flagged as a dim
+    # mismatch and dropped to unembedded.
+    obs = [
+        _obs("bad_first", "t", score=0.0,
+             embedding=[1.0, 0.0, 0.0],   # 3d under a 2d model_id
+             model_id="local-text-retrieval-v1-2d-int8"),
+        _obs("good_a", "t", score=0.0, embedding=[1.0, 0.0],
+             model_id="local-text-retrieval-v1-2d-int8"),
+        _obs("good_b", "t", score=0.0, embedding=[0.0, 1.0],
+             model_id="local-text-retrieval-v1-2d-int8"),
+    ]
+    out = await r._coarse_rank(obs, query_texts=["q"], k=3)
+    out_ids = [o["id"] for o in out]
+    # The 2d candidates must still come out in cosine order; the bad
+    # row falls into the unembedded pool but the others are not
+    # poisoned by it.
+    assert out_ids[0] == "good_a"  # cosine 1.0 against [1, 0]
+    # good_b lands either second (above bad_first by cosine) or via
+    # the unembedded quota — assert only that it survives.
+    assert "good_b" in out_ids
 
 
 @pytest.mark.asyncio

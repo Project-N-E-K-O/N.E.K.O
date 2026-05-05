@@ -52,6 +52,7 @@ from memory.embeddings import (
     decode_embedding,
     get_embedding_service,
     is_cached_embedding_valid,
+    parse_dim_from_model_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,10 +286,21 @@ class MemoryRecallReranker:
         # decode per pair too. Stacking amortises decode to one pass
         # and pushes the dot product into BLAS — at 5k entries × 256d
         # that drops the coarse rank from hundreds of ms to a few.
+        # Derive target_dim from the running service's model_id rather
+        # than from the first decoded candidate. Codex review PR #1147
+        # P2: if the first valid-on-paper row decoded to the wrong
+        # length, the old "first wins" rule would push every correctly
+        # sized candidate to the unembedded pool and silently lose the
+        # cosine ranking. model_id encodes dim by construction (see
+        # build_model_id), so it's the authoritative source.
+        # If the id is unparseable (custom model_id from a fixture or
+        # future profile), fall back to the first decoded row's dim —
+        # better than dropping every candidate to unembedded.
+        target_dim = parse_dim_from_model_id(model_id)
+
         embedded_obs: list[dict] = []
         embedded_decoded: list = []
         unembedded: list[dict] = []
-        target_dim: int | None = None
         for o in observations:
             # ``observations`` already passed through ``_hard_filter``,
             # which guarantees every entry is a dict with non-empty
@@ -301,7 +313,10 @@ class MemoryRecallReranker:
             # A row that passes is_cached_embedding_valid but fails to
             # decode (corrupt base64, or a future format we don't
             # know) falls through to the unembedded pool rather than
-            # crashing the rerank.
+            # crashing the rerank.  is_cached_embedding_valid already
+            # tries to decode and checks dim, so this branch is mainly
+            # defence-in-depth for racey writes between validity check
+            # and rerank.
             if cvec is None or cvec.size == 0:
                 unembedded.append(o)
                 continue

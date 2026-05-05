@@ -605,16 +605,18 @@ def test_decode_embedding_accepts_legacy_list_and_numpy():
 
 
 def test_is_cached_embedding_valid_full_match():
-    """Vector + sha + model_id all match → valid."""
+    """Vector + sha + model_id all match → valid.  Vector length must
+    match the dim segment of model_id (3 here) or the strengthened
+    validity check rejects it as a wrong-dim payload."""
     text = "主人喜欢猫"
     entry = {
         "text": text,
         "embedding": _encode_vector_int8([0.1, 0.2, 0.3]),
         "embedding_text_sha256": _embedding_text_sha256(text),
-        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+        "embedding_model_id": "local-text-retrieval-v1-3d-int8",
     }
     assert is_cached_embedding_valid(
-        entry, text, "local-text-retrieval-v1-128d-int8",
+        entry, text, "local-text-retrieval-v1-3d-int8",
     )
 
 
@@ -666,6 +668,44 @@ def test_is_cached_embedding_valid_missing_or_empty_embedding():
         {**base, "embedding": ""},
         text,
         "local-text-retrieval-v1-128d-int8",
+    )
+
+
+def test_is_cached_embedding_valid_corrupt_base64_invalidates():
+    """Codex review PR #1147 P1: a row whose ``embedding`` is a non-empty
+    string but doesn't actually decode must be treated as invalid so
+    the worker re-stamps it.  Without this, corrupt cache values stick
+    forever (typeof check passes, worker skips) while recall/dedup
+    silently treat them as missing — a permanent retrieval-quality
+    regression for affected entries."""
+    text = "x"
+    entry = {
+        "text": text,
+        "embedding": "this-is-not-valid-base64-!!!",
+        "embedding_text_sha256": _embedding_text_sha256(text),
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+    }
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
+    )
+
+
+def test_is_cached_embedding_valid_wrong_dim_payload_invalidates():
+    """A truncated or mis-quantized payload that decodes successfully
+    but to the wrong length must also invalidate. ``model_id`` encodes
+    dim by construction (build_model_id) so we can verify the decoded
+    length without re-running the model."""
+    text = "x"
+    # Encode at 4d but claim 128d via model_id — simulates a payload
+    # written under one config and read under another.
+    entry = {
+        "text": text,
+        "embedding": _encode_vector_int8([0.1, 0.2, 0.3, 0.4]),
+        "embedding_text_sha256": _embedding_text_sha256(text),
+        "embedding_model_id": "local-text-retrieval-v1-128d-int8",
+    }
+    assert not is_cached_embedding_valid(
+        entry, text, "local-text-retrieval-v1-128d-int8",
     )
 
 
@@ -750,7 +790,10 @@ def test_stamp_embedding_fields_writes_full_triple():
 
 def test_stamp_then_check_round_trips():
     text = "round-trip text"
-    model_id = "local-text-retrieval-v1-256d-fp32"
+    # Vector dim and model_id's dim segment must agree under the
+    # strengthened validity check — use a 3d model_id to match the
+    # 3d test vector.
+    model_id = "local-text-retrieval-v1-3d-fp32"
     entry: dict = {"text": text}
     stamp_embedding_fields(entry, [1.0, 0.0, 0.0], text, model_id)
     assert is_cached_embedding_valid(entry, text, model_id)
