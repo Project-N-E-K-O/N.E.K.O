@@ -2329,11 +2329,24 @@ MEME_SECTION_FOOTER = {
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
-    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
-    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
-    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
-    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
-    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'},
+    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐', 'mini_game': '小游戏邀请'},
+    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations', 'mini_game': 'Mini-game Invitation'},
+    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ', 'mini_game': 'ミニゲームのお誘い'},
+    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천', 'mini_game': '미니게임 초대'},
+    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации', 'mini_game': 'Приглашение в мини-игру'},
+}
+
+# ---------- Mini-game 邀请短路文案 ----------
+# proactive_chat 在 propensity / skip_probability / restricted_screen_only
+# 全过之后 10% 概率短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持
+# 单句、轻量、不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。
+# 24h+10 chats cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+MINI_GAME_INVITE_LINE = {
+    'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
+    'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
+    'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
+    'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
+    'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
 }
 
 # ---------- 音乐搜索结果格式化 ----------

@@ -73,6 +73,10 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
+    MINI_GAME_INVITE_ENABLED,
+    MINI_GAME_INVITE_TRIGGER_PROBABILITY,
+    MINI_GAME_INVITE_COOLDOWN_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_CHATS,
     PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
     PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
     PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
@@ -111,6 +115,7 @@ from config.prompts_proactive import (
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
+    MINI_GAME_INVITE_LINE,
     build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
@@ -1465,6 +1470,20 @@ async def get_changelog(since: str = "", lang: str = ""):
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
 
+# --- Mini-game 邀请短路状态（每角色独立）---
+# {lanlan_name: {'delivered_at': float|None,
+#                'responded_at': float|None,
+#                'chats_since_response': int}}
+# - delivered_at: 上次成功投递邀请的时间戳。None=从未发过 / 已过完整冷却。
+# - responded_at: 投递后被用户回应（任何用户消息时间戳 > delivered_at）的时间。
+#   pending（delivered_at!=None and responded_at=None）期间一律抑制掷骰，避免
+#   邀请挂着不响应又再发第二次。
+# - chats_since_response: responded_at 设上后成功投递的"普通主动搭话"次数。
+#   两条件（>= COOLDOWN_SECONDS 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
+# 进程内 dict，重启清零——24h 跟 10 chats 都是软冷却，重启后多发一次邀请的
+# 代价远小于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
+_mini_game_invite_state: dict[str, dict[str, Any]] = {}
+
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
@@ -1974,6 +1993,197 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
+
+
+# ---------- Mini-game 邀请短路状态管理 ----------
+# 入口在 proactive_chat 内部、过完 propensity / skip_probability /
+# restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
+# 即静态 i18n 模板 → feed_tts_chunk + finish_proactive_delivery 直投递；不走
+# Phase 1/2 LLM。冷却语义：一次邀请被回应后，必须同时跨过
+#   ``time.time() - responded_at >= MINI_GAME_INVITE_COOLDOWN_SECONDS``
+# 与
+#   ``chats_since_response >= MINI_GAME_INVITE_COOLDOWN_CHATS``
+# 才允许下次掷骰。pending（投递了但还没被回应）期间一律抑制，避免邀请挂着
+# 不响应又再发第二次。
+
+def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
+    """Lazy-init per-character state."""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if state is None:
+        state = {
+            'delivered_at': None,
+            'responded_at': None,
+            'chats_since_response': 0,
+        }
+        _mini_game_invite_state[lanlan_name] = state
+    return state
+
+
+def _mini_game_invite_advance_response(
+    lanlan_name: str, last_user_msg_at: float | None,
+) -> None:
+    """如果有 pending 邀请且用户已经在 delivered_at 之后说过话，标记为已回应。
+
+    每次进 proactive_chat（含 voice fast path 与 text path 两条）都调一次。
+    last_user_msg_at 是「用户最后一次活动的时间戳」——caller 负责从合适来源
+    解出来：text path 用 activity_snapshot.seconds_since_user_msg 反推；voice
+    path 直接用 mgr.last_user_activity_time（voice 不走 activity tracker，但
+    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都按"未回应"保留
+    pending，不主动 flip。
+
+    Anchor 到 last_user_msg_at 而不是"检测到的此刻"——advance 只在新一轮
+    proactive_chat 跑时被调，user 回完到下次 proactive 之间可能隔几小时，
+    用 now 会让 24h 冷却被这段间隔白白拉长。"""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state:
+        return
+    if state['delivered_at'] is None or state['responded_at'] is not None:
+        return
+    if last_user_msg_at is None:
+        return
+    if last_user_msg_at > state['delivered_at']:
+        state['responded_at'] = float(last_user_msg_at)
+        state['chats_since_response'] = 0
+        now = time.time()
+        logger.info(
+            "[%s] mini-game invite responded "
+            "(delivered_at=%.1fs ago, last user msg=%.1fs ago)",
+            lanlan_name, now - state['delivered_at'], now - float(last_user_msg_at),
+        )
+
+
+def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
+    """是否处于冷却期。True = 本轮不该掷骰。
+
+    覆盖：
+      - pending（投递了但 responded_at=None）→ True
+      - 已回应但 24h 或 10 chats 任一未跨过 → True
+      - 从未投递 / 已完整跨过两道 → False
+    """
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state['delivered_at'] is None:
+        return False
+    if state['responded_at'] is None:
+        return True
+    elapsed = time.time() - state['responded_at']
+    return (
+        elapsed < MINI_GAME_INVITE_COOLDOWN_SECONDS
+        or state['chats_since_response'] < MINI_GAME_INVITE_COOLDOWN_CHATS
+    )
+
+
+def _mini_game_invite_record_delivered(lanlan_name: str) -> None:
+    """记录一次成功投递的邀请。重置 responded/counter 进入新一轮 pending。"""
+    state = _mini_game_invite_get_state(lanlan_name)
+    state['delivered_at'] = time.time()
+    state['responded_at'] = None
+    state['chats_since_response'] = 0
+
+
+def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
+    """每次成功投递的主动搭话调一次：若上次邀请已被回应，counter +1。
+
+    在 _record_proactive_chat 后立即调。任何 channel 都计——只要 AI 真发了
+    一条主动搭话出去，"24h+10次"里的 10 次门就推进一格。pending 期间（还没
+    被回应）此函数 no-op，避免靠"邀请自身这一条"提前耗 counter。"""
+    state = _mini_game_invite_state.get(lanlan_name)
+    if not state or state['responded_at'] is None:
+        return
+    state['chats_since_response'] += 1
+
+
+async def _maybe_deliver_mini_game_invite(
+    *,
+    lanlan_name: str,
+    mgr,
+    activity_snapshot,
+    invite_lang: str,
+    master_name: str,
+) -> dict | None:
+    """命中即投递 mini-game 邀请、返回 _end_proactive 用的 JSON dict；未命中返 None。
+
+    短路条件（任一不满足即返 None，由 caller 继续走原 Phase1/2 流水线）：
+      - MINI_GAME_INVITE_ENABLED=False
+      - activity_snapshot is None（隐私模式 / tracker 不可用——保守不发）
+      - propensity == 'restricted_screen_only'（focused_work / non-casual gaming）
+      - state == 'away'（用户离场，邀请没人接）
+      - activity_snapshot.unfinished_thread is not None（AI 刚抛了问题用户
+        还没接，跟进 thread 优先于换话题；与 skip_probability /
+        restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
+      - _mini_game_invite_in_cooldown
+      - random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+
+    投递路径完全镜像 ``main_routers/game_router._deliver_postgame_text_bubble``：
+    prepare_proactive_delivery → feed_tts_chunk → finish_proactive_delivery。
+    不走 Phase 1/2 LLM；文案来自 ``MINI_GAME_INVITE_LINE`` 静态 i18n 模板。"""
+    if not MINI_GAME_INVITE_ENABLED:
+        return None
+    if activity_snapshot is None:
+        return None
+    propensity = getattr(activity_snapshot, 'propensity', None)
+    state_label = getattr(activity_snapshot, 'state', None)
+    if propensity == 'restricted_screen_only':
+        return None
+    if state_label == 'away':
+        return None
+    # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
+    # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
+    # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
+    if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
+        return None
+    if _mini_game_invite_in_cooldown(lanlan_name):
+        return None
+    import random as _random
+    if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+        return None
+
+    template = _loc(MINI_GAME_INVITE_LINE, invite_lang)
+    safe_master = (master_name or '').strip()
+    try:
+        invite_text = template.format(master_name=safe_master).strip()
+    except Exception:
+        invite_text = template.replace('{master_name}', safe_master).strip()
+    if not invite_text:
+        return None
+
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+        return {
+            "success": True,
+            "action": "pass",
+            "message": "mini-game invite skipped: prepare_proactive_delivery refused",
+        }
+    proactive_sid = mgr.current_speech_id
+    from main_logic.session_state import SessionEvent as _SE
+    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+    try:
+        feed = getattr(mgr, 'feed_tts_chunk', None)
+        if callable(feed):
+            await feed(invite_text, expected_speech_id=proactive_sid)
+    except Exception as exc:
+        logger.warning(
+            "[%s] mini-game invite feed_tts_chunk failed: %s", lanlan_name, exc,
+        )
+    committed = await mgr.finish_proactive_delivery(
+        invite_text,
+        expected_speech_id=proactive_sid,
+    )
+    if not committed:
+        return {
+            "success": True,
+            "action": "pass",
+            "message": "mini-game invite skipped: user took over before delivery",
+        }
+    _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
+    _mini_game_invite_record_delivered(lanlan_name)
+    print(f"[{lanlan_name}] Mini-game invite delivered: {invite_text[:60]}…")
+    return {
+        "success": True,
+        "action": "chat",
+        "message": "mini-game invite delivered",
+        "channel": "mini_game",
+        "lanlan_name": lanlan_name,
+        "turn_id": proactive_sid,
+    }
 
 
 def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int:
@@ -3533,6 +3743,14 @@ async def proactive_chat(request: Request):
         # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+            # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
+            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
+            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
+            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
+            # 永久抑制；CodeRabbit Major review 指出。
+            _mini_game_invite_advance_response(
+                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+            )
             if not mgr.state.can_start_proactive(session=probe_session):
                 return JSONResponse({
                     "success": False,
@@ -3541,6 +3759,10 @@ async def proactive_chat(request: Request):
                     "state": mgr.state.snapshot(),
                 }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
+            if delivered:
+                # 24h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
+                # 与 text path 在 _record_proactive_chat 之后调 count 对称。
+                _mini_game_invite_count_post_response_chat(lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -3620,6 +3842,18 @@ async def proactive_chat(request: Request):
             except Exception as _act_err:
                 logger.warning(f"[{lanlan_name}] activity snapshot fetch failed: {_act_err}; falling back to open propensity")
                 activity_snapshot = None
+
+        # 进 proactive_chat 后第一时间推进 mini-game invite 的"已回应"判定：
+        # 即便本轮不发邀请，pending 的上一次邀请也得在用户已说话时翻成已回应，
+        # 否则 cooldown 永远卡在 pending。Text path 从 activity_snapshot 反推
+        # last_user_msg_at；voice fast path 在上面的 voice block 内独立调一次
+        # （用 mgr.last_user_activity_time），两边对称。
+        _text_last_user_msg_at: float | None = None
+        if activity_snapshot is not None:
+            _secs = getattr(activity_snapshot, 'seconds_since_user_msg', None)
+            if _secs is not None:
+                _text_last_user_msg_at = time.time() - float(_secs)
+        _mini_game_invite_advance_response(lanlan_name, _text_last_user_msg_at)
 
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
@@ -3718,6 +3952,32 @@ async def proactive_chat(request: Request):
                 }))
 
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
+
+        # ========== Mini-game 邀请短路 ==========
+        # 过完 propensity / skip_probability / restricted_screen_only 这几道门后，
+        # 独立掷一次 10% 骰子；命中即用静态 i18n 模板直投递邀请，跳过 Phase 1/2
+        # LLM 与 source fetching。一次邀请被回应后 24h+10 chats cooldown，期间
+        # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
+        # 不发——无法判断是否在工作状态。
+        try:
+            _request_lang_for_invite = (
+                data.get('language') or data.get('lang') or data.get('i18n_language')
+            )
+            invite_lang = (
+                normalize_language_code(_request_lang_for_invite, format='short')
+                if _request_lang_for_invite else get_global_language()
+            )
+        except Exception:
+            invite_lang = 'zh'
+        invite_outcome = await _maybe_deliver_mini_game_invite(
+            lanlan_name=lanlan_name,
+            mgr=mgr,
+            activity_snapshot=activity_snapshot,
+            invite_lang=invite_lang,
+            master_name=master_name_current,
+        )
+        if invite_outcome is not None:
+            return await _end_proactive(JSONResponse(invite_outcome))
 
         # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
         # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
@@ -5057,6 +5317,10 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # Mini-game 邀请冷却 counter 推进：spec 是"被回应后再 10 次搭话才解禁"，
+        # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
+        # 内部自然 no-op，不靠"邀请自身"提前耗 counter。
+        _mini_game_invite_count_post_response_chat(lanlan_name)
         # Reminiscence usage：本轮 surfaced 了 pending reflection（不管 AI 最终
         # 用了什么标签，followup 都出现在 prompt 里）→ 记一次 reminiscence 用量。
         # 用独立 buffer (_reminiscence_usage_history) 而不是把同一条 message
