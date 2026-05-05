@@ -738,9 +738,7 @@ function canvasToPngBlob(canvas) {
     });
 }
 
-const DEFAULT_CARD_HEAD_FOCUS_RATIO = 0.18;
-
-function drawImageCover(ctx, source, dx, dy, dw, dh) {
+function drawImageCover(ctx, source, dx, dy, dw, dh, options = {}) {
     const sw = source.width;
     const sh = source.height;
     const sourceRatio = sw / sh;
@@ -758,110 +756,20 @@ function drawImageCover(ctx, source, dx, dy, dw, dh) {
         sy = (sh - cropH) / 2;
     }
 
-    let drawX = dx;
-    let drawY = dy;
-    const headFocus = estimateDefaultCardHeadFocus(source);
-    if (headFocus) {
-        // 默认卡面以头像为焦点，避免全身模型把躯干放到卡面中心。
-        const focusX = clampDefaultCardNumber((headFocus.x - sx) / cropW, 0, 1);
-        const focusY = clampDefaultCardNumber((headFocus.y - sy) / cropH, 0, 1);
-        drawX += dw / 2 - focusX * dw;
-        drawY += dh / 2 - focusY * dh;
+    const zoom = Number(options.zoom || 1);
+    if (zoom > 1) {
+        const focusX = Number.isFinite(options.focusX) ? options.focusX : 0.5;
+        const focusY = Number.isFinite(options.focusY) ? options.focusY : 0.32;
+        cropW = Math.max(1, cropW / zoom);
+        cropH = Math.max(1, cropH / zoom);
+        sx = clampCardFaceCrop(sw * focusX - cropW / 2, 0, sw - cropW);
+        sy = clampCardFaceCrop(sh * focusY - cropH / 2, 0, sh - cropH);
     }
 
-    ctx.drawImage(source, sx, sy, cropW, cropH, drawX, drawY, dw, dh);
+    ctx.drawImage(source, sx, sy, cropW, cropH, dx, dy, dw, dh);
 }
 
-function estimateDefaultCardHeadFocus(source) {
-    try {
-        const sampleW = Math.min(180, Math.max(1, source.width));
-        const sampleH = Math.min(180, Math.max(1, Math.round(sampleW * source.height / source.width)));
-        const sampleCanvas = document.createElement('canvas');
-        sampleCanvas.width = sampleW;
-        sampleCanvas.height = sampleH;
-        const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-        if (!sampleCtx) return fallbackDefaultCardHeadFocus(source);
-
-        sampleCtx.clearRect(0, 0, sampleW, sampleH);
-        sampleCtx.drawImage(source, 0, 0, sampleW, sampleH);
-
-        const imageData = sampleCtx.getImageData(0, 0, sampleW, sampleH).data;
-        const bounds = detectDefaultCardForegroundBounds(imageData, sampleW, sampleH);
-        if (!bounds) return fallbackDefaultCardHeadFocus(source);
-
-        const scaleX = source.width / sampleW;
-        const scaleY = source.height / sampleH;
-        return {
-            x: ((bounds.minX + bounds.maxX) / 2) * scaleX,
-            y: (bounds.minY + (bounds.maxY - bounds.minY) * DEFAULT_CARD_HEAD_FOCUS_RATIO) * scaleY
-        };
-    } catch (error) {
-        console.warn('[模型管理] 估算默认卡面头像焦点失败:', error);
-        return fallbackDefaultCardHeadFocus(source);
-    }
-}
-
-function detectDefaultCardForegroundBounds(data, width, height) {
-    const total = width * height;
-    const alphaBounds = computeDefaultCardBounds(data, width, height, (idx) => data[idx + 3] > 12);
-    if (alphaBounds && alphaBounds.count / total < 0.92) return alphaBounds;
-
-    const bg = estimateDefaultCardBackgroundColor(data, width, height);
-    return computeDefaultCardBounds(data, width, height, (idx) => {
-        if (data[idx + 3] <= 12) return false;
-        const dr = data[idx] - bg.r;
-        const dg = data[idx + 1] - bg.g;
-        const db = data[idx + 2] - bg.b;
-        return dr * dr + dg * dg + db * db > 900;
-    });
-}
-
-function computeDefaultCardBounds(data, width, height, isForeground) {
-    let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
-    for (let y = 0; y < height; y += 1) {
-        for (let x = 0; x < width; x += 1) {
-            const idx = (y * width + x) * 4;
-            if (!isForeground(idx)) continue;
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-            count += 1;
-        }
-    }
-    if (count < 16 || maxX < minX || maxY < minY) return null;
-    return { minX, minY, maxX, maxY, count };
-}
-
-function estimateDefaultCardBackgroundColor(data, width, height) {
-    const points = [
-        [0, 0],
-        [width - 1, 0],
-        [0, height - 1],
-        [width - 1, height - 1]
-    ];
-    const color = points.reduce((acc, point) => {
-        const idx = (point[1] * width + point[0]) * 4;
-        acc.r += data[idx];
-        acc.g += data[idx + 1];
-        acc.b += data[idx + 2];
-        return acc;
-    }, { r: 0, g: 0, b: 0 });
-    return {
-        r: color.r / points.length,
-        g: color.g / points.length,
-        b: color.b / points.length
-    };
-}
-
-function fallbackDefaultCardHeadFocus(source) {
-    return {
-        x: source.width / 2,
-        y: source.height * 0.28
-    };
-}
-
-function clampDefaultCardNumber(value, min, max) {
+function clampCardFaceCrop(value, min, max) {
     return Math.min(max, Math.max(min, value));
 }
 
@@ -995,7 +903,11 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillText(lanlanName, 40, headerH / 2);
 
-    drawImageCover(ctx, sourceCanvas, 0, headerH, cardW, cardH - headerH);
+    drawImageCover(ctx, sourceCanvas, 0, headerH, cardW, cardH - headerH, {
+        // 自动默认卡面偏向头像构图，避免全身模型把躯干放在卡面中心。
+        zoom: 1.45,
+        focusY: 0.32
+    });
 
     const cardBlob = await canvasToPngBlob(output);
     const formData = new FormData();

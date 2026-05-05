@@ -20,8 +20,6 @@
 
     // 构图参数
     const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
-    const DEFAULT_HEAD_FOCUS_RATIO = 0.18;
-    let headFocusCache = new WeakMap();
 
     // 贴纸状态
     const stickers = [];           // { id, src, x, y, w, h, rotation, layer, imgEl }
@@ -229,7 +227,6 @@
 
         showLoading(true);
         resetComposition();
-        resetHeadFocusCache();
 
         try {
             // 获取该角色的页面配置（包含模型类型和路径）
@@ -504,18 +501,8 @@
 
         // 偏移量在 450×600 坐标系下定义，按实际尺寸等比缩放
         const ratio = outW / 450;
-        let baseDx = (outW - drawW) / 2;
-        let baseDy = (outH - drawH) / 2;
-        const headFocus = getHeadFocus(srcCanvas);
-        if (headFocus) {
-            // 默认构图以头像为焦点，避免全身模型把躯干放到卡面中心。
-            const focusX = clamp((headFocus.x - sx) / sw, 0, 1);
-            const focusY = clamp((headFocus.y - sy) / sh, 0, 1);
-            baseDx += outW / 2 - (baseDx + focusX * drawW);
-            baseDy += outH / 2 - (baseDy + focusY * drawH);
-        }
-        const dx = baseDx + composition.offsetX * ratio;
-        const dy = baseDy + composition.offsetY * ratio;
+        const dx = (outW - drawW) / 2 + composition.offsetX * ratio;
+        const dy = (outH - drawH) / 2 + composition.offsetY * ratio;
 
         // 应用旋转（围绕模型中心）
         const angle = composition.rotation * Math.PI / 180;
@@ -533,114 +520,6 @@
         if (angle !== 0) {
             ctx.restore();
         }
-    }
-
-    function getHeadFocus(srcCanvas) {
-        const cached = headFocusCache.get(srcCanvas);
-        if (cached && cached.width === srcCanvas.width && cached.height === srcCanvas.height) {
-            return cached.focus;
-        }
-
-        const focus = estimateCanvasHeadFocus(srcCanvas);
-        headFocusCache.set(srcCanvas, {
-            width: srcCanvas.width,
-            height: srcCanvas.height,
-            focus
-        });
-        return focus;
-    }
-
-    function resetHeadFocusCache() {
-        headFocusCache = new WeakMap();
-    }
-
-    function estimateCanvasHeadFocus(srcCanvas) {
-        try {
-            const sampleW = Math.min(180, Math.max(1, srcCanvas.width));
-            const sampleH = Math.min(180, Math.max(1, Math.round(sampleW * srcCanvas.height / srcCanvas.width)));
-            const sampleCanvas = document.createElement('canvas');
-            sampleCanvas.width = sampleW;
-            sampleCanvas.height = sampleH;
-            const sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-            if (!sampleCtx) return fallbackHeadFocus(srcCanvas);
-
-            sampleCtx.clearRect(0, 0, sampleW, sampleH);
-            sampleCtx.drawImage(srcCanvas, 0, 0, sampleW, sampleH);
-
-            const imageData = sampleCtx.getImageData(0, 0, sampleW, sampleH).data;
-            const bounds = detectForegroundBounds(imageData, sampleW, sampleH);
-            if (!bounds) return fallbackHeadFocus(srcCanvas);
-
-            const scaleX = srcCanvas.width / sampleW;
-            const scaleY = srcCanvas.height / sampleH;
-            return {
-                x: ((bounds.minX + bounds.maxX) / 2) * scaleX,
-                y: (bounds.minY + (bounds.maxY - bounds.minY) * DEFAULT_HEAD_FOCUS_RATIO) * scaleY
-            };
-        } catch (e) {
-            console.warn('[CardExport] 估算默认卡面头像焦点失败:', e);
-            return fallbackHeadFocus(srcCanvas);
-        }
-    }
-
-    function detectForegroundBounds(data, width, height) {
-        const total = width * height;
-        const alphaBounds = computeBounds(data, width, height, (idx) => data[idx + 3] > 12);
-        if (alphaBounds && alphaBounds.count / total < 0.92) return alphaBounds;
-
-        const bg = estimateBackgroundColor(data, width, height);
-        return computeBounds(data, width, height, (idx) => {
-            if (data[idx + 3] <= 12) return false;
-            const dr = data[idx] - bg.r;
-            const dg = data[idx + 1] - bg.g;
-            const db = data[idx + 2] - bg.b;
-            return dr * dr + dg * dg + db * db > 900;
-        });
-    }
-
-    function computeBounds(data, width, height, isForeground) {
-        let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
-        for (let y = 0; y < height; y += 1) {
-            for (let x = 0; x < width; x += 1) {
-                const idx = (y * width + x) * 4;
-                if (!isForeground(idx)) continue;
-                minX = Math.min(minX, x);
-                minY = Math.min(minY, y);
-                maxX = Math.max(maxX, x);
-                maxY = Math.max(maxY, y);
-                count += 1;
-            }
-        }
-        if (count < 16 || maxX < minX || maxY < minY) return null;
-        return { minX, minY, maxX, maxY, count };
-    }
-
-    function estimateBackgroundColor(data, width, height) {
-        const points = [
-            [0, 0],
-            [width - 1, 0],
-            [0, height - 1],
-            [width - 1, height - 1]
-        ];
-        const color = points.reduce((acc, point) => {
-            const idx = (point[1] * width + point[0]) * 4;
-            acc.r += data[idx];
-            acc.g += data[idx + 1];
-            acc.b += data[idx + 2];
-            return acc;
-        }, { r: 0, g: 0, b: 0 });
-        return {
-            r: color.r / points.length,
-            g: color.g / points.length,
-            b: color.b / points.length
-        };
-    }
-
-    function fallbackHeadFocus(srcCanvas) {
-        return {
-            x: srcCanvas.width / 2,
-            y: srcCanvas.height * 0.28
-        };
     }
 
     // ====== 预览循环 ======
