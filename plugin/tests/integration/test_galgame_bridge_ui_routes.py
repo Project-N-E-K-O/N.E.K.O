@@ -137,6 +137,8 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert 'id="currentLineOverview"' in response.text
     assert 'id="ocrPipelinePanel"' in response.text
     assert 'id="installCompactSummary"' in response.text
+    assert "./i18n.js?v=20260505-ui-i18n" in response.text
+    assert 'data-i18n="ui.app.title"' in response.text
 
 
 @pytest.mark.asyncio
@@ -183,6 +185,46 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "dxcam" in response.text
     assert "tesseract" in response.text
     assert "textractor" in response.text
+    assert "function uiT(" in response.text
+    assert "getInstallUIConfig" in response.text
+    assert "i18n-ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_i18n_script_is_served(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+) -> None:
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/i18n.js")
+
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+    assert "const I18n" in response.text
+    assert "/ui-api/locale" in response.text
+    assert "/ui-api/i18n/ui/" in response.text
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
+    plugin_ui_async_client: AsyncClient,
+) -> None:
+    locale_response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui-api/locale")
+    assert locale_response.status_code == 200
+    assert isinstance(locale_response.json()["locale"], str)
+
+    bundle_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/i18n/ui/en.json"
+    )
+    assert bundle_response.status_code == 200
+    assert "application/json" in bundle_response.headers["content-type"]
+    bundle = bundle_response.json()
+    assert bundle["ui.button.collapse"] == "Collapse"
+    assert bundle["ui.install.rapidocr.action"] == "Install RapidOCR"
+
+    missing_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
+    )
+    assert missing_response.status_code == 404
 
 
 @pytest.mark.asyncio
