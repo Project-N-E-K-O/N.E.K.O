@@ -2355,6 +2355,116 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
 }
 
+# ---------- Mini-game 邀请三选项按钮 ----------
+# choice 是 wire-format 标识符（accept/decline/later），不进 UI；UI label 由
+# MINI_GAME_INVITE_OPTION_LABELS 按 locale 渲染。前端 ChoicePrompt 组件读
+# label 直接展示，点击发 ``choice`` 给 endpoint。文案设计：accept 热情但不
+# 过度、decline 客气不冷漠、later 自然不催促，三者语义清晰互不重叠。
+MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
+    'zh': {
+        'accept': '来一局！',
+        'decline': '现在不想玩',
+        'later': '等一会儿',
+    },
+    'en': {
+        'accept': "Let's play!",
+        'decline': 'Not feeling it',
+        'later': 'Maybe later',
+    },
+    'ja': {
+        'accept': 'やろう！',
+        'decline': '今はパス',
+        'later': 'あとでね',
+    },
+    'ko': {
+        'accept': '좋아, 가자!',
+        'decline': '지금은 됐어',
+        'later': '좀 이따',
+    },
+    'ru': {
+        'accept': 'Давай сыграем!',
+        'decline': 'Сейчас нет настроения',
+        'later': 'Чуть позже',
+    },
+}
+
+# ---------- Mini-game 邀请回应关键词（文本兜底匹配）----------
+# 用户没点按钮、自己打字时（"好啊"/"不要"/"晚点说"），后端 message handler 入口
+# 扫一遍这份关键词表：命中即触发对应 action（accept / decline / later），不吃掉
+# 用户消息（继续走普通 chat 流水线）。
+#
+# 匹配规则：消息**全文小写后包含任一关键词**视为命中；ASCII / Cyrillic 走
+# word-boundary regex 防 'yes' 命中 'yesterday'；CJK / Hiragana / Katakana /
+# Hangul 走 substring（无 word boundary）。多类同时命中按优先级
+# **decline > later > accept**（含明确 negation 必判 decline，"好的等下" 含
+# accept + later 关键词时判 later——别立刻开游戏）。匹配在
+# main_routers.system_router 的 helper 内做 —— 关键词列表本身放这里集中维护。
+# 早期版本曾用 accept-priority 简单兜底，被 codex / CodeRabbit Major 指出后
+# 改成 decline-priority 防 negation 句误判。
+#
+# 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
+# 扫一遍而不是只看 active locale。
+MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    'zh': {
+        # accept 必须用**短语 / 双字以上**且**不被任何 decline 短语作 substring
+        # 包含**——CJK 走 substring 没 word boundary 兜底，priority 仅在 decline
+        # 也命中时救场，"不可以" 这种 decline list 没列的 negation phrase 完全
+        # 救不了。设计原则：accept 短语必须保证「decline phrase 不含它」。
+        # - 单字 '好' '行' 被 "不好" / "我不行" / "不好玩" 包含。
+        # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
+        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡"（codex P2 指出）。
+        # - 双字 '可以' 被 "不可以" 包含——decline list 又没 '不可以'，
+        #   priority 救不了（codex P2 指出后删）。
+        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确接受 phrase。
+        'accept': ['好啊', '好的', '行啊', '来吧', '一起玩'],
+        'decline': ['不要', '不行', '不好', '不想', '不可以', '算了', '拒绝', '不玩', '没空'],
+        'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
+    },
+    'en': {
+        # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
+        # 单字 'no' 已删——即使 word-boundary 也会命中 "no idea"/"no worries"
+        # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
+        # 'don't want' / 'not now' 等 phrase。'after' 也太宽（"after lunch"），
+        # 改用更长的 'after this' / 仅保留 'in a bit'/'in a minute' 等明确 later。
+        # 'okay' 已删——"not okay" 会被 word-boundary accept 命中且 decline 没
+        # 'not okay' 时 priority 救不了（codex P2 指出）。其它单词 accept ('sure'
+        # /'yes'/'yeah'/'yep') 同类风险靠 decline list 加 'not sure' / 'not yet'
+        # 等 negation phrase 双保险拦截。
+        # accept："let's" 单字太宽（"let's not play" 命中），改 "let's play"
+        # 更具体；'wanna play' 同样被 "I don't wanna play" 命中，priority 兜底
+        # 不可靠（之前规则已加 "don't want"），但仍保留 'wanna play' 作 accept
+        # phrase——decline list 同步加 "don't wanna" / "let's not" 双保险
+        # （CodeRabbit Major 指出后调整）。
+        'accept': ['yes', 'sure', "let's play", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
+        'decline': [
+            'no thanks', 'nope', 'pass', 'skip',
+            'not now', 'not really', 'maybe not', "don't want", "don't wanna",
+            "let's not",
+            'not okay', 'not sure', 'not yet',
+        ],
+        'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],
+    },
+    'ja': {
+        # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
+        'accept': ['やろう', 'いいよ', 'うん', 'はい', 'やるよ', 'やります'],
+        'decline': ['パス', '嫌', 'いいえ', 'やめる', 'いやだ'],
+        'later': ['あとで', '今度', 'また今度', 'もうちょい', 'ちょっと待って'],
+    },
+    'ko': {
+        # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
+        # 单字 '응' 也宽——"적응" / "반응" 等含子串命中。codex P2 指出后删；
+        # 留 '좋아' / '그래' / '가자' / 'ㅇㅇ' 已 cover 接受意图。
+        'accept': ['좋아', '그래', '가자', 'ㅇㅇ'],
+        'decline': ['싫어', '아니', '됐어', '안 해'],
+        'later': ['나중', '이따', '잠시', '잠깐만'],
+    },
+    'ru': {
+        'accept': ['да', 'давай', 'конечно', 'хорошо', 'ок'],
+        'decline': ['нет', 'не хочу', 'откажусь', 'пас'],
+        'later': ['потом', 'позже', 'попозже', 'не сейчас'],
+    },
+}
+
 # ---------- 音乐搜索结果格式化 ----------
 MUSIC_SEARCH_RESULT_TEXTS = {
     'zh': {
