@@ -2414,9 +2414,13 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
     'en': {
         # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
+        # 单字 'no' 已删——即使 word-boundary 也会命中 "no idea"/"no worries"
+        # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
+        # 'don't want' / 'not now' 等 phrase。'after' 也太宽（"after lunch"），
+        # 改用更长的 'after this' / 仅保留 'in a bit'/'in a minute' 等明确 later。
         'accept': ['yes', 'sure', 'okay', "let's", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
-        'decline': ['no', 'nope', 'pass', 'skip', 'not now', 'not really', 'maybe not'],
-        'later': ['later', 'in a bit', 'in a minute', 'after', 'in a moment'],
+        'decline': ['no thanks', 'nope', 'pass', 'skip', 'not now', 'not really', 'maybe not', "don't want"],
+        'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],
     },
     'ja': {
         # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。

@@ -979,14 +979,23 @@ def test_keyword_matcher_priority_decline_over_later_over_accept():
     assert sr._match_mini_game_invite_keyword('不行吧，但可以下次') == 'decline'
 
 
-def test_keyword_matcher_no_false_positive_on_long_text():
-    """普通对话不应误命中：「好天气啊」按字面匹配会命中 '好'，是预期 — 关键词
-    匹配是兜底机制，spec 接受"模糊"匹配换取实现简单。但本测试 pin 住一些
-    明确不应命中的样例（确保关键词列表不包含太宽的字符）。"""
-    # '我现在没空'（含'不'？没；含'算了'？没；含'不想'？没；含'不要'？没）
-    # 但'我' '在' '空' 都不在任何 keyword list 里
-    assert sr._match_mini_game_invite_keyword('我现在没空') is None or \
-        sr._match_mini_game_invite_keyword('我现在没空') == 'decline'  # '没空' 在 decline
+def test_keyword_matcher_decline_via_phrase():
+    """「我现在没空」通过 '没空' phrase 命中 decline——pin 住关键词契约，
+    防止 '没空' 被从列表里误删（CodeRabbit Minor 指出原版 'None or decline'
+    断言放松过头，把"误命中回归"也放过去了）。"""
+    result = sr._match_mini_game_invite_keyword('我现在没空')
+    assert result == 'decline'
+
+
+def test_keyword_matcher_no_false_positive_on_common_english_phrases():
+    """codex P1 + CodeRabbit Major：英文 'no' 已从 decline 列表删除——
+    "I have no idea" / "no worries" / "know" 这些常规英文不应命中 decline。
+    pending invite 期间用户随口说这些不该启动 1h 长冷却。"""
+    assert sr._match_mini_game_invite_keyword('i have no idea') is None
+    assert sr._match_mini_game_invite_keyword('no worries') is None
+    assert sr._match_mini_game_invite_keyword('i know what you mean') is None
+    # 'no thanks' 是明确拒绝 phrase，应仍命中
+    assert sr._match_mini_game_invite_keyword('no thanks') == 'decline'
 
 
 def test_maybe_apply_keyword_noop_when_no_pending():

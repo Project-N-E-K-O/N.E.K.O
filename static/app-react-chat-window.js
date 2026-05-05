@@ -1395,7 +1395,13 @@
 
         var lanlanName = '';
         try {
-            lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+            // 优先读 window.appState.lanlan_name —— 角色切换时 appState 先更新，
+            // window.lanlan_config 可能滞后；用旧 lanlan_name 调 endpoint 会被
+            // 后端按错误角色查 pending invite 直接 expired。同 GalGame 请求路径
+            // 保持一致（CodeRabbit Major 指出）。
+            lanlanName = (window.appState && window.appState.lanlan_name)
+                || (window.lanlan_config && window.lanlan_config.lanlan_name)
+                || '';
         } catch (_) {}
 
         var requestBody = {
@@ -1525,16 +1531,24 @@
         // 同一 session 只 open 一次：按钮 endpoint 直接 open 后，backend 还会 push
         // mini_game_invite_resolved（cross-window 一致性广播）；不 dedupe 会双开。
         if (sessionId && state._launchedMiniGameSessionIds[sessionId]) return;
-        if (sessionId) state._launchedMiniGameSessionIds[sessionId] = true;
         // window.open 在 Electron 模式下被主进程 setWindowOpenHandler 拦截开独立
         // BrowserWindow；普通浏览器是新 tab。'_blank' target 让浏览器治理一致。
+        // dedupe flag 只在成功后设——popup blocker / throw 时让用户能再触发一次
+        // (codex P2 + CodeRabbit Major 指出原版 set-before-open 会让失败的 session
+        // 永远被 dedupe 锁死，prompt 已清掉用户彻底失去入口)。
+        var opened = false;
         try {
             var w = window.open(payload.url, '_blank');
             if (!w) {
                 console.warn('[MiniGameInvite] window.open returned null (popup blocked?)');
+            } else {
+                opened = true;
             }
         } catch (err) {
             console.warn('[MiniGameInvite] window.open failed:', err);
+        }
+        if (opened && sessionId) {
+            state._launchedMiniGameSessionIds[sessionId] = true;
         }
     }
 
