@@ -124,7 +124,7 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "<title>Galgame 游玩助手</title>" in response.text
+    assert '<title data-i18n="ui.app.title">Galgame 游玩助手</title>' in response.text
     assert "让猫娘陪你一起玩 Galgame" in response.text
     assert "RapidOCR" in response.text
     assert "依赖安装" in response.text
