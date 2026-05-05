@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: '開啟介面',
+      title: '介面',
       panel: '面板',
       guide: '教程',
       loading: '載入外掛介面中...',

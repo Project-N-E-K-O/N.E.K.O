@@ -5,6 +5,7 @@ import { deletePlugin } from '@/api/plugins'
 import { packPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import type { PluginListAction, PluginMeta } from '@/types/api'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
 
 type PluginListContextPlugin = PluginMeta & {
   status?: string
@@ -34,7 +35,7 @@ function replacePluginTokens(value: string, pluginId: string): string {
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   function isRunning(plugin: PluginListContextPlugin): boolean {
     return plugin.status === 'running'
@@ -105,8 +106,11 @@ export function usePluginListContextActions() {
   }
 
   function resolveActionLabel(action: PluginListAction): string {
-    if (action.label) {
-      return action.label
+    // 后端 label 可能是 string 或 locale-keyed dict，统一走 resolveLocalizedText
+    // 解析；解析后为空再回退到内置 action id 对应的 i18n key。
+    const localized = resolveLocalizedText(action.label, locale.value, '')
+    if (localized) {
+      return localized
     }
     switch (action.id) {
       case 'open_detail':
@@ -223,11 +227,15 @@ export function usePluginListContextActions() {
     if (action.confirm_mode === 'hold') {
       return true
     }
-    if (!action.confirm_message) {
+    // confirm_message 与 label 同样是 LocalizedText（string 或 locale-keyed
+    // dict），不能直接传给 ElMessageBox.confirm（它会把 dict 渲染成
+    // "[object Object]"）。解析为空时跳过确认。
+    const message = resolveLocalizedText(action.confirm_message, locale.value, '')
+    if (!message) {
       return true
     }
     try {
-      await ElMessageBox.confirm(action.confirm_message, t('common.confirm'), {
+      await ElMessageBox.confirm(message, t('common.confirm'), {
         type: action.danger ? 'warning' : 'info',
       })
       return true

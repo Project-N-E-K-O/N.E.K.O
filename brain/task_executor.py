@@ -235,8 +235,7 @@ class DirectTaskExecutor:
     def _normalize_correction_tool_name(self, value: Any) -> str:
         tool = str(value or "").strip().lower()
         return self._correction_tool_canonical.get(tool, "")
-    
-    
+
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
         """Allow agent_server to inject a custom async provider for plugin discovery."""
         self._external_plugin_provider = provider
@@ -1073,7 +1072,22 @@ class DirectTaskExecutor:
                                         fields = []
                                         for fname, fdef in list(props.items())[:8]:
                                             ftype = fdef.get("type", "any") if isinstance(fdef, dict) else "any"
-                                            fields.append(f"{fname}:{ftype}")
+                                            enum_hint = ""
+                                            if isinstance(fdef, dict):
+                                                enum_values = fdef.get("enum")
+                                                if isinstance(enum_values, list) and enum_values:
+                                                    shown = [str(v) for v in enum_values[:12]]
+                                                    inner = "|".join(shown)
+                                                    # 截断时把 "..." 放进 [] 内，并附上剩余数量。
+                                                    # 让 LLM 明确知道 "还有 N 个未列出的合法值"，
+                                                    # 而不是把可见 12 个误当成完整白名单。
+                                                    if len(enum_values) > 12:
+                                                        enum_hint = (
+                                                            f" enum=[{inner}|... +{len(enum_values) - 12} more]"
+                                                        )
+                                                    else:
+                                                        enum_hint = f" enum=[{inner}]"
+                                            fields.append(f"{fname}:{ftype}{enum_hint}")
                                         required = schema.get("required", [])
                                         req_str = f" required={required}" if required else ""
                                         schema_hint = f" args({', '.join(fields)}{req_str})"

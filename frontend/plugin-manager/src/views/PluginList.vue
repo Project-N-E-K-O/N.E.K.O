@@ -329,9 +329,7 @@
       :visible="dangerDialogVisible"
       :loading="dangerDialogLoading"
       :title="t('plugins.dangerDialog.title')"
-      :message="pendingDangerAction?.confirm_message || t('plugins.dangerDialog.deleteMessage', {
-        pluginName: pendingDangerPlugin?.name || pendingDangerPlugin?.id || '',
-      })"
+      :message="dangerDialogMessage"
       :hint="t('plugins.dangerDialog.hint')"
       :action-label="pendingDangerAction?.label || t('plugins.delete')"
       :warning-title="t('plugins.dangerDialog.warningTitle')"
@@ -363,6 +361,7 @@ import { uploadAndUnpackPlugin, packPluginCli, downloadPluginPackage } from '@/a
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
 
@@ -370,7 +369,7 @@ const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
@@ -387,6 +386,21 @@ const dangerDialogVisible = ref(false)
 const dangerDialogLoading = ref(false)
 const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
 const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
+
+// confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
+// 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
+// `pendingDangerAction?.confirm_message || t(...)` 在 dict 真值时会跳过
+// fallback 并把 dict 渲染成 "[object Object]"。统一走 helper 解析。
+const dangerDialogMessage = computed(() => {
+  const fallback = t('plugins.dangerDialog.deleteMessage', {
+    pluginName: pendingDangerPlugin.value?.name || pendingDangerPlugin.value?.id || '',
+  })
+  return resolveLocalizedText(
+    pendingDangerAction.value?.confirm_message,
+    locale.value,
+    fallback,
+  )
+})
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)

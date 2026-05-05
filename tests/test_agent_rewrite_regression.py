@@ -624,7 +624,7 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
     assert "timeline: []" in steps_source
     assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
     assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
-    assert "{ voiceKey: 'takeover_settings_peek_detail', at: 7450 / 13923, action: 'showSecondLine' }" in steps_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in steps_source
     assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
     assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
     assert "cue.action !== normalizedCueName" in director_source
@@ -789,6 +789,206 @@ def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
     plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
     assert plugin is plugins[0]
     assert entry is None
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_galgame_continue_phrase_through_plugin_assessment():
+    from unittest.mock import AsyncMock, patch
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
+
+    plugins = [{
+        "id": "galgame_plugin",
+        "description": "galgame plugin",
+        "short_description": "galgame control",
+        "entries": [{"id": "galgame_continue_auto_advance", "input_schema": {}}],
+    }]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+
+    decision = UserPluginDecision(
+        has_task=True,
+        can_execute=True,
+        task_description="继续自动推进 galgame 剧情",
+        plugin_id="galgame_plugin",
+        entry_id="galgame_continue_auto_advance",
+        plugin_args={"message": "继续推进剧情"},
+        reason="llm_user_plugin_assessment",
+    )
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        return_value=decision,
+    ) as mock_assess:
+        result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "继续推进剧情"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert result is not None
+    assert result.execution_method == "user_plugin"
+    assert result.tool_name == "galgame_plugin"
+    assert result.entry_id == "galgame_continue_auto_advance"
+    assert result.tool_args == {"message": "继续推进剧情"}
+    assert result.reason == "llm_user_plugin_assessment"
+    mock_assess.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessment():
+    from unittest.mock import AsyncMock, patch
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
+
+    plugins = [{
+        "id": "galgame_plugin",
+        "description": "galgame plugin",
+        "short_description": "galgame control",
+        "entries": [{"id": "galgame_set_mode", "input_schema": {}}],
+    }]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+
+    decisions = [
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到自动推进模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "choice_advisor", "push_notifications": True},
+            reason="llm_user_plugin_assessment_auto",
+        ),
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到伴读模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "companion", "push_notifications": True},
+            reason="llm_user_plugin_assessment_companion",
+        ),
+    ]
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        side_effect=decisions,
+    ) as mock_assess:
+        auto_result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "开启自动推进模式"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+        companion_result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "切回伴读，不要自动点"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert auto_result is not None
+    assert auto_result.execution_method == "user_plugin"
+    assert auto_result.tool_name == "galgame_plugin"
+    assert auto_result.entry_id == "galgame_set_mode"
+    assert auto_result.tool_args == {"mode": "choice_advisor", "push_notifications": True}
+    assert auto_result.reason == "llm_user_plugin_assessment_auto"
+    assert companion_result is not None
+    assert companion_result.entry_id == "galgame_set_mode"
+    assert companion_result.tool_args == {"mode": "companion", "push_notifications": True}
+    assert companion_result.reason == "llm_user_plugin_assessment_companion"
+    assert mock_assess.await_count == 2
+
+
+def test_task_executor_plugin_desc_includes_enum_values():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    lines = executor._build_plugin_desc_lines([
+        {
+            "id": "galgame_plugin",
+            "description": "galgame plugin",
+            "entries": [
+                {
+                    "id": "galgame_agent_command",
+                    "description": "agent command",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "query_status",
+                                    "query_context",
+                                    "send_message",
+                                    "set_standby",
+                                    "list_messages",
+                                    "ack_message",
+                                ],
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+    ])
+
+    assert "action:string enum=[query_status|query_context|send_message|set_standby|list_messages|ack_message]" in "\n".join(lines)
+
+
+def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
+    """超过 12 个 enum 值时，截断标记必须在 [] 内并带 '+N more' 数量提示，
+    而不是孤零零的 '...'，以避免 LLM 把可见的 12 个误当成完整合法值清单。
+    """
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12，触发截断
+    lines = executor._build_plugin_desc_lines([
+        {
+            "id": "demo_plugin",
+            "description": "demo",
+            "entries": [
+                {
+                    "id": "demo_entry",
+                    "description": "demo entry",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": long_enum},
+                        },
+                    },
+                },
+            ],
+        },
+    ])
+    rendered = "\n".join(lines)
+
+    expected_inner = "|".join(long_enum[:12])
+    assert f"kind:string enum=[{expected_inner}|... +3 more]" in rendered
+    # 旧的 "]..." 形态必须消失，避免 LLM 误读为"列表完整、后面是注释省略号"
+    assert "]..." not in rendered
+    # 被截断的值不应该出现在 prompt 里
+    for v in long_enum[12:]:
+        assert v not in rendered
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():

@@ -297,6 +297,7 @@ class ProactiveBridge:
                 "source_kind": "plugin",
                 "source_name": str(plugin_id) if plugin_id else "",
                 "timestamp": timestamp,
+                "metadata": metadata,
                 # v2 carries media inline; main_server will base64-decode
                 # and call session.send_media_input before/after the
                 # callback queue depending on ai_behavior.
