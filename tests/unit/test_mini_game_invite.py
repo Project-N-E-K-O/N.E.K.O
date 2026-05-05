@@ -938,6 +938,16 @@ def test_keyword_matcher_accept_zh():
     assert sr._match_mini_game_invite_keyword('一起玩吧') == 'accept'
 
 
+def test_keyword_matcher_no_false_positive_on_chong_substring():
+    """codex P2 回归保护：单字 '冲' 已从 zh accept 删除——
+    "我去冲个澡" / "冲咖啡" 等普通对话不应命中 accept（CJK 走 substring 没
+    word boundary 兜底）。"""
+    assert sr._match_mini_game_invite_keyword('我去冲个澡') is None
+    assert sr._match_mini_game_invite_keyword('在冲咖啡') is None
+    # 但完整 phrase 「来吧」仍命中 accept
+    assert sr._match_mini_game_invite_keyword('来吧') == 'accept'
+
+
 def test_keyword_matcher_accept_does_not_match_negation():
     """关键词列表配合 priority 双保险：'不好'/'我不行' 不能被 accept 误命中。
     accept 现在用「好啊/好的/行啊」短语，'不好' 不含 substring '好啊'；同时

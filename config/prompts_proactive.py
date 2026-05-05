@@ -2405,10 +2405,12 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         # accept 必须用**短语 / 双字以上**避免和 decline 子串重叠：
         # - 单字 '好' '行' 会被 "不好" / "我不行" / "不好玩" 当 substring 命中。
         # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
-        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起」等明确表达。CodeRabbit Major
+        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡" 这种普通对话会被 CJK
+        #   substring 误命中（codex P2 指出）。
+        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确表达。CodeRabbit Major
         # 指出，配合 _match_mini_game_invite_keyword 的 negation-priority
         # （decline > later > accept）双保险。
-        'accept': ['好啊', '好的', '可以', '行啊', '来吧', '一起', '冲'],
+        'accept': ['好啊', '好的', '可以', '行啊', '来吧', '一起玩'],
         'decline': ['不要', '不行', '不好', '不想', '算了', '拒绝', '不玩', '没空'],
         'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
     },
