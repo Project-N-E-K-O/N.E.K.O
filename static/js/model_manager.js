@@ -744,6 +744,17 @@ function createCardMakerFallbackToken() {
     return `card-maker-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function getCardMakerFallbackCloseMarkKey(token, name) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedName = String(name || '').trim();
+    if (!normalizedToken || !normalizedName) return '';
+    try {
+        return `neko_card_maker_fallback_closed:${encodeURIComponent(normalizedToken)}:${encodeURIComponent(normalizedName)}`;
+    } catch (_) {
+        return '';
+    }
+}
+
 function postCardMakerFallbackEvent(message) {
     try {
         const channel = new BroadcastChannel('neko-card-maker-fallback-events');
@@ -752,6 +763,14 @@ function postCardMakerFallbackEvent(message) {
     } catch (_) {}
 
     try {
+        const closeMarkKey = getCardMakerFallbackCloseMarkKey(message?.token, message?.name);
+        if (closeMarkKey) {
+            localStorage.setItem(closeMarkKey, JSON.stringify({
+                token: message.token,
+                name: message.name,
+                timestamp: Date.now()
+            }));
+        }
         localStorage.setItem('neko_card_maker_fallback_event', JSON.stringify(message));
         localStorage.removeItem('neko_card_maker_fallback_event');
     } catch (_) {}
@@ -774,12 +793,25 @@ function notifyCardMakerFallbackOwnerClosing() {
     postCardMakerFallbackEvent(message);
 }
 
+function cleanupCardMakerCloseFallbackWatcher() {
+    const cleanup = window._modelManagerCardMakerFallbackCleanup;
+    if (typeof cleanup === 'function') {
+        try {
+            cleanup();
+        } catch (error) {
+            console.warn('[模型管理] 清理卡面制作兜底监听失败:', error);
+        }
+    }
+    if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+        window._modelManagerCardMakerFallbackCleanup = null;
+    }
+    window._modelManagerActiveCardMakerFallback = null;
+}
+
 function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = {}, options = {}) {
     if (!makerWindow || !lanlanName) return;
 
-    if (typeof window._modelManagerCardMakerFallbackCleanup === 'function') {
-        window._modelManagerCardMakerFallbackCleanup();
-    }
+    cleanupCardMakerCloseFallbackWatcher();
 
     const startedAt = Date.now();
     const fallbackToken = options.fallbackToken || '';
@@ -1203,6 +1235,7 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
 
 async function offerCardFaceAfterModelSave(state = {}) {
     if (window._modelManagerCardFacePromptActive) return;
+    cleanupCardMakerCloseFallbackWatcher();
     window._modelManagerCardFacePromptActive = true;
     try {
         const lanlanName = await resolveModelManagerLanlanName();
@@ -1234,6 +1267,17 @@ async function offerCardFaceAfterModelSave(state = {}) {
             if (!makerWindow) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
+                try {
+                    await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                } catch (error) {
+                    console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                    setModelManagerStatusText(
+                        error && error.message
+                            ? error.message
+                            : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                    );
+                    return;
+                }
             } else {
                 watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
             }

@@ -72,6 +72,9 @@
     let fallbackDefaultPromise = null;
     let fallbackEventChannel = null;
     let pendingFallbackDefaultSave = false;
+    let fallbackDefaultListenersRegistered = false;
+
+    initModelSaveFallbackDefaultCardFace();
 
     // ====== 初始化 ======
     document.addEventListener('DOMContentLoaded', async () => {
@@ -101,17 +104,20 @@
         }
 
         bindEvents();
-        initModelSaveFallbackDefaultCardFace();
 
         // 从 URL 参数获取角色名并直接加载
         const params = new URLSearchParams(window.location.search);
         const name = params.get('name') || params.get('lanlan_name');
         if (name) {
             await onCharacterSelected(name);
+            if (consumeFallbackCloseMark(name)) {
+                pendingFallbackDefaultSave = true;
+            }
             if (pendingFallbackDefaultSave && !autoSaveDefaultCardFace) {
                 await saveModelSaveFallbackDefaultCardFace('pending-owner-close');
             }
             if (autoSaveDefaultCardFace) {
+                pendingFallbackDefaultSave = false;
                 await doAutoSaveDefaultCardFace();
             }
         }
@@ -232,7 +238,11 @@
 
     async function closeCardMakerPage() {
         try {
-            await saveModelSaveFallbackDefaultCardFace('card-maker-close');
+            await saveModelSaveFallbackDefaultCardFace('card-maker-close', {
+                maxWait: 1200,
+                skipIfModelNotLoaded: true,
+                waitForExisting: false
+            });
         } catch (error) {
             console.error('[CardMaker] 关闭前默认卡面兜底失败:', error);
         } finally {
@@ -265,19 +275,63 @@
         return !currentCharaName || !data.name || data.name === currentCharaName;
     }
 
-    async function saveModelSaveFallbackDefaultCardFace(reason = '') {
-        if (fallbackDefaultSaving) return fallbackDefaultPromise || false;
+    function getFallbackCloseMarkKey(name = '') {
+        const roleName = String(name || currentCharaName || fallbackPageName || '').trim();
+        if (!fallbackDefaultOnClose || !fallbackToken || !roleName) return '';
+        try {
+            return `neko_card_maker_fallback_closed:${encodeURIComponent(fallbackToken)}:${encodeURIComponent(roleName)}`;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function persistFallbackCloseMark(data) {
+        const key = getFallbackCloseMarkKey(data?.name);
+        if (!key) return;
+        try {
+            localStorage.setItem(key, JSON.stringify({
+                token: fallbackToken,
+                name: String(data?.name || '').trim(),
+                timestamp: Date.now()
+            }));
+        } catch (_) {}
+    }
+
+    function consumeFallbackCloseMark(name = '') {
+        const key = getFallbackCloseMarkKey(name);
+        if (!key) return false;
+        try {
+            const value = localStorage.getItem(key);
+            if (!value) return false;
+            localStorage.removeItem(key);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function saveModelSaveFallbackDefaultCardFace(reason = '', options = {}) {
+        if (fallbackDefaultSaving) {
+            return options.waitForExisting === false ? false : (fallbackDefaultPromise || false);
+        }
         if (!shouldSaveFallbackDefaultCardFace()) {
             if (!currentCharaName && fallbackDefaultOnClose) {
                 pendingFallbackDefaultSave = true;
             }
             return false;
         }
+        if (options.skipIfModelNotLoaded && !isModelLoaded) {
+            return false;
+        }
 
+        const maxWait = Number.isFinite(options.maxWait) && options.maxWait >= 0
+            ? options.maxWait
+            : 10000;
+        consumeFallbackCloseMark(currentCharaName);
         pendingFallbackDefaultSave = false;
         fallbackDefaultSaving = true;
         fallbackDefaultPromise = (async () => {
-            await waitForCondition(() => isModelLoaded, 10000, '模型加载');
+            await waitForCondition(() => isModelLoaded, maxWait, '模型加载');
             await new Promise(resolve => setTimeout(resolve, 200));
             const saveResult = await doSaveCardFace({
                 silent: true,
@@ -307,10 +361,12 @@
     }
 
     function initModelSaveFallbackDefaultCardFace() {
-        if (!fallbackDefaultOnClose) return;
+        if (!fallbackDefaultOnClose || fallbackDefaultListenersRegistered) return;
+        fallbackDefaultListenersRegistered = true;
 
         const handleFallbackEvent = (data) => {
             if (!matchesModelSaveFallbackEvent(data)) return;
+            persistFallbackCloseMark(data);
             pendingFallbackDefaultSave = true;
             saveModelSaveFallbackDefaultCardFace('model-manager-close').catch(() => {});
         };
