@@ -318,9 +318,7 @@ describe('App', () => {
       const { container } = render(<App />);
 
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
-      const lollipopButton = container.querySelectorAll('.composer-icon-button')[0];
-      expect(lollipopButton).toBeInstanceOf(HTMLButtonElement);
-      fireEvent.click(lollipopButton);
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
       await act(async () => {

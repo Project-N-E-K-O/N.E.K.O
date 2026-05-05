@@ -631,6 +631,7 @@ export default function App({
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
+  const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
   const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
@@ -652,17 +653,33 @@ export default function App({
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
     avatarRangeHoldUntilRef.current = 0;
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     setActiveCursorToolId(null);
     setToolMenuOpen(false);
     setIsCursorOverAvatarRange(false);
     setIsCursorOverCompactCursorZone(false);
   }, []);
   const setCursorOverAvatarRange = useCallback((nextValue: boolean, options?: { allowHold?: boolean }) => {
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
+
     if (nextValue) {
-      avatarRangeHoldUntilRef.current = performance.now() + avatarToolRangeHoldMs;
+      const holdUntil = performance.now() + avatarToolRangeHoldMs;
+      avatarRangeHoldUntilRef.current = holdUntil;
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === true ? previousValue : true
       ));
+      avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+        avatarRangeHoldTimerRef.current = null;
+        if (performance.now() < avatarRangeHoldUntilRef.current) return;
+        avatarRangeHoldUntilRef.current = 0;
+        setIsCursorOverAvatarRange(previousValue => (previousValue ? false : previousValue));
+      }, avatarToolRangeHoldMs);
       return;
     }
 
@@ -670,11 +687,24 @@ export default function App({
       const shouldHold = options?.allowHold !== false
         && previousValue
         && performance.now() <= avatarRangeHoldUntilRef.current;
-      const resolvedValue = shouldHold ? true : false;
-      if (!resolvedValue) {
+      if (shouldHold) {
+        const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
+        avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+          avatarRangeHoldTimerRef.current = null;
+          if (performance.now() < avatarRangeHoldUntilRef.current) return;
+          avatarRangeHoldUntilRef.current = 0;
+          setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
+        }, delay);
+        return true;
+      }
+      if (avatarRangeHoldTimerRef.current !== null) {
+        window.clearTimeout(avatarRangeHoldTimerRef.current);
+        avatarRangeHoldTimerRef.current = null;
+      }
+      if (avatarRangeHoldUntilRef.current !== 0) {
         avatarRangeHoldUntilRef.current = 0;
       }
-      return previousValue === resolvedValue ? previousValue : resolvedValue;
+      return previousValue ? false : previousValue;
     });
   }, []);
 
@@ -1252,6 +1282,10 @@ export default function App({
   useEffect(() => () => {
     clearHammerSwingAnimation();
     clearOutsideHammerResetTimer();
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     floatingHeartTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
     floatingHeartTimeoutIdsRef.current = [];
     floatingFistDropTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
