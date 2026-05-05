@@ -1400,10 +1400,38 @@
             choice: option.choice,
             session_id: sessionId
         };
-        fetch('/api/mini_game/invite/respond', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody)
+        // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request
+        // 拒绝缺 token 的请求，否则所有合法点击都会被 403 reject、prompt 已清掉
+        // 但 invite state 没更新 —— codex P1 指出。沿用 nekoLocalMutationSecurity
+        // 共享 helper（其它 prompt endpoint 同款），含 token 缺失时 refresh + 重
+        // 试一次的协议。
+        var bodyJson = JSON.stringify(requestBody);
+        var doFetch = function (headers) {
+            return fetch('/api/mini_game/invite/respond', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
+                body: bodyJson
+            });
+        };
+        var sec = window.nekoLocalMutationSecurity;
+        var firstHeadersPromise = sec && typeof sec.getMutationHeaders === 'function'
+            ? sec.getMutationHeaders()
+            : Promise.resolve({});
+        firstHeadersPromise.then(doFetch).then(function (resp) {
+            // 403 + csrf_validation_failed → refresh token 重试一次（与 prompt
+            // endpoint 同协议）
+            if (resp.status === 403 && sec && typeof sec.refreshToken === 'function') {
+                return resp.clone().json().catch(function () { return null; }).then(function (errBody) {
+                    var code = errBody && errBody.error_code;
+                    if (code === 'csrf_validation_failed') {
+                        return sec.refreshToken().then(function () {
+                            return sec.getMutationHeaders();
+                        }).then(doFetch);
+                    }
+                    return resp;
+                });
+            }
+            return resp;
         }).then(function (resp) {
             return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status));
         }).then(function (data) {

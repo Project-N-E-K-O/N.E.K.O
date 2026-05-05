@@ -193,15 +193,14 @@ def test_advance_response_noop_when_last_user_msg_at_none():
     assert sr._mini_game_invite_state[LANLAN]['responded_at'] is None
 
 
-def test_advance_response_flips_when_user_spoke_after_invite(monkeypatch):
-    """用户在 delivered_at 之后说过话 → 标记已回应、计数清零。
+def test_advance_response_dismisses_pending_invite_with_short_suppression(monkeypatch):
+    """用户在 delivered_at 之后发了任意普通消息（非显式 choice / 关键词命中）
+    → advance 把 prompt 静默 dismiss + 5min 短抑制，**不**启动长冷却。
 
-    `responded_at` 必须 anchor 到 *真实* 回应时间（last_user_msg_at），
-    而不是「检测到回应的此刻」。advance_response 只在下次 proactive_chat 才跑，
-    user 回完到下次 proactive 可能隔几小时；anchor 用 now 会让 24h 冷却被这段
-    间隔白白拉长。
-
-    冻结 sr.time.time —— 测试断言不依赖真实时钟、CI 拥塞下也确定。"""
+    历史：旧 PR #1141 时代「用户说话 = 隐式回应」直接 mark responded_at +
+    1h 长锁。CodeRabbit Major 指出会让"用户先发别的话再点按钮"被 endpoint
+    误判 expired 并已悄悄进入长冷却（违 D2 语义）。改成等同 'later' 选项的
+    reset+短抑制语义：保留 ever_delivered（force-first 不再 fire）但不长锁。"""
     fixed_now = 1_700_000_000.0
     monkeypatch.setattr(sr.time, 'time', lambda: fixed_now)
 
@@ -210,43 +209,57 @@ def test_advance_response_flips_when_user_spoke_after_invite(monkeypatch):
     state['delivered_at'] = delivered_at
     state['responded_at'] = None
     state['chats_since_response'] = 0
+    state['pending_session_id'] = 'pre-advance-sess'
 
     # 用户 5s 前说了话 → 落在 delivered_at 之后
     sr._mini_game_invite_advance_response(LANLAN, fixed_now - 5.0)
-    assert state['responded_at'] is not None
-    assert state['chats_since_response'] == 0
-    # Anchor 精确等于 last_user_msg_at = fixed_now - 5；冻结时钟下没有漂移，
-    # 不需要容差——直接精确断言，回归到 now（=fixed_now）会立刻挂。
-    assert state['responded_at'] == fixed_now - 5.0, (
-        f"responded_at={state['responded_at']:.3f} 应等于 last_user_msg_at "
-        f"({fixed_now - 5:.3f})；={fixed_now} 说明回归到了 now"
+    # 不再 set responded_at（避免长冷却）
+    assert state['responded_at'] is None, (
+        "advance_response 不应再 set responded_at——长冷却只该由显式 accept/decline 触发"
     )
+    # state 进 dismissed/reset：delivered_at 清掉，pending session 清掉
+    assert state['delivered_at'] is None
+    assert state['pending_session_id'] is None
+    # 5min 短抑制：suppressed_until = fixed_now + 5min
+    assert state['suppressed_until'] == fixed_now + sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS
 
 
-def test_advance_response_anchors_even_when_proactive_runs_long_after_reply(monkeypatch):
-    """关键回归保护：用户回完话后过 2 小时才跑下一次 proactive_chat，
-    `responded_at` 必须 anchor 到 ~2 小时前的回应时刻，而不是 now。否则
-    24h 冷却会被这段静默期白吃，整体冷却变成 ~26 小时，违背 spec。
-
-    冻结 sr.time.time —— anchor 是不是真的 = last_user_msg_at 可以精确比对。"""
-    fixed_now = 1_700_010_000.0
+def test_advance_response_does_not_trigger_long_cooldown(monkeypatch):
+    """关键回归保护（CodeRabbit Major 指出场景）：
+    1) 邀请投递；
+    2) 用户先发普通消息（不命中关键词）→ advance 跑；
+    3) 用户随后点 accept 按钮。
+    旧逻辑：advance 已 mark responded → endpoint 看到 responded_at != None →
+            返 expired，但状态早就进 1h 长冷却（错）。
+    新逻辑：advance 仅 dismiss + 5min 短抑制（≠长冷却）；endpoint 看到没
+            pending 仍返 expired（按钮已晚），但 5min 后下次 proactive 重新
+            走骰子可重新邀请，不长锁。"""
+    fixed_now = 1_700_005_000.0
     monkeypatch.setattr(sr.time, 'time', lambda: fixed_now)
 
-    # 模拟：邀请投递在 2h+10s 前；用户 2h 前回过话；之后一直没动；现在
-    # 第二次 proactive_chat 进来终于把 advance 跑上。
     state = sr._mini_game_invite_get_state(LANLAN)
-    state['delivered_at'] = fixed_now - 2 * 3600 - 10
+    state['delivered_at'] = fixed_now - 60
     state['responded_at'] = None
     state['chats_since_response'] = 0
+    state['pending_session_id'] = 'sess-x'
+    sr._invite_ever_delivered[LANLAN] = True
 
-    sr._mini_game_invite_advance_response(LANLAN, fixed_now - 2 * 3600)
-    assert state['responded_at'] is not None
-    # 冻结时钟下应精确等于 fixed_now - 2h；回归到 now 会让 24h 冷却被多锁 2h。
-    expected = fixed_now - 2 * 3600
-    assert state['responded_at'] == expected, (
-        f"responded_at={state['responded_at']:.1f} 应严格等于 "
-        f"{expected:.1f}（fixed_now={fixed_now}），偏差说明 anchor 出错"
-    )
+    # 用户 30s 前说了句普通话（advance 抓到）
+    sr._mini_game_invite_advance_response(LANLAN, fixed_now - 30.0)
+
+    # cooldown 检查应只反映 5min 短抑制（不到 1h 长锁）
+    assert state['responded_at'] is None
+    assert state['chats_since_response'] == 0  # 不是被锁的「已回应进入 10 chats 计数」
+    assert state['suppressed_until'] is not None
+    suppress_window = state['suppressed_until'] - fixed_now
+    assert (
+        sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS - 1
+        <= suppress_window
+        <= sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 1
+    ), f"suppressed_until 应是 5min 短抑制，实际 {suppress_window}s"
+    # 5min 后冷却应自然解除
+    monkeypatch.setattr(sr.time, 'time', lambda: fixed_now + sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 1)
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
 
 
 def test_advance_response_does_not_flip_when_last_user_msg_predates_invite():

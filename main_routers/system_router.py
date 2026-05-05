@@ -2192,18 +2192,24 @@ async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
 def _mini_game_invite_advance_response(
     lanlan_name: str, last_user_msg_at: float | None,
 ) -> None:
-    """如果有 pending 邀请且用户已经在 delivered_at 之后说过话，标记为已回应。
+    """pending 邀请期间用户发了任意普通消息（非显式 choice / 关键词命中）→
+    把 prompt 静默 dismiss + 5min 短抑制，**不**启动长冷却。
 
     每次进 proactive_chat（含 voice fast path 与 text path 两条）都调一次。
     last_user_msg_at 是「用户最后一次活动的时间戳」——caller 负责从合适来源
     解出来：text path 用 activity_snapshot.seconds_since_user_msg 反推；voice
     path 直接用 mgr.last_user_activity_time（voice 不走 activity tracker，但
-    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都按"未回应"保留
-    pending，不主动 flip。
+    session 自己跟踪 RMS / 文本输入活动）。任一缺失（None）都 noop。
 
-    Anchor 到 last_user_msg_at 而不是"检测到的此刻"——advance 只在新一轮
-    proactive_chat 跑时被调，user 回完到下次 proactive 之间可能隔几小时，
-    用 now 会让 24h 冷却被这段间隔白白拉长。"""
+    历史与现行语义的差异（CodeRabbit Major 指出后改）：
+    - 旧 PR #1141 时代：没有 ChoicePrompt，「用户在邀请之后说话」=「隐式回应」
+      → 直接 mark responded_at，启动 1h+10 chats 长冷却。
+    - 现在 PR #1145 引入显式三选项按钮 + 关键词文本兜底；长冷却语义只该由
+      **显式选择**（accept / decline）触发。任意非命中消息只是「dismiss
+      prompt」——保留 ever_delivered（force-first 不会再 fire）+ 5min 短抑
+      制（防下次 proactive 立刻又邀请），但不长锁。等同于 'later' choice。
+      否则用户先说一句别的再点按钮 → endpoint 看到 responded_at != None →
+      "expired"，状态已悄悄进 1h 长冷却（违背 D2 语义、用户体验差）。"""
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
         return
@@ -2211,15 +2217,12 @@ def _mini_game_invite_advance_response(
         return
     if last_user_msg_at is None:
         return
-    if last_user_msg_at > state['delivered_at']:
-        state['responded_at'] = float(last_user_msg_at)
-        state['chats_since_response'] = 0
-        now = time.time()
-        logger.info(
-            "[%s] mini-game invite responded "
-            "(delivered_at=%.1fs ago, last user msg=%.1fs ago)",
-            lanlan_name, now - state['delivered_at'], now - float(last_user_msg_at),
-        )
+    if last_user_msg_at <= state['delivered_at']:
+        return
+    # 任意消息 = 隐式 dismiss → 等同 'later' choice 的 reset+短抑制语义。
+    # 复用 _apply_mini_game_invite_choice 保持单一事实源；source 标 'implicit_dismiss'
+    # 让日志能区分按钮路径与隐式路径。
+    _apply_mini_game_invite_choice(lanlan_name, 'later', source='implicit_dismiss')
 
 
 def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:

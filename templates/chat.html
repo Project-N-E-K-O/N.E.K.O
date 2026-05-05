@@ -743,6 +743,10 @@
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
+    <!-- Local-mutation CSRF helper：mini-game invite respond endpoint 等本地
+         mutation 共用 window.nekoLocalMutationSecurity 拿 X-CSRF-Token；必须
+         在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
