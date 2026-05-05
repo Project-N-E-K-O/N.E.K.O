@@ -1356,7 +1356,6 @@ async function offerCardFaceAfterModelSave(state = {}) {
                             ? error.message
                             : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
                     );
-                    return;
                 }
             } else {
                 watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
@@ -1371,11 +1370,10 @@ async function offerCardFaceAfterModelSave(state = {}) {
                         ? error.message
                         : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
                 );
-                return;
             }
         }
-        // 用户关闭选择弹窗（cardFaceChoice 不是 edit/default）时，模型本身已经保存成功，
-        // 仍然要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
+        // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
+        // 都要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
 
         window.hasUnsavedChanges = false;
         await notifyMainPageModelReload();
