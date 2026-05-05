@@ -2337,16 +2337,22 @@ PROACTIVE_SOURCE_LABELS = {
 }
 
 # ---------- Mini-game 邀请短路文案 ----------
-# proactive_chat 在 propensity / skip_probability / restricted_screen_only
-# 全过之后 10% 概率短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持
-# 单句、轻量、不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。
-# 24h+10 chats cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
-MINI_GAME_INVITE_LINE = {
-    'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
-    'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
-    'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
-    'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
-    'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
+# proactive_chat 在 propensity / skip_probability / restricted_screen_only 全过
+# 之后短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持单句、轻量、
+# 不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。1h+10 chats
+# cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+#
+# 多游戏接口契约：外层 key 是 game_type（与 config.MINI_GAME_INVITE_AVAILABLE_GAMES
+# 对齐），内层是 5 native locale 的句子。新接 mini-game 时往这里加一个新外层
+# key 即可，short-circuit 分发逻辑无须改动。
+MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    'soccer': {
+        'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
+        'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
+        'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
+        'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
+        'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
+    },
 }
 
 # ---------- 音乐搜索结果格式化 ----------

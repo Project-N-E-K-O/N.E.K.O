@@ -3838,6 +3838,11 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "退出遊戲",
+            "ending": "正在退出本局…",
+            "ended": "遊戲已結束，正在返回…"
+        },
         "startScreen": {
             "readyToStart": "準備完成，點擊開始",
             "ready": "準備完成"

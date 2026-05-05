@@ -3838,6 +3838,11 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "Exit Game",
+            "ending": "Ending the round…",
+            "ended": "Game ended, returning…"
+        },
         "startScreen": {
             "readyToStart": "Ready — click to start",
             "ready": "Ready"

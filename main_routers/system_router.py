@@ -77,6 +77,8 @@ from config import (
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
     MINI_GAME_INVITE_COOLDOWN_SECONDS,
     MINI_GAME_INVITE_COOLDOWN_CHATS,
+    MINI_GAME_INVITE_NEW_USER_FORCE_AT,
+    MINI_GAME_INVITE_AVAILABLE_GAMES,
     PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
     PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
     PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
@@ -115,7 +117,7 @@ from config.prompts_proactive import (
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
-    MINI_GAME_INVITE_LINE,
+    MINI_GAME_INVITE_LINES_BY_GAME,
     build_proactive_action_note,
 )
 from utils.file_utils import atomic_write_json_async, read_json
@@ -1473,16 +1475,44 @@ _proactive_chat_history: dict[str, deque] = {}
 # --- Mini-game 邀请短路状态（每角色独立）---
 # {lanlan_name: {'delivered_at': float|None,
 #                'responded_at': float|None,
-#                'chats_since_response': int}}
-# - delivered_at: 上次成功投递邀请的时间戳。None=从未发过 / 已过完整冷却。
+#                'chats_since_response': int,
+#                'last_game_type': str|None}}
+# - delivered_at: 上次成功投递邀请的时间戳。None=从未发过。
 # - responded_at: 投递后被用户回应（任何用户消息时间戳 > delivered_at）的时间。
 #   pending（delivered_at!=None and responded_at=None）期间一律抑制掷骰，避免
 #   邀请挂着不响应又再发第二次。
 # - chats_since_response: responded_at 设上后成功投递的"普通主动搭话"次数。
 #   两条件（>= COOLDOWN_SECONDS 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
-# 进程内 dict，重启清零——24h 跟 10 chats 都是软冷却，重启后多发一次邀请的
-# 代价远小于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
+#   冷却跨 game_type 共享——每角色一个全局冷却，一次邀请 → 1h 内全部 mini-game
+#   静默；spec 没说邀请要密集，多游戏只是丰富选项不是加密。
+# - last_game_type: 上次邀请发的是哪个游戏（从 MINI_GAME_INVITE_AVAILABLE_GAMES
+#   里 random.choice 出来的）；用于 PR-B 按钮判断"打开哪个游戏"。
+# 进程内 dict，重启清零——1h+10 chats 是软冷却，重启后多发一次邀请的代价远小
+# 于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
 _mini_game_invite_state: dict[str, dict[str, Any]] = {}
+
+# --- 持久化"该角色累计成功投递的主动搭话次数 + 是否曾被邀请过"---
+# 单文件 schema：
+#   {"version": 2,
+#    "totals": {<lanlan_name>: <int>, ...},
+#    "ever_delivered": {<lanlan_name>: true, ...}}
+# 跨进程重启保留。两份数据合一个文件方便维护。
+#
+# - totals: 「新用户第 N 次主动搭话强制走 mini-game 邀请」(N=NEW_USER_FORCE_AT)
+#   必须依赖跨重启的累计计数——否则用户每次重启 app，force-trigger 会反复触发，
+#   体感邀请密度抖。计数语义与 _record_proactive_chat 对齐：仅在「成功投递给
+#   用户」时 +1，PASS 不算（spec 上"第 N 次主动搭话"指用户实际收到的）。
+# - ever_delivered: 「该角色是否曾经被发过 mini-game 邀请」一次性 true 标记，
+#   force-first 的 "is new user" 判定基础。和 in-memory 的 ``state.delivered_at``
+#   不同：后者跟随 PR-B 的 D2「回头再说」会被 reset，但 ever_delivered 一旦置
+#   True 就不再翻——「曾经被邀请过」是历史事实，不能被反悔。codex review (P1)
+#   指出，没这条 force-first 在重启后会把已邀请过的用户当新用户重新强制邀请。
+_PROACTIVE_CHAT_TOTALS_FILENAME = "proactive_chat_totals.json"
+_PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION = 2
+_proactive_chat_totals: dict[str, int] = {}
+_invite_ever_delivered: dict[str, bool] = {}
+_proactive_chat_totals_lock = asyncio.Lock()
+_proactive_chat_totals_loaded = False
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 _PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
@@ -2007,16 +2037,145 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
 # 不响应又再发第二次。
 
 def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
-    """Lazy-init per-character state."""
+    """Lazy-init per-character state。"""
     state = _mini_game_invite_state.get(lanlan_name)
     if state is None:
         state = {
             'delivered_at': None,
             'responded_at': None,
             'chats_since_response': 0,
+            'last_game_type': None,
         }
         _mini_game_invite_state[lanlan_name] = state
     return state
+
+
+def _proactive_chat_totals_path() -> Path:
+    return Path(get_config_manager().memory_dir) / _PROACTIVE_CHAT_TOTALS_FILENAME
+
+
+async def _ensure_proactive_chat_totals_loaded() -> None:
+    """Lazy-load 持久化的累计计数 + ever_delivered。幂等。文件读取放线程池。
+
+    schema: {"version": 2,
+             "totals": {<lanlan_name>: <int>, ...},
+             "ever_delivered": {<lanlan_name>: true, ...}}
+
+    缺失文件 / JSON 损坏都不致命——按全空起步，下次 increment 写出新文件。
+    旧 schema v1 没有 ever_delivered 字段，加载完是空 dict——升级后第一次
+    proactive 会让现有用户被「force-first 重发一次」（最多一次，因为 deliver
+    后 ever_delivered 立刻置 True 并写盘）；这是 v1→v2 一次性迁移代价，
+    不需要专门写迁移脚本。"""
+    global _proactive_chat_totals_loaded
+    if _proactive_chat_totals_loaded:
+        return
+    async with _proactive_chat_totals_lock:
+        if _proactive_chat_totals_loaded:
+            return
+        path = _proactive_chat_totals_path()
+        try:
+            data = await asyncio.to_thread(read_json, path)
+            totals = data.get('totals') if isinstance(data, dict) else None
+            if isinstance(totals, dict):
+                for k, v in totals.items():
+                    if isinstance(k, str) and isinstance(v, (int, float)):
+                        _proactive_chat_totals[k] = int(v)
+            ever = data.get('ever_delivered') if isinstance(data, dict) else None
+            if isinstance(ever, dict):
+                for k, v in ever.items():
+                    if isinstance(k, str) and bool(v):
+                        _invite_ever_delivered[k] = True
+        except FileNotFoundError:
+            # 首次启动 / cleanup 后没文件——按全空起步，下次 increment 会创建。
+            # 不是异常，不打 warning。
+            pass
+        except Exception as exc:
+            logger.warning("proactive_chat_totals load failed: %s", exc)
+        _proactive_chat_totals_loaded = True
+
+
+def _get_proactive_chat_total(lanlan_name: str) -> int:
+    """Synchronous read of cached counter. 0 if loaded-but-unset or not loaded yet.
+
+    `_maybe_deliver_mini_game_invite` 在 caller 已 await
+    `_ensure_proactive_chat_totals_loaded()` 后调用，所以此处不再 await。"""
+    return int(_proactive_chat_totals.get(lanlan_name, 0))
+
+
+def _was_invite_ever_delivered(lanlan_name: str) -> bool:
+    """Synchronous read of ever-delivered flag.
+
+    Caller 必须先 await ``_ensure_proactive_chat_totals_loaded()``。"""
+    return bool(_invite_ever_delivered.get(lanlan_name, False))
+
+
+async def _persist_totals_unlocked() -> None:
+    """把 totals + ever_delivered 写盘。调用方必须持有 _proactive_chat_totals_lock。"""
+    try:
+        await atomic_write_json_async(
+            _proactive_chat_totals_path(),
+            {
+                'version': _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION,
+                'totals': dict(_proactive_chat_totals),
+                'ever_delivered': dict(_invite_ever_delivered),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "proactive_chat_totals persist failed (in-memory still up-to-date): %s",
+            exc,
+        )
+
+
+async def _increment_proactive_chat_total(lanlan_name: str) -> int:
+    """+1 cached counter and persist atomically. Returns new value.
+
+    序列化通过 ``_proactive_chat_totals_lock`` 保证：并发的 proactive_chat 会
+    各自 await 到串行 update，不会丢 increment。写盘失败不向 caller 抛——
+    counter 是 best-effort，丢一次 +1 不致命，但保留日志。"""
+    await _ensure_proactive_chat_totals_loaded()
+    async with _proactive_chat_totals_lock:
+        new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
+        _proactive_chat_totals[lanlan_name] = new_value
+        await _persist_totals_unlocked()
+    return new_value
+
+
+async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
+    """一次性置 True + 持久化。已经是 True 时跳过写盘节省 IO。
+
+    与 ``_increment_proactive_chat_total`` 共用 ``_proactive_chat_totals_lock``
+    确保并发 update 时 totals + ever_delivered 一起原子写。
+
+    ⚠️ 邀请投递路径不要分开调 ``_increment_proactive_chat_total +
+    _mark_invite_ever_delivered``——两次 await 之间 lock 释放，进程在中间挂掉
+    会留下 ``totals: N+1, ever_delivered: 旧`` 的磁盘中间态，重启后 force-first
+    还会再 fire 一次。用 ``_record_invite_delivery_persistent`` 一把锁内原子写。"""
+    await _ensure_proactive_chat_totals_loaded()
+    async with _proactive_chat_totals_lock:
+        if _invite_ever_delivered.get(lanlan_name):
+            return
+        _invite_ever_delivered[lanlan_name] = True
+        await _persist_totals_unlocked()
+
+
+async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
+    """成功投递一次 mini-game 邀请的原子持久化记录：counter +1 + ever_delivered=True
+    一把锁内一次性写盘。返回新的 total。
+
+    存在的理由：先 +1 再 mark 两步分开 await，lock 在中间释放，进程崩溃 / 协程
+    cancel 都可能让磁盘留 ``totals: N+1, ever_delivered: 旧`` 的中间态——重启后
+    ``_was_invite_ever_delivered`` 看到旧的 false，force-first 又会 fire 一次。
+    CodeRabbit Major review 指出。"""
+    await _ensure_proactive_chat_totals_loaded()
+    async with _proactive_chat_totals_lock:
+        new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
+        _proactive_chat_totals[lanlan_name] = new_value
+        _invite_ever_delivered[lanlan_name] = True
+        await _persist_totals_unlocked()
+    return new_value
 
 
 def _mini_game_invite_advance_response(
@@ -2092,6 +2251,21 @@ def _mini_game_invite_count_post_response_chat(lanlan_name: str) -> None:
     state['chats_since_response'] += 1
 
 
+def _pick_mini_game_type() -> str | None:
+    """从 MINI_GAME_INVITE_AVAILABLE_GAMES 选一个 game_type。
+
+    必须是 MINI_GAME_INVITE_LINES_BY_GAME 里有文案的——如果配置错位（available
+    list 里有但 lines 里没），跳过那条。空 → None（caller 短路返回）。"""
+    candidates = [
+        g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
+        if g in MINI_GAME_INVITE_LINES_BY_GAME
+    ]
+    if not candidates:
+        return None
+    import random as _random
+    return _random.choice(candidates)
+
+
 async def _maybe_deliver_mini_game_invite(
     *,
     lanlan_name: str,
@@ -2111,11 +2285,18 @@ async def _maybe_deliver_mini_game_invite(
         还没接，跟进 thread 优先于换话题；与 skip_probability /
         restricted_screen_only 对 unfinished_thread 的优先级约定对齐）
       - _mini_game_invite_in_cooldown
-      - random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+      - 非 force-first 路径下 random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY
+
+    Force-first 分支：当
+      ``state.delivered_at is None`` 且
+      ``proactive_chat_total >= MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1``
+    时，绕开 10% 骰子直接走邀请——给从未玩过的用户一次确定的「被邀请」机会，
+    不靠概率。其它 gate（propensity / unfinished_thread / cooldown）仍生效。
 
     投递路径完全镜像 ``main_routers/game_router._deliver_postgame_text_bubble``：
     prepare_proactive_delivery → feed_tts_chunk → finish_proactive_delivery。
-    不走 Phase 1/2 LLM；文案来自 ``MINI_GAME_INVITE_LINE`` 静态 i18n 模板。"""
+    不走 Phase 1/2 LLM；文案从 ``MINI_GAME_INVITE_LINES_BY_GAME[game_type]`` 选，
+    game_type 从 ``MINI_GAME_INVITE_AVAILABLE_GAMES`` random.choice。"""
     if not MINI_GAME_INVITE_ENABLED:
         return None
     if activity_snapshot is None:
@@ -2133,11 +2314,40 @@ async def _maybe_deliver_mini_game_invite(
         return None
     if _mini_game_invite_in_cooldown(lanlan_name):
         return None
-    import random as _random
-    if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-        return None
 
-    template = _loc(MINI_GAME_INVITE_LINE, invite_lang)
+    # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
+    # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
+    # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
+    # 一回，邀请密度抖。
+    #
+    # "is new user" 必须查持久化的 ever_delivered，不能查 in-memory 的
+    # ``state.delivered_at is None``——后者会被 PR-B「回头再说」reset，且重启清零；
+    # codex review (P1) 指出，没这条 force-first 在每次重启后都会把已邀请过的
+    # 用户当新用户重新强制邀请。
+    await _ensure_proactive_chat_totals_loaded()
+    never_delivered = not _was_invite_ever_delivered(lanlan_name)
+    total_so_far = _get_proactive_chat_total(lanlan_name)
+    force_first = (
+        never_delivered
+        and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
+    )
+
+    if not force_first:
+        import random as _random
+        if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+            return None
+
+    game_type = _pick_mini_game_type()
+    if game_type is None:
+        logger.warning(
+            "[%s] mini-game invite skipped: no game_type available "
+            "(MINI_GAME_INVITE_AVAILABLE_GAMES=%r, LINES keys=%r)",
+            lanlan_name,
+            MINI_GAME_INVITE_AVAILABLE_GAMES,
+            list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
+        )
+        return None
+    template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
     safe_master = (master_name or '').strip()
     try:
         invite_text = template.format(master_name=safe_master).strip()
@@ -2175,12 +2385,22 @@ async def _maybe_deliver_mini_game_invite(
         }
     _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
     _mini_game_invite_record_delivered(lanlan_name)
-    print(f"[{lanlan_name}] Mini-game invite delivered: {invite_text[:60]}…")
+    _mini_game_invite_get_state(lanlan_name)['last_game_type'] = game_type
+    # counter +1 + ever_delivered=True 一把锁内原子写盘。两份持久化数据必须
+    # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
+    # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
+    await _record_invite_delivery_persistent(lanlan_name)
+    print(
+        f"[{lanlan_name}] Mini-game invite delivered "
+        f"(game={game_type}, force_first={force_first}): {invite_text[:60]}…"
+    )
     return {
         "success": True,
         "action": "chat",
         "message": "mini-game invite delivered",
         "channel": "mini_game",
+        "game_type": game_type,
+        "force_first": force_first,
         "lanlan_name": lanlan_name,
         "turn_id": proactive_sid,
     }
@@ -3760,9 +3980,11 @@ async def proactive_chat(request: Request):
                 }, status_code=409)
             delivered = await mgr.trigger_voice_proactive_nudge()
             if delivered:
-                # 24h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
+                # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
                 # 与 text path 在 _record_proactive_chat 之后调 count 对称。
                 _mini_game_invite_count_post_response_chat(lanlan_name)
+                # 持久化"累计成功投递的主动搭话总数"，给 force-first 用。
+                await _increment_proactive_chat_total(lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -5321,6 +5543,9 @@ async def proactive_chat(request: Request):
         # 任何 channel 的成功投递都算一次，pending 期间（responded_at=None）函数
         # 内部自然 no-op，不靠"邀请自身"提前耗 counter。
         _mini_game_invite_count_post_response_chat(lanlan_name)
+        # 持久化"累计成功投递的主动搭话总数"，给 force-first 用——新用户在第 N
+        # 次成功投递时强制走 mini-game 邀请，跨重启计数。
+        await _increment_proactive_chat_total(lanlan_name)
         # Reminiscence usage：本轮 surfaced 了 pending reflection（不管 AI 最终
         # 用了什么标签，followup 都出现在 prompt 里）→ 记一次 reminiscence 用量。
         # 用独立 buffer (_reminiscence_usage_history) 而不是把同一条 message

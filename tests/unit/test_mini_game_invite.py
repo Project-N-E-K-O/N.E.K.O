@@ -59,9 +59,13 @@ def _clear_mini_game_state():
     """每个 test 进来前后都清干净 module-level state。"""
     sr._mini_game_invite_state.clear()
     sr._proactive_chat_history.clear()
+    sr._proactive_chat_totals.clear()
+    sr._invite_ever_delivered.clear()
     yield
     sr._mini_game_invite_state.clear()
     sr._proactive_chat_history.clear()
+    sr._proactive_chat_totals.clear()
+    sr._invite_ever_delivered.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +79,37 @@ def _force_invite_enabled_default(monkeypatch):
     分支的用例（test_maybe_deliver_returns_none_when_disabled）自己 setattr
     回 False。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_ENABLED', True)
+
+
+@pytest.fixture(autouse=True)
+def _stub_persistent_counter(monkeypatch):
+    """单测不初始化 shared_state.config_manager，真路径 ``_proactive_chat_totals_path``
+    会 RuntimeError。把 load / increment / mark-ever-delivered 都替换成纯内存版
+    本，断言能直接读 / 写 ``sr._proactive_chat_totals[lanlan]`` 与
+    ``sr._invite_ever_delivered[lanlan]`` 来 setup / verify。"""
+    async def _noop_load():
+        sr._proactive_chat_totals_loaded = True
+
+    async def _bump_only(lanlan_name: str) -> int:
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        return n
+
+    async def _mark_only(lanlan_name: str) -> None:
+        sr._invite_ever_delivered[lanlan_name] = True
+
+    async def _record_delivery_only(lanlan_name: str) -> int:
+        # 模拟原子写盘——bump counter + 置 ever_delivered，单次状态更新。
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        sr._invite_ever_delivered[lanlan_name] = True
+        return n
+
+    monkeypatch.setattr(sr, '_ensure_proactive_chat_totals_loaded', _noop_load)
+    monkeypatch.setattr(sr, '_increment_proactive_chat_total', _bump_only)
+    monkeypatch.setattr(sr, '_mark_invite_ever_delivered', _mark_only)
+    monkeypatch.setattr(sr, '_record_invite_delivery_persistent', _record_delivery_only)
+    sr._proactive_chat_totals_loaded = False  # 强制每个 test 走 _noop_load 一次
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,16 +478,25 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
 # i18n 覆盖契约
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_invite_line_covers_all_native_locales():
-    """5 个 native locale（zh/en/ja/ko/ru）都必须有可格式化模板。"""
-    from config.prompts_proactive import MINI_GAME_INVITE_LINE
-    for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
-        line = MINI_GAME_INVITE_LINE[lang]
-        assert '{master_name}' in line, f"{lang} 模板缺 master_name 占位符"
-        rendered = line.format(master_name='测试')
-        assert '测试' in rendered
-        # 模板长度合理（不空、不爆）
-        assert 5 <= len(line) <= 200, f"{lang} 模板长度异常: {len(line)}"
+def test_invite_lines_cover_all_native_locales_per_game():
+    """每个 ``MINI_GAME_INVITE_AVAILABLE_GAMES`` 里列的 game_type 都必须在
+    ``MINI_GAME_INVITE_LINES_BY_GAME`` 里有 5 个 native locale 的可格式化模板。
+    这条契约是多游戏拓展的「门槛」——加新游戏忘了补对应 locale，line lookup
+    会落 _loc 兜底（zh），其它 locale 用户看到中文邀请。"""
+    from config import MINI_GAME_INVITE_AVAILABLE_GAMES
+    from config.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+    assert MINI_GAME_INVITE_AVAILABLE_GAMES, "AVAILABLE_GAMES 不能空"
+    for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
+        assert game in MINI_GAME_INVITE_LINES_BY_GAME, \
+            f"AVAILABLE_GAMES 列了 {game!r} 但 LINES 里没；多游戏接口契约破了"
+        lines = MINI_GAME_INVITE_LINES_BY_GAME[game]
+        for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
+            line = lines.get(lang)
+            assert line, f"{game!r} 缺 {lang!r} 模板"
+            assert '{master_name}' in line, f"{game!r}/{lang} 缺 master_name 占位符"
+            rendered = line.format(master_name='测试')
+            assert '测试' in rendered
+            assert 5 <= len(line) <= 200, f"{game!r}/{lang} 模板长度异常: {len(line)}"
 
 
 def test_format_recent_proactive_chats_renders_mini_game_channel():
@@ -495,3 +539,242 @@ async def test_invite_e2e_renders_in_recent_chats(monkeypatch):
     rendered = sr._format_recent_proactive_chats(LANLAN, 'zh')
     assert MASTER in rendered
     assert 'mini_game' in rendered
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Force-first 路径（新用户在第 N 次主动搭话强制邀请）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_force_first_triggers_when_new_user_at_threshold(monkeypatch):
+    """新用户（state.delivered_at is None）+ 持久化 total >= NEW_USER_FORCE_AT - 1
+    → 即便 trigger_probability=0 也强制走邀请。这是 spec「第 N 次主动搭话固定
+    邀请」的核心契约。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    # 默认 NEW_USER_FORCE_AT = 4 → total >= 3 触发
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    sr._proactive_chat_totals[LANLAN] = 3  # 已成功投递过 3 次普通主动搭话
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+    assert out["action"] == "chat"
+    assert out["force_first"] is True
+    assert out["game_type"] in sr.MINI_GAME_INVITE_AVAILABLE_GAMES
+
+
+@pytest.mark.asyncio
+async def test_force_first_skipped_when_total_below_threshold(monkeypatch):
+    """total < threshold → force-first 不生效，dice=0 时返回 None。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    sr._proactive_chat_totals[LANLAN] = 2  # 还差一次
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None  # 不到第 4 次 + dice=0 → 不发
+
+
+@pytest.mark.asyncio
+async def test_force_first_skipped_when_ever_delivered_persistent_flag_set(monkeypatch):
+    """``_invite_ever_delivered`` 持久化标记一旦置 True → force-first 不再生效，
+    回归普通 10% 掷骰路径。这是 "is new user" 的真正判定，跟 in-memory 的
+    ``state.delivered_at`` 完全独立。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    sr._invite_ever_delivered[LANLAN] = True  # 历史上发过邀请
+    sr._proactive_chat_totals[LANLAN] = 99
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None  # 老用户 + dice=0 → 不发
+
+
+@pytest.mark.asyncio
+async def test_force_first_skipped_after_simulated_restart(monkeypatch):
+    """关键回归：codex P1 / CodeRabbit Major 指出的 cross-restart bug——
+    重启后 ``_mini_game_invite_state`` 是空 dict，但 ``_proactive_chat_totals``
+    与 ``_invite_ever_delivered`` 都从持久化文件加载回来。已经被邀请过的用户
+    不应再被 force-first 当新用户重新强制邀请。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    # 模拟"重启后"的状态：state 空（in-memory 清零），但持久化两份都还在
+    sr._mini_game_invite_state.clear()
+    sr._proactive_chat_totals[LANLAN] = 99
+    sr._invite_ever_delivered[LANLAN] = True  # 重启前已发过
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None, (
+        "重启后已邀请过的用户被 force-first 重新邀请——"
+        "force-first 检查必须基于持久化的 _invite_ever_delivered，"
+        "不能基于 in-memory 的 state.delivered_at"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_marks_ever_delivered_persistent(monkeypatch):
+    """成功投递后必须把 _invite_ever_delivered 置 True（持久化），用于
+    跨重启识别"已邀请过的用户"防止 force-first 重复触发。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    assert not sr._was_invite_ever_delivered(LANLAN)
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+    assert sr._was_invite_ever_delivered(LANLAN), (
+        "投递成功但 ever_delivered 没置 True——下次 force-first 会重复触发"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_delivery_uses_atomic_persistence_helper(monkeypatch):
+    """关键回归：邀请投递必须走 _record_invite_delivery_persistent 一把锁原子
+    写盘，不能拆成 _increment_proactive_chat_total + _mark_invite_ever_delivered
+    两次独立 await——两次 await 之间 lock 释放，进程崩溃会留下 totals 已 +1 但
+    ever_delivered 旧值的中间态，重启后 force-first 重复 fire。CodeRabbit Major
+    review 指出。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+
+    increment_calls: list[str] = []
+    mark_calls: list[str] = []
+    record_calls: list[str] = []
+
+    async def _counting_increment(lanlan_name: str) -> int:
+        increment_calls.append(lanlan_name)
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        return n
+
+    async def _counting_mark(lanlan_name: str) -> None:
+        mark_calls.append(lanlan_name)
+        sr._invite_ever_delivered[lanlan_name] = True
+
+    async def _counting_record(lanlan_name: str) -> int:
+        record_calls.append(lanlan_name)
+        n = sr._proactive_chat_totals.get(lanlan_name, 0) + 1
+        sr._proactive_chat_totals[lanlan_name] = n
+        sr._invite_ever_delivered[lanlan_name] = True
+        return n
+
+    monkeypatch.setattr(sr, '_increment_proactive_chat_total', _counting_increment)
+    monkeypatch.setattr(sr, '_mark_invite_ever_delivered', _counting_mark)
+    monkeypatch.setattr(sr, '_record_invite_delivery_persistent', _counting_record)
+
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+
+    assert record_calls == [LANLAN], (
+        f"_record_invite_delivery_persistent should be called once, "
+        f"got {record_calls}"
+    )
+    assert increment_calls == [], (
+        f"_increment_proactive_chat_total should NOT be called from invite "
+        f"delivery, got {increment_calls}——拆成两步的 racy pattern 被复活了"
+    )
+    assert mark_calls == [], (
+        f"_mark_invite_ever_delivered should NOT be called from invite "
+        f"delivery, got {mark_calls}——拆成两步的 racy pattern 被复活了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_first_still_respects_unfinished_thread(monkeypatch):
+    """force-first 优先级低于 unfinished_thread——AI 刚问完用户没接的轮次
+    不允许换话题，即便是新用户的固定第 4 次也得让位。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    sr._proactive_chat_totals[LANLAN] = 3
+    fake_thread = types.SimpleNamespace(
+        text='你今天准备几点出发?', age_seconds=60.0,
+        follow_up_count=0, max_follow_ups=2,
+    )
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(unfinished_thread=fake_thread),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_force_first_still_respects_restricted_screen_only(monkeypatch):
+    """force-first 也要让位 propensity=restricted_screen_only——用户在工作 /
+    沉浸 gaming 时强制塞邀请反而打扰。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_NEW_USER_FORCE_AT', 4)
+    sr._proactive_chat_totals[LANLAN] = 3
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(
+            state='focused_work', propensity='restricted_screen_only',
+        ),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 多游戏接口契约（C：跨 game_type 共享冷却）
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_invite_outcome_includes_game_type(monkeypatch):
+    """投递成功 → outcome dict 必须带 game_type，让 caller 知道前端应该开哪个
+    游戏（PR-B 的「好」按钮用）。state.last_game_type 也写上，跨进程下次
+    proactive_chat 还能查到上次邀请发的什么。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is not None
+    assert out['game_type'] in sr.MINI_GAME_INVITE_AVAILABLE_GAMES
+    state = sr._mini_game_invite_state[LANLAN]
+    assert state['last_game_type'] == out['game_type']
+
+
+@pytest.mark.asyncio
+async def test_invite_skipped_when_no_game_available(monkeypatch):
+    """配置错位（AVAILABLE_GAMES 列出但 LINES 没对应 key）→ 静默不发，
+    不应抛异常或发空字符串。多游戏拓展时这是 defensive guard。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('nonexistent_game',))
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+    )
+    assert out is None
+    assert LANLAN not in sr._mini_game_invite_state
+
+
+def test_cooldown_is_1h_by_default():
+    """spec 改动：24h → 1h。常量值是后续 PR 调整的锚点，pin 住避免回归。"""
+    assert sr.MINI_GAME_INVITE_COOLDOWN_SECONDS == 3600
+
+
+def test_new_user_force_at_is_4_by_default():
+    """spec：「从未玩过的用户固定在开场第 4 次主动搭话邀请」。
+    pin 住默认值，未来调整由 follow-up 显式翻。"""
+    assert sr.MINI_GAME_INVITE_NEW_USER_FORCE_AT == 4
