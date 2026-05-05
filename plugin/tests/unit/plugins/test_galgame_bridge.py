@@ -3725,7 +3725,7 @@ async def test_install_rapidocr_entry_returns_chinese_error_message(
     assert isinstance(result, Err)
     assert (
         str(result.error)
-        == "RapidOCR 安装失败：RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
+        == "RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
     )
 
 

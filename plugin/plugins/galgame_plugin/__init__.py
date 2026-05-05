@@ -839,6 +839,8 @@ class GalgamePlugin(NekoPluginBase):
         )
         if not message:
             return prefix
+        if message.startswith(f"{component} 安装失败"):
+            return message
         return f"{prefix}：{message}"
 
     def _update_memory_reader_text_freshness(
