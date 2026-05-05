@@ -2422,8 +2422,16 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
         # 'don't want' / 'not now' 等 phrase。'after' 也太宽（"after lunch"），
         # 改用更长的 'after this' / 仅保留 'in a bit'/'in a minute' 等明确 later。
-        'accept': ['yes', 'sure', 'okay', "let's", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
-        'decline': ['no thanks', 'nope', 'pass', 'skip', 'not now', 'not really', 'maybe not', "don't want"],
+        # 'okay' 已删——"not okay" 会被 word-boundary accept 命中且 decline 没
+        # 'not okay' 时 priority 救不了（codex P2 指出）。其它单词 accept ('sure'
+        # /'yes'/'yeah'/'yep') 同类风险靠 decline list 加 'not sure' / 'not yet'
+        # 等 negation phrase 双保险拦截。
+        'accept': ['yes', 'sure', "let's", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
+        'decline': [
+            'no thanks', 'nope', 'pass', 'skip',
+            'not now', 'not really', 'maybe not', "don't want",
+            'not okay', 'not sure', 'not yet',
+        ],
         'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],
     },
     'ja': {

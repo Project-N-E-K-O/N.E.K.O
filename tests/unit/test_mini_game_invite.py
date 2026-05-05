@@ -981,7 +981,24 @@ def test_keyword_matcher_accept_does_not_match_negation():
 def test_keyword_matcher_accept_en():
     assert sr._match_mini_game_invite_keyword('yes please') == 'accept'
     assert sr._match_mini_game_invite_keyword("Let's go!") == 'accept'
-    assert sr._match_mini_game_invite_keyword('OKAY') == 'accept'
+    # 'okay' 已从 accept 删（codex P2：'not okay' substring 命中）；用户表达
+    # 接受改用 yes / sure / let's / yeah / yep 等仍在 list 内的 phrase。
+    assert sr._match_mini_game_invite_keyword('Yeah!') == 'accept'
+
+
+def test_keyword_matcher_no_false_positive_on_negated_accept_phrases():
+    """codex P2：'okay' / 'sure' 等英文 accept word 即使 word-boundary 也会被
+    'not okay' / 'not sure' 整词命中——decline list 没列对应 negation phrase
+    时 priority 救不了。删 'okay' + 加 'not okay' / 'not sure' / 'not yet'
+    进 decline 双保险。"""
+    # 'okay' 已删，独立验证："not okay" / "okay" / "okay let's go" 行为
+    assert sr._match_mini_game_invite_keyword('not okay') == 'decline'
+    assert sr._match_mini_game_invite_keyword('okay') is None  # accept 已删
+    # 'sure' 仍在 accept，但 'not sure' 现在在 decline，priority 兜底
+    assert sr._match_mini_game_invite_keyword("i'm not sure") == 'decline'
+    assert sr._match_mini_game_invite_keyword('sure thing') == 'accept'
+    # 'not yet' 进 decline，cover "i'm not yet ready" 等
+    assert sr._match_mini_game_invite_keyword("not yet") == 'decline'
 
 
 def test_keyword_matcher_decline_zh():
