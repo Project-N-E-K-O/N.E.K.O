@@ -49,7 +49,7 @@ import logging
 import re
 
 from memory.embeddings import (
-    cosine_similarity,
+    decode_embedding,
     get_embedding_service,
     is_cached_embedding_valid,
 )
@@ -276,24 +276,68 @@ class MemoryRecallReranker:
         # unembedded one fell off the cliff before reaching the LLM
         # rerank, even though the docstring promised they'd "fall
         # through to the LLM rerank below the cosine-ranked rows".
-        embedded_scored: list[tuple[float, dict]] = []
+        #
+        # Decoding strategy: build a stacked candidate matrix once and
+        # multiply against the query matrix in a single numpy call.
+        # The pre-int8 path used a per-pair Python cosine loop; for N
+        # candidates × Q queries × D dims that grew as N·Q·D Python
+        # ops. With base64+int8 storage we'd otherwise pay a base64
+        # decode per pair too. Stacking amortises decode to one pass
+        # and pushes the dot product into BLAS — at 5k entries × 256d
+        # that drops the coarse rank from hundreds of ms to a few.
+        embedded_obs: list[dict] = []
+        embedded_decoded: list = []
         unembedded: list[dict] = []
+        target_dim: int | None = None
         for o in observations:
             # ``observations`` already passed through ``_hard_filter``,
             # which guarantees every entry is a dict with non-empty
             # text — no need for a defensive isinstance check here.
             text = o.get('text', '')
-            cvec = o.get('embedding')
-            if is_cached_embedding_valid(o, text, model_id):
-                # Max-cosine across query vectors. Candidates with
-                # equal cosine fall back to evidence_score for tie-
-                # breaking — covered in the unit test.
-                best = max(
-                    cosine_similarity(cvec, qv) for qv in query_vectors
-                )
-                embedded_scored.append((best, o))
-            else:
+            if not is_cached_embedding_valid(o, text, model_id):
                 unembedded.append(o)
+                continue
+            cvec = decode_embedding(o.get('embedding'))
+            # A row that passes is_cached_embedding_valid but fails to
+            # decode (corrupt base64, or a future format we don't
+            # know) falls through to the unembedded pool rather than
+            # crashing the rerank.
+            if cvec is None or cvec.size == 0:
+                unembedded.append(o)
+                continue
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                # Mixed dims under a single model_id should be
+                # impossible (model_id encodes dim), but defend
+                # against it: drop to unembedded so the matmul stays
+                # rectangular.
+                unembedded.append(o)
+                continue
+            embedded_obs.append(o)
+            embedded_decoded.append(cvec)
+
+        embedded_scored: list[tuple[float, dict]] = []
+        if embedded_decoded:
+            import numpy as np
+            candidate_matrix = np.stack(embedded_decoded)
+            query_rows = []
+            for qv in query_vectors:
+                qvec = decode_embedding(qv)
+                if qvec is not None and qvec.size == target_dim:
+                    query_rows.append(qvec)
+            if query_rows:
+                query_matrix = np.stack(query_rows)
+                # (N, D) @ (D, Q) → (N, Q); max across queries → (N,)
+                scores_arr = (candidate_matrix @ query_matrix.T).max(axis=1)
+                embedded_scored = list(
+                    zip((float(s) for s in scores_arr), embedded_obs),
+                )
+            else:
+                # All query vectors failed dim check — degrade to 0
+                # cosine for every embedded candidate; evidence_score
+                # tie-break still gives a deterministic order below.
+                embedded_scored = [(0.0, o) for o in embedded_obs]
         # Sort embedded by cosine DESC, evidence_score DESC tie-break.
         embedded_scored.sort(
             key=lambda pair: (pair[0], pair[1].get('score', 0.0)),

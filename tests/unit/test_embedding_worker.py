@@ -29,6 +29,8 @@ from memory.embedding_worker import (
 )
 from memory.embeddings import (
     _embedding_text_sha256,
+    _encode_vector_int8,
+    decode_embedding,
     reset_embedding_service_for_tests,
 )
 
@@ -296,7 +298,12 @@ async def test_sweep_embeds_persona_reflection_and_facts_in_place():
 
     persona_facts = persona.store["小天"]["master"]["facts"]
     for entry in persona_facts:
-        assert entry["embedding"] == [float(len(entry["text"]))] * 4
+        # Stamp now writes the canonical base64+int8 form. Decode back
+        # and compare with the int8 quantization tolerance.
+        decoded = decode_embedding(entry["embedding"])
+        expected = [float(len(entry["text"]))] * 4
+        assert decoded is not None
+        assert decoded.tolist() == pytest.approx(expected, abs=0.02)
         assert entry["embedding_model_id"] == "fake-128d-int8"
         assert entry["embedding_text_sha256"] == _embedding_text_sha256(entry["text"])
     assert reflection.store["小天"][0]["embedding"] is not None
@@ -322,7 +329,7 @@ async def test_sweep_skips_entries_with_valid_cache():
             "facts": [
                 {
                     "text": text,
-                    "embedding": [0.9] * 4,
+                    "embedding": _encode_vector_int8([0.9] * 4),
                     "embedding_text_sha256": _embedding_text_sha256(text),
                     "embedding_model_id": "fake-128d-int8",
                 },
@@ -356,7 +363,7 @@ async def test_sweep_re_embeds_when_model_id_flipped():
             "facts": [
                 {
                     "text": text,
-                    "embedding": [0.9] * 4,
+                    "embedding": _encode_vector_int8([0.9] * 4),
                     "embedding_text_sha256": _embedding_text_sha256(text),
                     "embedding_model_id": "fake-128d-int8",
                 },
@@ -473,7 +480,7 @@ async def test_fact_sweep_forwards_dedup_candidates_when_resolver_present():
         # Pre-seeded existing row with a vector under the SAME model_id
         # — this is the cosine-collision target.
         {"id": "e1", "text": "主人喜欢猫", "entity": "master",
-         "embedding": [1.0, 0.0, 0.0, 0.0],
+         "embedding": _encode_vector_int8([1.0, 0.0, 0.0, 0.0]),
          "embedding_text_sha256": _embedding_text_sha256("主人喜欢猫"),
          "embedding_model_id": "fake-128d-int8",
          "absorbed": False},

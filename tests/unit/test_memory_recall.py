@@ -18,6 +18,7 @@ import pytest
 
 from memory.embeddings import (
     _embedding_text_sha256,
+    _encode_vector_int8,
     reset_embedding_service_for_tests,
 )
 from memory.recall import COARSE_OVERSAMPLE, MemoryRecallReranker
@@ -84,7 +85,11 @@ def _obs(oid: str, text: str, *, score: float = 1.0,
         "score": score,
         "suppress": suppress,
         "protected": protected,
-        "embedding": list(embedding) if embedding is not None else None,
+        # Tests author embeddings as raw fp32 lists for readability;
+        # encode to the canonical base64+int8 form so
+        # is_cached_embedding_valid recognises them. Quantization noise
+        # at int8 is well below the assertions' tolerance.
+        "embedding": _encode_vector_int8(embedding) if embedding is not None else None,
         "embedding_text_sha256": _embedding_text_sha256(text) if embedding else None,
         "embedding_model_id": model_id if embedding else None,
     }

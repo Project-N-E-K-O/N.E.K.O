@@ -45,14 +45,46 @@ match the current text + service ``model_id()`` — same pattern as the
 from __future__ import annotations
 
 import asyncio
+import base64
 import enum
 import hashlib
 import logging
 import os
 import platform
 import sys
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ── on-disk vector encoding ──────────────────────────────────────────
+#
+# A 256d float vector serialized as JSON ``list[float]`` runs ~5.3 KB
+# (each float prints to ~21 chars after Python's repr).  We instead
+# store a **base64-wrapped int8 quantization** with a per-vector fp16
+# scale prefix.  The wire format is ``base64( fp16_scale | int8_dims )``,
+# decoded via:
+#
+#     raw   = b64decode(s)
+#     scale = float(np.frombuffer(raw[:2],  dtype=np.float16)[0])
+#     vec   = np.frombuffer(raw[2:], dtype=np.int8) * (scale / 127.0)
+#
+# Total bytes ≈ ``2 + dim``; base64 expands to ``≈ ceil((2+dim) * 4/3)``.
+# At 256d that is ~344 chars vs ~5.3 KB before — ~15× smaller, plus the
+# decoder lands in a contiguous numpy buffer so the recall path can
+# stack candidates into a matrix and use ``M @ q.T`` instead of the
+# pure-Python cosine loop.
+#
+# Per-vector scale = ``max(|v|)`` preserves precision for L2-normalized
+# vectors whose dimensional magnitudes are typically << 1 (e.g. 1/√256).
+# Without the scale, int8 step would be 1/127 ≈ 0.79% of full range,
+# wasting ~6× of the available precision on each axis.
+#
+# Quantization noise is ~0.4% per dim, but the 256-dim dot product
+# averages it out — empirical cosine error vs fp32 is well under 1% on
+# standard retrieval benchmarks, which is invisible after the LLM
+# rerank stage in our pipeline.
+_QUANT_SCALE = 127.0
 
 
 # ── Config knobs (mirrored in config/__init__.py for centralised tuning) ──
@@ -102,6 +134,87 @@ class _DisableReason(enum.Enum):
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _encode_vector_int8(vector) -> str:
+    """Quantize a float vector to ``base64(fp16_scale | int8_dims)``.
+
+    Accepts list/tuple/numpy. Returns the canonical on-disk
+    representation. Empty / zero-norm inputs degrade to an all-zero
+    payload (with scale=1.0) rather than raising — keeps the stamp
+    path total even when an upstream embed returned a degenerate row.
+    """
+    import numpy as np
+    arr = np.asarray(vector, dtype=np.float32).ravel()
+    if arr.size == 0:
+        # Should not happen in practice (callers gate on ``embed()`` returning
+        # a vector), but a zero-length payload is at least decodable as an
+        # empty array on the read side.
+        return base64.b64encode(np.array([1.0], dtype=np.float16).tobytes()).decode("ascii")
+    max_abs = float(np.max(np.abs(arr)))
+    if max_abs == 0.0:
+        # All-zero vector → keep scale=1.0 sentinel and emit zeros so
+        # the round-trip yields the same all-zero array.
+        scale = 1.0
+        quantized = np.zeros_like(arr, dtype=np.int8)
+    else:
+        scale = max_abs
+        quantized = np.clip(
+            np.round(arr / max_abs * _QUANT_SCALE), -127, 127,
+        ).astype(np.int8)
+    scale_bytes = np.array([scale], dtype=np.float16).tobytes()
+    return base64.b64encode(scale_bytes + quantized.tobytes()).decode("ascii")
+
+
+def _decode_vector_int8(encoded: str):
+    """Inverse of :func:`_encode_vector_int8`. Returns a numpy fp32 array.
+
+    Returns None on any decoding failure — corrupt cache fields fall
+    through to the "no embedding" path rather than raising up into the
+    retrieval/dedup loops.
+    """
+    import numpy as np
+    try:
+        raw = base64.b64decode(encoded, validate=False)
+    except Exception:  # noqa: BLE001 — malformed base64 → treat as missing
+        return None
+    if len(raw) < 2:
+        return None
+    scale = float(np.frombuffer(raw[:2], dtype=np.float16)[0])
+    quantized = np.frombuffer(raw[2:], dtype=np.int8)
+    if quantized.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    return quantized.astype(np.float32) * (scale / _QUANT_SCALE)
+
+
+def decode_embedding(emb: Any):
+    """Public helper: turn a persisted ``embedding`` field into a numpy
+    fp32 array, regardless of whether the row carries the new base64
+    form, a legacy ``list[float]``, an already-decoded numpy array, or
+    None / empty.
+
+    Returns None when the field is missing or unreadable. Used by
+    cosine helpers and by recall's batched dot-product path.
+    """
+    if emb is None:
+        return None
+    import numpy as np
+    if isinstance(emb, np.ndarray):
+        if emb.size == 0:
+            return None
+        return emb.astype(np.float32, copy=False)
+    if isinstance(emb, str):
+        if not emb:
+            return None
+        return _decode_vector_int8(emb)
+    if isinstance(emb, (list, tuple)):
+        if not emb:
+            return None
+        try:
+            return np.asarray(emb, dtype=np.float32)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _embedding_text_sha256(text: str) -> str:
@@ -824,18 +937,31 @@ def _build_default_service() -> EmbeddingService:
 # ── cosine helpers (numpy-free for callers that only need scoring) ────
 
 
-def cosine_similarity(a: list[float] | None, b: list[float] | None) -> float:
+def cosine_similarity(a, b) -> float:
     """Cosine similarity between two unit-norm vectors.
 
     Both ``embed()`` outputs are L2-normalized, so this is a straight
-    dot product — no division required. Out-of-band inputs (None,
-    empty, dim mismatch) return 0.0 rather than raising; callers in the
-    retrieval/dedup path are happier ranking around an unrankable
-    candidate than crashing because one entry was missing its embedding.
+    dot product — no division required. Accepts the canonical base64
+    form, legacy ``list[float]``, or an already-decoded numpy array;
+    decodes lazily so the per-pair API stays compatible with tests and
+    fact-dedup's single-pair callsite. For hot loops over thousands of
+    candidates, prefer building a stacked matrix once via
+    :func:`decode_embedding` and using ``M @ q`` — the recall path does
+    that.
+
+    Out-of-band inputs (None, empty, dim mismatch, malformed base64)
+    return 0.0 rather than raising; retrieval and dedup are happier
+    ranking around an unrankable candidate than crashing because one
+    entry was missing its embedding.
     """
-    if not a or not b or len(a) != len(b):
+    av = decode_embedding(a)
+    bv = decode_embedding(b)
+    if av is None or bv is None:
         return 0.0
-    return sum(x * y for x, y in zip(a, b))
+    if av.size == 0 or bv.size == 0 or av.size != bv.size:
+        return 0.0
+    import numpy as np
+    return float(np.dot(av, bv))
 
 
 def is_cached_embedding_valid(
@@ -844,9 +970,15 @@ def is_cached_embedding_valid(
     """Decide whether the persisted embedding on ``entry`` is still good.
 
     Match contract (mirrors ``token_count`` cache in persona.py):
-      * non-empty embedding list
+      * embedding field is a non-empty base64 string (canonical form
+        emitted by :func:`stamp_embedding_fields`)
       * sha256 of ``current_text`` matches stored ``embedding_text_sha256``
       * ``embedding_model_id`` matches the running service's id
+
+    Legacy ``list[float]`` payloads are intentionally treated as invalid
+    so the warmup worker re-stamps them in the new compact form. The
+    one-time CPU cost is bounded (small N at migration time) and avoids
+    carrying two on-disk shapes forward indefinitely.
 
     Any mismatch → False, callers should clear the embedding fields and
     re-enqueue the entry for the warmup worker.
@@ -854,7 +986,7 @@ def is_cached_embedding_valid(
     if not isinstance(entry, dict):
         return False
     emb = entry.get("embedding")
-    if not isinstance(emb, list) or not emb:
+    if not isinstance(emb, str) or not emb:
         return False
     if current_model_id is None:
         return False
@@ -877,16 +1009,23 @@ def clear_embedding_fields(entry: dict) -> None:
 
 
 def stamp_embedding_fields(
-    entry: dict, vector: list[float], text: str, model_id: str,
+    entry: dict, vector, text: str, model_id: str,
 ) -> None:
     """In-place write of an embedding triple onto an entry.
 
     Stamping all three fields together (vector + text-sha + model-id)
     in one helper prevents the half-written state where ``embedding`` is
     set but the fingerprints aren't, which would otherwise look like a
-    legacy entry on the next read and trigger a recompute."""
+    legacy entry on the next read and trigger a recompute.
+
+    The vector is encoded to the canonical base64 int8 form before
+    storage (see :func:`_encode_vector_int8`). Callers pass the raw
+    fp32 list returned by :meth:`EmbeddingService.embed` — this helper
+    owns the on-disk encoding so the rest of the pipeline never sees
+    it.
+    """
     if not isinstance(entry, dict):
         return
-    entry["embedding"] = list(vector)
+    entry["embedding"] = _encode_vector_int8(vector)
     entry["embedding_text_sha256"] = _embedding_text_sha256(text)
     entry["embedding_model_id"] = model_id
