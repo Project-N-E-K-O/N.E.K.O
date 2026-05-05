@@ -851,8 +851,9 @@ def test_apply_choice_ignored_when_already_responded():
 
 
 def test_apply_choice_accept_returns_open_game_with_url():
-    """accept → 返回 game_url（带 lanlan_name + session_id query），
-    state 翻成 responded（启动 1h+10 chats 冷却）。"""
+    """accept → 返回 game_url（带 lanlan_name + session_id query）+ 顶层
+    session_id 字段（前端 dedupe key），state 翻成 responded（启动 1h+10 chats
+    冷却）。"""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 30
     state['responded_at'] = None
@@ -864,6 +865,10 @@ def test_apply_choice_accept_returns_open_game_with_url():
     assert result['game_url'].startswith('/soccer_demo?')
     assert 'lanlan_name=' + LANLAN in result['game_url']
     assert 'session_id=sess-abc' in result['game_url']
+    # 顶层 session_id 必须有，core.py keyword 路径推 mini_game_launch WS 时
+    # 把它放进 payload，让前端 dedupe set 跨「按钮 endpoint」/「keyword WS」
+    # 两路都用同一 key，避免双开窗口（codex P2 指出）。
+    assert result['session_id'] == 'sess-abc'
     # state 进 cooldown
     assert state['responded_at'] is not None
     assert state['chats_since_response'] == 0
@@ -916,8 +921,18 @@ def test_keyword_matcher_returns_none_for_empty_text():
 
 def test_keyword_matcher_accept_zh():
     assert sr._match_mini_game_invite_keyword('好啊') == 'accept'
-    assert sr._match_mini_game_invite_keyword('来！') == 'accept'
+    assert sr._match_mini_game_invite_keyword('来吧') == 'accept'
     assert sr._match_mini_game_invite_keyword('一起玩吧') == 'accept'
+
+
+def test_keyword_matcher_accept_does_not_match_negation():
+    """关键词列表配合 priority 双保险：'不好'/'我不行' 不能被 accept 误命中。
+    accept 现在用「好啊/好的/行啊」短语，'不好' 不含 substring '好啊'；同时
+    priority decline > accept 兜底——任一保护失效另一个仍 catch。"""
+    # 从 substring 层面：'不好' / '我不行' 不含 accept 短语
+    assert sr._match_mini_game_invite_keyword('不好') == 'decline'
+    assert sr._match_mini_game_invite_keyword('我不行') == 'decline'
+    assert sr._match_mini_game_invite_keyword('不好玩') == 'decline'
 
 
 def test_keyword_matcher_accept_en():
@@ -938,12 +953,17 @@ def test_keyword_matcher_later_zh():
     assert sr._match_mini_game_invite_keyword('晚点吧') == 'later'
 
 
-def test_keyword_matcher_accept_priority_over_later():
-    """暧昧文本同时含 accept + later 关键词 → accept 优先（spec 偏向"用户表达
-    了正面意愿就当接受"）。"""
-    # "好" + "等下" 同时命中
-    result = sr._match_mini_game_invite_keyword('好的等下')
-    assert result == 'accept'
+def test_keyword_matcher_priority_decline_over_later_over_accept():
+    """priority 是 decline > later > accept（CodeRabbit Major review 后调整）。
+    含 negation 的句子绝不能因 accept substring 凑巧命中就反向触发开游戏；
+    含 later 信号的句子优先于纯 accept。"""
+    # 'decline' > 'later'：含 '不要' (decline) + '回头' (later) → decline
+    assert sr._match_mini_game_invite_keyword('不要，回头说吧') == 'decline'
+    # 'later' > 'accept'：含 '好的' (accept) + '等下' (later) → later
+    # （用户语义"接受但等等"，later 比 accept 准——别立刻开游戏）
+    assert sr._match_mini_game_invite_keyword('好的等下') == 'later'
+    # 'decline' > 'accept'：含 '不行' (decline) + '可以' (accept)
+    assert sr._match_mini_game_invite_keyword('不行吧，但可以下次') == 'decline'
 
 
 def test_keyword_matcher_no_false_positive_on_long_text():

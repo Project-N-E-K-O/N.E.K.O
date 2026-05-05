@@ -2402,10 +2402,13 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
 # 扫一遍而不是只看 active locale。
 MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
     'zh': {
-        # 注意：'玩' / '走' 这种过宽的字不能进 accept——会把 "不想玩" / "走开"
-        # 这种含 negation 的话误判成 accept（priority accept > decline）。
-        # 'ok' 也省掉，全字符串匹配下任何 "okayy" 都会命中 en branch。
-        'accept': ['好', '可以', '行', '来', '一起', '冲'],
+        # accept 必须用**短语 / 双字以上**避免和 decline 子串重叠：
+        # - 单字 '好' '行' 会被 "不好" / "我不行" / "不好玩" 当 substring 命中。
+        # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
+        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起」等明确表达。CodeRabbit Major
+        # 指出，配合 _match_mini_game_invite_keyword 的 negation-priority
+        # （decline > later > accept）双保险。
+        'accept': ['好啊', '好的', '可以', '行啊', '来吧', '一起', '冲'],
         'decline': ['不要', '不行', '不好', '不想', '算了', '拒绝', '不玩', '没空'],
         'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
     },

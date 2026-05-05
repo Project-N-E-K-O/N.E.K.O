@@ -5786,7 +5786,11 @@ def _apply_mini_game_invite_choice(
     if choice == 'accept':
         state['responded_at'] = now
         state['chats_since_response'] = 0
-        # source_id 进 game_url query，后端 game_router 后续可能用来对账
+        # session_id 既进 game_url query，又作为 result 顶层字段返回——keyword 路径
+        # core.py 要把它放进 mini_game_launch WS payload，前端 dedupe 才能跨路径
+        # 共享 key（codex P2 review 指出：缺这个 dedupe 就失效，同 invite 多路径
+        # 触发会双开窗口）。
+        invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
         url_template = MINI_GAME_LAUNCH_URL_BY_GAME.get(game_type)
         if not url_template:
@@ -5798,7 +5802,7 @@ def _apply_mini_game_invite_choice(
         from urllib.parse import urlencode as _urlencode
         query = _urlencode({
             'lanlan_name': lanlan_name,
-            'session_id': state.get('pending_session_id') or '',
+            'session_id': invite_session_id,
         })
         game_url = f"{url_template}?{query}"
         logger.info(
@@ -5809,6 +5813,7 @@ def _apply_mini_game_invite_choice(
             'action': 'open_game',
             'game_type': game_type,
             'game_url': game_url,
+            'session_id': invite_session_id,
         }
     if choice == 'decline':
         state['responded_at'] = now
@@ -5857,12 +5862,16 @@ async def mini_game_invite_respond(request: Request):
         - 过期 / 状态不匹配：``{success: true, action: 'expired', message}``——前端
           应停止显示选项按钮（邀请已过期）。
     """
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"success": False, "error": "invalid JSON"}, status_code=400)
-    if not isinstance(data, dict):
-        return JSONResponse({"success": False, "error": "invalid body"}, status_code=400)
+    payload = await _read_json_object(request)
+    # 这是个本地 mutation endpoint，会改写 invite cooldown 状态——必须走和同文件
+    # 其它 browser-facing mutation endpoint 一样的 CSRF / origin 校验，否则
+    # 第三方页面可对 localhost:port 盲 POST 替用户 accept / decline / later 当前
+    # 邀请。CodeRabbit Major review 指出。
+    validation_error = _validate_local_mutation_request(request, payload=payload)
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
+    data = payload if isinstance(payload, dict) else {}
     try:
         config_manager = get_config_manager()
         _, her_name_default, _, _, _, _, _, _, _ = await config_manager.aget_character_data()
@@ -5877,17 +5886,18 @@ async def mini_game_invite_respond(request: Request):
             {"success": False, "error": f"choice must be accept/decline/later, got {choice!r}"},
             status_code=400,
         )
-    session_id = (data.get('session_id') or '').strip() or None
+    session_id = (data.get('session_id') or '').strip()
 
+    # session_id 强校验：必须存在 + 必须等于 state.pending_session_id；任一失败都
+    # 走 expired。原版「missing → 放过去用当前 pending」会让调用方漏传 session_id
+    # 时绕过 stale-session 保护——CodeRabbit Major review 指出。
     state = _mini_game_invite_state.get(lanlan_name)
     pending_sid = state.get('pending_session_id') if state else None
-    if session_id and pending_sid and session_id != pending_sid:
-        # 用户点的是过期邀请的按钮（典型场景：浮窗里的旧邀请没刷新就被点）。
-        # 不报错，告诉前端 expired，让 UI 停掉旧 prompt。
+    if not session_id or not pending_sid or session_id != pending_sid:
         return JSONResponse({
             "success": True,
             "action": "expired",
-            "message": "invite session expired; a newer invite or no pending invite exists",
+            "message": "invite session expired or missing; a newer invite or no pending invite exists",
         })
 
     result = _apply_mini_game_invite_choice(lanlan_name, choice, source='button')
@@ -5905,9 +5915,15 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
     choice，未命中返 None。
 
     所有 native locale 的关键词列表全扫一遍——用户可能切了 UI 语言但仍用
-    原语言打字。优先级：accept > later > decline（暧昧文本如「好的不过等下」
-    倾向 accept-with-delay 当 accept 处理而不是 later，spec 偏向"用户表达
-    了正面意愿就当接受"）。空 text / 命中无视为 None。"""
+    原语言打字。
+
+    **优先级 decline > later > accept**：句子里同时含 negation 和接受词时
+    （e.g. "不好" 含 '好啊'? 否；但 "我不行了，回头说" 含 '不行' + '回头'），
+    decline 永远优先于 later 优先于 accept——含明确 negation 的句子绝不能因
+    accept 关键词凑巧 substring 匹配就反向触发开游戏。CodeRabbit Major 指
+    出后从 accept-priority 改成 decline-priority。
+
+    空 text / 命中无视为 None。"""
     if not text:
         return None
     norm = text.lower().strip()
@@ -5923,12 +5939,13 @@ def _match_mini_game_invite_keyword(text: str) -> str | None:
             hit_later = True
         if not hit_decline and any(kw and kw in norm for kw in lang_kw.get('decline', [])):
             hit_decline = True
-    if hit_accept:
-        return 'accept'
-    if hit_later:
-        return 'later'
+    # decline > later > accept：negation-priority。
     if hit_decline:
         return 'decline'
+    if hit_later:
+        return 'later'
+    if hit_accept:
+        return 'accept'
     return None
 
 

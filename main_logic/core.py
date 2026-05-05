@@ -5060,8 +5060,12 @@ class LLMSessionManager:
                                     and hasattr(self.websocket, 'send_json')):
                                 ws_state = getattr(self.websocket, 'client_state', None)
                                 if ws_state is None or ws_state == ws_state.CONNECTED:
+                                    # 必须带 session_id：前端 _launchedMiniGameSessionIds
+                                    # dedupe 跨路径（按钮 endpoint / keyword WS）共享键，
+                                    # 缺 id 会让两路同时触发时双开窗口（codex P2 指出）。
                                     await self.websocket.send_json({
                                         'type': 'mini_game_launch',
+                                        'session_id': _kw_outcome.get('session_id') or '',
                                         'game_type': _kw_outcome.get('game_type'),
                                         'game_url': _kw_outcome.get('game_url'),
                                         'source': 'keyword',

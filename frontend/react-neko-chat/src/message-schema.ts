@@ -257,7 +257,9 @@ export const chatWindowPropsSchema = z.object({
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
-    .args(choiceOptionSchema, z.string())  // (option, source)
+    // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
+    // 任意 z.string() 会让 zod 验证变松。
+    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
     .returns(z.void())
     .optional(),
 });
