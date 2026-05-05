@@ -1148,6 +1148,27 @@
         // ``is_game_route_active`` 同源（_finalize 翻 false 时一并推 closed），
         // 不会出现"游戏已结束但 UI 仍锁着球态"的孤岛。
         var _gameMinimizeSnap = null;
+        // "用户当前是否仍应处于游戏最小化态"的目标态。所有异步分支（getBounds
+        // / rAF / collapseChat 700ms 落定 / restore 100ms 展开）都拿这个 flag
+        // 跟事件入口对照来判定 stale。
+        //
+        // 修两条 race：
+        // (1) codex P2：原版只在异步回调里写 _gameMinimizeSnap。opened →
+        //     getBounds pending 期间收到 closed → restore 因 snap=null 早返
+        //     → getBounds 落地把 snap 写出来 + 收成球态搬左下角 → 无 closed
+        //     抵消 → UI 永远卡球态。
+        // (2) CodeRabbit Major：closed 撞上 collapseChat() 进行中时，原版
+        //     restore 走 fallback setBounds 回原 bounds，但 doCollapse 内部
+        //     的 getWorkArea+setBounds 在动画 transitionend 后才跑，会把窗口
+        //     再 setBounds 到 ball 位 → 用户看到游戏已结束但聊天框已经被收
+        //     成球态、停在原始底部。
+        //
+        // 修法：
+        // - opened 设 active=true 后调 _gameMinimizeForGame，每条 await 出口
+        //   都 re-check active；closed 同理设 active=false 后调 restore。
+        // - restore 看到 animating=true 时 rAF 重试到动画落定再消费快照——避
+        //   开 doCollapse / expandChat 内部 setBounds 与 restore setBounds 抢位。
+        var _gameWindowActive = false;
 
         function _moveBallToWorkAreaBottomLeft() {
             return W.getWorkArea().then(function(wa) {
@@ -1158,14 +1179,15 @@
         }
 
         function _gameMinimizeForGame() {
-            if (_gameMinimizeSnap) return; // 重入保护：opened 重复来不再叠写 snap
+            if (!_gameWindowActive || _gameMinimizeSnap) return;
             if (animating) {
-                // 正在收/展过程中 → 等下一帧重试，避免把动画期 bounds 当原始尺寸抓拍
+                // 正在收/展过程中 → 等下一帧重试；rAF callback 自身仍 re-check
+                // active，closed 在 rAF 期间到达会让重试 noop
                 requestAnimationFrame(_gameMinimizeForGame);
                 return;
             }
             W.getBounds().then(function(b0) {
-                if (!b0) return;
+                if (!b0 || !_gameWindowActive || _gameMinimizeSnap) return;
                 _gameMinimizeSnap = {
                     bounds: { x: b0.x, y: b0.y, width: b0.width, height: b0.height },
                     wasCollapsed: collapsed,
@@ -1183,7 +1205,7 @@
                     // 缓冲（400ms 折叠动画 + 200ms ball-show + 100ms IPC 余量），
                     // 折叠真落定后再搬位置。
                     setTimeout(function() {
-                        if (!_gameMinimizeSnap) return;
+                        if (!_gameWindowActive || !_gameMinimizeSnap) return;
                         if (collapsed && !animating) _moveBallToWorkAreaBottomLeft();
                     }, 700);
                 }
@@ -1191,7 +1213,16 @@
         }
 
         function _gameRestoreAfterGame() {
-            if (!_gameMinimizeSnap) return;
+            if (_gameWindowActive || !_gameMinimizeSnap) return;
+            if (animating) {
+                // collapseChat / expandChat 进行中时不能立刻消费快照——doCollapse
+                // 的 getWorkArea+setBounds（或 expandChat 的对偶链）会在动画
+                // transitionend 后跑、把窗口拉到自己的目标位，覆盖 restore
+                // setBounds。等 animating 落定后再走 restore 主链路。
+                requestAnimationFrame(_gameRestoreAfterGame);
+                return;
+            }
+            // snap 一旦在本帧消费就 null 出去，避免 rAF 重入二次消费
             var snap = _gameMinimizeSnap;
             _gameMinimizeSnap = null;
             if (snap.wasCollapsed) {
@@ -1214,6 +1245,9 @@
             var b = snap.bounds;
             W.setBounds(b.x, b.y + b.height - BALL, BALL, BALL);
             setTimeout(function() {
+                // 100ms 内若 opened 又来（race：closed → restore → opened，
+                // 100ms 期间 active 翻 true），不再 expand 让新 opened 链路接手
+                if (_gameWindowActive) return;
                 if (!collapsed || animating) return;
                 savedWH = { w: b.width, h: b.height };
                 expandChat();
@@ -1223,8 +1257,10 @@
         window.addEventListener('neko-game-window-state-change', function(ev) {
             var detail = ev && ev.detail ? ev.detail : {};
             if (detail.action === 'opened') {
+                _gameWindowActive = true;
                 _gameMinimizeForGame();
             } else if (detail.action === 'closed') {
+                _gameWindowActive = false;
                 _gameRestoreAfterGame();
             }
         });
