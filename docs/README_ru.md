@@ -467,7 +467,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Текстовый API клиент (ChatCompletion)
 │   └── tts_client.py            # 🔊 Адаптер TTS-движка
 ├── 📁 main_routers/             # 🌐 API-маршруты (14 маршрутов)
-├── 📁 memory/                   # 🧠 Пятимерная система памяти
+├── 📁 memory/                   # 🧠 Пятимерная система памяти (частичные примеры)
 │   ├── facts/                   # Память фактов
 │   ├── reflection/              # Память рефлексий
 │   └── persona/                 # Память персоны

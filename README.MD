@@ -532,7 +532,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # 文本API客户端（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTS引擎适配器
 ├── 📁 main_routers/             # 🌐 API路由模块（14个路由）
-├── 📁 memory/                   # 🧠 五维记忆系统
+├── 📁 memory/                   # 🧠 五维记忆系统（部分示例）
 │   ├── facts/                   # 事实记忆
 │   ├── reflection/              # 反思记忆
 │   └── persona/                 # 人格记忆

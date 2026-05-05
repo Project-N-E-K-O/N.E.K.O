@@ -475,7 +475,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Text API client (ChatCompletion)
 │   └── tts_client.py            # 🔊 TTS engine adapter
 ├── 📁 main_routers/             # 🌐 API routers (14 routes)
-├── 📁 memory/                   # 🧠 Five-dimensional memory system
+├── 📁 memory/                   # 🧠 Five-dimensional memory system (partial examples)
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory

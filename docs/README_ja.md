@@ -467,7 +467,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # テキストAPIクライアント（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTSエンジンアダプター
 ├── 📁 main_routers/             # 🌐 APIルーター（14ルート）
-├── 📁 memory/                   # 🧠 五次元メモリシステム
+├── 📁 memory/                   # 🧠 五次元メモリシステム（一部例）
 │   ├── facts/                   # 事実記憶
 │   ├── reflection/              # 反省記憶
 │   └── persona/                 # 人格記憶
