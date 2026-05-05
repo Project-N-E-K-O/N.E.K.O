@@ -9,11 +9,27 @@
 
 <!-- Mock 桌宠运行环境（必要最小子集，避免各 init 脚本崩溃） -->
 <script>
-  window.lanlan_config = window.lanlan_config || {
-    lanlan_name: 'soccer_demo',
-    master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
-    model_type: 'vrm', live3d_sub_type: 'vrm'
-  };
+  // mini-game 邀请被接受后由 chat.html / Pet 主聊天 window.open 打开本页面，
+  // URL 形如 `/soccer_demo?lanlan_name=<active_character>&session_id=<invite_uuid>`。
+  // 提前从 query 解出来，覆盖默认 'soccer_demo' 值，避免后端 game route 用错角色。
+  // 直接手敲 /soccer_demo 进来时 query 缺失，沿用旧默认（route_start 内部会调
+  // /api/game/soccer/character 解出当前角色作为兜底，PR #1110 已实现）。
+  (function () {
+    var params = null;
+    try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
+    var queryLanlan = (params && params.get('lanlan_name')) || '';
+    var queryInviteSession = (params && params.get('session_id')) || '';
+    window.lanlan_config = window.lanlan_config || {
+      lanlan_name: queryLanlan || 'soccer_demo',
+      master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
+      model_type: 'vrm', live3d_sub_type: 'vrm'
+    };
+    if (queryLanlan && !window.lanlan_config.lanlan_name) {
+      window.lanlan_config.lanlan_name = queryLanlan;
+    }
+    // 留个全局让游戏内逻辑可见 invite 来源（例如赛后归档时打个 tag）
+    window.__nekoMiniGameInviteSessionId = queryInviteSession || '';
+  })();
   window.LanLan1 = window.LanLan1 || {};
   // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
   window.mouseTrackingEnabled = true;
@@ -755,8 +771,12 @@
   const _i18n = (key, fallback, params) => {
     if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
     if (!params) return fallback;
+    // 替换模式必须避开 Jinja2 模板里的双花括号字面量——本文件顶部有 Jinja
+    // 渲染（VRM_DEFAULT_LIGHTING），整份模板会过 Jinja parser；下面 replaceAll
+    // 的源串若写成模板字面量的 dollar 引用形式会被 Jinja 当表达式 SyntaxError。
+    // 拆字符拼接绕开 parser，运行期 JS 仍得到 [open][open]KEY[close][close]。
     return Object.entries(params).reduce(
-      (s, [k, v]) => s.replaceAll(`{{${k}}}`, String(v)),
+      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
       fallback,
     );
   };

@@ -1898,6 +1898,39 @@
                         ? window.t('app.repetitionDetected', { name: response.name })
                         : ('检测到高重复度对话。建议您终止对话，让' + response.name + '休息片刻。');
                     if (typeof window.showStatusToast === 'function') window.showStatusToast(warningMessage, 8000);
+
+                // -------- mini_game_invite_options --------
+                // 后端投递 mini-game 邀请时跟 invite text 一起 push 这条 options。
+                // 通用 ChoicePrompt 抽象，前端 ChoiceWindow 渲染三按钮（accept /
+                // decline / later）。多窗口模式下消息走 RAW_MESSAGE forwarding 自然
+                // 转给 chat.html，无需新 IPC channel。
+                } else if (response.type === 'mini_game_invite_options') {
+                    if (window.reactChatWindowHost
+                            && typeof window.reactChatWindowHost.setMiniGameInvitePrompt === 'function') {
+                        window.reactChatWindowHost.setMiniGameInvitePrompt({
+                            sessionId: response.session_id || '',
+                            gameType: response.game_type || '',
+                            options: Array.isArray(response.options) ? response.options : [],
+                        });
+                    }
+
+                // -------- mini_game_invite_resolved --------
+                // 邀请被 resolve（任一 outcome：accept / cooldown / suppress）→
+                // 前端 dismiss prompt UI（cross-window 一致性，pet + chat.html
+                // 多窗口同时显示 prompt 时全部清掉）。accept 时 payload 同时带
+                // game_url 当 launch 信号——前端 window.open 让 Electron 主进程
+                // setWindowOpenHandler 拦截开独立 BrowserWindow，dedupe 由
+                // launched session_id 保护防止双开。
+                } else if (response.type === 'mini_game_invite_resolved') {
+                    if (window.reactChatWindowHost
+                            && typeof window.reactChatWindowHost.handleMiniGameInviteResolved === 'function') {
+                        window.reactChatWindowHost.handleMiniGameInviteResolved({
+                            sessionId: response.session_id || '',
+                            action: response.action || '',
+                            gameType: response.game_type || '',
+                            url: response.game_url || '',
+                        });
+                    }
                 }
 
             } catch (parseError) {
