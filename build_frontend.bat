@@ -8,6 +8,28 @@ if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 
 set "FAIL=0"
 
+rem --- 0. yui-origin Live2D model (unpack from assets/) ---
+set "YUI_ARCHIVE=%ROOT_DIR%\assets\yui-origin.tar.gz"
+set "YUI_DIR=%ROOT_DIR%\static\yui-origin"
+
+if not exist "%YUI_ARCHIVE%" (
+  echo [build_frontend] yui-origin archive missing: %YUI_ARCHIVE%
+  exit /b 1
+)
+
+if not exist "%YUI_DIR%\yui-origin.moc3" (
+  echo [build_frontend] unpacking yui-origin...
+  if exist "%YUI_DIR%" rmdir /s /q "%YUI_DIR%"
+  tar -xzmf "%YUI_ARCHIVE%" -C "%ROOT_DIR%\static"
+  if errorlevel 1 (
+    echo [build_frontend] yui-origin unpack failed
+    exit /b 1
+  )
+  echo [build_frontend] yui-origin done: %YUI_DIR%
+) else (
+  echo [build_frontend] yui-origin already extracted, skip
+)
+
 rem --- 1. Plugin Manager (Vue) ---
 set "PM_DIR=%ROOT_DIR%\frontend\plugin-manager"
 set "PM_DIST=%PM_DIR%\dist"

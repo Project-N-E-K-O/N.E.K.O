@@ -9,6 +9,24 @@ if ! command -v npm &> /dev/null; then
   exit 1
 fi
 
+# --- 0. yui-origin Live2D model (unpack from assets/) ---
+YUI_ARCHIVE="$SCRIPT_DIR/assets/yui-origin.tar.gz"
+YUI_DIR="$SCRIPT_DIR/static/yui-origin"
+
+if [ ! -f "$YUI_ARCHIVE" ]; then
+  echo "[build_frontend] yui-origin archive missing: $YUI_ARCHIVE" >&2
+  exit 1
+fi
+
+if [ ! -f "$YUI_DIR/yui-origin.moc3" ] || [ "$YUI_ARCHIVE" -nt "$YUI_DIR/yui-origin.moc3" ]; then
+  echo "[build_frontend] unpacking yui-origin..."
+  rm -rf "$YUI_DIR"
+  tar -xzmf "$YUI_ARCHIVE" -C "$SCRIPT_DIR/static"
+  echo "[build_frontend] yui-origin done: $YUI_DIR"
+else
+  echo "[build_frontend] yui-origin up to date, skip"
+fi
+
 # --- 1. Plugin Manager (Vue) ---
 PM_DIR="$SCRIPT_DIR/frontend/plugin-manager"
 PM_DIST="$PM_DIR/dist"
