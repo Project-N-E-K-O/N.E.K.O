@@ -236,31 +236,37 @@
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
-  鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位<br>
-  1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档
+  <div data-i18n="soccer.hint.controls">鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
+  <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
+<!-- Debug 控件区：开发用，固定英文（不进入 i18n 池）。 -->
 <div id="controls">
-  <label><input type="checkbox" id="boundary-toggle"> 启用边界（出界规则）</label>
-  <label><input type="checkbox" id="voice-output-toggle" checked> 念出 LLM 台词（项目语音）</label>
+  <label><input type="checkbox" id="boundary-toggle"> Enable bounds (out-of-bounds rule)</label>
+  <label><input type="checkbox" id="voice-output-toggle" checked> Speak LLM lines (project voice)</label>
   <div id="voice-controls" aria-hidden="true">
-    <button id="voice-mic-button" type="button">调试语音</button>
-    <input id="voice-text-input" type="text" placeholder="调试：输入最终转写文本，回车发送">
-    <button id="voice-send-button" type="button">发送</button>
-    <div id="voice-status">调试 STT：隐藏</div>
+    <button id="voice-mic-button" type="button">Debug voice</button>
+    <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
+    <button id="voice-send-button" type="button">Send</button>
+    <div id="voice-status">Debug STT: hidden</div>
   </div>
 </div>
-<button id="exit-to-start-button" type="button" hidden data-i18n-key="soccer.exitGame.button">退出游戏</button>
+<!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
+     init / localechange 时刷新 textContent；codex P1 review 指出 IIFE 内
+     ``typeof window.t === 'function'`` 一次性 gate 在 i18n 异步 init 之前
+     会 skip，导致非 zh locale 卡在 HTML 兜底。统一走 ``data-i18n`` 后框架
+     接管两类时序。 -->
+<button id="exit-to-start-button" type="button" hidden data-i18n="soccer.exitGame.button">退出游戏</button>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
     <div id="loading-row">
       <div id="loading-spinner" aria-hidden="true"></div>
-      <div id="loading-text">初始化足球小游戏…</div>
+      <div id="loading-text" data-i18n="soccer.loading.initializingMiniGame">初始化足球小游戏…</div>
     </div>
     <div id="loading-actions" hidden>
-      <button id="soccer-start-button" type="button">开始</button>
-      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> 本局进入记忆（测试期间默认不开启）</label>
-      <div id="game-memory-hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
+      <button id="soccer-start-button" type="button" data-i18n="soccer.startScreen.startButton">开始</button>
+      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> <span id="game-memory-label" data-i18n="soccer.memoryOption.label">本局对话进入记忆（默认不开启）</span></label>
+      <div id="game-memory-hint" data-i18n="soccer.memoryOption.hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
     </div>
   </div>
 </div>
@@ -353,7 +359,7 @@
         setExitVisible(false);
         showOverlay();
       },
-      ending(text = '正在结束本局…') {
+      ending(text = _localized('exitGame.endingDefault', 'Ending this match…')) {
         state.route = false;
         state.routeStarting = true;
         state.started = false;
@@ -363,7 +369,7 @@
         setExitVisible(false, false);
         showOverlay();
       },
-      ended(text = '游戏已结束，请关闭页面。此提示仅用于调试，不作为重开的方式；重新进入请重新打开一次页面。') {
+      ended(text = _localized('exitGame.endedDefault', 'Game over. Please close this page. To play again, reopen it.')) {
         state.route = false;
         state.routeStarting = false;
         state.started = false;
@@ -1399,8 +1405,11 @@
     if (!bubbleEl) return;
     bubbleEl.textContent = text;
     bubbleEl.setAttribute('data-mood', mood);
-    if (sourceLabel) bubbleEl.setAttribute('data-source-label', sourceLabel);
-    else bubbleEl.removeAttribute('data-source-label');
+    // 不再向用户展示 ``data-source-label``（"LLM生成 · 850ms" / "开局上下文" / "快路径
+    // 兜底" 等）。这些是开发期溯源/延迟信息，玩家看到只觉冗余、且强调"延迟"反而拉低
+    // 体验。``sourceLabel`` 仍由 caller 传进来用于 console 日志与调试，但不渲染到
+    // bubble 上方。CSS ``[data-source-label]::before`` 规则保留以备调试模式回插。
+    bubbleEl.removeAttribute('data-source-label');
     bubbleEl.classList.add('show');
     if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
     bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
@@ -3569,14 +3578,12 @@
     _deliverPendingOpeningLine();
   }
 
-  // 把 HTML 字面量"退出游戏"换成当前 locale。window.t 在 i18n init 之前可能
-  // 还不可用——保留 HTML 兜底文案就是为这种顺序。
-  if (exitToStartButton && typeof window.t === 'function') {
-    const localized = window.t('soccer.exitGame.button');
-    if (localized && localized !== 'soccer.exitGame.button') {
-      exitToStartButton.textContent = localized;
-    }
-  }
+  // 注：之前这里有两段一次性 ``data-i18n-key`` localizer（exit button + memoryOption），
+  // 在 IIFE 执行时 ``typeof window.t === 'function'`` gate。codex P1 (PR #1149) 指出：
+  // i18n-i18next.js 是 ``DOMContentLoaded`` 之后异步 init，IIFE 跑到这一步时 ``window.t``
+  // 通常还没挂上，gate skip → 非 zh locale 看到 HTML 兜底中文。修法是改 ``data-i18n``
+  // 让框架的 ``updatePageTexts()`` 在 init / localechange 自动接管，全部不再需要手动
+  // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
 
   let _manualEndInFlight = false;
   async function _endGameAndShowClosePrompt() {

@@ -3843,14 +3843,22 @@
         "exitGame": {
             "button": "退出游戏",
             "ending": "正在退出本局…",
-            "ended": "游戏已结束，正在返回…"
+            "ended": "游戏已结束，正在返回…",
+            "endingDefault": "正在结束本局…",
+            "endedDefault": "游戏已结束，请关闭页面。重新进入请重新打开一次页面。"
         },
         "startScreen": {
             "readyToStart": "准备完成，点击开始",
-            "ready": "准备完成"
+            "ready": "准备完成",
+            "startButton": "开始"
+        },
+        "hint": {
+            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位",
+            "aiMood": "1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档"
         },
         "loading": {
             "beginStartDefault": "分析开局上下文…",
+            "initializingMiniGame": "初始化足球小游戏…",
             "assetsDone": "模型加载完成",
             "assetsFailed": "模型初始化失败，继续进入游戏",
             "routeDone": "开局上下文准备完成",
@@ -3875,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "松开提交",
             "idle": "调试语音"
+        },
+        "memoryOption": {
+            "label": "本局对话进入记忆（默认不开启）",
+            "hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
         }
     }
 }

@@ -3843,14 +3843,22 @@
         "exitGame": {
             "button": "게임 종료",
             "ending": "라운드를 종료하는 중…",
-            "ended": "게임 종료, 돌아가는 중…"
+            "ended": "게임 종료, 돌아가는 중…",
+            "endingDefault": "이번 경기를 종료하는 중…",
+            "endedDefault": "게임이 종료되었습니다. 페이지를 닫아 주세요. 다시 플레이하려면 페이지를 다시 여세요."
         },
         "startScreen": {
             "readyToStart": "준비 완료 — 클릭하여 시작",
-            "ready": "준비 완료"
+            "ready": "준비 완료",
+            "startButton": "시작"
+        },
+        "hint": {
+            "controls": "마우스 = 플레이어 안내 · 좌클릭 길게 = 차징, 놓으면 = 슛 (공에서 90px 이내에서 발동) · R = 리셋",
+            "aiMood": "1-6 = AI 기분 (평온 / 행복 / 화남 / 편안 / 슬픔 / 놀람) · 골 후에는 난이도가 자동으로 올라갑니다"
         },
         "loading": {
             "beginStartDefault": "게임 시작 컨텍스트를 분석 중…",
+            "initializingMiniGame": "축구 미니게임 초기화 중…",
             "assetsDone": "모델 로딩 완료",
             "assetsFailed": "모델 초기화에 실패했습니다. 게임을 계속 진행합니다",
             "routeDone": "게임 시작 컨텍스트 준비 완료",
@@ -3875,6 +3883,10 @@
         "debugButton": {
             "holdToSubmit": "손을 떼어 제출",
             "idle": "디버그 음성"
+        },
+        "memoryOption": {
+            "label": "이번 경기를 기억에 저장 (기본 꺼짐)",
+            "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 응답, 이벤트 반응, 경기 후 요약, 이어지는 대화 모두 기억에 저장되거나 참조되지 않습니다."
         }
     }
 }
