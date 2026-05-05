@@ -127,6 +127,8 @@
     width: 32px;
     height: 32px;
     object-fit: contain;
+    -webkit-user-drag: none;
+    user-select: none;
 }
 
 .touch-config-content {

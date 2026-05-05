@@ -25,3 +25,14 @@ select:focus-visible,
     outline: 2px solid #40C5F1;
     outline-offset: 2px;
 }
+
+/* 按钮图标是控件内容，禁止浏览器把图片当作可拖拽文件处理 */
+button img,
+.close-btn img,
+.close-page-btn img,
+.panel-close-btn img,
+.touch-config-close img,
+.chat-export-preview-close img {
+    -webkit-user-drag: none;
+    user-select: none;
+}

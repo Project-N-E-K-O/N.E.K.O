@@ -4269,6 +4269,7 @@ function openCatgirlPanel(card, originEl) {
     const closeBtnImg = document.createElement('img');
     closeBtnImg.src = '/static/icons/close_button.png';
     closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
+    closeBtnImg.draggable = false;
     closeBtn.appendChild(closeBtnImg);
     closeBtn.onclick = closeCatgirlPanel;
     headerBar.appendChild(closeBtn);
