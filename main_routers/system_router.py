@@ -2301,6 +2301,38 @@ def _pick_mini_game_type() -> str | None:
     return _random.choice(candidates)
 
 
+def _resolve_proactive_locale(data: dict, mgr) -> str:
+    """主动搭话路径解析"用户当前 locale"的统一入口（短码 zh / en / ja / ko / ru / es / pt）。
+
+    proactive_chat 路径解 locale 历来三层兜底，但前两层之前漏了 session 真值：
+
+      1. request body 显式 ``language`` / ``lang`` / ``i18n_language`` —— 前端请求可
+         以一锤定音，最高优先。
+      2. ``mgr.user_language`` —— websocket 建连时由前端 i18n 推上来（见
+         ``main_routers/websocket_router.py`` 处理 ``message['language']`` 的分支），
+         in-game / Phase 2 LLM 都已在用，proactive 早先没接，导致 Steam SDK 在后端
+         启动时拿不到值就一直缓存系统 locale。
+      3. ``get_global_language()`` —— 进程级缓存，从 Steam SDK / 系统 locale 读一次。
+         Steam SDK 启动期 race 失败（schinese 没拿到）就退化为系统 locale，前后端
+         看到不同结果（前端异步 ``/api/config/steam_language`` 端点重读，能拿到对的
+         schinese → zh）。在 Steam=zh / 系统=en 的场景下尤其明显。
+
+    把 session 真值塞进第二层，proactive 邀请文案 / Phase 1-2 LLM 输出语言都跟在线
+    会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
+    """
+    request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
+    if request_lang:
+        normalized = normalize_language_code(request_lang, format='short')
+        if normalized:
+            return normalized
+    session_lang = getattr(mgr, 'user_language', None)
+    if session_lang:
+        normalized = normalize_language_code(session_lang, format='short')
+        if normalized:
+            return normalized
+    return get_global_language() or 'zh'
+
+
 async def _maybe_deliver_mini_game_invite(
     *,
     lanlan_name: str,
@@ -4342,13 +4374,7 @@ async def proactive_chat(request: Request):
         # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
         # 不发——无法判断是否在工作状态。
         try:
-            _request_lang_for_invite = (
-                data.get('language') or data.get('lang') or data.get('i18n_language')
-            )
-            invite_lang = (
-                normalize_language_code(_request_lang_for_invite, format='short')
-                if _request_lang_for_invite else get_global_language()
-            )
+            invite_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             invite_lang = 'zh'
         # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
@@ -4580,12 +4606,10 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_memory")))
 
         # ========== 2. 选择语言 ==========
+        # 与 mini-game 邀请短路同源：request body → mgr.user_language → 全局缓存。
+        # 见 _resolve_proactive_locale 的 docstring。
         try:
-            request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
-            if request_lang:
-                proactive_lang = normalize_language_code(request_lang, format='short')
-            else:
-                proactive_lang = get_global_language()
+            proactive_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             proactive_lang = 'zh'
         
