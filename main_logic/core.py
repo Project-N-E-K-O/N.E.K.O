@@ -219,6 +219,7 @@ NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
+
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
 # 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
@@ -1746,6 +1747,71 @@ class LLMSessionManager:
             "metadata": metadata if isinstance(metadata, dict) else {},
             "turn_finalized": bool(finalize_turn),
         }
+
+    async def passthrough_to_chat_bubble(
+        self,
+        text: str,
+        *,
+        request_id: str | None = None,
+        turn_id: str | None = None,
+        source: str = "passthrough",
+    ) -> bool:
+        """Render external text verbatim into the chat bubble WITHOUT
+        entering chat-LLM context.
+
+        Distinct from :meth:`mirror_assistant_output`: that writes to
+        ``sync_message_queue`` (so cross_server may add an AIMessage to
+        chat history). ``passthrough_to_chat_bubble`` skips
+        ``sync_message_queue`` entirely — frontend sees the bubble, but
+        the chat LLM never sees it in the next turn.
+
+        Use case: plugin / agent_server pushes verbatim with
+        ``visibility=["chat"] + ai_behavior="blind"`` — operator wants
+        the user to read it but the LLM should remain ignorant.
+
+        This is a generic SessionManager capability; it does not assume
+        any particular consumer.
+
+        Returns ``True`` iff a ``gemini_response`` frame was actually
+        handed to ``send_json`` without raising. ``False`` covers every
+        no-op path: empty/whitespace text, websocket missing or
+        disconnected, and ``send_json`` failures swallowed below. Callers
+        that open an assistant-turn lifecycle on the frontend (e.g.
+        ``main_server`` chat-blind) MUST gate their turn-end emit on this
+        flag — a swallowed send means the frontend never opened a turn,
+        so emitting turn-end would close a lifecycle that never started.
+        """
+        # Why: caller passes raw_text deliberately (PR #1128 0ac9e8881).
+        # We empty-check on the stripped form but forward the ORIGINAL so
+        # leading/trailing whitespace, newlines, and indentation render
+        # exactly as the plugin authored them.
+        raw = str(text or "")
+        if not raw or not raw.strip():
+            return False
+        effective_turn_id = turn_id or request_id or str(uuid4())
+        message = {
+            "type": "gemini_response",
+            "text": raw,
+            "isNewMessage": True,
+            "turn_id": effective_turn_id,
+            "request_id": request_id,
+            "metadata": {"source": source, "passthrough": True},
+        }
+        if not (
+            self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json(message)
+        except Exception as e:
+            logger.warning(
+                "[%s] passthrough_to_chat_bubble WS send failed: %s",
+                self.lanlan_name, e,
+            )
+            return False
+        return True
 
     async def emit_mirror_turn_end(
         self,
@@ -4436,6 +4502,110 @@ class LLMSessionManager:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    async def trigger_new_character_greeting(self) -> None:
+        from config.prompts_proactive import get_new_character_greeting_prompt
+        from utils.new_character_greeting_state import has_pending, remove_pending
+
+        config_manager = get_config_manager()
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: no pending intent", self.lanlan_name)
+            return
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+
+        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+        template = get_new_character_greeting_prompt(_lang)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session check, skipping", self.lanlan_name)
+            return
+
+        if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_new_character_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            if not self._has_connected_websocket():
+                logger.warning("[%s] trigger_new_character_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_new_character_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_new_character_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_new_character_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        if not await has_pending(config_manager, self.lanlan_name):
+            logger.debug("[%s] trigger_new_character_greeting: pending intent already consumed", self.lanlan_name)
+            return
+
+        instruction = template.format(name=self.lanlan_name, master=self.master_name)
+        print(f"[trigger_new_character_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_new_character_greeting: delivering", self.lanlan_name)
+
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_new_character_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_new_character_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        delivered = False
+        proactive_sid = None
+        history_len = None
+        appended_snapshot = None
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_new_character_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_new_character_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                history = getattr(self.session, "_conversation_history", None)
+                if isinstance(history, list):
+                    history_len = len(history)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    delivered = await self.session.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                if history_len is not None and isinstance(history, list) and len(history) > history_len:
+                    appended_snapshot = list(history[history_len:])
+                logger.info("[%s] trigger_new_character_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            try:
+                interrupted = bool(proactive_sid) and self.current_speech_id != proactive_sid
+                if (not delivered or interrupted) and history_len is not None:
+                    history = getattr(self.session, "_conversation_history", None)
+                    if isinstance(history, list) and appended_snapshot:
+                        suffix_len = len(appended_snapshot)
+                        if suffix_len <= len(history) and history[-suffix_len:] == appended_snapshot:
+                            del history[-suffix_len:]
+                if delivered and not interrupted:
+                    try:
+                        await remove_pending(config_manager, self.lanlan_name)
+                    except Exception as exc:
+                        logger.warning("[%s] trigger_new_character_greeting: remove pending failed: %s", self.lanlan_name, exc)
+            finally:
+                await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
@@ -4864,6 +5034,52 @@ class LLMSessionManager:
                         data if isinstance(data, str) else None,
                         is_voice_source=False,
                     )
+
+                    # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
+                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按
+                    # 钮）→ 扫关键词命中就触发对应 state 转换。**不吃掉消息**：
+                    # 继续走普通 chat 流水线，AI 仍然会回应这条话——AI 收到的
+                    # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
+                    # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
+                    # 推一条 mini_game_launch WS 让前端 window.open 游戏。
+                    try:
+                        from main_routers.system_router import _maybe_apply_mini_game_invite_keyword
+                        _kw_outcome = _maybe_apply_mini_game_invite_keyword(
+                            self.lanlan_name,
+                            data if isinstance(data, str) else '',
+                        )
+                    except Exception as _kw_err:
+                        logger.debug(
+                            f"[{self.lanlan_name}] mini-game invite keyword "
+                            f"matcher hook failed: {_kw_err}",
+                        )
+                        _kw_outcome = None
+                    # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
+                    # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
+                    # 不让按钮挂着——codex P2 指出，原版只对 accept 推，
+                    # decline/later keyword 命中后前端 prompt 不消失，用户后续点
+                    # 按钮会被 endpoint 当 expired，state 早变了。
+                    if _kw_outcome and _kw_outcome.get('action'):
+                        try:
+                            if (self.websocket
+                                    and hasattr(self.websocket, 'send_json')):
+                                ws_state = getattr(self.websocket, 'client_state', None)
+                                if ws_state is None or ws_state == ws_state.CONNECTED:
+                                    payload = {
+                                        'type': 'mini_game_invite_resolved',
+                                        'session_id': _kw_outcome.get('session_id') or '',
+                                        'action': _kw_outcome['action'],
+                                    }
+                                    if _kw_outcome.get('game_url'):
+                                        payload['game_url'] = _kw_outcome['game_url']
+                                    if _kw_outcome.get('game_type'):
+                                        payload['game_type'] = _kw_outcome['game_type']
+                                    await self.websocket.send_json(payload)
+                        except Exception as _push_err:
+                            logger.warning(
+                                f"[{self.lanlan_name}] mini_game_invite_resolved "
+                                f"WS push failed: {_push_err}",
+                            )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:

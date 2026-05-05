@@ -10,6 +10,9 @@ import {
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
   type GalgameOption,
+  type ChoiceOption,
+  type ChoicePrompt,
+  type ChoicePromptSource,
 } from './message-schema';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
@@ -24,6 +27,11 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   onGalgameModeToggle?: () => void;
   onGalgameOptionSelect?: (option: GalgameOption) => void;
+  // Generic ChoicePrompt（mini-game invite 等通用三选项框架）。
+  // galgame mode 现有路径继续走 galgameOptions / onGalgameOptionSelect（BC）；
+  // 本框架先只承载 mini_game_invite，未来可把 galgame 也迁过来。
+  choicePrompt?: ChoicePrompt | null;
+  onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -576,6 +584,8 @@ export default function App({
   onTranslateToggle,
   onGalgameModeToggle,
   onGalgameOptionSelect,
+  choicePrompt = null,
+  onChoiceSelect,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
@@ -1766,6 +1776,49 @@ export default function App({
                             </button>
                           ))
                         : null}
+                  </div>
+                </div>
+              ) : null}
+              {/*
+                Generic ChoicePrompt slot —— mini-game invite 等通用三选项
+                抽象。复用 .composer-galgame-* CSS 让 visual / animation 与
+                galgame mode 统一；本框架与 galgame slot 互不重叠（galgame
+                走自己的 galgameOptions 路径，BC），未来可统一迁移。
+              */}
+              {choicePrompt && choicePrompt.options.length > 0 ? (
+                <div
+                  className={`composer-galgame-slot composer-choice-slot is-open is-${choicePrompt.source}`}
+                  aria-hidden="false"
+                  data-choice-source={choicePrompt.source}
+                >
+                  <div
+                    className="composer-galgame-options composer-choice-options"
+                    role="group"
+                    aria-label={choicePrompt.source === 'mini_game_invite'
+                      ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
+                      : galgameToggleButtonLabel}
+                  >
+                    {choicePrompt.options.slice(0, 3).map((option, index) => (
+                      <button
+                        key={`${index}-${option.choice}`}
+                        type="button"
+                        className="composer-galgame-option composer-choice-option"
+                        title={option.label}
+                        onClick={() => {
+                          if (submittingRef.current) return;
+                          submittingRef.current = true;
+                          try {
+                            onChoiceSelect?.(option, choicePrompt.source);
+                          } finally {
+                            requestAnimationFrame(() => { submittingRef.current = false; });
+                          }
+                        }}
+                      >
+                        <span className="composer-galgame-option-text composer-choice-option-text">
+                          {option.label}
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               ) : null}

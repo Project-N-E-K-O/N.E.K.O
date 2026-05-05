@@ -248,7 +248,7 @@
             throw new Error(
                 extractResponseError(
                     payload,
-                    translate('storage.restartUnavailable', '当前实例暂时无法执行受控关闭，请稍后重试。')
+                    translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。')
                 )
             );
         }
@@ -324,7 +324,7 @@
     function buildRestartPreviewReminder() {
         return translate(
             'storage.restartPreviewReminder',
-            '更改存储位置会先关闭当前实例，关闭后迁移数据并自动重启；旧数据默认保留。'
+            '更改存储位置后会重启，旧数据默认保留。'
         );
     }
 
@@ -340,15 +340,15 @@
             case 'directory_picker_unavailable':
                 return translate('storage.pickFolderUnavailable', '当前系统目录选择器不可用，请手动输入路径。');
             case 'insufficient_space':
-                return translate('storage.blockingInsufficientSpace', '目标卷剩余空间不足，无法安全执行关闭后的迁移。');
+                return translate('storage.blockingInsufficientSpace', '目标卷剩余空间不足，无法安全迁移。');
             case 'recovery_source_unavailable':
                 return translate('storage.recoverySourceUnavailable', '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。');
             case 'restart_not_required':
-                return translate('storage.restartNotRequired', '目标路径与当前路径一致，不需要关闭当前实例。');
+                return translate('storage.restartNotRequired', '目标路径与当前路径一致，不需要重启。');
             case 'restart_schedule_failed':
-                return translate('storage.restartScheduleFailed', '受控关闭启动失败，请稍后重试。');
+                return translate('storage.restartScheduleFailed', '受控重启启动失败，请稍后重试。');
             case 'restart_unavailable':
-                return translate('storage.restartUnavailable', '当前实例暂时无法执行受控关闭，请稍后重试。');
+                return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
                 return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
             case 'retained_source_mismatch':
@@ -368,7 +368,7 @@
             case 'target_not_empty':
                 return translate('storage.targetNotEmpty', '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。');
             case 'target_not_writable':
-                return translate('storage.blockingTargetNotWritable', '目标路径当前不可写，无法开始关闭后的迁移流程。');
+                return translate('storage.blockingTargetNotWritable', '目标路径当前不可写，无法开始迁移流程。');
             default:
                 return fallbackText || '';
         }
@@ -392,13 +392,13 @@
 
         switch (blockingReason) {
             case 'migration_pending':
-                return translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。');
+                return translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。');
             case 'recovery_required':
                 return translate('storage.recoveryRequired', '检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。');
             case 'selection_required':
                 return '';
             default:
-                return fallbackText || translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。');
+                return fallbackText || translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。');
         }
     }
 
@@ -535,7 +535,7 @@
     function isRedundantMaintenanceStatus(text) {
         var normalized = String(text || '').trim();
         return normalized === translate('storage.maintenanceWaitingStatus', '服务尚未恢复前，页面会继续停留在这里并自动重试连接。')
-            || normalized === translate('storage.maintenanceClosingStatus', '正在等待当前实例完成关闭...');
+            || normalized === translate('storage.maintenanceClosingStatus', '正在关闭...');
     }
 
     function sleep(ms) {
@@ -879,15 +879,15 @@
         if (preflight.restart_mode === 'rebind_only') {
             state.previewText.textContent = translate(
                 'storage.rebindPreviewNotice',
-                '后端已确认：原路径已经可以重新连接。后续会关闭当前实例并自动重启到该路径，本次不会复制运行时数据。'
+                '后端已确认：原路径已经可以重新连接。后续会重启到该路径，本次不会复制运行时数据。'
             );
             if (state.previewConfirmButton) {
-                state.previewConfirmButton.textContent = translate('storage.confirmReconnect', '确认关闭并重连路径');
+                state.previewConfirmButton.textContent = translate('storage.confirmReconnect', '确认并重启到原路径');
             }
         } else {
             state.previewText.textContent = buildRestartPreviewReminder(preflight);
             if (state.previewConfirmButton) {
-                state.previewConfirmButton.textContent = translate('storage.confirmRestart', '确认关闭并迁移');
+                state.previewConfirmButton.textContent = translate('storage.confirmRestart', '确认并重启');
             }
         }
         updateRestartPreviewPreflight(preflight);
@@ -931,7 +931,7 @@
         var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
         var percent = 14;
         var activeIndex = 0;
-        var label = translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭');
+        var label = translate('storage.progressWaitingShutdown', '正在关闭');
 
         if (lifecycleState === 'ready') {
             percent = 100;
@@ -942,7 +942,7 @@
                 case 'pending':
                     percent = 18;
                     activeIndex = 0;
-                    label = translate('storage.progressPending', '正在准备关闭当前实例');
+                    label = translate('storage.progressPending', '正在关闭');
                     break;
                 case 'preflight':
                     percent = 34;
@@ -986,8 +986,8 @@
                     percent = isRebindOnly ? 38 : 14;
                     activeIndex = isRebindOnly ? 1 : 0;
                     label = isRebindOnly
-                        ? translate('storage.progressRebinding', '正在关闭当前实例并重连原始路径')
-                        : translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭');
+                        ? translate('storage.progressRebinding', '正在关闭并重连原始路径')
+                        : translate('storage.progressWaitingShutdown', '正在关闭');
                     break;
             }
         }
@@ -998,7 +998,7 @@
             hasError: hasError,
             label: label,
             steps: [
-                translate('storage.progressStepShutdown', '关闭当前实例'),
+                translate('storage.progressStepShutdown', '正在关闭'),
                 translate('storage.progressStepTransfer', '处理存储目录'),
                 translate('storage.progressStepCommit', '校验并生效'),
                 translate('storage.progressStepRecover', '恢复服务')
@@ -1434,7 +1434,7 @@
 
                         setMaintenanceCopy(
                             translate('storage.maintenanceTitle', '正在优化存储布局...'),
-                            translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                            translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'),
                             buildMaintenanceStatusText(fallbackStatusPayload)
                         );
                         applyMaintenanceProgress(fallbackStatusPayload);
@@ -1442,9 +1442,9 @@
                         failureCount += 1;
                         setMaintenanceCopy(
                             translate('storage.maintenanceTitle', '正在优化存储布局...'),
-                            translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'),
+                            translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'),
                             failureCount <= 1
-                                ? translate('storage.maintenanceClosingStatus', '正在等待当前实例完成关闭...')
+                                ? translate('storage.maintenanceClosingStatus', '正在关闭...')
                                 : translate('storage.maintenanceOfflineStatus', '连接已暂时中断，正在等待服务恢复。请不要关闭当前页面。')
                         );
                         applyMaintenanceProgress({
@@ -1579,14 +1579,14 @@
                     throw new Error(
                         extractResponseError(
                             payload,
-                            translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')
+                            translate('storage.restartRequestFailed', '准备重启与迁移失败，请稍后重试。')
                         )
                     );
                 }
 
                 if (!payload || payload.ok !== true || payload.result !== 'restart_initiated') {
                     throw new Error(
-                        translate('storage.restartRequestUnexpected', '关闭与迁移准备接口返回了未识别的结果。')
+                        translate('storage.restartRequestUnexpected', '重启和迁移准备接口返回了未识别的结果。')
                     );
                 }
 
@@ -1596,7 +1596,7 @@
         } catch (error) {
             console.warn('[storage-location] restart failed', error);
             setSelectionStatus(
-                String((error && error.message) || error || translate('storage.restartRequestFailed', '启动关闭与迁移准备失败，请稍后重试。')),
+                String((error && error.message) || error || translate('storage.restartRequestFailed', '准备重启与迁移失败，请稍后重试。')),
                 true
             );
             setPhase('selection_required');
@@ -1762,7 +1762,7 @@
         previewActions.appendChild(backButton);
 
         var confirmRestartButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.confirmRestart', '确认关闭并迁移'))
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.confirmRestart', '确认并重启'))
         );
         confirmRestartButton.type = 'button';
         confirmRestartButton.addEventListener('click', requestRestart);
@@ -1805,14 +1805,14 @@
 
         var actions = createElement('div', 'storage-location-actions storage-location-intro-actions');
         var useDedicatedButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '使用专属小窝'))
+            createElement('button', 'storage-location-btn storage-location-btn--primary storage-location-intro-button storage-location-intro-button--primary', translate('storage.selectionIntroPickNew', '推荐存储位置'))
         );
         useDedicatedButton.type = 'button';
         useDedicatedButton.addEventListener('click', continueWithCurrentPath);
         actions.appendChild(useDedicatedButton);
 
         var chooseOtherButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-intro-button storage-location-intro-button--secondary', translate('storage.selectionIntroUseCurrent', '其他小窝'))
+            createElement('button', 'storage-location-btn storage-location-btn--secondary storage-location-intro-button storage-location-intro-button--secondary', translate('storage.selectionIntroUseCurrent', '其他位置'))
         );
         chooseOtherButton.type = 'button';
         chooseOtherButton.addEventListener('click', continueFromSelectionIntro);
@@ -1854,17 +1854,17 @@
         var shell = createElement('div', 'storage-location-shell');
         var hero = createElement('div', 'storage-location-hero');
         var maintenanceTitle = createElement('h2', 'storage-location-title', translate('storage.maintenanceTitle', '正在优化存储布局...'));
-        var maintenanceSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.maintenanceWaitingSubtitle', '当前实例即将关闭，数据会在关闭后迁移并自动重启。'));
+        var maintenanceSubtitle = createElement('p', 'storage-location-subtitle', translate('storage.maintenanceWaitingSubtitle', '正在关闭，数据会在关闭后迁移并自动重启。'));
         var maintenanceProgress = createElement('section', 'storage-location-progress');
         var progressMeta = createElement('div', 'storage-location-progress-meta');
-        var progressLabel = createElement('div', 'storage-location-progress-label', translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭'));
+        var progressLabel = createElement('div', 'storage-location-progress-label', translate('storage.progressWaitingShutdown', '正在关闭'));
         var progressValue = createElement('div', 'storage-location-progress-value', '14%');
         var progressTrack = createElement('div', 'storage-location-progress-track');
         progressTrack.setAttribute('role', 'progressbar');
         progressTrack.setAttribute('aria-valuemin', '0');
         progressTrack.setAttribute('aria-valuemax', '100');
         progressTrack.setAttribute('aria-valuenow', '14');
-        progressTrack.setAttribute('aria-valuetext', translate('storage.progressWaitingShutdown', '正在等待当前实例安全关闭'));
+        progressTrack.setAttribute('aria-valuetext', translate('storage.progressWaitingShutdown', '正在关闭'));
         var progressFill = createElement('div', 'storage-location-progress-fill');
         progressTrack.appendChild(progressFill);
         progressMeta.appendChild(progressLabel);
@@ -1875,7 +1875,7 @@
         var progressSteps = createElement('div', 'storage-location-progress-steps');
         var maintenanceStepItems = [];
         [
-            translate('storage.progressStepShutdown', '关闭当前实例'),
+            translate('storage.progressStepShutdown', '正在关闭'),
             translate('storage.progressStepTransfer', '处理存储目录'),
             translate('storage.progressStepCommit', '校验并生效'),
             translate('storage.progressStepRecover', '恢复服务')

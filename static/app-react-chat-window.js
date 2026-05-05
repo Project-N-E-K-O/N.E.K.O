@@ -51,7 +51,15 @@
         galgameModeEnabled: false,
         galgameOptions: [],
         galgameOptionsLoading: false,
-        _galgameRequestSeq: 0
+        galgameTemporarilyDisabled: false,
+        _galgameRequestSeq: 0,
+        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
+        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        choicePrompt: null,
+        // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
+        // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
+        _launchedMiniGameSessionIds: Object.create(null)
     };
 
     function readGalgameModePreference() {
@@ -523,6 +531,7 @@
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
+            choicePrompt: state.choicePrompt || null,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
@@ -534,7 +543,8 @@
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
-            onGalgameOptionSelect: handleGalgameOptionSelect
+            onGalgameOptionSelect: handleGalgameOptionSelect,
+            onChoiceSelect: handleChoiceSelect
         });
     }
 
@@ -1085,8 +1095,40 @@
     }
 
     // ============================ GalGame mode ============================
+    function isGalgameModeTemporarilyDisabled() {
+        return !!state.galgameTemporarilyDisabled;
+    }
+
+    function isHomeTutorialRunning() {
+        var manager = window.universalTutorialManager;
+        return !!(
+            manager
+            && manager.currentPage === 'home'
+            && manager.isTutorialRunning
+        );
+    }
+
+    function setGalgameModeTemporarilyDisabled(disabled) {
+        var next = !!disabled;
+        var changed = state.galgameTemporarilyDisabled !== next;
+        state.galgameTemporarilyDisabled = next;
+
+        if (next) {
+            setGalgameModeEnabled(false, { persist: false });
+        } else if (changed) {
+            setGalgameModeEnabled(readGalgameModePreference(), {
+                persist: false,
+                suppressRefetch: true
+            });
+        }
+    }
+
     function setGalgameModeEnabled(enabled, options) {
+        var requestOptions = options || {};
         var next = !!enabled;
+        if (next && isGalgameModeTemporarilyDisabled()) {
+            next = false;
+        }
         var changed = state.galgameModeEnabled !== next;
         state.galgameModeEnabled = next;
         if (!next) {
@@ -1099,7 +1141,9 @@
             abortPendingGalgameFetch();
         }
         applyGalgameBodyClass(next);
-        if (!options || options.persist !== false) persistGalgameModePreference(next);
+        if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
+            persistGalgameModePreference(next);
+        }
         renderWindow();
         if (changed) {
             dispatchHostEvent('galgame-mode-change', { enabled: next });
@@ -1109,7 +1153,7 @@
             // avoids wasting a summary-tier call during init() (where the
             // window is still hidden) and respects the same skip rule the
             // turn-end handler uses for voice-only / proactive paths.
-            if (next) {
+            if (next && !requestOptions.suppressRefetch) {
                 var overlay = getOverlay();
                 if (overlay && !overlay.hidden) {
                     fetchGalgameOptionsForLatestTurn();
@@ -1190,6 +1234,7 @@
     }
 
     function fetchGalgameOptionsForLatestTurn() {
+        if (isGalgameModeTemporarilyDisabled()) return;
         if (!state.galgameModeEnabled) return;
         var history = getRecentGalgameMessageHistory();
         if (!history.length) return;
@@ -1288,6 +1333,10 @@
     }
 
     function handleGalgameModeToggle() {
+        if (isGalgameModeTemporarilyDisabled()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
         // setGalgameModeEnabled handles the OFF→ON refetch internally.
         setGalgameModeEnabled(!state.galgameModeEnabled);
     }
@@ -1311,6 +1360,254 @@
         };
         handleComposerSubmit(detail);
         dispatchHostEvent('galgame-option-select', detail);
+    }
+
+    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
+    // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
+    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+
+    function handleChoiceSelect(option, source) {
+        if (!option || typeof option.choice !== 'string') return;
+        if (source === 'galgame') {
+            // Forward to legacy galgame handler if it shows up here
+            if (typeof option.text === 'string') {
+                handleGalgameOptionSelect(option);
+            }
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            handleMiniGameInviteChoice(option);
+            return;
+        }
+    }
+
+    function handleMiniGameInviteChoice(option) {
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'mini_game_invite') return;
+        var sessionId = prompt.sessionId || '';
+        // 暂存原 prompt 用于失败回滚——网络异常时让用户能再点一次（CodeRabbit
+        // Major 指出原版 fetch fail 仅 console.warn，用户看着空 UI 不知道发生
+        // 啥）。立即清 prompt 防连点；fail catch 里恢复。
+        var rollbackPrompt = prompt;
+        state.choicePrompt = null;
+        renderWindow();
+
+        var lanlanName = '';
+        try {
+            // 优先读 window.appState.lanlan_name —— 角色切换时 appState 先更新，
+            // window.lanlan_config 可能滞后；用旧 lanlan_name 调 endpoint 会被
+            // 后端按错误角色查 pending invite 直接 expired。同 GalGame 请求路径
+            // 保持一致（CodeRabbit Major 指出）。
+            lanlanName = (window.appState && window.appState.lanlan_name)
+                || (window.lanlan_config && window.lanlan_config.lanlan_name)
+                || '';
+        } catch (_) {}
+
+        var requestBody = {
+            lanlan_name: lanlanName,
+            choice: option.choice,
+            session_id: sessionId
+        };
+
+        // accept 路径预开 popup（**仍在用户点击的同步上下文**）保留 user-gesture
+        // 上下文。后续 fetch resolve 后再 window.open 会被浏览器 popup blocker
+        // 识别为非手势触发拦截——pre-open 后 .location.href 注入 URL 不会被拦
+        // （codex P2 指出原版 fetch 后 window.open 失败时 state 已 responded
+        // 用户失去重试入口）。decline / later 路径不开窗口，无此处理。
+        var preOpenedWindow = null;
+        if (option.choice === 'accept') {
+            try {
+                preOpenedWindow = window.open('', '_blank');
+                if (preOpenedWindow) {
+                    // 给个临时占位文本免得用户看到 about:blank 一闪
+                    try {
+                        preOpenedWindow.document.write(
+                            '<title>Loading…</title><body style="background:#111;color:#888;font:14px sans-serif;padding:20px">Loading mini-game…</body>'
+                        );
+                    } catch (_) {}
+                }
+            } catch (_) {
+                preOpenedWindow = null;
+            }
+        }
+        var closePreOpened = function () {
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try { preOpenedWindow.close(); } catch (_) {}
+            }
+        };
+
+        // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request
+        // 拒绝缺 token 的请求，否则所有合法点击都会被 403 reject、prompt 已清掉
+        // 但 invite state 没更新 —— codex P1 指出。沿用 nekoLocalMutationSecurity
+        // 共享 helper（其它 prompt endpoint 同款），含 token 缺失时 refresh + 重
+        // 试一次的协议。
+        var bodyJson = JSON.stringify(requestBody);
+        var doFetch = function (headers) {
+            return fetch('/api/mini_game/invite/respond', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
+                body: bodyJson
+            });
+        };
+        var sec = window.nekoLocalMutationSecurity;
+        var firstHeadersPromise = sec && typeof sec.getMutationHeaders === 'function'
+            ? sec.getMutationHeaders()
+            : Promise.resolve({});
+        firstHeadersPromise.then(doFetch).then(function (resp) {
+            // 403 + csrf_validation_failed → refresh token 重试一次（与 prompt
+            // endpoint 同协议）
+            if (resp.status === 403 && sec && typeof sec.refreshToken === 'function') {
+                return resp.clone().json().catch(function () { return null; }).then(function (errBody) {
+                    var code = errBody && errBody.error_code;
+                    if (code === 'csrf_validation_failed') {
+                        return sec.refreshToken().then(function () {
+                            return sec.getMutationHeaders();
+                        }).then(doFetch);
+                    }
+                    return resp;
+                });
+            }
+            return resp;
+        }).then(function (resp) {
+            return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status));
+        }).then(function (data) {
+            if (!data || data.action !== 'open_game' || !data.game_url) {
+                // 非 accept outcome（cooldown / suppress / expired）→ 关掉占位 popup
+                closePreOpened();
+                return;
+            }
+            // accept：优先注入 URL 进 pre-opened popup（保留用户手势上下文，
+            // 浏览器 popup blocker 不拦）；pre-open 失败时 fallback 调
+            // launchMiniGameInternal（可能被拦但留个 console.warn 兜底）。
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try {
+                    preOpenedWindow.location.href = data.game_url;
+                    if (sessionId) {
+                        state._launchedMiniGameSessionIds[sessionId] = true;
+                    }
+                    return;
+                } catch (err) {
+                    console.warn('[MiniGameInvite] pre-opened window navigation failed:', err);
+                    closePreOpened();
+                }
+            }
+            // pre-open 失败 fallback：直接 window.open（有被 popup blocker 拦
+            // 的风险，但 accept-path-via-pre-open 已是主路径，到此处罕见）。
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: data.game_type || rollbackPrompt.gameType || '',
+                url: data.game_url,
+                source: 'button'
+            });
+        }).catch(function (err) {
+            console.warn('[MiniGameInvite] respond endpoint failed:', err);
+            closePreOpened();
+            // 网络/服务异常 → 回滚 prompt 让用户能再试。但只在当前 prompt 仍是
+            // null（即用户没在 fetch 期间触发新 prompt）且会话仍未被 launch 过的
+            // 情况下回滚——否则强复活旧 UI 可能撞新邀请。
+            if (state.choicePrompt === null
+                    && sessionId
+                    && !state._launchedMiniGameSessionIds[sessionId]) {
+                state.choicePrompt = rollbackPrompt;
+                renderWindow();
+            }
+        });
+    }
+
+    function setMiniGameInvitePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        // 已经为该 session 开过游戏了 → 忽略 stale options（罕见：邀请 push 比
+        // 用户键盘/按钮路径慢，但为了对偶仍 guard 一下）
+        if (state._launchedMiniGameSessionIds[sessionId]) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        // map → filter，再 recheck 长度——后端数据异常导致全部 filter 掉时不
+        // 渲染空按钮 prompt（CodeRabbit Minor 指出原版只检 raw 长度漏了这条）。
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[MiniGameInvite] all options filtered out, skipping render', payload);
+            return;
+        }
+        state.choicePrompt = {
+            source: 'mini_game_invite',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || ''),
+            options: cleanedOptions
+        };
+        renderWindow();
+    }
+
+    function dismissChoicePromptIfMatches(sessionId) {
+        if (!sessionId) return;
+        if (state.choicePrompt
+                && state.choicePrompt.source === 'mini_game_invite'
+                && state.choicePrompt.sessionId === sessionId) {
+            state.choicePrompt = null;
+            renderWindow();
+        }
+    }
+
+    function handleMiniGameInviteResolved(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        // 任一 outcome（open_game / cooldown / suppress）都 dismiss 当前 prompt——
+        // 跨窗口一致性。即便本 page 不是触发方，也保持 UI 同步。
+        dismissChoicePromptIfMatches(sessionId);
+        // launch path（仅 keyword 触发会带 game_url，button path backend 已不推
+        // game_url）：多窗口 Electron 模式下 backend 通过 RAW_MESSAGE IPC 把
+        // event 转给所有 page (pet + chat.html mirrors)，每个 page 都执行此函数。
+        // 不分 ownership 直接 window.open 会让所有 page 各自开一个 game 窗口
+        // （codex P2 指出，per-page _launchedMiniGameSessionIds 跨 page 不 dedupe）。
+        // 约定：only **non-follower** owner page (pet / 单窗口) 处理 WS-trigger
+        // launch；chat.html follower (window.__NEKO_MULTI_WINDOW__ === true) 仅
+        // dismiss UI。Button path 不走这条 WS launch（HTTP 响应里 chat.html 自己
+        // launch），所以不会双开。
+        if (payload.action === 'open_game' && payload.url) {
+            if (window.__NEKO_MULTI_WINDOW__) {
+                return;  // chat.html follower：let pet leader 处理 launch
+            }
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: String(payload.gameType || ''),
+                url: payload.url,
+                source: 'ws'
+            });
+        }
+    }
+
+    function launchMiniGameInternal(payload) {
+        if (!payload || !payload.url) return;
+        var sessionId = String(payload.sessionId || '');
+        // 同一 session 只 open 一次：按钮 endpoint 直接 open 后，backend 还会 push
+        // mini_game_invite_resolved（cross-window 一致性广播）；不 dedupe 会双开。
+        if (sessionId && state._launchedMiniGameSessionIds[sessionId]) return;
+        // window.open 在 Electron 模式下被主进程 setWindowOpenHandler 拦截开独立
+        // BrowserWindow；普通浏览器是新 tab。'_blank' target 让浏览器治理一致。
+        // dedupe flag 只在成功后设——popup blocker / throw 时让用户能再触发一次
+        // (codex P2 + CodeRabbit Major 指出原版 set-before-open 会让失败的 session
+        // 永远被 dedupe 锁死，prompt 已清掉用户彻底失去入口)。
+        var opened = false;
+        try {
+            var w = window.open(payload.url, '_blank');
+            if (!w) {
+                console.warn('[MiniGameInvite] window.open returned null (popup blocked?)');
+            } else {
+                opened = true;
+            }
+        } catch (err) {
+            console.warn('[MiniGameInvite] window.open failed:', err);
+        }
+        if (opened && sessionId) {
+            state._launchedMiniGameSessionIds[sessionId] = true;
+        }
     }
 
     function setViewProps(nextViewProps) {
@@ -1440,6 +1737,13 @@
         state.messages = [];
         _sortKeySeq = 0;
         invalidatePendingGalgameRequest();
+        // 角色切换 / cloud reload 等触发 clearMessages 的路径也必须清掉 mini-game
+        // invite prompt——否则旧角色的按钮残留在新 context 里，用户点了 endpoint
+        // 会按新 lanlan_name 查旧 session_id 直接 expired。dedupe set 也清，防止
+        // 上一会话的 launched 标记错误地阻断新会话同 session_id 的 launch（虽然
+        // session_id 是 uuid 实际撞概率几乎 0，对偶清理更干净）。codex P2 指出。
+        state.choicePrompt = null;
+        state._launchedMiniGameSessionIds = Object.create(null);
         renderWindow();
     }
 
@@ -1489,7 +1793,7 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off.png';
+            icon.src = '/static/icons/expand_icon_off_ball.png';
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -1746,7 +2050,7 @@
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off.png';
+            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
         }
     }
 
@@ -2193,6 +2497,24 @@
             setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
         });
 
+        window.addEventListener('neko:tutorial-started', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(true);
+        });
+
+        window.addEventListener('neko:tutorial-completed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
+        window.addEventListener('neko:tutorial-skipped', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
         // Refresh option list whenever an assistant turn finishes streaming.
         window.addEventListener('neko-assistant-turn-end', function () {
             if (!state.galgameModeEnabled) return;
@@ -2243,7 +2565,11 @@
         // from a storage namespace the barrier is about to remap.
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
-        setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
+        if (isHomeTutorialRunning()) {
+            setGalgameModeTemporarilyDisabled(true);
+        } else {
+            setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
+        }
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -2307,7 +2633,7 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off.png';
+                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
             });
         }
 
@@ -2420,6 +2746,13 @@
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
+        // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
+        setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        // unified resolved handler：accept 兼 launch / decline / suppress 都通过
+        // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
+        // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
+        // dismiss 一致性能 cover decline / later 路径。
+        handleMiniGameInviteResolved: handleMiniGameInviteResolved,
         isMounted: function () { return mounted; }
     };
 })();

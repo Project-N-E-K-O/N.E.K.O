@@ -625,7 +625,11 @@ class OmniRealtimeClient:
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
-        
+        # Validate turn_detection_mode BEFORE any side effect (websockets.connect,
+        # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
+        if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
+            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -671,153 +675,175 @@ class OmniRealtimeClient:
             logger.info(f"静默超时检测已禁用（{reason}），不会自动关闭会话")
 
         # Set up default session configuration
-        if self.turn_detection_mode == TurnDetectionMode.MANUAL:
-            raise NotImplementedError("Manual turn detection is not supported")
-        elif self.turn_detection_mode == TurnDetectionMode.SERVER_VAD:
-            self._modalities = ["text", "audio"] if native_audio else ["text"]
-            if 'glm' in self._model_lower:
-                glm_session = {
-                    "instructions": instructions,
-                    "modalities": self._modalities ,
-                    "voice": self.voice if self.voice else "tongtong",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm",
-                    "turn_detection": {
-                        "type": "server_vad",
-                    },
-                    "input_audio_noise_reduction": {
-                        "type": "far_field",
-                    },
-                    "beta_fields":{
-                        "chat_mode": "video_passive",
-                        "auto_search": True,
-                    },
-                    "temperature": 1.0
-                }
-                # GLM Realtime: tools only honoured in audio mode per docs.
-                # Use the flat (OpenAI-Realtime-style) schema GLM expects.
-                if self.has_tools() and 'audio' in self._modalities:
-                    glm_session["tools"] = self._tools_for_openai_realtime()
-                await self.update_session(glm_session)
-            elif "qwen" in self._model_lower:
-                qwen_session: Dict[str, Any] = {
-                    "instructions": instructions,
-                    "modalities": self._modalities ,
-                    "voice": self.voice if self.voice else "Momo",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "input_audio_transcription": {
-                        "model": "gummy-realtime-v1"
-                    },
-                    "turn_detection": {
-                        # TODO: 未来需要cover更多型号
-                        "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
-                        "threshold": 0.55,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 600
-                    },
-                    "repetition_penalty": 1.2,
-                    "temperature": 0.7,
-                    # "enable_search": True,
-                    # "search_options": {'enable_source': True}
-                }
-                # Qwen-Omni-Realtime 自 2026 起支持 tools（嵌套 function 形，
-                # 同 StepFun）。重要约束：tools 与 enable_search 互斥——
-                # 我们注册了自定义工具时强制 enable_search=False，避免
-                # session.update 被服务端拒绝。文档参见 Aliyun client-events
-                # 章节 "工具调用（tools）和联网搜索（enable_search）不兼容"。
-                if self.has_tools():
-                    qwen_session["tools"] = self._tools_for_qwen()
-                    qwen_session["enable_search"] = False
-                await self.update_session(qwen_session)
-            elif "gpt" in self._model_lower:
-                gpt_session = {
-                    "type": "realtime",
-                    "model": self.model,
-                    "instructions": instructions,
-                    "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
-                    "audio": {
-                        "input": {
-                            "transcription": {"model": "gpt-4o-mini-transcribe"},
-                            "turn_detection": { "type": "semantic_vad",
-                                "eagerness": "auto",
-                                "create_response": True,
-                                "interrupt_response": True
-                            },
+        is_manual = self.turn_detection_mode == TurnDetectionMode.MANUAL
+        # MANUAL mode: every per-provider session.update below sends
+        # ``turn_detection: null``, so the provider will NOT emit
+        # speech_started / speech_stopped events. _has_server_vad was
+        # initialised in __init__ from provider/model heuristics
+        # (defaults to True for Qwen/GLM/GPT/Step/lanlan.tech-free), but
+        # those events won't arrive in MANUAL — so downstream branches in
+        # stream_audio() and _check_silence_timeout() must take the
+        # client-VAD path, same as Gemini / lanlan.app-free. Override the
+        # flag here uniformly across all providers; the Gemini connect
+        # path is unaffected because __init__ already set this to False
+        # for ``_is_gemini`` clients.
+        if is_manual:
+            self._has_server_vad = False
+        self._modalities = ["text", "audio"] if native_audio else ["text"]
+
+        if 'glm' in self._model_lower:
+            # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
+            # Best-effort — provider may reject; if so we degrade to local-suppression-only.
+            glm_session = {
+                "instructions": instructions,
+                "modalities": self._modalities ,
+                "voice": self.voice if self.voice else "tongtong",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad",
+                },
+                "input_audio_noise_reduction": {
+                    "type": "far_field",
+                },
+                "beta_fields":{
+                    "chat_mode": "video_passive",
+                    "auto_search": True,
+                },
+                "temperature": 1.0
+            }
+            # GLM Realtime: tools only honoured in audio mode per docs.
+            # Use the flat (OpenAI-Realtime-style) schema GLM expects.
+            if self.has_tools() and 'audio' in self._modalities:
+                glm_session["tools"] = self._tools_for_openai_realtime()
+            await self.update_session(glm_session)
+        elif "qwen" in self._model_lower:
+            qwen_session: Dict[str, Any] = {
+                "instructions": instructions,
+                "modalities": self._modalities ,
+                "voice": self.voice if self.voice else "Momo",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {
+                    "model": "gummy-realtime-v1"
+                },
+                "turn_detection": None if is_manual else {
+                    # TODO: 未来需要cover更多型号
+                    "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
+                    "threshold": 0.55,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 600
+                },
+                "repetition_penalty": 1.2,
+                "temperature": 0.7,
+                # "enable_search": True,
+                # "search_options": {'enable_source': True}
+            }
+            # Qwen-Omni-Realtime 自 2026 起支持 tools（嵌套 function 形，
+            # 同 StepFun）。重要约束：tools 与 enable_search 互斥——
+            # 我们注册了自定义工具时强制 enable_search=False，避免
+            # session.update 被服务端拒绝。文档参见 Aliyun client-events
+            # 章节 "工具调用（tools）和联网搜索（enable_search）不兼容"。
+            if self.has_tools():
+                qwen_session["tools"] = self._tools_for_qwen()
+                qwen_session["enable_search"] = False
+            await self.update_session(qwen_session)
+        elif "gpt" in self._model_lower:
+            gpt_session = {
+                "type": "realtime",
+                "model": self.model,
+                "instructions": instructions,
+                "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
+                "audio": {
+                    "input": {
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                        "turn_detection": None if is_manual else {
+                            "type": "semantic_vad",
+                            "eagerness": "auto",
+                            "create_response": True,
+                            "interrupt_response": True
                         },
-                        "output": {
-                            "voice": self.voice if self.voice else "marin",
-                            "speed": 1.0
-                        }
-                    }
-                }
-                if self.has_tools():
-                    gpt_session["tools"] = self._tools_for_openai_realtime()
-                    gpt_session["tool_choice"] = "auto"
-                await self.update_session(gpt_session)
-            elif "step" in self._model_lower:
-                step_session = {
-                    "instructions": instructions,
-                    "modalities": ['text', 'audio'], # Step API只支持这一个模式
-                    "voice": self.voice if self.voice else "qingchunshaonv",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "turn_detection": {
-                        "type": "server_vad"
                     },
-                }
-                # Always keep the built-in web_search; append custom tools
-                # (StepFun supports both type:"web_search" and type:"function"
-                # in the same array — see official docs).
-                step_tools: List[Dict[str, Any]] = [
-                    {
-                        "type": "web_search",
-                        "function": {
-                            "description": "这个web_search用来搜索互联网的信息"
-                        }
+                    "output": {
+                        "voice": self.voice if self.voice else "marin",
+                        "speed": 1.0
                     }
-                ]
-                if self.has_tools():
-                    step_tools.extend(self._tools_for_step())
-                step_session["tools"] = step_tools
-                await self.update_session(step_session)
-            elif "free" in self._model_lower:
-                # NOTE: lanlan.tech (China free) backs onto StepFun and
-                # supports the StepFun custom-function protocol — the
-                # server-side tool stripping the user mentioned will be
-                # lifted, after which our tools propagate naturally.
-                # lanlan.app (international free) backs onto Vertex AI
-                # Live; that path is currently TODO (no client→server
-                # tools propagation confirmed). Tools below match the
-                # StepFun shape and become a no-op on lanlan.app until
-                # the proxy supports them.
-                free_session = {
-                    "instructions": instructions,
-                    "modalities": ['text', 'audio'],
-                    "voice": self.voice if self.voice else "qingchunshaonv",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "turn_detection": {
-                        "type": "server_vad"
-                    },
                 }
-                free_tools: List[Dict[str, Any]] = [
-                    {
-                        "type": "web_search",
-                        "function": {
-                            "description": "这个web_search用来搜索互联网的信息"
-                        }
+            }
+            if self.has_tools():
+                gpt_session["tools"] = self._tools_for_openai_realtime()
+                gpt_session["tool_choice"] = "auto"
+            await self.update_session(gpt_session)
+        elif "step" in self._model_lower:
+            step_session = {
+                "instructions": instructions,
+                "modalities": ['text', 'audio'], # Step API只支持这一个模式
+                "voice": self.voice if self.voice else "qingchunshaonv",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad"
+                },
+            }
+            # Always keep the built-in web_search; append custom tools
+            # (StepFun supports both type:"web_search" and type:"function"
+            # in the same array — see official docs).
+            step_tools: List[Dict[str, Any]] = [
+                {
+                    "type": "web_search",
+                    "function": {
+                        "description": "这个web_search用来搜索互联网的信息"
                     }
-                ]
-                if self.has_tools():
-                    free_tools.extend(self._tools_for_step())
-                free_session["tools"] = free_tools
-                await self.update_session(free_session)
-            else:
-                raise ValueError(f"Invalid model: {self.model}")
-            self.instructions = instructions
+                }
+            ]
+            if self.has_tools():
+                step_tools.extend(self._tools_for_step())
+            step_session["tools"] = step_tools
+            await self.update_session(step_session)
+        elif "free" in self._model_lower:
+            # NOTE: lanlan.tech (China free) backs onto StepFun and
+            # supports the StepFun custom-function protocol — the
+            # server-side tool stripping the user mentioned will be
+            # lifted, after which our tools propagate naturally.
+            # lanlan.app (international free) backs onto Vertex AI
+            # Live; that path is currently TODO (no client→server
+            # tools propagation confirmed). Tools below match the
+            # StepFun shape and become a no-op on lanlan.app until
+            # the proxy supports them.
+            #
+            # MANUAL mode: both proxies receive ``turn_detection: null``
+            # via the StepFun-shape websocket session config. lanlan.tech
+            # (StepFun proxy) honours it natively; lanlan.app (Vertex
+            # Gemini proxy) translates the disabled-VAD intent on the
+            # server side, since the proxy already maps StepFun-shape
+            # client events to Vertex Live (see _has_server_vad gate
+            # at __init__ — lanlan.app+free is already treated as
+            # client-side VAD only).
+            free_session = {
+                "instructions": instructions,
+                "modalities": ['text', 'audio'],
+                "voice": self.voice if self.voice else "qingchunshaonv",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad"
+                },
+            }
+            free_tools: List[Dict[str, Any]] = [
+                {
+                    "type": "web_search",
+                    "function": {
+                        "description": "这个web_search用来搜索互联网的信息"
+                    }
+                }
+            ]
+            if self.has_tools():
+                free_tools.extend(self._tools_for_step())
+            free_session["tools"] = free_tools
+            await self.update_session(free_session)
         else:
-            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+            raise ValueError(f"Invalid model: {self.model}")
+        self.instructions = instructions
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
@@ -853,6 +879,17 @@ class OmniRealtimeClient:
                     )
                 ),
             }
+
+            # MANUAL turn detection: disable Gemini's automatic activity
+            # detection so end-of-turn is signalled explicitly by the
+            # client (audio_stream_end / activity_end). SERVER_VAD path
+            # leaves automatic_activity_detection at SDK default (enabled).
+            if self.turn_detection_mode == TurnDetectionMode.MANUAL:
+                config["realtime_input_config"] = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    )
+                )
             
             # 建立 Live 连接 - connect() 返回 async context manager
             logger.info(f"Connecting to Gemini Live API with model: {self.model}")
@@ -1154,7 +1191,7 @@ class OmniRealtimeClient:
         """Send audio data to Gemini Live API."""
         if not self._gemini_session:
             return
-        
+
         try:
             # 发送实时音频输入
             await self._gemini_session.send_realtime_input(
@@ -1165,6 +1202,47 @@ class OmniRealtimeClient:
             logger.error(f"Error sending audio to Gemini: {e}")
             if "closed" in str(e).lower():
                 self._fatal_error_occurred = True
+
+    async def signal_user_activity_end(self) -> None:
+        """Explicitly signal end-of-turn in MANUAL VAD mode.
+
+        With ``TurnDetectionMode.MANUAL`` the server-side VAD is
+        disabled, so the client owns turn boundaries and must emit a
+        provider-specific signal when the user stops speaking. Without
+        this, the model will never see a turn boundary and never
+        respond.
+
+        Per provider (MANUAL only — no-op in SERVER_VAD):
+        - Gemini Live: ``send_realtime_input(activity_end=ActivityEnd())``
+          (Google genai SDK ``LiveClientRealtimeInput`` docs:
+          "If automatic voice detection is disabled, the client must
+          send activity signals." ``audio_stream_end`` is NOT applicable
+          here — it's documented as "only when automatic activity
+          detection is enabled".)
+        - OpenAI / Qwen / GLM / Step / Free: ``input_audio_buffer.commit``
+          followed by ``response.create``.
+        """
+        if self.turn_detection_mode != TurnDetectionMode.MANUAL:
+            return
+        if self._fatal_error_occurred:
+            return
+        if self._is_gemini:
+            if not self._gemini_session:
+                return
+            if types is None:
+                logger.error("signal_user_activity_end: genai.types unavailable")
+                return
+            try:
+                await self._gemini_session.send_realtime_input(
+                    activity_end=types.ActivityEnd()
+                )
+            except Exception as e:
+                logger.error(f"Error sending activity_end to Gemini: {e}")
+                if "closed" in str(e).lower():
+                    self._fatal_error_occurred = True
+            return
+        await self.send_event({"type": "input_audio_buffer.commit"})
+        await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
         """Use VISION_MODEL to analyze image and return description."""

@@ -9,11 +9,27 @@
 
 <!-- Mock 桌宠运行环境（必要最小子集，避免各 init 脚本崩溃） -->
 <script>
-  window.lanlan_config = window.lanlan_config || {
-    lanlan_name: 'soccer_demo',
-    master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
-    model_type: 'vrm', live3d_sub_type: 'vrm'
-  };
+  // mini-game 邀请被接受后由 chat.html / Pet 主聊天 window.open 打开本页面，
+  // URL 形如 `/soccer_demo?lanlan_name=<active_character>&session_id=<invite_uuid>`。
+  // 提前从 query 解出来，覆盖默认 'soccer_demo' 值，避免后端 game route 用错角色。
+  // 直接手敲 /soccer_demo 进来时 query 缺失，沿用旧默认（route_start 内部会调
+  // /api/game/soccer/character 解出当前角色作为兜底，PR #1110 已实现）。
+  (function () {
+    var params = null;
+    try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
+    var queryLanlan = (params && params.get('lanlan_name')) || '';
+    var queryInviteSession = (params && params.get('session_id')) || '';
+    window.lanlan_config = window.lanlan_config || {
+      lanlan_name: queryLanlan || 'soccer_demo',
+      master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
+      model_type: 'vrm', live3d_sub_type: 'vrm'
+    };
+    if (queryLanlan && !window.lanlan_config.lanlan_name) {
+      window.lanlan_config.lanlan_name = queryLanlan;
+    }
+    // 留个全局让游戏内逻辑可见 invite 来源（例如赛后归档时打个 tag）
+    window.__nekoMiniGameInviteSessionId = queryInviteSession || '';
+  })();
   window.LanLan1 = window.LanLan1 || {};
   // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
   window.mouseTrackingEnabled = true;
@@ -220,31 +236,37 @@
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
-  鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位<br>
-  1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档
+  <div data-i18n="soccer.hint.controls">鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
+  <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
+<!-- Debug 控件区：开发用，固定英文（不进入 i18n 池）。 -->
 <div id="controls">
-  <label><input type="checkbox" id="boundary-toggle"> 启用边界（出界规则）</label>
-  <label><input type="checkbox" id="voice-output-toggle" checked> 念出 LLM 台词（项目语音）</label>
+  <label><input type="checkbox" id="boundary-toggle"> Enable bounds (out-of-bounds rule)</label>
+  <label><input type="checkbox" id="voice-output-toggle" checked> Speak LLM lines (project voice)</label>
   <div id="voice-controls" aria-hidden="true">
-    <button id="voice-mic-button" type="button">调试语音</button>
-    <input id="voice-text-input" type="text" placeholder="调试：输入最终转写文本，回车发送">
-    <button id="voice-send-button" type="button">发送</button>
-    <div id="voice-status">调试 STT：隐藏</div>
+    <button id="voice-mic-button" type="button">Debug voice</button>
+    <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
+    <button id="voice-send-button" type="button">Send</button>
+    <div id="voice-status">Debug STT: hidden</div>
   </div>
 </div>
-<button id="exit-to-start-button" type="button" hidden>结束游戏（调试）</button>
+<!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
+     init / localechange 时刷新 textContent；codex P1 review 指出 IIFE 内
+     ``typeof window.t === 'function'`` 一次性 gate 在 i18n 异步 init 之前
+     会 skip，导致非 zh locale 卡在 HTML 兜底。统一走 ``data-i18n`` 后框架
+     接管两类时序。 -->
+<button id="exit-to-start-button" type="button" hidden data-i18n="soccer.exitGame.button">退出游戏</button>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
     <div id="loading-row">
       <div id="loading-spinner" aria-hidden="true"></div>
-      <div id="loading-text">初始化足球小游戏…</div>
+      <div id="loading-text" data-i18n="soccer.loading.initializingMiniGame">初始化足球小游戏…</div>
     </div>
     <div id="loading-actions" hidden>
-      <button id="soccer-start-button" type="button">开始</button>
-      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> 本局进入记忆（测试期间默认不开启）</label>
-      <div id="game-memory-hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
+      <button id="soccer-start-button" type="button" data-i18n="soccer.startScreen.startButton">开始</button>
+      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> <span id="game-memory-label" data-i18n="soccer.memoryOption.label">本局对话进入记忆（默认不开启）</span></label>
+      <div id="game-memory-hint" data-i18n="soccer.memoryOption.hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
     </div>
   </div>
 </div>
@@ -337,7 +359,7 @@
         setExitVisible(false);
         showOverlay();
       },
-      ending(text = '正在结束本局…') {
+      ending(text = _localized('exitGame.endingDefault', 'Ending this match…')) {
         state.route = false;
         state.routeStarting = true;
         state.started = false;
@@ -347,7 +369,7 @@
         setExitVisible(false, false);
         showOverlay();
       },
-      ended(text = '游戏已结束，请关闭页面。此提示仅用于调试，不作为重开的方式；重新进入请重新打开一次页面。') {
+      ended(text = _localized('exitGame.endedDefault', 'Game over. Please close this page. To play again, reopen it.')) {
         state.route = false;
         state.routeStarting = false;
         state.started = false;
@@ -755,8 +777,12 @@
   const _i18n = (key, fallback, params) => {
     if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
     if (!params) return fallback;
+    // 替换模式必须避开 Jinja2 模板里的双花括号字面量——本文件顶部有 Jinja
+    // 渲染（VRM_DEFAULT_LIGHTING），整份模板会过 Jinja parser；下面 replaceAll
+    // 的源串若写成模板字面量的 dollar 引用形式会被 Jinja 当表达式 SyntaxError。
+    // 拆字符拼接绕开 parser，运行期 JS 仍得到 [open][open]KEY[close][close]。
     return Object.entries(params).reduce(
-      (s, [k, v]) => s.replaceAll(`{{${k}}}`, String(v)),
+      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
       fallback,
     );
   };
@@ -1379,8 +1405,11 @@
     if (!bubbleEl) return;
     bubbleEl.textContent = text;
     bubbleEl.setAttribute('data-mood', mood);
-    if (sourceLabel) bubbleEl.setAttribute('data-source-label', sourceLabel);
-    else bubbleEl.removeAttribute('data-source-label');
+    // 不再向用户展示 ``data-source-label``（"LLM生成 · 850ms" / "开局上下文" / "快路径
+    // 兜底" 等）。这些是开发期溯源/延迟信息，玩家看到只觉冗余、且强调"延迟"反而拉低
+    // 体验。``sourceLabel`` 仍由 caller 传进来用于 console 日志与调试，但不渲染到
+    // bubble 上方。CSS ``[data-source-label]::before`` 规则保留以备调试模式回插。
+    bubbleEl.removeAttribute('data-source-label');
     bubbleEl.classList.add('show');
     if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
     bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
@@ -3549,22 +3578,49 @@
     _deliverPendingOpeningLine();
   }
 
+  // 注：之前这里有两段一次性 ``data-i18n-key`` localizer（exit button + memoryOption），
+  // 在 IIFE 执行时 ``typeof window.t === 'function'`` gate。codex P1 (PR #1149) 指出：
+  // i18n-i18next.js 是 ``DOMContentLoaded`` 之后异步 init，IIFE 跑到这一步时 ``window.t``
+  // 通常还没挂上，gate skip → 非 zh locale 看到 HTML 兜底中文。修法是改 ``data-i18n``
+  // 让框架的 ``updatePageTexts()`` 在 init / localechange 自动接管，全部不再需要手动
+  // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
+
   let _manualEndInFlight = false;
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
     if (exitToStartButton) exitToStartButton.disabled = true;
+    const _t = (key, fallback) => {
+      // i18next 在 key 缺失时返回 key 字面量本身——必须等值比对回 fallback，
+      // 否则 UI 会出现 "soccer.exitGame.ending" 这种 key 字符串。
+      if (typeof window.t !== 'function') return fallback;
+      const fullKey = `soccer.${key}`;
+      const v = window.t(fullKey);
+      return (v && v !== fullKey) ? v : fallback;
+    };
     try {
-      window.__SoccerLoading?.ending?.('正在结束本局…');
+      window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
-        reason: 'manual_debug_exit',
+        reason: 'manual_user_exit',
         postgameProactive: false,
       });
     } finally {
-      // 这个按钮是测试/调试退出入口。结束后必须停在结束状态，不自动准备下一局，
-      // 避免后续接手者误以为这里是游戏内“重开”流程。
-      window.__SoccerLoading?.ended?.();
+      window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
+      // 退出后：先尝试 window.close()（适用于 main app 用 window.open 弹的子窗口
+      // 与 Electron 多窗口）；浏览器无脚本权限关闭时 fall back 到主聊天 SPA 的
+      // 根路径。短延迟让用户看到 "正在返回..." 文本，避免页面瞬间消失。
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (_) {}
+        // 如果 close 没生效（普通 tab / 用户手敲 URL），跳回 /
+        setTimeout(() => {
+          if (!window.closed) {
+            window.location.assign('/');
+          }
+        }, 150);
+      }, 600);
     }
   }
 

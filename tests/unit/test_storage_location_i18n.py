@@ -53,14 +53,14 @@ def test_storage_location_locale_namespace_matches_used_keys():
 @pytest.mark.parametrize(
     ("locale_name", "expected_pick_new", "expected_use_current"),
     (
-        ("en.json", "Use dedicated home", "Other home"),
-        ("es.json", "Usar refugio dedicado", "Otro refugio"),
-        ("ja.json", "専用のおうちを使う", "別のおうち"),
-        ("ko.json", "전용 보금자리 쓰기", "다른 보금자리"),
-        ("pt.json", "Usar cantinho dedicado", "Outro cantinho"),
-        ("ru.json", "Использовать свой домик", "Другой домик"),
-        ("zh-CN.json", "使用专属小窝", "其他小窝"),
-        ("zh-TW.json", "使用專屬小窩", "其他小窩"),
+        ("en.json", "Recommended Storage Location", "Other Location"),
+        ("es.json", "Ubicación de almacenamiento recomendada", "Otra ubicación"),
+        ("ja.json", "おすすめの保存先", "その他の場所"),
+        ("ko.json", "추천 저장 위치", "다른 위치"),
+        ("pt.json", "Local de armazenamento recomendado", "Outro local"),
+        ("ru.json", "Рекомендуемое место хранения", "Другое место"),
+        ("zh-CN.json", "推荐存储位置", "其他位置"),
+        ("zh-TW.json", "推薦儲存位置", "其他位置"),
     ),
 )
 def test_storage_location_intro_button_copy_matches_locale(locale_name, expected_pick_new, expected_use_current):

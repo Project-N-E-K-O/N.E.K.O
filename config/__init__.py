@@ -1300,6 +1300,76 @@ PROACTIVE_CHAT_HISTORY_MAX = 10
 - 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
 - 上游：proactive 触发的搭话事件。"""
 
+MINI_GAME_INVITE_ENABLED = True
+"""Mini-game 邀请短路通道总开关（默认开）。
+- 用途：proactive_chat 在过完 propensity / skip_probability / restricted_screen_only
+  这几道门后，按 MINI_GAME_INVITE_TRIGGER_PROBABILITY 概率短路成"邀请玩家来玩
+  小游戏"，跳过 Phase 1/2 LLM。关掉此开关 = 永远不触发该分支，proactive_chat
+  退化回纯 source-driven。
+- 上游：main_routers/system_router._maybe_deliver_mini_game_invite。"""
+
+MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.1
+"""每次 eligible 主动搭话进入 mini-game 邀请短路的概率。
+- 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
+- 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
+
+MINI_GAME_INVITE_COOLDOWN_SECONDS = 3600
+"""一次邀请被回应后的最小静默秒数（默认 1h）。
+- 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
+- 上游：_mini_game_invite_in_cooldown 时间侧判定。
+- 历史：原 24h，PR follow-up #1 改成 1h —— 24h 太长、用户日常重启或重新打开
+  app 都可能跨进过该窗口又被首次打开计数器骗回 force-trigger，体感邀请密度
+  反而抖动；1h 是「一次会话内不重复打扰」的合理平衡。"""
+
+MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
+"""新用户在第 N 次「成功投递的主动搭话」时强制触发 mini-game 邀请。
+- 「新用户」= ``state.delivered_at is None``（角色级，从未发过 invite）。
+- N 是整数，>=1；当持久化计数 ``proactive_chat_total >= N - 1`` 时，
+  本次投递走 force-trigger（绕开 10% 骰子，但仍尊重 propensity / 工作状态 /
+  unfinished_thread / cooldown 等其它 gate）。
+- 默认 4 = 用户成功收到 3 条普通主动搭话后，第 4 条强制变成游戏邀请；让
+  从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
+- 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
+
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
+"""mini-game 邀请可选的 game_type 列表。
+- 命中后从该列表 random.choice 选一个，文案从
+  config.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
+- 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
+  分发逻辑无须改动。
+- 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
+
+MINI_GAME_INVITE_COOLDOWN_CHATS = 10
+"""一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
+- 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
+- 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
+
+MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
+"""用户选择「回头再说」后的短期再掷骰抑制秒数（默认 5min）。
+- D2 语义：reset state（delivered_at/responded_at/chats_since_response 都清零，
+  让 force-first 与普通 10% 掷骰都恢复正常）但加一个 ``suppressed_until`` 软门，
+  这段时间内 ``_mini_game_invite_in_cooldown`` 仍返回 True 防止下一次 proactive
+  立刻又邀请，体感上像"等等再问我"。过了这个窗口下次 proactive 才重新走骰子。
+- 上游：endpoint /api/mini_game/invite/respond 的 'later' action。"""
+
+MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
+    'soccer': '/soccer_demo',
+}
+"""game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
+``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
+会带上 ``?lanlan_name=...&session_id=...`` query。新 mini-game 加新 entry 即可。"""
+
+MINI_GAME_INVITE_FORCE_GAME_TYPE: str | None = None
+"""【调试用临时旗标】非 None 时，每次合格的主动搭话都强制走 mini-game 邀请短路，
+且使用此值作为 game_type，跳过 activity_snapshot / propensity / away /
+unfinished_thread / cooldown / probability / force-first / 用户级 toggle 等所有
+gate；仅 ``MINI_GAME_INVITE_ENABLED`` 总开关仍生效作为最后 kill switch。
+- 取值约定：None 关闭（生产默认）；'soccer' 等 ``MINI_GAME_INVITE_LINES_BY_GAME``
+  里存在的合法 key。非法 key 会在投递时 warn + 跳过。
+- 用途：本地手测三 context UI 时，不想等 force-first 凑齐 N-1 次主动搭话、也不
+  想反复重启 fixture 调 cooldown。线上不要打开。
+- 上游：``main_routers/system_router._maybe_deliver_mini_game_invite``。"""
+
 PROACTIVE_SOURCE_HARD_SKIP_SECONDS = 5 * 3600
 """主动搭话 source 衰减历史的硬窗口（p_skip=1.0）。
 - 用途：5h 内同一 URL 必跳，超过后按 kind 半衰期指数衰减。
@@ -1591,6 +1661,15 @@ __all__ = [
     'PROACTIVE_PHASE2_GENERATE_MAX_TOKENS',
     'PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS',
     'PROACTIVE_CHAT_HISTORY_MAX',
+    'MINI_GAME_INVITE_ENABLED',
+    'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
+    'MINI_GAME_INVITE_COOLDOWN_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_CHATS',
+    'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
+    'MINI_GAME_INVITE_AVAILABLE_GAMES',
+    'MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS',
+    'MINI_GAME_LAUNCH_URL_BY_GAME',
+    'MINI_GAME_INVITE_FORCE_GAME_TYPE',
     'PROACTIVE_SOURCE_HARD_SKIP_SECONDS',
     'PROACTIVE_SOURCE_HALF_LIFE_BY_KIND',
     'PROACTIVE_SOURCE_HALF_LIFE_DEFAULT',

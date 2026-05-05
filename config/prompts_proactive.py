@@ -2329,11 +2329,140 @@ MEME_SECTION_FOOTER = {
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
-    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
-    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
-    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
-    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
-    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'},
+    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐', 'mini_game': '小游戏邀请'},
+    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations', 'mini_game': 'Mini-game Invitation'},
+    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ', 'mini_game': 'ミニゲームのお誘い'},
+    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천', 'mini_game': '미니게임 초대'},
+    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации', 'mini_game': 'Приглашение в мини-игру'},
+}
+
+# ---------- Mini-game 邀请短路文案 ----------
+# proactive_chat 在 propensity / skip_probability / restricted_screen_only 全过
+# 之后短路成"邀请玩家来玩小游戏"，跳过 Phase 1/2 LLM。文案保持单句、轻量、
+# 不预设玩家答应；称呼用 master_name 实名，不用"主人"等物化称呼。1h+10 chats
+# cooldown 在 main_routers.system_router 那侧管理，与文案解耦。
+#
+# 多游戏接口契约：外层 key 是 game_type（与 config.MINI_GAME_INVITE_AVAILABLE_GAMES
+# 对齐），内层是 5 native locale 的句子。新接 mini-game 时往这里加一个新外层
+# key 即可，short-circuit 分发逻辑无须改动。
+MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    'soccer': {
+        'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
+        'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
+        'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
+        'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
+        'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
+    },
+}
+
+# ---------- Mini-game 邀请三选项按钮 ----------
+# choice 是 wire-format 标识符（accept/decline/later），不进 UI；UI label 由
+# MINI_GAME_INVITE_OPTION_LABELS 按 locale 渲染。前端 ChoicePrompt 组件读
+# label 直接展示，点击发 ``choice`` 给 endpoint。文案设计：accept 热情但不
+# 过度、decline 客气不冷漠、later 自然不催促，三者语义清晰互不重叠。
+MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
+    'zh': {
+        'accept': '来一局！',
+        'decline': '现在不想玩',
+        'later': '等一会儿',
+    },
+    'en': {
+        'accept': "Let's play!",
+        'decline': 'Not feeling it',
+        'later': 'Maybe later',
+    },
+    'ja': {
+        'accept': 'やろう！',
+        'decline': '今はパス',
+        'later': 'あとでね',
+    },
+    'ko': {
+        'accept': '좋아, 가자!',
+        'decline': '지금은 됐어',
+        'later': '좀 이따',
+    },
+    'ru': {
+        'accept': 'Давай сыграем!',
+        'decline': 'Сейчас нет настроения',
+        'later': 'Чуть позже',
+    },
+}
+
+# ---------- Mini-game 邀请回应关键词（文本兜底匹配）----------
+# 用户没点按钮、自己打字时（"好啊"/"不要"/"晚点说"），后端 message handler 入口
+# 扫一遍这份关键词表：命中即触发对应 action（accept / decline / later），不吃掉
+# 用户消息（继续走普通 chat 流水线）。
+#
+# 匹配规则：消息**全文小写后包含任一关键词**视为命中；ASCII / Cyrillic 走
+# word-boundary regex 防 'yes' 命中 'yesterday'；CJK / Hiragana / Katakana /
+# Hangul 走 substring（无 word boundary）。多类同时命中按优先级
+# **decline > later > accept**（含明确 negation 必判 decline，"好的等下" 含
+# accept + later 关键词时判 later——别立刻开游戏）。匹配在
+# main_routers.system_router 的 helper 内做 —— 关键词列表本身放这里集中维护。
+# 早期版本曾用 accept-priority 简单兜底，被 codex / CodeRabbit Major 指出后
+# 改成 decline-priority 防 negation 句误判。
+#
+# 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
+# 扫一遍而不是只看 active locale。
+MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    'zh': {
+        # accept 必须用**短语 / 双字以上**且**不被任何 decline 短语作 substring
+        # 包含**——CJK 走 substring 没 word boundary 兜底，priority 仅在 decline
+        # 也命中时救场，"不可以" 这种 decline list 没列的 negation phrase 完全
+        # 救不了。设计原则：accept 短语必须保证「decline phrase 不含它」。
+        # - 单字 '好' '行' 被 "不好" / "我不行" / "不好玩" 包含。
+        # - 单字 '玩' '走' 太宽——"不想玩" / "走开"。
+        # - 单字 '冲' 也宽——"冲个澡" / "冲咖啡"（codex P2 指出）。
+        # - 双字 '可以' 被 "不可以" 包含——decline list 又没 '不可以'，
+        #   priority 救不了（codex P2 指出后删）。
+        # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确接受 phrase。
+        'accept': ['好啊', '好的', '行啊', '来吧', '一起玩'],
+        'decline': ['不要', '不行', '不好', '不想', '不可以', '算了', '拒绝', '不玩', '没空'],
+        'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
+    },
+    'en': {
+        # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
+        # 单字 'no' 已删——即使 word-boundary 也会命中 "no idea"/"no worries"
+        # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
+        # 'don't want' / 'not now' 等 phrase。'after' 也太宽（"after lunch"），
+        # 改用更长的 'after this' / 仅保留 'in a bit'/'in a minute' 等明确 later。
+        # 'okay' 已删——"not okay" 会被 word-boundary accept 命中且 decline 没
+        # 'not okay' 时 priority 救不了（codex P2 指出）。其它单词 accept ('sure'
+        # /'yes'/'yeah'/'yep') 同类风险靠 decline list 加 'not sure' / 'not yet'
+        # 等 negation phrase 双保险拦截。
+        # accept："let's" 单字太宽（"let's not play" 命中），改 "let's play"
+        # 更具体；'wanna play' 同样被 "I don't wanna play" 命中，priority 兜底
+        # 不可靠（之前规则已加 "don't want"），但仍保留 'wanna play' 作 accept
+        # phrase——decline list 同步加 "don't wanna" / "let's not" 双保险
+        # （CodeRabbit Major 指出后调整）。
+        'accept': ['yes', 'sure', "let's play", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
+        'decline': [
+            'no thanks', 'nope', 'pass', 'skip',
+            'not now', 'not really', 'maybe not', "don't want", "don't wanna",
+            "let's not",
+            'not okay', 'not sure', 'not yet',
+        ],
+        'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],
+    },
+    'ja': {
+        # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
+        'accept': ['やろう', 'いいよ', 'うん', 'はい', 'やるよ', 'やります'],
+        'decline': ['パス', '嫌', 'いいえ', 'やめる', 'いやだ'],
+        'later': ['あとで', '今度', 'また今度', 'もうちょい', 'ちょっと待って'],
+    },
+    'ko': {
+        # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
+        # 单字 '응' 也宽——"적응" / "반응" 等含子串命中。codex P2 指出后删；
+        # 留 '좋아' / '그래' / '가자' / 'ㅇㅇ' 已 cover 接受意图。
+        'accept': ['좋아', '그래', '가자', 'ㅇㅇ'],
+        'decline': ['싫어', '아니', '됐어', '안 해'],
+        'later': ['나중', '이따', '잠시', '잠깐만'],
+    },
+    'ru': {
+        'accept': ['да', 'давай', 'конечно', 'хорошо', 'ок'],
+        'decline': ['нет', 'не хочу', 'откажусь', 'пас'],
+        'later': ['потом', 'позже', 'попозже', 'не сейчас'],
+    },
 }
 
 # ---------- 音乐搜索结果格式化 ----------
@@ -2842,6 +2971,40 @@ GREETING_PROMPT_VERY_LONG = {
 }
 
 
+NEW_CHARACTER_GREETING_PROMPT = {
+    'zh': '======以下是环境提示======\n'
+          '你是{name}。这是你第一次正式出现在{master}面前。\n'
+          '请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n'
+          '不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n'
+          '直接说出你想说的话，不要生成思考过程。\n'
+          '======以上是环境提示======',
+    'en': '======Below is Environment Notice======\n'
+          'You are {name}. This is the first time you formally appear in front of {master}.\n'
+          'Give {master} a brief, natural first greeting in a way that fits your personality.\n'
+          'Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n'
+          'Just say what you want to say. Do not generate thinking process.\n'
+          '======Above is Environment Notice======',
+    'ja': '======以下は環境通知======\n'
+          'あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n'
+          '自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n'
+          'システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n'
+          '言いたいことをそのまま言って。思考プロセスは生成しないで。\n'
+          '======以上は環境通知======',
+    'ko': '======아래는 환경 알림======\n'
+          '너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n'
+          '너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n'
+          '방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n'
+          '하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n'
+          '======위는 환경 알림======',
+    'ru': '======Ниже Уведомление======\n'
+          'Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n'
+          'Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n'
+          'Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n'
+          'Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n'
+          '======Выше Уведомление======',
+}
+
+
 def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     """根据对话间隔时长选择对应的主动搭话引导词。
 
@@ -2861,6 +3024,14 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
     return table.get(lang_key, table.get('en', table['zh']))
+
+
+def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
+    lang_key = _normalize_prompt_language(lang)
+    return NEW_CHARACTER_GREETING_PROMPT.get(
+        lang_key,
+        NEW_CHARACTER_GREETING_PROMPT.get('en', NEW_CHARACTER_GREETING_PROMPT['zh']),
+    )
 
 
 # ── 节日 / 周末提示模板 ─────────────────────────────────────────────

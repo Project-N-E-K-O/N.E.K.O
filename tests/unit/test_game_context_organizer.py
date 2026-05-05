@@ -11,6 +11,7 @@ from main_routers import game_router
 
 def _new_state(monkeypatch):
     monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    monkeypatch.setattr(game_router, "_resolve_game_prompt_language", lambda _lanlan_name=None: "zh")
     return game_router._activate_game_route("soccer", "match_1", "Lan")
 
 
@@ -26,23 +27,23 @@ def _fake_success_result():
     return {
         "rollingSummary": "玩家一直在追分，猫娘用轻松语气回应。",
         "signals": {
-            "玩家信号": [{
+            "player_signals": [{
                 "signalLabel": "玩家在意能否追上比分",
                 "summary": "玩家多次提到追分。",
                 "evidence": [{"id": "glog_0003", "quote": "第 3 句"}],
                 "lastRound": 3,
                 "count": 1,
             }],
-            "关系互动信号": [],
-            "猫娘信号": [],
-            "本局事实": [{
+            "relationship_signals": [],
+            "character_signals": [],
+            "session_facts": [{
                 "signalLabel": "官方比分按 finalScore 记录",
                 "summary": "比分解释以状态为准。",
                 "evidence": [{"id": "glog_0005", "quote": "第 5 句"}],
                 "lastRound": 5,
                 "count": 1,
             }],
-            "口头声明": [],
+            "verbal_claims": [],
         },
         "source": {"provider": "fake"},
     }
@@ -88,7 +89,7 @@ async def test_context_organizer_triggers_at_15_and_keeps_recent_window(monkeypa
     assert len(snapshots) == 1
     assert [item["id"] for item in snapshots[0]] == [f"glog_{index:04d}" for index in range(1, 16)]
     assert state["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
-    assert state["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
+    assert state["game_context_signals"]["player_signals"][0]["signalLabel"] == "玩家在意能否追上比分"
     assert state["game_context_organizer"]["last_organized_id"] == "glog_0009"
     assert state["game_context_organizer"]["failure_count"] == 0
     assert state["game_context_recent_ids"] == [f"glog_{index:04d}" for index in range(10, 16)]
@@ -220,7 +221,7 @@ async def test_finalize_waits_for_running_context_organizer_before_archive(monke
     result = await finalize_task
 
     assert result["archive"]["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
-    assert result["archive"]["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
+    assert result["archive"]["game_context_signals"]["player_signals"][0]["signalLabel"] == "玩家在意能否追上比分"
     assert submitted[0]["game_context_summary"] == "玩家一直在追分，猫娘用轻松语气回应。"
     assert state["game_route_active"] is False
     assert state["game_context_organizer"]["running"] is False
@@ -338,7 +339,7 @@ def test_degraded_game_prompt_excludes_summary_and_signals():
         {"gameStance": "neutral_play"},
         {
             "summary": "不应进入 prompt 的摘要",
-            "signals": {"玩家信号": [{"signalLabel": "不应进入 prompt 的信号"}]},
+            "signals": {"player_signals": [{"signalLabel": "不应进入 prompt 的信号"}]},
             "recent_dialogues": [{"id": "glog_0040", "type": "user", "text": "继续踢"}],
             "degraded": True,
         },
@@ -405,7 +406,7 @@ def test_archive_uses_context_summary_and_grouped_signals_only_as_highlight_sour
     highlight_source = game_router._build_game_archive_memory_highlight_source(archive)
 
     assert archive["game_context_summary"] == "猫娘领先后放慢节奏，玩家继续追分。"
-    assert archive["game_context_signals"]["玩家信号"][0]["signalLabel"] == "玩家在意能否追上比分"
+    assert archive["game_context_signals"]["player_signals"][0]["signalLabel"] == "玩家在意能否追上比分"
     assert archive["game_context_degraded"] is False
     assert "局内滚动摘要" not in memory_text
     assert "局内中文分组信号" not in memory_text
@@ -426,7 +427,7 @@ async def test_degraded_archive_uses_minimal_memory_facts(monkeypatch):
     state = _new_state(monkeypatch)
     state["finalScore"] = {"player": 1, "ai": 9}
     state["game_context_summary"] = "不可靠关系摘要"
-    state["game_context_signals"] = {"关系互动信号": [{"signalLabel": "不可靠关系信号"}]}
+    state["game_context_signals"] = {"relationship_signals": [{"signalLabel": "不可靠关系信号"}]}
     state["game_context_organizer"]["degraded"] = True
     _append_user_line(state, 1)
     game_router._append_game_dialog(state, {

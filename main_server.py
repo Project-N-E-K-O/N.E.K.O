@@ -637,7 +637,10 @@ async def _handle_agent_event(event: dict):
             logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
         if event_type in ("task_result", "proactive_message"):
-            text = (event.get("text") or "").strip()
+            raw_text = event.get("text") or ""
+            # Why: chat-blind passthrough must preserve verbatim whitespace;
+            # only the empty-check / log / callback paths use the stripped form.
+            text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
             # same proactive_message event.  Image parts go straight to the
@@ -728,6 +731,15 @@ async def _handle_agent_event(event: dict):
                 delivery_mode = (event.get("delivery_mode") or "proactive").strip()
                 if delivery_mode not in ("proactive", "passive", "silent"):
                     delivery_mode = "proactive"
+                # Defensive: blind ai_behavior must NEVER reach the LLM channel,
+                # even if delivery_mode arrives as "proactive" / "passive". The
+                # plugin proactive_bridge already maps blind→silent, but this
+                # is an indirect contract — a future direct emitter (or a bug
+                # in another bridge) could violate it. Forcing silent here
+                # locks the (blind ⇒ no LLM enqueue) invariant on the host
+                # side regardless of caller-supplied delivery_mode.
+                if (event.get("ai_behavior") or "").strip() == "blind":
+                    delivery_mode = "silent"
                 # Default source_kind from channel when caller didn't specify one.
                 # Plugin emit sites already pass explicit source_kind/source_name.
                 _channel = event.get("channel") or "unknown"
@@ -746,6 +758,7 @@ async def _handle_agent_event(event: dict):
                             source_name = _channel.split(":", 1)[1]
                     else:
                         source_kind = "system"
+                event_metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
                 callback = {
                     "event": "agent_task_callback",
                     "task_id": event.get("task_id") or "",
@@ -759,6 +772,8 @@ async def _handle_agent_event(event: dict):
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
                     "timestamp": event.get("timestamp") or "",
+                    "metadata": event_metadata,
+                    "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
                     mgr.enqueue_agent_callback(callback)
@@ -785,8 +800,87 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
                         event_type,
                     )
+
+                # v2 chat+blind passthrough: render verbatim into chat
+                # bubble WITHOUT entering chat-LLM context. Distinct from
+                # mirror_assistant_output (which writes to sync_message_queue
+                # so cross_server may add an AIMessage). Both this branch
+                # and the HUD agent_notification below can fire when
+                # visibility=["chat","hud"] — they're orthogonal sinks.
+                #
+                # Gated on visibility containing "chat" AND ai_behavior=="blind"
+                # because non-blind ai_behavior already enqueues the LLM
+                # callback above and the AI's own response is what the
+                # user should see in the chat bubble.
+                _vis_raw = event.get("visibility")
+                _vis_present = isinstance(_vis_raw, list)
+                _vis = _vis_raw if _vis_present else []
+                _ai_behavior = (event.get("ai_behavior") or "").strip()
+                if (
+                    "chat" in _vis
+                    and _ai_behavior == "blind"
+                    and hasattr(mgr, "passthrough_to_chat_bubble")
+                ):
+                    passthrough_dispatched = False
+                    try:
+                        # Reuse the already-resolved source_kind local (computed
+                        # above from channel: computer_use→cu, browser_use→browser,
+                        # plugin:*→plugin, else system). Falling back to event
+                        # raw + "plugin" default would mislabel non-plugin sources.
+                        passthrough_source = source_kind or "plugin"
+                        # Why: passthrough_to_chat_bubble swallows send_json
+                        # failures and is a no-op when WS is missing/disconnected,
+                        # so absence-of-exception is NOT proof a frame was sent.
+                        # We must gate handle_proactive_complete on the bool
+                        # return — otherwise we emit turn-end without a matching
+                        # turn-start (frontend never opened the assistant
+                        # lifecycle), corrupting proactive rescheduling.
+                        passthrough_dispatched = bool(
+                            await mgr.passthrough_to_chat_bubble(
+                                raw_text,
+                                request_id=event.get("task_id") or None,
+                                source=passthrough_source,
+                            )
+                        )
+                        logger.info(
+                            "[EventBus] passthrough_to_chat_bubble dispatched=%s (text_len=%d, source=%s)",
+                            passthrough_dispatched, len(text), passthrough_source,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] passthrough_to_chat_bubble failed: %s", e,
+                        )
+                    # Why: gemini_response opens an assistant turn lifecycle on
+                    # the frontend (ensureAssistantTurnStarted in app-websocket.js);
+                    # without a matching turn-end event the assistant bubble
+                    # stays "in-progress" and proactive rescheduling / lifecycle
+                    # finalization never fire. handle_proactive_complete is the
+                    # canonical turn-end emitter shared with the direct task_result
+                    # reply path above. The HUD agent_notification branch below
+                    # does NOT open an assistant turn, so single-emit here is
+                    # sufficient even when visibility=["chat","hud"].
+                    if passthrough_dispatched and hasattr(mgr, "handle_proactive_complete"):
+                        try:
+                            await mgr.handle_proactive_complete()
+                        except Exception as e:
+                            logger.warning(
+                                "[EventBus] passthrough turn_end emit failed: %s", e,
+                            )
+                # v2 visibility contract: HUD agent_notification fires only
+                # when "hud" is in visibility. Why: visibility=["chat"] must
+                # not double-render as both chat bubble AND HUD toast.
+                # Legacy emitters that omit the visibility field entirely
+                # (no v2 plumbing) keep the pre-v2 behavior of firing HUD
+                # by default — checked via _vis_present, not via _vis truthiness,
+                # so an explicit visibility=[] (v2 "no verbatim render") suppresses HUD.
+                _hud_allowed = ("hud" in _vis) if _vis_present else True
                 ws = getattr(mgr, "websocket", None)
-                if _is_websocket_connected(ws):
+                if not _hud_allowed:
+                    logger.info(
+                        "[EventBus] agent_notification suppressed by visibility=%s (no 'hud') for lanlan=%s",
+                        _vis, lanlan,
+                    )
+                elif _is_websocket_connected(ws):
                     try:
                         notif = {
                             "type": "agent_notification",

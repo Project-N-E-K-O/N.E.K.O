@@ -9,6 +9,38 @@ _project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..')
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
+
+def _ensure_yui_origin_unpacked():
+    # Some tests read static/yui-origin/* directly (Live2D model). The model is
+    # shipped as assets/yui-origin.tar.gz; auto-unpack so pytest works without
+    # requiring build_frontend to have been run.
+    archive = _Path(_project_root) / "assets" / "yui-origin.tar.gz"
+    target_root = _Path(_project_root) / "static"
+    target_dir = target_root / "yui-origin"
+    marker = target_dir / "yui-origin.moc3"
+    if not archive.exists():
+        return
+    if marker.exists() and marker.stat().st_mtime >= archive.stat().st_mtime:
+        return
+    import shutil
+    import sys
+    import tarfile
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    with tarfile.open(archive, "r:gz") as tf:
+        # filter='data' added in Python 3.12; archive ships in-repo (trusted).
+        if sys.version_info >= (3, 12):
+            tf.extractall(target_root, filter="data")
+        else:
+            tf.extractall(target_root)
+    # tarfile preserves archived member mtimes by default, so the marker would
+    # stay older than the archive's filesystem mtime → freshness gate above
+    # would re-extract on every session. Refresh marker so subsequent runs skip.
+    marker.touch()
+
+
+_ensure_yui_origin_unpacked()
+
 # Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
 # Without this, every pytest session — including ones that intentionally inject
 # OSError / 坏 JSON / mock-driven failures via patches — dumps ERROR lines into

@@ -35,7 +35,7 @@ def test_soccer_game_prompts_follow_user_language():
     assert "Output only the spoken line" in en_prompt
     assert en_prompt != zh_prompt
     assert ja_prompt != en_prompt
-    assert es_prompt != en_prompt
+    assert es_prompt == en_prompt  # es falls back to en until its own i18n is added
 
 
 @pytest.mark.unit
@@ -59,6 +59,16 @@ def test_soccer_quick_lines_and_pregame_prompts_are_localized():
 
 
 @pytest.mark.unit
+def test_pregame_prompt_must_not_be_format_called():
+    """Pregame schema uses literal {} for JSON output; callers must not .format() it.
+    If a future change needs a {placeholder}, every JSON literal must be doubled first."""
+    for lang in ("zh", "en", "ja", "ko", "ru"):
+        prompt = get_soccer_pregame_context_prompt(lang)
+        with pytest.raises(KeyError):
+            prompt.format()
+
+
+@pytest.mark.unit
 def test_build_game_prompt_uses_requested_language():
     prompt = game_router._build_game_prompt(
         "soccer",
@@ -69,6 +79,7 @@ def test_build_game_prompt_uses_requested_language():
 
     assert "Output only the spoken line" in prompt
     assert "你正在和玩家踢一场足球比赛" not in prompt
+    assert "======以上为足球游戏会话系统提示======" in prompt
 
 
 @pytest.mark.unit

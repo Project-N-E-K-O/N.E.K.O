@@ -45,14 +45,44 @@ match the current text + service ``model_id()`` — same pattern as the
 from __future__ import annotations
 
 import asyncio
+import base64
 import enum
 import hashlib
 import logging
 import os
 import platform
+import re
 import sys
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ── on-disk vector encoding ──────────────────────────────────────────
+#
+# A 256d float vector serialized as JSON ``list[float]`` runs ~5.3 KB
+# (each float prints to ~21 chars after Python's repr). We instead
+# store ``base64(fp16_bytes)`` — raw little-endian fp16 of the
+# L2-normalized vector. Decode is:
+#
+#     raw = b64decode(s)
+#     vec = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
+#
+# Total bytes = ``2 * dim``; base64 ≈ ``ceil(2 * dim * 4/3)``. At 256d
+# that is ~684 chars vs ~5.3 KB before — ~8× smaller, and the decoder
+# lands in a contiguous numpy buffer so the recall path can stack
+# candidates into a matrix and use ``M @ q.T`` instead of the pure-
+# Python cosine loop.
+#
+# Why fp16 instead of int8: L2-normalized vectors have typical
+# per-axis magnitudes ~1/√dim; in that range fp16's mantissa step is
+# ~2⁻¹⁴ ≈ 6e-5, giving cosine error ~5e-4 over a 256-dim dot — well
+# below LLM-rerank perceptibility. int8 with a per-vector scale would
+# only buy 2× more compression but trade in quantization noise (~0.4%
+# per dim, ~1% cumulative cosine), an extra fp16 scale prefix, the
+# clip/round machinery, and a fresh attack surface around NaN scales.
+# At our scale (small thousand-entry corpus) the marginal compression
+# is invisible; simpler wire format wins.
 
 
 # ── Config knobs (mirrored in config/__init__.py for centralised tuning) ──
@@ -102,6 +132,113 @@ class _DisableReason(enum.Enum):
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def _encode_vector_fp16(vector) -> str:
+    """Encode a float vector as ``base64(fp16_bytes)``.
+
+    Accepts list/tuple/numpy. fp16 has dynamic range up to ±65504, so
+    L2-normalized vectors (per-axis magnitudes < 1) can never overflow
+    on cast — we don't need a per-vector scale prefix the way int8
+    quantization would.
+    """
+    import numpy as np
+    arr = np.asarray(vector, dtype=np.float16).ravel()
+    return base64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def _decode_vector_fp16(encoded: str):
+    """Inverse of :func:`_encode_vector_fp16`. Returns a numpy fp32 array.
+
+    Returns None on any decoding failure — corrupt cache fields fall
+    through to the "no embedding" path rather than raising up into the
+    retrieval/dedup loops.
+
+    Strict-validate the base64 payload (``validate=True``): the looser
+    setting silently skips non-alphabet bytes, letting a garbage-suffix
+    payload decode to plausible-but-wrong values. Reject odd-length
+    raw buffers (fp16 must align to 2 bytes — odd length means
+    truncation or corruption) and any non-finite element after cast
+    (NaN / ±Inf would otherwise propagate through every dot product
+    the decoded vector touches).
+    """
+    import numpy as np
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:  # noqa: BLE001 — malformed base64 → treat as missing
+        return None
+    if len(raw) % 2 != 0:
+        return None
+    decoded = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
+    if decoded.size == 0:
+        return decoded
+    if not np.isfinite(decoded).all():
+        return None
+    return decoded
+
+
+def decode_embedding(emb: Any):
+    """Public helper: turn a persisted ``embedding`` field into a numpy
+    fp32 array, regardless of whether the row carries the new base64
+    form, a legacy ``list[float]``, an already-decoded numpy array, or
+    None / empty.
+
+    Returns None when the field is missing or unreadable. Used by
+    cosine helpers and by recall's batched dot-product path.
+    """
+    if emb is None:
+        return None
+    import numpy as np
+    if isinstance(emb, np.ndarray):
+        if emb.size == 0:
+            return None
+        return emb.astype(np.float32, copy=False)
+    if isinstance(emb, str):
+        if not emb:
+            return None
+        return _decode_vector_fp16(emb)
+    if isinstance(emb, (list, tuple)):
+        if not emb:
+            return None
+        try:
+            return np.asarray(emb, dtype=np.float32)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+# Anchor on the trailing ``-<dim>d-<quant>`` form emitted by
+# :func:`build_model_id` (e.g. ``local-text-retrieval-v1-256d-int8``).
+# Anchoring at end-of-string + a known quantization keyword guards
+# against profile names that happen to contain their own ``-Nd-``
+# segment (e.g. an upstream profile like ``model-384d-v2``); without
+# the anchor, ``re.search`` would pick the *first* match (384) rather
+# than the actual runtime dim (256), and is_cached_embedding_valid
+# would reject every freshly stamped vector forever (size mismatch),
+# pinning the worker into an infinite re-embed loop. Codex review
+# PR #1147.
+_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)$")
+
+
+def parse_dim_from_model_id(model_id: str | None) -> int | None:
+    """Extract the embedding dimension from a model_id, or None if the
+    id can't be parsed.
+
+    ``embedding_model_id`` is built by :func:`build_model_id` and always
+    has the shape ``<profile>-<dim>d-<quant>`` where ``quant`` is a
+    fixed enum (``int8`` / ``fp32``). The regex anchors on that
+    trailing form so a profile name that itself contains ``-Nd-``
+    can't shadow the runtime dim segment.
+    """
+    if not model_id or not isinstance(model_id, str):
+        return None
+    m = _MODEL_ID_DIM_RE.search(model_id)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _embedding_text_sha256(text: str) -> str:
@@ -824,18 +961,31 @@ def _build_default_service() -> EmbeddingService:
 # ── cosine helpers (numpy-free for callers that only need scoring) ────
 
 
-def cosine_similarity(a: list[float] | None, b: list[float] | None) -> float:
+def cosine_similarity(a, b) -> float:
     """Cosine similarity between two unit-norm vectors.
 
     Both ``embed()`` outputs are L2-normalized, so this is a straight
-    dot product — no division required. Out-of-band inputs (None,
-    empty, dim mismatch) return 0.0 rather than raising; callers in the
-    retrieval/dedup path are happier ranking around an unrankable
-    candidate than crashing because one entry was missing its embedding.
+    dot product — no division required. Accepts the canonical base64
+    form, legacy ``list[float]``, or an already-decoded numpy array;
+    decodes lazily so the per-pair API stays compatible with tests and
+    fact-dedup's single-pair callsite. For hot loops over thousands of
+    candidates, prefer building a stacked matrix once via
+    :func:`decode_embedding` and using ``M @ q`` — the recall path does
+    that.
+
+    Out-of-band inputs (None, empty, dim mismatch, malformed base64)
+    return 0.0 rather than raising; retrieval and dedup are happier
+    ranking around an unrankable candidate than crashing because one
+    entry was missing its embedding.
     """
-    if not a or not b or len(a) != len(b):
+    av = decode_embedding(a)
+    bv = decode_embedding(b)
+    if av is None or bv is None:
         return 0.0
-    return sum(x * y for x, y in zip(a, b))
+    if av.size == 0 or bv.size == 0 or av.size != bv.size:
+        return 0.0
+    import numpy as np
+    return float(np.dot(av, bv))
 
 
 def is_cached_embedding_valid(
@@ -844,9 +994,26 @@ def is_cached_embedding_valid(
     """Decide whether the persisted embedding on ``entry`` is still good.
 
     Match contract (mirrors ``token_count`` cache in persona.py):
-      * non-empty embedding list
+      * embedding field is a non-empty base64 string (canonical form
+        emitted by :func:`stamp_embedding_fields`)
+      * the payload actually decodes (corrupt base64 → invalid)
+      * decoded length matches the dim encoded in the running
+        ``model_id`` — guards against truncated payloads and against
+        a wrong-quantization payload sneaking through under the right
+        model_id string
       * sha256 of ``current_text`` matches stored ``embedding_text_sha256``
       * ``embedding_model_id`` matches the running service's id
+
+    Legacy ``list[float]`` payloads are intentionally treated as invalid
+    so the warmup worker re-stamps them in the new compact form. The
+    one-time CPU cost is bounded (small N at migration time) and avoids
+    carrying two on-disk shapes forward indefinitely.
+
+    Without the decode + dim check, a corrupt cache row would pass the
+    typeof guard, never get re-stamped by the worker (it keeps
+    "validating"), and silently fall through to the unembedded pool in
+    every recall — a permanent retrieval-quality regression for that
+    entry (Codex review on PR #1147).
 
     Any mismatch → False, callers should clear the embedding fields and
     re-enqueue the entry for the warmup worker.
@@ -854,13 +1021,19 @@ def is_cached_embedding_valid(
     if not isinstance(entry, dict):
         return False
     emb = entry.get("embedding")
-    if not isinstance(emb, list) or not emb:
+    if not isinstance(emb, str) or not emb:
         return False
     if current_model_id is None:
         return False
     if entry.get("embedding_model_id") != current_model_id:
         return False
     if entry.get("embedding_text_sha256") != _embedding_text_sha256(current_text):
+        return False
+    decoded = _decode_vector_fp16(emb)
+    if decoded is None or decoded.size == 0:
+        return False
+    expected_dim = parse_dim_from_model_id(current_model_id)
+    if expected_dim is not None and decoded.size != expected_dim:
         return False
     return True
 
@@ -877,16 +1050,23 @@ def clear_embedding_fields(entry: dict) -> None:
 
 
 def stamp_embedding_fields(
-    entry: dict, vector: list[float], text: str, model_id: str,
+    entry: dict, vector, text: str, model_id: str,
 ) -> None:
     """In-place write of an embedding triple onto an entry.
 
     Stamping all three fields together (vector + text-sha + model-id)
     in one helper prevents the half-written state where ``embedding`` is
     set but the fingerprints aren't, which would otherwise look like a
-    legacy entry on the next read and trigger a recompute."""
+    legacy entry on the next read and trigger a recompute.
+
+    The vector is encoded to the canonical base64 fp16 form before
+    storage (see :func:`_encode_vector_fp16`). Callers pass the raw
+    fp32 list returned by :meth:`EmbeddingService.embed` — this helper
+    owns the on-disk encoding so the rest of the pipeline never sees
+    it.
+    """
     if not isinstance(entry, dict):
         return
-    entry["embedding"] = list(vector)
+    entry["embedding"] = _encode_vector_fp16(vector)
     entry["embedding_text_sha256"] = _embedding_text_sha256(text)
     entry["embedding_model_id"] = model_id

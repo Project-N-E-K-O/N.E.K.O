@@ -103,6 +103,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",
@@ -132,6 +133,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "mmd",
     "workshop",
     "character_cards",
+    "card_faces",
 )
 
 _cloud_apply_lock_handle = None

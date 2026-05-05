@@ -21,8 +21,8 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
@@ -38,6 +38,7 @@ class HostedUiActionRequest(BaseModel):
     args: dict[str, object] = Field(default_factory=dict)
     kind: str = "panel"
     surface_id: str = "main"
+
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
     """获取插件的静态文件目录
