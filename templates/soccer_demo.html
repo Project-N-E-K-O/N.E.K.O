@@ -182,7 +182,10 @@
   }
   #loading-spinner[hidden],
   #loading-actions[hidden] { display: none; }
-  #loading-text { min-width: 180px; }
+  /* min-width 防止 spinner 隐藏前后整行宽度抖动；text-align: center 让短文案
+     （"模型加载完成"等 4-6 字状态串）在 180px 槽位内视觉居中——之前缺这条所以
+     文字落在槽位左侧、偏离 panel 中心约 50px。 */
+  #loading-text { min-width: 180px; text-align: center; }
   #soccer-start-button {
     min-width: 112px;
     padding: 8px 18px;
