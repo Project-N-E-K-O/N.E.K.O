@@ -1235,9 +1235,12 @@
             // 进游戏前是展开态、当前是球态 → 把 expandChat 的目标尺寸钉到原 bounds
             // 让动画展开到原大小；球先搬到原 bounds 的底部对齐位（与 expandChat
             // 内部 newY = b.y + BALL - h 推算的"展开后还原原顶端"语义一致）。
-            if (!collapsed || animating) {
+            if (!collapsed) {
                 // 异常态（用户在 game 期间手动展开了？）—— 至少 setBounds 回去，
-                // 不动画，不再调 expandChat（会被 animating guard 拦住）
+                // 不动画，不再调 expandChat（会被 animating guard 拦住）。注：
+                // animating 在此分支已被入口的 rAF 等待保证为 false，不需要再
+                // OR 一遍（github-code-quality bot 指出原版 `|| animating` 永
+                // 远为 false 是 dead branch）。
                 W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
                 if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
                 return;

@@ -4335,14 +4335,28 @@ async def game_route_start(game_type: str, request: Request):
     # 还原。注意：要在 supersede + activate 锁外推送，避免阻塞锁；soccer
     # pregame 上下文构建可能耗几秒，那段期间前端已经看到游戏窗口在加载，
     # 越早收缩越平滑——所以放在 pregame build 之前。
+    #
+    # 锁外 stale-opened 防护（codex P1）：start 释放锁后到 push 之间，并发的
+    # /route/end 或新 /route/start supersede 可能已把 state.game_route_active
+    # 翻 false 并推过 closed。如果不 recheck，stale opened 会在 closed 后 land，
+    # 让前端 UI 卡死收缩态再无 closed 抵消。recheck state 自身的 active 标志 +
+    # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
+    # supersede 替换为新 state）。
     mgr_for_ws = get_session_manager().get(lanlan_name)
-    await _push_game_window_state_change(
-        mgr_for_ws,
-        action="opened",
-        lanlan_name=lanlan_name,
-        game_type=game_type,
-        session_id=session_id,
-    )
+    if state.get("game_route_active") and str(state.get("session_id") or "") == session_id:
+        await _push_game_window_state_change(
+            mgr_for_ws,
+            action="opened",
+            lanlan_name=lanlan_name,
+            game_type=game_type,
+            session_id=session_id,
+        )
+    else:
+        logger.info(
+            "🎮 game_window_state_change=opened 跳过推送（route 已被 supersede / "
+            "end 抵消）: lanlan=%s game=%s session=%s",
+            lanlan_name, game_type, session_id,
+        )
     if game_type == "soccer":
         state["heartbeat_enabled"] = False
         try:

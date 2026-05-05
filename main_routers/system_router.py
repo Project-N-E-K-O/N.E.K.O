@@ -2375,12 +2375,17 @@ async def _maybe_deliver_mini_game_invite(
     if not MINI_GAME_INVITE_ENABLED:
         return None
 
-    # 调试旗标短路：非 None 时跳过所有用户/snapshot/cooldown/概率 gate，把 game_type
+    # 调试旗标短路：非 None 时跳过所有 snapshot/cooldown/概率 gate，把 game_type
     # 钉到旗标值上。仍然要求该 game_type 有对应文案；非法值 warn + 退出而不 raise，
     # 避免在配置抖动时把整个 proactive 流水线带挂。Force-first 标记成 True 让 caller
     # 路径与正常 first-time 邀请等价（不影响 ever_delivered 持久化）。
+    #
+    # 但用户级 toggle (proactiveMiniGameInviteEnabled) 仍要尊重——开发者本机
+    # 调试用旗标不应该绕过普通用户在前端关掉 mini-game source 的明确意图。
     force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
     debug_force = bool(force_game)
+    if debug_force and not user_toggle_enabled:
+        return None
     if debug_force:
         if force_game not in MINI_GAME_INVITE_LINES_BY_GAME:
             logger.warning(
