@@ -818,12 +818,27 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     let cardFaceSaved = false;
     let fallbackRunning = false;
     let closeTimer = 0;
+    let closeGraceTimer = 0;
     let channel = null;
+    let cachedDefaultCardFaceImage = null;
+    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800 - Math.floor(800 / 6))
+        .then(image => {
+            cachedDefaultCardFaceImage = image;
+            if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+                window._modelManagerActiveCardMakerFallback.cachedDefaultCardFaceImage = image;
+            }
+            return image;
+        })
+        .catch(error => {
+            console.warn('[模型管理] 卡面制作兜底快照预捕获失败，将在兜底时重新截图:', error);
+            return null;
+        });
     window._modelManagerActiveCardMakerFallback = {
         makerWindow,
         lanlanName,
         token: fallbackToken,
-        cardFaceSaved: false
+        cardFaceSaved: false,
+        cachedDefaultCardFaceImage: null
     };
 
     const matchesCardFaceUpdate = (data) => {
@@ -842,12 +857,17 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
             clearInterval(closeTimer);
             closeTimer = 0;
         }
+        if (closeGraceTimer) {
+            clearTimeout(closeGraceTimer);
+            closeGraceTimer = 0;
+        }
         window.removeEventListener('message', handleMessage);
         window.removeEventListener('storage', handleStorage);
         if (channel) {
             try { channel.close(); } catch (_) {}
             channel = null;
         }
+        cachedDefaultCardFaceImage = null;
         if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
             window._modelManagerCardMakerFallbackCleanup = null;
         }
@@ -881,7 +901,8 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
         if (fallbackRunning || cardFaceSaved) return;
         fallbackRunning = true;
         try {
-            await generateDefaultCardFaceFromModelManager(lanlanName, state);
+            const modelImage = cachedDefaultCardFaceImage || await cachedDefaultCardFaceImagePromise;
+            await generateDefaultCardFaceFromModelManager(lanlanName, state, { modelImage });
             await notifyMainPageModelReload();
         } catch (error) {
             console.error('[模型管理] 卡面制作关闭后的默认卡面兜底生成失败:', error);
@@ -901,11 +922,20 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
             isClosed = true;
         }
         if (!isClosed) return;
-
-        cleanup();
-        if (!cardFaceSaved) {
-            generateFallbackDefaultCardFace();
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
         }
+        if (closeGraceTimer) return;
+
+        closeGraceTimer = setTimeout(() => {
+            closeGraceTimer = 0;
+            if (cardFaceSaved) {
+                cleanup();
+                return;
+            }
+            generateFallbackDefaultCardFace().finally(() => cleanup());
+        }, 350);
     }
 
     window.addEventListener('message', handleMessage);
@@ -1168,13 +1198,13 @@ async function captureDefaultCardFaceModelImage(state = {}, width, height) {
     };
 }
 
-async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
+async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
     setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
 
     const cardW = 600;
     const cardH = 800;
     const headerH = Math.floor(cardH / 6);
-    const modelImage = await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
     const sourceCanvas = modelImage.canvas;
     const output = document.createElement('canvas');
     output.width = cardW;

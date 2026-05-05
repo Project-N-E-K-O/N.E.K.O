@@ -327,8 +327,6 @@
         const maxWait = Number.isFinite(options.maxWait) && options.maxWait >= 0
             ? options.maxWait
             : 10000;
-        consumeFallbackCloseMark(currentCharaName);
-        pendingFallbackDefaultSave = false;
         fallbackDefaultSaving = true;
         fallbackDefaultPromise = (async () => {
             await waitForCondition(() => isModelLoaded, maxWait, '模型加载');
@@ -346,7 +344,12 @@
             } else if (saveResult?.status === 'ok') {
                 console.log('[CardMaker] 已生成模型保存流程的默认卡面兜底:', reason || 'unknown');
             }
-            return saveResult?.status === 'ok' || saveResult?.status === 'partial';
+            const saveSucceeded = saveResult?.status === 'ok' || saveResult?.status === 'partial';
+            if (saveSucceeded) {
+                consumeFallbackCloseMark(currentCharaName);
+                pendingFallbackDefaultSave = false;
+            }
+            return saveSucceeded;
         })();
 
         try {
