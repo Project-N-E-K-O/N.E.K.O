@@ -5331,6 +5331,16 @@ class LLMSessionManager:
                 self._reset_tts_retry_state()
 
         if _inactive_early:
+            if reset_starting_count:
+                # 前端启动超时会在 session 尚未 active 时发送 end_session。
+                # 旧输入缓存必须在释放 start_session guard 之前清掉；释放后
+                # 新一轮启动可能已经开始缓存用户消息，旧收尾不能再碰它们。
+                async with self.input_cache_lock:
+                    self.session_ready = False
+                    self.pending_input_data.clear()
+                async with self.lock:
+                    if expected_session is None or expected_session is self.session:
+                        self._starting_session_count = 0
             # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
             # 必须清理这些孤儿资源，否则线程/task 会泄漏
             await self._teardown_tts_runtime(
