@@ -583,7 +583,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM connection failed ({{error_type}}), exhausted {{max_retries}} retries: {{error}}",
         "TEXT_GEN_ERROR": "💥 Text generation error: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM returned no response. Please check your API connection and configuration.",
-        "PROACTIVE_GEN_FAILED": "💥 Proactive response generation failed: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} is heading to another terminal...",
         "RELOAD_PAGE": "Voice updated, page will refresh shortly",
         "AGENT_AUTO_DISABLED_COMPUTER": "Keyboard/mouse control auto-disabled: $t(agent.precheck.{{reason_code}})",
