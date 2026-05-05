@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**A proactive AI companion — listening to how you feel, seeing your world, and helping you discover more of what you love.**
+# Project N.E.K.O. :kissing_cat: <br>**A proactive AI companion — listening to your feelings, seeing your world, and discovering more to love with you.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 >

@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**プロアクティブAIパートナー——あなたの気持ちに耳を傾け、あなたの世界を見つめ、もっと「好き」に出会う手助けをします。**
+# Project N.E.K.O. :kissing_cat: <br>**プロアクティブAIパートナー——あなたの気持ちに耳を傾け、あなたの世界を見つめ、もっと「好き」を一緒に見つけます。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism（ネットワーク型感情知性生命体）
 >
