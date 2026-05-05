@@ -119,3 +119,7 @@ engine_type = "onnxruntime"
 lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv5"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
