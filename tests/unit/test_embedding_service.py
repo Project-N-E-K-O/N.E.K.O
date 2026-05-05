@@ -33,7 +33,7 @@ from memory.embeddings import (
     EmbeddingState,
     _coerce_dim,
     _embedding_text_sha256,
-    _encode_vector_int8,
+    _encode_vector_fp16,
     _resolve_quantization,
     _select_model_dir,
     build_model_id,
@@ -156,45 +156,47 @@ def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
     assert parse_dim_from_model_id("local-text-retrieval-v1-256d-fp16") is None
 
 
-def test_decode_vector_int8_rejects_garbage_suffix_and_nan_scale():
-    """CodeRabbit review PR #1147: ``_decode_vector_int8`` must reject
-    payloads with non-base64 suffix bytes and non-finite scales.
+def test_decode_vector_fp16_rejects_corrupt_payloads():
+    """CodeRabbit review PR #1147: ``_decode_vector_fp16`` must reject
+    payloads with non-base64 suffix bytes, odd raw byte counts, and
+    non-finite values.
 
     ``base64.b64decode(..., validate=False)`` (the previous default)
     silently skips characters outside the alphabet, so an attacker /
     bit-rot scenario that appends garbage would still decode to a
-    plausible-looking vector. ``np.frombuffer(...)`` on a bad scale
-    can produce NaN or ±Inf, which then propagates through every dot
-    product — a single corrupt cache row poisoning the entire recall
-    score distribution."""
-    from memory.embeddings import _decode_vector_int8, _encode_vector_int8
+    plausible-looking vector. An odd byte count means truncation
+    (fp16 is a 2-byte cell). NaN / ±Inf in any element would
+    propagate through every dot product — a single corrupt cache
+    row poisoning the entire recall score distribution."""
+    from memory.embeddings import _decode_vector_fp16, _encode_vector_fp16
     import numpy as np
 
-    good = _encode_vector_int8([0.1, 0.2, 0.3, 0.4])
+    good = _encode_vector_fp16([0.1, 0.2, 0.3, 0.4])
     # Sanity: the well-formed payload still decodes.
-    assert _decode_vector_int8(good) is not None
+    decoded = _decode_vector_fp16(good)
+    assert decoded is not None and decoded.size == 4
 
     # Suffix garbage (! is not in the base64 alphabet) → reject.
-    assert _decode_vector_int8(good + "!!!!") is None
-    assert _decode_vector_int8("not base 64 at all") is None
+    assert _decode_vector_fp16(good + "!!!!") is None
+    assert _decode_vector_fp16("not base 64 at all") is None
 
-    # NaN scale: hand-build the wire format with the canonical scale
-    # bytes replaced by NaN bits in fp16. Without the isfinite gate,
-    # decoding would return an array full of NaN.
-    nan_payload = (
-        np.array([np.nan], dtype=np.float16).tobytes()
-        + np.array([1, 2, 3, 4], dtype=np.int8).tobytes()
-    )
+    # Odd-length raw buffer (truncation): emit 3 bytes and base64
+    # them — the decoder must refuse rather than reinterpret the
+    # last byte as a half-cell.
+    odd_b64 = base64.b64encode(b"\x01\x02\x03").decode("ascii")
+    assert _decode_vector_fp16(odd_b64) is None
+
+    # NaN element: hand-build a payload where one fp16 cell is NaN.
+    # Without the isfinite gate, the decoded array would carry NaN
+    # straight into downstream dot products.
+    nan_payload = np.array([0.1, np.nan, 0.3, 0.4], dtype=np.float16).tobytes()
     nan_b64 = base64.b64encode(nan_payload).decode("ascii")
-    assert _decode_vector_int8(nan_b64) is None
+    assert _decode_vector_fp16(nan_b64) is None
 
-    # +Inf scale rejected too.
-    inf_payload = (
-        np.array([np.inf], dtype=np.float16).tobytes()
-        + np.array([1, 2, 3, 4], dtype=np.int8).tobytes()
-    )
+    # +Inf element rejected too.
+    inf_payload = np.array([np.inf, 0.2, 0.3, 0.4], dtype=np.float16).tobytes()
     inf_b64 = base64.b64encode(inf_payload).decode("ascii")
-    assert _decode_vector_int8(inf_b64) is None
+    assert _decode_vector_fp16(inf_b64) is None
 
 
 def test_build_model_id_encodes_axes():
@@ -586,10 +588,11 @@ def test_cosine_similarity_dot_product_for_unit_vectors():
     c = [0.0, 1.0, 0.0]
     assert cosine_similarity(a, b) == pytest.approx(1.0)
     assert cosine_similarity(a, c) == pytest.approx(0.0)
-    # Mixed: encoded string ↔ raw list must agree within int8 tolerance.
-    encoded_a = _encode_vector_int8(a)
-    assert cosine_similarity(encoded_a, b) == pytest.approx(1.0, abs=0.01)
-    assert cosine_similarity(encoded_a, _encode_vector_int8(c)) == pytest.approx(0.0, abs=0.01)
+    # Mixed: encoded string ↔ raw list must agree within fp16 cast
+    # noise (essentially lossless at L2-normalized scale).
+    encoded_a = _encode_vector_fp16(a)
+    assert cosine_similarity(encoded_a, b) == pytest.approx(1.0, abs=1e-3)
+    assert cosine_similarity(encoded_a, _encode_vector_fp16(c)) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_cosine_similarity_safe_on_missing_or_mismatched_inputs():
@@ -603,15 +606,16 @@ def test_cosine_similarity_safe_on_missing_or_mismatched_inputs():
     assert cosine_similarity([1.0, 0.0], [1.0]) == 0.0
     # Empty / corrupt base64 both fall through to 0.0 instead of
     # raising up into the retrieval / dedup loops.
-    assert cosine_similarity("", _encode_vector_int8([1.0, 0.0])) == 0.0
-    assert cosine_similarity("not-base64!!!", _encode_vector_int8([1.0, 0.0])) == 0.0
+    assert cosine_similarity("", _encode_vector_fp16([1.0, 0.0])) == 0.0
+    assert cosine_similarity("not-base64!!!", _encode_vector_fp16([1.0, 0.0])) == 0.0
 
 
-def test_encode_vector_int8_round_trip_within_tolerance():
-    """The base64+int8 wire format must decode within the documented
-    quantization noise envelope (~0.4% × max-abs per dim).  Locks the
-    format so a future encoder change doesn't silently widen the
-    cosine error past what callers tolerate."""
+def test_encode_vector_fp16_round_trip_within_tolerance():
+    """The base64+fp16 wire format must decode essentially losslessly
+    for L2-normalized vectors (per-axis magnitudes well under fp16's
+    dynamic range, so cast roundoff is the only error source).
+    Locks the format so a future encoder change doesn't silently
+    widen the cosine error past what callers tolerate."""
     import numpy as np
 
     rng = np.random.default_rng(seed=0xDEADBEEF)
@@ -620,32 +624,38 @@ def test_encode_vector_int8_round_trip_within_tolerance():
     vec = rng.standard_normal(256).astype(np.float32)
     vec = vec / float(np.linalg.norm(vec))
 
-    encoded = _encode_vector_int8(vec)
+    encoded = _encode_vector_fp16(vec)
     assert isinstance(encoded, str) and encoded
     decoded = decode_embedding(encoded)
     assert decoded is not None and decoded.shape == (256,)
-    # Per-dim error bounded by half a quantization step × scale.
-    max_abs = float(np.max(np.abs(vec)))
-    assert np.max(np.abs(decoded - vec)) <= (max_abs / 127.0) + 1e-3
-    # Cosine against the original is essentially 1.0 — small deviation
-    # from quantization, but well inside what the LLM rerank can absorb.
+    # Per-dim error bounded by half an fp16 mantissa step at the
+    # element's magnitude. For values around 1/√256 ≈ 0.0625 the
+    # step is 2⁻¹⁴ ≈ 6e-5; cumulative cosine error after 256-dim
+    # sum is < 1e-3, far below LLM-rerank perceptibility.
+    assert np.max(np.abs(decoded - vec)) <= 1e-3
     cos = float(np.dot(decoded, vec) / (
         np.linalg.norm(decoded) * np.linalg.norm(vec)
     ))
-    assert cos >= 0.999
+    assert cos >= 0.9999
 
 
-def test_encode_vector_int8_handles_zero_and_empty():
-    """Degenerate inputs — empty list, all-zero vector — must encode
-    to a decodable payload rather than crashing the stamp path. An
-    upstream embed() should never return these, but a defence is
-    cheap and keeps the encoder total."""
+def test_encode_vector_fp16_handles_zero_and_empty():
+    """Degenerate inputs — empty list, all-zero vector — must not crash
+    the stamp path. An upstream embed() should never return these, but
+    a defence is cheap and keeps the encoder total.
+
+    Empty input round-trips to None (the empty-payload string falls
+    through ``decode_embedding``'s "no embedding" gate, which is the
+    same fallback callers use for missing cache rows). All-zero is
+    a valid non-empty encoding and round-trips losslessly."""
     import numpy as np
-    encoded_empty = _encode_vector_int8([])
-    decoded_empty = decode_embedding(encoded_empty)
-    assert decoded_empty is not None and decoded_empty.size == 0
+    encoded_empty = _encode_vector_fp16([])
+    # Empty input → empty base64 string → treated as "no embedding"
+    # at the decode entry point. This is the contract the validity
+    # check relies on — no special "size==0" handling downstream.
+    assert decode_embedding(encoded_empty) is None
 
-    encoded_zero = _encode_vector_int8([0.0] * 8)
+    encoded_zero = _encode_vector_fp16([0.0] * 8)
     decoded_zero = decode_embedding(encoded_zero)
     assert decoded_zero is not None
     assert np.allclose(decoded_zero, np.zeros(8, dtype=np.float32))
@@ -664,9 +674,10 @@ def test_decode_embedding_accepts_legacy_list_and_numpy():
     assert via_list is not None
     assert via_list.tolist() == pytest.approx(raw)
 
-    via_str = decode_embedding(_encode_vector_int8(raw))
+    via_str = decode_embedding(_encode_vector_fp16(raw))
     assert via_str is not None and via_str.shape == (4,)
-    assert via_str.tolist() == pytest.approx(raw, abs=0.005)
+    # fp16 cast roundoff at magnitude 0.5 is ~2⁻¹², well under 1e-3.
+    assert via_str.tolist() == pytest.approx(raw, abs=1e-3)
 
     via_np = decode_embedding(np.asarray(raw, dtype=np.float32))
     assert via_np is not None
@@ -684,7 +695,7 @@ def test_is_cached_embedding_valid_full_match():
     text = "主人喜欢猫"
     entry = {
         "text": text,
-        "embedding": _encode_vector_int8([0.1, 0.2, 0.3]),
+        "embedding": _encode_vector_fp16([0.1, 0.2, 0.3]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-3d-int8",
     }
@@ -698,7 +709,7 @@ def test_is_cached_embedding_valid_text_mismatch():
     invalidate so the next sweep re-embeds the new text."""
     entry = {
         "text": "new",
-        "embedding": _encode_vector_int8([0.1, 0.2]),
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256("old"),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -713,7 +724,7 @@ def test_is_cached_embedding_valid_model_id_mismatch():
     text = "x"
     entry = {
         "text": text,
-        "embedding": _encode_vector_int8([0.1, 0.2]),
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -773,7 +784,7 @@ def test_is_cached_embedding_valid_wrong_dim_payload_invalidates():
     # written under one config and read under another.
     entry = {
         "text": text,
-        "embedding": _encode_vector_int8([0.1, 0.2, 0.3, 0.4]),
+        "embedding": _encode_vector_fp16([0.1, 0.2, 0.3, 0.4]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -807,7 +818,7 @@ def test_is_cached_embedding_valid_disabled_service_never_valid():
     text = "x"
     entry = {
         "text": text,
-        "embedding": _encode_vector_int8([0.1, 0.2]),
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": _embedding_text_sha256(text),
         "embedding_model_id": "local-text-retrieval-v1-128d-int8",
     }
@@ -818,7 +829,7 @@ def test_clear_embedding_fields_in_place():
     """clear() wipes the whole triple — half-cleared state would look
     like a legacy entry on the next read and trigger an unwanted reload."""
     entry = {
-        "embedding": _encode_vector_int8([0.1, 0.2]),
+        "embedding": _encode_vector_fp16([0.1, 0.2]),
         "embedding_text_sha256": "abc",
         "embedding_model_id": "x",
     }
@@ -832,8 +843,7 @@ def test_stamp_embedding_fields_writes_full_triple():
     """stamp() must set vector + sha + model_id atomically (from the
     callsite's POV) — partial writes break is_cached_embedding_valid.
     The on-disk vector form is base64 (canonical), and the helper
-    decodes back to the original values within int8 quantization
-    tolerance."""
+    decodes back to the original values within fp16 cast tolerance."""
     entry: dict = {}
     stamp_embedding_fields(
         entry,
@@ -844,9 +854,7 @@ def test_stamp_embedding_fields_writes_full_triple():
     assert isinstance(entry["embedding"], str) and entry["embedding"]
     decoded = decode_embedding(entry["embedding"])
     assert decoded is not None and decoded.shape == (3,)
-    # int8 quantization with per-vector scale → max-abs axis is exact,
-    # the rest are within ~0.4% × scale.
-    assert decoded.tolist() == pytest.approx([0.1, 0.2, 0.3], abs=0.002)
+    assert decoded.tolist() == pytest.approx([0.1, 0.2, 0.3], abs=1e-3)
     assert entry["embedding_text_sha256"] == _embedding_text_sha256("hello")
     assert (
         entry["embedding_model_id"]

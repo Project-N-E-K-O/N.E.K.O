@@ -61,31 +61,28 @@ logger = logging.getLogger(__name__)
 # ── on-disk vector encoding ──────────────────────────────────────────
 #
 # A 256d float vector serialized as JSON ``list[float]`` runs ~5.3 KB
-# (each float prints to ~21 chars after Python's repr).  We instead
-# store a **base64-wrapped int8 quantization** with a per-vector fp16
-# scale prefix.  The wire format is ``base64( fp16_scale | int8_dims )``,
-# decoded via:
+# (each float prints to ~21 chars after Python's repr). We instead
+# store ``base64(fp16_bytes)`` — raw little-endian fp16 of the
+# L2-normalized vector. Decode is:
 #
-#     raw   = b64decode(s)
-#     scale = float(np.frombuffer(raw[:2],  dtype=np.float16)[0])
-#     vec   = np.frombuffer(raw[2:], dtype=np.int8) * (scale / 127.0)
+#     raw = b64decode(s)
+#     vec = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
 #
-# Total bytes ≈ ``2 + dim``; base64 expands to ``≈ ceil((2+dim) * 4/3)``.
-# At 256d that is ~344 chars vs ~5.3 KB before — ~15× smaller, plus the
-# decoder lands in a contiguous numpy buffer so the recall path can
-# stack candidates into a matrix and use ``M @ q.T`` instead of the
-# pure-Python cosine loop.
+# Total bytes = ``2 * dim``; base64 ≈ ``ceil(2 * dim * 4/3)``. At 256d
+# that is ~684 chars vs ~5.3 KB before — ~8× smaller, and the decoder
+# lands in a contiguous numpy buffer so the recall path can stack
+# candidates into a matrix and use ``M @ q.T`` instead of the pure-
+# Python cosine loop.
 #
-# Per-vector scale = ``max(|v|)`` preserves precision for L2-normalized
-# vectors whose dimensional magnitudes are typically << 1 (e.g. 1/√256).
-# Without the scale, int8 step would be 1/127 ≈ 0.79% of full range,
-# wasting ~6× of the available precision on each axis.
-#
-# Quantization noise is ~0.4% per dim, but the 256-dim dot product
-# averages it out — empirical cosine error vs fp32 is well under 1% on
-# standard retrieval benchmarks, which is invisible after the LLM
-# rerank stage in our pipeline.
-_QUANT_SCALE = 127.0
+# Why fp16 instead of int8: L2-normalized vectors have typical
+# per-axis magnitudes ~1/√dim; in that range fp16's mantissa step is
+# ~2⁻¹⁴ ≈ 6e-5, giving cosine error ~5e-4 over a 256-dim dot — well
+# below LLM-rerank perceptibility. int8 with a per-vector scale would
+# only buy 2× more compression but trade in quantization noise (~0.4%
+# per dim, ~1% cumulative cosine), an extra fp16 scale prefix, the
+# clip/round machinery, and a fresh attack surface around NaN scales.
+# At our scale (small thousand-entry corpus) the marginal compression
+# is invisible; simpler wire format wins.
 
 
 # ── Config knobs (mirrored in config/__init__.py for centralised tuning) ──
@@ -137,64 +134,47 @@ class _DisableReason(enum.Enum):
 # ── helpers ──────────────────────────────────────────────────────────
 
 
-def _encode_vector_int8(vector) -> str:
-    """Quantize a float vector to ``base64(fp16_scale | int8_dims)``.
+def _encode_vector_fp16(vector) -> str:
+    """Encode a float vector as ``base64(fp16_bytes)``.
 
-    Accepts list/tuple/numpy. Returns the canonical on-disk
-    representation. Empty / zero-norm inputs degrade to an all-zero
-    payload (with scale=1.0) rather than raising — keeps the stamp
-    path total even when an upstream embed returned a degenerate row.
+    Accepts list/tuple/numpy. fp16 has dynamic range up to ±65504, so
+    L2-normalized vectors (per-axis magnitudes < 1) can never overflow
+    on cast — we don't need a per-vector scale prefix the way int8
+    quantization would.
     """
     import numpy as np
-    arr = np.asarray(vector, dtype=np.float32).ravel()
-    if arr.size == 0:
-        # Should not happen in practice (callers gate on ``embed()`` returning
-        # a vector), but a zero-length payload is at least decodable as an
-        # empty array on the read side.
-        return base64.b64encode(np.array([1.0], dtype=np.float16).tobytes()).decode("ascii")
-    max_abs = float(np.max(np.abs(arr)))
-    if max_abs == 0.0:
-        # All-zero vector → keep scale=1.0 sentinel and emit zeros so
-        # the round-trip yields the same all-zero array.
-        scale = 1.0
-        quantized = np.zeros_like(arr, dtype=np.int8)
-    else:
-        scale = max_abs
-        quantized = np.clip(
-            np.round(arr / max_abs * _QUANT_SCALE), -127, 127,
-        ).astype(np.int8)
-    scale_bytes = np.array([scale], dtype=np.float16).tobytes()
-    return base64.b64encode(scale_bytes + quantized.tobytes()).decode("ascii")
+    arr = np.asarray(vector, dtype=np.float16).ravel()
+    return base64.b64encode(arr.tobytes()).decode("ascii")
 
 
-def _decode_vector_int8(encoded: str):
-    """Inverse of :func:`_encode_vector_int8`. Returns a numpy fp32 array.
+def _decode_vector_fp16(encoded: str):
+    """Inverse of :func:`_encode_vector_fp16`. Returns a numpy fp32 array.
 
     Returns None on any decoding failure — corrupt cache fields fall
     through to the "no embedding" path rather than raising up into the
     retrieval/dedup loops.
 
-    Strict-validate the base64 payload (CodeRabbit review PR #1147):
-    ``validate=False`` would silently skip non-alphabet bytes, so a
-    payload with garbage suffix passes decoding and yields wrong but
-    plausible-looking values. Likewise reject non-finite scale (NaN /
-    ±Inf), which otherwise propagates through every dot product the
-    decoded vector touches.
+    Strict-validate the base64 payload (``validate=True``): the looser
+    setting silently skips non-alphabet bytes, letting a garbage-suffix
+    payload decode to plausible-but-wrong values. Reject odd-length
+    raw buffers (fp16 must align to 2 bytes — odd length means
+    truncation or corruption) and any non-finite element after cast
+    (NaN / ±Inf would otherwise propagate through every dot product
+    the decoded vector touches).
     """
     import numpy as np
     try:
         raw = base64.b64decode(encoded, validate=True)
     except Exception:  # noqa: BLE001 — malformed base64 → treat as missing
         return None
-    if len(raw) < 2:
+    if len(raw) % 2 != 0:
         return None
-    scale = float(np.frombuffer(raw[:2], dtype=np.float16)[0])
-    if not np.isfinite(scale):
+    decoded = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
+    if decoded.size == 0:
+        return decoded
+    if not np.isfinite(decoded).all():
         return None
-    quantized = np.frombuffer(raw[2:], dtype=np.int8)
-    if quantized.size == 0:
-        return np.zeros(0, dtype=np.float32)
-    return quantized.astype(np.float32) * (scale / _QUANT_SCALE)
+    return decoded
 
 
 def decode_embedding(emb: Any):
@@ -216,7 +196,7 @@ def decode_embedding(emb: Any):
     if isinstance(emb, str):
         if not emb:
             return None
-        return _decode_vector_int8(emb)
+        return _decode_vector_fp16(emb)
     if isinstance(emb, (list, tuple)):
         if not emb:
             return None
@@ -1049,7 +1029,7 @@ def is_cached_embedding_valid(
         return False
     if entry.get("embedding_text_sha256") != _embedding_text_sha256(current_text):
         return False
-    decoded = _decode_vector_int8(emb)
+    decoded = _decode_vector_fp16(emb)
     if decoded is None or decoded.size == 0:
         return False
     expected_dim = parse_dim_from_model_id(current_model_id)
@@ -1079,14 +1059,14 @@ def stamp_embedding_fields(
     set but the fingerprints aren't, which would otherwise look like a
     legacy entry on the next read and trigger a recompute.
 
-    The vector is encoded to the canonical base64 int8 form before
-    storage (see :func:`_encode_vector_int8`). Callers pass the raw
+    The vector is encoded to the canonical base64 fp16 form before
+    storage (see :func:`_encode_vector_fp16`). Callers pass the raw
     fp32 list returned by :meth:`EmbeddingService.embed` — this helper
     owns the on-disk encoding so the rest of the pipeline never sees
     it.
     """
     if not isinstance(entry, dict):
         return
-    entry["embedding"] = _encode_vector_int8(vector)
+    entry["embedding"] = _encode_vector_fp16(vector)
     entry["embedding_text_sha256"] = _embedding_text_sha256(text)
     entry["embedding_model_id"] = model_id
