@@ -688,13 +688,15 @@ export default function App({
         && previousValue
         && performance.now() <= avatarRangeHoldUntilRef.current;
       if (shouldHold) {
-        const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
-        avatarRangeHoldTimerRef.current = window.setTimeout(() => {
-          avatarRangeHoldTimerRef.current = null;
-          if (performance.now() < avatarRangeHoldUntilRef.current) return;
-          avatarRangeHoldUntilRef.current = 0;
-          setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
-        }, delay);
+        if (avatarRangeHoldTimerRef.current === null) {
+          const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
+          avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+            avatarRangeHoldTimerRef.current = null;
+            if (performance.now() < avatarRangeHoldUntilRef.current) return;
+            avatarRangeHoldUntilRef.current = 0;
+            setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
+          }, delay);
+        }
         return true;
       }
       if (avatarRangeHoldTimerRef.current !== null) {
