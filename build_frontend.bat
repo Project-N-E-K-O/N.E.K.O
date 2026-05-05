@@ -11,13 +11,21 @@ set "FAIL=0"
 rem --- 0. yui-origin Live2D model (unpack from assets/) ---
 set "YUI_ARCHIVE=%ROOT_DIR%\assets\yui-origin.tar.gz"
 set "YUI_DIR=%ROOT_DIR%\static\yui-origin"
+set "YUI_MARKER=%YUI_DIR%\yui-origin.moc3"
 
 if not exist "%YUI_ARCHIVE%" (
   echo [build_frontend] yui-origin archive missing: %YUI_ARCHIVE%
   exit /b 1
 )
 
-if not exist "%YUI_DIR%\yui-origin.moc3" (
+set "YUI_NEED_EXTRACT=0"
+if not exist "%YUI_MARKER%" (
+  set "YUI_NEED_EXTRACT=1"
+) else (
+  for /f %%I in ('powershell -NoProfile -Command "if ((Get-Item -LiteralPath $env:YUI_ARCHIVE).LastWriteTime -gt (Get-Item -LiteralPath $env:YUI_MARKER).LastWriteTime) {1} else {0}"') do set "YUI_NEED_EXTRACT=%%I"
+)
+
+if "%YUI_NEED_EXTRACT%"=="1" (
   echo [build_frontend] unpacking yui-origin...
   if exist "%YUI_DIR%" rmdir /s /q "%YUI_DIR%"
   tar -xzmf "%YUI_ARCHIVE%" -C "%ROOT_DIR%\static"
@@ -27,7 +35,7 @@ if not exist "%YUI_DIR%\yui-origin.moc3" (
   )
   echo [build_frontend] yui-origin done: %YUI_DIR%
 ) else (
-  echo [build_frontend] yui-origin already extracted, skip
+  echo [build_frontend] yui-origin up to date, skip
 )
 
 rem --- 1. Plugin Manager (Vue) ---
