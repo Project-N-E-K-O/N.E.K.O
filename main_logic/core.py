@@ -185,6 +185,7 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
+from utils.gemini_tts_voices import is_gemini_tts_voice
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -2301,6 +2302,8 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
+        if self.core_api_type == 'gemini' and is_gemini_tts_voice(self.voice_id):
+            return False
         # 克隆音色始终走 custom 路径；
         # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
         # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。

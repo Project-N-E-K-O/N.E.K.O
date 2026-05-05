@@ -18,6 +18,10 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.gemini_tts_voices import (
+    GEMINI_TTS_MODEL,
+    normalize_gemini_tts_voice,
+)
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -2135,13 +2139,18 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """Gemini TTS worker — 按句切分合成，httpx 异步直连。"""
     import httpx
 
-    if not voice_id:
-        voice_id = "Leda"
+    requested_voice_id = (voice_id or "").strip()
+    voice_id, voice_recognized = normalize_gemini_tts_voice(voice_id)
+    if requested_voice_id and not voice_recognized:
+        logger.warning(
+            "Gemini TTS voice '%s' is not in the supported catalog; falling back to '%s'",
+            requested_voice_id,
+            voice_id,
+        )
 
-    MODEL = "gemini-2.5-flash-preview-tts"
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent?key={audio_api_key}"
+        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
     )
     TTS_TIMEOUT = 12
     MAX_RETRIES = 3
@@ -2156,7 +2165,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}",
                 params={"key": audio_api_key},
                 timeout=10,
             )
@@ -2895,6 +2904,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    # 注：Gemini 原生 voice (Puck/Leda 等) 不会进入此分支 ——
+    # core.py 的 _has_custom_tts 已对 core_api_type=='gemini' + Gemini voice 短路返回 False。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):
