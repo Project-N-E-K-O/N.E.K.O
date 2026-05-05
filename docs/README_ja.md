@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**プロアクティブでネイティブなオムニモーダルAIコンパニオン——24/7環境認識、エージェント能力、そして具現化された感情エンジンを搭載。**
+# Project N.E.K.O. :kissing_cat: <br>**プロアクティブAIパートナー——あなたの気持ちに耳を傾け、あなたの世界を見つめ、もっと「好き」に出会う手助けをします。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism（ネットワーク型感情知性生命体）
 >
@@ -27,29 +27,21 @@
 
 </div>
 
-<div align="center">
-
-#### 機能デモ（完全版はBilibiliで） [![Bilibili](https://img.shields.io/badge/Bilibili-チュートリアル-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
-
-</div>
-
 ---
 
 ## コア機能
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>オムニモーダル対話</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、視覚理解対応</td>
-<td align="center" width="25%">🧠<br><b>三層記憶システム</b><br>事実記憶 / 反省記憶 / 人格記憶——彼女は本当にあなたを「覚えて」います</td>
-<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、OpenClaw A2A呼び出し——彼女があなたの仕事を手伝います</td>
+<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたの「好き」をおすすめします</td>
+<td align="center" width="25%">🎙️<br><b>リアルタイム音声・テキスト・視覚理解</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、リアルタイム視覚理解に対応</td>
+<td align="center" width="25%">🧠<br><b>五次元メモリシステム</b><br>作業記憶 / 直近記憶 / 事実記憶 / 反省記憶 / 人格記憶で、使うほどあなたを理解していきます</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKとマーケットプレイスでカスタム拡張が可能</td>
+<td align="center">🤖<br><b>エージェントツール実行</b><br>ブラウザやPCを操作し、CUA / OpenClaw A2A / プラグインを呼び出してタスクを実行</td>
+<td align="center">🔌<br><b>プラグインエコシステム</b><br>SDK + プラグインマーケットプレイスで、オンラインゲームで一緒に遊ぶ機能、SNS連携、配信連動、スマートホーム連携まで拡張可能</td>
 <td align="center">🌐<br><b>14以上のAIプロバイダー</b><br>OpenAI / Gemini / Qwen / DeepSeek等、無料モデルも即座に利用可能</td>
-<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、音楽やミーム——彼女から話しかけてきます</td>
 <td align="center">🏪<br><b>UGCワークショップ</b><br>Steam Workshop経由でカスタムキャラクター、モデル、ボイスパックをアップロード・共有</td>
 </tr>
 </table>
@@ -475,7 +467,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # テキストAPIクライアント（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTSエンジンアダプター
 ├── 📁 main_routers/             # 🌐 APIルーター（14ルート）
-├── 📁 memory/                   # 🧠 三層記憶システム
+├── 📁 memory/                   # 🧠 五次元メモリシステム
 │   ├── facts/                   # 事実記憶
 │   ├── reflection/              # 反省記憶
 │   └── persona/                 # 人格記憶

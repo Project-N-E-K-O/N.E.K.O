@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**A proactive, native omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.**
+# Project N.E.K.O. :kissing_cat: <br>**A proactive AI companion — listening to how you feel, seeing your world, and helping you discover more of what you love.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 >
@@ -27,29 +27,21 @@
 
 </div>
 
-<div align="center">
-
-#### Feature Demo (Full version on Bilibili) [![Bilibili](https://img.shields.io/badge/Bilibili-Tutorial-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
-
-</div>
-
 ---
 
 ## Core Features
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
-<td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
-<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, OpenClaw A2A calling — she can get work done for you</td>
+<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and recommends what you may love</td>
+<td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
+<td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK & marketplace for custom extensions</td>
+<td align="center">🤖<br><b>Agent Tool Execution</b><br>Controls browsers and computers, calling CUA / OpenClaw A2A / plugins to complete tasks</td>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>SDK + plugin marketplace for online game companionship, social media interaction, livestream interaction, and smart home integrations</td>
 <td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, music & memes — she initiates conversations with you</td>
 <td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
 </tr>
 </table>
@@ -483,7 +475,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Text API client (ChatCompletion)
 │   └── tts_client.py            # 🔊 TTS engine adapter
 ├── 📁 main_routers/             # 🌐 API routers (14 routes)
-├── 📁 memory/                   # 🧠 Three-tier memory system
+├── 📁 memory/                   # 🧠 Five-dimensional memory system
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory

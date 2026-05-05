@@ -3,7 +3,7 @@
 ![Logo](assets/neko_logo.jpg)
 
 [English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# Project N.E.K.O. :kissing_cat: <br>**主动式AI伙伴——具备24/7环境感知、自主执行力与具身情感引擎。**
+# Project N.E.K.O. :kissing_cat: <br>**主动式 AI 伙伴——听见你的心情，看见你的世界，陪你发现更多喜欢。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
 >
@@ -32,15 +32,15 @@
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>全模态对话</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
-<td align="center" width="25%">🧠<br><b>三层记忆系统</b><br>事实记忆 / 反思记忆 / 人格记忆，她真的会"记住"你</td>
-<td align="center" width="25%">🤖<br><b>Agent 智能体</b><br>浏览器操控、键鼠操控、OpenClaw A2A调用，她能帮你干活</td>
+<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，推荐你会喜欢的内容</td>
+<td align="center" width="25%">🎙️<br><b>实时语音、文字与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
+<td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
 <td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD 三种形态，支持动作捕捉与全屏追踪</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>插件生态</b><br>完整的插件 SDK 与商城，支持自定义扩展功能，可陪玩MC/杀戮尖塔/嘎啦给木</td>
+<td align="center">🤖<br><b>Agent 工具执行</b><br>可操作浏览器与电脑，调用 CUA / OpenClaw A2A / 插件完成任务</td>
+<td align="center">🔌<br><b>插件生态</b><br>SDK + 插件商城，支持联机游戏陪玩、社交媒体互动、直播互动、智能家居等扩展场景</td>
 <td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
-<td align="center">💬<br><b>主动对话</b><br>24/7环境感知：屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天</td>
 <td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
 </tr>
 </table>
@@ -532,7 +532,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # 文本API客户端（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTS引擎适配器
 ├── 📁 main_routers/             # 🌐 API路由模块（14个路由）
-├── 📁 memory/                   # 🧠 三层记忆系统
+├── 📁 memory/                   # 🧠 五维记忆系统
 │   ├── facts/                   # 事实记忆
 │   ├── reflection/              # 反思记忆
 │   └── persona/                 # 人格记忆
