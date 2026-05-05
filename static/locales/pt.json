@@ -3843,14 +3843,22 @@
         "exitGame": {
             "button": "Sair do jogo",
             "ending": "Encerrando a rodada…",
-            "ended": "Jogo encerrado, retornando…"
+            "ended": "Jogo encerrado, retornando…",
+            "endingDefault": "Encerrando esta partida…",
+            "endedDefault": "Partida encerrada. Feche esta página. Para jogar novamente, reabra a página."
         },
         "startScreen": {
             "readyToStart": "Pronto — clique para começar",
-            "ready": "Pronto"
+            "ready": "Pronto",
+            "startButton": "Iniciar"
+        },
+        "hint": {
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤90px da bola) · R = reset",
+            "aiMood": "1-6 = humor da IA (calma / feliz / brava / relaxada / triste / surpresa) · A dificuldade aumenta após cada gol"
         },
         "loading": {
             "beginStartDefault": "Analisando contexto de início…",
+            "initializingMiniGame": "Inicializando minijogo de futebol…",
             "assetsDone": "Modelo carregado",
             "assetsFailed": "Falha ao inicializar o modelo, continuando",
             "routeDone": "Contexto de início pronto",
