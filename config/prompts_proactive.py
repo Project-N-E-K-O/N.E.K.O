@@ -2393,10 +2393,14 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
 # 扫一遍这份关键词表：命中即触发对应 action（accept / decline / later），不吃掉
 # 用户消息（继续走普通 chat 流水线）。
 #
-# 匹配规则：消息**全文小写后包含任一关键词**视为命中；多类同时命中则按优先级
-# accept > later > decline（"好的不过等下" 这种倾向 accept-with-delay 当 later
-# 处理可能更尴尬，简单 accept-priority 兜底）。匹配在 main_routers.system_router
-# 的 helper 内做 —— 关键词列表本身放这里集中维护。
+# 匹配规则：消息**全文小写后包含任一关键词**视为命中；ASCII / Cyrillic 走
+# word-boundary regex 防 'yes' 命中 'yesterday'；CJK / Hiragana / Katakana /
+# Hangul 走 substring（无 word boundary）。多类同时命中按优先级
+# **decline > later > accept**（含明确 negation 必判 decline，"好的等下" 含
+# accept + later 关键词时判 later——别立刻开游戏）。匹配在
+# main_routers.system_router 的 helper 内做 —— 关键词列表本身放这里集中维护。
+# 早期版本曾用 accept-priority 简单兜底，被 codex / CodeRabbit Major 指出后
+# 改成 decline-priority 防 negation 句误判。
 #
 # 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
 # 扫一遍而不是只看 active locale。
