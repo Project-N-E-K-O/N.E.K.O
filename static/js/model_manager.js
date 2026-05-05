@@ -756,10 +756,18 @@ function drawImageCover(ctx, source, dx, dy, dw, dh, options = {}) {
         sy = (sh - cropH) / 2;
     }
 
-    const zoom = Number(options.zoom || 1);
-    if (zoom > 1) {
-        const focusX = Number.isFinite(options.focusX) ? options.focusX : 0.5;
-        const focusY = Number.isFinite(options.focusY) ? options.focusY : 0.32;
+    const focusPoint = options.focusPoint;
+    const hasFocusPoint = focusPoint &&
+        Number.isFinite(focusPoint.x) &&
+        Number.isFinite(focusPoint.y);
+    const zoom = Number(options.zoom || (hasFocusPoint ? 1.7 : 1));
+    if (zoom > 1 || hasFocusPoint) {
+        const focusX = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.x / sw, 0, 1)
+            : (Number.isFinite(options.focusX) ? options.focusX : 0.5);
+        const focusY = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.y / sh, 0, 1)
+            : (Number.isFinite(options.focusY) ? options.focusY : 0.32);
         cropW = Math.max(1, cropW / zoom);
         cropH = Math.max(1, cropH / zoom);
         sx = clampCardFaceCrop(sw * focusX - cropW / 2, 0, sw - cropW);
@@ -771,6 +779,30 @@ function drawImageCover(ctx, source, dx, dy, dw, dh, options = {}) {
 
 function clampCardFaceCrop(value, min, max) {
     return Math.min(max, Math.max(min, value));
+}
+
+function getManagerHeadFocusInCanvas(manager, sourceCanvas) {
+    if (!manager || !sourceCanvas || typeof manager.getHeadScreenAnchor !== 'function') {
+        return null;
+    }
+
+    const anchor = manager.getHeadScreenAnchor();
+    const canvas = manager.renderer?.domElement;
+    const rect = canvas?.getBoundingClientRect?.();
+    if (!anchor || !rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+
+    const x = ((anchor.x - rect.left) / rect.width) * sourceCanvas.width;
+    const y = ((anchor.y - rect.top) / rect.height) * sourceCanvas.height;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+    }
+
+    return {
+        x: clampCardFaceCrop(x, 0, sourceCanvas.width),
+        y: clampCardFaceCrop(y, 0, sourceCanvas.height)
+    };
 }
 
 function renderThreeSceneToCanvas(renderer, scene, camera) {
@@ -845,21 +877,25 @@ function captureLive2DStageToCanvas() {
 
 async function captureCurrentModelManagerCanvas(state = {}) {
     let sourceCanvas = null;
+    let sourceManager = null;
     const modelType = state.currentModelType || 'live2d';
     const live3dSubType = state.currentLive3dSubType || '';
 
     await new Promise(resolve => requestAnimationFrame(resolve));
 
     if (modelType === 'live3d' && live3dSubType === 'mmd') {
-        const core = window.mmdManager?.core || window.mmdManager;
-        if (typeof core?.waitForRenderFrame === 'function') {
+        sourceManager = window.mmdManager;
+        const core = sourceManager?.core;
+        if (typeof sourceManager?.waitForRenderFrame === 'function') {
+            await sourceManager.waitForRenderFrame(1200);
+        } else if (typeof core?.waitForRenderFrame === 'function') {
             await core.waitForRenderFrame(1200);
         }
-        sourceCanvas = renderThreeSceneToCanvas(core?.renderer, core?.scene, core?.camera);
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
     } else if (modelType === 'live3d') {
-        const manager = window.vrmManager;
-        if (manager?.controls) manager.controls.update();
-        sourceCanvas = renderThreeSceneToCanvas(manager?.renderer, manager?.scene, manager?.camera);
+        sourceManager = window.vrmManager;
+        if (sourceManager?.controls) sourceManager.controls.update();
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
     } else {
         sourceCanvas = captureLive2DStageToCanvas();
     }
@@ -874,16 +910,78 @@ async function captureCurrentModelManagerCanvas(state = {}) {
     const copyCtx = copy.getContext('2d');
     if (!copyCtx) throw new Error('copy_canvas_context_failed');
     copyCtx.drawImage(sourceCanvas, 0, 0);
-    return copy;
+    return {
+        canvas: copy,
+        manager: sourceManager,
+        modelType,
+        live3dSubType
+    };
+}
+
+function resolveDefaultCardFacePortraitModelType(state = {}) {
+    const modelType = String(state.currentModelType || 'live2d').toLowerCase();
+    const live3dSubType = String(state.currentLive3dSubType || '').toLowerCase();
+    if (modelType === 'live3d') {
+        if (live3dSubType === 'mmd') return 'mmd';
+        if (live3dSubType === 'vrm') return 'vrm';
+        if (window.mmdManager?.currentModel?.mesh) return 'mmd';
+        return 'vrm';
+    }
+    return modelType === 'mmd' || modelType === 'vrm' ? modelType : 'live2d';
+}
+
+async function captureDefaultCardFaceModelImage(state = {}, width, height) {
+    if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+        try {
+            const portrait = await window.avatarPortrait.capture({
+                width,
+                height,
+                padding: 0.035,
+                background: 'transparent',
+                shape: 'square',
+                radius: 0,
+                cropMode: 'headshot',
+                modelType: resolveDefaultCardFacePortraitModelType(state)
+            });
+
+            if (portrait?.canvas && portrait.canvas.width > 0 && portrait.canvas.height > 0) {
+                return {
+                    canvas: portrait.canvas,
+                    drawOptions: {}
+                };
+            }
+        } catch (error) {
+            console.warn('[模型管理] 默认卡面头像裁切失败，回退模型画布截图:', error);
+        }
+    }
+
+    const capture = await captureCurrentModelManagerCanvas(state);
+    const sourceCanvas = capture.canvas;
+    const headFocus = getManagerHeadFocusInCanvas(capture.manager, sourceCanvas);
+    return {
+        canvas: sourceCanvas,
+        drawOptions: headFocus
+            ? {
+                // 回退路径：优先对齐 3D 模型头部骨骼锚点。
+                zoom: 1.7,
+                focusPoint: headFocus
+            }
+            : {
+                // 回退路径：无头像识别能力时使用偏上构图。
+                zoom: 1.45,
+                focusY: 0.32
+            }
+    };
 }
 
 async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
     setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
 
-    const sourceCanvas = await captureCurrentModelManagerCanvas(state);
     const cardW = 600;
     const cardH = 800;
     const headerH = Math.floor(cardH / 6);
+    const modelImage = await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    const sourceCanvas = modelImage.canvas;
     const output = document.createElement('canvas');
     output.width = cardW;
     output.height = cardH;
@@ -903,11 +1001,15 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}) {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillText(lanlanName, 40, headerH / 2);
 
-    drawImageCover(ctx, sourceCanvas, 0, headerH, cardW, cardH - headerH, {
-        // 自动默认卡面偏向头像构图，避免全身模型把躯干放在卡面中心。
-        zoom: 1.45,
-        focusY: 0.32
-    });
+    drawImageCover(
+        ctx,
+        sourceCanvas,
+        0,
+        headerH,
+        cardW,
+        cardH - headerH,
+        modelImage.drawOptions || {}
+    );
 
     const cardBlob = await canvasToPngBlob(output);
     const formData = new FormData();
@@ -961,13 +1063,11 @@ async function offerCardFaceAfterModelSave(state = {}) {
             ]
         });
 
-        let shouldCloseAfterCardFaceFlow = true;
         if (cardFaceChoice === 'edit') {
             const makerWindow = openCardMakerFromModelManager(lanlanName);
             if (!makerWindow) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
-                shouldCloseAfterCardFaceFlow = false;
             }
         } else if (cardFaceChoice === 'default') {
             try {
@@ -989,15 +1089,6 @@ async function offerCardFaceAfterModelSave(state = {}) {
         await notifyMainPageModelReload();
         window._modelManagerModelChangedSinceSave = false;
         window._modelManagerLoadedFallbackModel = false;
-        if (shouldCloseAfterCardFaceFlow) {
-            setTimeout(() => {
-                if (window.opener && !window.opener.closed) {
-                    window.close();
-                } else {
-                    window.location.href = '/';
-                }
-            }, 120);
-        }
     } finally {
         window._modelManagerCardFacePromptActive = false;
     }
@@ -2358,6 +2449,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
+        let effectiveLive3dSubType = currentLive3dSubType || '';
+
         function decodeMaybeUrlComponent(value) {
             if (typeof value !== 'string') return value;
             try {
@@ -2458,6 +2551,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     subType === 'mmd' ||
                     modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
                     (currentModelInfo && currentModelInfo.type === 'mmd');
+                effectiveLive3dSubType = isMmdModel ? 'mmd' : 'vrm';
 
                 if (isMmdModel) {
                     // MMD 子类型：构建 MMD 路径（后端读取 data.get('mmd')）
@@ -2655,7 +2749,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     mmdSettingsFailed,
                     modelSaved: true,
                     lightingError: lightingResult && lightingResult.error,
-                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error
+                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error,
+                    effectiveLive3dSubType
                 }
             );
 
@@ -7370,9 +7465,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
             if (shouldOfferCardFace) {
+                const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
                 offerCardFaceAfterModelSave({
                     currentModelType,
-                    currentLive3dSubType
+                    currentLive3dSubType: savedLive3dSubType
                 }).catch(error => {
                     console.error('[模型管理] 保存后的卡面处理失败:', error);
                 });
