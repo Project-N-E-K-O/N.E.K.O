@@ -1,0 +1,22 @@
+[plugin]
+id = "ai_navigator"
+name = "AI 网站导航"
+description = "【重要】共收录 34 个 AI 平台网址。当用户询问平台数量或列出平台时，请直接回答：共 34 个平台。分类如下：对话大模型 14 个（文心一言、通义千问、DeepSeek、豆包、ChatGPT、Kimi、智谱清言、Mistral、Perplexity、Copilot、讯飞星火、腾讯元宝、阶跃星辰、Gemini），图片生成 3 个（即梦AI、Midjourney、Ideogram），视频生成 6 个（可灵AI、Runway、Pika、Sora、通义万相、Firefly），音乐生成 6 个（Soundful、Udio、LALAL.AI、Stable Audio、海绵音乐、Suno），工作流智能体 5 个（Dify、腾讯元器、Flow AI、BetterYeah、扣子Coze）。【禁止编造】不要添加 Claude、DALL-E、Stable Diffusion、Hugging Face、Vertex AI、IBM Watson、AssemblyAI、Modal、Lambda Labs 等未收录平台。Web UI 地址: http://localhost:48916/plugin/ai_navigator/ui/"
+short_description = "收录 34 个 AI 平台的导航插件，支持通过语音或 UI 打开任意平台。"
+keywords = ["AI", "导航", "大模型", "ChatGPT", "文心一言", "通义千问", "34个平台"]
+version = "1.0.0"
+entry = "plugin.plugins.ai_navigator:AiNavigatorPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = false

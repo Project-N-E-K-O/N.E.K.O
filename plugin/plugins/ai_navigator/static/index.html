@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 工作台 - 智能导航中心</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --blue-deep: #2c5f8a;
+            --blue-mid: #5a9bc8;
+            --blue-light: #8fc5e9;
+            --blue-pale: #c5dff2;
+            --pink-soft: #f0c4d1;
+            --pink-mid: #e8a8b8;
+            --pink-rose: #d68fa3;
+            --white: #ffffff;
+            --white-warm: #f8f6f4;
+            --text-primary: #2c3e50;
+            --text-secondary: #5a6c7d;
+            --text-light: #8fa3b8;
+            --cn-color: #d4574a;
+            --global-color: #4a90b8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background: var(--white-warm);
+            color: var(--text-primary);
+        }
+
+        #bgCanvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .container {
+            position: relative;
+            z-index: 2;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 8px 16px 4px;
+            max-width: 100%;
+            margin: 0 auto;
+        }
+
+        /* ===== 顶部导航栏 - 横向左右排布，更大字体图标 ===== */
+        .top-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 4px 4px;
+            margin-bottom: 6px;
+            flex-shrink: 0;
+        }
+
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .logo-icon {
+            width: 38px; height: 38px;
+            background: linear-gradient(135deg, var(--blue-mid) 0%, var(--pink-rose) 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 2px 10px rgba(74, 127, 181, 0.25);
+            flex-shrink: 0;
+        }
+
+        .logo-text {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--blue-deep) 0%, var(--blue-mid) 50%, var(--pink-rose) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 2px;
+            white-space: nowrap;
+        }
+
+        .nav-center {
+            flex: 1;
+            max-width: 400px;
+            min-width: 160px;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 10px 16px 10px 40px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(126, 184, 218, 0.25);
+            border-radius: 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: inherit;
+            transition: all 0.3s ease;
+            outline: none;
+            box-shadow: 0 1px 6px rgba(30, 58, 95, 0.05);
+        }
+
+        .search-box::placeholder { color: var(--text-light); font-weight: 300; }
+        .search-box:focus {
+            border-color: var(--blue-light);
+            box-shadow: 0 2px 12px rgba(126, 184, 218, 0.2);
+            background: rgba(255, 255, 255, 0.98);
+        }
+
+        .search-wrapper {
+            position: relative;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px; top: 50%;
+            transform: translateY(-50%);
+            color: var(--blue-light);
+            font-size: 14px;
+            pointer-events: none;
+        }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .stat-pill {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 12px;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            border: 1px solid rgba(126, 184, 218, 0.12);
+        }
+
+        .stat-value {
+            font-size: 17px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--blue-deep) 0%, var(--pink-rose) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-light);
+            letter-spacing: 0.5px;
+        }
+
+        /* ===== 最近访问 - 居中显示 ===== */
+        .recent-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 2px 4px;
+            margin-bottom: 6px;
+            flex-shrink: 0;
+        }
+
+        .recent-label {
+            font-size: 12px;
+            color: var(--text-light);
+            letter-spacing: 1px;
+            flex-shrink: 0;
+            font-weight: 500;
+        }
+
+        .recent-items {
+            display: flex;
+            gap: 8px;
+            flex-wrap: nowrap;
+            overflow: hidden;
+        }
+
+        .recent-chip {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 12px;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(126, 184, 218, 0.15);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            color: inherit;
+            flex-shrink: 0;
+        }
+
+        .recent-chip:hover {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: var(--blue-light);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(126, 184, 218, 0.15);
+        }
+
+        .recent-chip-icon {
+            width: 20px; height: 20px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+
+        .recent-chip-name {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+        }
+
+        /* ===== 主内容区 - 5大分区左右排列 ===== */
+        .main-content {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            gap: 10px;
+            overflow: hidden;
+            align-items: stretch;
+        }
+
+        .category-zone {
+            display: flex;
+            flex-direction: column;
+            border-radius: 16px;
+            padding: 12px 10px 10px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.6);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+            min-width: fit-content;
+        }
+
+        /* 各分区配色 - 蓝白粉主色调 */
+        .category-zone.chat {
+            background: linear-gradient(180deg, rgba(143,197,233,0.18) 0%, rgba(197,223,242,0.08) 100%);
+            border-top: 3px solid var(--blue-light);
+            flex: 3.2;
+        }
+        .category-zone.image {
+            background: linear-gradient(180deg, rgba(240,196,209,0.18) 0%, rgba(248,220,228,0.08) 100%);
+            border-top: 3px solid var(--pink-mid);
+            flex: 1.1;
+        }
+        .category-zone.video {
+            background: linear-gradient(180deg, rgba(197,223,242,0.18) 0%, rgba(232,244,250,0.08) 100%);
+            border-top: 3px solid var(--blue-pale);
+            flex: 2.2;
+        }
+        .category-zone.music {
+            background: linear-gradient(180deg, rgba(248,220,228,0.18) 0%, rgba(250,235,240,0.08) 100%);
+            border-top: 3px solid var(--pink-soft);
+            flex: 2.0;
+        }
+        .category-zone.agent {
+            background: linear-gradient(180deg, rgba(90,155,200,0.12) 0%, rgba(197,223,242,0.06) 100%);
+            border-top: 3px solid var(--blue-mid);
+            flex: 1.8;
+        }
+
+        .zone-header {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-bottom: 6px;
+            padding: 0 4px 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.5);
+            flex-shrink: 0;
+        }
+
+        .zone-title {
+            font-family: 'Noto Serif SC', serif;
+            font-size: 13px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--blue-deep) 0%, var(--blue-mid) 50%, var(--pink-rose) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            white-space: nowrap;
+            letter-spacing: 1px;
+        }
+
+        .zone-count {
+            font-size: 10px;
+            color: var(--text-light);
+            background: rgba(255,255,255,0.5);
+            padding: 1px 5px;
+            border-radius: 6px;
+        }
+
+        .zone-grid {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            align-content: start;
+            overflow: hidden;
+        }
+
+        /* 图片生成区域单列布局 */
+        .category-zone.image .zone-grid {
+            grid-template-columns: 1fr;
+        }
+
+        /* 对话大模型区域3列布局 */
+        .category-zone.chat .zone-grid {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        /* ===== 正方形APP卡片 ===== */
+        .app-card {
+            aspect-ratio: 1;
+            background: rgba(255, 255, 255, 0.88);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.9);
+            border-radius: 16px;
+            padding: 0;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            box-shadow: 0 1px 4px rgba(30, 58, 95, 0.05);
+            min-height: 0;
+        }
+
+        .app-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 3.5px;
+            background: var(--card-gradient);
+            opacity: 0.8;
+            z-index: 2;
+        }
+
+        /* 扫描光条效果 */
+        .app-card::after {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 60%; height: 3.5px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.9), transparent);
+            opacity: 0;
+            z-index: 3;
+            transition: opacity 0.3s;
+        }
+
+        .app-card:hover::after {
+            opacity: 1;
+            animation: scanLight 1.2s ease-in-out infinite;
+        }
+
+        @keyframes scanLight {
+            0% { left: -60%; }
+            100% { left: 100%; }
+        }
+
+        .app-card:hover {
+            transform: translateY(-4px) scale(1.03);
+            box-shadow: 0 8px 28px rgba(74, 127, 181, 0.18);
+            background: rgba(255, 255, 255, 0.98);
+            border-color: rgba(126, 184, 218, 0.3);
+        }
+
+        .app-card.dragging {
+            opacity: 0.6;
+            transform: scale(1.05) rotate(2deg);
+            box-shadow: 0 12px 36px rgba(74, 127, 181, 0.25);
+            cursor: grabbing;
+            z-index: 100;
+        }
+
+        .app-card.drag-over {
+            transform: scale(0.95);
+            opacity: 0.8;
+            border: 2px dashed var(--blue-light);
+        }
+
+        .app-icon {
+            width: 52px;
+            height: 52px;
+            min-width: 52px;
+            min-height: 52px;
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 26px;
+            background: var(--card-gradient);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            margin-bottom: 10px;
+            flex-shrink: 0;
+        }
+
+        .app-card:hover .app-icon {
+            transform: scale(1.08) rotate(-2deg);
+        }
+
+        .app-name {
+            font-family: 'Noto Sans SC', sans-serif;
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.3;
+            margin-bottom: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+            padding: 0 6px;
+        }
+
+        .app-desc {
+            position: absolute;
+            bottom: 0; left: 0;
+            width: 100%;
+            padding: 8px 6px 10px;
+            background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.95) 30%, rgba(255,255,255,0.98) 100%);
+            font-size: 10px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+            opacity: 0;
+            transform: translateY(8px);
+            transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            pointer-events: none;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-align: center;
+        }
+
+        .app-card:hover .app-desc {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .app-meta {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .app-region {
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            line-height: 1.4;
+        }
+
+        .app-region.cn {
+            background: rgba(212, 87, 74, 0.1);
+            color: var(--cn-color);
+        }
+
+        .app-region.global {
+            background: rgba(74, 144, 184, 0.1);
+            color: var(--global-color);
+        }
+
+        .app-visits {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 9px;
+            color: var(--text-light);
+        }
+
+        .app-visits svg {
+            width: 10px; height: 10px;
+        }
+
+        footer {
+            text-align: center;
+            padding-top: 4px;
+            padding-bottom: 2px;
+            color: var(--text-light);
+            font-size: 9px;
+            letter-spacing: 2px;
+            flex-shrink: 0;
+        }
+
+        .hidden { display: none !important; }
+
+        ::selection {
+            background: rgba(126, 184, 218, 0.3);
+            color: var(--blue-deep);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="bgCanvas"></canvas>
+
+    <div class="container">
+        <!-- 顶部导航栏：标题左 | 搜索中 | 统计右 -->
+        <div class="top-nav">
+            <div class="nav-left">
+                <div class="logo-icon">✨</div>
+                <h1 class="logo-text">AI 工作台</h1>
+            </div>
+            <div class="nav-center">
+                <div class="search-wrapper">
+                    <input type="text" class="search-box" id="searchBox" placeholder="搜索平台...">
+                    <span class="search-icon">🔍</span>
+                </div>
+            </div>
+            <div class="nav-right">
+                <div class="stat-pill">
+                    <span class="stat-value" id="totalCount">0</span>
+                    <span class="stat-label">平台</span>
+                </div>
+                <div class="stat-pill">
+                    <span class="stat-value" id="visitCount">0</span>
+                    <span class="stat-label">今日</span>
+                </div>
+                <div class="stat-pill">
+                    <span class="stat-value" id="favCount">0</span>
+                    <span class="stat-label">常用</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 最近访问横向排列 -->
+        <div class="recent-bar" id="recentBar">
+            <span class="recent-label">最近</span>
+            <div class="recent-items" id="recentItems"></div>
+        </div>
+
+        <!-- 主内容区：5大分区左右排列 -->
+        <div class="main-content" id="mainContent"></div>
+
+        <footer>
+            <p>AI 工作台 · 让智能如诗意般流淌</p>
+        </footer>
+    </div>
+
+    <script>
+        const platforms = [
+            { id: 'yiyan', name: '文心一言', url: 'https://yiyan.baidu.com/', description: '百度知识增强大语言模型', category: 'chat', icon: '🧠', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 100%)', tags: ['百度', '中文'], region: 'cn' },
+            { id: 'qianwen', name: '通义千问', url: 'https://www.qianwen.com/chat', description: '阿里云超大规模语言模型', category: 'chat', icon: '☁️', gradient: 'linear-gradient(135deg, #e8a0bf 0%, #f8c3cd 100%)', tags: ['阿里', '代码'], region: 'cn' },
+            { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', description: '深度求索AI智能助手', category: 'chat', icon: '🐋', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #4a7fb5 100%)', tags: ['推理', '数学'], region: 'cn' },
+            { id: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat', description: '字节跳动AI智能助手', category: 'chat', icon: '📦', gradient: 'linear-gradient(135deg, #f4a6b5 0%, #f8c3cd 100%)', tags: ['字节', '多模态'], region: 'cn' },
+            { id: 'chatgpt', name: 'ChatGPT', url: 'https://chatgpt.com/', description: 'OpenAI现象级对话产品', category: 'chat', icon: '💬', gradient: 'linear-gradient(135deg, #7eb8da 0%, #b8d4e8 100%)', tags: ['OpenAI', 'GPT-4'], region: 'global' },
+            { id: 'kimi', name: 'Kimi', url: 'https://www.kimi.com/?chat_enter_method=new_chat', description: '月之暗面长文本AI', category: 'chat', icon: '🌙', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #e8a0bf 100%)', tags: ['长文本', '阅读'], region: 'cn' },
+            { id: 'chatglm', name: '智谱清言', url: 'https://chatglm.cn/main/alltoolsdetail?t=1776803740258&lang=zh', description: '智谱AI对话模型', category: 'chat', icon: '🔬', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #7eb8da 100%)', tags: ['智谱', '工具'], region: 'cn' },
+            { id: 'mistral', name: 'Mistral', url: 'https://chat.mistral.ai/chat', description: '欧洲开源大语言模型', category: 'chat', icon: '🌊', gradient: 'linear-gradient(135deg, #b8d4e8 0%, #f8c3cd 100%)', tags: ['开源', '欧洲'], region: 'global' },
+            { id: 'perplexity', name: 'Perplexity', url: 'https://www.perplexity.ai/?login-source=oneTapHome&login-new=false', description: 'AI联网搜索引擎', category: 'chat', icon: '🔍', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #b8d4e8 100%)', tags: ['搜索', '联网'], region: 'global' },
+            { id: 'copilot', name: 'Copilot', url: 'https://copilot.microsoft.com/', description: '微软AI智能助手', category: 'chat', icon: '🚀', gradient: 'linear-gradient(135deg, #7eb8da 0%, #4a7fb5 100%)', tags: ['微软', '办公'], region: 'global' },
+            { id: 'xinghuo', name: '讯飞星火', url: 'https://xinghuo.xfyun.cn/desk', description: '科大讯飞认知大模型', category: 'chat', icon: '🔥', gradient: 'linear-gradient(135deg, #e8a0bf 0%, #f4a6b5 100%)', tags: ['讯飞', '语音'], region: 'cn' },
+            { id: 'yuanbao', name: '腾讯元宝', url: 'https://yuanbao.tencent.com/chat/naQivTmsDa', description: '腾讯混元大语言模型', category: 'chat', icon: '💎', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 100%)', tags: ['腾讯', '混元'], region: 'cn' },
+            { id: 'stepfun', name: '阶跃星辰', url: 'https://www.stepfun.com/chats/new', description: '阶跃星辰多模态大模型', category: 'chat', icon: '⭐', gradient: 'linear-gradient(135deg, #f4a6b5 0%, #e8a0bf 100%)', tags: ['阶跃', '多模态'], region: 'cn' },
+            { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/', description: 'Google多模态AI助手', category: 'chat', icon: '♊', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #b8d4e8 50%, #f8c3cd 100%)', tags: ['Google', '多模态'], region: 'global' },
+            { id: 'jimeng', name: '即梦 AI', url: 'https://jimeng.jianying.com/ai-tool/home', description: '字节AI图像创作平台', category: 'image', icon: '🎨', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #e8a0bf 100%)', tags: ['AIGC', '图像'], region: 'cn' },
+            { id: 'midjourney', name: 'Midjourney', url: 'https://www.midjourney.com/explore?tab=video_top', description: '顶级AI绘画生成', category: 'image', icon: '🖼️', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #4a7fb5 100%)', tags: ['绘画', '艺术'], region: 'global' },
+            { id: 'ideogram', name: 'Ideogram', url: 'https://ideogram.ai/t/explore', description: 'AI图像生成设计', category: 'image', icon: '✏️', gradient: 'linear-gradient(135deg, #7eb8da 0%, #b8d4e8 100%)', tags: ['文字', '设计'], region: 'global' },
+            { id: 'kling', name: '可灵 AI', url: 'https://klingai.com/app', description: '快手AI视频生成', category: 'video', icon: '🎬', gradient: 'linear-gradient(135deg, #e8a0bf 0%, #f8c3cd 100%)', tags: ['快手', '视频'], region: 'cn' },
+            { id: 'runway', name: 'Runway', url: 'https://app.runwayml.com/video-tools/teams/2987293848/ai-tools/generate?mode=apps', description: '专业AI视频工具', category: 'video', icon: '🎥', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 100%)', tags: ['专业', '创意'], region: 'global' },
+            { id: 'pika', name: 'Pika', url: 'https://pika.art/?auth_type=sign-up&provider=google', description: 'AI视频生成创作', category: 'video', icon: '🦊', gradient: 'linear-gradient(135deg, #f4a6b5 0%, #e8a0bf 100%)', tags: ['简单', '快速'], region: 'global' },
+            { id: 'sora', name: 'Sora', url: 'https://sora.chatgpt.com/profile', description: 'OpenAI视频生成', category: 'video', icon: '🌌', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #b8d4e8 100%)', tags: ['OpenAI', '画质'], region: 'global' },
+            { id: 'tongyiwan', name: '通义万相', url: 'https://tongyi.aliyun.com/wan/explore', description: '阿里云图像视频生成', category: 'video', icon: '🌸', gradient: 'linear-gradient(135deg, #7eb8da 0%, #f8c3cd 100%)', tags: ['阿里', '万相'], region: 'cn' },
+            { id: 'firefly', name: 'Firefly', url: 'https://firefly.adobe.com/generate/video', description: 'Adobe AI创意工具', category: 'video', icon: '🦋', gradient: 'linear-gradient(135deg, #b8d4e8 0%, #e8a0bf 100%)', tags: ['Adobe', '设计'], region: 'global' },
+            { id: 'soundful', name: 'Soundful', url: 'https://my.soundful.com/', description: 'AI音乐生成平台', category: 'music', icon: '🎵', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 100%)', tags: ['版权', '商用'], region: 'global' },
+            { id: 'udio', name: 'Udio', url: 'https://www.udio.com/home', description: 'AI音乐创作生成', category: 'music', icon: '🎶', gradient: 'linear-gradient(135deg, #e8a0bf 0%, #f4a6b5 100%)', tags: ['创作', '风格'], region: 'global' },
+            { id: 'lalal', name: 'LALAL.AI', url: 'https://www.lalal.ai/', description: 'AI音频分离提取', category: 'music', icon: '🎧', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #4a7fb5 100%)', tags: ['分离', '音频'], region: 'global' },
+            { id: 'stableaudio', name: 'Stable Audio', url: 'https://stableaudio.com/generate', description: 'Stability AI音乐生成', category: 'music', icon: '🎼', gradient: 'linear-gradient(135deg, #7eb8da 0%, #b8d4e8 100%)', tags: ['Stability', '生成'], region: 'global' },
+            { id: 'haimian', name: '海绵音乐', url: 'https://www.haimian.com/?is_new_user=0&login_report=1', description: '字节跳动AI音乐', category: 'music', icon: '🧽', gradient: 'linear-gradient(135deg, #f8c3cd 0%, #e8a0bf 100%)', tags: ['字节', '简单'], region: 'cn' },
+            { id: 'suno', name: 'Suno', url: 'https://suno.com/', description: 'AI音乐创作生成', category: 'music', icon: '☀️', gradient: 'linear-gradient(135deg, #f4a6b5 0%, #f8c3cd 50%, #b8d4e8 100%)', tags: ['创作', '热门'], region: 'global' },
+            { id: 'dify', name: 'Dify', url: 'https://cloud.dify.ai/apps', description: '开源LLM应用开发平台', category: 'agent', icon: '🔧', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 100%)', tags: ['开源', '开发'], region: 'global' },
+            { id: 'yuanqi', name: '腾讯元器', url: 'https://yuanqi.tencent.com/', description: '腾讯智能体开发平台', category: 'agent', icon: '🤖', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #4a7fb5 100%)', tags: ['腾讯', '智能体'], region: 'cn' },
+            { id: 'flowai', name: 'Flow AI', url: 'https://flowai.cc/dashboard/projects', description: 'AI工作流自动化平台', category: 'agent', icon: '⚡', gradient: 'linear-gradient(135deg, #e8a0bf 0%, #f8c3cd 100%)', tags: ['工作流', '自动化'], region: 'cn' },
+            { id: 'betteryeah', name: 'BetterYeah', url: 'https://ai.betteryeah.com/explore', description: '企业AI智能体平台', category: 'agent', icon: '🏢', gradient: 'linear-gradient(135deg, #7eb8da 0%, #b8d4e8 100%)', tags: ['企业', '智能'], region: 'cn' },
+            { id: 'coze', name: '扣子 Coze', url: 'https://www.coze.cn/', description: '字节AI智能体开发平台', category: 'agent', icon: '🔷', gradient: 'linear-gradient(135deg, #4a7fb5 0%, #7eb8da 50%, #f8c3cd 100%)', tags: ['字节', 'Agent'], region: 'cn' }
+        ];
+
+        const categoryNames = {
+            chat: '对话大模型',
+            image: '图片生成',
+            video: '视频生成',
+            music: '音乐生成',
+            agent: '工作流智能体'
+        };
+
+        let searchQuery = '';
+        let visitHistory = JSON.parse(localStorage.getItem('aiVisitHistory') || '[]');
+        let visitCounts = JSON.parse(localStorage.getItem('aiVisitCounts') || '{}');
+        let todayVisits = JSON.parse(localStorage.getItem('aiTodayVisits') || '0');
+        let lastVisitDate = localStorage.getItem('aiLastVisitDate') || '';
+
+        function init() {
+            const today = new Date().toDateString();
+            if (lastVisitDate !== today) {
+                todayVisits = 0;
+                lastVisitDate = today;
+                localStorage.setItem('aiLastVisitDate', today);
+                localStorage.setItem('aiTodayVisis', '0');
+            }
+
+            initCanvas();
+            renderZones();
+            renderRecent();
+            updateStats();
+            bindEvents();
+        }
+
+        function initCanvas() {
+            const canvas = document.getElementById('bgCanvas');
+            const ctx = canvas.getContext('2d');
+            let width, height;
+            let particles = [];
+            const particleCount = 35;
+
+            function resize() {
+                width = canvas.width = window.innerWidth;
+                height = canvas.height = window.innerHeight;
+            }
+
+            function createParticles() {
+                particles = [];
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push({
+                        x: Math.random() * width,
+                        y: Math.random() * height,
+                        radius: Math.random() * 2.5 + 0.8,
+                        vx: (Math.random() - 0.5) * 0.25,
+                        vy: (Math.random() - 0.5) * 0.25,
+                        opacity: Math.random() * 0.4 + 0.1,
+                        color: Math.random() > 0.5 ? '143, 197, 233' : '232, 168, 184'
+                    });
+                }
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, width, height);
+                const gradient = ctx.createLinearGradient(0, 0, width, height);
+                gradient.addColorStop(0, '#f8f6f4');
+                gradient.addColorStop(0.5, '#f0ecf0');
+                gradient.addColorStop(1, '#e8f0f6');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, width, height);
+
+                particles.forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(${p.color}, ${p.opacity})`;
+                    ctx.fill();
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    if (p.x < 0 || p.x > width) p.vx *= -1;
+                    if (p.y < 0 || p.y > height) p.vy *= -1;
+                });
+
+                particles.forEach((p1, i) => {
+                    particles.slice(i + 1).forEach(p2 => {
+                        const dx = p1.x - p2.x;
+                        const dy = p1.y - p2.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < 140) {
+                            ctx.beginPath();
+                            ctx.moveTo(p1.x, p1.y);
+                            ctx.lineTo(p2.x, p2.y);
+                            ctx.strokeStyle = `rgba(143, 197, 233, ${0.08 * (1 - dist / 140)})`;
+                            ctx.lineWidth = 0.5;
+                            ctx.stroke();
+                        }
+                    });
+                });
+
+                requestAnimationFrame(draw);
+            }
+
+            resize();
+            createParticles();
+            draw();
+            window.addEventListener('resize', () => { resize(); createParticles(); });
+        }
+
+        function renderZones() {
+            const container = document.getElementById('mainContent');
+            const categories = ['chat', 'image', 'video', 'music', 'agent'];
+
+            container.innerHTML = categories.map(cat => {
+                const filtered = platforms.filter(p => {
+                    const matchCategory = p.category === cat;
+                    const matchSearch = !searchQuery ||
+                        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        p.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        p.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
+                    return matchCategory && matchSearch;
+                });
+
+                if (filtered.length === 0) return '';
+
+                return `
+                    <div class="category-zone ${cat}" data-category="${cat}">
+                        <div class="zone-header">
+                            <div class="zone-title">${categoryNames[cat]}</div>
+                            <span class="zone-count">${filtered.length}</span>
+                        </div>
+                        <div class="zone-grid">
+                            ${filtered.map(platform => `
+                                <div class="app-card" data-id="${platform.id}"
+                                     draggable="true"
+                                     style="--card-gradient: ${platform.gradient};">
+                                    <div class="app-icon" style="background: ${platform.gradient}">${platform.icon}</div>
+                                    <div class="app-name">${platform.name}</div>
+                                    <div class="app-desc">${platform.description}</div>
+                                    <div class="app-meta">
+                                        <span class="app-region ${platform.region}">${platform.region === 'cn' ? '国内' : '海外'}</span>
+                                        <div class="app-visits">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                                <circle cx="12" cy="12" r="3"/>
+                                            </svg>
+                                            <span>${visitCounts[platform.id] || 0}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.querySelectorAll('.app-card').forEach(card => {
+                card.addEventListener('click', () => openPlatform(card.dataset.id));
+            });
+        }
+
+        function renderRecent() {
+            const bar = document.getElementById('recentBar');
+            const items = document.getElementById('recentItems');
+            const recent = visitHistory.slice(0, 6);
+
+            if (recent.length === 0) {
+                bar.classList.add('hidden');
+                return;
+            }
+
+            bar.classList.remove('hidden');
+            items.innerHTML = recent.map(item => {
+                const platform = platforms.find(p => p.id === item.id);
+                if (!platform) return '';
+                return `
+                    <div class="recent-chip" data-id="${platform.id}">
+                        <div class="recent-chip-icon" style="background: ${platform.gradient}">${platform.icon}</div>
+                        <span class="recent-chip-name">${platform.name}</span>
+                    </div>
+                `;
+            }).join('');
+
+            items.querySelectorAll('.recent-chip').forEach(chip => {
+                chip.addEventListener('click', () => openPlatform(chip.dataset.id));
+            });
+        }
+
+        function openPlatform(id) {
+            const platform = platforms.find(p => p.id === id);
+            if (!platform) return;
+
+            visitCounts[id] = (visitCounts[id] || 0) + 1;
+            todayVisits++;
+
+            visitHistory = visitHistory.filter(h => h.id !== id);
+            visitHistory.unshift({ id, time: Date.now() });
+            visitHistory = visitHistory.slice(0, 10);
+
+            localStorage.setItem('aiVisitCounts', JSON.stringify(visitCounts));
+            localStorage.setItem('aiTodayVisits', JSON.stringify(todayVisits));
+            localStorage.setItem('aiVisitHistory', JSON.stringify(visitHistory));
+
+            updateStats();
+            renderRecent();
+            renderZones();
+
+            window.open(platform.url, '_blank');
+        }
+
+        function updateStats() {
+            document.getElementById('totalCount').textContent = platforms.length;
+            document.getElementById('visitCount').textContent = todayVisits;
+            const favorites = Object.entries(visitCounts).filter(([_, count]) => count > 0).length;
+            document.getElementById('favCount').textContent = favorites;
+        }
+
+        function bindEvents() {
+            const searchBox = document.getElementById('searchBox');
+            searchBox.addEventListener('input', (e) => {
+                searchQuery = e.target.value.trim();
+                renderZones();
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                    e.preventDefault();
+                    searchBox.focus();
+                }
+                if (e.key === 'Escape') {
+                    searchBox.value = '';
+                    searchQuery = '';
+                    renderZones();
+                    searchBox.blur();
+                }
+            });
+        }
+
+        // 拖拽排序功能
+        let draggedCard = null;
+        let draggedId = null;
+        let sourceZone = null;
+
+        function initDragAndDrop() {
+            const container = document.getElementById('mainContent');
+
+            container.addEventListener('dragstart', (e) => {
+                if (!e.target.classList.contains('app-card')) return;
+                draggedCard = e.target;
+                draggedId = e.target.dataset.id;
+                sourceZone = e.target.closest('.category-zone');
+                e.target.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', draggedId);
+            });
+
+            container.addEventListener('dragend', (e) => {
+                if (!e.target.classList.contains('app-card')) return;
+                e.target.classList.remove('dragging');
+                document.querySelectorAll('.app-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+                draggedCard = null;
+                draggedId = null;
+                sourceZone = null;
+            });
+
+            container.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const targetCard = e.target.closest('.app-card');
+                if (!targetCard || targetCard === draggedCard) return;
+
+                const targetZone = targetCard.closest('.category-zone');
+                if (targetZone !== sourceZone) return;
+
+                document.querySelectorAll('.app-card.drag-over').forEach(c => {
+                    if (c !== targetCard) c.classList.remove('drag-over');
+                });
+                targetCard.classList.add('drag-over');
+            });
+
+            container.addEventListener('dragleave', (e) => {
+                const targetCard = e.target.closest('.app-card');
+                if (targetCard) {
+                    targetCard.classList.remove('drag-over');
+                }
+            });
+
+            container.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const targetCard = e.target.closest('.app-card');
+                if (!targetCard || targetCard === draggedCard) return;
+
+                const targetZone = targetCard.closest('.category-zone');
+                if (targetZone !== sourceZone) return;
+
+                targetCard.classList.remove('drag-over');
+
+                const targetId = targetCard.dataset.id;
+                const category = sourceZone.dataset.category;
+
+                const zoneCards = Array.from(sourceZone.querySelectorAll('.app-card'));
+                const fromIndex = zoneCards.indexOf(draggedCard);
+                const toIndex = zoneCards.indexOf(targetCard);
+
+                if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+                const categoryPlatforms = platforms.filter(p => p.category === category);
+                const [moved] = categoryPlatforms.splice(fromIndex, 1);
+                categoryPlatforms.splice(toIndex, 0, moved);
+
+                const otherPlatforms = platforms.filter(p => p.category !== category);
+                platforms.length = 0;
+                platforms.push(...otherPlatforms, ...categoryPlatforms);
+
+                savePlatformOrder();
+                renderZones();
+            });
+        }
+
+        function savePlatformOrder() {
+            const order = platforms.map(p => ({ id: p.id, category: p.category }));
+            localStorage.setItem('aiPlatformOrder', JSON.stringify(order));
+        }
+
+        function loadPlatformOrder() {
+            const saved = localStorage.getItem('aiPlatformOrder');
+            if (!saved) return;
+            try {
+                const order = JSON.parse(saved);
+                const orderedPlatforms = [];
+                order.forEach(o => {
+                    const p = platforms.find(x => x.id === o.id);
+                    if (p) orderedPlatforms.push(p);
+                });
+                const newIds = new Set(order.map(o => o.id));
+                platforms.forEach(p => {
+                    if (!newIds.has(p.id)) orderedPlatforms.push(p);
+                });
+                platforms.length = 0;
+                platforms.push(...orderedPlatforms);
+            } catch (e) { console.error('加载排序失败', e); }
+        }
+
+        loadPlatformOrder();
+        init();
+        initDragAndDrop();
+    </script>
+</body>
+</html>
