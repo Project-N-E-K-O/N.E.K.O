@@ -771,8 +771,12 @@
   const _i18n = (key, fallback, params) => {
     if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
     if (!params) return fallback;
+    // 替换模式必须避开 Jinja2 模板里的双花括号字面量——本文件顶部有 Jinja
+    // 渲染（VRM_DEFAULT_LIGHTING），整份模板会过 Jinja parser；下面 replaceAll
+    // 的源串若写成模板字面量的 dollar 引用形式会被 Jinja 当表达式 SyntaxError。
+    // 拆字符拼接绕开 parser，运行期 JS 仍得到 [open][open]KEY[close][close]。
     return Object.entries(params).reduce(
-      (s, [k, v]) => s.replaceAll(`{{${k}}}`, String(v)),
+      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
       fallback,
     );
   };
