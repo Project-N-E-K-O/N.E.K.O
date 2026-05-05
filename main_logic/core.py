@@ -4514,7 +4514,26 @@ class LLMSessionManager:
                 await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
                 try:
-                    delivered = await self.session.prompt_ephemeral(instruction)
+                    # 防御 stale session: 4429 start_session 之后到这里又过了
+                    # 多次 await（holiday hint / try_start_proactive /
+                    # _proactive_write_lock / self.lock / state.fire ×2），
+                    # 期间 cleanup / disconnected_by_server / 切音色重建路径
+                    # 都可能把 self.session 置 None 或换为 OmniRealtimeClient。
+                    # 直接 self.session.prompt_ephemeral 会触发 AttributeError
+                    # 把 trigger_greeting task 整个挂掉（参考切音色后并发
+                    # session 重建期间 trigger_greeting 撞 self.session=None
+                    # 的崩溃 trace）。先快照本地引用 + 类型校验，stale 时
+                    # 静默 skip，外层 finally 会 fire PROACTIVE_DONE 让 SM
+                    # 不卡在 PHASE2 / CLAIM。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
                 finally:
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
