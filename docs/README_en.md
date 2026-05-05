@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**A proactive, native omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.**
+# Project N.E.K.O. :kissing_cat: <br>**A proactive AI companion — listening to your feelings, seeing your world, and discovering more to love with you.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 >
@@ -14,24 +14,16 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
+**:older_woman: Zero-configuration and ready to use — a cyber catgirl even my grandma can wake up with ease!**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/) version has been released! Complete UI overhaul and added out-of-the-box exclusive free model (thanks to StepFun for sponsoring this project). Add it to your wishlist now~**
+:newspaper: **The [Steam version](https://store.steampowered.com/app/4099310/__NEKO/) is available for free! If you like her, add her to your library and leave a kind review~**
 
 *Project N.E.K.O., NekoVerse!*
-
-</div>
-
-<div align="center">
-
-#### Feature Demo (Full version on Bilibili) [![Bilibili](https://img.shields.io/badge/Bilibili-Tutorial-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 </div>
 
@@ -41,15 +33,15 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>Omni-Modal Dialogue</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with visual understanding</td>
-<td align="center" width="25%">🧠<br><b>Three-Tier Memory</b><br>Facts / Reflection / Persona — she truly "remembers" you</td>
-<td align="center" width="25%">🤖<br><b>Agent Capabilities</b><br>Browser control (CUA), computer use, OpenClaw A2A calling — she can get work done for you</td>
+<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you love</td>
+<td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
+<td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
 <td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Live2D / VRM / MMD with motion capture and full-screen tracking support</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>Full plugin SDK & marketplace for custom extensions</td>
+<td align="center">🤖<br><b>Agent Tool Execution</b><br>Controls browsers and computers, calling CUA / OpenClaw A2A / plugins to complete tasks</td>
+<td align="center">🔌<br><b>Plugin Ecosystem</b><br>SDK + plugin marketplace for online game companionship, social media interaction, livestream interaction, and smart home integrations</td>
 <td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">💬<br><b>Proactive Chat</b><br>24/7 ambient awareness: screen understanding, social media trends, personal feeds, music & memes — she initiates conversations with you</td>
 <td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
 </tr>
 </table>
@@ -77,7 +69,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **Creators:** Artists, Live2D/3D modelers, voice actors, writers — you give "her" a soul.
 * **Dreamers:** Your feedback and advocacy are invaluable contributions.
 
-**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: 995414391
 
 ## Quick Start
 
@@ -417,7 +409,7 @@ uv run python agent_server.py
 # 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
-Developers are encouraged to join QQ group 1022939659.
+Developers are encouraged to join QQ group 995414391.
 
 </details>
 
@@ -429,7 +421,7 @@ Developers are encouraged to join QQ group 1022939659.
 
 Configure third-party AI services for additional features:
 
-- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*.
+- **Core API** (real-time voice conversation): Must support Realtime API. Recommended: *Alibaba Cloud*.
 - **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
 
 Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
@@ -483,7 +475,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Text API client (ChatCompletion)
 │   └── tts_client.py            # 🔊 TTS engine adapter
 ├── 📁 main_routers/             # 🌐 API routers (14 routes)
-├── 📁 memory/                   # 🧠 Three-tier memory system
+├── 📁 memory/                   # 🧠 Five-dimensional memory system (partial examples)
 │   ├── facts/                   # Fact memory
 │   ├── reflection/              # Reflection memory
 │   └── persona/                 # Persona memory

@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**プロアクティブでネイティブなオムニモーダルAIコンパニオン——24/7環境認識、エージェント能力、そして具現化された感情エンジンを搭載。**
+# Project N.E.K.O. :kissing_cat: <br>**プロアクティブAIパートナー——あなたの気持ちに耳を傾け、あなたの世界を見つめ、もっと「好き」を一緒に見つけます。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism（ネットワーク型感情知性生命体）
 >
@@ -14,24 +14,16 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: ゼロコンフィグで即座に使える、おばあちゃんでも使いこなせるサイバー猫娘！**
+**:older_woman: ゼロコンフィグですぐ使える、おばあちゃんでも気軽に目覚めさせられるサイバー猫娘！**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)版がリリースされました！UI完全刷新、専用無料モデルを標準搭載（StepFunの提供に感謝）。今すぐウィッシュリストに追加してください~**
+:newspaper: **[Steam版](https://store.steampowered.com/app/4099310/__NEKO/)は無料で配信中！気に入ったらライブラリに追加して、よければレビューもお願いします~**
 
 *Project N.E.K.O.、ニャー宇宙！*
-
-</div>
-
-<div align="center">
-
-#### 機能デモ（完全版はBilibiliで） [![Bilibili](https://img.shields.io/badge/Bilibili-チュートリアル-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 </div>
 
@@ -41,15 +33,15 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>オムニモーダル対話</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、視覚理解対応</td>
-<td align="center" width="25%">🧠<br><b>三層記憶システム</b><br>事実記憶 / 反省記憶 / 人格記憶——彼女は本当にあなたを「覚えて」います</td>
-<td align="center" width="25%">🤖<br><b>エージェント能力</b><br>ブラウザ操作 (CUA)、PC操作、OpenClaw A2A呼び出し——彼女があなたの仕事を手伝います</td>
+<td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたの好きな新しい話題を届けます</td>
+<td align="center" width="25%">🎙️<br><b>リアルタイム音声・テキスト・視覚理解</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、リアルタイム視覚理解に対応</td>
+<td align="center" width="25%">🧠<br><b>五次元メモリシステム</b><br>作業記憶 / 直近記憶 / 事実記憶 / 反省記憶 / 人格記憶で、使うほどあなたを理解していきます</td>
 <td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>プラグインエコシステム</b><br>完全なプラグインSDKとマーケットプレイスでカスタム拡張が可能</td>
+<td align="center">🤖<br><b>エージェントツール実行</b><br>ブラウザやPCを操作し、CUA / OpenClaw A2A / プラグインを呼び出してタスクを実行</td>
+<td align="center">🔌<br><b>プラグインエコシステム</b><br>SDK + プラグインマーケットプレイスで、オンラインゲームで一緒に遊ぶ機能、SNS連携、配信連動、スマートホーム連携まで拡張可能</td>
 <td align="center">🌐<br><b>14以上のAIプロバイダー</b><br>OpenAI / Gemini / Qwen / DeepSeek等、無料モデルも即座に利用可能</td>
-<td align="center">💬<br><b>プロアクティブチャット</b><br>24/7環境認識：画面理解、SNSトレンド、個人フィード、音楽やミーム——彼女から話しかけてきます</td>
 <td align="center">🏪<br><b>UGCワークショップ</b><br>Steam Workshop経由でカスタムキャラクター、モデル、ボイスパックをアップロード・共有</td>
 </tr>
 </table>
@@ -77,7 +69,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **クリエイター：** アーティスト、Live2D/3Dモデラー、声優、ライター——「彼女」に魂を与えます。
 * **ドリーマー：** あなたのフィードバックと支持は貴重な貢献です。
 
-**Discord**：[参加する](https://discord.gg/5kgHfepNJr) | **QQグループ**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**：[参加する](https://discord.gg/5kgHfepNJr) | **QQグループ**：995414391
 
 ## クイックスタート
 
@@ -409,7 +401,7 @@ uv run python agent_server.py
 # 5. http://localhost:48911 にアクセスしてAPI Keyを設定し、使用開始
 ```
 
-開発者はQQグループ 1022939659 への参加をお勧めします。
+開発者はQQグループ 995414391 への参加をお勧めします。
 
 </details>
 
@@ -421,7 +413,7 @@ uv run python agent_server.py
 
 追加機能のためにサードパーティAIサービスを設定できます：
 
-- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。推奨：*Gemini*、*OpenAI*、*StepFun*、または*Alibaba Cloud*。
+- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。推奨：*Alibaba Cloud*。
 - **アシストAPI**（記憶/感情/視覚等）：標準ChatCompletionインターフェースに対応。14以上のプロバイダーが利用可能。
 
 `http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。
@@ -475,7 +467,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # テキストAPIクライアント（ChatCompletion）
 │   └── tts_client.py            # 🔊 TTSエンジンアダプター
 ├── 📁 main_routers/             # 🌐 APIルーター（14ルート）
-├── 📁 memory/                   # 🧠 三層記憶システム
+├── 📁 memory/                   # 🧠 五次元メモリシステム（一部例）
 │   ├── facts/                   # 事実記憶
 │   ├── reflection/              # 反省記憶
 │   └── persona/                 # 人格記憶
