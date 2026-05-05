@@ -2155,6 +2155,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {

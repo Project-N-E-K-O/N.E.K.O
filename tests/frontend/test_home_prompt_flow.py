@@ -669,6 +669,75 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
 
 
 @pytest.mark.frontend
+def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            document.body.innerHTML = `
+                <div id="react-chat-window-overlay" hidden>
+                    <div id="react-chat-window-shell">
+                        <div id="react-chat-window-drag-handle"></div>
+                        <div id="react-chat-window-root"></div>
+                    </div>
+                </div>
+            `;
+            window.NekoChatWindow = {
+                mount: (_root, props) => {
+                    window.__lastReactChatProps = props;
+                },
+            };
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const host = window.reactChatWindowHost;
+            await host.ensureBundleLoaded();
+            host.openWindow();
+            window.__toolCursorResetKeys = [];
+            window.__avatarToolStateEvents = [];
+            host.setOnAvatarToolStateChange((detail) => {
+                window.__avatarToolStateEvents.push(detail);
+            });
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => !!window.__lastReactChatProps",
+        timeout=5000,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            const host = window.reactChatWindowHost;
+            host.deactivateToolCursor();
+            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+            host.closeWindow();
+            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+        }
+        """
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            resetKeys: window.__toolCursorResetKeys.slice(),
+            avatarToolStateEvents: window.__avatarToolStateEvents.slice(),
+        })
+        """
+    )
+
+    assert len(result["resetKeys"]) == 2
+    assert result["resetKeys"][0]
+    assert result["resetKeys"][1]
+    assert result["resetKeys"][1] != result["resetKeys"][0]
+    assert result["avatarToolStateEvents"][-1]["active"] is False
+    assert result["avatarToolStateEvents"][-1]["toolId"] is None
+
+
+@pytest.mark.frontend
 def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
     mock_page: Page,
 ):

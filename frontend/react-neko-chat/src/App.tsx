@@ -112,6 +112,7 @@ function getToolItemLabel(item: ToolIconItem): string {
 }
 
 const avatarToolRangePadding = 100;
+const avatarToolRangeHoldMs = 180;
 const compactCursorZoneSelector = [
   '.composer-bottom-tools',
   '.composer-tool-menu',
@@ -630,6 +631,8 @@ export default function App({
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
+  const avatarRangeHoldUntilRef = useRef(0);
+  const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
   const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
@@ -650,10 +653,62 @@ export default function App({
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
+    avatarRangeHoldUntilRef.current = 0;
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     setActiveCursorToolId(null);
     setToolMenuOpen(false);
     setIsCursorOverAvatarRange(false);
     setIsCursorOverCompactCursorZone(false);
+  }, []);
+  const setCursorOverAvatarRange = useCallback((nextValue: boolean, options?: { allowHold?: boolean }) => {
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
+
+    if (nextValue) {
+      const holdUntil = performance.now() + avatarToolRangeHoldMs;
+      avatarRangeHoldUntilRef.current = holdUntil;
+      setIsCursorOverAvatarRange(previousValue => (
+        previousValue === true ? previousValue : true
+      ));
+      avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+        avatarRangeHoldTimerRef.current = null;
+        if (performance.now() < avatarRangeHoldUntilRef.current) return;
+        avatarRangeHoldUntilRef.current = 0;
+        setIsCursorOverAvatarRange(previousValue => (previousValue ? false : previousValue));
+      }, avatarToolRangeHoldMs);
+      return;
+    }
+
+    setIsCursorOverAvatarRange(previousValue => {
+      const shouldHold = options?.allowHold !== false
+        && previousValue
+        && performance.now() <= avatarRangeHoldUntilRef.current;
+      if (shouldHold) {
+        if (avatarRangeHoldTimerRef.current === null) {
+          const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
+          avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+            avatarRangeHoldTimerRef.current = null;
+            if (performance.now() < avatarRangeHoldUntilRef.current) return;
+            avatarRangeHoldUntilRef.current = 0;
+            setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
+          }, delay);
+        }
+        return true;
+      }
+      if (avatarRangeHoldTimerRef.current !== null) {
+        window.clearTimeout(avatarRangeHoldTimerRef.current);
+        avatarRangeHoldTimerRef.current = null;
+      }
+      if (avatarRangeHoldUntilRef.current !== 0) {
+        avatarRangeHoldUntilRef.current = 0;
+      }
+      return previousValue ? false : previousValue;
+    });
   }, []);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
@@ -1084,9 +1139,7 @@ export default function App({
       }
       const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY, avatarToolCacheState);
       const isOverAvatarAtPointer = avatarRangeHit !== null;
-      setIsCursorOverAvatarRange(previousValue => (
-        previousValue === isOverAvatarAtPointer ? previousValue : isOverAvatarAtPointer
-      ));
+      setCursorOverAvatarRange(isOverAvatarAtPointer, { allowHold: true });
 
       if (activeCursorToolId === 'lollipop') {
         if (isOverAvatarAtPointer) {
@@ -1221,7 +1274,7 @@ export default function App({
       window.removeEventListener('pointercancel', handlePointerUp, true);
       window.removeEventListener('blur', handlePointerUp);
     };
-  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase]);
+  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase, setCursorOverAvatarRange]);
 
   useEffect(() => {
     if (activeCursorToolId === 'hammer') return;
@@ -1232,6 +1285,10 @@ export default function App({
   useEffect(() => () => {
     clearHammerSwingAnimation();
     clearOutsideHammerResetTimer();
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     floatingHeartTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
     floatingHeartTimeoutIdsRef.current = [];
     floatingFistDropTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
@@ -1240,7 +1297,7 @@ export default function App({
 
   useEffect(() => {
     if (!activeCursorToolId) {
-      setIsCursorOverAvatarRange(false);
+      setCursorOverAvatarRange(false, { allowHold: false });
       setIsCursorOverCompactCursorZone(false);
       return;
     }
@@ -1249,9 +1306,7 @@ export default function App({
 
     const updateCursorRangeState = (clientX: number, clientY: number) => {
       const nextValue = isPointerWithinAvatarRange(clientX, clientY, avatarToolCacheState);
-      setIsCursorOverAvatarRange(previousValue => (
-        previousValue === nextValue ? previousValue : nextValue
-      ));
+      setCursorOverAvatarRange(nextValue, { allowHold: true });
     };
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -1279,7 +1334,7 @@ export default function App({
     const hideLocalCursorOverlay = () => {
       clearAvatarBoundsCache(avatarToolCacheState);
       latestPointerTargetRef.current = null;
-      setIsCursorOverAvatarRange(false);
+      setCursorOverAvatarRange(false, { allowHold: false });
       setIsCursorOverCompactCursorZone(false);
       setIsCursorInsideHostWindow(false);
     };
@@ -1328,7 +1383,7 @@ export default function App({
       window.removeEventListener('blur', hideLocalCursorOverlay);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeCursorToolId]);
+  }, [activeCursorToolId, avatarToolCacheState, setCursorOverAvatarRange]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1543,7 +1598,10 @@ export default function App({
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
-                setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
+                setCursorOverAvatarRange(
+                  isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
+                  { allowHold: true },
+                );
                 if (activeCursorToolId === item.id) {
                   setActiveCursorToolId(null);
                   setToolMenuOpen(false);
