@@ -821,6 +821,7 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     let closeGraceTimer = 0;
     let channel = null;
     let cachedDefaultCardFaceImage = null;
+    let fallbackAbortController = null;
     const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800 - Math.floor(800 / 6))
         .then(image => {
             cachedDefaultCardFaceImage = image;
@@ -868,6 +869,10 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
             channel = null;
         }
         cachedDefaultCardFaceImage = null;
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
+        }
+        fallbackAbortController = null;
         if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
             window._modelManagerCardMakerFallbackCleanup = null;
         }
@@ -881,6 +886,9 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
         cardFaceSaved = true;
         if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
             window._modelManagerActiveCardMakerFallback.cardFaceSaved = true;
+        }
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
         }
         cleanup();
     };
@@ -900,17 +908,28 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     async function generateFallbackDefaultCardFace() {
         if (fallbackRunning || cardFaceSaved) return;
         fallbackRunning = true;
+        fallbackAbortController = new AbortController();
         try {
+            const signal = fallbackAbortController.signal;
             const modelImage = cachedDefaultCardFaceImage || await cachedDefaultCardFaceImagePromise;
-            await generateDefaultCardFaceFromModelManager(lanlanName, state, { modelImage });
+            if (cardFaceSaved || signal.aborted) return;
+            await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                modelImage,
+                signal,
+                shouldCancel: () => cardFaceSaved
+            });
+            if (cardFaceSaved || signal.aborted) return;
             await notifyMainPageModelReload();
         } catch (error) {
+            if (error && error.name === 'AbortError') return;
             console.error('[模型管理] 卡面制作关闭后的默认卡面兜底生成失败:', error);
             setModelManagerStatusText(
                 error && error.message
                     ? error.message
                     : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
             );
+        } finally {
+            fallbackAbortController = null;
         }
     }
 
@@ -1199,12 +1218,24 @@ async function captureDefaultCardFaceModelImage(state = {}, width, height) {
 }
 
 async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
+    const abortSignal = options.signal || null;
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const throwIfCancelled = () => {
+        if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+            const error = new Error('默认卡面生成已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+
+    throwIfCancelled();
     setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
 
     const cardW = 600;
     const cardH = 800;
     const headerH = Math.floor(cardH / 6);
     const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    throwIfCancelled();
     const sourceCanvas = modelImage.canvas;
     const output = document.createElement('canvas');
     output.width = cardW;
@@ -1236,25 +1267,44 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
     );
 
     const cardBlob = await canvasToPngBlob(output);
+    throwIfCancelled();
     const formData = new FormData();
     formData.append('image', cardBlob, 'card_face.png');
 
     const controller = new AbortController();
+    const abortFallbackUpload = () => controller.abort();
+    if (abortSignal) {
+        if (abortSignal.aborted) {
+            abortFallbackUpload();
+        } else {
+            abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
+        }
+    }
     const timeoutId = setTimeout(() => controller.abort(), 20000);
     let response;
     try {
+        throwIfCancelled();
         response = await fetch(
             `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
             { method: 'PUT', body: formData, signal: controller.signal }
         );
     } catch (error) {
         if (error && error.name === 'AbortError') {
+            if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+                const abortError = new Error('默认卡面生成已取消');
+                abortError.name = 'AbortError';
+                throw abortError;
+            }
             throw new Error('默认卡面上传超时，请稍后重试');
         }
         throw error;
     } finally {
         clearTimeout(timeoutId);
+        if (abortSignal) {
+            abortSignal.removeEventListener('abort', abortFallbackUpload);
+        }
     }
+    throwIfCancelled();
     if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || `HTTP ${response.status}`);
