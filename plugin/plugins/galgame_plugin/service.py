@@ -2245,9 +2245,18 @@ def _build_status_payload_unchecked(
             "active_data_source": state.active_data_source,
         }
     )
+    # Recompute dependency_status off the just-inspected dxcam/rapidocr
+    # payloads so the diagnosis sees the same state the UI sees (avoids
+    # showing stale "缺依赖" warnings right after a successful install).
+    dependency_status_for_diagnosis = _build_dependency_status_payload(
+        state=state,
+        dxcam_payload=dxcam,
+        rapidocr_payload=rapidocr,
+    )
     primary_diagnosis = build_primary_diagnosis(
         {
             "ocr_reader_runtime": ocr_runtime,
+            "memory_reader_runtime": copy_for_payload(state.memory_reader_runtime),
             "last_error": last_error,
             "effective_current_line": effective_current_line or {},
             "ocr_context_state": ocr_runtime_obj.get("ocr_context_state", ""),
@@ -2261,8 +2270,11 @@ def _build_status_payload_unchecked(
             "ocr_reader_trigger_mode": config.ocr_reader_trigger_mode,
             "ocr_background_status": ocr_background_status,
             "active_data_source": state.active_data_source,
+            "reader_mode": config.reader_mode,
             "rapidocr_enabled": config.rapidocr_enabled,
             "rapidocr": rapidocr,
+            "textractor": textractor,
+            "dependency_status": dependency_status_for_diagnosis,
             "summary": summary,
         }
     )
@@ -2426,11 +2438,7 @@ def _build_status_payload_unchecked(
         # UI doesn't show "缺依赖" warnings for components that just finished
         # installing (state.dependency_status is updated lazily, this is the
         # authoritative read for the same status frame).
-        "dependency_status": _build_dependency_status_payload(
-            state=state,
-            dxcam_payload=dxcam,
-            rapidocr_payload=rapidocr,
-        ),
+        "dependency_status": dependency_status_for_diagnosis,
     }
 
 

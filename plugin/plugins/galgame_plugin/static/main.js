@@ -6423,6 +6423,13 @@ async function handleDiagnosisAction(action) {
       expandAndScrollTo('rapidocrPrompt');
       setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
+    case 'install_textractor':
+      // Textractor is a desktop binary (GitHub releases), not a Python
+      // wheel — it still has a real runtime install flow via the
+      // `galgame_install_textractor` SDK action. Trigger it directly so
+      // the "Memory Reader 缺 Textractor" diagnosis is actionable.
+      await installTextractor(false);
+      break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
       break;
