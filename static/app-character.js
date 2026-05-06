@@ -151,6 +151,16 @@
             console.log('[猫娘切换] 新旧角色相同，跳过切换');
             return;
         }
+        // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
+        // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
+        // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
+        // !== oldCatgirl 的 dedupe 拦不住，会重新清 chat / 关 socket / 重连 / 重加载模型。
+        // app-interpage.js 的 BC handler 已加同样守护作为外层防御，这里在源头再加一道，
+        // 让所有调用方（不光 BC/WS handler）自动受益。
+        if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
+            console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
+            return;
+        }
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
