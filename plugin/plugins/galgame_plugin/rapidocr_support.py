@@ -143,12 +143,6 @@ def _resolve_rapidocr_model_paths(
     return det_path, cls_path, rec_path
 
 
-def _purge_modules(prefixes: tuple[str, ...]) -> None:
-    for name in list(sys.modules.keys()):
-        if any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes):
-            sys.modules.pop(name, None)
-
-
 @contextmanager
 def _rapidocr_import_context(
     *,
@@ -335,7 +329,6 @@ def load_rapidocr_runtime(
     lang_type: str,
     model_type: str,
     ocr_version: str,
-    force_reload: bool = False,
 ) -> tuple[Any, dict[str, str]]:
     site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
     model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
@@ -343,8 +336,6 @@ def load_rapidocr_runtime(
         site_packages_dir=site_packages_dir,
         model_cache_dir=model_cache_dir,
     ):
-        if force_reload:
-            _purge_modules((RAPIDOCR_PACKAGE_NAME,))
         importlib.invalidate_caches()
         module = importlib.import_module(RAPIDOCR_PACKAGE_NAME)
         runtime_class = getattr(module, "RapidOCR", None)
@@ -455,7 +446,6 @@ def inspect_rapidocr_installation(
                 lang_type=lang_type,
                 model_type=model_type,
                 ocr_version=ocr_version,
-                force_reload=False,
             )
             detected_path = str(runtime_meta.get("detected_path") or detected_path)
             detail = "installed"

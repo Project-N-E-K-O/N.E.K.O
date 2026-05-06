@@ -1986,6 +1986,8 @@
         "glmApiBug": "La API GLM provocó un error de facturación. Considere recargar 1 CNY.",
         "aliApiOwed": "La API de Alibaba está desequilibrada.",
         "voiceSystemPreparing": "Sistema de voz preparándose...",
+    "voiceConfigSwitching": "Cambiando la voz, preparando el chat de voz...",
+    "voiceConfigSwitchTimeout": "El cambio de voz aún no ha terminado. Inicia el chat de voz de nuevo más tarde.",
         "textSystemPreparing": "El sistema de texto se está preparando, espere...",
         "connectingToServer": "Conectándose al servidor...",
         "readyToSpeak": "¡Listo para hablar!",

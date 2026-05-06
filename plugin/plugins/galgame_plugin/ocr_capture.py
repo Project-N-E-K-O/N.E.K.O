@@ -5,6 +5,7 @@ from . import ocr_reader as _ocr_reader
 CAPTURE_BACKEND_AUTO = _ocr_reader._CAPTURE_BACKEND_AUTO
 CAPTURE_BACKEND_DXCAM = _ocr_reader._CAPTURE_BACKEND_DXCAM
 CAPTURE_BACKEND_MSS = _ocr_reader._CAPTURE_BACKEND_MSS
+CAPTURE_BACKEND_PYAUTOGUI = _ocr_reader._CAPTURE_BACKEND_PYAUTOGUI
 CAPTURE_BACKEND_PRINTWINDOW = _ocr_reader._CAPTURE_BACKEND_PRINTWINDOW
 
 _BACKGROUND_HASH_BOTTOM_INSET_RATIO = _ocr_reader._BACKGROUND_HASH_BOTTOM_INSET_RATIO
@@ -14,6 +15,7 @@ _DXCAM_GRAB_RETRY_DELAY_SECONDS = _ocr_reader._DXCAM_GRAB_RETRY_DELAY_SECONDS
 
 CaptureBackend = _ocr_reader.CaptureBackend
 MssCaptureBackend = _ocr_reader.MssCaptureBackend
+PyAutoGuiCaptureBackend = _ocr_reader.PyAutoGuiCaptureBackend
 PrintWindowCaptureBackend = _ocr_reader.PrintWindowCaptureBackend
 DxcamCaptureBackend = _ocr_reader.DxcamCaptureBackend
 Win32CaptureBackend = _ocr_reader.Win32CaptureBackend
@@ -37,10 +39,12 @@ __all__ = [
     "CAPTURE_BACKEND_AUTO",
     "CAPTURE_BACKEND_DXCAM",
     "CAPTURE_BACKEND_MSS",
+    "CAPTURE_BACKEND_PYAUTOGUI",
     "CAPTURE_BACKEND_PRINTWINDOW",
     "CaptureBackend",
     "DxcamCaptureBackend",
     "MssCaptureBackend",
+    "PyAutoGuiCaptureBackend",
     "PrintWindowCaptureBackend",
     "Win32CaptureBackend",
     "_BACKGROUND_HASH_BOTTOM_INSET_RATIO",
