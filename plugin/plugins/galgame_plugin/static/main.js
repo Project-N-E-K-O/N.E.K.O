@@ -5477,6 +5477,9 @@ async function withButtonPending(buttonOrId, pendingText, fn) {
 
 async function startInstall(kind, force = false) {
   const config = getInstallConfig(kind);
+
+  navigateToInstallPanel(kind);
+
   const state = getInstallState(kind);
   const { button } = getInstallNodes(kind);
   state.inProgress = true;
@@ -6427,6 +6430,45 @@ function switchInstallTab(tab) {
   const memoryBanner = document.getElementById('textractorPrompt');
   if (memoryBanner) {
     memoryBanner.hidden = false;
+  }
+}
+
+function navigateToInstallPanel(kind) {
+  const advancedSettings = document.getElementById('advancedSettings');
+  const advancedToggleBtn = document.getElementById('advancedToggleBtn');
+  const dependencyModule = document.getElementById('dependencyModule');
+  const installSection = document.getElementById('installSection');
+
+  localStorage.setItem('galgame_skip_onboarding', '1');
+  document.body.classList.remove('onboarding-active');
+  const onboardingView = document.getElementById('onboardingView');
+  if (onboardingView) {
+    onboardingView.hidden = true;
+  }
+
+  if (advancedSettings && !advancedSettings.classList.contains('open')) {
+    advancedSettings.classList.add('open');
+    if (advancedToggleBtn) {
+      advancedToggleBtn.textContent = uiT('ui.advanced.collapse_settings', '收起高级设置');
+    }
+    const firstRunGuide = document.getElementById('firstRunGuide');
+    if (firstRunGuide) {
+      firstRunGuide.hidden = true;
+    }
+  }
+
+  if (dependencyModule && !dependencyModule.open) {
+    dependencyModule.open = true;
+  }
+
+  if (OCR_INSTALL_TABS.includes(kind)) {
+    switchInstallTab(kind);
+  }
+
+  if (installSection) {
+    requestAnimationFrame(() => {
+      installSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 }
 
