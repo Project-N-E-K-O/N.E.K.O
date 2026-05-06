@@ -78,7 +78,7 @@ class AirQualityRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
+        tz = str(plugin._cfg.get("timezone") or "auto").strip() or "auto"
 
         try:
             data = await fetch_air_quality(loc["lat"], loc["lon"], tz=tz)

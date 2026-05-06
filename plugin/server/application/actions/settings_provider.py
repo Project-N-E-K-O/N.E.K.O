@@ -26,6 +26,11 @@ logger = get_logger("server.application.actions.settings_provider")
 
 
 def _is_hot(field_info: Any) -> bool:
+    if any(
+        isinstance(entry, tuple) and entry[:1] == ("__neko_hot__",) and bool(entry[1])
+        for entry in getattr(field_info, "metadata", [])
+    ):
+        return True
     extra = field_info.json_schema_extra
     return isinstance(extra, dict) and extra.get("hot") is True
 

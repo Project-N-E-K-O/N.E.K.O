@@ -54,7 +54,7 @@ class HourlyForecastRouter(PluginRouter):
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
         hours = max(1, min(int(hours), 168))
-        tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
+        tz = str(plugin._cfg.get("timezone") or "auto").strip() or "auto"
 
         try:
             data = await fetch_forecast(
