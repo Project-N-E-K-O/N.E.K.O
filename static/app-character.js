@@ -347,6 +347,10 @@
                 if (!s || lower === 'undefined' || lower === 'null') return '';
                 return s;
             };
+            // mmdPath/vrmPath 提前在 live3d 分支统一计算，subType 已知和 subType 缺失两条
+            // 路径都用同一份净化后的路径来源（顶层 + _reserved），让下游 VRM/MMD 加载分支
+            // 直接复用——避免 VRM 分支自己重新解析时只看顶层 catgirlConfig.vrm 漏掉规范化
+            // live3d+vrm 卡的 _reserved.avatar.vrm.model_path（参见 VRM 分支注释）。
             let mmdPath = '';
             let vrmPath = '';
             let effectiveModelType = modelType;
@@ -357,18 +361,19 @@
                     || ''
                 ).toString().trim().toLowerCase();
 
+                mmdPath = _sanitize(catgirlConfig.mmd)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                    || '';
+                vrmPath = _sanitize(catgirlConfig.vrm)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                    || '';
+
                 if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
                 } else if (subType === 'mmd') {
                     effectiveModelType = 'mmd';
                 } else {
-                    // sub_type 缺失时回退到路径探测
-                    mmdPath = _sanitize(catgirlConfig.mmd)
-                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                        || '';
-                    vrmPath = _sanitize(catgirlConfig.vrm)
-                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                        || '';
+                    // sub_type 缺失时根据路径探测
                     if (mmdPath && !vrmPath) {
                         effectiveModelType = 'mmd';
                     } else if (vrmPath) {
@@ -676,93 +681,86 @@
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
 
-                // 安全获取 VRM 模型路径，处理各种边界情况
-                let vrmModelPath = null;
-                // 检查 vrm 字段是否存在且有效
-                const hasVrmField = catgirlConfig.hasOwnProperty('vrm');
-                const vrmValue = catgirlConfig.vrm;
+                // VRM 模型路径解析：优先用前面 subType 探测时算好的 vrmPath（已 _sanitize，
+                // 涵盖 _reserved.avatar.vrm.model_path 和顶层 catgirlConfig.vrm，与 MMD 分支
+                // line 1098 `mmdModelPath = mmdPath || catgirlConfig.mmd || _reserved...` 对偶）。
+                // 不再单独检查 catgirlConfig.vrm 字段——规范化为 live3d+vrm 子类型的角色卡
+                // 没有顶层 vrm 字段（其权威来源是 _reserved.avatar.vrm.model_path），原本只看
+                // 顶层会把它误判成"未配置"，触发 fallback 默认模型 + auto-repair PUT 写
+                // model_type='vrm' + 顶层 vrm 字段把规范化卡反向反规范化、污染后端配置。
+                let vrmModelPath = vrmPath || '';
 
-                // 检查 vrmValue 是否是有效的值（排除字符串 "undefined" 和 "null"）
+                // 仅 legacy（catgirlConfig.model_type === 'vrm'）格式参与 auto-repair：规范化
+                // live3d+vrm 卡走到 fallback 时不应触发 PUT，否则反向反规范化把 model_type
+                // 改回 'vrm'、写入顶层 vrm 字段，破坏 PR #510 后采用的 live3d 规范化格式。
+                const isLegacyVrmCard = catgirlConfig.model_type === 'vrm';
+                const hasVrmField = Object.prototype.hasOwnProperty.call(catgirlConfig, 'vrm');
+                const vrmValue = catgirlConfig.vrm;
+                // 检查顶层 vrm 字段是否是字符串 "undefined"/"null" 等无效字面值（仅用于决定
+                // 是否触发 auto-repair 警告/PUT，不影响 vrmModelPath 解析——后者已由前置
+                // _sanitize 处理）
                 let isVrmValueInvalid = false;
                 if (hasVrmField && vrmValue !== undefined && vrmValue !== null) {
-                    const rawValue = vrmValue;
-                    if (typeof rawValue === 'string') {
-                        const trimmed = rawValue.trim();
-                        const lowerTrimmed = trimmed.toLowerCase();
-                        // 检查是否是无效的字符串值（包括 "undefined", "null" 等）
-                        isVrmValueInvalid = trimmed === '' ||
-                            lowerTrimmed === 'undefined' ||
-                            lowerTrimmed === 'null' ||
-                            lowerTrimmed.includes('undefined') ||
-                            lowerTrimmed.includes('null');
-                        if (!isVrmValueInvalid) {
-                            vrmModelPath = trimmed;
-                        }
-                    } else {
-                        // 非字符串类型，转换为字符串后也要验证
-                        const strValue = String(rawValue);
-                        const lowerStr = strValue.toLowerCase();
-                        isVrmValueInvalid = lowerStr === 'undefined' || lowerStr === 'null' || lowerStr.includes('undefined');
-                        if (!isVrmValueInvalid) {
-                            vrmModelPath = strValue;
-                        }
-                    }
+                    const rawStr = typeof vrmValue === 'string' ? vrmValue : String(vrmValue);
+                    const trimmed = rawStr.trim();
+                    const lowerTrimmed = trimmed.toLowerCase();
+                    isVrmValueInvalid = trimmed === ''
+                        || lowerTrimmed === 'undefined'
+                        || lowerTrimmed === 'null'
+                        || lowerTrimmed.includes('undefined')
+                        || lowerTrimmed.includes('null');
                 }
 
-                // 如果路径无效，使用默认模型或抛出错误
+                // 如果路径仍无效，使用默认模型
                 if (!vrmModelPath) {
-                    // 如果配置中明确指定了 model_type 为 'vrm'，静默使用默认模型
-                    if (catgirlConfig.model_type === 'vrm') {
-                        vrmModelPath = '/static/vrm/sister1.0.vrm';
+                    // effectiveModelType === 'vrm' 才进入这一分支：legacy（model_type='vrm'）
+                    // 和规范化（live3d+vrm 子类型）两条路径都走默认模型 fallback。
+                    // 改用 effectiveModelType 而非 catgirlConfig.model_type：规范化卡 model_type
+                    // 是 'live3d'，原条件会让它走错误抛出分支拒载；现在统一 fallback 到默认。
+                    vrmModelPath = '/static/vrm/sister1.0.vrm';
 
-                        // 如果 vrmValue 是字符串 "undefined" 或 "null"，视为"未配置"，不显示警告
-                        // 只有在 vrm 字段存在且值不是字符串 "undefined"/"null" 时才显示警告
-                        if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
-                            // 这种情况不应该发生，因为 isVrmValueInvalid 为 false 时应该已经设置了 vrmModelPath
-                            const vrmValueStr = typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue);
-                            console.warn(`[猫娘切换] VRM 模型路径无效 (${vrmValueStr})，使用默认模型`);
-                        } else {
-                            // vrmValue 是字符串 "undefined"、"null" 或未配置，视为正常情况，只显示 info
-                            console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
+                    if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
+                        // 走到这一分支说明顶层 vrm 字段值看起来合法但 _sanitize 没让它进 vrmPath
+                        // ——理论上不该发生，留着诊断
+                        const vrmValueStr = typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue);
+                        console.warn(`[猫娘切换] VRM 模型路径无效 (${vrmValueStr})，使用默认模型`);
+                    } else {
+                        console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
 
-                            // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
-                            if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
-                                try {
-                                    // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
-                                    // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
-                                    // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
-                                    // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
-                                    // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
-                                    const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
-                                        method: 'PUT',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                            model_type: 'vrm',
-                                            vrm: vrmModelPath  // 使用默认模型路径
-                                        })
-                                    });
+                        // auto-repair：仅 legacy 卡 + 顶层 vrm 字段是 "undefined" 字面值时触发。
+                        // 规范化卡（live3d+vrm 子类型）跳过：PUT 写 model_type='vrm' + 顶层 vrm
+                        // 会反向反规范化，污染后端配置；规范化卡的权威来源是 _reserved.avatar.vrm
+                        // .model_path，正常路径下根本不该走到 fallback（vrmPath 已经覆盖）。
+                        if (isLegacyVrmCard && hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
+                            try {
+                                // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
+                                // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
+                                // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
+                                // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
+                                // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
+                                const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        model_type: 'vrm',
+                                        vrm: vrmModelPath  // 使用默认模型路径
+                                    })
+                                });
+                                throwIfStale();
+                                if (fixResponse.ok) {
+                                    const fixResult = await fixResponse.json();
                                     throwIfStale();
-                                    if (fixResponse.ok) {
-                                        const fixResult = await fixResponse.json();
-                                        throwIfStale();
-                                        if (fixResult.success) {
-                                            console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
-                                        }
+                                    if (fixResult.success) {
+                                        console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
                                     }
-                                } catch (fixError) {
-                                    if (fixError?.isStaleSwitchAttempt) throw fixError;
-                                    console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                                 }
+                            } catch (fixError) {
+                                if (fixError?.isStaleSwitchAttempt) throw fixError;
+                                console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                             }
                         }
-                        console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
-                    } else {
-                        // model_type 不是 'vrm'，抛出错误
-                        const vrmValueStr = hasVrmField && vrmValue !== undefined && vrmValue !== null
-                            ? (typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue))
-                            : '(未配置)';
-                        throw new Error(`VRM 模型路径无效: ${vrmValueStr}`);
                     }
+                    console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
                 }
 
                 // 确保 VRM 管理器已初始化
