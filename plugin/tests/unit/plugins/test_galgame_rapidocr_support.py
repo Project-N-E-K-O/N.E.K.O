@@ -78,8 +78,8 @@ def test_rapidocr_kwargs_prefers_user_model_cache(tmp_path: Path) -> None:
 def test_rapidocr_kwargs_resolves_server_variant_filenames(tmp_path: Path) -> None:
     model_cache_dir = tmp_path / "RapidOCR" / "models"
     package_models_dir = tmp_path / "package" / "models"
-    server_det_path = _touch(model_cache_dir / "ch_PP-OCRv4_server_det_infer.onnx")
-    server_rec_path = _touch(model_cache_dir / "ch_PP-OCRv4_server_rec_infer.onnx")
+    server_det_path = _touch(model_cache_dir / "ch_PP-OCRv4_det_server_infer.onnx")
+    server_rec_path = _touch(model_cache_dir / "ch_PP-OCRv4_rec_server_infer.onnx")
     cls_path = _touch(package_models_dir / "ch_ppocr_mobile_v2.0_cls_infer.onnx")
     # Mobile variants exist alongside server ones to ensure model_type drives selection.
     _touch(package_models_dir / "ch_PP-OCRv4_det_infer.onnx")
