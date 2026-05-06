@@ -404,9 +404,11 @@
                   <p class="install-module-summary" data-i18n="ui.install.ocr_desc">RapidOCR 是主识别后端，DXcam 负责稳定截图，Tesseract 仅作为兼容兜底。</p>
                 </div>
                 <div class="install-tabs">
-                  <button class="install-tab active" data-install-tab="rapidocr">RapidOCR</button>
-                  <button class="install-tab" data-install-tab="dxcam">DXcam</button>
-                  <button class="install-tab" data-install-tab="tesseract">Tesseract</button>
+                  <!-- rapidocr / dxcam tab buttons removed: their banners are
+                       always visible (no install-task tab logic anymore since
+                       both are bundled main-program deps). Only tesseract
+                       still has runtime install machinery. -->
+                  <button class="install-tab active" data-install-tab="tesseract">Tesseract</button>
                 </div>
                 <div class="install-panels install-panels-ocr">
               <div id="rapidocrPrompt" class="install-banner install-banner-rapidocr" hidden>

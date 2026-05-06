@@ -6225,7 +6225,9 @@ function revealLineDetails() {
 }
 
 function revealCaptureBackendSettings() {
-  switchInstallTab('dxcam');
+  // Previously called switchInstallTab('dxcam') to focus the dxcam install
+  // tab, but rapidocr / dxcam tab buttons no longer exist (both bundled
+  // into main program; their banners are always visible). Just scroll.
   expandAndScrollTo('dxcamPrompt');
 }
 

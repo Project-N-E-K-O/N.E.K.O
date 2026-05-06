@@ -2995,7 +2995,6 @@ class RapidOcrBackend:
                         lang_type=self._lang_type,
                         model_type=self._model_type,
                         ocr_version=self._ocr_version,
-                        force_reload=False,
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
             self._runtime = runtime
