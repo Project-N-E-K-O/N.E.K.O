@@ -69,6 +69,27 @@ class TestMapListAction:
         assert d is not None
         assert d.open_in == "same_tab"
 
+    def test_navigation_requires_string_target(self) -> None:
+        for target in (None, "", "   ", {"path": "/ui"}):
+            d = module._map_list_action("demo", "Demo", {
+                "id": "open",
+                "kind": "ui",
+                "label": "Open",
+                "target": target,
+            })
+            assert d is None
+
+    def test_quick_action_parses_string_false(self) -> None:
+        d = module._map_list_action("demo", "Demo", {
+            "id": "greet",
+            "kind": "chat_inject",
+            "label": "Greet",
+            "quick_action": "false",
+        })
+
+        assert d is not None
+        assert d.quick_action is False
+
     def test_invalid_priority_falls_back_to_zero(self) -> None:
         d = module._map_list_action("demo", "Demo", {
             "id": "open",
@@ -107,6 +128,7 @@ class TestMapListAction:
             "id": "do_stuff",
             "kind": "ui",
             "label": "Do Stuff",
+            "target": "/ui",
         })
         assert d is not None
         assert d.action_id == "my-plugin:do_stuff"
@@ -137,7 +159,7 @@ class TestCollectListActions:
     def test_filter_by_plugin_id(self) -> None:
         state = _FakeState(plugins={
             "a": {"name": "A", "list_actions": [{"id": "x", "kind": "action", "label": "X"}]},
-            "b": {"name": "B", "list_actions": [{"id": "y", "kind": "ui", "label": "Y"}]},
+            "b": {"name": "B", "list_actions": [{"id": "y", "kind": "ui", "label": "Y", "target": "/ui"}]},
         })
         actions = _collect(state, plugin_id="b")
         assert len(actions) == 1
@@ -149,7 +171,7 @@ class TestCollectListActions:
             "list_actions": [
                 "not-a-dict",
                 {"id": "ok", "kind": "action", "label": "OK"},
-                {"id": "open", "kind": "ui", "label": "Open"},
+                {"id": "open", "kind": "ui", "label": "Open", "target": "/ui"},
             ],
         }})
         actions = _collect(state)

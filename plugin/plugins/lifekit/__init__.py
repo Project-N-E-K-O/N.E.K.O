@@ -246,7 +246,7 @@ class LifeKitPlugin(NekoPluginBase):
         """获取天气数据。返回 (data, error_key)。"""
         ttl = int(self._cfg.get("cache_ttl_seconds", 1800))
         days = int(self._cfg.get("forecast_days", 3))
-        tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
+        tz = str(self._cfg.get("timezone") or "auto").strip() or "auto"
         cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f},days={days},tz={tz}"
         cached = self._cache.get(cache_key, ttl)
         if cached is not None:
@@ -395,7 +395,9 @@ class LifeKitPlugin(NekoPluginBase):
                 updates["locale"] = locale
             for key in ("default_city", "timezone"):
                 if key in updates:
-                    updates[key] = str(updates[key])
+                    updates[key] = str(updates[key]).strip()
+            if "timezone" in updates and not updates["timezone"]:
+                updates["timezone"] = "auto"
         except (TypeError, ValueError) as exc:
             return Err(SdkError(f"Invalid config value: {exc}"))
         try:

@@ -70,12 +70,14 @@ def SettingsField(
     else:
         json_schema_extra = dict(json_schema_extra or {})
         json_schema_extra["hot"] = hot
-    return Field(
+    field = Field(
         default=default,
         description=description,
         json_schema_extra=json_schema_extra,
         **kwargs,
     )
+    field.metadata.append(("__neko_hot__", hot))
+    return field
 
 
 def get_hot_fields(settings_cls: type[PluginSettings]) -> set[str]:
@@ -85,6 +87,12 @@ def get_hot_fields(settings_cls: type[PluginSettings]) -> set[str]:
     """
     hot_names: set[str] = set()
     for name, field_info in settings_cls.model_fields.items():
+        if any(
+            isinstance(entry, tuple) and entry[:1] == ("__neko_hot__",) and bool(entry[1])
+            for entry in field_info.metadata
+        ):
+            hot_names.add(name)
+            continue
         extra = field_info.json_schema_extra
         if isinstance(extra, dict) and extra.get("hot") is True:
             hot_names.add(name)

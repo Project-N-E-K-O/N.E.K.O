@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from plugin.plugins.lifekit import _routing
-from plugin.plugins.lifekit._routing import OSRMProvider, RoutingProviderError, RoutingService
+from plugin.plugins.lifekit._routing import AMapProvider, OSRMProvider, RoutingProviderError, RoutingService
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -44,6 +44,24 @@ async def test_routing_service_reports_provider_failures() -> None:
 
     assert result.routes == []
     assert result.error == "provider_error:broken:walking:timeout"
+
+
+@pytest.mark.asyncio
+async def test_amap_provider_converts_wgs84_to_gcj02() -> None:
+    provider = AMapProvider("key")
+    captured: dict[str, str] = {}
+
+    async def fake_simple(url: str, origin: str, dest: str, mode: str, timeout: float):
+        captured["origin"] = origin
+        captured["dest"] = dest
+        return []
+
+    provider._simple = fake_simple  # type: ignore[method-assign]
+
+    await provider.plan_route(31.2304, 121.4737, 31.2200, 121.4600, "walking")
+
+    assert captured["origin"] != "121.473700,31.230400"
+    assert captured["dest"] != "121.460000,31.220000"
 
 
 @pytest.mark.asyncio

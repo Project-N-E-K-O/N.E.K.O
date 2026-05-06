@@ -35,6 +35,18 @@ def _safe_priority(value: Any) -> int:
         return 0
 
 
+def _safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
 def _map_list_action(
     plugin_id: str,
     plugin_name: str,
@@ -49,7 +61,7 @@ def _map_list_action(
     label = str(action.get("label", action_id))
     description = str(action.get("description", ""))
     full_action_id = f"{plugin_id}:{action_id}"
-    quick = bool(action.get("quick_action", False))
+    quick = _safe_bool(action.get("quick_action", False))
     icon_override = action.get("icon")
     priority_override = action.get("priority")
 
@@ -74,7 +86,15 @@ def _map_list_action(
         )
 
     if kind in _NAVIGATION_KINDS:
-        target = str(action.get("target", ""))
+        raw_target = action.get("target")
+        if not isinstance(raw_target, str) or not raw_target.strip():
+            logger.debug(
+                "Skipping navigation list_action with invalid target plugin_id={} action_id={}",
+                plugin_id,
+                action_id,
+            )
+            return None
+        target = raw_target.strip()
         open_in = action.get("open_in")
         if open_in not in ("new_tab", "same_tab"):
             open_in = "new_tab"

@@ -1058,6 +1058,7 @@ def _plugin_process_runner(
             run_id = None
             try:
                 ctx._current_lang = None
+                ctx._manual_lang_override = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     run_id = ctx_obj.get("run_id")
@@ -1152,6 +1153,7 @@ def _plugin_process_runner(
 
             try:
                 ctx._current_lang = None
+                ctx._manual_lang_override = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     lanlan_name = ctx_obj.get("lanlan_name")

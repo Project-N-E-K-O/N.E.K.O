@@ -19,7 +19,7 @@ from plugin.sdk.plugin.base import (
     PluginMeta,
 )
 from plugin.sdk.plugin.decorators import plugin_entry
-from plugin.sdk.plugin.settings import PluginSettings, SettingsField, create_settings_safe
+from plugin.sdk.plugin.settings import PluginSettings, SettingsField, create_settings_safe, get_hot_fields
 from plugin.sdk.shared.constants import SDK_VERSION
 
 
@@ -580,6 +580,7 @@ def test_settings_field_preserves_callable_json_schema_extra() -> None:
 
     assert props["hot"] is True
     assert props["x-marker"] == "ok"
+    assert get_hot_fields(_Settings) == {"value"}
 
 
 def test_create_settings_safe_uses_default_factory_once() -> None:

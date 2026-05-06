@@ -271,7 +271,7 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         host_prefix_value = ask_text("路由前缀 (Route Prefix)", default="")
         if host_prefix_value is None:
             return _cancelled()
-        host_prefix = host_prefix_value
+        host_prefix = host_prefix_value.strip()
 
     # Features
     feature_choices = _get_feature_choices(plugin_type)

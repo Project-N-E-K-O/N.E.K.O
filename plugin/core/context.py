@@ -735,7 +735,8 @@ class PluginContext:
         return self._manual_lang_override or self._current_lang or ""
 
     def set_user_language(self, lang: str) -> None:
-        self._manual_lang_override = str(lang).strip() if lang else None
+        normalized = str(lang).strip() if lang else ""
+        self._manual_lang_override = normalized or None
 
     async def _run_update_async(
         self,

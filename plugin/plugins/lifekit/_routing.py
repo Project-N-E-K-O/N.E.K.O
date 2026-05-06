@@ -130,7 +130,11 @@ class AMapProvider:
         dest_lat: float, dest_lon: float,
         mode: str, timeout: float = 10.0,
     ) -> List[Route]:
-        # 高德坐标格式: lon,lat
+        from ._poi import _wgs84_to_gcj02
+
+        origin_lat, origin_lon = _wgs84_to_gcj02(origin_lat, origin_lon)
+        dest_lat, dest_lon = _wgs84_to_gcj02(dest_lat, dest_lon)
+        # 高德坐标格式: lon,lat；高德 API 使用 GCJ-02。
         origin = f"{origin_lon:.6f},{origin_lat:.6f}"
         dest = f"{dest_lon:.6f},{dest_lat:.6f}"
 
