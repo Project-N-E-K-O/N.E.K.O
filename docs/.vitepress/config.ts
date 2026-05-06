@@ -14,7 +14,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     'zh-CN': {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
-      quick: '快速开始', struct: '项目结构',
+      quick: '快速开始', struct: '项目结构', troubleshoot: 'OpenClaw / 字幕窗故障调查',
     },
     ja: {
       group: 'はじめに',
@@ -32,6 +32,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.dev, link: `${p}/guide/dev-setup` },
         { text: t.quick, link: `${p}/guide/quick-start` },
         { text: t.struct, link: `${p}/guide/project-structure` },
+        ...(lang === 'zh-CN' ? [{ text: t.troubleshoot, link: `${p}/guide/openclaw-subtitle-troubleshooting` }] : []),
       ],
     },
   ]
