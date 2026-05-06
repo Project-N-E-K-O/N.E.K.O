@@ -347,12 +347,18 @@
                 if (!s || lower === 'undefined' || lower === 'null') return '';
                 return s;
             };
-            // mmdPath/vrmPath 提前在 live3d 分支统一计算，subType 已知和 subType 缺失两条
-            // 路径都用同一份净化后的路径来源（顶层 + _reserved），让下游 VRM/MMD 加载分支
-            // 直接复用——避免 VRM 分支自己重新解析时只看顶层 catgirlConfig.vrm 漏掉规范化
-            // live3d+vrm 卡的 _reserved.avatar.vrm.model_path（参见 VRM 分支注释）。
-            let mmdPath = '';
-            let vrmPath = '';
+            // mmdPath/vrmPath 在所有 modelType 路径上统一计算（不只 live3d），让下游 VRM/MMD
+            // 加载分支可以直接复用一份已 _sanitize 的路径来源（顶层 + _reserved）：
+            // - 规范化的 live3d+vrm/mmd 卡：权威路径在 _reserved.avatar.{vrm,mmd}.model_path
+            // - legacy 卡（model_type='vrm'，无 live3d_sub_type）：路径在顶层 catgirlConfig.vrm
+            // 之前只在 live3d 分支算 vrmPath，legacy VRM 卡走 VRM 分支时 vrmPath='' 让真实
+            // 模型路径被吃掉静默 fallback 默认模型，回归 PR 之前的行为，bug 由 review 抓出。
+            const mmdPath = _sanitize(catgirlConfig.mmd)
+                || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                || '';
+            const vrmPath = _sanitize(catgirlConfig.vrm)
+                || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                || '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
                 const subType = (
@@ -360,13 +366,6 @@
                     || catgirlConfig.live3d_sub_type
                     || ''
                 ).toString().trim().toLowerCase();
-
-                mmdPath = _sanitize(catgirlConfig.mmd)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                    || '';
-                vrmPath = _sanitize(catgirlConfig.vrm)
-                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                    || '';
 
                 if (subType === 'vrm') {
                     effectiveModelType = 'vrm';
@@ -681,13 +680,14 @@
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
 
-                // VRM 模型路径解析：优先用前面 subType 探测时算好的 vrmPath（已 _sanitize，
-                // 涵盖 _reserved.avatar.vrm.model_path 和顶层 catgirlConfig.vrm，与 MMD 分支
-                // line 1098 `mmdModelPath = mmdPath || catgirlConfig.mmd || _reserved...` 对偶）。
-                // 不再单独检查 catgirlConfig.vrm 字段——规范化为 live3d+vrm 子类型的角色卡
-                // 没有顶层 vrm 字段（其权威来源是 _reserved.avatar.vrm.model_path），原本只看
-                // 顶层会把它误判成"未配置"，触发 fallback 默认模型 + auto-repair PUT 写
-                // model_type='vrm' + 顶层 vrm 字段把规范化卡反向反规范化、污染后端配置。
+                // VRM 模型路径解析：复用前面已 _sanitize 的 vrmPath（涵盖 _reserved.avatar
+                // .vrm.model_path 和顶层 catgirlConfig.vrm 两条来源，无论 modelType=='live3d'
+                // 还是 legacy 'vrm' 都会被填充），与 MMD 分支 `mmdModelPath = mmdPath || ...`
+                // 对偶。
+                // 不再在 VRM 分支自己重新解析顶层 catgirlConfig.vrm——规范化为 live3d+vrm
+                // 子类型的角色卡没有顶层 vrm 字段（其权威来源是 _reserved.avatar.vrm.model_path），
+                // 原本只看顶层会把它误判成"未配置"，触发 fallback 默认模型 + auto-repair PUT
+                // 写 model_type='vrm' + 顶层 vrm 字段把规范化卡反向反规范化、污染后端配置。
                 let vrmModelPath = vrmPath || '';
 
                 // 仅 legacy（catgirlConfig.model_type === 'vrm'）格式参与 auto-repair：规范化
@@ -1680,7 +1680,11 @@
                 } catch (_e) { /* ignore */ }
                 // MMD rollback 恢复：清理阶段为防 MMD→非 MMD 切换中途失败让模型区空白，
                 // 把旧 mmdManager.dispose 延后到了 commit 之后。这里 commit 没到，旧实例
-                // 还活着；恢复 mmd-container 可见性 + 浮动按钮，让用户看到旧模型而不是空白。
+                // 还活着；恢复 mmd-container + canvas 可见性 + 浮动按钮，让用户看到旧模型
+                // 而不是空白。注意 canvas 这里要显式恢复 visibility/display/pointerEvents
+                // 而非用 clearMMDCanvasLoadingSession——后者只清 dataset 但反过来把 canvas
+                // 设成 visibility:hidden + pointerEvents:none（line 117-119），会立刻把刚
+                // 恢复的容器再藏回去，rollback 等于没做。
                 if (_mmdDeferredDispose && window.mmdManager === _mmdDeferredDispose) {
                     try {
                         const mmdContainer = document.getElementById('mmd-container');
@@ -1690,7 +1694,10 @@
                         }
                         const mmdCanvas = document.getElementById('mmd-canvas');
                         if (mmdCanvas) {
-                            clearMMDCanvasLoadingSession(mmdCanvas);
+                            delete mmdCanvas.dataset.mmdLoadingSessionId;
+                            mmdCanvas.style.display = 'block';
+                            mmdCanvas.style.visibility = 'visible';
+                            mmdCanvas.style.pointerEvents = 'auto';
                         }
                         if (typeof _mmdDeferredDispose.setupFloatingButtons === 'function') {
                             _mmdDeferredDispose.setupFloatingButtons();
