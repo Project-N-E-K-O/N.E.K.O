@@ -2780,6 +2780,21 @@ class Win32CaptureBackend:
         return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            # Explicit PrintWindow selection: user is opting into the only
+            # backend that can capture occluded / background windows. If we
+            # silently fell through to dxcam/mss/pyautogui on a background
+            # target after PrintWindow failed, those backends read whatever
+            # is on screen — usually the occluding window — and OCR would
+            # produce confident garbage from the wrong source. Match Smart
+            # mode's strictness for background targets here.
+            if bool(getattr(target, "is_minimized", False)):
+                raise RuntimeError("printwindow: target_window_minimized_for_capture")
+            if bool(getattr(target, "is_foreground", False)):
+                # Foreground: other backends would also see the right window,
+                # so falling through after PrintWindow failure is safe.
+                return list(self._backends)
+            return [self._printwindow_backend]
         if self.selection != _CAPTURE_BACKEND_SMART:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):

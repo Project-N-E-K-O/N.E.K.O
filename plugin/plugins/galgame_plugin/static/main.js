@@ -6252,9 +6252,12 @@ function revealLineDetails() {
 }
 
 function revealCaptureBackendSettings() {
-  // Previously called switchInstallTab('dxcam') to focus the dxcam install
-  // tab, but rapidocr / dxcam tab buttons no longer exist (both bundled
-  // into main program; their banners are always visible). Just scroll.
+  // navigateToInstallPanel expands the Advanced Settings container + the
+  // dependencies <details>, otherwise expandAndScrollTo would scroll past
+  // a still-collapsed parent and the user sees nothing. The 'dxcam' kind
+  // skips the install-tab switch (not in OCR_INSTALL_TABS post-bundling)
+  // but the expansion side-effects still apply.
+  navigateToInstallPanel('dxcam');
   expandAndScrollTo('dxcamPrompt');
 }
 
@@ -6310,14 +6313,17 @@ async function handleDiagnosisAction(action) {
       break;
     case 'capture_backend':
       revealCaptureBackendSettings();
-      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。'), 'info');
+      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS、PyAutoGUI 或 PrintWindow。'), 'info');
       break;
     case 'install_rapidocr':
       // The action ID is kept for backward compat with diagnosis emitters
       // (`withRapidOcrInstallAction`, onboarding button). Behavior changed:
-      // RapidOCR is bundled now, no in-app install. Just scroll to the
-      // status banner where the bundled_hint copy explains what to do
-      // (reinstall packaged build / `uv sync --group galgame`).
+      // RapidOCR is bundled now, no in-app install. navigateToInstallPanel
+      // expands the Advanced Settings + dependencies containers so the
+      // banner is actually visible after the scroll; bundled_hint copy on
+      // the banner explains what to do (reinstall packaged build /
+      // `uv sync --group galgame`).
+      navigateToInstallPanel('rapidocr');
       expandAndScrollTo('rapidocrPrompt');
       setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;

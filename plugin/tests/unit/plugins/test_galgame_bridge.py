@@ -5054,6 +5054,40 @@ def test_win32_capture_backend_smart_uses_target_aware_order() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_win32_capture_backend_printwindow_strict_for_background_target() -> None:
+    # Explicit `selection="printwindow"` should ONLY use PrintWindow on a
+    # background/occluded target. Falling through to dxcam/mss/pyautogui
+    # would silently OCR the occluding window (screen pixels, not target
+    # window) — defeats the whole reason a user picks PrintWindow explicitly.
+    # Foreground target keeps the fallback chain since the other backends
+    # would also see the correct window.
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
+    foreground = DetectedGameWindow(
+        hwnd=1,
+        title="Demo",
+        process_name="DemoGame.exe",
+        pid=200,
+        is_foreground=True,
+    )
+    background = DetectedGameWindow(
+        hwnd=2,
+        title="Demo",
+        process_name="DemoGame.exe",
+        pid=201,
+        is_foreground=False,
+    )
+    assert [item.kind for item in backend._ordered_backends_for_target(foreground)] == [
+        "printwindow",
+        "dxcam",
+        "mss",
+        "pyautogui",
+    ]
+    assert [item.kind for item in backend._ordered_backends_for_target(background)] == [
+        "printwindow"
+    ]
+
+
+@pytest.mark.plugin_unit
 def test_ocr_stability_ignores_whitelisted_trailing_orphan_only() -> None:
     clean = galgame_ocr_reader._clean_ocr_dialogue_text("三年前初患此病，我便将人视作走兽。")
     orphan = galgame_ocr_reader._clean_ocr_dialogue_text("三年前初患此病，我便将人视作走兽。义")
