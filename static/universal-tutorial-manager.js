@@ -3258,11 +3258,14 @@ class UniversalTutorialManager {
         // 模型管理 MMD 教程结束后曾出现 #vrm-model-select-btn / #mmd-animation-select-btn
         // 等按钮被 pointer-events:none 卡死的情况，根因是 await 期间集合被提前 clear，
         // 后续被遗漏。这里独立做一遍 DOM 兜底清理。
+        // 优先从 tutorialInteractionStates 还原原始 inline 值，仅在没有保存态时
+        // 退化为清空，避免误把页面上原本就 pointer-events:none 的元素重新激活。
         try {
             document.querySelectorAll('[data-tutorial-disabled]').forEach(element => {
-                element.style.pointerEvents = '';
-                element.style.cursor = '';
-                element.style.userSelect = '';
+                const state = this.tutorialInteractionStates.get(element);
+                element.style.pointerEvents = state?.pointerEvents || '';
+                element.style.cursor = state?.cursor || '';
+                element.style.userSelect = state?.userSelect || '';
                 delete element.dataset.tutorialDisabled;
             });
         } catch (error) {
