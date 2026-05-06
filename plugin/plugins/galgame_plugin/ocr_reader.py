@@ -287,6 +287,15 @@ _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
 )
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
+
+
+class _CaptureStillRunning(TimeoutError):
+    """Backpressure: previous capture worker has not finished yet."""
+
+
+class _CaptureTimedOut(TimeoutError):
+    """A single capture/OCR call exceeded the deadline."""
+
 _FOREGROUND_ADVANCE_STABLE_GRACE_SECONDS = 2.0
 _CAPTURE_BACKEND_AUTO = "auto"
 _CAPTURE_BACKEND_SMART = "smart"
@@ -6487,13 +6496,13 @@ class OcrReaderManager:
             current = self._capture_future
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
-                prefix = (
-                    "previous ocr_reader capture/OCR timed out and is still running"
-                    if self._capture_future_timed_out
-                    else "previous ocr_reader capture/OCR is still running"
-                )
-                raise TimeoutError(
-                    f"{prefix} after {elapsed:.1f}s; "
+                if self._capture_future_timed_out:
+                    raise _CaptureStillRunning(
+                        f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                        "skipping new capture to avoid accumulating blocked OCR threads"
+                    )
+                raise _CaptureStillRunning(
+                    f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
                     "skipping new capture to avoid overlapping OCR work"
                 )
             executor = self._capture_executor
@@ -6547,7 +6556,7 @@ class OcrReaderManager:
             with self._capture_worker_lock:
                 if self._capture_future is future:
                     self._capture_future_timed_out = True
-            raise TimeoutError(
+            raise _CaptureTimedOut(
                 f"ocr_reader capture/OCR timed out after {timeout_seconds:.1f}s"
             ) from exc
         finally:
@@ -7606,6 +7615,18 @@ class OcrReaderManager:
                             )
                             if emitted:
                                 now = followup_now
+        except _CaptureStillRunning as exc:
+            self._logger.debug("ocr_reader tick skipped (backpressure): {}", exc)
+            result.warnings.append(f"ocr_reader tick skipped: {exc}")
+            capture_attempted = False
+        except _CaptureTimedOut as exc:
+            self._logger.warning("ocr_reader capture/OCR timed out: {}", exc)
+            capture_error = True
+            self._record_capture_error(now=now, error=exc)
+            self._reset_aihong_menu_state()
+            if int(self._writer.last_seq or 0) <= 1:
+                self._writer.discard_session()
+            result.warnings.append(f"ocr_reader capture timed out: {exc}")
         except Exception as exc:
             self._logger.warning("ocr_reader capture/OCR failed: {}", exc)
             capture_error = True
