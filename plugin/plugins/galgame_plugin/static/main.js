@@ -5674,7 +5674,6 @@ function scheduleSettingsAutosave() {
 }
 
 async function saveMode({ auto = false } = {}) {
-  const requestId = ++modeSaveRequestId;
   let modeCommitted = false;
   clearSettingsAutosaveTimer();
   const mode = document.getElementById('modeSelect').value;
@@ -5708,6 +5707,7 @@ async function saveMode({ auto = false } = {}) {
     clearPendingModeSelection(mode);
     return;
   }
+  const requestId = ++modeSaveRequestId;
   try {
     if (mode && (!latestStatus || latestStatus.mode !== mode)) {
       pendingModeSelection = mode;
@@ -5733,29 +5733,34 @@ async function saveMode({ auto = false } = {}) {
       vision_enabled: visionEnabled,
       vision_max_image_px: Math.round(visionMaxImagePx),
     });
+    if (requestId !== modeSaveRequestId) {
+      return;
+    }
     setFlash(auto ? uiT('ui.flash.settings_auto_saved', '设置已自动保存') : uiT('ui.flash.settings_saved', '设置已保存'), 'success');
     settingsDirty = false;
     settingsSaveInFlight = false;
     updateSettingsDirtyHint();
-    if (requestId === modeSaveRequestId) {
-      await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
-    }
+    await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
   } catch (error) {
-    if (requestId === modeSaveRequestId) {
-      if (modeCommitted) {
-        try {
-          await refreshAll({ preserveFlash: true, forceRefresh: true });
-        } catch (refreshError) {
-          console.error('[galgame] mode save reconcile refresh failed', refreshError);
-        }
-      } else {
-        clearPendingModeSelection(mode);
+    if (requestId !== modeSaveRequestId) {
+      console.error('[galgame] stale saveMode error suppressed', error);
+      return;
+    }
+    if (modeCommitted) {
+      try {
+        await refreshAll({ preserveFlash: true, forceRefresh: true });
+      } catch (refreshError) {
+        console.error('[galgame] mode save reconcile refresh failed', refreshError);
       }
+    } else {
+      clearPendingModeSelection(mode);
     }
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   } finally {
-    settingsSaveInFlight = false;
-    updateSettingsDirtyHint();
+    if (requestId === modeSaveRequestId) {
+      settingsSaveInFlight = false;
+      updateSettingsDirtyHint();
+    }
   }
 }
 
