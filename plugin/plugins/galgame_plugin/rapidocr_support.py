@@ -315,7 +315,12 @@ def inspect_rapidocr_installation(
     return {
         "install_supported": supported,
         "installed": installed,
-        "can_install": supported and not installed,
+        # rapidocr-onnxruntime is now bundled into the main program (see
+        # pyproject.toml [dependency-groups] galgame). When it's not importable
+        # the user is on a source install without `uv sync --group galgame` —
+        # no in-app install action exists anymore (HTTP routes removed in this
+        # refactor), so `can_install` stays False to keep the UI button hidden.
+        "can_install": False,
         "detected_path": detected_path,
         "target_dir": str(target_dir) if target_dir else "",
         "runtime_dir": str(runtime_dir) if runtime_dir else "",
