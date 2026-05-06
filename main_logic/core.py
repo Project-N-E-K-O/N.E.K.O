@@ -190,7 +190,7 @@ from utils.api_config_loader import (
     get_livestream_config,
     is_livestream_active,
 )
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full, is_supported_language_code
 import threading
 from threading import Thread
 from queue import Queue, Empty
@@ -5533,6 +5533,16 @@ class LLMSessionManager:
         """
         if not language:
             logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
+            return
+
+        # 校验原始输入：``normalize_language_code`` 对未识别值会默认回退 ``'en'``，
+        # 外部来源（ws ``message['language']`` 携带的 corrupted ``localStorage``、
+        # 第三方客户端发的 ``'undefined'`` / ``'null'`` / ``'estonian'`` 等 garbage）
+        # 会被静默归一成 ``'en'``，覆盖正确的 session locale。先用公共白名单挡掉。
+        if not is_supported_language_code(language):
+            logger.warning(
+                f"语言参数不支持: {language!r}，保持当前语言: {self.user_language}"
+            )
             return
 
         # 使用公共函数进行语言代码归一化
