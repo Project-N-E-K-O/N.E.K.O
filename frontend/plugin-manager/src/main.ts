@@ -27,6 +27,43 @@ import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 initDarkMode()
 initPluginDashboardYuiGuideRuntime()
 
+function initDecorativeImageDragGuard() {
+  const markImage = (img: HTMLImageElement) => {
+    img.draggable = false
+    img.setAttribute('draggable', 'false')
+  }
+
+  const markImages = (root: ParentNode | HTMLImageElement = document) => {
+    if (root instanceof HTMLImageElement) {
+      markImage(root)
+      return
+    }
+    root.querySelectorAll<HTMLImageElement>('img').forEach(markImage)
+  }
+
+  const handleDragStart = (event: DragEvent) => {
+    if (event.target instanceof HTMLImageElement) {
+      event.preventDefault()
+    }
+  }
+
+  markImages(document)
+  document.addEventListener('dragstart', handleDragStart, true)
+
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node instanceof Element) {
+          markImages(node)
+        }
+      })
+    })
+  })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+}
+
+initDecorativeImageDragGuard()
+
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
 
 const app = createApp(App)
