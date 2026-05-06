@@ -3208,6 +3208,17 @@ function renderStatus(status) {
   document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.mode === currentMode);
   });
+  const modeSwitchEl = document.getElementById('modeSwitch');
+  if (modeSwitchEl) {
+    modeSwitchEl.dataset.active = currentMode;
+    const activeBtn = modeSwitchEl.querySelector('.mode-btn.active');
+    if (activeBtn) {
+      const sr = modeSwitchEl.getBoundingClientRect();
+      const br = activeBtn.getBoundingClientRect();
+      modeSwitchEl.style.setProperty('--indicator-left', `${br.left - sr.left}px`);
+      modeSwitchEl.style.setProperty('--indicator-width', `${br.width}px`);
+    }
+  }
   const currentSpeed = status.advance_speed || 'medium';
   document.querySelectorAll('#speedSwitch .speed-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.speed === currentSpeed);

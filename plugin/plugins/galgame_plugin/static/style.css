@@ -1918,16 +1918,107 @@ body:not(.onboarding-active) #onboardingView {
   align-items: center;
 }
 
-.mode-switch,
-.speed-switch {
+/* ---- mode-switch (pill segmented control) ---- */
+
+.mode-switch {
+  position: relative;
   display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(31, 42, 51, 0.06);
+  isolation: isolate;
+}
+
+.mode-switch::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: var(--indicator-left, 76px);
+  width: var(--indicator-width, 72px);
+  height: calc(100% - 8px);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(31, 42, 51, 0.1), 0 1px 2px rgba(31, 42, 51, 0.06);
+  transition: left 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.mode-btn {
+  position: relative;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  border: none;
+  cursor: pointer;
+  transition: color 200ms ease;
+  z-index: 1;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mode-btn:hover {
+  color: var(--ink);
+}
+
+.mode-btn.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.mode-btn:active {
+  transform: scale(0.95);
+  transition: transform 100ms ease;
+}
+
+.mode-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* ---- Mode accents ---- */
+
+.mode-btn[data-mode="silent"].active {
+  color: var(--muted);
+}
+
+.mode-switch[data-active="silent"]::before {
+  background: #f0f0f0;
+  box-shadow: 0 2px 8px rgba(31, 42, 51, 0.08);
+}
+
+.mode-btn[data-mode="companion"].active {
+  color: var(--brand-strong);
+}
+
+.mode-switch[data-active="companion"]::before {
+  background: rgba(14, 138, 124, 0.1);
+  box-shadow: 0 2px 8px rgba(14, 138, 124, 0.12);
+}
+
+.mode-btn[data-mode="choice_advisor"].active {
+  color: var(--accent);
+}
+
+.mode-switch[data-active="choice_advisor"]::before {
+  background: rgba(210, 95, 69, 0.08);
+  box-shadow: 0 2px 8px rgba(210, 95, 69, 0.12);
+}
+
+/* ---- speed-switch ---- */
+
+.speed-switch {
   gap: 4px;
   padding: 4px;
   border-radius: 999px;
   background: rgba(31, 42, 51, 0.06);
 }
 
-.mode-btn,
 .speed-btn {
   padding: 8px 16px;
   border-radius: 999px;
@@ -1939,12 +2030,10 @@ body:not(.onboarding-active) #onboardingView {
   transition: background 150ms ease, color 150ms ease;
 }
 
-.mode-btn:hover,
 .speed-btn:hover {
   background: rgba(255, 255, 255, 0.5);
 }
 
-.mode-btn.active,
 .speed-btn.active {
   background: #fff;
   color: var(--brand-strong);
@@ -2156,9 +2245,13 @@ body:not(.onboarding-active) #onboardingView {
     align-items: stretch;
   }
 
-  .mode-switch,
+  .mode-switch {
+    align-self: flex-start;
+  }
+
   .speed-switch {
     flex-direction: column;
+    align-self: stretch;
   }
 
   .primary-diagnosis-actions,
