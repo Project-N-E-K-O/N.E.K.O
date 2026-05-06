@@ -233,6 +233,26 @@
                     } catch (_e) { /* ignore overlay failures */ }
                     mmdLoadingSessionId = '';
                 }
+                // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
+                // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
+                // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
+                //   - S.socket=null 且旧 ws 还活着 → 恢复 S.socket = _switchOldSocket（让用户继续旧角色）
+                //   - 新 connectWebSocket 已跑且 S.socket 是新 ws → 直接关旧 _switchOldSocket
+                try {
+                    if (_switchOldSocket
+                        && _switchOldSocket.readyState !== WebSocket.CLOSED
+                        && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                        if (S.socket === null) {
+                            S.socket = _switchOldSocket;
+                            console.log('[猫娘切换] watchdog 触发，恢复 S.socket 引用到旧连接');
+                        } else if (S.socket !== _switchOldSocket) {
+                            _switchOldSocket.close();
+                        }
+                    }
+                    if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                        clearInterval(_switchOldHeartbeat);
+                    }
+                } catch (_e) { /* ignore socket cleanup failures */ }
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
                 try {
