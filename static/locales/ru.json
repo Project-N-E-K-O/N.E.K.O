@@ -1966,6 +1966,7 @@
         "switchedCatgirl": "Переключено на {{name}}",
         "switchCatgirlFailed": "Не удалось переключиться на {{name}}",
         "switchCatgirlError": "Ошибка переключения: {{error}}",
+        "switchCatgirlWatchdog": "Прошлое переключение персонажа, похоже, зависло. Попробуйте ещё раз",
         "started": "{{name}} запущена",
         "voiceUpdated": "Голос {{name}} обновлён",
         "audioWorkletFailed": "AudioWorklet не загрузился",

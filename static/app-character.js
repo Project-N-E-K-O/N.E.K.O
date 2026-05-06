@@ -151,15 +151,161 @@
             console.log('[猫娘切换] 新旧角色相同，跳过切换');
             return;
         }
+        // 已是当前角色：BroadcastChannel 兜底 + WebSocket 后端通知会让同一次切换在两条
+        // 通道各到一份。BC 先到的话 handleCatgirlSwitch 跑完 lanlan_name 已是 newCatgirl，
+        // 接踵而至的 WS 事件参数还是 (newCatgirl, 上一次的 oldCatgirl)，原本只 newCatgirl
+        // !== oldCatgirl 的 dedupe 拦不住，会重新清 chat / 关 socket / 重连 / 重加载模型。
+        // app-interpage.js 的 BC handler 已加同样守护作为外层防御，这里在源头再加一道，
+        // 让所有调用方（不光 BC/WS handler）自动受益。
+        if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
+            console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
+            return;
+        }
         // 确认切换到不同角色后，清空上一任的搜歌任务
         window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
         _switchOldSocket = S.socket;
         _switchOldHeartbeat = S.heartbeatInterval;
+        // 保存切换前的 lanlan_config 三件套用于失败回滚。三个字段都在 fallible await 之前
+        // 被乐观写入：lanlan_name 在 line 489（connectWebSocket 之前），model_type / live3d_sub_type
+        // 在 line ~234（VRM 模型类型分支判定之前）。任何路径上失败/超时都得整套回滚，否则：
+        //   - lanlan_name 不回滚 → 重试同名被入口 dedupe 拦掉
+        //   - model_type / live3d_sub_type 不回滚 → 全局类型跟实际仍跑的旧模型不一致，
+        //     后续分支走偏（preload 穿透逻辑读这两个字段）
+        const previousLanlanConfig = {
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            model_type: (window.lanlan_config && window.lanlan_config.model_type) || '',
+            live3d_sub_type: (window.lanlan_config && window.lanlan_config.live3d_sub_type) || '',
+        };
+        const restorePreviousLanlanConfig = () => {
+            if (!window.lanlan_config) return;
+            window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
+            window.lanlan_config.model_type = previousLanlanConfig.model_type;
+            window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+        };
+        // 给延迟 UI 回调用的角色归属守护：handleCatgirlSwitch 完成后挂着的 setTimeout
+        // (line 964/1187/1357 那些 300ms ensure-visible 回调）触发时如果用户已切到别的角色，
+        // 旧回调会污染新角色的 UI（比如调 setupFloatingButtons 重建错类型按钮）。
+        //
+        // 双重守护：
+        //   - lanlan_name === newCatgirl：cover 新 attempt 已经把 lanlan_name 改成它的目标
+        //   - S._currentSwitchAttemptId === myAttemptId：cover 新 attempt 已接管 attempt id
+        //     但还没跑到 line 612 改 lanlan_name 的窗口（line 203 attempt id 接管 vs line 612
+        //     lanlan_name 写入之间的几百行代码 + 长 await）。这段窗口里只查 lanlan_name 会
+        //     误判"自己还是当前角色"放行旧 setTimeout 的 UI mutation。
+        const isStillActiveSwitchTarget = () =>
+            S._currentSwitchAttemptId === myAttemptId
+            && !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
+
+        // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
+        // fetch /api/characters 等）。任何一处永挂都会让 finally 永不执行、isSwitchingCatgirl
+        // 永卡 true，后续 broadcast 触发的切换全在前面 isSwitchingCatgirl 早退分支被吞掉，
+        // 且 ws 重连也救不回来——只能刷页面。墙钟兜底强制重置标志，让用户能再次触发切换自愈。
+        // 45s 留足真实大模型加载空间（VRM/MMD 偶尔 20-30s），又不至于让用户等到放弃。
+        //
+        // attempt id 归属：watchdog 触发后用户重试新一轮切换时，老 attempt 的 promise 链
+        // 如果苏醒走到 finally，会把新 attempt 的标志也一并清掉、放第三次切换并发进来。
+        // 给每次切换一个 id，watchdog 和 finally 都只在 id 匹配时才动 isSwitchingCatgirl，
+        // 老 attempt 的副作用就被锁在自己 attempt 内。
+        const myAttemptId = (S._switchAttemptCounter = (S._switchAttemptCounter || 0) + 1);
+        S._currentSwitchAttemptId = myAttemptId;
+        // 显式切换完成 flag：lanlan_name 在 line 612 就赋值，远早于 model load / render
+        // stabilization 等长 await。如果 watchdog 用 `lanlan_name === newCatgirl` 判 "已完成"，
+        // 长 await 永挂超过 45s 时会误判跳过回滚 + toast，但实际 model/UI 没切完——
+        // 用户重试同名被 dedupe 拦死卡半切换。改用显式 flag：line 1546 "已切换到"toast 之前
+        // 才 set true（这点说明模型/socket/UI/lanlan_config 都到位、只剩 unlockAchievement
+        // 等末尾副作用 await），watchdog 检测这个 flag 精准。
+        let switchHasCommitted = false;
+        // try 体里 line 486 / 489 / 493 那一段是关键全局副作用区段：S.socket.close()、
+        // lanlan_config.lanlan_name = newCatgirl、connectWebSocket()。老 attempt 卡在
+        // removeModel/clearAudioQueue 这类无 timeout 的 await 上苏醒后会接着跑这一段，
+        // 把新 attempt 刚连的 socket 关掉、把 lanlan_name 覆盖回老目标、用老 lanlan_name
+        // 重连——直接把新切换状态打回老角色。在每个关键 await 之后调 throwIfStale 让老
+        // attempt 苏醒第一时间被赶进 catch 走 finally，attempt id 校验决定不动门闩。
+        const throwIfStale = () => {
+            if (S._currentSwitchAttemptId !== myAttemptId) {
+                const err = new Error('[猫娘切换] attempt ' + myAttemptId + ' superseded（已被新一轮切换取代或 watchdog 超时），中止后续 mutation');
+                err.isStaleSwitchAttempt = true;
+                throw err;
+            }
+        };
+        const switchWatchdogId = setTimeout(() => {
+            if (S._currentSwitchAttemptId !== myAttemptId) return;
+            if (S.isSwitchingCatgirl) {
+                // 切换可能已实际完成、只是末尾 unlockAchievement 等无关副作用 await 还在跑：
+                // line 1481 toast 已 emit + connectWebSocket 已跑 + model 已加载 + lanlan_config
+                // 已写入 newCatgirl。此时 watchdog 无脑 restorePreviousLanlanConfig 会把
+                // lanlan_config 回滚成旧、socket 收尾把新 ws 关掉，但实际 model/server 都在新——
+                // 严重 desync。检测：lanlan_name 已是 newCatgirl 说明已切完，跳过回滚 + socket
+                // 收尾，只清门闩 + 收 overlay。
+                // 用显式 commit flag 而非 lanlan_name 判定——后者在 line 612 就赋值，远早于
+                // model load 等长 await 完成。switchHasCommitted 在 line ~1546 toast 之前才
+                // set true，那时模型/socket/UI 都已到位。
+                const switchAlreadyCompleted = switchHasCommitted;
+                if (switchAlreadyCompleted) {
+                    console.warn('[猫娘切换] watchdog 超时 45s，但切换已实际完成（卡在 unlockAchievement 等末尾副作用 await），跳过回滚仅清门闩');
+                } else {
+                    console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
+                    // 整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type），否则
+                    // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
+                    // 后续分支走偏。
+                    restorePreviousLanlanConfig();
+                    // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
+                    // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
+                    // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
+                    //   - S.socket=null 且旧 ws 还活着 → 恢复 S.socket = _switchOldSocket（让用户继续旧角色）
+                    //   - 新 connectWebSocket 已跑且 S.socket 是新 ws → 直接关旧 _switchOldSocket
+                    try {
+                        if (_switchOldSocket
+                            && _switchOldSocket.readyState !== WebSocket.CLOSED
+                            && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                            if (S.socket === null) {
+                                S.socket = _switchOldSocket;
+                                console.log('[猫娘切换] watchdog 触发，恢复 S.socket 引用到旧连接');
+                            } else if (S.socket !== _switchOldSocket) {
+                                _switchOldSocket.close();
+                            }
+                        }
+                        if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                            clearInterval(_switchOldHeartbeat);
+                        }
+                    } catch (_e) { /* ignore socket cleanup failures */ }
+                }
+                // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
+                // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
+                // overlay 留着 block UI，用户看到 toast 也没法点。这里主动 fail 它。
+                // overlay 收尾不区分"已完成 vs 未完成"——已完成路径下 overlay 应该已经被 end 掉，
+                // mmdLoadingSessionId 一般已为空；这里只是 defensive 兜底。
+                if (mmdLoadingSessionId) {
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch watchdog timeout' });
+                        clearMMDCanvasLoadingSession(document.getElementById('mmd-canvas'));
+                    } catch (_e) { /* ignore overlay failures */ }
+                    mmdLoadingSessionId = '';
+                }
+                S.isSwitchingCatgirl = false;
+                S._currentSwitchAttemptId = null;
+                if (!switchAlreadyCompleted) {
+                    try {
+                        showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
+                    } catch (_e) { /* ignore toast failures */ }
+                }
+                // 已完成路径下不弹"卡住了"toast——line 1481 已 emit 的"已切换到 newCatgirl"是
+                // 用户唯一应该看到的状态反馈。
+            }
+        }, 45000);
 
         try {
             emitAssistantSpeechCancel('character_switch');
+            // VRM applyLighting retry ownership token：无论新角色是 VRM/Live2D/MMD 都先刷新。
+            // 之前只在 VRM 分支刷的话，VRM→Live2D/MMD 时旧 VRM retry 仍持有相同 token →
+            // 继续 mutate vrmManager.scene 灯光（即便 VRM 已隐藏，scene 状态被污染、下次切回
+            // VRM 时残留）。这里无条件刷成 attempt 级 token，旧 retry 比对 !== 立刻自杀。
+            // 提到 try 顶部还覆盖了"非 VRM 分支也参与 ownership 流转"的语义。
+            const currentSwitchId = Symbol();
+            window._currentCatgirlSwitchId = currentSwitchId;
+
             // 0. 紧急制动：立即停止所有渲染循环
             // 停止 Live2D Ticker
             if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
@@ -174,10 +320,12 @@
 
             // 1. 获取新角色的配置（包括 model_type）
             const charResponse = await fetch('/api/characters');
+            throwIfStale();
             if (!charResponse.ok) {
                 throw new Error('无法获取角色配置');
             }
             const charactersData = await charResponse.json();
+            throwIfStale();
             const catgirlConfig = charactersData['猫娘']?.[newCatgirl];
 
             if (!catgirlConfig) {
@@ -395,8 +543,13 @@
                 }
 
             } catch (e) {
+                if (e?.isStaleSwitchAttempt) throw e;
                 console.warn('[猫娘切换] Live2D 清理出错:', e);
             }
+            // 内层 try 之外做 stale 检查：line 413 await live2dManager.removeModel 是这一段唯一的
+            // long await，stale attempt 可能卡在它的 ticker 回调清理里。在 try 外检查，避免
+            // throwIfStale 抛错被上面的 catch 吞成 warn 让 stale attempt 继续往下跑。
+            throwIfStale();
 
             // 清理 MMD 资源
             try {
@@ -481,14 +634,20 @@
             }
             //  等待清空音频队列完成，避免竞态条件
             await clearAudioQueue();
+            throwIfStale();
             if (S.isTextSessionActive) S.isTextSessionActive = false;
 
+            // 关键全局副作用区段开始：S.socket / lanlan_config / connectWebSocket。
+            // 老 attempt 苏醒到这里若已 stale，绝对不能再动这些——会把新 attempt 的
+            // socket 关掉、lanlan_name 覆盖回老目标、用老 lanlan_name 重连。
+            throwIfStale();
             if (S.socket) S.socket.close();
             if (S.heartbeatInterval) clearInterval(S.heartbeatInterval);
 
             window.lanlan_config.lanlan_name = newCatgirl;
 
             await new Promise(resolve => setTimeout(resolve, 100));
+            throwIfStale();
             S._pendingGreetingSwitch = true;  // 标记为切换连接，onopen 时发送 greeting_check
             connectWebSocket();
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
@@ -502,7 +661,7 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
             } else if (effectiveModelType === 'vrm') {
-                // 加载 VRM 模型
+                // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
 
                 // 安全获取 VRM 模型路径，处理各种边界情况
@@ -557,6 +716,11 @@
                             // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
                             if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
                                 try {
+                                    // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
+                                    // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
+                                    // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
+                                    // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
+                                    // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
                                     const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
                                         method: 'PUT',
                                         headers: { 'Content-Type': 'application/json' },
@@ -565,13 +729,16 @@
                                             vrm: vrmModelPath  // 使用默认模型路径
                                         })
                                     });
+                                    throwIfStale();
                                     if (fixResponse.ok) {
                                         const fixResult = await fixResponse.json();
+                                        throwIfStale();
                                         if (fixResult.success) {
                                             console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
                                         }
                                     }
                                 } catch (fixError) {
+                                    if (fixError?.isStaleSwitchAttempt) throw fixError;
                                     console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                                 }
                             }
@@ -649,6 +816,11 @@
                         };
                     });
                 }
+                // VRMRuntimeReady wait（5s timeout）resolve 后立刻做 stale 检查：stale attempt
+                // 苏醒后接下来的 vrmManager 创建 / canvas 创建 / initThreeJS 都会 mutate 共享
+                // three.js 状态，必须在调任何 mutation 之前拦下，否则即便 line 723 的 throwIfStale
+                // 抛错，污染已经发生了。
+                throwIfStale();
 
                 if (!window.vrmManager) {
                     window.vrmManager = new window.VRMManager();
@@ -670,6 +842,7 @@
                 }
                 const lightingConfig = catgirlConfig.lighting || null;
                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
+                throwIfStale();
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 // 再次验证 vrmModelPath 的有效性
@@ -724,6 +897,7 @@
                 // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，会自动尝试 /user_vrm/ 和 /static/vrm/）
                 console.log('[猫娘切换] 开始加载VRM模型:', modelUrl);
                 await window.vrmManager.loadModel(modelUrl);
+                throwIfStale();
                 console.log('[猫娘切换] VRM模型加载完成');
 
                 // 【关键修复】确保VRM渲染循环已启动（loadModel内部会调用startAnimation，但为了保险再次确认）
@@ -736,7 +910,7 @@
                     console.log('[猫娘切换] VRM渲染循环已启动，ID:', window.vrmManager._animationFrameId);
                 }
 
-                // 应用角色的光照配置
+                // 应用角色的光照配置（currentSwitchId 在 VRM 分支顶部已刷新）
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
 
@@ -744,8 +918,6 @@
                     let applyLightingRetryCount = 0;
                     const MAX_RETRY_COUNT = 50; // 最多重试50次（5秒）
                     let applyLightingTimerId = null;
-                    const currentSwitchId = Symbol(); // 用于标识当前切换，防止旧切换的定时器继续执行
-                    window._currentCatgirlSwitchId = currentSwitchId;
 
                     const applyLighting = () => {
                         // 检查是否切换已被取消（新的切换已开始）
@@ -891,6 +1063,8 @@
 
                 // 确保 VRM 按钮和锁图标可见
                 setTimeout(() => {
+                    // fire-and-forget 延迟回调：用户在 300ms 内切到别角色时旧回调会重建错类型按钮
+                    if (!isStillActiveSwitchTarget()) return;
                     const vrmButtons = document.getElementById('vrm-floating-buttons');
                     console.log('[猫娘切换] VRM按钮检查 - 存在:', !!vrmButtons);
                     if (vrmButtons) {
@@ -1016,13 +1190,17 @@
                     } else if (typeof initMMDModel === 'function') {
                         initializedManager = await initMMDModel();
                     }
+                    throwIfStale();
                     if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
                         console.error('[猫娘切换] MMD 管理器初始化失败');
                         window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
                             detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
                         });
                         mmdLoadingSessionId = '';
-                        return;
+                        // 改 throw 而不 return：原本静默 return 会绕过外层 catch 的失败 toast +
+                        // lanlan_config 回滚，配合本 PR 入口加的 dedupe (lanlan_name === newCatgirl)
+                        // 会让用户重试同名角色被拦死、且 lanlan_config 残留半切换状态。
+                        throw new Error('MMD 管理器初始化失败');
                     }
                 }
 
@@ -1035,16 +1213,31 @@
                     try {
                         window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'settings' });
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
+                        throwIfStale();
                         const settingsData = await settingsRes.json();
+                        throwIfStale();
                         if (settingsData.success && settingsData.settings) {
                             savedSettings = settingsData.settings;
                             if (savedSettings.physics?.enabled != null) {
+                                // mutation 之前再一次 stale 检查：上面两道 throwIfStale 已能拦下
+                                // stale 苏醒在 fetch / json await 之后的场景，但 catch 已加 stale
+                                // rethrow 兜底，这道是局部防御性双保险——将来 try 里多加一个 await
+                                // 时不至于漏。
+                                throwIfStale();
                                 window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
                             }
                         }
-                    } catch (e) { /* ignore - will use current enablePhysics */ }
+                    } catch (e) {
+                        if (e?.isStaleSwitchAttempt) throw e;
+                        /* ignore - will use current enablePhysics */
+                    }
+                    // settings 段的 catch 故意 swallow 用户态错误，但要把 stale rethrow 出去；
+                    // 同时再做一次显式 stale 检查兜底，避免 stale attempt 在 settings fetch
+                    // 里苏醒后接着调 mmdManager.loadModel 跟 B 并发跑共享的 loadModel。
+                    throwIfStale();
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'model' });
                     await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
+                    throwIfStale();
                     console.log('[猫娘切换] MMD 模型加载完成');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -1058,15 +1251,22 @@
                         try {
                             window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'idle' });
                             await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                            // playAnimation 之前补 stale 检查：A 卡在 loadAnimation 上苏醒后会
+                            // 直接对 B 接管的 mmdManager 播放 A 的待机动作，串台。catch 已 rethrow
+                            // stale 不会被吞。
+                            throwIfStale();
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
                         } catch (idleErr) {
+                            if (idleErr?.isStaleSwitchAttempt) throw idleErr;
                             console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
                         }
+                        throwIfStale();
                     }
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'done' });
                     if (window._waitForMMDRenderFrame) {
                         await window._waitForMMDRenderFrame(window.mmdManager);
+                        throwIfStale();
                     }
                     window.MMDLoadingOverlay?.end(mmdLoadingSessionId);
                     const mmdCanvasReady = document.getElementById('mmd-canvas');
@@ -1095,6 +1295,7 @@
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
+                    if (!isStillActiveSwitchTarget()) return;
                     const mmdButtons = document.getElementById('mmd-floating-buttons');
                     if (mmdButtons) {
                         mmdButtons.style.removeProperty('display');
@@ -1124,7 +1325,20 @@
                 }
 
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
+                throwIfStale();
+                if (!modelResponse.ok) {
+                    // 原本失败也走成功路径：configRes.ok 失败时跳进 fallback yui-origin，
+                    // 但 modelResponse 本身失败时 modelData.success/model_info 缺失，下面
+                    // `if (modelData.success && modelData.model_info)` 直接跳过整个加载块，
+                    // 用户看到的是空白容器但弹"已切换到 xxx"——配合本 PR 入口 dedupe，
+                    // 重试同名被拦死。明确抛错让外层 catch 走完整失败路径。
+                    throw new Error(`无法获取 Live2D 模型配置 (HTTP ${modelResponse.status})`);
+                }
                 const modelData = await modelResponse.json();
+                throwIfStale();
+                if (!modelData.success || !modelData.model_info?.path) {
+                    throw new Error(modelData.error || 'Live2D 模型配置无效（缺 success 或 model_info.path）');
+                }
 
                 // 确保 Manager 存在
                 if (!window.live2dManager && typeof window.Live2DManager === 'function') {
@@ -1139,22 +1353,27 @@
                 // 初始化或重用 PIXI
                 if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
                     await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                    throwIfStale();
                 }
 
                 // 加载新模型
                 if (modelData.success && modelData.model_info) {
                     const modelConfigRes = await fetch(modelData.model_info.path);
+                    throwIfStale();
                     if (modelConfigRes.ok) {
                         const modelConfig = await modelConfigRes.json();
+                        throwIfStale();
                         modelConfig.url = modelData.model_info.path;
 
                         const preferences = await window.live2dManager.loadUserPreferences();
+                        throwIfStale();
                         const modelPreferences = preferences ? preferences.find(p => p.model_path === modelConfig.url) : null;
 
                         await window.live2dManager.loadModel(modelConfig, {
                             preferences: modelPreferences,
                             isMobile: window.innerWidth <= 768
                         });
+                        throwIfStale();
 
                         if (window.LanLan1) {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
@@ -1187,12 +1406,15 @@
                         try {
                             const defaultPath = '/static/yui-origin/yui-origin.model3.json';
                             const defaultRes = await fetch(defaultPath);
+                            throwIfStale();
                             if (defaultRes.ok) {
                                 const defaultConfig = await defaultRes.json();
+                                throwIfStale();
                                 defaultConfig.url = defaultPath;
                                 await window.live2dManager.loadModel(defaultConfig, {
                                     isMobile: window.innerWidth <= 768
                                 });
+                                throwIfStale();
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                     window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1203,11 +1425,20 @@
                                 }
                                 console.log('[猫娘切换] 已回退加载默认模型 yui-origin');
                             } else {
-                                console.error('[猫娘切换] 默认模型也无法加载');
+                                // throw 而非只 log：原本静默继续会让 showLive2d() + "已切换到 xxx"
+                                // toast 都跑，但实际模型没载起来。配合 dedupe 让用户看空白点不动。
+                                throw new Error(`默认 Live2D 模型加载失败 (HTTP ${defaultRes.status})`);
                             }
                         } catch (fallbackErr) {
+                            if (fallbackErr?.isStaleSwitchAttempt) throw fallbackErr;
                             console.error('[猫娘切换] 默认模型加载失败:', fallbackErr);
+                            // rethrow 让外层 catch 走完整失败路径（toast + lanlan_config 回滚）。
+                            // 不 rethrow 的话同问题：UI 当成功但模型没载起来。
+                            throw fallbackErr;
                         }
+                        // 内层 try 之外补 stale 检查（fallback try 内部多个 await 含 loadModel，
+                        // stale 抛错会被上面 catch 吞成 console.error 让 stale attempt 继续）
+                        throwIfStale();
                     }
                 }
 
@@ -1252,6 +1483,7 @@
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
+                    if (!isStillActiveSwitchTarget()) return;
 
                     window.dispatchEvent(new Event('resize'));
 
@@ -1320,28 +1552,96 @@
                 }, 300);
             }
 
+            // 切换完成 commit 点：模型加载完、socket 连上、UI 收尾完成、lanlan_config 已是
+            // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
+            // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
+            switchHasCommitted = true;
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
+            // 注：内层 try/catch 会吞 throwIfStale 的抛错，需要先做 stale 检查再进 try
+            throwIfStale();
             if (window.unlockAchievement) {
                 try {
                     await window.unlockAchievement('ACH_CHANGE_SKIN');
                 } catch (err) {
+                    if (err?.isStaleSwitchAttempt) throw err;
                     console.error('解锁换肤成就失败:', err);
                 }
+                // unlockAchievement 是 try 体内最后一个 await。watchdog 在它期间触发会清门闩
+                // + 回滚 lanlan_config，attempt 苏醒后如果不 stale check 会"成功"落到 finally：
+                // line 1481 已经 emit 的"已切换"toast 留下来 + watchdog 后续 emit 的"卡住了"
+                // toast 矛盾，且状态半截（lanlan_config 被回滚但 ws/model 已切）。补一道让
+                // catch 走 stale 分支静默退场（watchdog 已弹的 toast 是用户唯一看到的）。
+                throwIfStale();
             }
 
         } catch (error) {
-            console.error('[猫娘切换] 失败:', error);
-            if (mmdLoadingSessionId) {
-                window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+            // stale attempt 主动退出：老 attempt 苏醒发现自己已被新一轮取代/watchdog 超时，
+            // 静默退场。不弹 toast（不是用户当前操作的失败）、不回滚（新 attempt 持有 socket）。
+            // 但 mmdLoadingSessionId 是 stale attempt 自己持有的 overlay session token，
+            // 如果 stale 在 MMD 分支已 begin 了 overlay 后才被取代、且新 attempt 是 non-MMD，
+            // 新 attempt 不会 end/fail 这个 session → 老 overlay 一直挂着 block UI。
+            // 必须由 stale 自己 fail 它持有的 session 才能让 overlay 退出。
+            //
+            // stale 判定：除了 throwIfStale 抛的带 isStaleSwitchAttempt 标记的 error 外，
+            // 还要看 attempt ownership——某些路径上 await 真实 reject（如 network error）发生
+            // 在 watchdog 超时/新 attempt 接管之后，error 没 stale 标记但 attempt 已 stale，
+            // 走 else 分支会弹"切换失败"toast 给已被取代的 attempt，干扰新 attempt 的 UI。
+            const isStaleAttempt = !!error?.isStaleSwitchAttempt
+                || S._currentSwitchAttemptId !== myAttemptId;
+            if (isStaleAttempt) {
+                console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）；error:', error?.message || error);
+                if (mmdLoadingSessionId) {
+                    // 跟 watchdog 分支一样用 try/catch 包：overlay.fail 自己抛错会让后续
+                    // toast / lanlan_config 回滚 / S.socket 恢复全跳过，用户卡半切换状态。
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch superseded' });
+                    } catch (overlayErr) { console.warn('[猫娘切换] MMDLoadingOverlay.fail 报错:', overlayErr); }
+                }
+            } else {
+                console.error('[猫娘切换] 失败:', error);
+                if (mmdLoadingSessionId) {
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+                    } catch (overlayErr) { console.warn('[猫娘切换] MMDLoadingOverlay.fail 报错:', overlayErr); }
+                }
+                const errorMessage = error?.message || String(error);
+                showStatusToast((window.t && window.t('app.switchCatgirlError', { error: errorMessage })) || `切换失败: ${errorMessage}`, 4000);
+                // 失败时整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type）：
+                // 三个字段都在 fallible await 之前被乐观写入，不回滚的话——name 让重试被入口
+                // dedupe 拦死、type 让全局类型跟实际旧模型不一致让后续分支走偏。
+                // attempt id 守护：只在自己仍是 currentAttempt 时回滚（与 isStaleAttempt 计算
+                // 等价，但显式列出避免与上面 stale 分支耦合），避免 stale attempt 苏醒走 else
+                // 分支后用自己看到的 snapshot 覆盖新 attempt 的成功状态。
+                if (S._currentSwitchAttemptId === myAttemptId) {
+                    restorePreviousLanlanConfig();
+                    console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
+                    // 恢复 S.socket 引用：line 530 早期 retire 把 S.socket 设成 null（让 stale
+                    // onmessage/onclose 在清空会话期间走 stale guard）。如果新 connectWebSocket
+                    // 还没替换 S.socket（即 S.socket 仍是 null），下面的 ticker/vrm rollback
+                    // 检查 S.socket === _switchOldSocket 永远 false → rollback 进不去，且 finally
+                    // 会把 _switchOldSocket 关掉 → "切换失败 + 旧角色掉线"。如果新 attempt 已建
+                    // 新 socket（S.socket 是别的对象），则它已接管，不动。
+                    if (_switchOldSocket && S.socket === null
+                        && _switchOldSocket.readyState !== WebSocket.CLOSED
+                        && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                        S.socket = _switchOldSocket;
+                        console.log('[猫娘切换] 切换失败，恢复 S.socket 引用到旧连接，避免角色掉线');
+                    }
+                }
             }
-            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
 
             // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
             // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
             // 否则用户看到的是切换失败 toast + 冻结画面。
-            if (_switchOldSocket && S.socket === _switchOldSocket) {
+            // stale attempt 必须排除：watchdog 触发后 B 已启动但还没跑到 line 486 关 socket 时,
+            // S.socket 仍是 _switchOldSocket，A stale 苏醒进 catch 会满足条件错误地启动旧模型，
+            // 跟 B 后续清理/加载并发打架。用 isStaleAttempt 而非 error.isStaleSwitchAttempt：
+            // 同样覆盖 attempt ownership 检测出的隐式 stale（无标记的真实 reject）。
+            // 注：上面 restorePreviousLanlanConfig 那段也会把 S.socket 从 null 恢复成
+            // _switchOldSocket，所以这里的 === _switchOldSocket 检查能命中。
+            if (!isStaleAttempt && _switchOldSocket && S.socket === _switchOldSocket) {
                 try {
                     const ticker = window.live2dManager?.pixi_app?.ticker;
                     if (ticker && !ticker.started) ticker.start();
@@ -1355,6 +1655,12 @@
                 } catch (_e) { /* ignore */ }
             }
         } finally {
+            clearTimeout(switchWatchdogId);
+            // attempt id 归属：watchdog 触发后老 attempt 苏醒走到这里时不能动新 attempt 的标志。
+            // 注意 socket / 模型清理仍要做（否则老 attempt 持有的旧资源会泄漏），只有
+            // isSwitchingCatgirl / _currentSwitchAttemptId 这两个全局门闩需要 attempt 隔离。
+            const isCurrentAttempt = (S._currentSwitchAttemptId === myAttemptId);
+
             // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
             // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
             // (S.socket !== _thisSocket)，本层是第二道防线。
@@ -1372,9 +1678,18 @@
                 }
             } catch (_e) { /* ignore */ }
 
-            S.isSwitchingCatgirl = false;
-            // 清理切换标识，取消所有 pending 的 applyLighting 定时器
-            window._currentCatgirlSwitchId = null;
+            if (isCurrentAttempt) {
+                S.isSwitchingCatgirl = false;
+                S._currentSwitchAttemptId = null;
+                // window._currentCatgirlSwitchId 故意不清——它是 VRM applyLighting retry loop
+                // 的 ownership token（line 794-800 用 Symbol() 标识 attempt，retry 比对
+                // !== currentSwitchId 自我退出）。retry 是 setTimeout 链，可能跨 finally 还在跑；
+                // 慢设备上首轮检查可能晚于 finally → null !== Symbol 判 true → retry 自杀，
+                // 灯光偶发不生效。留给下次切换 line 796 的新 Symbol() 自然覆盖；老 retry 比对
+                // 新 Symbol 仍然 !==，自然退出。stale attempt 苏醒走 else 分支也不动这个 token。
+            } else {
+                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl 不动');
+            }
 
             // 重置 goodbyeClicked 标志，确保 showCurrentModel 可以正常运行
             if (window.live2dManager) {
