@@ -177,6 +177,72 @@ def rapidocr_selected_model_name(
     )
 
 
+def _resolve_rapidocr_model_paths(
+    *,
+    model_cache_dir: Path,
+    package_models_dir: Path | None,
+    lang_type: str,
+    ocr_version: str,
+    model_type: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Find det/cls/rec ONNX files on disk for a given (lang, version, type).
+
+    Two filename conventions in the wild:
+      - PaddleOCR / wheel-bundled: f"{lang}_{version}_{stage}{_server?}_infer.onnx"
+        e.g. ch_PP-OCRv4_det_infer.onnx, ch_PP-OCRv4_det_server_infer.onnx
+      - RapidAI ModelScope releases (v3.x): f"{lang}_{version}_{stage}_{type}.onnx"
+        e.g. ch_PP-OCRv4_det_mobile.onnx, ch_PP-OCRv4_det_server.onnx
+        (no `_infer` suffix; type is `_mobile` or `_server`)
+
+    Both conventions are checked per location to support either source. The
+    `_infer` form is preferred (matches both bundled wheels and the
+    test_galgame_rapidocr_support fixtures that came in with PR #1194).
+    """
+    lang = str(lang_type or DEFAULT_RAPIDOCR_LANG_TYPE).strip() or DEFAULT_RAPIDOCR_LANG_TYPE
+    version = str(ocr_version or DEFAULT_RAPIDOCR_OCR_VERSION).strip() or DEFAULT_RAPIDOCR_OCR_VERSION
+    mt = (str(model_type or DEFAULT_RAPIDOCR_MODEL_TYPE).strip() or DEFAULT_RAPIDOCR_MODEL_TYPE).lower()
+    server_infix = "_server" if mt == "server" else ""
+    type_suffix = "_server" if mt == "server" else "_mobile"
+
+    det_names = [
+        f"{lang}_{version}_det{server_infix}_infer.onnx",  # paddle / wheel
+        f"{lang}_{version}_det{type_suffix}.onnx",          # modelscope v3.x
+    ]
+    rec_names = [
+        f"{lang}_{version}_rec{server_infix}_infer.onnx",
+        f"{lang}_{version}_rec{type_suffix}.onnx",
+    ]
+    # Cls is shared across mobile/server variants. PaddleOCR ships the
+    # legacy v2.0 mobile cls; PP-OCRv5 introduces a new textline-orientation
+    # cls. List both — first match wins.
+    cls_names = [
+        "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+        "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+    ]
+
+    def _find_first(search_dir: Path, names: list[str]) -> str | None:
+        for name in names:
+            candidate = search_dir / name
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    det_path: str | None = None
+    cls_path: str | None = None
+    rec_path: str | None = None
+    for search_dir in (model_cache_dir, package_models_dir):
+        if not search_dir or not search_dir.is_dir():
+            continue
+        if det_path is None:
+            det_path = _find_first(search_dir, det_names)
+        if cls_path is None:
+            cls_path = _find_first(search_dir, cls_names)
+        if rec_path is None:
+            rec_path = _find_first(search_dir, rec_names)
+    return det_path, cls_path, rec_path
+
+
 @contextmanager
 def _rapidocr_import_context(
     *,
@@ -314,6 +380,7 @@ def _build_runtime_constructor_kwargs(
     model_type: str,
     ocr_version: str,
     model_cache_dir: Path,
+    package_models_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Build kwargs passed to RapidOCR(...).
 
@@ -331,27 +398,38 @@ def _build_runtime_constructor_kwargs(
         parameters = inspect.signature(runtime_class).parameters
     except (TypeError, ValueError):
         return {}
-    has_var_keyword = any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+
+    has_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
     )
+    # Passthrough mode (RapidOCR's actual signature path): the runtime accepts
+    # **kwargs and routes by name prefix in `UpdateParameters.__call__`. We
+    # resolve det/cls/rec paths from disk and hand them through. The resolver
+    # checks two filename conventions per location — `_infer.onnx` (PaddleOCR
+    # / wheel-bundled) and `_mobile.onnx` (RapidAI ModelScope downloads via
+    # `download_rapidocr_models`). Only emit a model_path key when the file
+    # actually exists; passing a non-existent path makes RapidOCR silently
+    # fall back to its bundled config (wrong model, no error).
+    if has_var_kwargs:
+        det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
+            model_cache_dir=model_cache_dir,
+            package_models_dir=package_models_dir,
+            lang_type=lang_type,
+            ocr_version=ocr_version,
+            model_type=model_type,
+        )
+        kwargs: dict[str, Any] = {}
+        if det_path and rec_path:
+            kwargs["det_model_path"] = det_path
+            kwargs["rec_model_path"] = rec_path
+            if cls_path:
+                kwargs["cls_model_path"] = cls_path
+        if engine_type:
+            kwargs["engine_type"] = engine_type
+        return kwargs
 
     kwargs: dict[str, Any] = {}
-
-    # Passthrough mode: when the runtime accepts **kwargs, route per-stage
-    # model paths so RapidOCR's UpdateParameters picks them up. Only emit a
-    # model_path key when the file actually exists on disk — passing a
-    # non-existent path makes RapidOCR fall back to its bundled config in a
-    # confusing way (the user gets no error but the wrong model).
-    if has_var_keyword:
-        registry = _registry_lookup(ocr_version, lang_type)
-        if registry and _normalize_model_key(ocr_version, lang_type) != _BUNDLED_KEY:
-            for kind, kwarg_name in (("det", "det_model_path"), ("rec", "rec_model_path"), ("cls", "cls_model_path")):
-                spec = registry.get(kind)
-                if not spec:
-                    continue
-                target = model_cache_dir / spec["name"] if model_cache_dir else None
-                if target and target.is_file():
-                    kwargs[kwarg_name] = str(target)
 
     # Legacy / explicit-arg mode: older RapidOCR builds may take some of
     # these as named parameters. inspect-by-name only catches them if they
@@ -446,6 +524,13 @@ def load_rapidocr_runtime(
         runtime_class = getattr(module, "RapidOCR", None)
         if runtime_class is None:
             raise RuntimeError("RapidOCR runtime class not found")
+        module_file = getattr(module, "__file__", "") or ""
+        # Sentinel must be None (not Path()) — Path() resolves to CWD and would
+        # let _resolve_rapidocr_model_paths inadvertently scan the working
+        # directory if `__file__` were ever missing.
+        package_models_dir: Path | None = (
+            Path(module_file).resolve().parent / "models" if module_file else None
+        )
         with _onnxruntime_intra_op_thread_cap(_RAPIDOCR_INFERENCE_THREAD_LIMIT):
             runtime = runtime_class(
                 **_build_runtime_constructor_kwargs(
@@ -455,6 +540,7 @@ def load_rapidocr_runtime(
                     model_type=model_type,
                     ocr_version=ocr_version,
                     model_cache_dir=model_cache_dir,
+                    package_models_dir=package_models_dir,
                 )
             )
     metadata = {

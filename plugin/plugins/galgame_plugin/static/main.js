@@ -741,6 +741,8 @@ let autoRefreshIntervalMs = AUTO_REFRESH_INTERVAL_MS;
 let activeInstallTab = 'tesseract';
 let settingsDirty = false;
 let settingsSaveInFlight = false;
+let pendingModeSelection = '';
+let modeSaveRequestId = 0;
 let settingsAutosaveTimer = null;
 let flashTimer = null;
 let flashToken = 0;
@@ -3275,6 +3277,8 @@ function renderInstallTaskState(kind) {
 
 function renderPluginUnavailable(error) {
   latestStatus = null;
+  pendingModeSelection = '';
+  updateModeSwitchControl('', { ready: false });
   const pluginNotStarted = uiT('ui.diag.plugin_not_started.title', '插件尚未启动');
   const message = error instanceof Error ? error.message : String(error || pluginNotStarted);
   document.getElementById('summaryText').textContent = pluginNotStarted;
@@ -3541,17 +3545,74 @@ async function restoreTesseractInstallState() {
   await restoreInstallState('tesseract');
 }
 
+function updateModeSwitchControl(currentMode, { ready = true } = {}) {
+  const modeSwitchEl = document.getElementById('modeSwitch');
+  if (!modeSwitchEl) {
+    return;
+  }
+  document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
+    btn.classList.toggle('active', ready && btn.dataset.mode === currentMode);
+    btn.disabled = !ready;
+    btn.setAttribute('aria-disabled', ready ? 'false' : 'true');
+  });
+  modeSwitchEl.dataset.active = ready ? currentMode : '';
+  modeSwitchEl.dataset.ready = ready ? 'true' : 'false';
+  if (!ready) {
+    modeSwitchEl.style.removeProperty('--indicator-left');
+    modeSwitchEl.style.removeProperty('--indicator-width');
+    return;
+  }
+  const activeBtn = modeSwitchEl.querySelector('.mode-btn.active');
+  if (activeBtn) {
+    const sr = modeSwitchEl.getBoundingClientRect();
+    const br = activeBtn.getBoundingClientRect();
+    modeSwitchEl.style.setProperty('--indicator-left', `${br.left - sr.left}px`);
+    modeSwitchEl.style.setProperty('--indicator-width', `${br.width}px`);
+  }
+}
+
+function updateSummaryMode(currentMode) {
+  const summaryNode = document.getElementById('summaryText');
+  if (!summaryNode) {
+    return;
+  }
+  if (latestStatus) {
+    summaryNode.textContent = buildStatusSummaryText({
+      ...latestStatus,
+      mode: currentMode,
+    });
+    return;
+  }
+  summaryNode.textContent = uiTf('ui.summary.mode_part', '模式：{mode}', {
+    mode: modeLabel(currentMode, currentMode),
+  });
+}
+
+function clearPendingModeSelection(mode) {
+  if (!pendingModeSelection || (mode && pendingModeSelection !== mode)) {
+    return;
+  }
+  pendingModeSelection = '';
+  if (latestStatus) {
+    renderStatus(latestStatus);
+  }
+}
+
 function renderStatus(status) {
   latestStatus = status;
-  document.getElementById('summaryText').textContent = buildStatusSummaryText(status);
-  syncSettingsValue('modeSelect', status.mode || 'companion');
+  const statusMode = status.mode || 'companion';
+  if (pendingModeSelection && statusMode === pendingModeSelection) {
+    pendingModeSelection = '';
+  }
+  const currentMode = pendingModeSelection || statusMode;
+  syncSettingsValue('modeSelect', currentMode);
   syncSettingsChecked('pushToggle', Boolean(status.push_notifications));
   syncSettingsValue('advanceSpeedSelect', status.advance_speed || 'medium');
-
-  const currentMode = status.mode || 'companion';
-  document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.mode === currentMode);
+  document.getElementById('summaryText').textContent = buildStatusSummaryText({
+    ...status,
+    mode: currentMode,
   });
+  updateModeSwitchControl(currentMode);
   const currentSpeed = status.advance_speed || 'medium';
   document.querySelectorAll('#speedSwitch .speed-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.speed === currentSpeed);
@@ -5945,6 +6006,7 @@ function scheduleSettingsAutosave() {
 }
 
 async function saveMode({ auto = false } = {}) {
+  let modeCommitted = false;
   clearSettingsAutosaveTimer();
   const mode = document.getElementById('modeSelect').value;
   const pushNotifications = document.getElementById('pushToggle').checked;
@@ -5959,21 +6021,31 @@ async function saveMode({ auto = false } = {}) {
   const visionMaxImagePx = Number(visionMaxRaw || 768);
   if (!['auto', 'memory_reader', 'ocr_reader'].includes(readerMode)) {
     setFlash(uiT('ui.flash.invalid_reader_mode', '文本读取模式无效。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!Number.isFinite(ocrPollInterval) || ocrPollInterval < 0.5 || ocrPollInterval > 10) {
     setFlash(uiT('ui.flash.invalid_ocr_interval', 'OCR/DXcam 识别间隔必须在 0.5 到 10 秒之间。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!['interval', 'after_advance'].includes(ocrTriggerMode)) {
     setFlash(uiT('ui.flash.invalid_ocr_trigger', 'OCR 触发方式无效。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!Number.isFinite(visionMaxImagePx) || visionMaxImagePx < 64 || visionMaxImagePx > 2048) {
     setFlash(uiT('ui.flash.invalid_vision_max', 'Vision 最大边长必须在 64 到 2048 之间。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
+  const requestId = ++modeSaveRequestId;
   try {
+    if (mode && (!latestStatus || latestStatus.mode !== mode)) {
+      pendingModeSelection = mode;
+      updateModeSwitchControl(mode);
+      updateSummaryMode(mode);
+    }
     settingsSaveInFlight = true;
     updateSettingsDirtyHint(auto ? uiT('ui.pending.auto_saving', '正在自动保存...') : uiT('ui.pending.saving', '保存中...'));
     setFlash(auto ? uiT('ui.flash.auto_saving_settings', '正在自动保存设置...') : uiT('ui.flash.saving_settings', '正在保存设置...'), 'info');
@@ -5983,6 +6055,7 @@ async function saveMode({ auto = false } = {}) {
       advance_speed: advanceSpeed,
       reader_mode: readerMode,
     });
+    modeCommitted = true;
     await callPlugin('galgame_set_ocr_timing', {
       poll_interval_seconds: ocrPollInterval,
       trigger_mode: ocrTriggerMode,
@@ -5992,16 +6065,34 @@ async function saveMode({ auto = false } = {}) {
       vision_enabled: visionEnabled,
       vision_max_image_px: Math.round(visionMaxImagePx),
     });
+    if (requestId !== modeSaveRequestId) {
+      return;
+    }
     setFlash(auto ? uiT('ui.flash.settings_auto_saved', '设置已自动保存') : uiT('ui.flash.settings_saved', '设置已保存'), 'success');
     settingsDirty = false;
     settingsSaveInFlight = false;
     updateSettingsDirtyHint();
     await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
   } catch (error) {
+    if (requestId !== modeSaveRequestId) {
+      console.error('[galgame] stale saveMode error suppressed', error);
+      return;
+    }
+    if (modeCommitted) {
+      try {
+        await refreshAll({ preserveFlash: true, forceRefresh: true });
+      } catch (refreshError) {
+        console.error('[galgame] mode save reconcile refresh failed', refreshError);
+      }
+    } else {
+      clearPendingModeSelection(mode);
+    }
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   } finally {
-    settingsSaveInFlight = false;
-    updateSettingsDirtyHint();
+    if (requestId === modeSaveRequestId) {
+      settingsSaveInFlight = false;
+      updateSettingsDirtyHint();
+    }
   }
 }
 
@@ -7236,11 +7327,18 @@ document.querySelectorAll('.install-tab').forEach((btn) => {
 
 document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
+    const modeSwitchEl = document.getElementById('modeSwitch');
+    if (!modeSwitchEl || modeSwitchEl.dataset.ready !== 'true') {
+      return;
+    }
     const mode = btn.dataset.mode;
     const select = document.getElementById('modeSelect');
     if (select && mode) {
       select.value = mode;
       select.dispatchEvent(new Event('change'));
+      pendingModeSelection = mode;
+      updateModeSwitchControl(mode);
+      updateSummaryMode(mode);
       saveMode().catch((error) => { console.error('[galgame] async action failed', error); });
     }
   });
