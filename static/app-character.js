@@ -600,6 +600,12 @@
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
+                // 进入 VRM 分支立刻刷新 ownership token：分支内有 initThreeJS / loadModel 等
+                // 长 await，旧 retry 在 await 期间仍持有旧 token 写到共享 vrmManager；尤其
+                // A→B 都 VRM 时旧 retry 可能把 A 的 lighting 写到 B 已 init 的 three.js scene。
+                // 必须在任何让 vrmManager 变可用的 await 之前刷新，旧 retry 比对 !== 立刻退出。
+                const currentSwitchId = Symbol();
+                window._currentCatgirlSwitchId = currentSwitchId;
 
                 // 安全获取 VRM 模型路径，处理各种边界情况
                 let vrmModelPath = null;
@@ -839,15 +845,7 @@
                     console.log('[猫娘切换] VRM渲染循环已启动，ID:', window.vrmManager._animationFrameId);
                 }
 
-                // 每次进入 VRM 分支都无条件刷新 ownership token，取消上一轮残留 retry。
-                // 不能放在 if (catgirlConfig.lighting) 块内：从 A（有 lighting）切到 B（没 lighting）
-                // 时 A 的 applyLighting retry 不会被取消（finally 故意不清这个 token），仍把
-                // A 的光照参数写到 B 的 VRM 场景。这里无条件设新 Symbol，旧 retry 比对 !==
-                // 自然退出。
-                const currentSwitchId = Symbol();
-                window._currentCatgirlSwitchId = currentSwitchId;
-
-                // 应用角色的光照配置
+                // 应用角色的光照配置（currentSwitchId 在 VRM 分支顶部已刷新）
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
 
@@ -1526,12 +1524,18 @@
             if (isStaleAttempt) {
                 console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）；error:', error?.message || error);
                 if (mmdLoadingSessionId) {
-                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch superseded' });
+                    // 跟 watchdog 分支一样用 try/catch 包：overlay.fail 自己抛错会让后续
+                    // toast / lanlan_config 回滚 / S.socket 恢复全跳过，用户卡半切换状态。
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch superseded' });
+                    } catch (overlayErr) { console.warn('[猫娘切换] MMDLoadingOverlay.fail 报错:', overlayErr); }
                 }
             } else {
                 console.error('[猫娘切换] 失败:', error);
                 if (mmdLoadingSessionId) {
-                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+                    } catch (overlayErr) { console.warn('[猫娘切换] MMDLoadingOverlay.fail 报错:', overlayErr); }
                 }
                 showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
                 // 失败时整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type）：
