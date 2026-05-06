@@ -6439,7 +6439,11 @@ function navigateToInstallPanel(kind) {
   const dependencyModule = document.getElementById('dependencyModule');
   const installSection = document.getElementById('installSection');
 
-  localStorage.setItem('galgame_skip_onboarding', '1');
+  try {
+    localStorage.setItem('galgame_skip_onboarding', '1');
+  } catch (error) {
+    console.warn('[galgame_plugin ui] persist onboarding skip failed', error);
+  }
   document.body.classList.remove('onboarding-active');
   const onboardingView = document.getElementById('onboardingView');
   if (onboardingView) {
