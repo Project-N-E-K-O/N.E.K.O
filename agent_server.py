@@ -1010,6 +1010,7 @@ async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> No
             status = await asyncio.to_thread(adapter.is_available)
             ready = bool(status.get("ready")) if isinstance(status, dict) else False
             last_reasons = status.get("reasons", []) if isinstance(status, dict) else []
+            status_code = status.get("status_code") if isinstance(status, dict) else None
             if ready:
                 _set_capability("openclaw", True, "")
                 logger.info("[Agent] OpenClaw(QwenPaw) ready after enable probe attempt %s", attempt + 1)
@@ -1017,8 +1018,8 @@ async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> No
                 await _emit_agent_status_update(lanlan_name=lanlan_name)
                 return
 
-            reason_text = _openclaw_reason_text(last_reasons)
-            if "responded 401" in reason_text or "responded 403" in reason_text:
+            auth_error_codes = getattr(adapter, "AUTH_ERROR_STATUS_CODES", frozenset({401, 403}))
+            if status_code in auth_error_codes:
                 break
             if attempt < OPENCLAW_ENABLE_CHECK_ATTEMPTS - 1:
                 await asyncio.sleep(OPENCLAW_ENABLE_CHECK_INTERVAL)
