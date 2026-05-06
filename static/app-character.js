@@ -166,10 +166,28 @@
         S.isSwitchingCatgirl = true;
         _switchOldSocket = S.socket;
         _switchOldHeartbeat = S.heartbeatInterval;
-        // 保存切换前的 lanlan_name 用于失败回滚：line 489 在 model load 等多个 fallible await
-        // 之前就 lanlan_config.lanlan_name = newCatgirl，失败时如果不回滚，新加的"已是当前"
-        // dedupe 会让用户重试同一角色被静默拦掉，卡在半破状态。catch 里非 stale 失败时恢复。
-        const previousLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        // 保存切换前的 lanlan_config 三件套用于失败回滚。三个字段都在 fallible await 之前
+        // 被乐观写入：lanlan_name 在 line 489（connectWebSocket 之前），model_type / live3d_sub_type
+        // 在 line ~234（VRM 模型类型分支判定之前）。任何路径上失败/超时都得整套回滚，否则：
+        //   - lanlan_name 不回滚 → 重试同名被入口 dedupe 拦掉
+        //   - model_type / live3d_sub_type 不回滚 → 全局类型跟实际仍跑的旧模型不一致，
+        //     后续分支走偏（preload 穿透逻辑读这两个字段）
+        const previousLanlanConfig = {
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            model_type: (window.lanlan_config && window.lanlan_config.model_type) || '',
+            live3d_sub_type: (window.lanlan_config && window.lanlan_config.live3d_sub_type) || '',
+        };
+        const restorePreviousLanlanConfig = () => {
+            if (!window.lanlan_config) return;
+            window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
+            window.lanlan_config.model_type = previousLanlanConfig.model_type;
+            window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+        };
+        // 给延迟 UI 回调用的角色归属守护：handleCatgirlSwitch 完成后挂着的 setTimeout
+        // (line 964/1187/1357 那些 300ms ensure-visible 回调）触发时如果用户已切到别的角色，
+        // 旧回调会污染新角色的 UI（比如调 setupFloatingButtons 重建错类型按钮）。
+        const isStillActiveSwitchTarget = () =>
+            !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
@@ -201,6 +219,10 @@
             if (S._currentSwitchAttemptId !== myAttemptId) return;
             if (S.isSwitchingCatgirl) {
                 console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
+                // 整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type），否则
+                // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
+                // 后续分支走偏。
+                restorePreviousLanlanConfig();
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
                 try {
@@ -962,6 +984,8 @@
 
                 // 确保 VRM 按钮和锁图标可见
                 setTimeout(() => {
+                    // fire-and-forget 延迟回调：用户在 300ms 内切到别角色时旧回调会重建错类型按钮
+                    if (!isStillActiveSwitchTarget()) return;
                     const vrmButtons = document.getElementById('vrm-floating-buttons');
                     console.log('[猫娘切换] VRM按钮检查 - 存在:', !!vrmButtons);
                     if (vrmButtons) {
@@ -1185,6 +1209,7 @@
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
+                    if (!isStillActiveSwitchTarget()) return;
                     const mmdButtons = document.getElementById('mmd-floating-buttons');
                     if (mmdButtons) {
                         mmdButtons.style.removeProperty('display');
@@ -1356,6 +1381,7 @@
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
+                    if (!isStillActiveSwitchTarget()) return;
 
                     window.dispatchEvent(new Event('resize'));
 
@@ -1463,15 +1489,15 @@
                     window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
                 }
                 showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
-                // 失败时回滚 lanlan_name：line 489 在 fallible await 之前就改了它，不回滚的话
-                // 用户重试同一角色会被入口的 dedupe (lanlan_name === newCatgirl) 静默拦掉，
-                // 卡在半破状态。attempt id 守护：只在自己仍是 currentAttempt 时回滚，避免
-                // stale attempt 苏醒后用自己看到的 previousLanlanName 覆盖新 attempt 的成功状态。
-                if (S._currentSwitchAttemptId === myAttemptId
-                    && window.lanlan_config
-                    && window.lanlan_config.lanlan_name === newCatgirl) {
-                    window.lanlan_config.lanlan_name = previousLanlanName;
-                    console.log('[猫娘切换] 切换失败，回滚 lanlan_name 到', previousLanlanName, '允许用户重试同一目标');
+                // 失败时整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type）：
+                // 三个字段都在 fallible await 之前被乐观写入，不回滚的话——name 让重试被入口
+                // dedupe 拦死、type 让全局类型跟实际旧模型不一致让后续分支走偏。
+                // attempt id 守护：只在自己仍是 currentAttempt 时回滚（与 isStaleAttempt 计算
+                // 等价，但显式列出避免与上面 stale 分支耦合），避免 stale attempt 苏醒走 else
+                // 分支后用自己看到的 snapshot 覆盖新 attempt 的成功状态。
+                if (S._currentSwitchAttemptId === myAttemptId) {
+                    restorePreviousLanlanConfig();
+                    console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
                 }
             }
 
