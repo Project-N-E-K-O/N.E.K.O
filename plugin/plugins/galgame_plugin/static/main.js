@@ -692,6 +692,7 @@ let activeInstallTab = 'rapidocr';
 let settingsDirty = false;
 let settingsSaveInFlight = false;
 let pendingModeSelection = '';
+let modeSaveRequestId = 0;
 let settingsAutosaveTimer = null;
 let flashTimer = null;
 let flashToken = 0;
@@ -3255,15 +3256,14 @@ function clearPendingModeSelection(mode) {
 
 function renderStatus(status) {
   latestStatus = status;
-  syncSettingsValue('modeSelect', status.mode || 'companion');
-  syncSettingsChecked('pushToggle', Boolean(status.push_notifications));
-  syncSettingsValue('advanceSpeedSelect', status.advance_speed || 'medium');
-
   const statusMode = status.mode || 'companion';
   if (pendingModeSelection && statusMode === pendingModeSelection) {
     pendingModeSelection = '';
   }
   const currentMode = pendingModeSelection || statusMode;
+  syncSettingsValue('modeSelect', currentMode);
+  syncSettingsChecked('pushToggle', Boolean(status.push_notifications));
+  syncSettingsValue('advanceSpeedSelect', status.advance_speed || 'medium');
   document.getElementById('summaryText').textContent = buildStatusSummaryText({
     ...status,
     mode: currentMode,
@@ -5674,6 +5674,8 @@ function scheduleSettingsAutosave() {
 }
 
 async function saveMode({ auto = false } = {}) {
+  const requestId = ++modeSaveRequestId;
+  let modeCommitted = false;
   clearSettingsAutosaveTimer();
   const mode = document.getElementById('modeSelect').value;
   const pushNotifications = document.getElementById('pushToggle').checked;
@@ -5721,6 +5723,7 @@ async function saveMode({ auto = false } = {}) {
       advance_speed: advanceSpeed,
       reader_mode: readerMode,
     });
+    modeCommitted = true;
     await callPlugin('galgame_set_ocr_timing', {
       poll_interval_seconds: ocrPollInterval,
       trigger_mode: ocrTriggerMode,
@@ -5734,9 +5737,21 @@ async function saveMode({ auto = false } = {}) {
     settingsDirty = false;
     settingsSaveInFlight = false;
     updateSettingsDirtyHint();
-    await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
+    if (requestId === modeSaveRequestId) {
+      await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
+    }
   } catch (error) {
-    clearPendingModeSelection(mode);
+    if (requestId === modeSaveRequestId) {
+      if (modeCommitted) {
+        try {
+          await refreshAll({ preserveFlash: true, forceRefresh: true });
+        } catch (refreshError) {
+          console.error('[galgame] mode save reconcile refresh failed', refreshError);
+        }
+      } else {
+        clearPendingModeSelection(mode);
+      }
+    }
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   } finally {
     settingsSaveInFlight = false;
