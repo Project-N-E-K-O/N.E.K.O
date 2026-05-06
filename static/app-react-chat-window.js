@@ -1113,6 +1113,18 @@
         );
     }
 
+    function isHomeTutorialInteractionLocked() {
+        if (state.homeTutorialInteractionLocked || isHomeTutorialRunning()) {
+            return true;
+        }
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function setGalgameModeTemporarilyDisabled(disabled) {
         var next = !!disabled;
         var changed = state.galgameTemporarilyDisabled !== next;
@@ -1131,7 +1143,7 @@
     function setGalgameModeEnabled(enabled, options) {
         var requestOptions = options || {};
         var next = !!enabled;
-        if (next && isGalgameModeTemporarilyDisabled()) {
+        if (next && !requestOptions.force && (isGalgameModeTemporarilyDisabled() || isHomeTutorialInteractionLocked())) {
             next = false;
         }
         var changed = state.galgameModeEnabled !== next;
@@ -1338,6 +1350,10 @@
     }
 
     function handleGalgameModeToggle() {
+        if (isHomeTutorialInteractionLocked()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
         if (isGalgameModeTemporarilyDisabled()) {
             setGalgameModeEnabled(false, { persist: false });
             return;
@@ -1347,6 +1363,7 @@
     }
 
     function handleGalgameOptionSelect(option) {
+        if (isHomeTutorialInteractionLocked()) return;
         if (!option || typeof option.text !== 'string') return;
         var text = option.text.trim();
         if (!text) return;
@@ -1373,6 +1390,7 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
+        if (isHomeTutorialInteractionLocked()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
@@ -1388,6 +1406,7 @@
     }
 
     function handleMiniGameInviteChoice(option) {
+        if (isHomeTutorialInteractionLocked()) return;
         var prompt = state.choicePrompt;
         if (!prompt || prompt.source !== 'mini_game_invite') return;
         var sessionId = prompt.sessionId || '';
@@ -2594,7 +2613,7 @@
         // from a storage namespace the barrier is about to remap.
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
-        if (isHomeTutorialRunning()) {
+        if (isHomeTutorialInteractionLocked()) {
             setGalgameModeTemporarilyDisabled(true);
         } else {
             setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
