@@ -6733,14 +6733,20 @@ async function resetTutorialGuide() {
   lastSavedStepIndex = -1;
   latestTutorialProgress = null;
   clearSkipOnboarding();
+  const resetProgress = {
+    completed: false,
+    skipped: false,
+    last_step_index: 0,
+    started_at: Date.now() / 1000,
+    completed_at: 0,
+  };
   try {
-    await saveTutorialProgress({
-      completed: false,
-      skipped: false,
-      last_step_index: 0,
-      started_at: Date.now() / 1000,
-      completed_at: 0,
-    });
+    await saveTutorialProgress(resetProgress);
+    lastSavedStepIndex = 0;
+    latestTutorialProgress = {
+      ...resetProgress,
+      ...(latestTutorialProgress || {}),
+    };
   } catch (error) {
     console.warn('[galgame_plugin ui] tutorial reset progress save failed', error);
   }
