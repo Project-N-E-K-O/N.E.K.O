@@ -66,6 +66,7 @@ VALID_USER_COHORTS = {
 }
 
 VALID_TUTORIAL_EVENT_SOURCES = {
+    "auto",
     "manual",
     "idle_prompt",
 }

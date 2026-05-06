@@ -138,6 +138,56 @@
         // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
         let _switchOldSocket = null;
         let _switchOldHeartbeat = null;
+        // MMD→非 MMD 切换时延后 dispose 旧 mmdManager 用的引用：
+        // 清理阶段无条件 dispose 会把旧 MMD 实例销毁，但失败回滚仅重启 Live2D ticker /
+        // VRM animation——MMD 没有恢复路径，从 MMD 切出去时任一步失败都留下空白模型区。
+        // 暂存到 commit 之后 dispose；rollback 时跳过 dispose + 重显容器/按钮。
+        let _mmdDeferredDispose = null;
+        // 恢复延后保留的旧 MMD 实例可见性 + UI（catch rollback / watchdog 超时两条路径
+        // 都要走这套逻辑）。canvas 显式 display/visibility/pointerEvents 而非用 helper：
+        // clearMMDCanvasLoadingSession 实际是"退役 canvas"，会再次设 visibility:hidden +
+        // pointerEvents:none（line 117-119），把刚显式恢复的 mmd-container 又藏回去。
+        // restoreMMDCanvasForLoadingSession 有 sessionId 门闩匹配，rollback 时无 token，
+        // 也用不上。所以这里直接内联恢复逻辑。
+        const _restoreDeferredMmdUi = () => {
+            if (!_mmdDeferredDispose || window.mmdManager !== _mmdDeferredDispose) return;
+            try {
+                const mmdContainer = document.getElementById('mmd-container');
+                if (mmdContainer) {
+                    mmdContainer.style.removeProperty('display');
+                    mmdContainer.classList.remove('hidden');
+                }
+                const mmdCanvas = document.getElementById('mmd-canvas');
+                if (mmdCanvas) {
+                    delete mmdCanvas.dataset.mmdLoadingSessionId;
+                    mmdCanvas.style.display = 'block';
+                    mmdCanvas.style.visibility = 'visible';
+                    mmdCanvas.style.pointerEvents = 'auto';
+                }
+                if (typeof _mmdDeferredDispose.setupFloatingButtons === 'function') {
+                    _mmdDeferredDispose.setupFloatingButtons();
+                }
+            } catch (recoveryErr) {
+                console.warn('[猫娘切换] MMD UI 恢复出错:', recoveryErr);
+            }
+            // 旧实例继续作为 active mmdManager；不再 commit 时 dispose。
+            _mmdDeferredDispose = null;
+        };
+        // dispose 延后保留的旧 MMD 实例，commit / finally 兜底 / watchdog 错配三个路径
+        // 都用这个 helper（避免 dispose 调用 + window.mmdManager null 化 + 引用清空的
+        // 三步散在多处出现数字后缀的代码重复）。
+        const _disposeDeferredMmd = () => {
+            if (!_mmdDeferredDispose) return;
+            try {
+                if (typeof _mmdDeferredDispose.dispose === 'function') {
+                    _mmdDeferredDispose.dispose();
+                }
+            } catch (_e) { /* ignore */ }
+            if (window.mmdManager === _mmdDeferredDispose) {
+                window.mmdManager = null;
+            }
+            _mmdDeferredDispose = null;
+        };
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -271,6 +321,18 @@
                             clearInterval(_switchOldHeartbeat);
                         }
                     } catch (_e) { /* ignore socket cleanup failures */ }
+                    // MMD UI 处理：只在 socket 也回滚到旧 ws 时才显示旧 MMD（与 catch 路径
+                    // line ~1716 的 `S.socket === _switchOldSocket` guard 对偶）。新 ws 已抢占
+                    // S.socket 时显示旧 MMD 会跟后端会话错配（前端 lanlan_config 回滚到旧角色
+                    // 但 server 在和新角色通过新 ws 对话），dispose 旧实例既消除错配又避免 GPU
+                    // 泄漏。watchdog 后 async chain 苏醒进 catch 是 stale 路径，finally 的
+                    // isFailedNoRecovery 因 isCurrentAttempt=false 不触发——这里不显式 dispose
+                    // 就漏（与连接态正常 commit 后的 connected-replaced 边界 case 同源）。
+                    if (_switchOldSocket && S.socket === _switchOldSocket) {
+                        _restoreDeferredMmdUi();
+                    } else {
+                        _disposeDeferredMmd();
+                    }
                 }
                 // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
                 // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
@@ -342,8 +404,18 @@
                 if (!s || lower === 'undefined' || lower === 'null') return '';
                 return s;
             };
-            let mmdPath = '';
-            let vrmPath = '';
+            // mmdPath/vrmPath 在所有 modelType 路径上统一计算（不只 live3d），让下游 VRM/MMD
+            // 加载分支可以直接复用一份已 _sanitize 的路径来源（顶层 + _reserved）：
+            // - 规范化的 live3d+vrm/mmd 卡：权威路径在 _reserved.avatar.{vrm,mmd}.model_path
+            // - legacy 卡（model_type='vrm'，无 live3d_sub_type）：路径在顶层 catgirlConfig.vrm
+            // 之前只在 live3d 分支算 vrmPath，legacy VRM 卡走 VRM 分支时 vrmPath='' 让真实
+            // 模型路径被吃掉静默 fallback 默认模型，回归 PR 之前的行为，bug 由 review 抓出。
+            const mmdPath = _sanitize(catgirlConfig.mmd)
+                || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
+                || '';
+            const vrmPath = _sanitize(catgirlConfig.vrm)
+                || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
+                || '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
                 const subType = (
@@ -357,13 +429,7 @@
                 } else if (subType === 'mmd') {
                     effectiveModelType = 'mmd';
                 } else {
-                    // sub_type 缺失时回退到路径探测
-                    mmdPath = _sanitize(catgirlConfig.mmd)
-                        || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
-                        || '';
-                    vrmPath = _sanitize(catgirlConfig.vrm)
-                        || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
-                        || '';
+                    // sub_type 缺失时根据路径探测
                     if (mmdPath && !vrmPath) {
                         effectiveModelType = 'mmd';
                     } else if (vrmPath) {
@@ -565,11 +631,18 @@
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
-                // MMD→MMD 切换时需要完全销毁旧实例，避免状态残留导致的问题
+                // MMD→MMD 切换时需要完全销毁旧实例，避免新旧 GPU/物理 world 实例并存；
+                // MMD→非 MMD 切换时延后到 commit 之后销毁，让中途失败 rollback 还能让旧
+                // MMD 模型重新可见——否则用户看到空白模型区只能再切一次或刷新。
                 if (window.mmdManager && typeof window.mmdManager.dispose === 'function') {
-                    console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例');
-                    window.mmdManager.dispose();
-                    window.mmdManager = null;
+                    if (effectiveModelType === 'mmd') {
+                        console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例（MMD→MMD）');
+                        window.mmdManager.dispose();
+                        window.mmdManager = null;
+                    } else {
+                        _mmdDeferredDispose = window.mmdManager;
+                        console.log('[猫娘切换] 延后旧 MMD 实例 dispose 到 commit（MMD→', effectiveModelType, '）');
+                    }
                 }
                 if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
@@ -642,7 +715,18 @@
             // socket 关掉、lanlan_name 覆盖回老目标、用老 lanlan_name 重连。
             throwIfStale();
             if (S.socket) S.socket.close();
-            if (S.heartbeatInterval) clearInterval(S.heartbeatInterval);
+            // 不在这里 clear 旧 heartbeat：新 connectWebSocket onopen（app-websocket.js
+            // line 594-602）会自己 clearInterval + 重建。中途 close 完老 ws 还没等到新
+            // onopen 这段窗口里，老 heartbeat 的 callback 已 fail-safe 检查
+            // `S.socket && readyState === OPEN`，老 ws CLOSING / 新 ws CONNECTING / null
+            // 期间都直接跳过，无害。
+            // 关键：rollback 路径上（catch line ~1645 / watchdog line ~301 把 S.socket 从
+            // null 恢复回 _switchOldSocket）老 heartbeat 必须仍活着，否则即便 socket 塞
+            // 回去也没有保活，连接很快被 server idle timeout 关掉、用户失败切角色后看到
+            // 莫名断线重连——pre-existing 自 PR #1167 引入 socket rollback 但漏了 heartbeat
+            // 重启的这一脉。finally line ~1762 的 `S.heartbeatInterval !== _switchOldHeartbeat`
+            // 已正确区分"成功路径 onopen 替换了 heartbeat → 关老的"和"失败路径 onopen 没
+            // 跑过 → 不动"，所以删掉这里的提前 clear 不会引入 success-path 残留。
 
             window.lanlan_config.lanlan_name = newCatgirl;
 
@@ -664,93 +748,87 @@
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
 
-                // 安全获取 VRM 模型路径，处理各种边界情况
-                let vrmModelPath = null;
-                // 检查 vrm 字段是否存在且有效
-                const hasVrmField = catgirlConfig.hasOwnProperty('vrm');
-                const vrmValue = catgirlConfig.vrm;
+                // VRM 模型路径解析：复用前面已 _sanitize 的 vrmPath（涵盖 _reserved.avatar
+                // .vrm.model_path 和顶层 catgirlConfig.vrm 两条来源，无论 modelType=='live3d'
+                // 还是 legacy 'vrm' 都会被填充），与 MMD 分支 `mmdModelPath = mmdPath || ...`
+                // 对偶。
+                // 不再在 VRM 分支自己重新解析顶层 catgirlConfig.vrm——规范化为 live3d+vrm
+                // 子类型的角色卡没有顶层 vrm 字段（其权威来源是 _reserved.avatar.vrm.model_path），
+                // 原本只看顶层会把它误判成"未配置"，触发 fallback 默认模型 + auto-repair PUT
+                // 写 model_type='vrm' + 顶层 vrm 字段把规范化卡反向反规范化、污染后端配置。
+                let vrmModelPath = vrmPath || '';
 
-                // 检查 vrmValue 是否是有效的值（排除字符串 "undefined" 和 "null"）
+                // 仅 legacy（catgirlConfig.model_type === 'vrm'）格式参与 auto-repair：规范化
+                // live3d+vrm 卡走到 fallback 时不应触发 PUT，否则反向反规范化把 model_type
+                // 改回 'vrm'、写入顶层 vrm 字段，破坏 PR #510 后采用的 live3d 规范化格式。
+                const isLegacyVrmCard = catgirlConfig.model_type === 'vrm';
+                const hasVrmField = Object.prototype.hasOwnProperty.call(catgirlConfig, 'vrm');
+                const vrmValue = catgirlConfig.vrm;
+                // 检查顶层 vrm 字段是否是字符串 "undefined"/"null" 等无效字面值（仅用于决定
+                // 是否触发 auto-repair 警告/PUT，不影响 vrmModelPath 解析——后者已由前置
+                // _sanitize 处理）
                 let isVrmValueInvalid = false;
                 if (hasVrmField && vrmValue !== undefined && vrmValue !== null) {
-                    const rawValue = vrmValue;
-                    if (typeof rawValue === 'string') {
-                        const trimmed = rawValue.trim();
-                        const lowerTrimmed = trimmed.toLowerCase();
-                        // 检查是否是无效的字符串值（包括 "undefined", "null" 等）
-                        isVrmValueInvalid = trimmed === '' ||
-                            lowerTrimmed === 'undefined' ||
-                            lowerTrimmed === 'null' ||
-                            lowerTrimmed.includes('undefined') ||
-                            lowerTrimmed.includes('null');
-                        if (!isVrmValueInvalid) {
-                            vrmModelPath = trimmed;
-                        }
-                    } else {
-                        // 非字符串类型，转换为字符串后也要验证
-                        const strValue = String(rawValue);
-                        const lowerStr = strValue.toLowerCase();
-                        isVrmValueInvalid = lowerStr === 'undefined' || lowerStr === 'null' || lowerStr.includes('undefined');
-                        if (!isVrmValueInvalid) {
-                            vrmModelPath = strValue;
-                        }
-                    }
+                    const rawStr = typeof vrmValue === 'string' ? vrmValue : String(vrmValue);
+                    const trimmed = rawStr.trim();
+                    const lowerTrimmed = trimmed.toLowerCase();
+                    isVrmValueInvalid = trimmed === ''
+                        || lowerTrimmed === 'undefined'
+                        || lowerTrimmed === 'null'
+                        || lowerTrimmed.includes('undefined')
+                        || lowerTrimmed.includes('null');
                 }
 
-                // 如果路径无效，使用默认模型或抛出错误
+                // 如果路径仍无效，使用默认模型
                 if (!vrmModelPath) {
-                    // 如果配置中明确指定了 model_type 为 'vrm'，静默使用默认模型
-                    if (catgirlConfig.model_type === 'vrm') {
-                        vrmModelPath = '/static/vrm/sister1.0.vrm';
+                    // effectiveModelType === 'vrm' 才进入这一分支：legacy（model_type='vrm'）
+                    // 和规范化（live3d+vrm 子类型）两条路径都走默认模型 fallback。
+                    // 改用 effectiveModelType 而非 catgirlConfig.model_type：规范化卡 model_type
+                    // 是 'live3d'，原条件会让它走错误抛出分支拒载；现在统一 fallback 到默认。
+                    vrmModelPath = '/static/vrm/sister1.0.vrm';
 
-                        // 如果 vrmValue 是字符串 "undefined" 或 "null"，视为"未配置"，不显示警告
-                        // 只有在 vrm 字段存在且值不是字符串 "undefined"/"null" 时才显示警告
-                        if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
-                            // 这种情况不应该发生，因为 isVrmValueInvalid 为 false 时应该已经设置了 vrmModelPath
-                            const vrmValueStr = typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue);
-                            console.warn(`[猫娘切换] VRM 模型路径无效 (${vrmValueStr})，使用默认模型`);
-                        } else {
-                            // vrmValue 是字符串 "undefined"、"null" 或未配置，视为正常情况，只显示 info
-                            console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
+                    if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
+                        // 走到这一分支说明顶层 vrm 字段值看起来合法但 _sanitize 没让它进 vrmPath
+                        // ——理论上不该发生，留着诊断
+                        const vrmValueStr = typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue);
+                        console.warn(`[猫娘切换] VRM 模型路径无效 (${vrmValueStr})，使用默认模型`);
+                    } else {
+                        console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
 
-                            // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
-                            if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
-                                try {
-                                    // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
-                                    // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
-                                    // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
-                                    // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
-                                    // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
-                                    const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
-                                        method: 'PUT',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                            model_type: 'vrm',
-                                            vrm: vrmModelPath  // 使用默认模型路径
-                                        })
-                                    });
+                        // auto-repair：仅 legacy 卡 + 顶层 vrm 字段是 "undefined" 字面值时触发。
+                        // 规范化卡（live3d+vrm 子类型）跳过：PUT 写 model_type='vrm' + 顶层 vrm
+                        // 会反向反规范化，污染后端配置；规范化卡的权威来源是 _reserved.avatar.vrm
+                        // .model_path，正常路径下根本不该走到 fallback（vrmPath 已经覆盖）。
+                        if (isLegacyVrmCard && hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
+                            try {
+                                // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
+                                // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
+                                // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
+                                // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
+                                // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
+                                const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        model_type: 'vrm',
+                                        vrm: vrmModelPath  // 使用默认模型路径
+                                    })
+                                });
+                                throwIfStale();
+                                if (fixResponse.ok) {
+                                    const fixResult = await fixResponse.json();
                                     throwIfStale();
-                                    if (fixResponse.ok) {
-                                        const fixResult = await fixResponse.json();
-                                        throwIfStale();
-                                        if (fixResult.success) {
-                                            console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
-                                        }
+                                    if (fixResult.success) {
+                                        console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
                                     }
-                                } catch (fixError) {
-                                    if (fixError?.isStaleSwitchAttempt) throw fixError;
-                                    console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                                 }
+                            } catch (fixError) {
+                                if (fixError?.isStaleSwitchAttempt) throw fixError;
+                                console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                             }
                         }
-                        console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
-                    } else {
-                        // model_type 不是 'vrm'，抛出错误
-                        const vrmValueStr = hasVrmField && vrmValue !== undefined && vrmValue !== null
-                            ? (typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue))
-                            : '(未配置)';
-                        throw new Error(`VRM 模型路径无效: ${vrmValueStr}`);
                     }
+                    console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
                 }
 
                 // 确保 VRM 管理器已初始化
@@ -1556,6 +1634,9 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
+            // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
+            _disposeDeferredMmd();
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
@@ -1653,6 +1734,11 @@
                         window.vrmManager.startAnimation();
                     }
                 } catch (_e) { /* ignore */ }
+                // MMD rollback 恢复：清理阶段为防 MMD→非 MMD 切换中途失败让模型区空白，
+                // 把旧 mmdManager.dispose 延后到了 commit 之后。这里 commit 没到，旧实例
+                // 还活着；helper 恢复 mmd-container + canvas 可见性 + 浮动按钮，让用户看到
+                // 旧模型而不是空白（watchdog 超时分支也复用同一个 helper）。
+                _restoreDeferredMmdUi();
             }
         } finally {
             clearTimeout(switchWatchdogId);
@@ -1677,6 +1763,29 @@
                     clearInterval(_switchOldHeartbeat);
                 }
             } catch (_e) { /* ignore */ }
+
+            // 兜底 dispose 延后保留的旧 MMD 实例。commit 成功 / rollback 恢复 / 抢占
+            // 退出三条路径都已把 _mmdDeferredDispose 置 null。残余 case 需要分类处理：
+            //
+            // - **orphan**：stale 退出且新 attempt 已替换 mmdManager
+            //   （window.mmdManager !== ours）——必须 dispose 释放 GPU。
+            // - **failed-no-recovery**：catch 进了非 stale 分支但 socket guard 没匹配
+            //   （`S.socket !== _switchOldSocket`，常见于 connectWebSocket 已替换 S.socket
+            //   后再发生的 model load 失败），rollback helper 没被调用。这条路径上
+            //   isCurrentAttempt && !switchHasCommitted 同时成立、window.mmdManager 仍是
+            //   旧实例——只用 orphan 检查会漏掉，让旧 MMD 永远活着 + 容器隐藏，泄漏 GPU
+            //   memory（Codex P2 抓出来的回归）。这条路径 dispose 而不重显容器，保持
+            //   pre-PR 在此边界 case 的"空白但无泄漏"语义，与 L2D/VRM 在同一 guard 下
+            //   不重启 ticker/animation 的行为对偶。
+            // - **shared with new attempt**：stale 但新 attempt 也持有同一引用——orphan
+            //   检查命中 false 跳过，留给新 attempt 处理，避免双 dispose。
+            if (_mmdDeferredDispose) {
+                const isOrphan = window.mmdManager !== _mmdDeferredDispose;
+                const isFailedNoRecovery = isCurrentAttempt && !switchHasCommitted;
+                if (isOrphan || isFailedNoRecovery) {
+                    _disposeDeferredMmd();
+                }
+            }
 
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
