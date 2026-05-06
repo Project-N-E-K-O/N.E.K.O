@@ -30,10 +30,9 @@ DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
 DEFAULT_RAPIDOCR_PIP_SPEC = "rapidocr_onnxruntime"
 DEFAULT_ONNXRUNTIME_PIP_SPEC = "onnxruntime"
 _INSTALL_STATE_NAME = "install_state.json"
-# RapidOCR builds 3 onnxruntime sessions (det/cls/rec); without a cap each
-# defaults to one intra-op worker per logical core, freezing the desktop on
-# many-core machines during every OCR pass.
-_RAPIDOCR_INFERENCE_THREAD_LIMIT = 2
+# RapidOCR builds 3 onnxruntime sessions (det/cls/rec); cap intra-op threads
+# so each inference burst doesn't saturate every logical core on the host.
+_RAPIDOCR_INFERENCE_THREAD_LIMIT = 4
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _RAPIDOCR_IMPORT_CONTEXT_LOCK = threading.RLock()
 
