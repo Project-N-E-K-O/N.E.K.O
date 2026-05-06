@@ -411,7 +411,6 @@
                     // 每帧继续运行，角色卡切换几次后表现为持续低 FPS。
                     if (typeof window.live2dManager.removeModel === 'function') {
                         await window.live2dManager.removeModel({ skipCloseWindows: true });
-                        throwIfStale();
                     } else if (window.live2dManager.currentModel) {
                         // 兼容兜底：旧版本没有 removeModel 时仍尽量销毁模型。
                         if (typeof window.live2dManager.currentModel.destroy === 'function') {
@@ -435,8 +434,13 @@
                 }
 
             } catch (e) {
+                if (e?.isStaleSwitchAttempt) throw e;
                 console.warn('[猫娘切换] Live2D 清理出错:', e);
             }
+            // 内层 try 之外做 stale 检查：line 413 await live2dManager.removeModel 是这一段唯一的
+            // long await，stale attempt 可能卡在它的 ticker 回调清理里。在 try 外检查，避免
+            // throwIfStale 抛错被上面的 catch 吞成 warn 让 stale attempt 继续往下跑。
+            throwIfStale();
 
             // 清理 MMD 资源
             try {
@@ -1091,7 +1095,14 @@
                                 window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
                             }
                         }
-                    } catch (e) { /* ignore - will use current enablePhysics */ }
+                    } catch (e) {
+                        if (e?.isStaleSwitchAttempt) throw e;
+                        /* ignore - will use current enablePhysics */
+                    }
+                    // settings 段的 catch 故意 swallow 用户态错误，但要把 stale rethrow 出去；
+                    // 同时再做一次显式 stale 检查兜底，避免 stale attempt 在 settings fetch
+                    // 里苏醒后接着调 mmdManager.loadModel 跟 B 并发跑共享的 loadModel。
+                    throwIfStale();
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'model' });
                     await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
                     throwIfStale();
@@ -1111,8 +1122,10 @@
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
                         } catch (idleErr) {
+                            if (idleErr?.isStaleSwitchAttempt) throw idleErr;
                             console.warn('[猫娘切换] 播放待机动作失败:', idleErr);
                         }
+                        throwIfStale();
                     }
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'done' });
                     if (window._waitForMMDRenderFrame) {
@@ -1175,7 +1188,9 @@
                 }
 
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
+                throwIfStale();
                 const modelData = await modelResponse.json();
+                throwIfStale();
 
                 // 确保 Manager 存在
                 if (!window.live2dManager && typeof window.Live2DManager === 'function') {
@@ -1196,11 +1211,14 @@
                 // 加载新模型
                 if (modelData.success && modelData.model_info) {
                     const modelConfigRes = await fetch(modelData.model_info.path);
+                    throwIfStale();
                     if (modelConfigRes.ok) {
                         const modelConfig = await modelConfigRes.json();
+                        throwIfStale();
                         modelConfig.url = modelData.model_info.path;
 
                         const preferences = await window.live2dManager.loadUserPreferences();
+                        throwIfStale();
                         const modelPreferences = preferences ? preferences.find(p => p.model_path === modelConfig.url) : null;
 
                         await window.live2dManager.loadModel(modelConfig, {
@@ -1240,13 +1258,14 @@
                         try {
                             const defaultPath = '/static/yui-origin/yui-origin.model3.json';
                             const defaultRes = await fetch(defaultPath);
+                            throwIfStale();
                             if (defaultRes.ok) {
                                 const defaultConfig = await defaultRes.json();
+                                throwIfStale();
                                 defaultConfig.url = defaultPath;
                                 await window.live2dManager.loadModel(defaultConfig, {
                                     isMobile: window.innerWidth <= 768
                                 });
-                                throwIfStale();
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                     window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1260,8 +1279,12 @@
                                 console.error('[猫娘切换] 默认模型也无法加载');
                             }
                         } catch (fallbackErr) {
+                            if (fallbackErr?.isStaleSwitchAttempt) throw fallbackErr;
                             console.error('[猫娘切换] 默认模型加载失败:', fallbackErr);
                         }
+                        // 内层 try 之外补 stale 检查（fallback try 内部多个 await 含 loadModel，
+                        // stale 抛错会被上面 catch 吞成 console.error 让 stale attempt 继续）
+                        throwIfStale();
                     }
                 }
 
@@ -1383,6 +1406,7 @@
                 try {
                     await window.unlockAchievement('ACH_CHANGE_SKIN');
                 } catch (err) {
+                    if (err?.isStaleSwitchAttempt) throw err;
                     console.error('解锁换肤成就失败:', err);
                 }
             }
@@ -1405,7 +1429,10 @@
             // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
             // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
             // 否则用户看到的是切换失败 toast + 冻结画面。
-            if (_switchOldSocket && S.socket === _switchOldSocket) {
+            // stale attempt 必须排除：watchdog 触发后 B 已启动但还没跑到 line 486 关 socket 时，
+            // S.socket 仍是 _switchOldSocket，A stale 苏醒进 catch 会满足条件错误地启动旧模型，
+            // 跟 B 后续清理/加载并发打架。
+            if (!error?.isStaleSwitchAttempt && _switchOldSocket && S.socket === _switchOldSocket) {
                 try {
                     const ticker = window.live2dManager?.pixi_app?.ticker;
                     if (ticker && !ticker.started) ticker.start();
