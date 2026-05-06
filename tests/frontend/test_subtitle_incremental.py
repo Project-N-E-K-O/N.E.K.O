@@ -553,6 +553,8 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             document.dispatchEvent(new Event('DOMContentLoaded'));
             await new Promise((resolve) => setTimeout(resolve, 0));
             const emptySize = window.__subtitleSizes[window.__subtitleSizes.length - 1];
+            const emptySettingsBtnRect = document.getElementById('subtitle-settings-btn').getBoundingClientRect();
+            const emptyDragHandleRect = document.getElementById('subtitle-drag-handle').getBoundingClientRect();
             window.dispatchEvent(new CustomEvent('neko-ws-transcript', {
                 detail: {
                     transcript: '这是一段很长很长的翻译字幕，用来测试窗口高度会按内容增长，但是不会超过中号字幕的最大高度。'.repeat(8),
@@ -576,6 +578,8 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             const textStyle = getComputedStyle(document.getElementById('subtitle-text'));
             return {
                 emptySize,
+                emptyControlsOverlap: emptySettingsBtnRect.bottom > emptyDragHandleRect.top,
+                emptyControlsGap: emptyDragHandleRect.top - emptySettingsBtnRect.bottom,
                 longSize,
                 panelOpenSize,
                 displayHeight: displayRect.height,
@@ -600,7 +604,9 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
         """
     )
 
-    assert result["emptySize"]["height"] == 40
+    assert result["emptySize"]["height"] == 68
+    assert result["emptyControlsOverlap"] is False
+    assert result["emptyControlsGap"] >= 8
     assert result["longSize"]["height"] <= 160
     assert result["longSize"]["height"] >= 40
     assert result["panelOpenSize"]["height"] >= result["panelBottom"]

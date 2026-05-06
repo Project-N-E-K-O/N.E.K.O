@@ -19,9 +19,9 @@
         subtitleSize: 'subtitleSize'
     };
     var SIZE_PRESETS = {
-        small:  { width: 400, minHeight: 36, maxHeight: 120, fontSize: 14 },
-        medium: { width: 600, minHeight: 40, maxHeight: 160, fontSize: 17 },
-        large:  { width: 800, minHeight: 48, maxHeight: 200, fontSize: 21 }
+        small:  { width: 400, minHeight: 64, maxHeight: 120, fontSize: 14 },
+        medium: { width: 600, minHeight: 68, maxHeight: 160, fontSize: 17 },
+        large:  { width: 800, minHeight: 76, maxHeight: 200, fontSize: 21 }
     };
     var UI_KEY_MAP = {
         settingsBtn: 'subtitle.settings.settingsBtn',
