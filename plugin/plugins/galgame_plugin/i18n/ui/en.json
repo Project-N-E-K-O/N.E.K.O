@@ -1052,5 +1052,6 @@
   "ui.error.plugin_call_timeout": "Plugin call timed out",
   "ui.settings.saving_hint": "Saving...",
   "ui.common.auto_value": "(auto)",
-  "ui.common.none_value": "(none)"
+  "ui.common.none_value": "(none)",
+  "ui.first_run.install_ocr.pending_tesseract": "Go to \"Dependencies\" panel and install Tesseract."
 }

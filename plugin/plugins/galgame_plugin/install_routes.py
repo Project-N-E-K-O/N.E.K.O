@@ -536,8 +536,10 @@ def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
     for key in _TUTORIAL_DEFAULTS:
         if key in raw:
             result[key] = raw[key]
-    result["completed"] = bool(result["completed"])
-    result["skipped"] = bool(result["skipped"])
+    if not isinstance(result["completed"], bool):
+        result["completed"] = _TUTORIAL_DEFAULTS["completed"]
+    if not isinstance(result["skipped"], bool):
+        result["skipped"] = _TUTORIAL_DEFAULTS["skipped"]
     try:
         result["last_step_index"] = max(0, int(result["last_step_index"] or 0))
     except (TypeError, ValueError):

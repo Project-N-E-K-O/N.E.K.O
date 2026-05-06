@@ -1052,5 +1052,6 @@
   "ui.error.plugin_call_timeout": "插件调用超时",
   "ui.settings.saving_hint": "正在保存...",
   "ui.common.auto_value": "(自动)",
-  "ui.common.none_value": "(无)"
+  "ui.common.none_value": "(无)",
+  "ui.first_run.install_ocr.pending_tesseract": "前往“依赖安装”面板一键安装 Tesseract。"
 }

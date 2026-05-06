@@ -17,12 +17,14 @@
 
 ## 二、安装截图工具
 
-OCR 需要稳定截取游戏画面：
+OCR 需要稳定截取游戏画面，截图后端可在 `auto / smart / DXcam / MSS / PrintWindow` 中选择：
 
 - **DXcam**（推荐）：Windows 高性能截图，延迟低、帧率高
-- **Textractor**：内存读取方案，部分引擎无需截图即可提取文字
+- **MSS / PrintWindow**：兜底方案，无需安装
 
-> 点击「安装 DXcam」按钮一键安装。如果你使用的游戏引擎支持 Textractor 内存读取（如 Unity、Kirikiri），可跳过截图直接使用内存读取。
+> 点击「安装 DXcam」按钮一键安装。如果 DXcam 截图黑屏，可在「高级设置 → 截图后端」切换到 MSS 或 PrintWindow。
+>
+> **Textractor 不是截图后端**，而是内存读取（Memory Reader）兜底方案。部分游戏引擎（如 Unity、Kirikiri）可在「高级设置 → 内存读取」中接入 Textractor，跳过截图直接提取文字。
 
 ---
 
@@ -101,7 +103,8 @@ OCR 需要稳定截取游戏画面：
 展开「高级设置」区域可以配置：
 
 - **OCR 引擎选择**：RapidOCR / Tesseract 切换
-- **截图后端**：DXcam / Textractor 切换
+- **截图后端**：auto / smart / DXcam / MSS / PrintWindow 切换
+- **内存读取**：Textractor 等内存读取方案的接入与开关（部分引擎可跳过截图）
 - **轮询间隔**：OCR 识别和状态刷新的频率
 - **OCR 截图校准**：文字区域裁剪参数
 - **屏幕感知**：画面类型识别和场景切换检测
@@ -116,6 +119,6 @@ OCR 需要稳定截取游戏画面：
 | OCR 安装失败 | 检查网络连接，确保可以访问 GitHub Release 页面 |
 | 找不到游戏窗口 | 确认游戏已启动，窗口未最小化，点击「刷新窗口」重试 |
 | 识别不出文字 | 检查截图区域是否正确，尝试重新校准；确认游戏文字在画面中可见 |
-| DXcam 截图黑屏 | 部分游戏有反截图保护，尝试使用 Textractor 内存读取 |
+| DXcam 截图黑屏 | 部分游戏有反截图保护，可在「高级设置 → 截图后端」切换到 MSS / PrintWindow，或在「内存读取」中接入 Textractor 跳过截图 |
 | AI 不回复 | 确认陪伴模式已开启，目标 AI 已配置，AI 服务正常运行 |
 | 识别结果乱码 | 在 OCR 设置中调整识别语言（中文/日文/英文） |

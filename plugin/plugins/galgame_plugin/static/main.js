@@ -1612,8 +1612,9 @@ function buildFirstRunSteps(status = {}) {
     && detail !== 'memory_reader_window_minimized'
     && lastExcludeReason !== 'excluded_minimized_window'
   );
-  const processName = textValue(runtime.process_name);
-  const hasProfile = Boolean(processName && findStoredCaptureProfileEntry(status, processName));
+  const processName = textValue(runtime.effective_process_name) || textValue(runtime.process_name);
+  const hasProfile = ['bucket_exact', 'bucket_aspect_nearest', 'process_fallback']
+    .includes(textValue(runtime.capture_profile_match_source));
   const { observedText, stableText, effectiveText } = getCurrentLineTexts(status);
   const hasLine = Boolean(effectiveText || stableText || observedText);
   const steps = [];
