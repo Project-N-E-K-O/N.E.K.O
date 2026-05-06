@@ -20,6 +20,7 @@ from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
 from plugin.server.routes import (
+    actions_router,
     config_router,
     frontend_router,
     health_router,
@@ -168,6 +169,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     app.include_router(frontend_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
+    app.include_router(actions_router)
     # galgame_plugin install routes 是可选模块：plugin import-time 副作用
     # （缺 dxcam / tesseract / textractor 等可选依赖、非 Windows 运行时等）不应让
     # 整个 plugin server 启动失败；失败时只让 install 端点返回 404。
