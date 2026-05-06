@@ -6497,22 +6497,14 @@ class OcrReaderManager:
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
                 if self._capture_future_timed_out:
-                    old_executor = self._capture_executor
-                    if old_executor is not None:
-                        old_executor.shutdown(wait=False, cancel_futures=True)
-                    self._capture_future = None
-                    self._capture_future_started_at = 0.0
-                    self._capture_future_timed_out = False
-                    self._capture_executor = None
-                    self._logger.warning(
-                        "ocr_reader replacing stuck capture worker after %.1fs timeout",
-                        elapsed,
-                    )
-                else:
                     raise _CaptureStillRunning(
-                        f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
-                        "skipping new capture to avoid overlapping OCR work"
+                        f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                        "skipping new capture to avoid accumulating blocked OCR threads"
                     )
+                raise _CaptureStillRunning(
+                    f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
+                    "skipping new capture to avoid overlapping OCR work"
+                )
             executor = self._capture_executor
             if executor is None:
                 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
