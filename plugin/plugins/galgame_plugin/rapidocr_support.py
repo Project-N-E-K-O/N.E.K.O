@@ -30,9 +30,8 @@ DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
 DEFAULT_RAPIDOCR_PIP_SPEC = "rapidocr_onnxruntime"
 DEFAULT_ONNXRUNTIME_PIP_SPEC = "onnxruntime"
 _INSTALL_STATE_NAME = "install_state.json"
-# ~1/4 of logical cores, bounded 2..8: small hosts behave like ORT defaults,
-# big hosts don't over-thread (ORT inference gains plateau past ~8 threads).
-_RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, min(8, (os.cpu_count() or 4) // 4))
+# Leave one core free for the OS / interactive use; floor at 2 so 1-2 core hosts still parallelise.
+_RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, (os.cpu_count() or 2) - 1)
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _RAPIDOCR_IMPORT_CONTEXT_LOCK = threading.RLock()
 
@@ -444,14 +443,11 @@ def _ensure_session_options_patch_installed() -> None:
 
         def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
             orig_init(self, *args, **kwargs)
-            cap = getattr(_SESSION_OPTIONS_PATCH_TLS, "cap", None)
-            if cap is None:
+            intra = getattr(_SESSION_OPTIONS_PATCH_TLS, "intra", None)
+            if intra is None:
                 return
-            intra, inter = cap
             if getattr(self, "intra_op_num_threads", 0) == 0:
                 self.intra_op_num_threads = intra
-            if getattr(self, "inter_op_num_threads", 0) == 0:
-                self.inter_op_num_threads = inter
 
         options_cls.__init__ = _patched_init
         _SESSION_OPTIONS_PATCH_INSTALLED = True
@@ -459,20 +455,20 @@ def _ensure_session_options_patch_installed() -> None:
 
 @contextmanager
 def _onnxruntime_intra_op_thread_cap(limit: int) -> Iterator[None]:
-    """Clamp SessionOptions thread counts on the calling thread only."""
+    """Clamp SessionOptions.intra_op_num_threads on the calling thread only."""
     _ensure_session_options_patch_installed()
-    prev = getattr(_SESSION_OPTIONS_PATCH_TLS, "cap", None)
-    _SESSION_OPTIONS_PATCH_TLS.cap = (limit, 1)
+    prev = getattr(_SESSION_OPTIONS_PATCH_TLS, "intra", None)
+    _SESSION_OPTIONS_PATCH_TLS.intra = limit
     try:
         yield
     finally:
         if prev is None:
             try:
-                del _SESSION_OPTIONS_PATCH_TLS.cap
+                del _SESSION_OPTIONS_PATCH_TLS.intra
             except AttributeError:
                 pass
         else:
-            _SESSION_OPTIONS_PATCH_TLS.cap = prev
+            _SESSION_OPTIONS_PATCH_TLS.intra = prev
 
 
 def load_rapidocr_runtime(
