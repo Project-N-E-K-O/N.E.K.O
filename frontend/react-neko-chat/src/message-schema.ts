@@ -53,6 +53,46 @@ const galgameOptionSchema = z.object({
   text: z.string().min(1),
 });
 
+const commandItemSchema = z.object({
+  action_id: z.string().min(1),
+  type: z.enum(['instant', 'chat_inject', 'navigation']),
+  label: z.string().min(1),
+  description: z.string(),
+  category: z.string(),
+  plugin_id: z.string(),
+  control: z.enum([
+    'toggle',
+    'button',
+    'dropdown',
+    'number',
+    'slider',
+    'text',
+    'plugin_lifecycle',
+    'entry_toggle',
+  ]).optional(),
+  current_value: z.unknown().optional(),
+  options: z.array(z.string()).optional(),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+  step: z.number().finite().optional(),
+  disabled: z.boolean().optional(),
+  inject_text: z.string().optional(),
+  input_schema: z.record(z.unknown()).optional(),
+  target: z.string().optional(),
+  open_in: z.enum(['new_tab', 'same_tab']).optional(),
+  keywords: z.array(z.string()).optional(),
+  icon: z.string().nullable().optional(),
+  priority: z.number().finite().optional(),
+  section: z.enum(['pinned', 'recent', 'commands']).nullable().optional(),
+  quick_action: z.boolean().optional(),
+}).strict();
+
+const commandPreferencesSchema = z.object({
+  pinned: z.array(z.string()),
+  hidden: z.array(z.string()),
+  recent: z.array(z.string()),
+}).strict();
+
 // Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
 //
 // 当前 source：
@@ -207,6 +247,9 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  quickActions: z.array(commandItemSchema).optional(),
+  quickActionsPreferences: commandPreferencesSchema.optional(),
+  quickActionsLoading: z.boolean().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -255,6 +298,18 @@ export const chatWindowPropsSchema = z.object({
     .args(galgameOptionSchema)
     .returns(z.void())
     .optional(),
+  onQuickActionExecute: z.function()
+    .args(z.string(), z.unknown())
+    .returns(z.promise(z.union([commandItemSchema, z.null()])))
+    .optional(),
+  onQuickActionsRequest: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onQuickActionsPreferencesChange: z.function()
+    .args(commandPreferencesSchema)
+    .returns(z.void())
+    .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
@@ -274,6 +329,8 @@ export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type CommandItemSchema = z.infer<typeof commandItemSchema>;
+export type CommandPreferences = z.infer<typeof commandPreferencesSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
