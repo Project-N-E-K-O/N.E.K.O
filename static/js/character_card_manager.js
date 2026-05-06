@@ -2917,9 +2917,15 @@ function openManagedPopup(url, windowName, features) {
         const replacementName = `${windowName}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const replacementWindow = window.open(url, replacementName, features);
         if (replacementWindow) {
+            try { existingWindow.close(); } catch (_) {}
+            try {
+                // 随机名只用于绕开旧窗口复用；新窗口接管后恢复固定名称，方便其他上下文继续定位。
+                replacementWindow.name = windowName;
+            } catch (error) {
+                console.warn('更新弹窗名称失败:', error);
+            }
             window._openWindows[windowName] = replacementWindow;
             try { replacementWindow.focus(); } catch (_) {}
-            try { existingWindow.close(); } catch (_) {}
             return replacementWindow;
         }
 
