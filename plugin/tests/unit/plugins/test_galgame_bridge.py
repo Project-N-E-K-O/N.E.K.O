@@ -2520,8 +2520,6 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_get_ocr_screen_awareness_snapshot",
         "galgame_get_snapshot",
         "galgame_get_status",
-        "galgame_install_dxcam",
-        "galgame_install_rapidocr",
         "galgame_install_tesseract",
         "galgame_install_textractor",
         "galgame_list_memory_reader_processes",
@@ -3535,198 +3533,10 @@ async def test_install_tesseract_entry_returns_install_result_and_refreshed_stat
     )
 
 
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_install_rapidocr_entry_returns_install_result_and_refreshed_status(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "RapidOCRInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={"enabled": True},
-            rapidocr={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    async def _fake_install_rapidocr(**kwargs):
-        del kwargs
-        runtime_dir = install_root / "runtime"
-        site_packages_dir = runtime_dir / "site-packages"
-        model_cache_dir = install_root / "models"
-        package_dir = site_packages_dir / "rapidocr_onnxruntime"
-        package_dir.mkdir(parents=True, exist_ok=True)
-        model_cache_dir.mkdir(parents=True, exist_ok=True)
-        return {
-            "installed": True,
-            "already_installed": False,
-            "detected_path": str(package_dir),
-            "target_dir": str(install_root),
-            "runtime_dir": str(runtime_dir),
-            "site_packages_dir": str(site_packages_dir),
-            "model_cache_dir": str(model_cache_dir),
-            "selected_model": "PP-OCRv5/ch/mobile",
-            "engine_type": "onnxruntime",
-            "lang_type": "ch",
-            "model_type": "mobile",
-            "ocr_version": "PP-OCRv5",
-            "install_supported": True,
-            "can_install": False,
-            "detail": "installed",
-            "summary": "RapidOCR 安装完成",
-            "release_name": "RapidOCR ONNXRuntime",
-            "asset_name": "rapidocr_onnxruntime, onnxruntime",
-            "runtime_error": "",
-        }
-
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.install_rapidocr",
-        _fake_install_rapidocr,
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.service.inspect_rapidocr_installation",
-        lambda **kwargs: {
-            "install_supported": True,
-            "installed": True,
-            "can_install": False,
-            "detected_path": str(install_root / "runtime" / "site-packages" / "rapidocr_onnxruntime"),
-            "target_dir": str(install_root),
-            "runtime_dir": str(install_root / "runtime"),
-            "site_packages_dir": str(install_root / "runtime" / "site-packages"),
-            "model_cache_dir": str(install_root / "models"),
-            "selected_model": "PP-OCRv5/ch/mobile",
-            "engine_type": "onnxruntime",
-            "lang_type": "ch",
-            "model_type": "mobile",
-            "ocr_version": "PP-OCRv5",
-            "detail": "installed",
-            "runtime_error": "",
-        },
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
-        lambda **kwargs: {
-            "installed": True,
-            "detail": "installed",
-            "detected_path": str(install_root / "runtime" / "site-packages" / "rapidocr_onnxruntime"),
-            "selected_model": "PP-OCRv5/ch/mobile",
-        },
-    )
-
-    result = await plugin.galgame_install_rapidocr()
-
-    assert isinstance(result, Ok)
-    assert result.value["summary"] == "RapidOCR 安装完成"
-    assert result.value["install_result"]["installed"] is True
-    assert result.value["status"]["rapidocr"]["installed"] is True
-    assert result.value["status"]["rapidocr"]["selected_model"] == "PP-OCRv5/ch/mobile"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_install_dxcam_entry_returns_install_result_and_refreshed_status(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={"enabled": True},
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    async def _fake_install_dxcam(**kwargs):
-        del kwargs
-        return {
-            "install_supported": True,
-            "installed": True,
-            "can_install": False,
-            "detected_path": "C:/Python/Lib/site-packages/dxcam/__init__.py",
-            "package_name": "dxcam",
-            "target_dir": "current_python_environment",
-            "detail": "installed",
-            "summary": "DXcam 安装完成",
-            "release_name": "DXcam",
-            "asset_name": "dxcam",
-        }
-
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.install_dxcam",
-        _fake_install_dxcam,
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.service.inspect_dxcam_installation",
-        lambda **kwargs: {
-            "install_supported": True,
-            "installed": True,
-            "can_install": False,
-            "detected_path": "C:/Python/Lib/site-packages/dxcam/__init__.py",
-            "package_name": "dxcam",
-            "target_dir": "current_python_environment",
-            "detail": "installed",
-        },
-    )
-
-    result = await plugin.galgame_install_dxcam()
-
-    assert isinstance(result, Ok)
-    assert result.value["summary"] == "DXcam 安装完成"
-    assert result.value["install_result"]["installed"] is True
-    assert result.value["status"]["dxcam"]["installed"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_install_rapidocr_entry_returns_chinese_error_message(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "RapidOCRInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={"enabled": True},
-            rapidocr={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    async def _fake_install_rapidocr(**kwargs):
-        del kwargs
-        raise RuntimeError(
-            "RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
-        )
-
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.install_rapidocr",
-        _fake_install_rapidocr,
-    )
-
-    result = await plugin.galgame_install_rapidocr()
-
-    assert isinstance(result, Err)
-    assert (
-        str(result.error)
-        == "RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
-    )
+# NOTE: tests for galgame_install_rapidocr / galgame_install_dxcam SDK actions
+# removed — both packages are now bundled main-program deps (see pyproject.toml
+# [dependency-groups] galgame). The runtime install flow they exercised no
+# longer exists.
 
 
 @pytest.mark.asyncio
@@ -5185,16 +4995,21 @@ def test_ocr_reader_capture_backend_config_is_sanitized(tmp_path: Path) -> None:
 @pytest.mark.plugin_unit
 def test_win32_capture_backend_selection_orders_dxcam_first_for_auto() -> None:
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="auto")
-    assert [item.kind for item in backend._backends] == ["dxcam", "imagegrab", "printwindow"]
+    assert [item.kind for item in backend._backends] == ["dxcam", "mss", "printwindow"]
 
     dxcam_backend = galgame_ocr_reader.Win32CaptureBackend(selection="dxcam")
-    assert [item.kind for item in dxcam_backend._backends] == ["dxcam", "imagegrab", "printwindow"]
+    assert [item.kind for item in dxcam_backend._backends] == ["dxcam", "mss", "printwindow"]
 
-    imagegrab_backend = galgame_ocr_reader.Win32CaptureBackend(selection="imagegrab")
-    assert [item.kind for item in imagegrab_backend._backends] == ["imagegrab", "dxcam", "printwindow"]
+    mss_backend = galgame_ocr_reader.Win32CaptureBackend(selection="mss")
+    assert [item.kind for item in mss_backend._backends] == ["mss", "dxcam", "printwindow"]
+
+    # Legacy "imagegrab" selection migrates to MSS for backward compatibility.
+    legacy_imagegrab_backend = galgame_ocr_reader.Win32CaptureBackend(selection="imagegrab")
+    assert legacy_imagegrab_backend.selection == "mss"
+    assert [item.kind for item in legacy_imagegrab_backend._backends] == ["mss", "dxcam", "printwindow"]
 
     printwindow_backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
-    assert [item.kind for item in printwindow_backend._backends] == ["printwindow", "dxcam", "imagegrab"]
+    assert [item.kind for item in printwindow_backend._backends] == ["printwindow", "dxcam", "mss"]
 
 
 @pytest.mark.plugin_unit
@@ -5217,7 +5032,7 @@ def test_win32_capture_backend_smart_uses_target_aware_order() -> None:
 
     assert [item.kind for item in backend._ordered_backends_for_target(foreground)] == [
         "dxcam",
-        "imagegrab",
+        "mss",
         "printwindow",
     ]
     assert [item.kind for item in backend._ordered_backends_for_target(background)] == [

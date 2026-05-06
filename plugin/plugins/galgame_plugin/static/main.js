@@ -4454,14 +4454,14 @@ function renderDxcam(status) {
     text: selectedCaptureBackend === 'auto'
       ? uiT('ui.install.capture_auto.using', '截图自动选择中')
       : uiT('ui.install.capture_auto', '截图自动'),
-    title: uiT('ui.install.capture_auto.title', '兼容旧策略：按 DXcam 优先、ImageGrab/PrintWindow 兜底自动选择截图后端'),
+    title: uiT('ui.install.capture_auto.title', '兼容旧策略：按 DXcam 优先、MSS/PrintWindow 兜底自动选择截图后端'),
   });
-  configureUseButton('imagegrabUseBtn', {
-    active: selectedCaptureBackend === 'imagegrab',
-    text: selectedCaptureBackend === 'imagegrab'
-      ? uiT('ui.install.imagegrab.using', '正在使用 ImageGrab')
-      : uiT('ui.install.imagegrab.use', '使用 ImageGrab'),
-    title: uiT('ui.install.imagegrab.title', '使用系统截图兼容后端，游戏窗口需要可见'),
+  configureUseButton('mssUseBtn', {
+    active: selectedCaptureBackend === 'mss' || selectedCaptureBackend === 'imagegrab',
+    text: (selectedCaptureBackend === 'mss' || selectedCaptureBackend === 'imagegrab')
+      ? uiT('ui.install.mss.using', '正在使用 MSS')
+      : uiT('ui.install.mss.use', '使用 MSS'),
+    title: uiT('ui.install.mss.title', '使用 mss 跨平台截图后端，游戏窗口需要可见'),
   });
   configureUseButton('printwindowUseBtn', {
     active: selectedCaptureBackend === 'printwindow',
@@ -6398,7 +6398,7 @@ async function handleDiagnosisAction(action) {
       break;
     case 'capture_backend':
       revealCaptureBackendSettings();
-      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、ImageGrab 或 PrintWindow。'), 'info');
+      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。'), 'info');
       break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
@@ -6642,7 +6642,7 @@ document.getElementById('tesseractUseBtn').addEventListener('click', () => setOc
 document.getElementById('smartCaptureUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'smart' }));
 document.getElementById('dxcamUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'dxcam' }));
 document.getElementById('captureBackendAutoBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'auto' }));
-document.getElementById('imagegrabUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'imagegrab' }));
+document.getElementById('mssUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'mss' }));
 document.getElementById('printwindowUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'printwindow' }));
 document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () => {
   refreshMemoryProcessTargetsIfNeeded({

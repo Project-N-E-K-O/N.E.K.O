@@ -44,6 +44,16 @@ critical_packages = [
     # skipped gracefully for source installs that do not enable vectors.
     'onnxruntime',
     'tokenizers',
+    # galgame_plugin native deps. Installed by `uv sync --group galgame` (see
+    # build.bat / .github/workflows/build-desktop.yml). Skipped gracefully for
+    # source installs without the group — galgame plugin import-guards these
+    # so the plugin still loads with degraded OCR backend.
+    'rapidocr_onnxruntime',
+    'cv2',  # provided by opencv-python-headless via [tool.uv].override-dependencies
+    'shapely',
+    'pyclipper',
+    'mss',
+    'dxcam',  # win-only platform marker; collect_all warns and skips on macOS/Linux
 ]
 
 # onnxruntime + tokenizers are only needed when the bundle ships embedding
