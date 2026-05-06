@@ -73,9 +73,13 @@ embedding_assets_present = os.path.isdir(
 # routes were removed). If the maintainer builds without `uv sync --group
 # galgame`, the resulting dist has OCR permanently broken with no recovery
 # at runtime — fail the build instead of silently shipping a degraded artifact.
-# `dxcam` skips this guard since it's win-only and would legitimately fail to
-# collect on macOS/Linux build hosts.
 galgame_runtime_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper', 'mss'}
+# `dxcam` is Windows-only (PEP 508 marker `sys_platform == 'win32'` in
+# pyproject.toml). On Windows, it MUST be collectable — that's the intended
+# bundling target. On macOS/Linux build hosts the package legitimately isn't
+# installed; skip the guard there.
+if sys.platform == 'win32':
+    galgame_runtime_packages = galgame_runtime_packages | {'dxcam'}
 
 for pkg in critical_packages:
     try:
