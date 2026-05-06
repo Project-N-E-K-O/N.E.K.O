@@ -514,7 +514,7 @@
   "ui.flash.sending_agent": "Отправка Agent...",
   "ui.agent.no_reply": "Agent не вернул текст",
   "ui.flash.agent_responded": "Agent ответил",
-  "ui.install.capture_auto.title": "Автоматически выбирать бэкенд захвата: сначала DXcam, затем MSS/PrintWindow как резерв",
+  "ui.install.capture_auto.title": "Стандартная цепочка: DXcam, затем MSS → PyAutoGUI как резерв (PrintWindow — только при явном выборе или фоновом Smart-режиме)",
   "ui.install.capture_auto.using": "Автовыбор захвата",
   "ui.install.compat_fallback": "резерв совместимости",
   "ui.install.current_plugin_python": "текущая Python-среда плагина",
@@ -679,7 +679,7 @@
   "ui.flash.status_refresh_failed": "Не удалось обновить статус. Попробуйте позже.",
   "ui.flash.debug_details_expanded": "Детали отладки runtime OCR раскрыты.",
   "ui.flash.line_details_revealed": "Открыты детали распознавания текущей реплики.",
-  "ui.flash.capture_backend_settings_revealed": "Открыты настройки способа захвата. Можно переключить DXcam, MSS или PrintWindow.",
+  "ui.flash.capture_backend_settings_revealed": "Открыты настройки способа захвата. Можно переключить DXcam, MSS, PyAutoGUI или PrintWindow.",
   "ui.flash.focus_game_window": "Вернитесь в окно игры. Когда оно снова будет на переднем плане, распознавание продолжится при следующем обновлении.",
   "ui.flash.action_unavailable": "Это действие пока недоступно.",
   "ui.flash.refreshing_plugin_status": "Обновление статуса плагина...",
@@ -1014,6 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam недоступен — только Windows, требуется упакованная сборка или `uv sync --group galgame` из исходников",
   "ui.install.pyautogui.use": "Использовать PyAutoGUI",
   "ui.install.pyautogui.using": "Используется PyAutoGUI",
-  "ui.install.pyautogui.title": "Использовать кросс-платформенный бэкенд скриншотов pyautogui (медленнее на macOS/Linux)",
+  "ui.install.pyautogui.title": "Использовать кросс-платформенный бэкенд скриншотов PyAutoGUI (медленнее на macOS/Linux)",
   "ui.flash.rapidocr_hint_revealed": "Прокручено до баннера статуса RapidOCR. Следуйте указаниям на баннере (переустановите упакованную сборку / uv sync --group galgame)."
 }

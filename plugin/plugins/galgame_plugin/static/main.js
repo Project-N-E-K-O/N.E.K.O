@@ -4404,7 +4404,7 @@ function renderDxcam(status) {
     text: selectedCaptureBackend === 'pyautogui'
       ? uiT('ui.install.pyautogui.using', '正在使用 PyAutoGUI')
       : uiT('ui.install.pyautogui.use', '使用 PyAutoGUI'),
-    title: uiT('ui.install.pyautogui.title', '使用 pyautogui 截图后端，跨平台兜底（macOS/Linux 上较慢）'),
+    title: uiT('ui.install.pyautogui.title', '使用 PyAutoGUI 截图后端，跨平台兜底（macOS/Linux 上较慢）'),
   });
   configureUseButton('printwindowUseBtn', {
     active: selectedCaptureBackend === 'printwindow',

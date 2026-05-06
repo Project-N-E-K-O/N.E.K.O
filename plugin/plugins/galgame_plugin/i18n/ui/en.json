@@ -514,7 +514,7 @@
   "ui.flash.sending_agent": "Sending to Agent...",
   "ui.agent.no_reply": "Agent returned no text",
   "ui.flash.agent_responded": "Agent responded",
-  "ui.install.capture_auto.title": "Auto-select the capture backend with DXcam first and MSS/PrintWindow as fallbacks",
+  "ui.install.capture_auto.title": "Default chain: DXcam first, MSS → PyAutoGUI as fallbacks (PrintWindow only as explicit selection or Smart background)",
   "ui.install.capture_auto.using": "Capture auto selection",
   "ui.install.compat_fallback": "compatibility fallback",
   "ui.install.current_plugin_python": "current plugin Python environment",
@@ -679,7 +679,7 @@
   "ui.flash.status_refresh_failed": "Status refresh failed. Try again later.",
   "ui.flash.debug_details_expanded": "OCR runtime debug details expanded.",
   "ui.flash.line_details_revealed": "Moved to current line recognition details.",
-  "ui.flash.capture_backend_settings_revealed": "Moved to capture backend settings. You can switch DXcam, MSS, or PrintWindow.",
+  "ui.flash.capture_backend_settings_revealed": "Moved to capture backend settings. You can switch DXcam, MSS, PyAutoGUI, or PrintWindow.",
   "ui.flash.focus_game_window": "Return to the game window. After it is foreground again, recognition will continue on the next refresh.",
   "ui.flash.action_unavailable": "This action is not available yet.",
   "ui.flash.refreshing_plugin_status": "Refreshing plugin status...",
@@ -1014,6 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam unavailable — Windows only, requires packaged build or `uv sync --group galgame`",
   "ui.install.pyautogui.use": "Use PyAutoGUI",
   "ui.install.pyautogui.using": "Using PyAutoGUI",
-  "ui.install.pyautogui.title": "Use the cross-platform pyautogui screenshot backend (slower on macOS/Linux)",
+  "ui.install.pyautogui.title": "Use the cross-platform PyAutoGUI screenshot backend (slower on macOS/Linux)",
   "ui.flash.rapidocr_hint_revealed": "Scrolled to the RapidOCR status banner. Follow the on-banner steps (reinstall packaged build / uv sync --group galgame)."
 }

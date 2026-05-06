@@ -2476,12 +2476,19 @@ class MssCaptureBackend:
 
 
 class PyAutoGuiCaptureBackend:
-    """Cross-platform fallback using pyautogui (already a main dep for computer_use).
+    """Cross-platform fallback in the spirit of pyautogui's screenshot path.
 
     Functionally similar to MssCaptureBackend on Windows (both go through GDI),
-    but kept as a defense-in-depth fallback in case mss fails (e.g. handle
-    exhaustion). On macOS/Linux, pyautogui shells out to platform-native
-    screenshot tools — slower than mss but more battle-tested.
+    kept as a defense-in-depth fallback in case mss fails (e.g. handle
+    exhaustion).
+
+    Internally we call PIL ImageGrab.grab() directly with all_screens=True
+    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
+    ImageGrab without exposing all_screens — its capture silently truncates
+    to the primary monitor on multi-display setups, which would corrupt
+    OCR for any galgame window placed on a secondary screen or at negative
+    coordinates. The is_available() probe still gates on `import pyautogui`
+    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
     """
 
     kind = _CAPTURE_BACKEND_PYAUTOGUI
@@ -2491,8 +2498,9 @@ class PyAutoGuiCaptureBackend:
 
     def is_available(self) -> bool:
         try:
-            import pyautogui
-            return bool(pyautogui)
+            import pyautogui  # noqa: F401 — gate on user-facing label
+            from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
+            return True
         except ImportError:
             return False
 
@@ -2500,15 +2508,18 @@ class PyAutoGuiCaptureBackend:
         return f"{target.process_name}({target.pid}) {target.title}"
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
-        import pyautogui
+        from PIL import ImageGrab
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_window_rect(target)
         left, top, right, bottom = rect
-        width = int(right - left)
-        height = int(bottom - top)
-        # pyautogui.screenshot(region=...) → PIL.Image, RGB
-        image = pyautogui.screenshot(region=(int(left), int(top), width, height))
+        # all_screens=True is Windows-only in Pillow but harmlessly ignored
+        # on macOS/Linux — covers multi-monitor layouts including secondary
+        # displays at negative coordinates relative to the primary screen.
+        image = ImageGrab.grab(
+            bbox=(int(left), int(top), int(right), int(bottom)),
+            all_screens=True,
+        )
         if image.mode != "RGB":
             image = image.convert("RGB")
         return _crop_window_image(

@@ -514,7 +514,7 @@
   "ui.flash.sending_agent": "正在发送给 Agent...",
   "ui.agent.no_reply": "Agent 未返回文本",
   "ui.flash.agent_responded": "Agent 已响应",
-  "ui.install.capture_auto.title": "兼容旧策略：按 DXcam 优先、MSS/PrintWindow 兜底自动选择截图后端",
+  "ui.install.capture_auto.title": "默认链：DXcam 优先、MSS → PyAutoGUI 兜底（PrintWindow 仅显式选择或 Smart 后台时使用）",
   "ui.install.capture_auto.using": "截图自动选择中",
   "ui.install.compat_fallback": "兼容兜底",
   "ui.install.current_plugin_python": "当前插件 Python 环境",
@@ -679,7 +679,7 @@
   "ui.flash.status_refresh_failed": "状态刷新失败，请稍后重试。",
   "ui.flash.debug_details_expanded": "已展开 OCR 运行时调试详情。",
   "ui.flash.line_details_revealed": "已定位到当前台词识别详情。",
-  "ui.flash.capture_backend_settings_revealed": "已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。",
+  "ui.flash.capture_backend_settings_revealed": "已定位到截图方式设置。可以切换 DXcam、MSS、PyAutoGUI 或 PrintWindow。",
   "ui.flash.focus_game_window": "请切回游戏窗口。窗口回到前台后，插件会在下一轮刷新中继续识别。",
   "ui.flash.action_unavailable": "这个操作暂时不可用。",
   "ui.flash.refreshing_plugin_status": "正在刷新插件状态...",
@@ -1014,6 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam 不可用 — 仅 Windows 平台支持，且需要打包版本或源码 `uv sync --group galgame`",
   "ui.install.pyautogui.use": "使用 PyAutoGUI",
   "ui.install.pyautogui.using": "正在使用 PyAutoGUI",
-  "ui.install.pyautogui.title": "使用 pyautogui 截图后端，跨平台兜底（macOS/Linux 上较慢）",
+  "ui.install.pyautogui.title": "使用 PyAutoGUI 截图后端，跨平台兜底（macOS/Linux 上较慢）",
   "ui.flash.rapidocr_hint_revealed": "已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。"
 }
