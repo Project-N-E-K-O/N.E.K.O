@@ -114,16 +114,23 @@ def _rapidocr_import_context(
         old_model_dir = os.environ.get("RAPIDOCR_MODEL_DIR")
         old_model_home = os.environ.get("RAPIDOCR_MODEL_HOME")
         dll_handles: list[Any] = []
-        # Legacy plugin-isolated install layout: still supported so users who
-        # ran the old runtime-pip-install flow keep working without re-downloading.
-        # New installs use the bundled main-program package, so this branch is
-        # a no-op for them.
-        if site_packages_dir:
+        # Legacy plugin-isolated install layout: only injected as a fallback
+        # when the bundled main-program rapidocr_onnxruntime is NOT importable.
+        # Otherwise sys.path order would let a stale legacy install shadow the
+        # bundled (likely newer) version, breaking upgrades for users who
+        # haven't manually cleaned %LOCALAPPDATA%/.../RapidOCR/runtime.
+        bundled_available = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME) is not None
+        use_legacy_layout = (
+            site_packages_dir
+            and site_packages_dir.is_dir()
+            and not bundled_available
+        )
+        if use_legacy_layout:
             site_path = str(site_packages_dir)
-            if site_packages_dir.is_dir() and site_path not in sys.path:
+            if site_path not in sys.path:
                 sys.path.insert(0, site_path)
                 inserted = True
-            if hasattr(os, "add_dll_directory") and site_packages_dir.is_dir():
+            if hasattr(os, "add_dll_directory"):
                 for candidate in (
                     site_packages_dir,
                     site_packages_dir / "onnxruntime",

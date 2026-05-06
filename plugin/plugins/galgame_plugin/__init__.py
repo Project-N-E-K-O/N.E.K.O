@@ -145,7 +145,19 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
 
 
 _OCR_BACKEND_SELECTIONS = {"auto", "rapidocr", "tesseract"}
-_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "imagegrab", "printwindow"}
+_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "printwindow"}
+
+
+def _migrate_legacy_capture_backend(value: object) -> object:
+    """Rewrite legacy "imagegrab" stored value to "mss" at every entry point.
+
+    Old configs saved before the MSS rename keep "imagegrab" verbatim; this
+    helper normalizes them at storage / API boundaries so the runtime never
+    sees the legacy name and `_OCR_CAPTURE_BACKEND_SELECTIONS` can shrink.
+    """
+    if isinstance(value, str) and value.strip().lower() == "imagegrab":
+        return "mss"
+    return value
 _BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS = 45.0
 _BRIDGE_TICK_INTERVAL_SECONDS = 1.0
 # Foreground refresh TTL: repeated calls within two seconds return early so
@@ -2716,7 +2728,7 @@ class GalgamePlugin(NekoPluginBase):
         if value is not None and value in _OCR_BACKEND_SELECTIONS:
             self._cfg.ocr_reader.ocr_reader_backend_selection = value
 
-        value = overrides.get(STORE_OCR_CAPTURE_BACKEND)
+        value = _migrate_legacy_capture_backend(overrides.get(STORE_OCR_CAPTURE_BACKEND))
         if value is not None and value in _OCR_CAPTURE_BACKEND_SELECTIONS:
             self._cfg.ocr_reader.ocr_reader_capture_backend = value
 
@@ -4043,7 +4055,7 @@ class GalgamePlugin(NekoPluginBase):
                 and str(getattr(self._cfg, "ocr_reader_capture_backend", "") or "")
                 .strip()
                 .lower()
-                in {"smart", "dxcam", "mss", "imagegrab", "printwindow"}
+                in {"smart", "dxcam", "mss", "printwindow"}
             )
         )
         memory_reader_default_is_unavailable = (
@@ -4709,6 +4721,10 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         normalized_backend = str(backend_selection or "").strip().lower() or None
         normalized_capture = str(capture_backend or "").strip().lower() or None
+        # Accept legacy "imagegrab" from external callers but normalize to "mss"
+        # before validation so the schema set can drop the deprecated value.
+        if normalized_capture == "imagegrab":
+            normalized_capture = "mss"
         if normalized_backend is None and normalized_capture is None:
             return Err(SdkError("backend_selection or capture_backend is required"))
         if normalized_backend is not None and normalized_backend not in _OCR_BACKEND_SELECTIONS:

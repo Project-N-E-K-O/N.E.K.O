@@ -504,9 +504,12 @@ def _sanitize_ocr_screen_templates(value: object) -> list[dict[str, Any]]:
 
 def _coerce_ocr_capture_backend(value: object, default: str = "smart") -> str:
     normalized = str(value or default).strip().lower()
-    # "imagegrab" is the legacy selection; ocr_reader.Win32CaptureBackend.__init__
-    # transparently migrates it to "mss". Accept both for backward compatibility.
-    if normalized in {"auto", "smart", "dxcam", "mss", "imagegrab", "printwindow"}:
+    # Legacy stored "imagegrab" auto-migrates to "mss" — same GDI capability,
+    # mss is faster + cross-platform. The set below intentionally excludes
+    # "imagegrab" so the rewritten value sticks once the config is re-saved.
+    if normalized == "imagegrab":
+        normalized = "mss"
+    if normalized in {"auto", "smart", "dxcam", "mss", "printwindow"}:
         return normalized
     return default
 

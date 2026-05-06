@@ -1925,10 +1925,12 @@ async def test_set_ocr_backend_resets_capture_runtime_diagnostics_on_change(
     )
     plugin._start_background_bridge_poll = lambda: False  # type: ignore[method-assign]
 
+    # Legacy "imagegrab" is accepted at the API boundary but normalized to "mss"
+    # so old configs auto-rewrite on the next save.
     result = await plugin.galgame_set_ocr_backend(capture_backend="imagegrab")
 
     assert isinstance(result, Ok)
-    assert plugin._cfg.ocr_reader_capture_backend == "imagegrab"
+    assert plugin._cfg.ocr_reader_capture_backend == "mss"
     assert resets == [True]
 
 
