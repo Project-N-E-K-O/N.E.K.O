@@ -143,6 +143,36 @@
         // VRM animation——MMD 没有恢复路径，从 MMD 切出去时任一步失败都留下空白模型区。
         // 暂存到 commit 之后 dispose；rollback 时跳过 dispose + 重显容器/按钮。
         let _mmdDeferredDispose = null;
+        // 恢复延后保留的旧 MMD 实例可见性 + UI（catch rollback / watchdog 超时两条路径
+        // 都要走这套逻辑）。canvas 显式 display/visibility/pointerEvents 而非用 helper：
+        // clearMMDCanvasLoadingSession 实际是"退役 canvas"，会再次设 visibility:hidden +
+        // pointerEvents:none（line 117-119），把刚显式恢复的 mmd-container 又藏回去。
+        // restoreMMDCanvasForLoadingSession 有 sessionId 门闩匹配，rollback 时无 token，
+        // 也用不上。所以这里直接内联恢复逻辑。
+        const _restoreDeferredMmdUi = () => {
+            if (!_mmdDeferredDispose || window.mmdManager !== _mmdDeferredDispose) return;
+            try {
+                const mmdContainer = document.getElementById('mmd-container');
+                if (mmdContainer) {
+                    mmdContainer.style.removeProperty('display');
+                    mmdContainer.classList.remove('hidden');
+                }
+                const mmdCanvas = document.getElementById('mmd-canvas');
+                if (mmdCanvas) {
+                    delete mmdCanvas.dataset.mmdLoadingSessionId;
+                    mmdCanvas.style.display = 'block';
+                    mmdCanvas.style.visibility = 'visible';
+                    mmdCanvas.style.pointerEvents = 'auto';
+                }
+                if (typeof _mmdDeferredDispose.setupFloatingButtons === 'function') {
+                    _mmdDeferredDispose.setupFloatingButtons();
+                }
+            } catch (recoveryErr) {
+                console.warn('[猫娘切换] MMD UI 恢复出错:', recoveryErr);
+            }
+            // 旧实例继续作为 active mmdManager；不再 commit 时 dispose。
+            _mmdDeferredDispose = null;
+        };
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -276,6 +306,10 @@
                             clearInterval(_switchOldHeartbeat);
                         }
                     } catch (_e) { /* ignore socket cleanup failures */ }
+                    // MMD UI 恢复：watchdog 卡死路径下旧 mmdManager 实例还活着但 mmd-container
+                    // 已在清理阶段被隐藏 + 浮动按钮被移除——不恢复的话 lanlan_config 已回滚但
+                    // 模型区仍空白，跟 catch rollback 那条路径同样症状。
+                    _restoreDeferredMmdUi();
                 }
                 // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
                 // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
@@ -1680,34 +1714,9 @@
                 } catch (_e) { /* ignore */ }
                 // MMD rollback 恢复：清理阶段为防 MMD→非 MMD 切换中途失败让模型区空白，
                 // 把旧 mmdManager.dispose 延后到了 commit 之后。这里 commit 没到，旧实例
-                // 还活着；恢复 mmd-container + canvas 可见性 + 浮动按钮，让用户看到旧模型
-                // 而不是空白。注意 canvas 这里要显式恢复 visibility/display/pointerEvents
-                // 而非用 clearMMDCanvasLoadingSession——后者只清 dataset 但反过来把 canvas
-                // 设成 visibility:hidden + pointerEvents:none（line 117-119），会立刻把刚
-                // 恢复的容器再藏回去，rollback 等于没做。
-                if (_mmdDeferredDispose && window.mmdManager === _mmdDeferredDispose) {
-                    try {
-                        const mmdContainer = document.getElementById('mmd-container');
-                        if (mmdContainer) {
-                            mmdContainer.style.removeProperty('display');
-                            mmdContainer.classList.remove('hidden');
-                        }
-                        const mmdCanvas = document.getElementById('mmd-canvas');
-                        if (mmdCanvas) {
-                            delete mmdCanvas.dataset.mmdLoadingSessionId;
-                            mmdCanvas.style.display = 'block';
-                            mmdCanvas.style.visibility = 'visible';
-                            mmdCanvas.style.pointerEvents = 'auto';
-                        }
-                        if (typeof _mmdDeferredDispose.setupFloatingButtons === 'function') {
-                            _mmdDeferredDispose.setupFloatingButtons();
-                        }
-                    } catch (recoveryErr) {
-                        console.warn('[猫娘切换] MMD rollback 恢复出错:', recoveryErr);
-                    }
-                    // 旧实例继续作为 active mmdManager；不再 commit 时 dispose。
-                    _mmdDeferredDispose = null;
-                }
+                // 还活着；helper 恢复 mmd-container + canvas 可见性 + 浮动按钮，让用户看到
+                // 旧模型而不是空白（watchdog 超时分支也复用同一个 helper）。
+                _restoreDeferredMmdUi();
             }
         } finally {
             clearTimeout(switchWatchdogId);
