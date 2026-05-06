@@ -1445,11 +1445,16 @@
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
+                // 清理切换标识，取消所有 pending 的 applyLighting 定时器。
+                // 必须放在 isCurrentAttempt 守护内：window._currentCatgirlSwitchId 是 VRM 分支
+                // applyLighting retry loop 的 ownership token（line 794-800 用 Symbol() 标识当前
+                // attempt，retry 比对 !== currentSwitchId 自我退出）。stale attempt 苏醒到 finally
+                // 时如果无条件清成 null，会把新 attempt 刚设的 token 清掉，新 attempt 的 lighting
+                // retry 误以为自己被取消、退出循环 → 新角色 lighting 残缺。
+                window._currentCatgirlSwitchId = null;
             } else {
-                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl 不动');
+                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl / _currentCatgirlSwitchId 不动');
             }
-            // 清理切换标识，取消所有 pending 的 applyLighting 定时器
-            window._currentCatgirlSwitchId = null;
 
             // 重置 goodbyeClicked 标志，确保 showCurrentModel 可以正常运行
             if (window.live2dManager) {
