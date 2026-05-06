@@ -6684,13 +6684,17 @@ async function resetTutorialGuide() {
   lastSavedStepIndex = -1;
   latestTutorialProgress = null;
   clearSkipOnboarding();
-  await saveTutorialProgress({
-    completed: false,
-    skipped: false,
-    last_step_index: 0,
-    started_at: Date.now() / 1000,
-    completed_at: 0,
-  });
+  try {
+    await saveTutorialProgress({
+      completed: false,
+      skipped: false,
+      last_step_index: 0,
+      started_at: Date.now() / 1000,
+      completed_at: 0,
+    });
+  } catch (error) {
+    console.warn('[galgame_plugin ui] tutorial reset progress save failed', error);
+  }
   const onboardingView = document.getElementById('onboardingView');
   if (onboardingView) {
     onboardingView.hidden = false;
@@ -6818,9 +6822,13 @@ async function initialize() {
     document.body.classList.add('onboarding-active');
     const onboardingView = document.getElementById('onboardingView');
     if (onboardingView) { onboardingView.hidden = false; }
-    await saveTutorialProgress({
-      started_at: Number(progress?.started_at || 0) || Date.now() / 1000,
-    });
+    try {
+      await saveTutorialProgress({
+        started_at: Number(progress?.started_at || 0) || Date.now() / 1000,
+      });
+    } catch (error) {
+      console.warn('[galgame_plugin ui] tutorial initial progress save failed', error);
+    }
   } else {
     onboardingDismissed = true;
     forceShowOnboarding = false;
