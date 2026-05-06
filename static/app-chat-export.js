@@ -1602,9 +1602,14 @@
         // silently drop for image-sized blobs (markdown sometimes slips
         // through). Place the anchor in the popup's realm so the download
         // inherits the same user-activation context as the tap.
-        var hostWindow = (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document)
-            ? state.previewWindow
-            : window;
+        var hostWindow = window;
+        try {
+            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                hostWindow = state.previewWindow;
+            }
+        } catch (_) {
+            hostWindow = window;
+        }
         var hostDoc = hostWindow.document;
         var hostURL = hostWindow.URL || hostWindow.webkitURL || URL;
         var url = hostURL.createObjectURL(blob);
