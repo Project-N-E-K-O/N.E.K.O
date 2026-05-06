@@ -3,12 +3,18 @@ const RUNS_URL = '/runs';
 const UI_API_BASE = `/plugin/${PLUGIN_ID}/ui-api`;
 const TUTORIAL_STATUS_URL = `${UI_API_BASE}/tutorial/status`;
 const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
-const RAPIDOCR_INSTALL_URL = `${UI_API_BASE}/rapidocr/install`;
-const DXCAM_INSTALL_URL = `${UI_API_BASE}/dxcam/install`;
+// rapidocr / dxcam install URLs gone — both are bundled main-program deps
+// (see pyproject.toml [dependency-groups] galgame). Only textractor +
+// tesseract still need the runtime-install UI. RapidOCR adds a
+// model-download UI for non-bundled language packs (see RAPIDOCR_MODELS_*).
+const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models/download`;
+const RAPIDOCR_MODELS_LATEST_URL = `${UI_API_BASE}/rapidocr-models/latest`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
-const OCR_INSTALL_TABS = ['rapidocr', 'dxcam', 'tesseract'];
+// Only tesseract retains an install tab; rapidocr / dxcam status is now
+// shown as plain banners (always visible, no install action).
+const OCR_INSTALL_TABS = ['tesseract'];
 const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
@@ -95,32 +101,6 @@ function clearSkipOnboarding() {
 
 function getInstallUIConfig() {
   return {
-    rapidocr: {
-      kind: 'rapidocr',
-      label: 'RapidOCR',
-      url: RAPIDOCR_INSTALL_URL,
-      storageKey: `${PLUGIN_ID}:rapidocr_install_task_id`,
-      domPrefix: 'rapidocr',
-      actionText: uiT('ui.install.rapidocr.action', '一键安装 RapidOCR'),
-      retryText: uiT('ui.install.rapidocr.retry', '重试安装 RapidOCR'),
-      runningText: uiT('ui.install.running', '后台安装中...'),
-      queuedFlash: uiT('ui.install.rapidocr.queued', '已创建后台安装任务，接下来会安装插件隔离的 RapidOCR 运行时，并通过 SSE 推送实时进度。'),
-      successFlash: uiT('ui.install.rapidocr.success', 'RapidOCR 安装完成'),
-      failureFlash: uiT('ui.install.rapidocr.failure', 'RapidOCR 安装失败'),
-    },
-    dxcam: {
-      kind: 'dxcam',
-      label: 'DXcam',
-      url: DXCAM_INSTALL_URL,
-      storageKey: `${PLUGIN_ID}:dxcam_install_task_id`,
-      domPrefix: 'dxcam',
-      actionText: uiT('ui.install.dxcam.action', '一键安装 DXcam'),
-      retryText: uiT('ui.install.dxcam.retry', '重试安装 DXcam'),
-      runningText: uiT('ui.install.running', '后台安装中...'),
-      queuedFlash: uiT('ui.install.dxcam.queued', '已创建后台安装任务，接下来会安装 DXcam 截图依赖，并通过 SSE 推送实时进度。'),
-      successFlash: uiT('ui.install.dxcam.success', 'DXcam 安装完成'),
-      failureFlash: uiT('ui.install.dxcam.failure', 'DXcam 安装失败'),
-    },
     tesseract: {
       kind: 'tesseract',
       label: 'Tesseract',
@@ -658,8 +638,9 @@ const ACTION_LABELS_ZH = {
   recalibrate_ocr: '重新截图校准',
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
-  install_rapidocr: '一键安装 RapidOCR',
+  install_rapidocr: '查看 RapidOCR 状态',
   install_tesseract: '一键安装 Tesseract',
+  install_dxcam: '查看 DXcam 状态',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
 };
@@ -739,7 +720,7 @@ let lastOcrWindowRefreshAt = 0;
 let emptyOcrWindowFocusForceRefreshDone = false;
 let autoRefreshTimer = null;
 let autoRefreshIntervalMs = AUTO_REFRESH_INTERVAL_MS;
-let activeInstallTab = 'rapidocr';
+let activeInstallTab = 'tesseract';
 let settingsDirty = false;
 let settingsSaveInFlight = false;
 let settingsAutosaveTimer = null;
@@ -2271,22 +2252,10 @@ function dependencySummaryItem(kind, status = {}) {
     };
   }
 
-  if (kind === 'rapidocr') {
-    const rapidocr = status.rapidocr || {};
-    if (!rapidocr.install_supported) {
-      return { kind, label: 'RapidOCR', state: 'neutral', labelText: uiT('ui.install.summary.unsupported_auto_install', '不支持自动安装'), needsAttention: false };
-    }
-    return rapidocr.installed
-      ? { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
-      : { kind, label: 'RapidOCR', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
-  }
-
-  if (kind === 'dxcam') {
-    const dxcam = status.dxcam || {};
-    return dxcam.installed
-      ? { kind, label: 'DXcam', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
-      : { kind, label: 'DXcam', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
-  }
+  // rapidocr / dxcam used to have install-summary branches here; both are now
+  // bundled main-program deps, so they're not in OCR_INSTALL_TABS and this
+  // function is never called with those kinds. Their status is shown
+  // exclusively via the always-visible rapidocrPrompt / dxcamPrompt banners.
 
   if (kind === 'tesseract') {
     const tesseract = status.tesseract || {};
@@ -3295,23 +3264,50 @@ function renderPluginUnavailable(error) {
     { label: 'status', value: pluginNotStarted },
   ]);
 
+  // Static label table — rapidocr/dxcam are no longer in `getInstallUIConfig`
+  // (no install machinery for bundled deps), so calling `getInstallConfig`
+  // for them would throw and break this whole fallback render. Touch banner
+  // text directly via static labels; only tesseract/textractor still have
+  // install button/card DOM to hide.
+  const PROMPT_LABELS = {
+    rapidocr: 'RapidOCR',
+    dxcam: 'DXcam',
+    tesseract: 'Tesseract',
+    textractor: 'Textractor',
+  };
   for (const kind of ['rapidocr', 'dxcam', 'tesseract', 'textractor']) {
-    const config = getInstallConfig(kind);
-    const { button, card } = getInstallNodes(kind);
-    const banner = document.getElementById(`${config.domPrefix}Prompt`);
-    const kicker = document.getElementById(`${config.domPrefix}PromptKicker`);
-    const title = document.getElementById(`${config.domPrefix}PromptTitle`);
-    const body = document.getElementById(`${config.domPrefix}PromptBody`);
-    const path = document.getElementById(`${config.domPrefix}PathText`);
+    const banner = document.getElementById(`${kind}Prompt`);
+    if (!banner) {
+      continue;
+    }
+    const kicker = document.getElementById(`${kind}PromptKicker`);
+    const title = document.getElementById(`${kind}PromptTitle`);
+    const body = document.getElementById(`${kind}PromptBody`);
+    const path = document.getElementById(`${kind}PathText`);
+    // Banners default to `hidden` in HTML and used to be unhidden by
+    // switchInstallTab. Post-refactor switchInstallTab only iterates
+    // OCR_INSTALL_TABS = ['tesseract'] so rapidocr/dxcam stay hidden in
+    // the plugin-unavailable failure path — explicitly clear it here so
+    // the degraded-state hint is actually visible to the user.
+    banner.hidden = false;
     banner.className = `install-banner install-banner-${kind} neutral`;
-    kicker.textContent = config.label;
-    title.textContent = pluginNotStarted;
-    body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
-    path.textContent = message;
-    card.hidden = true;
-    card.style.display = 'none';
-    button.hidden = true;
-    button.disabled = true;
+    if (kicker) kicker.textContent = PROMPT_LABELS[kind];
+    if (title) title.textContent = pluginNotStarted;
+    if (body) body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
+    if (path) path.textContent = message;
+    // Install button/card only exist for tesseract + textractor (bundled
+    // rapidocr/dxcam don't have install task DOM anymore).
+    if (kind === 'tesseract' || kind === 'textractor') {
+      const { button, card } = getInstallNodes(kind);
+      if (card) {
+        card.hidden = true;
+        card.style.display = 'none';
+      }
+      if (button) {
+        button.hidden = true;
+        button.disabled = true;
+      }
+    }
   }
 }
 
@@ -3495,13 +3491,8 @@ async function restoreTextractorInstallState() {
   await restoreInstallState('textractor');
 }
 
-async function restoreRapidOcrInstallState() {
-  await restoreInstallState('rapidocr');
-}
-
-async function restoreDxcamInstallState() {
-  await restoreInstallState('dxcam');
-}
+// restoreRapidOcrInstallState / restoreDxcamInstallState removed — both
+// kinds no longer have install machinery (bundled into main program).
 
 async function restoreTesseractInstallState() {
   await restoreInstallState('tesseract');
@@ -4608,10 +4599,7 @@ function renderRapidOcr(status) {
   const title = document.getElementById('rapidocrPromptTitle');
   const body = document.getElementById('rapidocrPromptBody');
   const path = document.getElementById('rapidocrPathText');
-  const button = document.getElementById('rapidocrInstallBtn');
-  const installState = getInstallState('rapidocr').state;
-  const installable = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
-  const installed = Boolean(rapidocr.installed) || (installState && installState.status === 'completed');
+  const installed = Boolean(rapidocr.installed);
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4623,7 +4611,7 @@ function renderRapidOcr(status) {
       : uiT('ui.install.rapidocr.use', '使用 RapidOCR'),
     title: installed
       ? uiT('ui.install.rapidocr.force_title', '强制 OCR Reader 使用 RapidOCR')
-      : uiT('ui.install.rapidocr.install_first_title', '请先安装 RapidOCR'),
+      : uiT('ui.install.rapidocr.unavailable_title', 'RapidOCR 未启用 — 请使用打包版本，或源码运行 `uv sync --group galgame`'),
   });
   configureUseButton('ocrBackendAutoBtn', {
     active: selectedBackend === 'auto',
@@ -4633,21 +4621,16 @@ function renderRapidOcr(status) {
     title: uiT('ui.install.ocr_auto.title', '按 RapidOCR 优先、Tesseract 兜底自动选择 OCR 后端'),
   });
 
+  // rapidocrPrompt is no longer tab-controlled — show it whenever we render.
+  banner.hidden = false;
   banner.className = 'install-banner install-banner-rapidocr';
-  button.hidden = !installable;
-  button.disabled = getInstallState('rapidocr').inProgress;
-  button.textContent = getInstallState('rapidocr').inProgress
-    ? getInstallConfig('rapidocr').runningText
-    : getInstallConfig('rapidocr').actionText;
 
   if (!rapidocr.install_supported) {
     banner.classList.add('neutral');
     kicker.textContent = uiT('ui.install.rapidocr.kicker', 'OCR 主后端');
-    title.textContent = uiT('ui.install.rapidocr.unsupported_title', '当前平台暂不支持自动安装 RapidOCR');
-    body.textContent = uiT('ui.install.rapidocr.unsupported_body', 'RapidOCR 主后端目前只支持 Windows 本地运行时安装。');
+    title.textContent = uiT('ui.install.rapidocr.unsupported_title', '当前平台暂不支持 RapidOCR');
+    body.textContent = uiT('ui.install.rapidocr.unsupported_body', 'RapidOCR 主后端目前只支持 Windows。');
     path.textContent = '';
-    button.hidden = true;
-    renderInstallTaskState('rapidocr');
     return;
   }
 
@@ -4662,64 +4645,30 @@ function renderRapidOcr(status) {
     body.textContent = usingRapidOcr
       ? `${uiT('ui.install.backend_label', '后端')}: ${runtime.backend_kind || 'rapidocr'}\n${uiT('ui.install.model_label', '模型')}: ${runtime.backend_model || rapidocr.selected_model || ''}`
       : usingFallback
-        ? `${uiT('ui.install.rapidocr.fallback_body', 'RapidOCR 已安装，但本帧 OCR 回退到了 Tesseract。原因')}: ${runtime.backend_detail || rapidocr.detail || uiT('ui.status.unknown', '未知')}。`
-        : uiT('ui.install.rapidocr.ready_body', 'RapidOCR 已安装完成。无 SDK 且无有效内存文本时，它会优先于 Tesseract 作为 OCR Reader 的主后端。');
+        ? `${uiT('ui.install.rapidocr.fallback_body', 'RapidOCR 已就绪，但本帧 OCR 回退到了 Tesseract。原因')}: ${runtime.backend_detail || rapidocr.detail || uiT('ui.status.unknown', '未知')}。`
+        : uiT('ui.install.rapidocr.ready_body', 'RapidOCR 已就绪。无 SDK 且无有效内存文本时，它会优先于 Tesseract 作为 OCR Reader 的主后端。');
     path.textContent = [
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
     ].filter(Boolean).join('\n');
-    button.hidden = true;
-  } else if (rapidocr.detail === 'missing_models') {
-    banner.classList.add('warning');
-    kicker.textContent = uiT('ui.install.rapidocr.kicker_missing_models', 'OCR 主后端缺少模型');
-    title.textContent = uiT('ui.install.rapidocr.missing_models_title', 'RapidOCR 运行时存在，但模型状态不完整');
-    body.textContent = uiT('ui.install.rapidocr.missing_models_body', 'RapidOCR 包已存在，但缺少安装完成状态或模型缓存标记。重新安装会执行预热校验并修复状态。');
-    path.textContent = rapidocr.target_dir ? `${uiT('ui.install.target_dir', '目标目录')}: ${rapidocr.target_dir}` : '';
   } else if (rapidocr.detail === 'broken_runtime') {
     banner.classList.add('warning');
     kicker.textContent = uiT('ui.install.rapidocr.kicker_broken', 'OCR 主后端异常');
     title.textContent = uiT('ui.install.rapidocr.broken_title', 'RapidOCR 运行时已损坏或导入失败');
-    body.textContent = uiT('ui.install.rapidocr.broken_body', '建议重新执行一键安装。安装流程会重新落地插件隔离运行时，并在完成后做一次空白图推理自检。');
+    body.textContent = uiT('ui.install.rapidocr.broken_body', 'bundled rapidocr 包导入失败。请重建插件 venv（`uv sync --group galgame`）或重装打包版本。');
     path.textContent = rapidocr.detected_path
       ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}`
       : '';
   } else {
+    // Bundled-but-missing: source install without `--group galgame`, or non-Windows.
     banner.classList.add('warning');
     kicker.textContent = uiT('ui.install.rapidocr.kicker_not_ready', 'OCR 主后端未就绪');
-    title.textContent = uiT('ui.install.rapidocr.not_ready_title', 'RapidOCR 尚未就绪');
-    body.textContent = uiT('ui.install.rapidocr.not_ready_body', 'RapidOCR 现在是 OCR Reader 的内部主后端。安装完成后会优先于 Tesseract 参与 OCR，Tesseract 仅保留为兼容兜底。');
-    path.textContent = rapidocr.target_dir
-      ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${rapidocr.target_dir}`
-      : '';
-  }
-
-  if (installState && !isInstallTaskTerminal(installState)) {
-    banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
-    title.textContent = uiT('ui.install.rapidocr.installing_title', 'RapidOCR 正在后台安装');
-    body.textContent = uiT('ui.install.rapidocr.installing_body', '页面会通过 SSE 接收实时安装进度。安装完成后会自动刷新插件状态，并优先切回 RapidOCR 主后端。');
-    button.hidden = false;
-    button.disabled = true;
-    button.textContent = getInstallConfig('rapidocr').runningText;
-  } else if (installState && installState.status === 'failed' && installable) {
-    banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
-    title.textContent = uiT('ui.install.rapidocr.failed_title', 'RapidOCR 安装失败，可直接重试');
-    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
-    button.hidden = false;
-    button.disabled = false;
-    button.textContent = getInstallConfig('rapidocr').retryText;
-  } else if (installState && installState.status === 'completed' && !installed) {
-    banner.className = 'install-banner install-banner-rapidocr neutral';
-    kicker.textContent = uiT('ui.install.rapidocr.install_kicker', 'RapidOCR 安装');
-    title.textContent = uiT('ui.install.rapidocr.completed_refresh_title', 'RapidOCR 安装已完成，正在刷新 OCR 状态');
-    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
-  }
-
-  if (installed) {
-    getInstallNodes('rapidocr').card.hidden = true;
-  } else {
-    renderInstallTaskState('rapidocr');
+    title.textContent = uiT('ui.install.rapidocr.not_ready_title', '未检测到 RapidOCR');
+    body.textContent = uiT(
+      'ui.install.rapidocr.bundled_hint',
+      'RapidOCR 现在随主程序打包。如果你跑的是打包版本，请重新下载安装包；如果是源码运行，请执行 `uv sync --group galgame` 后重启。',
+    );
+    path.textContent = '';
   }
 }
 
@@ -4731,10 +4680,7 @@ function renderDxcam(status) {
   const title = document.getElementById('dxcamPromptTitle');
   const body = document.getElementById('dxcamPromptBody');
   const path = document.getElementById('dxcamPathText');
-  const button = document.getElementById('dxcamInstallBtn');
-  const installState = getInstallState('dxcam').state;
-  const installable = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
-  const installed = Boolean(dxcam.installed) || (installState && installState.status === 'completed');
+  const installed = Boolean(dxcam.installed);
   const selectedCaptureBackend = status.ocr_capture_backend_selection || 'auto';
   const usingDxcam = runtime.capture_backend_kind === 'dxcam';
   const captureBackendText = runtime.capture_backend_kind || (
@@ -4757,14 +4703,14 @@ function renderDxcam(status) {
       : uiT('ui.install.dxcam.use', '使用 DXcam'),
     title: installed
       ? uiT('ui.install.dxcam.force_title', '强制截图后端使用 DXcam')
-      : uiT('ui.install.dxcam.install_first_title', '请先安装 DXcam'),
+      : uiT('ui.install.dxcam.unavailable_title', 'DXcam 不可用 — 仅 Windows 平台支持，且需要打包版本或源码 uv sync'),
   });
   configureUseButton('captureBackendAutoBtn', {
     active: selectedCaptureBackend === 'auto',
     text: selectedCaptureBackend === 'auto'
       ? uiT('ui.install.capture_auto.using', '截图自动选择中')
       : uiT('ui.install.capture_auto', '截图自动'),
-    title: uiT('ui.install.capture_auto.title', '兼容旧策略：按 DXcam 优先、MSS/PrintWindow 兜底自动选择截图后端'),
+    title: uiT('ui.install.capture_auto.title', '默认链：DXcam → MSS → PyAutoGUI 自动选择截图后端'),
   });
   configureUseButton('mssUseBtn', {
     active: selectedCaptureBackend === 'mss' || selectedCaptureBackend === 'imagegrab',
@@ -4773,29 +4719,31 @@ function renderDxcam(status) {
       : uiT('ui.install.mss.use', '使用 MSS'),
     title: uiT('ui.install.mss.title', '使用 MSS 跨平台截图后端，游戏窗口需要可见'),
   });
+  configureUseButton('pyautoguiUseBtn', {
+    active: selectedCaptureBackend === 'pyautogui',
+    text: selectedCaptureBackend === 'pyautogui'
+      ? uiT('ui.install.pyautogui.using', '正在使用 PyAutoGUI')
+      : uiT('ui.install.pyautogui.use', '使用 PyAutoGUI'),
+    title: uiT('ui.install.pyautogui.title', '使用 PyAutoGUI 截图后端，跨平台兜底（macOS/Linux 上较慢）'),
+  });
   configureUseButton('printwindowUseBtn', {
     active: selectedCaptureBackend === 'printwindow',
     text: selectedCaptureBackend === 'printwindow'
       ? uiT('ui.install.printwindow.using', '正在使用 PrintWindow')
       : uiT('ui.install.printwindow.use', '使用 PrintWindow'),
-    title: uiT('ui.install.printwindow.title', '使用 Win32 PrintWindow 兜底，DirectX/Unity 游戏可能旧帧'),
+    title: uiT('ui.install.printwindow.title', '使用 Win32 PrintWindow，主要用于截被遮挡窗口；DirectX/Unity 游戏可能旧帧或黑屏'),
   });
 
+  // dxcamPrompt is no longer tab-controlled — show it whenever we render.
+  banner.hidden = false;
   banner.className = 'install-banner install-banner-dxcam';
-  button.hidden = !installable;
-  button.disabled = getInstallState('dxcam').inProgress;
-  button.textContent = getInstallState('dxcam').inProgress
-    ? getInstallConfig('dxcam').runningText
-    : getInstallConfig('dxcam').actionText;
 
   if (!dxcam.install_supported) {
     banner.classList.add('neutral');
     kicker.textContent = uiT('ui.install.dxcam.kicker', '截图依赖');
-    title.textContent = uiT('ui.install.dxcam.unsupported_title', '当前平台暂不支持自动安装 DXcam');
-    body.textContent = uiT('ui.install.dxcam.unsupported_body', 'DXcam 截图后端仅用于 Windows 桌面捕获；当前平台会继续使用兼容截图方案。');
+    title.textContent = uiT('ui.install.dxcam.unsupported_title', '当前平台不支持 DXcam');
+    body.textContent = uiT('ui.install.dxcam.unsupported_body', 'DXcam 仅用于 Windows 桌面捕获。当前平台会自动使用 mss / pyautogui 等跨平台后端。');
     path.textContent = '';
-    button.hidden = true;
-    renderInstallTaskState('dxcam');
     return;
   }
 
@@ -4808,47 +4756,21 @@ function renderDxcam(status) {
       ? uiT('ui.install.dxcam.active_title', 'DXcam 正在作为截图后端工作')
       : selectedCaptureBackend === 'dxcam'
         ? uiT('ui.install.dxcam.selected_waiting', 'DXcam 已选择，等待下一次 OCR 截图确认')
-        : uiT('ui.install.dxcam.ready_title', 'DXcam 已安装，等待 OCR Reader 自动使用');
+        : uiT('ui.install.dxcam.ready_title', 'DXcam 已就绪，等待 OCR Reader 自动使用');
     body.textContent = usingDxcam
       ? uiT('ui.install.dxcam.active_body', '当前截图后端使用 DXcam。它仍要求游戏窗口前台可见，不做后台捕获或绕过。')
-      : `${uiT('ui.install.dxcam.ready_body_prefix', 'DXcam 已安装。当前截图后端')}: ${captureBackendText}。`;
+      : `${uiT('ui.install.dxcam.ready_body_prefix', 'DXcam 已就绪。当前截图后端')}: ${captureBackendText}。`;
     path.textContent = dxcam.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${dxcam.detected_path}` : '';
-    button.hidden = true;
   } else {
+    // Bundled-but-missing: source install without `--group galgame`, or non-Windows.
     banner.classList.add('warning');
     kicker.textContent = uiT('ui.install.dxcam.kicker_not_ready', '截图依赖未就绪');
     title.textContent = uiT('ui.install.dxcam.not_ready_title', '未检测到 DXcam');
-    body.textContent = uiT('ui.install.dxcam.not_ready_body', '安装 DXcam 后，auto 截图后端会优先使用 GPU Desktop Duplication 截取前台游戏画面，降低插件页遮挡或 PrintWindow 旧帧问题。');
-    path.textContent = `${uiT('ui.install.install_location', '安装位置')}: ${uiT('ui.install.current_plugin_python', '当前插件 Python 环境')}`;
-  }
-
-  if (installState && !isInstallTaskTerminal(installState)) {
-    banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
-    title.textContent = uiT('ui.install.dxcam.installing_title', 'DXcam 正在后台安装');
-    body.textContent = uiT('ui.install.dxcam.installing_body', '页面会通过 SSE 接收实时安装进度。安装完成后会刷新 OCR 截图后端状态。');
-    button.hidden = false;
-    button.disabled = true;
-    button.textContent = getInstallConfig('dxcam').runningText;
-  } else if (installState && installState.status === 'failed' && installable) {
-    banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
-    title.textContent = uiT('ui.install.dxcam.failed_title', 'DXcam 安装失败，可直接重试');
-    body.textContent = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
-    button.hidden = false;
-    button.disabled = false;
-    button.textContent = getInstallConfig('dxcam').retryText;
-  } else if (installState && installState.status === 'completed' && !installed) {
-    banner.className = 'install-banner install-banner-dxcam neutral';
-    kicker.textContent = uiT('ui.install.dxcam.install_kicker', 'DXcam 安装');
-    title.textContent = uiT('ui.install.dxcam.completed_refresh_title', 'DXcam 安装已完成，正在刷新截图状态');
-    body.textContent = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
-  }
-
-  if (installed) {
-    getInstallNodes('dxcam').card.hidden = true;
-  } else {
-    renderInstallTaskState('dxcam');
+    body.textContent = uiT(
+      'ui.install.dxcam.bundled_hint',
+      'DXcam 现在随主程序打包（仅 Windows）。如果你跑的是打包版本，请重新下载安装包；如果是源码运行，请执行 `uv sync --group galgame` 后重启。截图链会自动 fallback 到 MSS / PyAutoGUI。',
+    );
+    path.textContent = '';
   }
 }
 
@@ -5869,13 +5791,8 @@ async function installTextractor(force = false) {
   await startInstall('textractor', force);
 }
 
-async function installRapidOcr(force = false) {
-  await startInstall('rapidocr', force);
-}
-
-async function installDxcam(force = false) {
-  await startInstall('dxcam', force);
-}
+// installRapidOcr / installDxcam removed — both kinds no longer have install
+// machinery (bundled into main program; HTTP routes deleted in PR #1188).
 
 async function installTesseract(force = false) {
   await startInstall('tesseract', force);
@@ -6649,7 +6566,15 @@ function revealLineDetails() {
 }
 
 function revealCaptureBackendSettings() {
-  switchInstallTab('dxcam');
+  // navigateToInstallPanel expands the Advanced Settings container + the
+  // dependencies <details>, otherwise expandAndScrollTo would scroll past
+  // a still-collapsed parent and the user sees nothing. The 'dxcam' kind
+  // skips the install-tab switch (not in OCR_INSTALL_TABS post-bundling)
+  // but the expansion side-effects still apply.
+  // `scrollToSection: false` so navigateToInstallPanel's queued
+  // installSection.scrollIntoView doesn't snap the viewport back to the
+  // top of installSection on the next frame and hide dxcamPrompt.
+  navigateToInstallPanel('dxcam', { scrollToSection: false });
   expandAndScrollTo('dxcamPrompt');
 }
 
@@ -6720,11 +6645,6 @@ async function saveTutorialProgress(partial) {
   return save;
 }
 
-async function revealDxcamInstallAndTrigger() {
-  navigateToInstallPanel('dxcam');
-  await installDxcam(false);
-}
-
 async function resetTutorialGuide() {
   onboardingDismissed = false;
   forceShowOnboarding = true;
@@ -6778,18 +6698,35 @@ async function handleDiagnosisAction(action) {
     case 'recalibrate_ocr':
       await autoRecalibrateOcrDialogueProfile();
       break;
-    case 'install_rapidocr':
-      await installRapidOcr(false);
-      break;
     case 'install_tesseract':
       await installTesseract(false);
       break;
     case 'install_dxcam':
-      await revealDxcamInstallAndTrigger();
+      // DXcam is bundled now (see PR #1191) — there is no runtime-install
+      // path. Onboarding routes here to expand Advanced Settings + scroll
+      // to the dxcam status banner so the user can read the bundled hint
+      // (reinstall packaged build / `uv sync --group galgame`).
+      navigateToInstallPanel('dxcam', { scrollToSection: false });
+      expandAndScrollTo('dxcamPrompt');
+      setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
     case 'capture_backend':
       revealCaptureBackendSettings();
-      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。'), 'info');
+      setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS、PyAutoGUI 或 PrintWindow。'), 'info');
+      break;
+    case 'install_rapidocr':
+      // The action ID is kept for backward compat with diagnosis emitters
+      // (`withRapidOcrInstallAction`, onboarding button). Behavior changed:
+      // RapidOCR is bundled now, no in-app install. navigateToInstallPanel
+      // expands the Advanced Settings + dependencies containers so the
+      // banner is actually visible after the scroll; bundled_hint copy on
+      // the banner explains what to do (reinstall packaged build /
+      // `uv sync --group galgame`). `scrollToSection: false` keeps
+      // navigateToInstallPanel from snapping back to installSection top
+      // on the next frame and hiding rapidocrPrompt.
+      navigateToInstallPanel('rapidocr', { scrollToSection: false });
+      expandAndScrollTo('rapidocrPrompt');
+      setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
@@ -6820,7 +6757,7 @@ function handleFirstRunActionClick(button, action) {
 }
 
 function switchInstallTab(tab) {
-  activeInstallTab = OCR_INSTALL_TABS.includes(tab) ? tab : 'rapidocr';
+  activeInstallTab = OCR_INSTALL_TABS.includes(tab) ? tab : 'tesseract';
   document.querySelectorAll('.install-tab').forEach((btn) => {
     if (btn.dataset.installTab === activeInstallTab) {
       btn.classList.add('active');
@@ -6840,7 +6777,14 @@ function switchInstallTab(tab) {
   }
 }
 
-function navigateToInstallPanel(kind) {
+function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
+  // `scrollToSection: false` callers (revealCaptureBackendSettings,
+  // case 'install_rapidocr') only want the parent-container expansion
+  // side effects — they do their own fine-grained scroll afterwards via
+  // expandAndScrollTo(banner). Without this opt-out, the queued
+  // installSection.scrollIntoView in the next frame snaps the viewport
+  // back to the top of installSection, hiding the banner the caller
+  // just scrolled to.
   const advancedSettings = document.getElementById('advancedSettings');
   const advancedToggleBtn = document.getElementById('advancedToggleBtn');
   const dependencyModule = document.getElementById('dependencyModule');
@@ -6865,7 +6809,7 @@ function navigateToInstallPanel(kind) {
     switchInstallTab(kind);
   }
 
-  if (installSection) {
+  if (scrollToSection && installSection) {
     requestAnimationFrame(() => {
       installSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
@@ -6922,8 +6866,7 @@ async function initialize() {
     })
   ));
   runBackgroundTask('restore install states', () => Promise.all([
-    restoreRapidOcrInstallState(),
-    restoreDxcamInstallState(),
+    // restoreRapidOcrInstallState / restoreDxcamInstallState removed (bundled).
     restoreTesseractInstallState(),
     restoreTextractorInstallState(),
   ]));
@@ -7045,8 +6988,7 @@ document.getElementById('queryContextBtn').addEventListener('click', () => {
 document.getElementById('sendMessageBtn').addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('rapidocrInstallBtn').addEventListener('click', () => installRapidOcr(false));
-document.getElementById('dxcamInstallBtn').addEventListener('click', () => installDxcam(false));
+// rapidocrInstallBtn / dxcamInstallBtn event listeners removed — buttons gone from HTML.
 document.getElementById('tesseractInstallBtn').addEventListener('click', () => installTesseract(false));
 document.getElementById('textractorInstallBtn').addEventListener('click', () => installTextractor(false));
 document.getElementById('rapidocrUseBtn').addEventListener('click', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
@@ -7056,6 +6998,7 @@ document.getElementById('smartCaptureUseBtn').addEventListener('click', () => se
 document.getElementById('dxcamUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'dxcam' }));
 document.getElementById('captureBackendAutoBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'auto' }));
 document.getElementById('mssUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'mss' }));
+document.getElementById('pyautoguiUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'pyautogui' }));
 document.getElementById('printwindowUseBtn').addEventListener('click', () => setOcrBackendSelection({ captureBackend: 'printwindow' }));
 document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () => {
   refreshMemoryProcessTargetsIfNeeded({

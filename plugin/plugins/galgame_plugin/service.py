@@ -509,7 +509,7 @@ def _coerce_ocr_capture_backend(value: object, default: str = "smart") -> str:
     # "imagegrab" so the rewritten value sticks once the config is re-saved.
     if normalized == "imagegrab":
         normalized = "mss"
-    if normalized in {"auto", "smart", "dxcam", "mss", "printwindow"}:
+    if normalized in {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}:
         return normalized
     return default
 
@@ -811,15 +811,13 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             _default_ocr_reader_enabled(),
         ),
         rapidocr_enabled_explicit="enabled" in rapidocr_obj,
-        rapidocr_install_manifest_url=str(
-            rapidocr_obj.get("install_manifest_url") or ""
-        ).strip(),
+        # NOTE: `rapidocr_install_manifest_url` and `rapidocr_install_timeout_seconds`
+        # were removed when the runtime install path was deleted. Old user configs
+        # may still have these keys — they're now silently ignored (no consumer reads
+        # them), which is the right backward-compat behavior.
         rapidocr_install_target_dir=str(
             rapidocr_obj.get("install_target_dir") or ""
         ).strip(),
-        rapidocr_install_timeout_seconds=_coerce_float(
-            rapidocr_obj.get("install_timeout_seconds"), 180.0, minimum=1.0
-        ),
         rapidocr_engine_type=str(
             rapidocr_obj.get("engine_type") or DEFAULT_RAPIDOCR_ENGINE_TYPE
         ).strip()

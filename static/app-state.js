@@ -96,6 +96,8 @@
         heartbeatInterval: null,
         autoReconnectTimeoutId: null,
         isRecording: false,
+        voiceChatActive: false,
+        voiceStartPending: false,
         isTextSessionActive: false,
         isSwitchingMode: false,
         sessionStartedResolver: null,

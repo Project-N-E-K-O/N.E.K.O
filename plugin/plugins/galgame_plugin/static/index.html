@@ -408,9 +408,11 @@
                   <p class="install-module-summary" data-i18n="ui.install.ocr_desc">RapidOCR 是主识别后端，DXcam 负责稳定截图，Tesseract 仅作为兼容兜底。</p>
                 </div>
                 <div class="install-tabs">
-                  <button class="install-tab active" data-install-tab="rapidocr">RapidOCR</button>
-                  <button class="install-tab" data-install-tab="dxcam">DXcam</button>
-                  <button class="install-tab" data-install-tab="tesseract">Tesseract</button>
+                  <!-- rapidocr / dxcam tab buttons removed: their banners are
+                       always visible (no install-task tab logic anymore since
+                       both are bundled main-program deps). Only tesseract
+                       still has runtime install machinery. -->
+                  <button class="install-tab active" data-install-tab="tesseract">Tesseract</button>
                 </div>
                 <div class="install-panels install-panels-ocr">
               <div id="rapidocrPrompt" class="install-banner install-banner-rapidocr" hidden>
@@ -434,7 +436,6 @@
                 <div class="install-actions">
                   <button id="rapidocrUseBtn" class="secondary" data-i18n="ui.install.rapidocr.use">使用 RapidOCR</button>
                   <button id="ocrBackendAutoBtn" class="ghost" data-i18n="ui.install.ocr_auto">OCR 自动</button>
-                  <button id="rapidocrInstallBtn" class="primary" data-i18n="ui.install.rapidocr.action">一键安装 RapidOCR</button>
                 </div>
               </div>
 
@@ -461,8 +462,8 @@
                   <button id="dxcamUseBtn" class="secondary" data-i18n="ui.install.dxcam.use">使用 DXcam</button>
                   <button id="captureBackendAutoBtn" class="ghost" data-i18n="ui.install.capture_auto">截图自动</button>
                   <button id="mssUseBtn" class="ghost" data-i18n="ui.install.mss.use">使用 MSS</button>
+                  <button id="pyautoguiUseBtn" class="ghost" data-i18n="ui.install.pyautogui.use">使用 PyAutoGUI</button>
                   <button id="printwindowUseBtn" class="ghost" data-i18n="ui.install.printwindow.use">使用 PrintWindow</button>
-                  <button id="dxcamInstallBtn" class="primary" data-i18n="ui.install.dxcam.action">一键安装 DXcam</button>
                 </div>
               </div>
 

@@ -1325,24 +1325,193 @@
     // Voice chat composer sync (cross-window)
     // =====================================================================
 
-    /**
-     * Sync voice chat state to local React composer AND broadcast to other windows.
-     * Called from app-buttons.js / app-audio-capture.js whenever voice chat starts/stops.
-     *
-     * @param {boolean} hidden - true = voice chat active, hide composer; false = show composer
-     */
-    function syncVoiceChatComposerHidden(hidden) {
+    var VOICE_CONFIG_SWITCH_STALE_MS = 45000;
+    var _voiceConfigSwitchOps = {};
+    var _voiceConfigSwitchWaiters = [];
+
+    function getCurrentLanlanName() {
+        return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+    }
+
+    function isVoiceChatDesktopLayout() {
+        return !(window.appUtils && typeof window.appUtils.isMobile === 'function' && window.appUtils.isMobile());
+    }
+
+    function shouldKeepVoiceComposerHidden() {
+        return isVoiceChatDesktopLayout() && !!(
+            (S && (S.isRecording || S.voiceChatActive || S.voiceStartPending)) ||
+            window.isMicStarting
+        );
+    }
+
+    function applyVoiceChatComposerHidden(hidden) {
         hidden = !!hidden;
-        // Update local React composer
         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
             window.reactChatWindowHost.setComposerHidden(hidden);
         }
-        // Broadcast to other windows (chat.html ↔ index.html)
+        var textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) {
+            if (hidden) {
+                textInputArea.classList.add('hidden');
+            } else {
+                textInputArea.classList.remove('hidden');
+            }
+        }
+    }
+
+    function pruneVoiceConfigSwitchOps(now) {
+        now = now || Date.now();
+        Object.keys(_voiceConfigSwitchOps).forEach(function (opId) {
+            var op = _voiceConfigSwitchOps[opId];
+            if (!op || now - (op.updatedAt || op.startedAt || 0) > VOICE_CONFIG_SWITCH_STALE_MS) {
+                delete _voiceConfigSwitchOps[opId];
+            }
+        });
+    }
+
+    function isVoiceConfigSwitching() {
+        pruneVoiceConfigSwitchOps(Date.now());
+        return Object.keys(_voiceConfigSwitchOps).length > 0;
+    }
+
+    function notifyVoiceConfigSwitchWaiters() {
+        _voiceConfigSwitchWaiters.slice().forEach(function (waiter) {
+            try { waiter(); } catch (_) { /* 等待器异常不影响状态同步 */ }
+        });
+    }
+
+    function isVoiceConfigMessageForCurrentLanlan(data) {
+        var currentName = getCurrentLanlanName();
+        // 没带 lanlan_name 的广播视为通用通知，所有窗口都接受。
+        // 带了 lanlan_name 但本窗口 config 还没注入（currentName 空）时拒绝：
+        // 否则别的角色的 op 会被存入 _voiceConfigSwitchOps，配好后又收不到对应的
+        // active=false（被 lanlan_name mismatch 滤掉），导致 waitForVoiceConfigSwitchReady
+        // 在最长 30s 超时前一直阻塞，触发误报的"音色切换超时"。
+        if (!data.lanlan_name) return true;
+        return !!currentName && data.lanlan_name === currentName;
+    }
+
+    function handleVoiceConfigSwitchingMessage(data) {
+        if (!data || !isVoiceConfigMessageForCurrentLanlan(data)) return;
+        var now = Date.now();
+        var opId = String(data.op_id || data.operation_id || data.lanlan_name || 'voice_config_switch');
+        var active = !!data.active;
+
+        if (active) {
+            pruneVoiceConfigSwitchOps(now);
+            _voiceConfigSwitchOps[opId] = {
+                lanlanName: data.lanlan_name || '',
+                startedAt: _voiceConfigSwitchOps[opId]?.startedAt || now,
+                updatedAt: now
+            };
+        } else if (data.op_id || data.operation_id) {
+            delete _voiceConfigSwitchOps[opId];
+        } else {
+            Object.keys(_voiceConfigSwitchOps).forEach(function (knownOpId) {
+                var op = _voiceConfigSwitchOps[knownOpId];
+                if (!data.lanlan_name || !op || !op.lanlanName || op.lanlanName === data.lanlan_name) {
+                    delete _voiceConfigSwitchOps[knownOpId];
+                }
+            });
+        }
+
+        notifyVoiceConfigSwitchWaiters();
+        window.dispatchEvent(new CustomEvent('neko:voice-config-switching-changed', {
+            detail: { active: isVoiceConfigSwitching(), lanlan_name: data.lanlan_name || '' }
+        }));
+    }
+
+    function waitForVoiceConfigSwitchReady(options) {
+        options = options || {};
+        var timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(0, options.timeoutMs) : 30000;
+        var stableMs = Number.isFinite(options.stableMs) ? Math.max(0, options.stableMs) : 0;
+        var onWaiting = typeof options.onWaiting === 'function' ? options.onWaiting : null;
+        var waitingNotified = false;
+
+        return new Promise(function (resolve) {
+            var done = false;
+            var stableTimer = null;
+            var timeoutTimer = null;
+
+            function cleanup() {
+                done = true;
+                if (stableTimer) clearTimeout(stableTimer);
+                if (timeoutTimer) clearTimeout(timeoutTimer);
+                stableTimer = null;
+                timeoutTimer = null;
+                _voiceConfigSwitchWaiters = _voiceConfigSwitchWaiters.filter(function (waiter) {
+                    return waiter !== evaluate;
+                });
+            }
+
+            function resolveReady(timedOut) {
+                cleanup();
+                resolve({ timedOut: !!timedOut });
+            }
+
+            function notifyWaitingOnce() {
+                if (!waitingNotified && onWaiting) {
+                    waitingNotified = true;
+                    try { onWaiting(); } catch (_) { /* 提示失败不影响启动等待 */ }
+                }
+            }
+
+            function evaluate() {
+                if (done) return;
+                if (stableTimer) {
+                    clearTimeout(stableTimer);
+                    stableTimer = null;
+                }
+                if (isVoiceConfigSwitching()) {
+                    notifyWaitingOnce();
+                    return;
+                }
+                if (stableMs <= 0) {
+                    resolveReady(false);
+                    return;
+                }
+                stableTimer = setTimeout(function () {
+                    stableTimer = null;
+                    if (isVoiceConfigSwitching()) {
+                        notifyWaitingOnce();
+                        return;
+                    }
+                    resolveReady(false);
+                }, stableMs);
+            }
+
+            _voiceConfigSwitchWaiters.push(evaluate);
+            if (timeoutMs > 0) {
+                timeoutTimer = setTimeout(function () {
+                    resolveReady(true);
+                }, timeoutMs);
+            }
+            evaluate();
+        });
+    }
+
+    /**
+     * 同步本地聊天输入栏状态，并广播给其它窗口。
+     * app-buttons.js / app-audio-capture.js 会在语音开始和结束时调用。
+     *
+     * @param {boolean} hidden - true 表示收起输入栏；false 表示允许展开输入栏
+     */
+    function syncVoiceChatComposerHidden(hidden) {
+        var requestedHidden = !!hidden;
+        if (S) {
+            S.voiceChatActive = requestedHidden;
+        }
+        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
+        if (S) {
+            S.voiceChatActive = effectiveHidden;
+        }
+        applyVoiceChatComposerHidden(effectiveHidden);
+        // 同步给其它页面（chat.html ↔ index.html）
         if (nekoBroadcastChannel) {
             nekoBroadcastChannel.postMessage({
                 action: 'voice_chat_active',
-                active: hidden,
-                lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+                active: effectiveHidden,
+                lanlan_name: getCurrentLanlanName(),
                 timestamp: Date.now()
             });
         }
@@ -1495,21 +1664,21 @@
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
-                        var vcCurrentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        var vcCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!vcCurrentName || event.data.lanlan_name !== vcCurrentName)) break;
                         var vcHidden = !!event.data.active;
-                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setComposerHidden === 'function') {
-                            window.reactChatWindowHost.setComposerHidden(vcHidden);
+                        if (S) {
+                            S.voiceChatActive = vcHidden;
                         }
-                        // 同步旧版 text-input-area（兜底）
-                        var vcTextInput = document.getElementById('text-input-area');
-                        if (vcTextInput) {
-                            if (vcHidden) {
-                                vcTextInput.classList.add('hidden');
-                            } else {
-                                vcTextInput.classList.remove('hidden');
-                            }
+                        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
+                        if (S) {
+                            S.voiceChatActive = vcEffectiveHidden;
                         }
+                        applyVoiceChatComposerHidden(vcEffectiveHidden);
+                        break;
+                    }
+                    case 'voice_config_switching': {
+                        handleVoiceConfigSwitchingMessage(event.data);
                         break;
                     }
                     case 'yui_guide_append_chat_message': {
@@ -1936,6 +2105,24 @@
         }
     });
 
+    // 音色应用页的后备通道：没有 BroadcastChannel 时使用 postMessage 同步准备态
+    window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的音色切换消息:', event.origin);
+            return;
+        }
+        var data = event.data || {};
+        if (data.action !== 'voice_config_switching' && data.type !== 'voice_config_switching') {
+            return;
+        }
+        handleVoiceConfigSwitchingMessage(data);
+    });
+
+    // N.E.K.O.-PC 多窗口兜底：由 Electron 主进程广播音色切换准备态
+    window.addEventListener('neko:electron-voice-config-switching', function (event) {
+        handleVoiceConfigSwitchingMessage((event && event.detail) || {});
+    });
+
     // =====================================================================
     // Reset current avatar to the built-in default Live2D model
     //
@@ -2040,6 +2227,9 @@
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     mod.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
+    mod.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    mod.isVoiceConfigSwitching = isVoiceConfigSwitching;
+    mod.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
     mod.applyTutorialChatIdentityOverride = applyTutorialChatIdentityOverride;
 
     // Backward-compatible window globals
@@ -2051,6 +2241,9 @@
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
     window.syncVoiceChatComposerHidden = syncVoiceChatComposerHidden;
+    window.shouldKeepVoiceComposerHidden = shouldKeepVoiceComposerHidden;
+    window.isVoiceConfigSwitching = isVoiceConfigSwitching;
+    window.waitForVoiceConfigSwitchReady = waitForVoiceConfigSwitchReady;
 
     window.appInterpage = mod;
 })();

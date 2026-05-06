@@ -68,6 +68,19 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
 
+    function isHomeTutorialFeatureSuppressed() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
             _proactiveLeaderChannel = new BroadcastChannel(PROACTIVE_LEADER_CHANNEL);
@@ -305,6 +318,10 @@
     mod._isUserRecentlySpeaking = _isUserRecentlySpeaking;
 
     function canTriggerProactively() {
+        if (isHomeTutorialFeatureSuppressed()) {
+            return false;
+        }
+
         // 「请她离开」状态下禁止一切主动搭话
         if (isGoodbyeActive()) {
             return false;
@@ -602,6 +619,11 @@
     async function triggerProactiveChat() {
         var requestSent = false;
         try {
+            if (isHomeTutorialFeatureSuppressed()) {
+                console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
+                return false;
+            }
+
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
             if (!isProactiveLeader()) {
@@ -1633,6 +1655,16 @@
         }
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
+
+    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            stopProactiveChatSchedule();
+            stopProactiveVisionDuringSpeech();
+        } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            scheduleProactiveChat();
+        }
+    });
 
     // ======================== backward-compat window exports ========================
 
