@@ -509,7 +509,7 @@ def _coerce_ocr_capture_backend(value: object, default: str = "smart") -> str:
     # "imagegrab" so the rewritten value sticks once the config is re-saved.
     if normalized == "imagegrab":
         normalized = "mss"
-    if normalized in {"auto", "smart", "dxcam", "mss", "printwindow"}:
+    if normalized in {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}:
         return normalized
     return default
 
