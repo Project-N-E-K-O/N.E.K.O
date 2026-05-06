@@ -6,6 +6,7 @@ import zipfile
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.commands import init_cmd
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -137,3 +138,21 @@ def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert "package_type=bundle" in captured.out
     assert "plugin_count=2" in captured.out
     assert "type=bundle" in captured.out
+
+
+def test_setup_repo_git_skips_when_inside_existing_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (tmp_path / "repo" / ".git").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run_git(command: list[str], *, cwd: Path) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(init_cmd, "_run_git", fake_run_git)
+
+    init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
+
+    assert calls == []

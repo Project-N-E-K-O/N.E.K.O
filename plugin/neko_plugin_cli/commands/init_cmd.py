@@ -249,20 +249,29 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
 
     author_email = ""
     if author_name:
-        author_email = ask_text("作者邮箱 (Author Email)", default="") or ""
+        author_email_value = ask_text("作者邮箱 (Author Email)", default="")
+        if author_email_value is None:
+            return _cancelled()
+        author_email = author_email_value
 
     # Extension-specific: host plugin
     host_plugin_id = ""
     host_prefix = ""
     if plugin_type == "extension":
-        host_plugin_id = ask_text("宿主插件 ID (Host Plugin ID)") or ""
+        host_plugin_id_value = ask_text("宿主插件 ID (Host Plugin ID)")
+        if host_plugin_id_value is None:
+            return _cancelled()
+        host_plugin_id = host_plugin_id_value.strip()
         if not host_plugin_id:
             print("[FAIL] extension type requires a host plugin ID", file=sys.stderr)
             return 1
         if not _PLUGIN_ID_RE.fullmatch(host_plugin_id):
             print(f"[FAIL] invalid host plugin ID: '{host_plugin_id}'", file=sys.stderr)
             return 1
-        host_prefix = ask_text("路由前缀 (Route Prefix)", default="") or ""
+        host_prefix_value = ask_text("路由前缀 (Route Prefix)", default="")
+        if host_prefix_value is None:
+            return _cancelled()
+        host_prefix = host_prefix_value
 
     # Features
     feature_choices = _get_feature_choices(plugin_type)
@@ -402,10 +411,8 @@ def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults
 
 def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> None:
     existing_git = _find_parent_git_dir(target_dir)
-    if existing_git is not None and existing_git != target_dir / ".git":
-        raise RuntimeError(
-            f"refusing to create nested git repository inside existing repository: {existing_git.parent}"
-        )
+    if existing_git is not None:
+        return
     _run_git(["init"], cwd=target_dir)
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
