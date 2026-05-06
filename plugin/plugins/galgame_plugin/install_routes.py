@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -11,6 +12,7 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
     build_install_task_state,
@@ -18,6 +20,7 @@ from plugin.plugins.galgame_plugin.install_tasks import (
     load_latest_install_task_state,
     update_install_task_state,
 )
+from plugin.sdk.shared.storage import PluginStore
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
@@ -82,7 +85,9 @@ def _get_install_kind_spec(kind: str) -> dict[str, str]:
     normalized = str(kind or "").strip().lower()
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
-    # galgame), so only textractor + tesseract still need the install machinery.
+    # galgame). textractor + tesseract still need runtime install. rapidocr_models
+    # is a model-pack download (not a package install) for non-bundled (lang,
+    # version) combos like japan + PP-OCRv4.
     mapping = {
         "textractor": {
             "kind": "textractor",
@@ -95,6 +100,12 @@ def _get_install_kind_spec(kind: str) -> dict[str, str]:
             "entry_id": "galgame_install_tesseract",
             "label": "Tesseract",
             "queued_message": "Tesseract install queued",
+        },
+        "rapidocr_models": {
+            "kind": "rapidocr_models",
+            "entry_id": "galgame_download_rapidocr_models",
+            "label": "RapidOCR Models",
+            "queued_message": "RapidOCR model download queued",
         },
     }
     spec = mapping.get(normalized)
@@ -472,3 +483,179 @@ async def galgame_plugin_stream_tesseract_install(
         task_id=task_id,
         request=request,
     )
+
+
+# ====== RapidOCR model-download endpoints ======
+# Mirrors the tesseract/textractor install pattern: POST to start, GET for
+# latest task, GET {task_id}, GET {task_id}/stream. URL base is
+# `/rapidocr-models` (kebab-case in URL, `rapidocr_models` snake_case as the
+# persisted task kind). The frontend's install task helper builds GET URLs as
+# `${config.url}/${task_id}` so POST and GET must share the same base prefix.
+
+
+@router.post("/plugin/{plugin_id}/ui-api/rapidocr-models")
+async def galgame_plugin_start_rapidocr_models_download(
+    plugin_id: str,
+    payload: InstallStartPayload,
+    request: Request,
+):
+    return await _start_install_task(
+        plugin_id=plugin_id,
+        kind="rapidocr_models",
+        payload=payload,
+        request=request,
+    )
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/latest")
+async def galgame_plugin_latest_rapidocr_models_download(plugin_id: str):
+    return _latest_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models")
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}")
+async def galgame_plugin_get_rapidocr_models_download(plugin_id: str, task_id: str):
+    return _get_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models", task_id=task_id)
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}/stream")
+async def galgame_plugin_stream_rapidocr_models_download(
+    plugin_id: str,
+    task_id: str,
+    request: Request,
+):
+    return _install_stream_response(
+        plugin_id=plugin_id,
+        kind="rapidocr_models",
+        task_id=task_id,
+        request=request,
+    )
+
+
+# ====== Tutorial progress endpoints ======
+
+_TUTORIAL_DEFAULTS = {
+    "completed": False,
+    "skipped": False,
+    "last_step_index": 0,
+    "started_at": 0.0,
+    "completed_at": 0.0,
+}
+_tutorial_store_instance: GalgameStore | None = None
+
+
+def _tutorial_store() -> GalgameStore:
+    global _tutorial_store_instance
+    if _tutorial_store_instance is not None:
+        return _tutorial_store_instance
+    plugin_dir = Path(__file__).resolve().parent
+    plugin_store = PluginStore(
+        plugin_id="galgame_plugin",
+        plugin_dir=plugin_dir,
+        logger=logger,
+        enabled=True,
+    )
+    _tutorial_store_instance = GalgameStore(plugin_store, logger)
+    return _tutorial_store_instance
+
+
+class TutorialProgressPayload(BaseModel):
+    completed: bool = False
+    skipped: bool = False
+    last_step_index: int = 0
+    started_at: float = 0.0
+    completed_at: float = 0.0
+
+
+def _read_tutorial_progress() -> dict[str, Any] | None:
+    try:
+        return _tutorial_store().load_tutorial_progress()
+    except Exception:
+        logger.warning("tutorial progress read failed", exc_info=True)
+        raise
+
+
+def _write_tutorial_progress(progress: dict[str, Any]) -> None:
+    try:
+        _tutorial_store().save_tutorial_progress(progress)
+    except Exception:
+        logger.warning("tutorial progress write failed", exc_info=True)
+        raise
+
+
+def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return dict(_TUTORIAL_DEFAULTS)
+
+    result = dict(_TUTORIAL_DEFAULTS)
+    for key in _TUTORIAL_DEFAULTS:
+        if key in raw:
+            result[key] = raw[key]
+    if not isinstance(result["completed"], bool):
+        result["completed"] = _TUTORIAL_DEFAULTS["completed"]
+    if not isinstance(result["skipped"], bool):
+        result["skipped"] = _TUTORIAL_DEFAULTS["skipped"]
+    try:
+        result["last_step_index"] = max(0, int(result["last_step_index"] or 0))
+    except (TypeError, ValueError):
+        result["last_step_index"] = 0
+    try:
+        result["started_at"] = max(0.0, float(result["started_at"] or 0.0))
+    except (TypeError, ValueError):
+        result["started_at"] = 0.0
+    try:
+        result["completed_at"] = max(0.0, float(result["completed_at"] or 0.0))
+    except (TypeError, ValueError):
+        result["completed_at"] = 0.0
+    return result
+
+
+@router.get("/plugin/{plugin_id}/ui-api/tutorial/status")
+async def get_tutorial_status(plugin_id: str) -> JSONResponse:
+    _ensure_has_install(plugin_id)
+    try:
+        raw = _read_tutorial_progress()
+    except Exception:
+        logger.error("tutorial progress status read failed", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "progress": _normalize_tutorial_progress(raw)})
+
+
+@router.post("/plugin/{plugin_id}/ui-api/tutorial/progress")
+async def save_tutorial_progress(
+    plugin_id: str,
+    body: TutorialProgressPayload,
+) -> JSONResponse:
+    _ensure_has_install(plugin_id)
+    payload = (
+        body.model_dump(exclude_unset=True)
+        if hasattr(body, "model_dump")
+        else body.dict(exclude_unset=True)
+    )
+    try:
+        current = _normalize_tutorial_progress(_read_tutorial_progress())
+    except Exception:
+        logger.error("tutorial progress save aborted after read failure", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
+            status_code=500,
+        )
+    normalized_payload = _normalize_tutorial_progress(payload)
+    current.update(
+        {
+            key: normalized_payload[key]
+            for key in payload
+            if key in _TUTORIAL_DEFAULTS
+        }
+    )
+    try:
+        _write_tutorial_progress(current)
+    except Exception:
+        logger.warning("tutorial progress save failed", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": current},
+            status_code=500,
+        )
+    return JSONResponse({"ok": True, "progress": current})

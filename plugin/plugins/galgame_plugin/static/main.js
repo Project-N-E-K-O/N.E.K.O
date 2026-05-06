@@ -1,9 +1,14 @@
 const PLUGIN_ID = 'galgame_plugin';
 const RUNS_URL = '/runs';
 const UI_API_BASE = `/plugin/${PLUGIN_ID}/ui-api`;
+const TUTORIAL_STATUS_URL = `${UI_API_BASE}/tutorial/status`;
+const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
 // rapidocr / dxcam install URLs gone — both are bundled main-program deps
 // (see pyproject.toml [dependency-groups] galgame). Only textractor +
-// tesseract still need the runtime-install UI.
+// tesseract still need the runtime-install UI. RapidOCR adds a
+// model-download UI for non-bundled language packs — same task lifecycle
+// pattern as install tasks (POST to base, GET base/{task_id}).
+const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
@@ -14,6 +19,7 @@ const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
 const PLUGIN_RUN_LIGHT_TIMEOUT_MS = 30000;
+const TUTORIAL_PROGRESS_TIMEOUT_MS = 5000;
 const PLUGIN_RUN_INITIAL_POLL_MS = 250;
 const PLUGIN_RUN_MAX_POLL_MS = 2000;
 const CL_ZOOM_KEY = 'galgame_current_line_zoom';
@@ -52,6 +58,47 @@ function uiDynamicT(prefix, key, fallback) {
   return uiT(`${prefix}.${normalized}`, fallback || normalized);
 }
 
+function storageGet(key, fallback = '') {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage read failed', error);
+    return fallback;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage write failed', error);
+    return false;
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+    return true;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage remove failed', error);
+    return false;
+  }
+}
+
+function readSkipOnboarding() {
+  return storageGet('galgame_skip_onboarding') === '1';
+}
+
+function persistSkipOnboarding() {
+  storageSet('galgame_skip_onboarding', '1');
+}
+
+function clearSkipOnboarding() {
+  storageRemove('galgame_skip_onboarding');
+}
+
 function getInstallUIConfig() {
   return {
     tesseract: {
@@ -80,6 +127,23 @@ function getInstallUIConfig() {
       successFlash: uiT('ui.install.textractor.success', 'Textractor 安装完成'),
       failureFlash: uiT('ui.install.textractor.failure', 'Textractor 安装失败'),
     },
+    rapidocr_models: {
+      kind: 'rapidocr_models',
+      label: 'RapidOCR Models',
+      url: RAPIDOCR_MODELS_DOWNLOAD_URL,
+      storageKey: `${PLUGIN_ID}:rapidocr_models_task_id`,
+      // domPrefix reuses the existing rapidocrInstallState card inside
+      // rapidocrPrompt — that card was orphaned after PR #1191 stripped the
+      // rapidocr runtime install machinery. We bring it back to surface
+      // model-download progress (different operation, same UI shape).
+      domPrefix: 'rapidocr',
+      actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
+      retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
+      runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从 ModelScope 拉取缺失的模型文件，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
+      failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
+    },
   };
 }
 
@@ -99,15 +163,16 @@ const installRuntime = {
   dxcam: createInstallRuntimeState(),
   tesseract: createInstallRuntimeState(),
   textractor: createInstallRuntimeState(),
+  rapidocr_models: createInstallRuntimeState(),
 };
 
 function readCurrentLineZoom() {
-  const raw = parseInt(localStorage.getItem(CL_ZOOM_KEY) || '', 10);
+  const raw = parseInt(storageGet(CL_ZOOM_KEY), 10);
   return Number.isFinite(raw) ? raw : CL_ZOOM_DEFAULT;
 }
 
 function readCurrentLineCollapsed() {
-  const raw = localStorage.getItem(CL_COLLAPSED_KEY);
+  const raw = storageGet(CL_COLLAPSED_KEY);
   if (raw === '1') { return true; }
   if (raw === '0') { return false; }
   return CL_COLLAPSED_DEFAULT;
@@ -116,24 +181,24 @@ function readCurrentLineCollapsed() {
 function applyCurrentLineZoom(px) {
   const clamped = Math.max(CL_ZOOM_MIN, Math.min(CL_ZOOM_MAX, px));
   document.documentElement.style.setProperty('--galgame-line-font-size', `${clamped}px`);
-  localStorage.setItem(CL_ZOOM_KEY, String(clamped));
+  storageSet(CL_ZOOM_KEY, String(clamped));
   return clamped;
 }
 
 function readPipelineZoom() {
-  const raw = parseInt(localStorage.getItem(PIPELINE_ZOOM_KEY) || '', 10);
+  const raw = parseInt(storageGet(PIPELINE_ZOOM_KEY), 10);
   return Number.isFinite(raw) ? raw : PIPELINE_ZOOM_DEFAULT;
 }
 
 function applyPipelineZoom(px) {
   const clamped = Math.max(PIPELINE_ZOOM_MIN, Math.min(PIPELINE_ZOOM_MAX, px));
   document.documentElement.style.setProperty('--ocr-pipeline-font-size', `${clamped}px`);
-  localStorage.setItem(PIPELINE_ZOOM_KEY, String(clamped));
+  storageSet(PIPELINE_ZOOM_KEY, String(clamped));
   return clamped;
 }
 
 function readPipelineCollapsed() {
-  return localStorage.getItem(PIPELINE_COLLAPSED_KEY) === '1';
+  return storageGet(PIPELINE_COLLAPSED_KEY) === '1';
 }
 
 function applyPipelineCollapsed(on) {
@@ -157,7 +222,7 @@ function applyPipelineCollapsed(on) {
       : uiT('ui.ocr.pipeline.collapse_title', '隐藏 OCR 链路步骤');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
-  localStorage.setItem(PIPELINE_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(PIPELINE_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function applyCurrentLineCollapsed(on) {
@@ -183,7 +248,7 @@ function applyCurrentLineCollapsed(on) {
       : uiT('ui.current_line.collapse_title', '隐藏当前台词内容');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
-  localStorage.setItem(CL_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(CL_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function initCurrentLineUiPrefs() {
@@ -227,7 +292,7 @@ function initPipelineCollapse() {
 }
 
 function readOcrWindowCollapsed() {
-  return localStorage.getItem(OCR_WINDOW_COLLAPSED_KEY) === '1';
+  return storageGet(OCR_WINDOW_COLLAPSED_KEY) === '1';
 }
 
 function applyOcrWindowCollapsed(on) {
@@ -253,7 +318,7 @@ function applyOcrWindowCollapsed(on) {
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
-  localStorage.setItem(OCR_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(OCR_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function initOcrWindowCollapse() {
@@ -591,7 +656,9 @@ const ACTION_LABELS_ZH = {
   recalibrate_ocr: '重新截图校准',
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
-  install_rapidocr: '查看 RapidOCR 启用提示',
+  install_rapidocr: '查看 RapidOCR 状态',
+  install_tesseract: '一键安装 Tesseract',
+  install_dxcam: '查看 DXcam 状态',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
 };
@@ -657,6 +724,12 @@ let latestStatus = null;
 let latestSnapshotData = null;
 let latestMemoryProcessSnapshot = null;
 let latestOcrWindowSnapshot = null;
+let onboardingDismissed = false;
+let forceShowOnboarding = false;
+let lastSavedStepIndex = -1;
+let latestTutorialProgress = null;
+let tutorialProgressSaveQueue = Promise.resolve();
+const tutorialProgressPendingSaveKeys = new Set();
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
@@ -677,6 +750,26 @@ let ocrScreenTemplatesUndoValue = '';
 let ocrRegionSnapshot = null;
 let ocrRegionSelection = null;
 let ocrRegionDragStart = null;
+
+function fetchWithTutorialTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, TUTORIAL_PROGRESS_TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
+
+function hideOnboardingWithoutSkipping() {
+  onboardingDismissed = true;
+  forceShowOnboarding = false;
+  document.body.classList.remove('onboarding-active');
+  const onboardingView = document.getElementById('onboardingView');
+  if (onboardingView) {
+    onboardingView.hidden = true;
+  }
+}
 
 const SETTINGS_CONTROL_IDS = new Set([
   'modeSelect',
@@ -1356,7 +1449,7 @@ function renderPrimaryDiagnosis(status = {}) {
   `).join('');
 }
 
-function buildFirstRunSteps(status = {}) {
+function buildFirstRunStepsLegacy(status = {}) {
   const runtime = status.ocr_reader_runtime || {};
   const memoryRuntime = status.memory_reader_runtime || {};
   const snapshotWindows = latestOcrWindowSnapshot && Array.isArray(latestOcrWindowSnapshot.windows)
@@ -1420,7 +1513,7 @@ function buildFirstRunSteps(status = {}) {
   ];
 }
 
-function renderFirstRunGuide(status = {}) {
+function renderFirstRunGuideLegacy(status = {}) {
   const node = document.getElementById('firstRunGuide');
   const stepsNode = document.getElementById('firstRunSteps');
   if (!node || !stepsNode) {
@@ -1479,6 +1572,282 @@ function renderFirstRunGuide(status = {}) {
       actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(primaryActionLabel('refresh_status'))}</button>`);
     }
     onboardingActions.innerHTML = actions.join('');
+  }
+}
+
+function buildFirstRunSteps(status = {}) {
+  const runtime = status.ocr_reader_runtime || {};
+  const memoryRuntime = status.memory_reader_runtime || {};
+  const snapshotWindows = latestOcrWindowSnapshot && Array.isArray(latestOcrWindowSnapshot.windows)
+    ? latestOcrWindowSnapshot.windows
+    : [];
+  const availableGameIds = Array.isArray(status.available_game_ids) ? status.available_game_ids : [];
+  const detail = textValue(runtime.target_selection_detail);
+  const lastExcludeReason = textValue(runtime.last_exclude_reason);
+  const rapidocr = status.rapidocr || {};
+  const tesseract = status.tesseract || {};
+  const dxcam = status.dxcam || {};
+  const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
+  const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
+  const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
+  const rapidocrModelsMissing = rapidocr.detail === 'missing_model_files';
+  // Route the install_ocr CTA: model download if rapidocr is bundled but the
+  // user-selected language pack isn't on disk (the common japan-default
+  // first-run case); rapidocr install if a runtime install path is somehow
+  // available; tesseract as last-resort fallback.
+  const ocrInstallAction = rapidocrModelsMissing
+    ? 'download_rapidocr_models'
+    : (rapidocrSupported ? 'install_rapidocr' : 'install_tesseract');
+  const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing));
+  const captureReady = Boolean(dxcam.installed || !dxcamSupported);
+  const hasGame = Boolean(
+    textValue(status.active_session_id)
+    || availableGameIds.length
+    || Number(runtime.pid || 0)
+    || textValue(runtime.process_name)
+    || textValue(runtime.window_title)
+    || Number(memoryRuntime.pid || 0)
+    || textValue(memoryRuntime.process_name)
+  );
+  const hasWindow = Boolean(
+    textValue(runtime.effective_window_key)
+    || Number(runtime.candidate_count || 0) > 0
+    || snapshotWindows.length > 0
+  );
+  const hasConfirmedWindow = Boolean(
+    textValue(runtime.effective_window_key)
+    && detail !== 'no_eligible_window'
+    && detail !== 'memory_reader_window_minimized'
+    && lastExcludeReason !== 'excluded_minimized_window'
+  );
+  const processName = textValue(runtime.effective_process_name) || textValue(runtime.process_name);
+  const hasProfile = ['bucket_exact', 'bucket_aspect_nearest', 'process_fallback']
+    .includes(textValue(runtime.capture_profile_match_source));
+  const { observedText, stableText, effectiveText } = getCurrentLineTexts(status);
+  const hasLine = Boolean(effectiveText || stableText || observedText);
+  const steps = [];
+
+  if (!ocrReady) {
+    let body;
+    if (ocrInstallAction === 'download_rapidocr_models') {
+      body = uiT(
+        'ui.first_run.install_ocr.pending_models',
+        '默认语言模型 (japan + PP-OCRv4) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 10MB 的模型文件。',
+      );
+    } else if (ocrInstallAction === 'install_tesseract') {
+      body = uiT('ui.first_run.install_ocr.pending_tesseract', '前往"依赖安装"面板一键安装 Tesseract。');
+    } else {
+      body = uiT('ui.first_run.install_ocr.pending', '前往"依赖安装"面板一键安装 RapidOCR。');
+    }
+    steps.push({
+      key: 'install_ocr',
+      done: false,
+      installAction: ocrInstallAction,
+      title: uiT('ui.first_run.install_ocr.title', 'OCR 模型'),
+      body,
+    });
+  }
+  if (!captureReady) {
+    steps.push({
+      key: 'install_capture',
+      done: false,
+      title: uiT('ui.first_run.install_capture.title', '安装截图依赖'),
+      body: uiT('ui.first_run.install_capture.pending', '前往“依赖安装”面板一键安装 DXcam。'),
+    });
+  }
+
+  steps.push(
+    {
+      key: 'start_game',
+      done: hasGame,
+      title: uiT('ui.first_run.start_game.title', '启动或恢复游戏'),
+      body: hasGame
+        ? uiT('ui.first_run.start_game.done', '已发现游戏状态。')
+        : uiT('ui.first_run.start_game.pending', '打开游戏，并停在有文字的画面。'),
+    },
+    {
+      key: 'refresh_window',
+      done: hasWindow,
+      title: uiT('ui.first_run.refresh_window.title', '刷新窗口'),
+      body: hasWindow
+        ? uiT('ui.first_run.refresh_window.done', '已找到可检查的窗口。')
+        : uiT('ui.first_run.refresh_window.pending', '回到插件页，点击“刷新窗口”。'),
+    },
+    {
+      key: 'select_window',
+      done: hasConfirmedWindow,
+      title: uiT('ui.first_run.select_window.title', '选择游戏窗口'),
+      body: hasConfirmedWindow
+        ? uiT('ui.first_run.select_window.done', '已确认识别窗口。')
+        : uiT('ui.first_run.select_window.pending', '如果没有自动选中，请手动选择游戏窗口。'),
+    },
+  );
+
+  if (hasConfirmedWindow && processName && !hasProfile) {
+    steps.push({
+      key: 'calibrate',
+      done: false,
+      title: uiT('ui.first_run.calibrate.title', '校准截图区域'),
+      body: uiT('ui.first_run.calibrate.pending', '打开“高级设置”，在 OCR 截图校准中设置裁剪区域。'),
+    });
+  }
+
+  steps.push({
+    key: 'recognize',
+    done: hasLine,
+    title: uiT('ui.first_run.recognize.title', '开始识别'),
+    body: hasLine
+      ? uiT('ui.first_run.recognize.done', '已读到台词。')
+      : uiT('ui.first_run.recognize.pending', '开始自动识别，或在游戏中推进到下一句台词。'),
+  });
+
+  return steps;
+}
+
+function buildFirstRunActions(steps, firstIncompleteIndex) {
+  if (firstIncompleteIndex < 0) {
+    return '';
+  }
+  const firstIncomplete = steps[firstIncompleteIndex] || {};
+  const actions = [];
+
+  if (firstIncomplete.key === 'install_ocr') {
+    const installAction = firstIncomplete.installAction || 'install_rapidocr';
+    let installActionKey;
+    let fallbackLabel;
+    if (installAction === 'download_rapidocr_models') {
+      installActionKey = 'ui.first_run.action.download_rapidocr_models';
+      fallbackLabel = '立即下载模型';
+    } else if (installAction === 'install_tesseract') {
+      installActionKey = 'ui.first_run.action.install_tesseract';
+      fallbackLabel = primaryActionLabel(installAction);
+    } else {
+      installActionKey = 'ui.first_run.action.install_rapidocr';
+      fallbackLabel = primaryActionLabel(installAction);
+    }
+    actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'install_capture') {
+    actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', '一键安装 DXcam'))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'start_game' || firstIncomplete.key === 'refresh_window') {
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'select_window') {
+    actions.push(`<button class="primary" data-first-run-action="select_ocr_window">${escapeHtml(uiT('ui.first_run.action.select_window', primaryActionLabel('select_ocr_window')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_ocr_windows">${escapeHtml(primaryActionLabel('refresh_ocr_windows'))}</button>`);
+  } else if (firstIncomplete.key === 'calibrate') {
+    actions.push(`<button class="primary" data-first-run-action="recalibrate_ocr">${escapeHtml(uiT('ui.first_run.action.auto_calibrate', primaryActionLabel('recalibrate_ocr')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'recognize') {
+    actions.push(`<button class="primary" data-first-run-action="choice_advisor">${escapeHtml(uiT('ui.first_run.action.start_recognition', primaryActionLabel('start_recognition')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  }
+  return actions.join('');
+}
+
+function saveTutorialProgressDeduped(key, partial) {
+  if (tutorialProgressPendingSaveKeys.has(key)) {
+    return null;
+  }
+  tutorialProgressPendingSaveKeys.add(key);
+  const save = saveTutorialProgress(partial);
+  save.then(
+    () => {
+      tutorialProgressPendingSaveKeys.delete(key);
+    },
+    () => {
+      tutorialProgressPendingSaveKeys.delete(key);
+    },
+  );
+  return save;
+}
+
+function renderFirstRunGuide(status = {}) {
+  const node = document.getElementById('firstRunGuide');
+  const stepsNode = document.getElementById('firstRunSteps');
+  if (!node || !stepsNode) {
+    return;
+  }
+  const steps = buildFirstRunSteps(status);
+  const allDone = steps.every((step) => step.done);
+  const gameStepIndex = steps.findIndex((step) => step.key === 'start_game');
+  const readyThreshold = gameStepIndex >= 0
+    ? Math.min(steps.length, gameStepIndex + 2)
+    : Math.min(3, steps.length);
+  const readyToStart = readyThreshold > 0 && steps.slice(0, readyThreshold).every((step) => step.done);
+  const advancedSettings = document.getElementById('advancedSettings');
+  const advancedOpen = Boolean(advancedSettings && advancedSettings.classList.contains('open'));
+  const shouldHideOnboarding = advancedOpen || allDone || readyToStart;
+  const shouldHideMainGuide = advancedOpen || allDone;
+  const onboardingView = document.getElementById('onboardingView');
+
+  if (onboardingView) {
+    if (shouldHideOnboarding && !forceShowOnboarding) {
+      onboardingView.hidden = true;
+      onboardingDismissed = true;
+      forceShowOnboarding = false;
+      document.body.classList.remove('onboarding-active');
+    } else if (!onboardingDismissed && !readSkipOnboarding()) {
+      onboardingView.hidden = false;
+      document.body.classList.add('onboarding-active');
+    }
+  }
+
+  if (shouldHideMainGuide && !forceShowOnboarding) {
+    node.hidden = true;
+    stepsNode.replaceChildren();
+    document.body.classList.remove('onboarding-active');
+    if (onboardingView) { onboardingView.hidden = true; }
+    if (allDone && !latestTutorialProgress?.completed) {
+      const completedAt = Date.now() / 1000;
+      saveTutorialProgressDeduped('completed', { completed: true, completed_at: completedAt })
+        ?.then(() => {
+          latestTutorialProgress = {
+            ...(latestTutorialProgress || {}),
+            completed: true,
+            completed_at: completedAt,
+          };
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+  if (advancedOpen && !forceShowOnboarding) {
+    return;
+  }
+
+  const firstIncompleteIndex = steps.findIndex((step) => !step.done);
+  if (firstIncompleteIndex >= 0 && firstIncompleteIndex !== lastSavedStepIndex) {
+    saveTutorialProgressDeduped(`last_step_index:${firstIncompleteIndex}`, { last_step_index: firstIncompleteIndex })
+      ?.then(() => {
+        lastSavedStepIndex = firstIncompleteIndex;
+      })
+      .catch(() => {});
+  }
+  const html = steps.map((step, index) => {
+    const stateClass = step.done ? 'done' : (index === firstIncompleteIndex ? 'active' : 'pending');
+    const marker = step.done ? uiT('ui.first_run.done_marker', '完成') : String(index + 1);
+    return `
+      <article class="first-run-step ${stateClass}">
+        <span class="first-run-step-marker">${escapeHtml(marker)}</span>
+        <div>
+          <h3>${escapeHtml(step.title)}</h3>
+          <p>${escapeHtml(step.body)}</p>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  stepsNode.innerHTML = html;
+  node.hidden = false;
+
+  const onboardingSteps = document.getElementById('onboardingSteps');
+  const onboardingActions = document.getElementById('onboardingActions');
+  if (onboardingSteps) {
+    onboardingSteps.innerHTML = html;
+  }
+  if (onboardingActions) {
+    onboardingActions.innerHTML = buildFirstRunActions(steps, firstIncompleteIndex);
   }
 }
 
@@ -2597,27 +2966,15 @@ function persistInstallTaskId(kind, taskId) {
   if (!taskId) {
     return;
   }
-  try {
-    localStorage.setItem(getInstallConfig(kind).storageKey, taskId);
-  } catch (_) {
-    // Ignore storage failures in embedded browsers.
-  }
+  storageSet(getInstallConfig(kind).storageKey, taskId);
 }
 
 function readPersistedInstallTaskId(kind) {
-  try {
-    return localStorage.getItem(getInstallConfig(kind).storageKey) || '';
-  } catch (_) {
-    return '';
-  }
+  return storageGet(getInstallConfig(kind).storageKey);
 }
 
 function clearPersistedInstallTaskId(kind) {
-  try {
-    localStorage.removeItem(getInstallConfig(kind).storageKey);
-  } catch (_) {
-    // Ignore storage failures in embedded browsers.
-  }
+  storageRemove(getInstallConfig(kind).storageKey);
 }
 
 function clearInstallReconnectTimer(kind) {
@@ -4347,6 +4704,20 @@ function renderRapidOcr(status) {
   const body = document.getElementById('rapidocrPromptBody');
   const path = document.getElementById('rapidocrPathText');
   const installed = Boolean(rapidocr.installed);
+  const canDownloadModels = Boolean(rapidocr.can_download_models);
+  const downloadBtn = document.getElementById('rapidocrModelsDownloadBtn');
+  if (downloadBtn) {
+    downloadBtn.hidden = !canDownloadModels;
+    // Don't disable while a download is in flight — startInstall() handles
+    // its own pending state. Reset button label here in case a previous
+    // download finished and downloadBtn was left in retry text.
+    if (canDownloadModels && !installRuntime.rapidocr_models.inProgress) {
+      const config = getInstallConfig('rapidocr_models');
+      const isRetry = installRuntime.rapidocr_models.state
+        && installRuntime.rapidocr_models.state.status === 'failed';
+      downloadBtn.textContent = isRetry ? config.retryText : config.actionText;
+    }
+  }
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4397,6 +4768,45 @@ function renderRapidOcr(status) {
     path.textContent = [
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
+    ].filter(Boolean).join('\n');
+  } else if (rapidocr.detail === 'missing_model_files') {
+    banner.classList.add('warning');
+    kicker.textContent = uiT('ui.install.rapidocr.missing_models_kicker', 'OCR 主后端 — 模型未下载');
+    title.textContent = uiT('ui.install.rapidocr.missing_models_title', 'RapidOCR 已就绪，但所选语言模型未下载');
+    const missing = Array.isArray(rapidocr.missing_model_files) ? rapidocr.missing_model_files : [];
+    const fileList = missing.map((f) => `• ${f.name}`).join('\n');
+    const totalMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
+    const langType = rapidocr.lang_type || '';
+    const ocrVersion = rapidocr.ocr_version || '';
+    // After a failed download, append a manual-fallback hint so the user
+    // has a concrete recovery path (proxy / download manually + drop into
+    // model_cache_dir + refresh). Surfacing this in the banner — not just
+    // the install card — keeps it visible after the user dismisses or
+    // collapses the card.
+    const lastTask = installRuntime.rapidocr_models.state;
+    const downloadFailed = Boolean(lastTask && lastTask.status === 'failed');
+    const proxyHint = downloadFailed
+      ? '\n\n' + uiTf(
+          'ui.install.rapidocr.download_failure_proxy_hint',
+          '上次下载失败：{error}\n国内网络可能需要代理；或手动从 {source} 下载缺失文件到 {dir}，然后点击"刷新状态"。',
+          {
+            error: (lastTask && (lastTask.error || lastTask.message)) || '',
+            source: rapidocr.model_download_source || '',
+            dir: rapidocr.model_cache_dir || '',
+          },
+        )
+      : '';
+    body.textContent = [
+      uiTf(
+        'ui.install.rapidocr.missing_models_body',
+        '当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。点击下方按钮可一键下载；下载来自 RapidAI ModelScope。',
+        { lang: langType, version: ocrVersion, count: missing.length, size: totalMb },
+      ),
+      fileList,
+    ].filter(Boolean).join('\n') + proxyHint;
+    path.textContent = [
+      rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
+      rapidocr.model_download_source ? `${uiT('ui.install.rapidocr.download_source', '下载来源')}: ${rapidocr.model_download_source}` : '',
     ].filter(Boolean).join('\n');
   } else if (rapidocr.detail === 'broken_runtime') {
     banner.classList.add('warning');
@@ -5545,6 +5955,15 @@ async function installTesseract(force = false) {
   await startInstall('tesseract', force);
 }
 
+async function downloadRapidOcrModels(force = false) {
+  // Same task lifecycle as install actions — startInstall() routes via
+  // /rapidocr-models/download (POST), persists task_id, and connects the
+  // SSE stream. Network failures from ModelScope surface in the install
+  // task card with their original error text, so the user can tell whether
+  // it was a timeout, an HTTP 403, or a checksum mismatch.
+  await startInstall('rapidocr_models', force);
+}
+
 async function setOcrBackendSelection({ backendSelection = null, captureBackend = null } = {}) {
   const args = {};
   if (backendSelection) {
@@ -6383,6 +6802,76 @@ async function switchToChoiceAdvisorMode() {
   await saveMode();
 }
 
+async function fetchTutorialProgress() {
+  try {
+    const response = await fetchWithTutorialTimeout(TUTORIAL_STATUS_URL, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    latestTutorialProgress = payload && payload.progress ? payload.progress : null;
+    return latestTutorialProgress;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function saveTutorialProgress(partial) {
+  const save = tutorialProgressSaveQueue.catch(() => {}).then(async () => {
+    const response = await fetchWithTutorialTimeout(TUTORIAL_PROGRESS_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(partial || {}),
+    });
+    if (!response.ok) {
+      throw new Error(`tutorial progress save failed: HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    if (data && data.progress) {
+      latestTutorialProgress = data.progress;
+    }
+    return latestTutorialProgress;
+  });
+  tutorialProgressSaveQueue = save.catch(() => {});
+  return save;
+}
+
+async function resetTutorialGuide() {
+  onboardingDismissed = false;
+  forceShowOnboarding = true;
+  lastSavedStepIndex = -1;
+  latestTutorialProgress = null;
+  clearSkipOnboarding();
+  const resetProgress = {
+    completed: false,
+    skipped: false,
+    last_step_index: 0,
+    started_at: Date.now() / 1000,
+    completed_at: 0,
+  };
+  try {
+    await saveTutorialProgress(resetProgress);
+    lastSavedStepIndex = 0;
+    latestTutorialProgress = {
+      ...resetProgress,
+      ...(latestTutorialProgress || {}),
+    };
+  } catch (error) {
+    console.warn('[galgame_plugin ui] tutorial reset progress save failed', error);
+  }
+  const onboardingView = document.getElementById('onboardingView');
+  if (onboardingView) {
+    onboardingView.hidden = false;
+  }
+  document.body.classList.add('onboarding-active');
+  await refreshStatusAndWindowsFromAction();
+}
+
 async function handleDiagnosisAction(action) {
   switch (action) {
     case 'refresh_all':
@@ -6405,6 +6894,27 @@ async function handleDiagnosisAction(action) {
     case 'recalibrate_ocr':
       await autoRecalibrateOcrDialogueProfile();
       break;
+    case 'install_tesseract':
+      await installTesseract(false);
+      break;
+    case 'download_rapidocr_models':
+      // Onboarding install_ocr step routes here when rapidocr is bundled
+      // but the user-selected language pack isn't on disk. Navigate to the
+      // RapidOCR banner so the missing-models card is visible, then kick
+      // off the model download (same lifecycle as install tasks).
+      navigateToInstallPanel('rapidocr', { scrollToSection: false });
+      expandAndScrollTo('rapidocrPrompt');
+      await downloadRapidOcrModels(false);
+      break;
+    case 'install_dxcam':
+      // DXcam is bundled now (see PR #1191) — there is no runtime-install
+      // path. Onboarding routes here to expand Advanced Settings + scroll
+      // to the dxcam status banner so the user can read the bundled hint
+      // (reinstall packaged build / `uv sync --group galgame`).
+      navigateToInstallPanel('dxcam', { scrollToSection: false });
+      expandAndScrollTo('dxcamPrompt');
+      setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
+      break;
     case 'capture_backend':
       revealCaptureBackendSettings();
       setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS、PyAutoGUI 或 PrintWindow。'), 'info');
@@ -6426,6 +6936,9 @@ async function handleDiagnosisAction(action) {
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
       break;
+    case 'reset_tutorial':
+      await resetTutorialGuide();
+      break;
     case 'focus_game':
       setFlash(uiT('ui.flash.focus_game_window', '请切回游戏窗口。窗口回到前台后，插件会在下一轮刷新中继续识别。'), 'info');
       break;
@@ -6433,6 +6946,22 @@ async function handleDiagnosisAction(action) {
       setFlash(uiT('ui.flash.action_unavailable', '这个操作暂时不可用。'), 'warning');
       break;
   }
+}
+
+function isFirstRunInstallAction(action) {
+  return action === 'install_rapidocr'
+    || action === 'install_tesseract'
+    || action === 'install_dxcam'
+    || action === 'download_rapidocr_models';
+}
+
+function handleFirstRunActionClick(button, action) {
+  return withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => {
+    if (isFirstRunInstallAction(action)) {
+      hideOnboardingWithoutSkipping();
+    }
+    return handleDiagnosisAction(action);
+  });
 }
 
 function switchInstallTab(tab) {
@@ -6469,17 +6998,6 @@ function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
   const dependencyModule = document.getElementById('dependencyModule');
   const installSection = document.getElementById('installSection');
 
-  try {
-    localStorage.setItem('galgame_skip_onboarding', '1');
-  } catch (error) {
-    console.warn('[galgame_plugin ui] persist onboarding skip failed', error);
-  }
-  document.body.classList.remove('onboarding-active');
-  const onboardingView = document.getElementById('onboardingView');
-  if (onboardingView) {
-    onboardingView.hidden = true;
-  }
-
   if (advancedSettings && !advancedSettings.classList.contains('open')) {
     advancedSettings.classList.add('open');
     if (advancedToggleBtn) {
@@ -6515,18 +7033,36 @@ async function initialize() {
   updateSettingsDirtyHint();
   switchInstallTab(activeInstallTab);
 
-  const skipOnboarding = localStorage.getItem('galgame_skip_onboarding') === '1';
+  const progress = await fetchTutorialProgress();
+  const skipOnboarding = readSkipOnboarding() || Boolean(progress && (progress.completed || progress.skipped));
   if (!skipOnboarding) {
+    onboardingDismissed = false;
     document.body.classList.add('onboarding-active');
     const onboardingView = document.getElementById('onboardingView');
     if (onboardingView) { onboardingView.hidden = false; }
+    try {
+      await saveTutorialProgress({
+        started_at: Number(progress?.started_at || 0) || Date.now() / 1000,
+      });
+    } catch (error) {
+      console.warn('[galgame_plugin ui] tutorial initial progress save failed', error);
+    }
+  } else {
+    onboardingDismissed = true;
+    forceShowOnboarding = false;
+    // Sync DOM with the dismissed flag. Without this, an initial render
+    // pass that placed the onboarding overlay before this branch ran
+    // (e.g. completed/skipped progress arrives mid-frame) would leave
+    // `onboardingView` visible and `onboarding-active` on body — the
+    // dismissed flag alone won't actively hide it again on the next render.
+    document.body.classList.remove('onboarding-active');
+    const onboardingView = document.getElementById('onboardingView');
+    if (onboardingView) {
+      onboardingView.hidden = true;
+    }
   }
 
-  try {
-    localStorage.removeItem(`${PLUGIN_ID}:last_ui_state:v1`);
-  } catch (error) {
-    console.warn('[galgame_plugin ui] clear cached state failed', error);
-  }
+  storageRemove(`${PLUGIN_ID}:last_ui_state:v1`);
   renderInsightsPending(uiT('ui.suggest.initial_pending', '等待首轮状态刷新；选项建议会在后台更新。'));
     setFlash(uiT('ui.flash.loading_status', '正在加载插件状态...'), 'info');
   const loaded = await refreshAll({ forceInsights: false, showInsightPending: true });
@@ -6601,7 +7137,16 @@ document.getElementById('firstRunGuide').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
+  handleFirstRunActionClick(button, action).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('resetTutorialBtn')?.addEventListener('click', (event) => {
+  const button = eventElement(event.currentTarget);
+  if (!button) {
+    return;
+  }
+  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction('reset_tutorial')).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
@@ -6661,7 +7206,10 @@ document.getElementById('queryContextBtn').addEventListener('click', () => {
 document.getElementById('sendMessageBtn').addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-// rapidocrInstallBtn / dxcamInstallBtn event listeners removed — buttons gone from HTML.
+// rapidocrInstallBtn / dxcamInstallBtn event listeners removed — runtime
+// install machinery for both is gone; rapidocrModelsDownloadBtn is the new
+// rapidocr action and triggers a model-pack download (different operation).
+document.getElementById('rapidocrModelsDownloadBtn')?.addEventListener('click', () => downloadRapidOcrModels(false));
 document.getElementById('tesseractInstallBtn').addEventListener('click', () => installTesseract(false));
 document.getElementById('textractorInstallBtn').addEventListener('click', () => installTextractor(false));
 document.getElementById('rapidocrUseBtn').addEventListener('click', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
@@ -6810,8 +7358,15 @@ document.querySelectorAll('#speedSwitch .speed-btn').forEach((btn) => {
 
 document.querySelectorAll('[data-skip-onboarding]').forEach((btn) => {
   btn.addEventListener('click', () => {
-    localStorage.setItem('galgame_skip_onboarding', '1');
+    persistSkipOnboarding();
+    onboardingDismissed = true;
+    forceShowOnboarding = false;
     document.body.classList.remove('onboarding-active');
+    const onboardingView = document.getElementById('onboardingView');
+    if (onboardingView) {
+      onboardingView.hidden = true;
+    }
+    saveTutorialProgress({ skipped: true, last_step_index: 0 }).catch(() => {});
   });
 });
 
@@ -6822,7 +7377,7 @@ document.getElementById('onboardingView').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
+  handleFirstRunActionClick(button, action).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
