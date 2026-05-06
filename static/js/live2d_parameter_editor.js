@@ -1344,13 +1344,46 @@ if (saveBtn) {
         if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
             const coreModel = live2dModel.internalModel.coreModel;
             const paramCount = coreModel.getParameterCount();
+            const eyeBlinkIds = new Set();
+            const eyeBlinkIndexes = new Set();
+            const groups = live2dModel.internalModel.settings?.json?.Groups;
+            const eyeBlinkGroup = Array.isArray(groups)
+                ? groups.find(g => g?.Target === 'Parameter' && g?.Name === 'EyeBlink')
+                : null;
+            if (Array.isArray(eyeBlinkGroup?.Ids)) {
+                for (const id of eyeBlinkGroup.Ids) {
+                    if (!id) continue;
+                    eyeBlinkIds.add(id);
+                    try {
+                        const idx = coreModel.getParameterIndex(id);
+                        if (idx >= 0) eyeBlinkIndexes.add(idx);
+                    } catch (_) {}
+                }
+            }
+            const isEyeBlinkParam = (paramId, index) => {
+                if (eyeBlinkIndexes.has(index)) return true;
+                if (!paramId) return false;
+                if (eyeBlinkIds.has(paramId)) return true;
+                const id = String(paramId);
+                return !/eyeball|angle|look|iris|pupil/i.test(id) &&
+                    (/parameye[lr]open/i.test(id) || /eye.*open/i.test(id) || /eye.*blink/i.test(id));
+            };
+
             for (let i = 0; i < paramCount; i++) {
                 try {
                     let paramId = null;
                     try {
-                        paramId = coreModel.getParameterId(i);
+                        paramId = coreModel._parameterIds?.[i]
+                            ?? coreModel._model?.parameters?.ids?.[i]
+                            ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
                     } catch (e) {
                         paramId = `param_${i}`;
+                    }
+                    if (!paramId) {
+                        paramId = `param_${i}`;
+                    }
+                    if (isEyeBlinkParam(paramId, i)) {
+                        continue;
                     }
                     const value = coreModel.getParameterValueByIndex(i);
                     paramsToSave[paramId] = value;
