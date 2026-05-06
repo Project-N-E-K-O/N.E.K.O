@@ -256,12 +256,86 @@
         }
     }
 
-    function buildDisabledAgentFlags() {
+    async function postAgentCommand(command, payload) {
+        const response = await fetch('/api/agent/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({
+                request_id: 'home-tutorial-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+                command: command,
+            }, payload || {})),
+        });
+        if (!response || !response.ok) {
+            throw new Error('agent_command_post_failed');
+        }
+        const result = await response.json().catch(function () { return null; });
+        if (result && result.success === false) {
+            throw new Error(result.error || 'agent_command_rejected');
+        }
+    }
+
+    function buildAgentChildFlags(values) {
         const flags = {};
         HOME_TUTORIAL_AGENT_FLAG_KEYS.forEach(function (key) {
-            flags[key] = false;
+            if (key !== 'agent_enabled' && Object.prototype.hasOwnProperty.call(values, key)) {
+                flags[key] = !!values[key];
+            }
         });
         return flags;
+    }
+
+    function buildDisabledAgentChildFlags() {
+        const flags = {};
+        HOME_TUTORIAL_AGENT_FLAG_KEYS.forEach(function (key) {
+            if (key !== 'agent_enabled') {
+                flags[key] = false;
+            }
+        });
+        return flags;
+    }
+
+    function canRestoreAgentSnapshot(restoreToken) {
+        return !state.featureSuppression.active
+            && state.featureSuppression.token === restoreToken;
+    }
+
+    async function restoreAgentSnapshot(flags, restoreToken) {
+        if (!flags) {
+            return false;
+        }
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+            return false;
+        }
+        if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
+            await postAgentCommand('set_agent_enabled', {
+                enabled: !!flags.agent_enabled,
+            });
+        }
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+            if (state.featureSuppression.active && flags.agent_enabled) {
+                try {
+                    await postAgentCommand('set_agent_enabled', { enabled: false });
+                } catch (error) {
+                    console.warn('[TutorialPrompt] failed to re-suppress stale agent master restore:', error);
+                }
+            }
+            return false;
+        }
+        const childFlags = buildAgentChildFlags(flags);
+        if (Object.keys(childFlags).length > 0) {
+            await postAgentFlags(childFlags);
+        }
+        if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
+            if (state.featureSuppression.active && Object.keys(childFlags).length > 0) {
+                try {
+                    await postAgentFlags(buildDisabledAgentChildFlags());
+                } catch (error) {
+                    console.warn('[TutorialPrompt] failed to re-suppress stale agent child flag restore:', error);
+                }
+            }
+            return false;
+        }
+        return true;
     }
 
     function syncAgentFlagsUi() {
@@ -292,11 +366,33 @@
             if (state.featureSuppression.snapshot) {
                 state.featureSuppression.snapshot.agentFlags = flags;
             }
-            await postAgentFlags(buildDisabledAgentFlags());
+            await postAgentCommand('set_agent_enabled', { enabled: false });
             if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+                const restoreToken = state.featureSuppression.token;
+                if (state.featureSuppression.active || !canRestoreAgentSnapshot(restoreToken)) {
+                    return;
+                }
                 try {
-                    await postAgentFlags(flags);
-                    syncAgentFlagsUi();
+                    const restored = await restoreAgentSnapshot(flags, restoreToken);
+                    if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        syncAgentFlagsUi();
+                    }
+                } catch (restoreError) {
+                    console.warn('[TutorialPrompt] failed to restore agent flags after stale master suppress:', restoreError);
+                }
+                return;
+            }
+            await postAgentFlags(buildDisabledAgentChildFlags());
+            if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+                const restoreToken = state.featureSuppression.token;
+                if (state.featureSuppression.active || !canRestoreAgentSnapshot(restoreToken)) {
+                    return;
+                }
+                try {
+                    const restored = await restoreAgentSnapshot(flags, restoreToken);
+                    if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        syncAgentFlagsUi();
+                    }
                 } catch (restoreError) {
                     console.warn('[TutorialPrompt] failed to restore agent flags after stale suppress:', restoreError);
                 }
@@ -363,8 +459,12 @@
             maybeRestartProactiveSchedule(snapshot.proactive);
         }
         if (snapshot.agentFlags) {
-            void postAgentFlags(snapshot.agentFlags)
-                .then(syncAgentFlagsUi)
+            void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)
+                .then(function (restored) {
+                    if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        syncAgentFlagsUi();
+                    }
+                })
                 .catch(function (error) {
                     console.warn('[TutorialPrompt] failed to restore agent flags:', error);
                 });

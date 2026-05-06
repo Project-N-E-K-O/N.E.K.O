@@ -817,6 +817,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
             window.history.pushState({}, '', '/');
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'false');
             window.__agentFlagBodies = [];
+            window.__agentCommandBodies = [];
         """,
         fetch_js="""
             if (requestUrl === '/api/tutorial-prompt/state') {
@@ -863,6 +864,10 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
                 window.__agentFlagBodies.push(body);
                 return jsonResponse({ success: true });
             }
+            if (requestUrl === '/api/agent/command' && method === 'POST') {
+                window.__agentCommandBodies.push(body);
+                return jsonResponse({ success: true });
+            }
         """,
         script_names=("app-prompt-shared.js", "app-tutorial-prompt.js"),
         init_js="() => window.appTutorialPrompt.init()",
@@ -902,6 +907,10 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
         "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
         timeout=5000,
     )
+    mock_page.wait_for_function(
+        "() => window.__agentCommandBodies.length === 1 && window.__agentFlagBodies.length === 1",
+        timeout=5000,
+    )
 
     mock_page.evaluate(
         """
@@ -921,7 +930,7 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
         timeout=5000,
     )
     mock_page.wait_for_function(
-        "() => window.__agentFlagBodies.length === 2",
+        "() => window.__agentCommandBodies.length === 2 && window.__agentFlagBodies.length === 2",
         timeout=5000,
     )
     result = mock_page.evaluate(
@@ -929,13 +938,18 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
         () => ({
             suppressed: window.NekoHomeTutorialFeatureController.isActive(),
             agentFlagBodies: window.__agentFlagBodies.slice(),
+            agentCommandBodies: window.__agentCommandBodies.slice(),
         })
         """
     )
     assert result["suppressed"] is False
-    assert result["agentFlagBodies"][0]["flags"]["agent_enabled"] is False
+    assert result["agentCommandBodies"][0]["command"] == "set_agent_enabled"
+    assert result["agentCommandBodies"][0]["enabled"] is False
+    assert result["agentCommandBodies"][1]["command"] == "set_agent_enabled"
+    assert result["agentCommandBodies"][1]["enabled"] is True
+    assert "agent_enabled" not in result["agentFlagBodies"][0]["flags"]
     assert result["agentFlagBodies"][0]["flags"]["computer_use_enabled"] is False
-    assert result["agentFlagBodies"][1]["flags"]["agent_enabled"] is True
+    assert "agent_enabled" not in result["agentFlagBodies"][1]["flags"]
     assert result["agentFlagBodies"][1]["flags"]["computer_use_enabled"] is True
 
 
