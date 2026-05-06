@@ -4,7 +4,7 @@ from . import ocr_reader as _ocr_reader
 
 CAPTURE_BACKEND_AUTO = _ocr_reader._CAPTURE_BACKEND_AUTO
 CAPTURE_BACKEND_DXCAM = _ocr_reader._CAPTURE_BACKEND_DXCAM
-CAPTURE_BACKEND_IMAGEGRAB = _ocr_reader._CAPTURE_BACKEND_IMAGEGRAB
+CAPTURE_BACKEND_MSS = _ocr_reader._CAPTURE_BACKEND_MSS
 CAPTURE_BACKEND_PRINTWINDOW = _ocr_reader._CAPTURE_BACKEND_PRINTWINDOW
 
 _BACKGROUND_HASH_BOTTOM_INSET_RATIO = _ocr_reader._BACKGROUND_HASH_BOTTOM_INSET_RATIO
@@ -13,7 +13,7 @@ _DXCAM_GRAB_RETRY_ATTEMPTS = _ocr_reader._DXCAM_GRAB_RETRY_ATTEMPTS
 _DXCAM_GRAB_RETRY_DELAY_SECONDS = _ocr_reader._DXCAM_GRAB_RETRY_DELAY_SECONDS
 
 CaptureBackend = _ocr_reader.CaptureBackend
-ImageGrabCaptureBackend = _ocr_reader.ImageGrabCaptureBackend
+MssCaptureBackend = _ocr_reader.MssCaptureBackend
 PrintWindowCaptureBackend = _ocr_reader.PrintWindowCaptureBackend
 DxcamCaptureBackend = _ocr_reader.DxcamCaptureBackend
 Win32CaptureBackend = _ocr_reader.Win32CaptureBackend
@@ -36,11 +36,11 @@ def __getattr__(name: str):
 __all__ = [
     "CAPTURE_BACKEND_AUTO",
     "CAPTURE_BACKEND_DXCAM",
-    "CAPTURE_BACKEND_IMAGEGRAB",
+    "CAPTURE_BACKEND_MSS",
     "CAPTURE_BACKEND_PRINTWINDOW",
     "CaptureBackend",
     "DxcamCaptureBackend",
-    "ImageGrabCaptureBackend",
+    "MssCaptureBackend",
     "PrintWindowCaptureBackend",
     "Win32CaptureBackend",
     "_BACKGROUND_HASH_BOTTOM_INSET_RATIO",

@@ -291,6 +291,8 @@ _FOREGROUND_ADVANCE_STABLE_GRACE_SECONDS = 2.0
 _CAPTURE_BACKEND_AUTO = "auto"
 _CAPTURE_BACKEND_SMART = "smart"
 _CAPTURE_BACKEND_DXCAM = "dxcam"
+_CAPTURE_BACKEND_MSS = "mss"
+# Legacy alias kept so existing user configs with "imagegrab" still load; mapped to MSS.
 _CAPTURE_BACKEND_IMAGEGRAB = "imagegrab"
 _CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
 _SCREEN_AWARENESS_LATENCY_MODE_OFF = "off"
@@ -2419,29 +2421,50 @@ def _crop_window_image(
     return cropped
 
 
-class ImageGrabCaptureBackend:
-    kind = _CAPTURE_BACKEND_IMAGEGRAB
+class MssCaptureBackend:
+    kind = _CAPTURE_BACKEND_MSS
 
     def __init__(self, *, logger=None) -> None:
         self._logger = logger
+        self._sct = None
+        self._sct_lock = threading.RLock()
 
     def is_available(self) -> bool:
         try:
-            import win32gui
-            from PIL import ImageGrab
-            return bool(win32gui and ImageGrab)
+            import mss
+            return bool(mss)
         except ImportError:
             return False
 
     def describe_target(self, target: DetectedGameWindow) -> str:
         return f"{target.process_name}({target.pid}) {target.title}"
 
+    def _sct_instance(self):
+        with self._sct_lock:
+            if self._sct is not None:
+                return self._sct
+            import mss
+
+            self._sct = mss.mss()
+            return self._sct
+
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
-        from PIL import ImageGrab
+        from PIL import Image
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_window_rect(target)
-        image = ImageGrab.grab(bbox=rect, all_screens=True).convert("RGB")
+        left, top, right, bottom = rect
+        monitor = {
+            "left": int(left),
+            "top": int(top),
+            "width": int(right - left),
+            "height": int(bottom - top),
+        }
+        with self._sct_lock:
+            sct = self._sct_instance()
+            shot = sct.grab(monitor)
+        # mss returns BGRA; convert to RGB via PIL.
+        image = Image.frombytes("RGB", shot.size, shot.rgb)
         return _crop_window_image(
             image,
             window_rect=rect,
@@ -2637,15 +2660,18 @@ class Win32CaptureBackend:
     def __init__(self, *, logger=None, selection: str = _CAPTURE_BACKEND_AUTO) -> None:
         self._logger = logger
         self.selection = str(selection or _CAPTURE_BACKEND_AUTO).strip().lower()
+        # Legacy "imagegrab" selection migrates to MSS (same GDI capability, faster + cross-platform).
+        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
+            self.selection = _CAPTURE_BACKEND_MSS
         if self.selection not in {
             _CAPTURE_BACKEND_AUTO,
             _CAPTURE_BACKEND_SMART,
             _CAPTURE_BACKEND_DXCAM,
-            _CAPTURE_BACKEND_IMAGEGRAB,
+            _CAPTURE_BACKEND_MSS,
             _CAPTURE_BACKEND_PRINTWINDOW,
         }:
             self.selection = _CAPTURE_BACKEND_AUTO
-        self._imagegrab_backend = ImageGrabCaptureBackend(logger=self._logger)
+        self._mss_backend = MssCaptureBackend(logger=self._logger)
         self._printwindow_backend = PrintWindowCaptureBackend(logger=self._logger)
         self._dxcam_backend = DxcamCaptureBackend(logger=self._logger)
         self._backends = self._build_backends()
@@ -2671,14 +2697,14 @@ class Win32CaptureBackend:
 
     def _build_backends(self) -> list[CaptureBackend]:
         if self.selection == _CAPTURE_BACKEND_DXCAM:
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
-        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
-            return [self._imagegrab_backend, self._dxcam_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
+        if self.selection == _CAPTURE_BACKEND_MSS:
+            return [self._mss_backend, self._dxcam_backend, self._printwindow_backend]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
+            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend]
         if self.selection == _CAPTURE_BACKEND_SMART:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
-        return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend]
+        return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
         if self.selection != _CAPTURE_BACKEND_SMART:
@@ -2686,7 +2712,7 @@ class Win32CaptureBackend:
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
         return [self._printwindow_backend]
 
     def is_available(self) -> bool:

@@ -504,7 +504,12 @@ def _sanitize_ocr_screen_templates(value: object) -> list[dict[str, Any]]:
 
 def _coerce_ocr_capture_backend(value: object, default: str = "smart") -> str:
     normalized = str(value or default).strip().lower()
-    if normalized in {"auto", "smart", "dxcam", "imagegrab", "printwindow"}:
+    # Legacy stored "imagegrab" auto-migrates to "mss" — same GDI capability,
+    # mss is faster + cross-platform. The set below intentionally excludes
+    # "imagegrab" so the rewritten value sticks once the config is re-saved.
+    if normalized == "imagegrab":
+        normalized = "mss"
+    if normalized in {"auto", "smart", "dxcam", "mss", "printwindow"}:
         return normalized
     return default
 
@@ -1348,12 +1353,9 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         and ocr_background_status.get("trigger_mode") == OCR_TRIGGER_MODE_INTERVAL
         and runtime_obj.get("target_is_foreground") is False
     )
-    rapidocr = local_state.get("rapidocr")
-    rapidocr_obj = rapidocr if isinstance(rapidocr, dict) else {}
-    should_offer_rapidocr_install = (
-        bool(local_state.get("rapidocr_enabled"))
-        and rapidocr_obj.get("installed") is False
-    )
+    # rapidocr install prompt removed: rapidocr-onnxruntime is now bundled
+    # via [dependency-groups] galgame; if it's missing the dev needs to run
+    # `uv sync --group galgame`, not click an in-app install button.
 
     def diagnosis(
         severity: str,
@@ -1361,10 +1363,6 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         message: str,
         actions: list[dict[str, str]],
     ) -> dict[str, Any]:
-        if should_offer_rapidocr_install and not any(
-            action.get("id") == "install_rapidocr" for action in actions
-        ):
-            actions = [_diagnosis_action("install_rapidocr", "一键安装 RapidOCR"), *actions]
         return _primary_diagnosis(severity, title, message, actions)
 
     if last_error_message:
