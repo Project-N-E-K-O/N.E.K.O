@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,9 @@ import httpx
 from ._routing import haversine_km
 
 logger = logging.getLogger(__name__)
+
+_EARTH_A = 6378245.0
+_EARTH_EE = 0.00669342162296594323
 
 
 @dataclass
@@ -35,6 +39,40 @@ class POIResult:
     error: str = ""
 
 
+def _outside_china(lat: float, lon: float) -> bool:
+    return lon < 72.004 or lon > 137.8347 or lat < 0.8293 or lat > 55.8271
+
+
+def _transform_lat(x: float, y: float) -> float:
+    ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (160.0 * math.sin(y / 12.0 * math.pi) + 320 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    return ret
+
+
+def _transform_lon(x: float, y: float) -> float:
+    ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    return ret
+
+
+def _wgs84_to_gcj02(lat: float, lon: float) -> tuple[float, float]:
+    if _outside_china(lat, lon):
+        return lat, lon
+    dlat = _transform_lat(lon - 105.0, lat - 35.0)
+    dlon = _transform_lon(lon - 105.0, lat - 35.0)
+    radlat = lat / 180.0 * math.pi
+    magic = math.sin(radlat)
+    magic = 1 - _EARTH_EE * magic * magic
+    sqrt_magic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((_EARTH_A * (1 - _EARTH_EE)) / (magic * sqrt_magic) * math.pi)
+    dlon = (dlon * 180.0) / (_EARTH_A / sqrt_magic * math.cos(radlat) * math.pi)
+    return lat + dlat, lon + dlon
+
+
 # ── 高德 POI 搜索 ───────────────────────────────────────────────
 
 class AMapPOI:
@@ -48,13 +86,11 @@ class AMapPOI:
         radius: int = 3000, limit: int = 10, timeout: float = 8.0,
     ) -> List[POIItem]:
         url = "https://restapi.amap.com/v3/place/around"
+        center_lat, center_lon = _wgs84_to_gcj02(lat, lon)
         params = {
             "key": self.api_key,
             "keywords": query,
-            # Note: AMap expects GCJ-02 input but we pass WGS84. The offset
-            # (~100-500m) is negligible for POI radius searches (typically 3km+).
-            # AMap returns GCJ-02 coords; distance field is server-computed.
-            "location": f"{lon:.6f},{lat:.6f}",
+            "location": f"{center_lon:.6f},{center_lat:.6f}",
             "radius": str(min(radius, 50000)),
             "offset": str(min(limit, 25)),
             "sortrule": "distance",
@@ -233,12 +269,21 @@ class POIService:
         self, query: str, lat: float, lon: float,
         radius: int = 3000, limit: int = 10,
     ) -> POIResult:
+        if radius <= 0:
+            raise ValueError("radius must be positive")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        radius = min(int(radius), 50000)
+        limit = min(int(limit), 50)
         result = POIResult(query=query)
         errors: list[str] = []
         for provider in self._providers:
             try:
                 items = await provider.search(query, lat, lon, radius=radius, limit=limit)
                 if items:
+                    if provider.name == "osm":
+                        for item in items:
+                            item.lat, item.lon = _wgs84_to_gcj02(item.lat, item.lon)
                     result.items = items
                     result.provider = provider.name
                     return result

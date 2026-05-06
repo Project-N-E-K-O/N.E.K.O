@@ -118,7 +118,12 @@ def _analyze_sdk_overlap(
 
 
 def _probe_matching_versions(specifier_texts: list[str], *, current_sdk_version: str | None) -> list[str]:
-    specifiers = [SpecifierSet(text or "") for text in specifier_texts]
+    specifiers: list[SpecifierSet] = []
+    for text in specifier_texts:
+        try:
+            specifiers.append(SpecifierSet(text or ""))
+        except InvalidSpecifier:
+            specifiers.append(SpecifierSet(""))
     candidates = _candidate_versions(specifier_texts, current_sdk_version=current_sdk_version)
 
     matches: list[str] = []

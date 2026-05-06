@@ -58,8 +58,18 @@ def SettingsField(
         description: Human-readable description.
         **kwargs: Forwarded to ``pydantic.Field``.
     """
-    json_schema_extra = kwargs.pop("json_schema_extra", None) or {}
-    json_schema_extra["hot"] = hot
+    json_schema_extra = kwargs.pop("json_schema_extra", None)
+    if callable(json_schema_extra):
+        original_extra = json_schema_extra
+
+        def _with_hot(schema: dict[str, Any]) -> None:
+            original_extra(schema)
+            schema["hot"] = hot
+
+        json_schema_extra = _with_hot
+    else:
+        json_schema_extra = dict(json_schema_extra or {})
+        json_schema_extra["hot"] = hot
     return Field(
         default=default,
         description=description,
@@ -108,6 +118,7 @@ def create_settings_safe(
         pass
 
     # Slow path: validate field-by-field, falling back to defaults.
+    base_defaults = _defaults_dict(settings_cls)
     safe_data: dict[str, Any] = {}
     for name, field_info in settings_cls.model_fields.items():
         if name not in data:
@@ -119,7 +130,7 @@ def create_settings_safe(
         probe: dict[str, Any] = {name: value}
         try:
             settings_cls.model_validate(
-                {**_defaults_dict(settings_cls), **probe},
+                {**base_defaults, **probe},
             )
             safe_data[name] = value
         except ValidationError as exc:
@@ -140,7 +151,7 @@ def create_settings_safe(
                 # Omit from safe_data so pydantic uses the declared default.
 
     try:
-        return settings_cls.model_validate(safe_data)
+        return settings_cls.model_validate({**base_defaults, **safe_data})
     except ValidationError as exc:
         # Last resort: all defaults.
         logger.warning(
@@ -157,7 +168,13 @@ def _defaults_dict(settings_cls: type[PluginSettings]) -> dict[str, Any]:
         if field_info.default is not PydanticUndefined:
             defaults[name] = field_info.default
         elif field_info.default_factory is not None:
-            defaults[name] = field_info.default_factory()
+            try:
+                defaults[name] = field_info.get_default(
+                    call_default_factory=True,
+                    validated_data=defaults,
+                )
+            except TypeError:
+                defaults[name] = field_info.get_default(call_default_factory=True)
     return defaults
 
 

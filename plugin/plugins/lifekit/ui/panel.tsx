@@ -53,7 +53,7 @@ type LifeKitDashboardState = {
 
 const defaultConfigForm = {
   default_city: "",
-  timezone: "Asia/Shanghai",
+  timezone: "",
   forecast_days: "3",
   locale: "",
   force_locale: false,
@@ -115,7 +115,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
     try {
       await props.api.call("update_config", {
         default_city: configForm.values.default_city.trim(),
-        timezone: configForm.values.timezone.trim() || "Asia/Shanghai",
+        timezone: configForm.values.timezone.trim(),
         forecast_days: Number(configForm.values.forecast_days) || 3,
         locale: configForm.values.locale,
         force_locale: !!configForm.values.force_locale,
@@ -315,11 +315,11 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
                   render: (row) => (
                     <Stack>
                       {!row.is_default ? (
-                        <Button tone="primary" disabled={!setDefaultAction} onClick={() => setDefaultLocation(row)}>
+                        <Button tone="primary" disabled={!storeEnabled || !setDefaultAction} onClick={() => setDefaultLocation(row)}>
                           {t("panel.actions.setDefault")}
                         </Button>
                       ) : null}
-                      <Button tone="danger" disabled={!removeLocationAction} onClick={() => removeLocation(row)}>
+                      <Button tone="danger" disabled={!storeEnabled || !removeLocationAction} onClick={() => removeLocation(row)}>
                         {t("panel.actions.remove")}
                       </Button>
                     </Stack>

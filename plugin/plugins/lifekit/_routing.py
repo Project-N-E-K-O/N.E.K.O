@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 # ── 数据模型 ─────────────────────────────────────────────────────
@@ -375,6 +378,8 @@ class RoutingService:
             modes = suggest_modes(dist_km)
 
         result = RoutingResult(origin_name="", destination_name="")
+        used_providers: list[str] = []
+        errors: list[str] = []
         for mode in modes:
             for provider in self._providers:
                 if mode == "transit" and not getattr(provider, "supports_transit", False):
@@ -383,8 +388,14 @@ class RoutingService:
                     routes = await provider.plan_route(origin_lat, origin_lon, dest_lat, dest_lon, mode)
                     if routes:
                         result.routes.extend(routes)
-                        result.provider = provider.name
+                        if provider.name not in used_providers:
+                            used_providers.append(provider.name)
                         break
-                except Exception:
+                except Exception as exc:
+                    errors.append(f"{provider.name}:{mode}")
+                    logger.debug("Routing provider failed: provider=%s mode=%s", provider.name, mode, exc_info=True)
                     continue
+        result.provider = ",".join(used_providers)
+        if not result.routes:
+            result.error = "no_route_found" if not errors else f"provider_error:{','.join(errors)}"
         return result

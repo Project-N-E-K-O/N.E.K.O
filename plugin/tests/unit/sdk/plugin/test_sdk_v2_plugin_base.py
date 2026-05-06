@@ -19,6 +19,7 @@ from plugin.sdk.plugin.base import (
     PluginMeta,
 )
 from plugin.sdk.plugin.decorators import plugin_entry
+from plugin.sdk.plugin.settings import PluginSettings, SettingsField, create_settings_safe
 from plugin.sdk.shared.constants import SDK_VERSION
 
 
@@ -566,3 +567,37 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
     assert "CallChain" not in mod.__all__
     assert "HookExecutorMixin" not in mod.__all__
     assert "EXTENDED_TYPES" not in mod.__all__
+
+
+def test_settings_field_preserves_callable_json_schema_extra() -> None:
+    def add_marker(schema: dict[str, object]) -> None:
+        schema["x-marker"] = "ok"
+
+    class _Settings(PluginSettings):
+        value: int = SettingsField(1, hot=True, json_schema_extra=add_marker)
+
+    props = _Settings.model_json_schema()["properties"]["value"]
+
+    assert props["hot"] is True
+    assert props["x-marker"] == "ok"
+
+
+def test_create_settings_safe_uses_default_factory_once() -> None:
+    calls = {"count": 0}
+
+    def make_items() -> list[str]:
+        calls["count"] += 1
+        return ["fallback"]
+
+    class _Settings(PluginSettings):
+        items: list[str] = SettingsField(default_factory=make_items)
+        count: int = SettingsField(1)
+
+    settings = create_settings_safe(_Settings, {"count": "bad"})
+
+    assert settings.items == ["fallback"]
+    assert settings.count == 1
+    # Pydantic's initial fast-path validation invokes the factory once before
+    # we fall back to per-field recovery; the recovery path should invoke it
+    # only once more, not once per field.
+    assert calls["count"] == 2

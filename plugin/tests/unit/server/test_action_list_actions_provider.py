@@ -69,6 +69,18 @@ class TestMapListAction:
         assert d is not None
         assert d.open_in == "same_tab"
 
+    def test_invalid_priority_falls_back_to_zero(self) -> None:
+        d = module._map_list_action("demo", "Demo", {
+            "id": "open",
+            "kind": "ui",
+            "label": "Open",
+            "target": "/ui",
+            "priority": "not-a-number",
+        })
+
+        assert d is not None
+        assert d.priority == 0
+
     def test_non_routable_kinds_are_skipped(self) -> None:
         for kind in ("toggle", "trigger", "action", "button", "run", "custom_kind"):
             d = module._map_list_action("demo", "Demo", {

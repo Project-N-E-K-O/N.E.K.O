@@ -25,6 +25,16 @@ _NAVIGATION_KINDS = frozenset({"ui", "url", "route"})
 _CHAT_INJECT_KIND = "chat_inject"
 
 
+def _safe_priority(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.debug("Ignoring invalid list_action priority: {}", value)
+        return 0
+
+
 def _map_list_action(
     plugin_id: str,
     plugin_name: str,
@@ -60,7 +70,7 @@ def _map_list_action(
             icon=icon_override or "📎",
             keywords=[plugin_id, plugin_name, action_id, label],
             quick_action=quick,
-            priority=int(priority_override) if priority_override is not None else 0,
+            priority=_safe_priority(priority_override),
         )
 
     if kind in _NAVIGATION_KINDS:
@@ -80,7 +90,7 @@ def _map_list_action(
             icon=icon_override or "↗",
             keywords=[plugin_id, plugin_name, action_id, label],
             quick_action=quick,
-            priority=int(priority_override) if priority_override is not None else 0,
+            priority=_safe_priority(priority_override),
         )
 
     if kind:

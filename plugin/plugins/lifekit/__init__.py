@@ -113,6 +113,7 @@ class LifeKitPlugin(NekoPluginBase):
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
         await self._reload_config()
+        self._resolve_locale()
         return Ok({"status": "reloaded"})
 
     async def _reload_config(self):
@@ -400,6 +401,7 @@ class LifeKitPlugin(NekoPluginBase):
         try:
             await self.config.update({"lifekit": updates})
             await self._reload_config()
-            return Ok({"message": "Config updated", "config": dict(self._cfg)})
+            self._resolve_locale()
+            return Ok({"message": "Config updated", "config": self._public_config()})
         except Exception as e:
             return Err(SdkError(f"Config update failed: {e}"))

@@ -608,13 +608,13 @@ class PluginContext:
         timeout: float = 10.0,
     ) -> Dict[str, Any]:
         """Push an image export, choosing inline binary or URL transport."""
-        resolved_mime = mime or "image/png"
         meta = dict(metadata or {})
         meta.setdefault("media_type", "image")
 
         if image_data is not None and image_url is not None:
             raise ValueError("export_push_image requires either image_data or image_url, not both")
         if image_data is not None:
+            resolved_mime = mime or "image/png"
             limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
             if limit > 0 and len(image_data) > limit:
                 raise ValueError(
@@ -635,7 +635,7 @@ class PluginContext:
                 export_type="binary_url",
                 run_id=run_id,
                 binary_url=image_url,
-                mime=resolved_mime,
+                mime=mime,
                 description=description,
                 metadata=meta,
                 timeout=timeout,
