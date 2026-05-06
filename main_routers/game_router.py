@@ -1011,6 +1011,28 @@ def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
         return "en"
 
 
+def _game_payload_language(data: dict | None) -> str:
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("language") or data.get("lang") or data.get("i18n_language") or "").strip()
+
+
+def _sync_game_language_from_payload(lanlan_name: str, data: dict | None) -> None:
+    """Mirror the game page's current i18n language into the active session."""
+    language = _game_payload_language(data)
+    if not language:
+        return
+    try:
+        mgr = get_session_manager().get(lanlan_name)
+        if mgr and hasattr(mgr, "set_user_language"):
+            normalized = normalize_language_code(language, format="full")
+            if str(getattr(mgr, "user_language", "") or "") == normalized:
+                return
+            mgr.set_user_language(language)
+    except Exception:
+        pass
+
+
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     """从 shared_state 获取指定角色信息；未指定时使用当前角色。"""
     try:
@@ -4207,6 +4229,8 @@ async def game_chat(game_type: str, request: Request):
     event = data.get('event', {})
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
+    if lanlan_name:
+        _sync_game_language_from_payload(lanlan_name, data)
     if state and state.get("session_id") == session_id:
         _update_game_memory_enabled_from_payload(state, data)
         if isinstance(event, dict):
@@ -4242,6 +4266,7 @@ async def game_route_start(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    _sync_game_language_from_payload(lanlan_name, data)
 
     session_id = str(data.get("session_id") or "default")
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
@@ -4450,6 +4475,7 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    _sync_game_language_from_payload(lanlan_name, data)
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
@@ -5330,7 +5356,7 @@ async def game_end(game_type: str, request: Request):
 
 
 @router.post("/{game_type}/quick-lines")
-async def game_quick_lines(game_type: str):
+async def game_quick_lines(game_type: str, request: Request):
     """进入游戏时生成一组当前猫娘专属快路径台词。
 
     产品语义：这是“游戏内上下文初始化”的一部分。代码告诉 LLM：
@@ -5341,6 +5367,13 @@ async def game_quick_lines(game_type: str):
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
 
     try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+        if lanlan_name:
+            _sync_game_language_from_payload(lanlan_name, data)
         char_info = _get_current_character_info()
         language = char_info.get("user_language")
         prompt = get_soccer_quick_lines_prompt(language).format(

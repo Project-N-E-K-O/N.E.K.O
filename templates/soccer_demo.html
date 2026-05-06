@@ -804,6 +804,20 @@
     if (tag.startsWith('pt')) return 'pt-BR';
     return raw;
   };
+  const _currentGameLanguage = () => (
+    (typeof window.i18next !== 'undefined' && window.i18next.language)
+    || window.localStorage?.getItem('i18nextLng')
+    || (typeof navigator !== 'undefined' && navigator.language)
+    || document.documentElement?.lang
+    || 'zh-CN'
+  );
+  const _gameLanguagePayload = () => {
+    const language = _currentGameLanguage();
+    return {
+      language,
+      i18n_language: language,
+    };
+  };
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -1674,7 +1688,11 @@
 
   async function loadGeneratedQuickLines() {
     try {
-      const resp = await fetch('/api/game/soccer/quick-lines', { method: 'POST' });
+      const resp = await fetch('/api/game/soccer/quick-lines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_gameLanguagePayload()),
+      });
       if (!resp.ok) {
         soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
         return;
@@ -2450,9 +2468,12 @@
 	    try {
 	      window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
 	      const resp = await fetch('/api/game/soccer/route/start', {
-	        method: 'POST',
-	        headers: { 'Content-Type': 'application/json' },
-	        body: _gameRoutePayload(_readGameRouteStartOptions()),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _gameRoutePayload({
+          ..._readGameRouteStartOptions(),
+          ..._gameLanguagePayload(),
+        }),
 	      });
 	      const data = await resp.json().catch(() => ({}));
 	      if (data.ok) {
@@ -3300,6 +3321,7 @@
         body: JSON.stringify({
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          ..._gameLanguagePayload(),
           ..._soccerGameMemoryPolicyPayload(),
           event: {
             ...eventPayload,
@@ -3652,6 +3674,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: _gameRoutePayload({
+          ..._gameLanguagePayload(),
           transcript: clean,
           source,
           request_id: requestId,
