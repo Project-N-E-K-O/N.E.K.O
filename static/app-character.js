@@ -166,6 +166,10 @@
         S.isSwitchingCatgirl = true;
         _switchOldSocket = S.socket;
         _switchOldHeartbeat = S.heartbeatInterval;
+        // 保存切换前的 lanlan_name 用于失败回滚：line 489 在 model load 等多个 fallible await
+        // 之前就 lanlan_config.lanlan_name = newCatgirl，失败时如果不回滚，新加的"已是当前"
+        // dedupe 会让用户重试同一角色被静默拦掉，卡在半破状态。catch 里非 stale 失败时恢复。
+        const previousLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
@@ -1451,6 +1455,16 @@
                     window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
                 }
                 showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
+                // 失败时回滚 lanlan_name：line 489 在 fallible await 之前就改了它，不回滚的话
+                // 用户重试同一角色会被入口的 dedupe (lanlan_name === newCatgirl) 静默拦掉，
+                // 卡在半破状态。attempt id 守护：只在自己仍是 currentAttempt 时回滚，避免
+                // stale attempt 苏醒后用自己看到的 previousLanlanName 覆盖新 attempt 的成功状态。
+                if (S._currentSwitchAttemptId === myAttemptId
+                    && window.lanlan_config
+                    && window.lanlan_config.lanlan_name === newCatgirl) {
+                    window.lanlan_config.lanlan_name = previousLanlanName;
+                    console.log('[猫娘切换] 切换失败，回滚 lanlan_name 到', previousLanlanName, '允许用户重试同一目标');
+                }
             }
 
             // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
