@@ -1943,6 +1943,7 @@
         "switchedCatgirl": "{{name}}로 전환됨",
         "switchCatgirlFailed": "{{name}}로 전환하지 못했습니다.",
         "switchCatgirlError": "전환 실패: {{error}}",
+        "switchCatgirlWatchdog": "이전 캐릭터 전환이 멈춘 것 같습니다. 다시 전환해 주세요",
         "started": "{{name}} 시작됨",
         "voiceUpdated": "{{name}}의 음성이 업데이트되었습니다.",
         "audioWorkletFailed": "AudioWorklet을 로드하지 못했습니다.",

@@ -1943,6 +1943,7 @@
         "switchedCatgirl": "Mudou para {{name}}",
         "switchCatgirlFailed": "Falha ao mudar para {{name}}",
         "switchCatgirlError": "Falha na troca: {{error}}",
+        "switchCatgirlWatchdog": "A última troca de personagem parece travada. Tente novamente",
         "started": "{{name}} começou",
         "voiceUpdated": "Voz de {{name}} atualizada",
         "audioWorkletFailed": "Falha ao carregar AudioWorklet",

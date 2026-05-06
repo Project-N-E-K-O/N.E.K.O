@@ -1943,6 +1943,7 @@
         "switchedCatgirl": "Switched to {{name}}",
         "switchCatgirlFailed": "Failed to switch to {{name}}",
         "switchCatgirlError": "Switch failed: {{error}}",
+        "switchCatgirlWatchdog": "Last character switch seems stuck — please try switching again",
         "started": "{{name}} started",
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",

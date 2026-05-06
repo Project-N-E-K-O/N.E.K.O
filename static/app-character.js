@@ -158,6 +158,21 @@
         _switchOldHeartbeat = S.heartbeatInterval;
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
+        // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
+        // fetch /api/characters 等）。任何一处永挂都会让 finally 永不执行、isSwitchingCatgirl
+        // 永卡 true，后续 broadcast 触发的切换全在前面 isSwitchingCatgirl 早退分支被吞掉，
+        // 且 ws 重连也救不回来——只能刷页面。墙钟兜底强制重置标志，让用户能再次触发切换自愈。
+        // 45s 留足真实大模型加载空间（VRM/MMD 偶尔 20-30s），又不至于让用户等到放弃。
+        const switchWatchdogId = setTimeout(() => {
+            if (S.isSwitchingCatgirl) {
+                console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
+                S.isSwitchingCatgirl = false;
+                try {
+                    showStatusToast(window.t ? window.t('app.switchCatgirlWatchdog') : '上次切换似乎卡住了，请再点一次切换', 5000);
+                } catch (_e) { /* ignore toast failures */ }
+            }
+        }, 45000);
+
         try {
             emitAssistantSpeechCancel('character_switch');
             // 0. 紧急制动：立即停止所有渲染循环
@@ -1355,6 +1370,7 @@
                 } catch (_e) { /* ignore */ }
             }
         } finally {
+            clearTimeout(switchWatchdogId);
             // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
             // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
             // (S.socket !== _thisSocket)，本层是第二道防线。

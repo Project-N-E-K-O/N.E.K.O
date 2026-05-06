@@ -1943,6 +1943,7 @@
         "switchedCatgirl": "已切換到 {{name}}",
         "switchCatgirlFailed": "切換到 {{name}} 失敗",
         "switchCatgirlError": "切換失敗: {{error}}",
+        "switchCatgirlWatchdog": "上次切換似乎卡住了，請再點一次切換",
         "started": "{{name}} 已啓動",
         "voiceUpdated": "{{name}} 的語音已更新",
         "audioWorkletFailed": "AudioWorklet加載失敗",
