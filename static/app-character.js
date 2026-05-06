@@ -210,6 +210,13 @@
         // 老 attempt 的副作用就被锁在自己 attempt 内。
         const myAttemptId = (S._switchAttemptCounter = (S._switchAttemptCounter || 0) + 1);
         S._currentSwitchAttemptId = myAttemptId;
+        // 显式切换完成 flag：lanlan_name 在 line 612 就赋值，远早于 model load / render
+        // stabilization 等长 await。如果 watchdog 用 `lanlan_name === newCatgirl` 判 "已完成"，
+        // 长 await 永挂超过 45s 时会误判跳过回滚 + toast，但实际 model/UI 没切完——
+        // 用户重试同名被 dedupe 拦死卡半切换。改用显式 flag：line 1546 "已切换到"toast 之前
+        // 才 set true（这点说明模型/socket/UI/lanlan_config 都到位、只剩 unlockAchievement
+        // 等末尾副作用 await），watchdog 检测这个 flag 精准。
+        let switchHasCommitted = false;
         // try 体里 line 486 / 489 / 493 那一段是关键全局副作用区段：S.socket.close()、
         // lanlan_config.lanlan_name = newCatgirl、connectWebSocket()。老 attempt 卡在
         // removeModel/clearAudioQueue 这类无 timeout 的 await 上苏醒后会接着跑这一段，
@@ -232,8 +239,10 @@
                 // lanlan_config 回滚成旧、socket 收尾把新 ws 关掉，但实际 model/server 都在新——
                 // 严重 desync。检测：lanlan_name 已是 newCatgirl 说明已切完，跳过回滚 + socket
                 // 收尾，只清门闩 + 收 overlay。
-                const switchAlreadyCompleted = !!(window.lanlan_config
-                    && window.lanlan_config.lanlan_name === newCatgirl);
+                // 用显式 commit flag 而非 lanlan_name 判定——后者在 line 612 就赋值，远早于
+                // model load 等长 await 完成。switchHasCommitted 在 line ~1546 toast 之前才
+                // set true，那时模型/socket/UI 都已到位。
+                const switchAlreadyCompleted = switchHasCommitted;
                 if (switchAlreadyCompleted) {
                     console.warn('[猫娘切换] watchdog 超时 45s，但切换已实际完成（卡在 unlockAchievement 等末尾副作用 await），跳过回滚仅清门闩');
                 } else {
@@ -1543,6 +1552,10 @@
                 }, 300);
             }
 
+            // 切换完成 commit 点：模型加载完、socket 连上、UI 收尾完成、lanlan_config 已是
+            // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
+            // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
+            switchHasCommitted = true;
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
