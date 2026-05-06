@@ -1344,29 +1344,15 @@ if (saveBtn) {
         if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
             const coreModel = live2dModel.internalModel.coreModel;
             const paramCount = coreModel.getParameterCount();
-            const eyeBlinkIds = new Set();
-            const eyeBlinkIndexes = new Set();
-            const groups = live2dModel.internalModel.settings?.json?.Groups;
-            const eyeBlinkGroup = Array.isArray(groups)
-                ? groups.find(g => g?.Target === 'Parameter' && g?.Name === 'EyeBlink')
-                : null;
-            if (Array.isArray(eyeBlinkGroup?.Ids)) {
-                for (const id of eyeBlinkGroup.Ids) {
-                    if (!id) continue;
-                    eyeBlinkIds.add(id);
-                    try {
-                        const idx = coreModel.getParameterIndex(id);
-                        if (idx >= 0) eyeBlinkIndexes.add(idx);
-                    } catch (_) {}
-                }
-            }
+            const manager = window.live2dManager;
             const isEyeBlinkParam = (paramId, index) => {
-                if (eyeBlinkIndexes.has(index)) return true;
-                if (!paramId) return false;
-                if (eyeBlinkIds.has(paramId)) return true;
-                const id = String(paramId);
-                return !/eyeball|angle|look|iris|pupil/i.test(id) &&
-                    (/parameye[lr]open/i.test(id) || /eye.*open/i.test(id) || /eye.*blink/i.test(id));
+                if (!manager || typeof manager._isEyeBlinkParamId !== 'function') return false;
+                try {
+                    return manager._isEyeBlinkParamId(paramId)
+                        || manager._isEyeBlinkParamId(`param_${index}`);
+                } catch (_) {
+                    return false;
+                }
             };
 
             for (let i = 0; i < paramCount; i++) {
