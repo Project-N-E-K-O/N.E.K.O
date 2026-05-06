@@ -6,6 +6,15 @@
 // lipsync 强制覆盖 motion mouth 参数的阈值：mouthValue 高于此值时强制写入，否则让位给 motion 自带的嘴部关键帧
 const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
 
+// Bundled pixi-live2d-display MotionPriority enum. Keep this local instead of
+// reading window.PIXI.live2d.MotionPriority, which is not a stable runtime path.
+const LIVE2D_MOTION_PRIORITY = Object.freeze({
+    NONE: 0,
+    IDLE: 1,
+    NORMAL: 2,
+    FORCE: 3
+});
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -593,6 +602,9 @@ Live2DManager.prototype._loadDisplayInfo = async function(settings) {
 Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
     const groups = settings?.Groups;
     let eyeBlinkIds = null;
+    let usedFallbackScan = false;
+    this._autoEyeBlinkEnabled = false;
+    this._eyeBlinkParams = null;
 
     if (!groups || !Array.isArray(groups)) {
         console.warn(`[Live2D EyeBlink] 模型 ${this.modelName || this.modelRootPath} 的 .model3.json 中缺少 Groups 字段或 Groups 不是数组，将尝试自动扫描眨眼参数`);
@@ -613,9 +625,8 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
         const scanned = this._scanEyeBlinkParams(model);
         if (scanned && scanned.length > 0) {
             eyeBlinkIds = scanned;
+            usedFallbackScan = true;
             console.log(`[Live2D EyeBlink] 自动扫描到眨眼参数:`, eyeBlinkIds);
-            this._autoEyeBlinkEnabled = true;
-            console.log(`[Live2D EyeBlink] 已启用自动眨眼（fallback 模式）`);
         } else {
             console.warn(`[Live2D EyeBlink] 无法为模型 ${this.modelName || this.modelRootPath} 找到任何眨眼参数，眨眼功能不可用`);
             return;
@@ -624,14 +635,45 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
         console.log(`[Live2D EyeBlink] 检测通过: EyeBlink Ids =`, eyeBlinkIds);
     }
 
-    this._eyeBlinkParams = eyeBlinkIds.map(id => {
+    const coreModel = model?.internalModel?.coreModel;
+    if (!coreModel) {
+        console.warn(`[Live2D EyeBlink] coreModel 不可用，眨眼功能不可用`);
+        return;
+    }
+
+    const resolveEyeBlinkParam = (id) => {
         try {
-            const idx = model.internalModel.coreModel.getParameterIndex(id);
-            return idx >= 0 ? { id, idx } : null;
+            const idx = coreModel.getParameterIndex(id);
+            return idx >= 0 ? this._createEyeBlinkParamConfig(coreModel, id, idx) : null;
         } catch (_) {
             return null;
         }
-    }).filter(Boolean);
+    };
+    const dedupeEyeBlinkParams = (params) => {
+        const seenIndexes = new Set();
+        return params.filter(param => {
+            if (!param || seenIndexes.has(param.idx)) return false;
+            seenIndexes.add(param.idx);
+            return true;
+        });
+    };
+
+    let resolvedEyeBlinkParams = dedupeEyeBlinkParams(eyeBlinkIds.map(resolveEyeBlinkParam).filter(Boolean));
+
+    if (resolvedEyeBlinkParams.length < eyeBlinkIds.length && !usedFallbackScan) {
+        const scanned = this._scanEyeBlinkParams(model);
+        if (scanned && scanned.length > 0) {
+            usedFallbackScan = true;
+            console.warn(`[Live2D EyeBlink] EyeBlink 组参数索引不完整，合并 fallback-scan:`, scanned);
+            resolvedEyeBlinkParams = dedupeEyeBlinkParams([
+                ...resolvedEyeBlinkParams,
+                ...scanned.map(resolveEyeBlinkParam).filter(Boolean)
+            ]);
+            eyeBlinkIds = resolvedEyeBlinkParams.map(param => param.id);
+        }
+    }
+
+    this._eyeBlinkParams = resolvedEyeBlinkParams;
 
     if (this._eyeBlinkParams.length === 0) {
         console.warn(`[Live2D EyeBlink] EyeBlink 参数索引全部无效，眨眼功能不可用`);
@@ -639,9 +681,119 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
         return;
     }
 
+    this._autoEyeBlinkEnabled = true;
+    const mode = usedFallbackScan
+        ? 'fallback-scan'
+        : (this._eyeBlinkParams.some(p => p.isInverted) ? 'inverted' : 'standard');
+    console.log(`[Live2D EyeBlink] enabled mode=${mode}`);
     this._eyeBlinkParams.forEach(p => {
-        console.log(`[Live2D EyeBlink] 注册眨眼参数: ${p.id} (idx=${p.idx})`);
+        console.log(`[Live2D EyeBlink] param id=${p.id} index=${p.idx} open=${p.openValue} closed=${p.closedValue} default=${p.defaultValue} current=${p.currentValue}`);
     });
+};
+
+Live2DManager.prototype._readParameterValueByIndex = function(coreModel, idx, methodNames, arrayNames, fallbackValue) {
+    for (const methodName of methodNames) {
+        try {
+            if (typeof coreModel?.[methodName] === 'function') {
+                const value = Number(coreModel[methodName](idx));
+                if (Number.isFinite(value)) return value;
+            }
+        } catch (_) {}
+    }
+
+    const roots = [
+        coreModel,
+        coreModel?.parameters,
+        coreModel?._model,
+        coreModel?._model?.parameters,
+        coreModel?.model,
+        coreModel?.model?.parameters
+    ];
+    for (const root of roots) {
+        if (!root) continue;
+        for (const arrayName of arrayNames) {
+            try {
+                const values = root[arrayName];
+                if (values && values[idx] !== undefined) {
+                    const value = Number(values[idx]);
+                    if (Number.isFinite(value)) return value;
+                }
+            } catch (_) {}
+        }
+    }
+
+    return fallbackValue;
+};
+
+Live2DManager.prototype._createEyeBlinkParamConfig = function(coreModel, id, idx) {
+    let minValue = this._readParameterValueByIndex(
+        coreModel,
+        idx,
+        ['getParameterMinimumValueByIndex', 'getParameterMinimumValue', 'getParamMin'],
+        ['minimumValues', 'minimums', 'minValues', '_parameterMinimumValues'],
+        0
+    );
+    let maxValue = this._readParameterValueByIndex(
+        coreModel,
+        idx,
+        ['getParameterMaximumValueByIndex', 'getParameterMaximumValue', 'getParamMax'],
+        ['maximumValues', 'maximums', 'maxValues', '_parameterMaximumValues'],
+        1
+    );
+    if (minValue > maxValue) {
+        const tmp = minValue;
+        minValue = maxValue;
+        maxValue = tmp;
+    }
+
+    const defaultValue = this._readParameterValueByIndex(
+        coreModel,
+        idx,
+        ['getParameterDefaultValueByIndex', 'getParameterDefaultValue', 'getParamDefault'],
+        ['defaultValues', 'defaults', '_parameterDefaultValues'],
+        NaN
+    );
+    let currentValue = NaN;
+    try {
+        currentValue = Number(coreModel.getParameterValueByIndex(idx));
+    } catch (_) {}
+
+    const clamp = (value) => Math.min(maxValue, Math.max(minValue, value));
+    const midpoint = minValue + (maxValue - minValue) / 2;
+    let openValue = Number.isFinite(defaultValue)
+        ? defaultValue
+        : (Number.isFinite(currentValue) ? currentValue : maxValue);
+    openValue = clamp(openValue);
+
+    const closedValue = openValue < midpoint ? maxValue : minValue;
+    return {
+        id,
+        idx,
+        minValue,
+        maxValue,
+        defaultValue: Number.isFinite(defaultValue) ? defaultValue : null,
+        currentValue: Number.isFinite(currentValue) ? currentValue : null,
+        openValue,
+        closedValue,
+        isInverted: openValue < closedValue
+    };
+};
+
+Live2DManager.prototype._forceEyeBlinkOpen = function(coreModel) {
+    if (!coreModel || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return;
+    for (const param of this._eyeBlinkParams) {
+        try {
+            coreModel.setParameterValueByIndex(param.idx, param.openValue);
+        } catch (_) {}
+    }
+};
+
+Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
+    if (!paramId || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return false;
+    const id = String(paramId);
+    return this._eyeBlinkParams.some(param => (
+        param.id === id || `param_${param.idx}` === id
+    ));
 };
 
 // 自动扫描模型参数以识别眨眼相关参数
@@ -689,9 +841,17 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
     const params = this._eyeBlinkParams;
+    const setEyeBlinkValue = (resolver) => {
+        for (const param of params) {
+            try {
+                coreModel.setParameterValueByIndex(param.idx, resolver(param));
+            } catch (_) {}
+        }
+    };
 
     this._eyeBlinkTimer += delta;
     if (this._eyeBlinkState === 0) {
+        setEyeBlinkValue(param => param.openValue);
         if (this._eyeBlinkTimer >= this._eyeBlinkNextTime) {
             this._eyeBlinkState = 1;
             this._eyeBlinkTimer = 0;
@@ -700,10 +860,7 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
         const CLOSE_DURATION = 0.08;
         let t = Math.min(this._eyeBlinkTimer / CLOSE_DURATION, 1);
         let p = Easing.easeInCubic(t);
-        let currentValue = 1.0 + (0.0 - 1.0) * p;
-        for (const param of params) {
-            try { coreModel.setParameterValueByIndex(param.idx, currentValue); } catch (_) {}
-        }
+        setEyeBlinkValue(param => param.openValue + (param.closedValue - param.openValue) * p);
         if (this._eyeBlinkTimer >= CLOSE_DURATION) {
             this._eyeBlinkState = 2;
             this._eyeBlinkTimer = 0;
@@ -712,10 +869,7 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
         const OPEN_DURATION = 0.15;
         let t = Math.min(this._eyeBlinkTimer / OPEN_DURATION, 1);
         let p = Easing.easeOutCubic(t);
-        let currentValue = 0.0 + (1.0 - 0.0) * p;
-        for (const param of params) {
-            try { coreModel.setParameterValueByIndex(param.idx, currentValue); } catch (_) {}
-        }
+        setEyeBlinkValue(param => param.closedValue + (param.openValue - param.closedValue) * p);
         if (this._eyeBlinkTimer >= OPEN_DURATION) {
             this._eyeBlinkState = 0;
             this._eyeBlinkTimer = 0;
@@ -1161,11 +1315,18 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     this.setupHTMLLockIcon(model);
 
     const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
+    this._validateEyeBlinkGroup(settings, model);
+    this._forceEyeBlinkOpen(model.internalModel?.coreModel);
+    try {
+        this.installMouthOverride();
+        console.log('[Live2D EyeBlink] first-frame override installed');
+    } catch (e) {
+        console.warn('[Live2D EyeBlink] first-frame override install failed; will retry after full init:', e);
+    }
     if (settings) {
         try {
             await this._loadDisplayInfo(settings);
         } catch (_) {}
-        this._validateEyeBlinkGroup(settings, model);
     } else {
         this._displayInfo = null;
     }
@@ -1626,6 +1787,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             const preUpdateParams = {};
             if (this.savedModelParameters && this._shouldApplySavedParams) {
                 for (const paramId of Object.keys(this.savedModelParameters)) {
+                    if (this._isEyeBlinkParamId(paramId)) continue;
                     try {
                         const idx = coreModel.getParameterIndex(paramId);
                         if (idx >= 0) {
@@ -1676,6 +1838,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isMouthDrivenByMotion = false;
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
+            const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
+            const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
             for (const id of lipSyncParams) {
                 try {
                     const idx = coreModel.getParameterIndex(id);
@@ -1695,7 +1859,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         const postVal = coreModel.getParameterValueByIndex(p.idx);
                         const preVal = preUpdateParams[p.id];
                         if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._isEyeDrivenByMotion = true;
+                            this._isEyeDrivenByMotion = shouldTreatEyeChangesAsAuthoritative;
                             break;
                         }
                     } catch (_) {}
@@ -1773,6 +1937,8 @@ Live2DManager.prototype.installMouthOverride = function() {
                     const persistentParamIds = this.getPersistentExpressionParamIds();
 
                     for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
+                        // 跳过眨眼参数，眨眼是运行时动态通道
+                        if (this._isEyeBlinkParamId(paramId)) continue;
                         // 跳过口型参数
                         if (lipSyncParams.includes(paramId)) continue;
                         // 跳过可见性参数
@@ -1804,6 +1970,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         if (Array.isArray(params)) {
                             for (const p of params) {
                                 if (lipSyncParams.includes(p.Id)) continue;
+                                if (this._isEyeBlinkParamId(p.Id)) continue;
                                 try {
                                     coreModel.setParameterValueById(p.Id, p.Value);
                                 } catch (_) {}
@@ -1863,7 +2030,9 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             }
             // 眨眼更新（仅当 Motion 未接管且未暂停时）
-            if (this._autoEyeBlinkEnabled && !this._suspendEyeBlinkOverride && !this._isEyeDrivenByMotion) {
+            if (this._autoEyeBlinkEnabled
+                && !this._suspendEyeBlinkOverride
+                && !this._isEyeDrivenByMotion) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateEyeBlink(delta);
             }
@@ -1876,6 +2045,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     if (Array.isArray(params)) {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
+                            if (this._isEyeBlinkParamId(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
@@ -2119,6 +2289,11 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
             try {
                 const value = parameters[paramId];
                 if (typeof value !== 'number' || !Number.isFinite(value)) {
+                    continue;
+                }
+
+                // EyeBlink 参数由运行时眨眼通道接管，避免冷加载闭眼值被持久化/重放
+                if (this._isEyeBlinkParamId(paramId)) {
                     continue;
                 }
                 
