@@ -218,14 +218,48 @@
         const switchWatchdogId = setTimeout(() => {
             if (S._currentSwitchAttemptId !== myAttemptId) return;
             if (S.isSwitchingCatgirl) {
-                console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
-                // 整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type），否则
-                // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
-                // 后续分支走偏。
-                restorePreviousLanlanConfig();
+                // 切换可能已实际完成、只是末尾 unlockAchievement 等无关副作用 await 还在跑：
+                // line 1481 toast 已 emit + connectWebSocket 已跑 + model 已加载 + lanlan_config
+                // 已写入 newCatgirl。此时 watchdog 无脑 restorePreviousLanlanConfig 会把
+                // lanlan_config 回滚成旧、socket 收尾把新 ws 关掉，但实际 model/server 都在新——
+                // 严重 desync。检测：lanlan_name 已是 newCatgirl 说明已切完，跳过回滚 + socket
+                // 收尾，只清门闩 + 收 overlay。
+                const switchAlreadyCompleted = !!(window.lanlan_config
+                    && window.lanlan_config.lanlan_name === newCatgirl);
+                if (switchAlreadyCompleted) {
+                    console.warn('[猫娘切换] watchdog 超时 45s，但切换已实际完成（卡在 unlockAchievement 等末尾副作用 await），跳过回滚仅清门闩');
+                } else {
+                    console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
+                    // 整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type），否则
+                    // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
+                    // 后续分支走偏。
+                    restorePreviousLanlanConfig();
+                    // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
+                    // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
+                    // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
+                    //   - S.socket=null 且旧 ws 还活着 → 恢复 S.socket = _switchOldSocket（让用户继续旧角色）
+                    //   - 新 connectWebSocket 已跑且 S.socket 是新 ws → 直接关旧 _switchOldSocket
+                    try {
+                        if (_switchOldSocket
+                            && _switchOldSocket.readyState !== WebSocket.CLOSED
+                            && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                            if (S.socket === null) {
+                                S.socket = _switchOldSocket;
+                                console.log('[猫娘切换] watchdog 触发，恢复 S.socket 引用到旧连接');
+                            } else if (S.socket !== _switchOldSocket) {
+                                _switchOldSocket.close();
+                            }
+                        }
+                        if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
+                            clearInterval(_switchOldHeartbeat);
+                        }
+                    } catch (_e) { /* ignore socket cleanup failures */ }
+                }
                 // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
                 // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
                 // overlay 留着 block UI，用户看到 toast 也没法点。这里主动 fail 它。
+                // overlay 收尾不区分"已完成 vs 未完成"——已完成路径下 overlay 应该已经被 end 掉，
+                // mmdLoadingSessionId 一般已为空；这里只是 defensive 兜底。
                 if (mmdLoadingSessionId) {
                     try {
                         window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch watchdog timeout' });
@@ -233,31 +267,15 @@
                     } catch (_e) { /* ignore overlay failures */ }
                     mmdLoadingSessionId = '';
                 }
-                // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
-                // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
-                // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
-                //   - S.socket=null 且旧 ws 还活着 → 恢复 S.socket = _switchOldSocket（让用户继续旧角色）
-                //   - 新 connectWebSocket 已跑且 S.socket 是新 ws → 直接关旧 _switchOldSocket
-                try {
-                    if (_switchOldSocket
-                        && _switchOldSocket.readyState !== WebSocket.CLOSED
-                        && _switchOldSocket.readyState !== WebSocket.CLOSING) {
-                        if (S.socket === null) {
-                            S.socket = _switchOldSocket;
-                            console.log('[猫娘切换] watchdog 触发，恢复 S.socket 引用到旧连接');
-                        } else if (S.socket !== _switchOldSocket) {
-                            _switchOldSocket.close();
-                        }
-                    }
-                    if (_switchOldHeartbeat && S.heartbeatInterval !== _switchOldHeartbeat) {
-                        clearInterval(_switchOldHeartbeat);
-                    }
-                } catch (_e) { /* ignore socket cleanup failures */ }
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
-                try {
-                    showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
-                } catch (_e) { /* ignore toast failures */ }
+                if (!switchAlreadyCompleted) {
+                    try {
+                        showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
+                    } catch (_e) { /* ignore toast failures */ }
+                }
+                // 已完成路径下不弹"卡住了"toast——line 1481 已 emit 的"已切换到 newCatgirl"是
+                // 用户唯一应该看到的状态反馈。
             }
         }, 45000);
 
