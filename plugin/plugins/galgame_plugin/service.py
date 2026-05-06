@@ -54,6 +54,10 @@ from .models import (
     sanitize_screen_ui_elements,
     sanitize_snapshot_state,
 )
+from .dependency_status import (
+    infer_inspection_failed_dependencies,
+    infer_missing_dependencies,
+)
 from .dxcam_support import inspect_dxcam_installation
 from .reader import expand_bridge_root, normalize_text, read_session_json
 from .rapidocr_support import (
@@ -1143,6 +1147,25 @@ def _status_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _is_textractor_missing_error_message(message: str) -> bool:
+    """Detect Textractor-missing errors that flow through plugin_error.
+
+    Memory Reader surfaces these as the legacy English string when the
+    invalid_textractor_path code lands in last_error.message; we want to
+    re-classify them as "Memory Reader 缺 Textractor" warnings rather than
+    showing the raw "插件运行出错" diagnosis.
+    """
+    normalized = _status_text(message).lower()
+    return (
+        "textractorcli.exe is invalid or missing" in normalized
+        or "invalid_textractor_path" in normalized
+        or (
+            "textractor" in normalized
+            and ("missing" in normalized or "invalid" in normalized)
+        )
+    )
+
+
 def _status_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -1307,14 +1330,19 @@ def build_ocr_background_status(local_state: dict[str, Any]) -> dict[str, Any]:
 def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
     runtime = local_state.get("ocr_reader_runtime")
     runtime_obj = runtime if isinstance(runtime, dict) else {}
+    memory_runtime = local_state.get("memory_reader_runtime")
+    memory_runtime_obj = memory_runtime if isinstance(memory_runtime, dict) else {}
     last_error = local_state.get("last_error")
     last_error_obj = last_error if isinstance(last_error, dict) else {}
     effective_line = local_state.get("effective_current_line")
     effective_line_obj = effective_line if isinstance(effective_line, dict) else {}
 
+    active_data_source = _status_text(local_state.get("active_data_source"))
+    reader_mode = _coerce_reader_mode(local_state.get("reader_mode"), READER_MODE_AUTO)
     context_state = _status_text(local_state.get("ocr_context_state") or runtime_obj.get("ocr_context_state"))
     detail = _status_text(runtime_obj.get("target_selection_detail"))
     runtime_detail = _status_text(runtime_obj.get("detail"))
+    memory_runtime_detail = _status_text(memory_runtime_obj.get("detail"))
     ocr_tick_block_reason = _status_text(
         local_state.get("ocr_tick_block_reason") or runtime_obj.get("ocr_tick_block_reason")
     )
@@ -1353,7 +1381,36 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
     )
     # rapidocr install prompt removed: rapidocr-onnxruntime is now bundled
     # via [dependency-groups] galgame; if it's missing the dev needs to run
-    # `uv sync --group galgame`, not click an in-app install button.
+    # `uv sync --group galgame`, not click an in-app install button. We still
+    # honor inspection_failed signals so a corrupt wheel surfaces a warning
+    # instead of being silently swept under "插件运行出错".
+    dependency_status = local_state.get("dependency_status")
+    dependency_status_obj = dependency_status if isinstance(dependency_status, dict) else {}
+    textractor = local_state.get("textractor")
+    textractor_obj = textractor if isinstance(textractor, dict) else {}
+    inspection_failed_dependencies = [
+        str(item)
+        for item in dependency_status_obj.get("inspection_failed", [])
+        if str(item or "").strip()
+    ]
+    generic_inspection_failed_dependencies = [
+        item for item in inspection_failed_dependencies if item in {"rapidocr", "dxcam"}
+    ]
+    textractor_last_error_signal = _is_textractor_missing_error_message(last_error_message)
+    textractor_missing_signal = (
+        memory_runtime_detail == "invalid_textractor_path"
+        or _status_text(textractor_obj.get("detail")) == "missing"
+    )
+    memory_reader_path_active = (
+        reader_mode == READER_MODE_MEMORY
+        or active_data_source == DATA_SOURCE_MEMORY_READER
+        or ocr_tick_block_reason == "reader_mode_memory_only"
+    )
+    generic_last_error_message = (
+        ""
+        if textractor_last_error_signal and not memory_reader_path_active
+        else last_error_message
+    )
 
     def diagnosis(
         severity: str,
@@ -1363,11 +1420,47 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
     ) -> dict[str, Any]:
         return _primary_diagnosis(severity, title, message, actions)
 
-    if last_error_message:
+    if (
+        bool(dependency_status_obj.get("degraded"))
+        and generic_inspection_failed_dependencies
+        and not (textractor_missing_signal and memory_reader_path_active)
+    ):
+        dependency_labels = {
+            "rapidocr": "RapidOCR（OCR 文字识别）",
+            "dxcam": "DXcam（屏幕截图）",
+        }
+        failed_text = "、".join(
+            dependency_labels.get(key, key) for key in generic_inspection_failed_dependencies
+        )
+        return _primary_diagnosis(
+            "warning",
+            "依赖状态检查失败",
+            f"无法确认依赖状态：{failed_text}。功能可能已降级，请刷新状态或查看插件日志。",
+            [
+                _diagnosis_action("refresh_all", "刷新全部"),
+                _diagnosis_action("debug_details", "查看调试详情"),
+            ],
+        )
+
+    if textractor_missing_signal and memory_reader_path_active:
+        return _primary_diagnosis(
+            "warning",
+            "Memory Reader 不可用——缺少 Textractor",
+            (
+                "未检测到 TextractorCLI.exe。Memory Reader 内存读取暂不可用；"
+                "如果你只使用 OCR，可以继续使用；如果需要内存读取，请安装 Textractor 后刷新状态。"
+            ),
+            [
+                _diagnosis_action("install_textractor", "安装 Textractor"),
+                _diagnosis_action("refresh_all", "刷新全部"),
+            ],
+        )
+
+    if generic_last_error_message:
         return diagnosis(
             "error",
             "插件运行出错",
-            f"{last_error_message}。可以先刷新状态；如果仍然出现，请查看调试详情。",
+            f"{generic_last_error_message}。可以先刷新状态；如果仍然出现，请查看调试详情。",
             [
                 _diagnosis_action("refresh_all", "刷新全部"),
                 _diagnosis_action("debug_details", "查看调试详情"),
@@ -1405,18 +1498,18 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         last_rejected_reason == "self_ui_guard"
         and not stale_rejected_ocr_diagnostic
     ):
-        preview = f"最近拒绝文本：{last_rejected_text[:80]}。" if last_rejected_text else ""
         return diagnosis(
             "warning",
-            "OCR 抓到了非游戏画面",
+            "OCR 已跳过插件页面内容",
             (
-                f"{preview}OCR 已拒绝该文本并跳过扩展画面识别。"
-                "请确认游戏窗口在前台或切换到 Smart/PrintWindow 截图方式。"
+                "本次截图看起来包含 N.E.K.O 插件页面或调试窗口内容，已跳过写入。"
+                "请切回游戏窗口，确认插件页面没有遮挡游戏后刷新状态；"
+                "必要时重新选择 OCR 窗口或重新截图校准。"
             ),
             [
                 _diagnosis_action("focus_game", "切回游戏窗口"),
-                _diagnosis_action("capture_backend", "切换截图方式"),
                 _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("recalibrate_ocr", "重新截图校准"),
                 _diagnosis_action("debug_details", "查看调试详情"),
             ],
         )
@@ -2329,6 +2422,54 @@ def _build_status_payload_unchecked(
         "rapidocr": rapidocr,
         "textractor": textractor,
         "tesseract": tesseract,
+        # Recompute dependency_status off the just-inspected payload so the
+        # UI doesn't show "缺依赖" warnings for components that just finished
+        # installing (state.dependency_status is updated lazily, this is the
+        # authoritative read for the same status frame).
+        "dependency_status": _build_dependency_status_payload(
+            state=state,
+            dxcam_payload=dxcam,
+            rapidocr_payload=rapidocr,
+        ),
+    }
+
+
+def _build_dependency_status_payload(
+    *,
+    state: Any,
+    dxcam_payload: dict[str, Any],
+    rapidocr_payload: dict[str, Any],
+) -> dict[str, Any]:
+    fallback_status = getattr(state, "dependency_status", None)
+    fallback_obj = fallback_status if isinstance(fallback_status, dict) else {}
+    dependencies = (
+        ("dxcam", dxcam_payload),
+        ("rapidocr", rapidocr_payload),
+    )
+    inferred_missing = infer_missing_dependencies(dependencies)
+    inferred_inspection_failed = infer_inspection_failed_dependencies(dependencies)
+    inspected = (
+        dxcam_payload.get("installed") is not None
+        or rapidocr_payload.get("installed") is not None
+    )
+    if inspected or inferred_missing or inferred_inspection_failed:
+        payload = {
+            "checked_at": time.time(),
+            "degraded": bool(inferred_missing or inferred_inspection_failed),
+            "missing": inferred_missing,
+        }
+        if inferred_inspection_failed:
+            payload["inspection_failed"] = inferred_inspection_failed
+        return payload
+
+    # Inspection didn't run for some reason — fall back to whatever was
+    # snapshotted (could be empty defaults).
+    return {
+        "checked_at": float(fallback_obj.get("checked_at", 0.0) or 0.0),
+        "degraded": bool(fallback_obj.get("degraded")),
+        "missing": [
+            str(item) for item in fallback_obj.get("missing", []) or [] if str(item or "").strip()
+        ],
     }
 
 
