@@ -804,6 +804,29 @@
     if (tag.startsWith('pt')) return 'pt-BR';
     return raw;
   };
+  // 当前 UI locale（同 app-proactive.js 的 i18nLanguage 三级兜底）。
+  // 后端 _absorb_request_language 优先吃这个字段并回写 mgr.user_language，
+  // 不再依赖 ws greeting_check 的同步时机或全局缓存的 Steam SDK race。
+  // Steam=中文 / 系统=英文 + Steam SDK 启动期 race 失败的场景下，没有这条
+  // 路径 in-game LLM 的 prompt 会跑成英文。
+  window.SoccerCurrentI18nLang = function () {
+    try {
+      if (typeof window.i18next !== 'undefined'
+          && typeof window.i18next.language === 'string'
+          && window.i18next.language) {
+        return window.i18next.language;
+      }
+      if (typeof localStorage !== 'undefined') {
+        const cached = localStorage.getItem('i18nextLng');
+        if (cached) return cached;
+      }
+      if (typeof navigator !== 'undefined' && navigator.language) {
+        return navigator.language;
+      }
+    } catch (_) { /* swallow: fetch payload tolerates empty */ }
+    return '';
+  };
+  const _currentI18nLang = window.SoccerCurrentI18nLang;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -1674,7 +1697,15 @@
 
   async function loadGeneratedQuickLines() {
     try {
-      const resp = await fetch('/api/game/soccer/quick-lines', { method: 'POST' });
+      // quick-lines 在 _startGameRoute 之前就开炮，是整个 soccer 流程里第一个会
+      // 命中 LLM 的端点；得自带 i18n_language 让后端 _absorb_request_language
+      // 在 mgr.user_language 还是错的全局缓存值时就把它纠正过来，否则首批 quick
+      // lines 会落英文。
+      const resp = await fetch('/api/game/soccer/quick-lines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ i18n_language: _currentI18nLang() }),
+      });
       if (!resp.ok) {
         soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
         return;
@@ -2245,6 +2276,10 @@
       gameStartedElapsedMs,
       game_started_elapsed_ms: gameStartedElapsedMs,
       gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
+      // 见 _currentI18nLang 注释：把前端 i18n 真值随 route/heartbeat/start/end/
+      // voice-transcript 一起捎给后端，后端 _absorb_request_language 自愈
+      // mgr.user_language。
+      i18n_language: _currentI18nLang(),
       ...extra,
     });
   }
@@ -2717,6 +2752,7 @@
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           state: stateNow,
           pendingItems: safeItems,
+          i18n_language: _currentI18nLang(),
         }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -2747,6 +2783,7 @@
           turn_id: `game-mirror-${requestId}`,
           finalize_turn: shouldFinalizeTurn,
           line: clean,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -2814,6 +2851,7 @@
           voice_arbiter_reason: voiceArbiterReason,
           line,
           state: stateNow,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -3301,6 +3339,7 @@
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           ..._soccerGameMemoryPolicyPayload(),
+          i18n_language: _currentI18nLang(),
           event: {
             ...eventPayload,
             ..._soccerGameMemoryPolicyPayload(),
@@ -3460,6 +3499,7 @@
         body: JSON.stringify({
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          i18n_language: _currentI18nLang(),
         }),
       });
       if (!resp.ok) return;

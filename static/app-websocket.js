@@ -2268,10 +2268,27 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
+                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
+                // start_session seed 的全局缓存），所以这里宁可送 navigator
+                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
+                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
+                // Steam API 时，navigator.language 通常已经是 zh-CN）。
+                var greetingLang = '';
+                try {
+                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                        greetingLang = window.i18next.language;
+                    } else if (typeof localStorage !== 'undefined') {
+                        greetingLang = localStorage.getItem('i18nextLng') || '';
+                    }
+                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
+                        greetingLang = navigator.language;
+                    }
+                } catch (_) { greetingLang = ''; }
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: !!S._greetingCheckIsSwitch,
-                    language: (window.i18next && window.i18next.language) || ''
+                    language: greetingLang
                 }));
                 S._greetingCheckPending = false;
                 _resetGreetingCheckRetry(true);
@@ -2307,6 +2324,40 @@
     // VRM / MMD
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
+
+    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
+    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
+    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
+    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
+    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
+    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
+    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
+    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
+    // 即可。
+    function _syncLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] send failed:', e);
+        }
+    }
+    if (window.i18next && typeof window.i18next.on === 'function') {
+        window.i18next.on('languageChanged', _syncLanguageToBackend);
+    } else {
+        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
+        window.addEventListener('localechange', function () {
+            try {
+                var lng = (window.i18next && typeof window.i18next.language === 'string')
+                    ? window.i18next.language : '';
+                _syncLanguageToBackend(lng);
+            } catch (_) { /* noop */ }
+        });
+    }
 
     window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
         var detail = event && event.detail ? event.detail : {};
