@@ -186,8 +186,16 @@
         // 给延迟 UI 回调用的角色归属守护：handleCatgirlSwitch 完成后挂着的 setTimeout
         // (line 964/1187/1357 那些 300ms ensure-visible 回调）触发时如果用户已切到别的角色，
         // 旧回调会污染新角色的 UI（比如调 setupFloatingButtons 重建错类型按钮）。
+        //
+        // 双重守护：
+        //   - lanlan_name === newCatgirl：cover 新 attempt 已经把 lanlan_name 改成它的目标
+        //   - S._currentSwitchAttemptId === myAttemptId：cover 新 attempt 已接管 attempt id
+        //     但还没跑到 line 612 改 lanlan_name 的窗口（line 203 attempt id 接管 vs line 612
+        //     lanlan_name 写入之间的几百行代码 + 长 await）。这段窗口里只查 lanlan_name 会
+        //     误判"自己还是当前角色"放行旧 setTimeout 的 UI mutation。
         const isStillActiveSwitchTarget = () =>
-            !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
+            S._currentSwitchAttemptId === myAttemptId
+            && !!(window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl);
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
         // Watchdog: 切换路径上有大量没有 timeout 兜底的 await（rAF 循环、wasm reset、模型加载、
@@ -699,6 +707,11 @@
                             // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
                             if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
                                 try {
+                                    // VRM 自动修复 PUT 是对后端配置的持久化写入。如果切换在
+                                    // PUT/json 两个 await 之间被新 attempt 顶掉，旧 attempt 仍替
+                                    // 过期目标 newCatgirl 写后端默认 VRM 路径，污染后端配置。
+                                    // 在每个 await 后立刻 stale check，stale 时让 catch 走 stale
+                                    // 分支静默退出（catch 已加 isStaleSwitchAttempt rethrow 兜底）。
                                     const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
                                         method: 'PUT',
                                         headers: { 'Content-Type': 'application/json' },
@@ -707,13 +720,16 @@
                                             vrm: vrmModelPath  // 使用默认模型路径
                                         })
                                     });
+                                    throwIfStale();
                                     if (fixResponse.ok) {
                                         const fixResult = await fixResponse.json();
+                                        throwIfStale();
                                         if (fixResult.success) {
                                             console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
                                         }
                                     }
                                 } catch (fixError) {
+                                    if (fixError?.isStaleSwitchAttempt) throw fixError;
                                     console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
                                 }
                             }
