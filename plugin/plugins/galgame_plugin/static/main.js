@@ -3238,6 +3238,16 @@ function updateSummaryMode(currentMode) {
   });
 }
 
+function clearPendingModeSelection(mode) {
+  if (!pendingModeSelection || (mode && pendingModeSelection !== mode)) {
+    return;
+  }
+  pendingModeSelection = '';
+  if (latestStatus) {
+    renderStatus(latestStatus);
+  }
+}
+
 function renderStatus(status) {
   latestStatus = status;
   syncSettingsValue('modeSelect', status.mode || 'companion');
@@ -5673,18 +5683,22 @@ async function saveMode({ auto = false } = {}) {
   const visionMaxImagePx = Number(visionMaxRaw || 768);
   if (!['auto', 'memory_reader', 'ocr_reader'].includes(readerMode)) {
     setFlash(uiT('ui.flash.invalid_reader_mode', '文本读取模式无效。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!Number.isFinite(ocrPollInterval) || ocrPollInterval < 0.5 || ocrPollInterval > 10) {
     setFlash(uiT('ui.flash.invalid_ocr_interval', 'OCR/DXcam 识别间隔必须在 0.5 到 10 秒之间。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!['interval', 'after_advance'].includes(ocrTriggerMode)) {
     setFlash(uiT('ui.flash.invalid_ocr_trigger', 'OCR 触发方式无效。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   if (!Number.isFinite(visionMaxImagePx) || visionMaxImagePx < 64 || visionMaxImagePx > 2048) {
     setFlash(uiT('ui.flash.invalid_vision_max', 'Vision 最大边长必须在 64 到 2048 之间。'), 'error');
+    clearPendingModeSelection(mode);
     return;
   }
   try {
@@ -5717,12 +5731,7 @@ async function saveMode({ auto = false } = {}) {
     updateSettingsDirtyHint();
     await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
   } catch (error) {
-    if (pendingModeSelection === mode) {
-      pendingModeSelection = '';
-      if (latestStatus) {
-        renderStatus(latestStatus);
-      }
-    }
+    clearPendingModeSelection(mode);
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   } finally {
     settingsSaveInFlight = false;
