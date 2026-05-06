@@ -5033,6 +5033,16 @@ class LLMSessionManager:
                     # 等本路径走到 await self.start_session(text) 时命中 2776 的
                     # "Session正在启动中" guard 被静默忽略，重建静默失败
                     # （ERROR "💥 文本模式Session重建失败"）。
+                    #
+                    # 同时把 session_ready 提前置 False，与 start_session 2867-2868
+                    # 的初始化对偶：rebuild 期间若 session_ready 仍是 True，并发
+                    # _stream_data_now 跳过 4926-4938 的 cache 分支（条件为
+                    # not session_ready），落到 _process_stream_data_internal 后
+                    # 命中 4975 的 count>0 早退被 silent drop——用户在 rebuild
+                    # 窗口内打的字直接丢失。提前置 False 让 cache 路径接住，
+                    # rebuild 完成后 _flush_pending_input_data 会 flush 出去。
+                    async with self.input_cache_lock:
+                        self.session_ready = False
                     self._starting_session_count += 1
                     try:
                         if self.session:
@@ -5182,9 +5192,13 @@ class LLMSessionManager:
                         return
                     
                     logger.info(f"语音模式需要 OmniRealtimeClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 与上面 text 重建路径对偶：占用 guard 跨过 end_session 窗口期，
-                    # 防止并发 _stream_data_now 抢跑 start_session(text) 造成本路径
-                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）。
+                    # 与上面 text 重建路径对偶：先置 session_ready=False 让 cache
+                    # 路径接住窗口期内的输入，再占用 guard 跨过 end_session，防止
+                    # 并发 _stream_data_now 抢跑 start_session(text) 造成本路径
+                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）
+                    # 或落到 _process_stream_data_internal 4975 早退被 silent drop。
+                    async with self.input_cache_lock:
+                        self.session_ready = False
                     self._starting_session_count += 1
                     try:
                         if self.session:
