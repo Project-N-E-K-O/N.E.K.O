@@ -1,0 +1,36 @@
+[plugin]
+name = "B站私信"
+description = "接入 B站私信，实现与用户的 AI 自动对话。支持文本、图片、分享视频等消息类型。"
+short_description = "B站私信自动回复，通过 bilibili_api 监听私信并自动回复。"
+keywords = ["bilibili", "b站", "私信", "dm"]
+passive = true
+version = "1.0.0"
+id = "bilibili_dm"
+type = "plugin"
+entry = "plugin.plugins.bilibili_dm:BiliDMPlugin"
+
+[plugin.author]
+name = "xxynet"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = true
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[bilibili_dm]
+bot_uid = ""
+permission_mode = "allow_list"
+trusted_users = []
+
+# B站 Cookie 配置（从浏览器开发者工具获取）
+sesdata = ""
+bili_jct = ""
+buvid3 = ""
+dedeuserid = ""
+ac_time_value = ""
