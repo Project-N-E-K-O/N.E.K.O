@@ -5025,12 +5025,25 @@ class LLMSessionManager:
                         return
                     
                     logger.info(f"文本模式需要 OmniOfflineClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 先关闭旧 session
-                    if self.session:
-                        await self.end_session()
-                    # 再创建新的文本模式 session
+                    # 占用 _starting_session_count guard 跨过 end_session 窗口期。
+                    # 默认 end_session(reset_starting_count=True) 会把 guard 清零；
+                    # 它内部又有多个 await 拆 session，期间另一条 _stream_data_now
+                    # （比如 audio worker 拉到下一包）看到 session=None / count=0 会
+                    # 从 4941-4953 的 auto-create 分支抢跑 start_session(audio)，
+                    # 等本路径走到 await self.start_session(text) 时命中 2776 的
+                    # "Session正在启动中" guard 被静默忽略，重建静默失败
+                    # （ERROR "💥 文本模式Session重建失败"）。
+                    self._starting_session_count += 1
+                    try:
+                        if self.session:
+                            await self.end_session(reset_starting_count=False)
+                    finally:
+                        self._starting_session_count = max(0, self._starting_session_count - 1)
+                    # 释放 guard 与下面的 start_session 之间禁止 await，否则窗口
+                    # 重新打开。start_session 入口的 +=1 (2781) 之前都是同步代码，
+                    # 函数调用本身不让出控制权，安全。
                     await self.start_session(self.websocket, new=False, input_mode='text')
-                    
+
                     # 检查重建是否成功
                     if not self.session or not self.is_active or not isinstance(self.session, OmniOfflineClient):
                         logger.error("💥 文本模式Session重建失败，放弃本次数据流")
@@ -5169,12 +5182,17 @@ class LLMSessionManager:
                         return
                     
                     logger.info(f"语音模式需要 OmniRealtimeClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 先关闭旧 session
-                    if self.session:
-                        await self.end_session()
-                    # 再创建新的语音模式 session
+                    # 与上面 text 重建路径对偶：占用 guard 跨过 end_session 窗口期，
+                    # 防止并发 _stream_data_now 抢跑 start_session(text) 造成本路径
+                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）。
+                    self._starting_session_count += 1
+                    try:
+                        if self.session:
+                            await self.end_session(reset_starting_count=False)
+                    finally:
+                        self._starting_session_count = max(0, self._starting_session_count - 1)
                     await self.start_session(self.websocket, new=False, input_mode='audio')
-                    
+
                     # 检查重建是否成功
                     if not self.session or not self.is_active or not isinstance(self.session, OmniRealtimeClient):
                         logger.error("💥 语音模式Session重建失败，放弃本次数据流")
