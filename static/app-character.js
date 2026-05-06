@@ -716,6 +716,7 @@
                 }
                 const lightingConfig = catgirlConfig.lighting || null;
                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
+                throwIfStale();
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 // 再次验证 vrmModelPath 的有效性
@@ -770,6 +771,7 @@
                 // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，会自动尝试 /user_vrm/ 和 /static/vrm/）
                 console.log('[猫娘切换] 开始加载VRM模型:', modelUrl);
                 await window.vrmManager.loadModel(modelUrl);
+                throwIfStale();
                 console.log('[猫娘切换] VRM模型加载完成');
 
                 // 【关键修复】确保VRM渲染循环已启动（loadModel内部会调用startAnimation，但为了保险再次确认）
@@ -1062,6 +1064,7 @@
                     } else if (typeof initMMDModel === 'function') {
                         initializedManager = await initMMDModel();
                     }
+                    throwIfStale();
                     if (!initializedManager || !window.mmdManager || window.mmdManager._isDisposed) {
                         console.error('[猫娘切换] MMD 管理器初始化失败');
                         window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, {
@@ -1091,6 +1094,7 @@
                     } catch (e) { /* ignore - will use current enablePhysics */ }
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'model' });
                     await window.mmdManager.loadModel(mmdModelUrl, { loadingSessionId: mmdLoadingSessionId });
+                    throwIfStale();
                     console.log('[猫娘切换] MMD 模型加载完成');
 
                     // 应用完整设置（光照、渲染、物理、鼠标跟踪）
@@ -1113,6 +1117,7 @@
                     window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'done' });
                     if (window._waitForMMDRenderFrame) {
                         await window._waitForMMDRenderFrame(window.mmdManager);
+                        throwIfStale();
                     }
                     window.MMDLoadingOverlay?.end(mmdLoadingSessionId);
                     const mmdCanvasReady = document.getElementById('mmd-canvas');
@@ -1185,6 +1190,7 @@
                 // 初始化或重用 PIXI
                 if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
                     await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                    throwIfStale();
                 }
 
                 // 加载新模型
@@ -1201,6 +1207,7 @@
                             preferences: modelPreferences,
                             isMobile: window.innerWidth <= 768
                         });
+                        throwIfStale();
 
                         if (window.LanLan1) {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
@@ -1239,6 +1246,7 @@
                                 await window.live2dManager.loadModel(defaultConfig, {
                                     isMobile: window.innerWidth <= 768
                                 });
+                                throwIfStale();
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                     window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1369,6 +1377,8 @@
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
+            // 注：内层 try/catch 会吞 throwIfStale 的抛错，需要先做 stale 检查再进 try
+            throwIfStale();
             if (window.unlockAchievement) {
                 try {
                     await window.unlockAchievement('ACH_CHANGE_SKIN');
