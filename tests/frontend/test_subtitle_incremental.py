@@ -306,6 +306,175 @@ def test_subtitle_incremental_translation_does_not_merge_fast_streaming_sentence
 
 
 @pytest.mark.frontend
+def test_subtitle_incremental_translation_waits_for_user_language_before_request(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__translateRequests = [];
+            window.__resolveLanguage = null;
+            window.fetch = async (url, options) => {
+                const requestUrl = String(url);
+                const body = options && options.body ? JSON.parse(options.body) : {};
+                if (requestUrl === '/api/config/user_language') {
+                    await new Promise((resolve) => { window.__resolveLanguage = resolve; });
+                    return new Response(JSON.stringify({ success: true, language: 'en' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (requestUrl === '/api/translate') {
+                    window.__translateRequests.push(body);
+                    return new Response(JSON.stringify({
+                        success: true,
+                        translated_text: 'Hello world.',
+                        source_lang: 'zh',
+                        target_lang: body.target_lang || 'en',
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.removeItem('userLanguage');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.beginSubtitleTurn();
+            window.subtitleBridge.setSubtitleEnabled(true);
+            window.updateSubtitleStreamingText('你好世界。');
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            const requestsBeforeLanguage = window.__translateRequests.slice();
+            window.__resolveLanguage();
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (window.__translateRequests.length > 0) {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('translation request did not start'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            return {
+                requestsBeforeLanguage,
+                requests: window.__translateRequests,
+                text: document.getElementById('subtitle-text').textContent,
+            };
+        }
+        """
+    )
+
+    assert result["requestsBeforeLanguage"] == []
+    assert result["requests"][0]["target_lang"] == "en"
+    assert result["text"] == "Hello world."
+
+
+@pytest.mark.frontend
+def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            let requestCount = 0;
+            window.fetch = async (url, options) => {
+                const requestUrl = String(url);
+                const body = options && options.body ? JSON.parse(options.body) : {};
+                if (requestUrl === '/api/config/user_language') {
+                    return new Response(JSON.stringify({ success: true, language: 'en' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (requestUrl === '/api/translate') {
+                    requestCount += 1;
+                    const translated = requestCount === 1
+                        ? '明明没什么本事, you still keep acting tough.'
+                        : 'You keep causing trouble.';
+                    return new Response(JSON.stringify({
+                        success: true,
+                        translated_text: translated,
+                        source_lang: 'zh',
+                        target_lang: body.target_lang || 'en',
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'en');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.beginSubtitleTurn();
+            window.subtitleBridge.setSubtitleEnabled(true);
+            window.updateSubtitleStreamingText('明明没什么本事。你还到处惹麻烦。');
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    const text = document.getElementById('subtitle-text').textContent;
+                    if (text === 'You keep causing trouble.') {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1200) {
+                        reject(new Error('clean translated subtitle did not render'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            return document.getElementById('subtitle-text').textContent;
+        }
+        """
+    )
+
+    assert result == "You keep causing trouble."
+
+
+@pytest.mark.frontend
 def test_subtitle_turn_end_keeps_pending_incremental_sentence_queue(
     mock_page: Page,
 ):

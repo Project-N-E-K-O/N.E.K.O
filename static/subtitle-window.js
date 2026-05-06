@@ -4,7 +4,6 @@
     var SubtitleShared = window.nekoSubtitleShared || null;
     var subtitleWindowController = null;
     var currentTranscript = '';
-    var WINDOW_DROPDOWN_HEIGHT = 230;
 
     if (!SubtitleShared) {
         console.error('[SubtitleWindow] subtitle-shared.js 未加载');

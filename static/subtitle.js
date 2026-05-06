@@ -57,7 +57,7 @@ function applySharedSubtitleSettings(patch, options) {
         refreshUiLocale: options && options.refreshUiLocale === true
     });
     subtitleEnabled = !!next.subtitleEnabled;
-    if (next.userLanguage) {
+    if (Object.prototype.hasOwnProperty.call(patch, 'userLanguage') && next.userLanguage) {
         userLanguage = next.userLanguage;
     }
     return next;
@@ -319,6 +319,19 @@ function enqueueIncrementalSentences(sentences) {
     processIncrementalTranslationQueue(incrementalRequestId);
 }
 
+function countCjkChars(text) {
+    var matches = (text || '').match(/[\u3400-\u9FFF\uF900-\uFAFF]/g);
+    return matches ? matches.length : 0;
+}
+
+function hasUnexpectedSourceResidue(translatedText, targetLang) {
+    var normalizedTarget = (targetLang || '').toLowerCase();
+    if (!translatedText || normalizedTarget === 'zh' || normalizedTarget === 'ja' || normalizedTarget === 'ko') {
+        return false;
+    }
+    return countCjkChars(translatedText) >= 4;
+}
+
 /**
  * 增量翻译核心：按发现顺序逐句翻译并追加到字幕显示。
  */
@@ -338,12 +351,19 @@ async function processIncrementalTranslationQueue(requestSnapId) {
     var abortCtrl = incrementalAbortController;
 
     try {
+        if (userLanguage === null) {
+            await getUserLanguage();
+        }
+        if (!subtitleEnabled) return;
+        if (requestSnapId !== incrementalRequestId) return;
+
+        var targetLanguage = userLanguage !== null ? userLanguage : 'zh';
         var response = await fetch('/api/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: textToTranslate,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
+                target_lang: targetLanguage,
                 source_lang: null
             }),
             signal: abortCtrl.signal
@@ -358,7 +378,12 @@ async function processIncrementalTranslationQueue(requestSnapId) {
         if (requestSnapId !== incrementalRequestId) return;
 
         if (result.success && result.translated_text) {
-            incrementalTranslatedSentences.push(result.translated_text.trim());
+            var translated = result.translated_text.trim();
+            if (hasUnexpectedSourceResidue(translated, result.target_lang || targetLanguage)) {
+                console.warn('字幕翻译结果仍包含源语言片段，已跳过该句。');
+            } else {
+                incrementalTranslatedSentences.push(translated);
+            }
         }
         incrementalTranslatedCount += 1;
         updateIncrementalDisplay();
