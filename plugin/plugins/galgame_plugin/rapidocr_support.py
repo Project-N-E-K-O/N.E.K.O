@@ -30,6 +30,10 @@ DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
 DEFAULT_RAPIDOCR_PIP_SPEC = "rapidocr_onnxruntime"
 DEFAULT_ONNXRUNTIME_PIP_SPEC = "onnxruntime"
 _INSTALL_STATE_NAME = "install_state.json"
+# RapidOCR builds 3 onnxruntime sessions (det/cls/rec); without a cap each
+# defaults to one intra-op worker per logical core, freezing the desktop on
+# many-core machines during every OCR pass.
+_RAPIDOCR_INFERENCE_THREAD_LIMIT = 2
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _RAPIDOCR_IMPORT_CONTEXT_LOCK = threading.RLock()
 
@@ -417,6 +421,34 @@ def _build_runtime_constructor_kwargs(
     return kwargs
 
 
+@contextmanager
+def _onnxruntime_intra_op_thread_cap(limit: int) -> Iterator[None]:
+    """Clamp default SessionOptions thread counts while RapidOCR builds its sessions."""
+    try:
+        import onnxruntime as _ort
+    except Exception:
+        yield
+        return
+    options_cls = getattr(_ort, "SessionOptions", None)
+    if options_cls is None:
+        yield
+        return
+    orig_init = options_cls.__init__
+
+    def _clamped_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        if getattr(self, "intra_op_num_threads", 0) == 0:
+            self.intra_op_num_threads = limit
+        if getattr(self, "inter_op_num_threads", 0) == 0:
+            self.inter_op_num_threads = 1
+
+    options_cls.__init__ = _clamped_init
+    try:
+        yield
+    finally:
+        options_cls.__init__ = orig_init
+
+
 def load_rapidocr_runtime(
     *,
     install_target_dir_raw: str,
@@ -441,16 +473,17 @@ def load_rapidocr_runtime(
         runtime_class = getattr(module, "RapidOCR", None)
         if runtime_class is None:
             raise RuntimeError("RapidOCR runtime class not found")
-        runtime = runtime_class(
-            **_build_runtime_constructor_kwargs(
-                runtime_class,
-                engine_type=engine_type,
-                lang_type=lang_type,
-                model_type=model_type,
-                ocr_version=ocr_version,
-                model_cache_dir=model_cache_dir,
+        with _onnxruntime_intra_op_thread_cap(_RAPIDOCR_INFERENCE_THREAD_LIMIT):
+            runtime = runtime_class(
+                **_build_runtime_constructor_kwargs(
+                    runtime_class,
+                    engine_type=engine_type,
+                    lang_type=lang_type,
+                    model_type=model_type,
+                    ocr_version=ocr_version,
+                    model_cache_dir=model_cache_dir,
+                )
             )
-        )
     metadata = {
         "detected_path": str(Path(getattr(module, "__file__", "")).resolve().parent),
         "model_cache_dir": str(model_cache_dir),
