@@ -170,6 +170,19 @@
         // 老 attempt 的副作用就被锁在自己 attempt 内。
         const myAttemptId = (S._switchAttemptCounter = (S._switchAttemptCounter || 0) + 1);
         S._currentSwitchAttemptId = myAttemptId;
+        // try 体里 line 486 / 489 / 493 那一段是关键全局副作用区段：S.socket.close()、
+        // lanlan_config.lanlan_name = newCatgirl、connectWebSocket()。老 attempt 卡在
+        // removeModel/clearAudioQueue 这类无 timeout 的 await 上苏醒后会接着跑这一段，
+        // 把新 attempt 刚连的 socket 关掉、把 lanlan_name 覆盖回老目标、用老 lanlan_name
+        // 重连——直接把新切换状态打回老角色。在每个关键 await 之后调 throwIfStale 让老
+        // attempt 苏醒第一时间被赶进 catch 走 finally，attempt id 校验决定不动门闩。
+        const throwIfStale = () => {
+            if (S._currentSwitchAttemptId !== myAttemptId) {
+                const err = new Error('[猫娘切换] attempt ' + myAttemptId + ' superseded（已被新一轮切换取代或 watchdog 超时），中止后续 mutation');
+                err.isStaleSwitchAttempt = true;
+                throw err;
+            }
+        };
         const switchWatchdogId = setTimeout(() => {
             if (S._currentSwitchAttemptId !== myAttemptId) return;
             if (S.isSwitchingCatgirl) {
@@ -198,10 +211,12 @@
 
             // 1. 获取新角色的配置（包括 model_type）
             const charResponse = await fetch('/api/characters');
+            throwIfStale();
             if (!charResponse.ok) {
                 throw new Error('无法获取角色配置');
             }
             const charactersData = await charResponse.json();
+            throwIfStale();
             const catgirlConfig = charactersData['猫娘']?.[newCatgirl];
 
             if (!catgirlConfig) {
@@ -396,6 +411,7 @@
                     // 每帧继续运行，角色卡切换几次后表现为持续低 FPS。
                     if (typeof window.live2dManager.removeModel === 'function') {
                         await window.live2dManager.removeModel({ skipCloseWindows: true });
+                        throwIfStale();
                     } else if (window.live2dManager.currentModel) {
                         // 兼容兜底：旧版本没有 removeModel 时仍尽量销毁模型。
                         if (typeof window.live2dManager.currentModel.destroy === 'function') {
@@ -505,14 +521,20 @@
             }
             //  等待清空音频队列完成，避免竞态条件
             await clearAudioQueue();
+            throwIfStale();
             if (S.isTextSessionActive) S.isTextSessionActive = false;
 
+            // 关键全局副作用区段开始：S.socket / lanlan_config / connectWebSocket。
+            // 老 attempt 苏醒到这里若已 stale，绝对不能再动这些——会把新 attempt 的
+            // socket 关掉、lanlan_name 覆盖回老目标、用老 lanlan_name 重连。
+            throwIfStale();
             if (S.socket) S.socket.close();
             if (S.heartbeatInterval) clearInterval(S.heartbeatInterval);
 
             window.lanlan_config.lanlan_name = newCatgirl;
 
             await new Promise(resolve => setTimeout(resolve, 100));
+            throwIfStale();
             S._pendingGreetingSwitch = true;  // 标记为切换连接，onopen 时发送 greeting_check
             connectWebSocket();
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
@@ -1356,11 +1378,19 @@
             }
 
         } catch (error) {
-            console.error('[猫娘切换] 失败:', error);
-            if (mmdLoadingSessionId) {
-                window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+            // stale attempt 主动退出：老 attempt 苏醒发现自己已被新一轮取代/watchdog 超时，
+            // 静默退场。不弹 toast（不是用户当前操作的失败）、不回滚（新 attempt 持有 socket）、
+            // 不报 MMDLoadingOverlay.fail（不属于当前可见加载）。后续 finally 里的资源清理仍照常跑，
+            // 否则老 attempt 持有的旧 socket / heartbeat 会泄漏。
+            if (error?.isStaleSwitchAttempt) {
+                console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）');
+            } else {
+                console.error('[猫娘切换] 失败:', error);
+                if (mmdLoadingSessionId) {
+                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
+                }
+                showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
             }
-            showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
 
             // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
             // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
