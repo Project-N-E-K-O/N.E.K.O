@@ -217,7 +217,7 @@ function startMultiWindowPageConfigLoad() {
                 return;
             }
             var d = detail || {};
-            if (!d.lanlan_name) {
+            if (!Object.prototype.hasOwnProperty.call(d, 'lanlan_name')) {
                 requestInjectedConfig(500);
                 return;
             }
@@ -259,7 +259,7 @@ function startMultiWindowPageConfigLoad() {
             applyInjectedConfig((event && event.detail) || {});
         };
         window.addEventListener('neko:config-injected', handler);
-        if (window.__nekoInjectedConfig && window.__nekoInjectedConfig.lanlan_name) {
+        if (window.__nekoInjectedConfig && Object.prototype.hasOwnProperty.call(window.__nekoInjectedConfig, 'lanlan_name')) {
             applyInjectedConfig(window.__nekoInjectedConfig);
             return;
         }

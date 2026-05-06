@@ -133,7 +133,11 @@ def _is_current_catgirl_voice_session_starting(name: str, characters, session_ma
     mgr = session_manager.get(name) if session_manager else None
     if not mgr:
         return False
-    return bool(getattr(mgr, "is_starting", False) and not getattr(mgr, "is_active", False))
+    return bool(
+        getattr(mgr, "is_starting", False)
+        and not getattr(mgr, "is_active", False)
+        and getattr(mgr, "input_mode", "") == "audio"
+    )
 
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
@@ -1745,19 +1749,23 @@ async def get_catgirl_voice_mode_status(name: str):
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
     is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
+    is_audio_starting = bool(is_current and is_starting and getattr(mgr, 'input_mode', '') == 'audio')
     
-    is_voice_mode = bool(is_current and is_starting)
+    is_voice_mode = is_audio_starting
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
         from main_logic.omni_realtime_client import OmniRealtimeClient
-        is_voice_mode = is_voice_mode or bool(mgr.session and isinstance(mgr.session, OmniRealtimeClient))
+        is_voice_mode = is_voice_mode or bool(
+            getattr(mgr, 'input_mode', '') == 'audio'
+            or (mgr.session and isinstance(mgr.session, OmniRealtimeClient))
+        )
     
     return JSONResponse({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
         'is_active': is_active,
         'is_starting': is_starting,
-        'is_voice_starting': bool(is_current and is_starting),
+        'is_voice_starting': is_audio_starting,
     })
 
 

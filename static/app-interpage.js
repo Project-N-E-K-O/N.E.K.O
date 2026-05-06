@@ -1392,6 +1392,7 @@
         var active = !!data.active;
 
         if (active) {
+            pruneVoiceConfigSwitchOps(now);
             _voiceConfigSwitchOps[opId] = {
                 lanlanName: data.lanlan_name || '',
                 startedAt: _voiceConfigSwitchOps[opId]?.startedAt || now,
@@ -1490,10 +1491,14 @@
      * @param {boolean} hidden - true 表示收起输入栏；false 表示允许展开输入栏
      */
     function syncVoiceChatComposerHidden(hidden) {
-        if (hidden && S) {
-            S.voiceChatActive = true;
+        var requestedHidden = !!hidden;
+        if (S) {
+            S.voiceChatActive = requestedHidden;
         }
-        var effectiveHidden = !!hidden || (!hidden && shouldKeepVoiceComposerHidden());
+        var effectiveHidden = requestedHidden || (!requestedHidden && shouldKeepVoiceComposerHidden());
+        if (S) {
+            S.voiceChatActive = effectiveHidden;
+        }
         applyVoiceChatComposerHidden(effectiveHidden);
         // 同步给其它页面（chat.html ↔ index.html）
         if (nekoBroadcastChannel) {
@@ -1659,7 +1664,11 @@
                         if (S) {
                             S.voiceChatActive = vcHidden;
                         }
-                        applyVoiceChatComposerHidden(vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden()));
+                        var vcEffectiveHidden = vcHidden || (!vcHidden && shouldKeepVoiceComposerHidden());
+                        if (S) {
+                            S.voiceChatActive = vcEffectiveHidden;
+                        }
+                        applyVoiceChatComposerHidden(vcEffectiveHidden);
                         break;
                     }
                     case 'voice_config_switching': {
@@ -2092,12 +2101,12 @@
 
     // 音色应用页的后备通道：没有 BroadcastChannel 时使用 postMessage 同步准备态
     window.addEventListener('message', function (event) {
-        var data = event.data || {};
-        if (data.action !== 'voice_config_switching' && data.type !== 'voice_config_switching') {
-            return;
-        }
         if (event.origin !== window.location.origin) {
             console.warn('[Security] 拒绝来自不同源的音色切换消息:', event.origin);
+            return;
+        }
+        var data = event.data || {};
+        if (data.action !== 'voice_config_switching' && data.type !== 'voice_config_switching') {
             return;
         }
         handleVoiceConfigSwitchingMessage(data);

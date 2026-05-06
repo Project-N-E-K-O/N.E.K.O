@@ -410,6 +410,12 @@
 
     // ========================  ensureWebSocketOpen  ========================
 
+    function getWebSocketLanlanName() {
+        return (window.lanlan_config && window.lanlan_config.lanlan_name)
+            ? window.lanlan_config.lanlan_name
+            : '';
+    }
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -426,11 +432,23 @@
 
             var settled = false;
             var timer = null;
+            var lanlanWaitTimer = null;
+            var socketPollTimer = null;
+
+            var clearAutoReconnectTimer = function () {
+                if (S.autoReconnectTimeoutId) {
+                    clearTimeout(S.autoReconnectTimeoutId);
+                    S.autoReconnectTimeoutId = null;
+                }
+            };
 
             var settle = function (fn, arg) {
                 if (settled) return;
                 settled = true;
                 if (timer) { clearTimeout(timer); timer = null; }
+                if (lanlanWaitTimer) { clearTimeout(lanlanWaitTimer); lanlanWaitTimer = null; }
+                if (socketPollTimer) { clearTimeout(socketPollTimer); socketPollTimer = null; }
+                clearAutoReconnectTimer();
                 fn(arg);
             };
 
@@ -462,15 +480,36 @@
                 // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
-                if (S.autoReconnectTimeoutId) {
-                    clearTimeout(S.autoReconnectTimeoutId);
-                    S.autoReconnectTimeoutId = null;
-                }
-                connectWebSocket();
+                clearAutoReconnectTimer();
+                var connectWhenLanlanNameReady = function () {
+                    if (settled) return;
+                    if (getWebSocketLanlanName()) {
+                        connectWebSocket();
+                        return;
+                    }
+                    _lanlanNameWaitAttempts += 1;
+                    var waitNow = Date.now();
+                    if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                        console.warn('[WebSocket] lanlan_name not ready, waiting for page config');
+                        _lanlanNameWaitLastLogAt = waitNow;
+                    }
+                    lanlanWaitTimer = setTimeout(function () {
+                        lanlanWaitTimer = null;
+                        connectWhenLanlanNameReady();
+                    }, Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250));
+                };
+                connectWhenLanlanNameReady();
             }
 
             // Polling fallback: track socket reference; re-attach when replaced
             var lastAttachedWs = null;
+            var scheduleSocketPoll = function (delay) {
+                if (settled) return;
+                socketPollTimer = setTimeout(function () {
+                    socketPollTimer = null;
+                    waitForNewSocket();
+                }, delay);
+            };
             var waitForNewSocket = function () {
                 if (settled) return;
                 if (S.socket) {
@@ -479,13 +518,13 @@
                         attachOpenListener(S.socket);
                     }
                     if (!settled) {
-                        setTimeout(waitForNewSocket, S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
+                        scheduleSocketPoll(S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
                     }
                 } else {
-                    setTimeout(waitForNewSocket, 50);
+                    scheduleSocketPoll(50);
                 }
             };
-            setTimeout(waitForNewSocket, 10);
+            scheduleSocketPoll(10);
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
@@ -493,9 +532,7 @@
     // ========================  connectWebSocket  ========================
 
     function connectWebSocket() {
-        var currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
-            ? window.lanlan_config.lanlan_name
-            : '';
+        var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
         // 切换档案时 Chat 窗口曾出现这样的 stale 序列：handleCatgirlSwitch 刚 connect 的新代理被
         // 旧 WS 生命周期的 CLOSED IPC 误触发 close，onclose 排了一个 3s auto-reconnect；紧接着
