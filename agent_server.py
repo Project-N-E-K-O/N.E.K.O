@@ -894,7 +894,7 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
         if text.startswith("AGENT_"):
             return text
         if name == "openclaw":
-            return text
+            return _openclaw_reason_code(text)
 
         lower = text.lower()
         # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
@@ -944,11 +944,46 @@ def _cancel_openclaw_enable_probe() -> None:
     Modules.openclaw_enable_task = None
 
 
-def _openclaw_reason_text(reasons: Any) -> str:
+def _openclaw_first_reason(reasons: Any) -> str:
     if isinstance(reasons, list) and reasons:
-        reason = str(reasons[0] or "").strip()
-    else:
-        reason = "unknown"
+        return str(reasons[0] or "").strip()
+    return str(reasons or "").strip()
+
+
+def _openclaw_reason_code(reasons: Any) -> str:
+    reason = _openclaw_first_reason(reasons)
+    if not reason:
+        return "AGENT_OPENCLAW_UNAVAILABLE"
+    if reason.startswith("AGENT_"):
+        return reason
+
+    lower = reason.lower()
+    if "pending" in lower or "未检查" in reason:
+        return "AGENT_PRECHECK_PENDING"
+    if "module not loaded" in lower or "adapter 未加载" in lower or "模块未加载" in reason:
+        return "AGENT_OPENCLAW_MODULE_NOT_LOADED"
+    if (
+        "unavailable" in lower
+        or "connect" in lower
+        or "connection" in lower
+        or "timeout" in lower
+        or "timed out" in lower
+        or "refused" in lower
+        or "连接" in reason
+    ):
+        return "AGENT_CONNECTIVITY_FAILED"
+    return "AGENT_OPENCLAW_UNAVAILABLE"
+
+
+def _openclaw_reason_text(reasons: Any) -> str:
+    reason = _openclaw_first_reason(reasons) or "unknown"
+    display_reasons = {
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "module not loaded",
+        "AGENT_OPENCLAW_UNAVAILABLE": "OpenClaw service unavailable",
+        "AGENT_PRECHECK_PENDING": "connectivity check pending",
+        "AGENT_CONNECTIVITY_FAILED": "OpenClaw service connection failed",
+    }
+    reason = display_reasons.get(reason, reason)
     reason = reason.replace("OpenClaw(QwenPaw)", "OpenClaw").replace("QwenPaw", "OpenClaw service")
     return reason[:USER_NOTIFICATION_REASON_MAX_CHARS] if reason else "unknown"
 
@@ -957,7 +992,7 @@ def _openclaw_notification(code: str, reasons: Any) -> str:
     reason = _openclaw_reason_text(reasons)
     return json.dumps({
         "code": code,
-        "details": {"reason": reason, "reason_code": reason},
+        "details": {"reason": reason, "reason_code": _openclaw_reason_code(reasons)},
     })
 
 
