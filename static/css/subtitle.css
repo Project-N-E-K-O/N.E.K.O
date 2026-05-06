@@ -10,18 +10,18 @@ body.subtitle-window-host {
 }
 
 #subtitle-display {
-    padding: 10px 18px;
-    padding-top: 28px;
-    min-height: 80px;
+    padding: 10px 46px;
+    padding-top: 24px;
+    /* min-height, max-height, font-size 由 JS preset 控制 */
     background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
     color: #fff;
     border-radius: 12px;
-    font-size: 17px;
     font-weight: 500;
     line-height: 1.5;
     text-align: center;
     overflow-wrap: break-word;
     white-space: normal;
+    overflow: visible;
     box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
         0 0 0 1px rgba(255, 255, 255, 0.3) inset;
     border: 1.5px solid rgba(255, 255, 255, 0.4);
@@ -42,7 +42,7 @@ body.subtitle-web-host #subtitle-display {
     max-width: min(var(--subtitle-max-width, 500px), 85%);
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0.4s, max-width 0.3s ease, min-height 0.3s ease;
+    transition: opacity 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), visibility 0.4s, max-width 0.3s ease, min-height 0.3s ease, max-height 0.3s ease, font-size 0.3s ease;
     pointer-events: none;
 }
 
@@ -51,24 +51,42 @@ body.subtitle-window-host #subtitle-display {
     top: 0;
     left: 0;
     width: 100%;
-    transition: min-height 0.3s ease, font-size 0.3s ease;
+    transition: min-height 0.3s ease, max-height 0.3s ease, font-size 0.3s ease;
 }
 
 #subtitle-scroll {
     width: 100%;
-    max-height: 100%;
+    max-height: var(--subtitle-content-max-height, 120px);
     overflow-y: auto;
-    scrollbar-width: none;
-    padding: 4px 0 28px 0;
+    overscroll-behavior: contain;
+    pointer-events: auto;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.42) transparent;
+    padding: 4px 0;
 }
 
 #subtitle-scroll::-webkit-scrollbar {
-    display: none;
+    width: 3px;
+}
+
+#subtitle-scroll::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 999px;
+}
+
+#subtitle-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.42);
+    border-radius: 999px;
+}
+
+#subtitle-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.68);
 }
 
 #subtitle-text {
     display: block;
-    margin-right: 24px;
+    margin-right: 8px;
     white-space: pre-wrap;
     overflow-wrap: break-word;
 }
@@ -118,8 +136,9 @@ body.subtitle-window-host #subtitle-display {
 
 #subtitle-settings-panel {
     position: absolute;
-    top: 30px;
-    right: 4px;
+    top: auto;
+    right: 0;
+    bottom: calc(100% + 8px);
     min-width: 210px;
     padding: 8px 10px;
     background: rgba(0, 0, 0, 0.65);
@@ -129,6 +148,12 @@ body.subtitle-window-host #subtitle-display {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
     pointer-events: auto;
     z-index: 10;
+}
+
+body.subtitle-window-host #subtitle-settings-panel {
+    top: calc(100% + 8px);
+    right: 4px;
+    bottom: auto;
 }
 
 #subtitle-settings-panel.hidden {
@@ -259,6 +284,7 @@ body.subtitle-window-host #subtitle-display {
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.35);
 }
 
+body.subtitle-web-host #subtitle-display.drag-anywhere,
 #subtitle-display.drag-anywhere {
     cursor: grab;
     pointer-events: auto;
@@ -365,8 +391,7 @@ body.subtitle-web-host #subtitle-display.show {
         bottom: 80px;
         min-width: 180px;
         max-width: min(var(--subtitle-max-width, 500px), 92%);
-        font-size: 15px;
-        padding: 6px 14px;
+        padding: 6px 42px;
         padding-top: 24px;
     }
 }

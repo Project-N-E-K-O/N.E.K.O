@@ -57,7 +57,7 @@ function applySharedSubtitleSettings(patch, options) {
         refreshUiLocale: options && options.refreshUiLocale === true
     });
     subtitleEnabled = !!next.subtitleEnabled;
-    if (next.userLanguage) {
+    if (Object.prototype.hasOwnProperty.call(patch, 'userLanguage') && next.userLanguage) {
         userLanguage = next.userLanguage;
     }
     return next;
@@ -178,9 +178,11 @@ let turnBoundaryLatched = false;
 // --- 增量逐句翻译状态 ---
 let incrementalTranslatedCount = 0;
 let incrementalTranslatedSentences = [];
-let incrementalTranslateTimer = null;
 let incrementalAbortController = null;
 let incrementalRequestId = 0;
+let incrementalQueuedCount = 0;
+let incrementalTranslationQueue = [];
+let incrementalTranslationActive = false;
 
 /**
  * 句子分割（用于增量翻译）。
@@ -200,7 +202,6 @@ function splitSubtitleSentences(buffer) {
     function isBoundary(ch, next) {
         if (ch === '\n') return true;
         if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
-        if (isPunctForBoundary(ch) && !next) return false;
         if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
         if (ch === '!' || ch === '?') return true;
         if (ch === '\u2026') return true;
@@ -298,24 +299,68 @@ function writeSubtitleText(text) {
                 presetKey: preset.subtitleSize,
                 maxWidth: presetSize.width,
                 minHeight: presetSize.minHeight,
+                maxHeight: presetSize.maxHeight,
+                baseFont: presetSize.fontSize,
                 availableWidth: Math.max(0, (display.clientWidth || presetSize.width) - 48),
-                availableHeight: Math.max(display.offsetHeight || presetSize.minHeight, presetSize.minHeight)
+                availableHeight: presetSize.maxHeight
             })
             : { fontSize: 17 };
-        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        subtitleText.style.fontSize = layout.fontSize < presetSize.fontSize ? layout.fontSize + 'px' : '';
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
 
+function enqueueIncrementalSentences(sentences) {
+    if (!sentences || !sentences.length) return;
+    for (var i = 0; i < sentences.length; i++) {
+        incrementalTranslationQueue.push(sentences[i]);
+    }
+    processIncrementalTranslationQueue(incrementalRequestId);
+}
+
+function resetIncrementalTranslationState() {
+    incrementalRequestId += 1;
+    incrementalTranslatedCount = 0;
+    incrementalTranslatedSentences = [];
+    incrementalQueuedCount = 0;
+    incrementalTranslationQueue = [];
+    incrementalTranslationActive = false;
+    if (incrementalAbortController) {
+        incrementalAbortController.abort();
+        incrementalAbortController = null;
+    }
+}
+
+function resumeIncrementalTranslationQueue() {
+    if (subtitleEnabled && incrementalTranslationQueue.length) {
+        processIncrementalTranslationQueue(incrementalRequestId);
+    }
+}
+
+function countCjkChars(text) {
+    var matches = (text || '').match(/[\u1100-\u11FF\u3040-\u30FF\u31F0-\u31FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/g);
+    return matches ? matches.length : 0;
+}
+
+function hasUnexpectedSourceResidue(translatedText, targetLang) {
+    var normalizedTarget = (targetLang || '').toLowerCase();
+    if (!translatedText || normalizedTarget === 'zh' || normalizedTarget === 'ja' || normalizedTarget === 'ko') {
+        return false;
+    }
+    return countCjkChars(translatedText) >= 4;
+}
+
 /**
- * 增量翻译核心：翻译新完成的句子并追加到字幕显示。
+ * 增量翻译核心：按发现顺序逐句翻译并追加到字幕显示。
  */
-async function translateNewSentencesIncremental(newSentences, requestSnapId) {
-    if (!newSentences || newSentences.length === 0) return;
+async function processIncrementalTranslationQueue(requestSnapId) {
+    if (incrementalTranslationActive) return;
+    if (!incrementalTranslationQueue.length) return;
     if (!subtitleEnabled) return;
     if (requestSnapId !== incrementalRequestId) return;
 
-    var textToTranslate = newSentences.join(' ');
+    var textToTranslate = incrementalTranslationQueue.shift();
+    incrementalTranslationActive = true;
 
     if (incrementalAbortController) {
         incrementalAbortController.abort();
@@ -324,53 +369,59 @@ async function translateNewSentencesIncremental(newSentences, requestSnapId) {
     var abortCtrl = incrementalAbortController;
 
     try {
+        if (userLanguage === null) {
+            await getUserLanguage();
+        }
+        if (!subtitleEnabled) return;
+        if (requestSnapId !== incrementalRequestId) return;
+
+        var targetLanguage = userLanguage !== null ? userLanguage : 'zh';
         var response = await fetch('/api/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: textToTranslate,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
+                target_lang: targetLanguage,
                 source_lang: null
             }),
             signal: abortCtrl.signal
         });
 
         if (!response.ok) {
-            appendIncrementalFallback(newSentences, requestSnapId);
+            markIncrementalSentenceHandled(requestSnapId);
             return;
         }
 
         var result = await response.json();
         if (requestSnapId !== incrementalRequestId) return;
 
-        if (result.success && result.translated_text &&
-            result.source_lang && result.target_lang &&
-            result.source_lang !== result.target_lang &&
-            result.source_lang !== 'unknown') {
-            incrementalTranslatedSentences.push(result.translated_text.trim());
-        } else {
-            for (var j = 0; j < newSentences.length; j++) {
-                incrementalTranslatedSentences.push(newSentences[j]);
+        if (result.success && result.translated_text) {
+            var translated = result.translated_text.trim();
+            if (hasUnexpectedSourceResidue(translated, result.target_lang || targetLanguage)) {
+                console.warn('字幕翻译结果仍包含源语言片段，已跳过该句。');
+            } else {
+                incrementalTranslatedSentences.push(translated);
             }
         }
-        incrementalTranslatedCount += newSentences.length;
+        incrementalTranslatedCount += 1;
         updateIncrementalDisplay();
     } catch (error) {
         if (error.name === 'AbortError') return;
-        appendIncrementalFallback(newSentences, requestSnapId);
+        markIncrementalSentenceHandled(requestSnapId);
     } finally {
         if (incrementalAbortController === abortCtrl) {
             incrementalAbortController = null;
         }
+        incrementalTranslationActive = false;
+        if (requestSnapId === incrementalRequestId && incrementalTranslationQueue.length) {
+            processIncrementalTranslationQueue(requestSnapId);
+        }
     }
 }
 
-function appendIncrementalFallback(sentences, requestSnapId) {
+function markIncrementalSentenceHandled(requestSnapId) {
     if (requestSnapId !== incrementalRequestId) return;
-    for (var i = 0; i < sentences.length; i++) {
-        incrementalTranslatedSentences.push(sentences[i]);
-    }
-    incrementalTranslatedCount += sentences.length;
+    incrementalTranslatedCount += 1;
     updateIncrementalDisplay();
 }
 
@@ -402,32 +453,12 @@ function updateSubtitleStreamingText(text) {
     var splitResult = splitSubtitleSentences(cleaned);
     var allSentences = splitResult.sentences;
     var rest = splitResult.rest;
-    var newCount = allSentences.length - incrementalTranslatedCount;
+    var newCount = allSentences.length - incrementalQueuedCount;
 
     if (newCount > 0) {
-        var newSentences = allSentences.slice(incrementalTranslatedCount);
-
-        if (incrementalTranslateTimer) clearTimeout(incrementalTranslateTimer);
-        var requestSnapId = ++incrementalRequestId;
-        incrementalTranslateTimer = setTimeout(function() {
-            incrementalTranslateTimer = null;
-            translateNewSentencesIncremental(newSentences, requestSnapId);
-        }, 300);
-
-        // 防抖期间先显示原文 preview
-        var preview = incrementalTranslatedSentences.slice();
-        for (var i = 0; i < newSentences.length; i++) {
-            preview.push(newSentences[i]);
-        }
-        if (rest.trim()) preview.push(rest.trim());
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(preview.join(' '));
-    } else if (rest.trim()) {
-        // 无新句子但有尾部更新
-        var displayParts = incrementalTranslatedSentences.slice();
-        displayParts.push(rest.trim());
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(displayParts.join(' '));
+        var newSentences = allSentences.slice(incrementalQueuedCount);
+        incrementalQueuedCount = allSentences.length;
+        enqueueIncrementalSentences(newSentences);
     }
 }
 
@@ -441,6 +472,11 @@ function updateSubtitleStreamingText(text) {
 function markSubtitleStructured() {
     if (isCurrentTurnFinalized) return;
     if (currentTurnIsStructured) return; // 已是结构化，幂等
+    resetIncrementalTranslationState();
+    if (currentTranslateAbortController) {
+        currentTranslateAbortController.abort();
+        currentTranslateAbortController = null;
+    }
     currentTurnIsStructured = true;
     const placeholder = getStructuredPlaceholder();
     currentTurnOriginalText = placeholder;
@@ -456,6 +492,7 @@ function markSubtitleStructured() {
 function finalizeSubtitleAsStructured() {
     isCurrentTurnFinalized = true;
     currentTurnIsStructured = true;
+    resetIncrementalTranslationState();
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
@@ -480,19 +517,7 @@ function resetSubtitleTurnState() {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
     }
-    // 增量翻译状态复位
-    incrementalTranslatedCount = 0;
-    incrementalTranslatedSentences = [];
-    if (incrementalTranslateTimer) {
-        clearTimeout(incrementalTranslateTimer);
-        incrementalTranslateTimer = null;
-    }
-    if (incrementalAbortController) {
-        incrementalAbortController.abort();
-        incrementalAbortController = null;
-    }
-    // 不重置 incrementalRequestId；保持单调递增作为失效令牌，
-    // 使旧的翻译响应无法与新的请求 ID 碰撞。
+    resetIncrementalTranslationState();
 }
 
 /**
@@ -540,7 +565,7 @@ function onAssistantTurnStart() {
 }
 
 /**
- * Turn 结束时调用：翻译剩余未处理部分并追加到增量翻译结果。
+ * Turn 结束时调用：把剩余未入队文本补进逐句翻译队列。
  */
 async function translateAndShowSubtitle(text) {
     if (!text || !text.trim()) {
@@ -557,12 +582,6 @@ async function translateAndShowSubtitle(text) {
     const requestId = ++currentTranslationRequestId;
     isCurrentTurnFinalized = true;
 
-    // 取消 pending 的增量翻译定时器
-    if (incrementalTranslateTimer) {
-        clearTimeout(incrementalTranslateTimer);
-        incrementalTranslateTimer = null;
-    }
-
     if (userLanguage === null) {
         await getUserLanguage();
     }
@@ -577,95 +596,24 @@ async function translateAndShowSubtitle(text) {
         return;
     }
 
-    // 计算剩余未翻译部分
     var splitResult = splitSubtitleSentences(text);
-    var totalSentences = splitResult.sentences;
-    var trailingRest = splitResult.rest;
-    var remainingSentences = totalSentences.slice(incrementalTranslatedCount);
-    var remainingText = remainingSentences.join(' ');
-    if (trailingRest && trailingRest.trim()) {
-        remainingText = (remainingText ? remainingText + ' ' : '') + trailingRest.trim();
+    var finalSentences = splitResult.sentences.slice();
+    if (splitResult.rest && splitResult.rest.trim()) {
+        finalSentences.push(splitResult.rest.trim());
     }
-
-    // 无剩余 → 直接显示已有的增量翻译
-    if (!remainingText.trim()) {
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(incrementalTranslatedSentences.join(' ') || text);
+    var remainingSentences = finalSentences.slice(incrementalQueuedCount);
+    if (remainingSentences.length) {
+        incrementalQueuedCount = finalSentences.length;
+        enqueueIncrementalSentences(remainingSentences);
         return;
     }
-
-    if (incrementalAbortController) {
-        incrementalAbortController.abort();
-        incrementalAbortController = null;
+    if (!incrementalTranslationActive && incrementalTranslationQueue.length) {
+        resumeIncrementalTranslationQueue();
+        return;
     }
-    if (currentTranslateAbortController) {
-        currentTranslateAbortController.abort();
-    }
-    currentTranslateAbortController = new AbortController();
-    const abortController = currentTranslateAbortController;
-
-    try {
-        const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: remainingText,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
-                source_lang: null
-            }),
-            signal: abortController.signal
-        });
-
-        if (!response.ok) {
-            console.warn('字幕翻译请求失败:', response.status);
-            var fallbackParts = incrementalTranslatedSentences.slice();
-            if (remainingSentences.length) fallbackParts = fallbackParts.concat(remainingSentences);
-            if (trailingRest && trailingRest.trim()) fallbackParts.push(trailingRest.trim());
-            ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(fallbackParts.join(' ') || text);
-            return;
-        }
-
-        const result = await response.json();
-
-        if (requestTurnId !== currentTurnId || requestId !== currentTranslationRequestId) {
-            return;
-        }
-        if (!subtitleEnabled) return;
-
-        if (result.success && result.translated_text &&
-            result.source_lang && result.target_lang &&
-            result.source_lang !== result.target_lang &&
-            result.source_lang !== 'unknown') {
-            incrementalTranslatedSentences.push(result.translated_text.trim());
-            ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(incrementalTranslatedSentences.join(' '));
-            console.log('字幕翻译完成:', incrementalTranslatedSentences.join(' ').substring(0, 80));
-        } else {
-            if (remainingSentences.length) {
-                incrementalTranslatedSentences = incrementalTranslatedSentences.concat(remainingSentences);
-            }
-            if (trailingRest && trailingRest.trim()) {
-                incrementalTranslatedSentences.push(trailingRest.trim());
-            }
-            ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(incrementalTranslatedSentences.join(' '));
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') return;
-        if (subtitleEnabled && requestTurnId === currentTurnId) {
-            ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(text);
-        }
-        console.error('字幕翻译异常:', {
-            error: error.message,
-            text: text.substring(0, 50) + '...',
-            userLanguage: userLanguage
-        });
-    } finally {
-        if (currentTranslateAbortController === abortController) {
-            currentTranslateAbortController = null;
-        }
+    if (!incrementalTranslationActive && !incrementalTranslationQueue.length) {
+        ensureSubtitleVisibleIfEnabled();
+        writeSubtitleText(incrementalTranslatedSentences.join(' '));
     }
 }
 
@@ -709,16 +657,7 @@ function initSubtitleDrag() {
 }
 
 function retranslateCurrentSubtitle() {
-    incrementalTranslatedCount = 0;
-    incrementalTranslatedSentences = [];
-    if (incrementalTranslateTimer) {
-        clearTimeout(incrementalTranslateTimer);
-        incrementalTranslateTimer = null;
-    }
-    if (incrementalAbortController) {
-        incrementalAbortController.abort();
-        incrementalAbortController = null;
-    }
+    resetIncrementalTranslationState();
     if (currentTranslateAbortController) {
         currentTranslateAbortController.abort();
         currentTranslateAbortController = null;
@@ -798,18 +737,15 @@ window.subtitleBridge = {
         });
 
         if (subtitleEnabled) {
-            // 优先显示已有的增量翻译，其次原文
+            // 只显示译文；翻译回来前不预览原文
             var incrementalText = incrementalTranslatedSentences.join(' ');
+            ensureSubtitleVisibleIfEnabled();
             if (incrementalText.trim()) {
-                ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(incrementalText);
-            } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
-                ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(currentTurnOriginalText);
             } else {
-                ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText('');
             }
+            resumeIncrementalTranslationQueue();
         } else {
             hideSubtitle();
         }
@@ -837,23 +773,26 @@ window.subtitleBridge = {
             }
             hideSubtitle();
         } else {
-            // 优先显示已有的增量翻译
+            // 只显示译文；翻译回来前不预览原文
             var incrementalText = incrementalTranslatedSentences.join(' ');
             if (incrementalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(incrementalText);
+                resumeIncrementalTranslationQueue();
                 if (isCurrentTurnFinalized) {
                     translateAndShowSubtitle(currentTurnOriginalText);
                 }
             } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(currentTurnOriginalText);
+                writeSubtitleText('');
+                resumeIncrementalTranslationQueue();
                 if (isCurrentTurnFinalized) {
                     translateAndShowSubtitle(currentTurnOriginalText);
                 }
             } else {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText('');
+                resumeIncrementalTranslationQueue();
             }
         }
 
