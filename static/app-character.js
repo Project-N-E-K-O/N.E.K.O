@@ -1413,11 +1413,16 @@
 
         } catch (error) {
             // stale attempt 主动退出：老 attempt 苏醒发现自己已被新一轮取代/watchdog 超时，
-            // 静默退场。不弹 toast（不是用户当前操作的失败）、不回滚（新 attempt 持有 socket）、
-            // 不报 MMDLoadingOverlay.fail（不属于当前可见加载）。后续 finally 里的资源清理仍照常跑，
-            // 否则老 attempt 持有的旧 socket / heartbeat 会泄漏。
+            // 静默退场。不弹 toast（不是用户当前操作的失败）、不回滚（新 attempt 持有 socket）。
+            // 但 mmdLoadingSessionId 是 stale attempt 自己持有的 overlay session token，
+            // 如果 stale 在 MMD 分支已 begin 了 overlay 后才被取代、且新 attempt 是 non-MMD，
+            // 新 attempt 不会 end/fail 这个 session → 老 overlay 一直挂着 block UI。
+            // 必须由 stale 自己 fail 它持有的 session 才能让 overlay 退出。
             if (error?.isStaleSwitchAttempt) {
                 console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）');
+                if (mmdLoadingSessionId) {
+                    window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch superseded' });
+                }
             } else {
                 console.error('[猫娘切换] 失败:', error);
                 if (mmdLoadingSessionId) {
