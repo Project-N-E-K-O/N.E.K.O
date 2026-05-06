@@ -334,8 +334,23 @@ def refresh_global_language(language: str) -> bool:
     if not language:
         return False
 
-    short = normalize_language_code(language, format='short')
-    full = normalize_language_code(language, format='full')
+    # normalize_language_code 对未识别的输入会默认回退到 'en'，让 garbage / 空白
+    # 字符串能静默把缓存写成英文。该函数是公共 utility，未来可能被未校验的来源
+    # 调用，先把输入收紧到已知支持集合，不在白名单的直接 no-op。
+    raw = language.strip().lower()
+    if not raw:
+        return False
+    _supported_prefixes = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+    _supported_steam_literals = {
+        'schinese', 'tchinese', 'english', 'japanese',
+        'koreana', 'korean', 'russian', 'spanish', 'latam',
+        'portuguese', 'brazilian',
+    }
+    if not (raw.startswith(_supported_prefixes) or raw in _supported_steam_literals):
+        return False
+
+    short = normalize_language_code(raw, format='short')
+    full = normalize_language_code(raw, format='full')
     if not short:
         return False
 
