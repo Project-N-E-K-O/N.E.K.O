@@ -6,6 +6,15 @@
 // lipsync 强制覆盖 motion mouth 参数的阈值：mouthValue 高于此值时强制写入，否则让位给 motion 自带的嘴部关键帧
 const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
 
+// Bundled pixi-live2d-display MotionPriority enum. Keep this local instead of
+// reading window.PIXI.live2d.MotionPriority, which is not a stable runtime path.
+const LIVE2D_MOTION_PRIORITY = Object.freeze({
+    NONE: 0,
+    IDLE: 1,
+    NORMAL: 2,
+    FORCE: 3
+});
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -1851,9 +1860,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
-            const idleMotionPriority = Number(window.PIXI?.live2d?.MotionPriority?.IDLE ?? 1);
             const expressionOwnsEyeBlink = this._isEyeBlinkOwnedByExpression();
-            const shouldTreatEyeChangesAsAuthoritative = motionPriority > idleMotionPriority || expressionOwnsEyeBlink;
+            const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE || expressionOwnsEyeBlink;
             for (const id of lipSyncParams) {
                 try {
                     const idx = coreModel.getParameterIndex(id);
