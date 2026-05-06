@@ -6,9 +6,9 @@ const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
 // rapidocr / dxcam install URLs gone — both are bundled main-program deps
 // (see pyproject.toml [dependency-groups] galgame). Only textractor +
 // tesseract still need the runtime-install UI. RapidOCR adds a
-// model-download UI for non-bundled language packs (see RAPIDOCR_MODELS_*).
-const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models/download`;
-const RAPIDOCR_MODELS_LATEST_URL = `${UI_API_BASE}/rapidocr-models/latest`;
+// model-download UI for non-bundled language packs — same task lifecycle
+// pattern as install tasks (POST to base, GET base/{task_id}).
+const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
@@ -127,6 +127,23 @@ function getInstallUIConfig() {
       successFlash: uiT('ui.install.textractor.success', 'Textractor 安装完成'),
       failureFlash: uiT('ui.install.textractor.failure', 'Textractor 安装失败'),
     },
+    rapidocr_models: {
+      kind: 'rapidocr_models',
+      label: 'RapidOCR Models',
+      url: RAPIDOCR_MODELS_DOWNLOAD_URL,
+      storageKey: `${PLUGIN_ID}:rapidocr_models_task_id`,
+      // domPrefix reuses the existing rapidocrInstallState card inside
+      // rapidocrPrompt — that card was orphaned after PR #1191 stripped the
+      // rapidocr runtime install machinery. We bring it back to surface
+      // model-download progress (different operation, same UI shape).
+      domPrefix: 'rapidocr',
+      actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
+      retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
+      runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从 ModelScope 拉取缺失的模型文件，并通过 SSE 推送实时进度。'),
+      successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
+      failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
+    },
   };
 }
 
@@ -146,6 +163,7 @@ const installRuntime = {
   dxcam: createInstallRuntimeState(),
   tesseract: createInstallRuntimeState(),
   textractor: createInstallRuntimeState(),
+  rapidocr_models: createInstallRuntimeState(),
 };
 
 function readCurrentLineZoom() {
@@ -1570,8 +1588,15 @@ function buildFirstRunSteps(status = {}) {
   const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
   const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
-  const ocrInstallAction = rapidocrSupported ? 'install_rapidocr' : 'install_tesseract';
-  const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported));
+  const rapidocrModelsMissing = rapidocr.detail === 'missing_model_files';
+  // Route the install_ocr CTA: model download if rapidocr is bundled but the
+  // user-selected language pack isn't on disk (the common japan-default
+  // first-run case); rapidocr install if a runtime install path is somehow
+  // available; tesseract as last-resort fallback.
+  const ocrInstallAction = rapidocrModelsMissing
+    ? 'download_rapidocr_models'
+    : (rapidocrSupported ? 'install_rapidocr' : 'install_tesseract');
+  const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing));
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
     textValue(status.active_session_id)
@@ -1601,14 +1626,23 @@ function buildFirstRunSteps(status = {}) {
   const steps = [];
 
   if (!ocrReady) {
+    let body;
+    if (ocrInstallAction === 'download_rapidocr_models') {
+      body = uiT(
+        'ui.first_run.install_ocr.pending_models',
+        '默认语言模型 (japan + PP-OCRv4) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 10MB 的模型文件。',
+      );
+    } else if (ocrInstallAction === 'install_tesseract') {
+      body = uiT('ui.first_run.install_ocr.pending_tesseract', '前往"依赖安装"面板一键安装 Tesseract。');
+    } else {
+      body = uiT('ui.first_run.install_ocr.pending', '前往"依赖安装"面板一键安装 RapidOCR。');
+    }
     steps.push({
       key: 'install_ocr',
       done: false,
       installAction: ocrInstallAction,
-      title: uiT('ui.first_run.install_ocr.title', '安装 OCR 依赖'),
-      body: ocrInstallAction === 'install_tesseract'
-        ? uiT('ui.first_run.install_ocr.pending_tesseract', '前往“依赖安装”面板一键安装 Tesseract。')
-        : uiT('ui.first_run.install_ocr.pending', '前往“依赖安装”面板一键安装 RapidOCR。'),
+      title: uiT('ui.first_run.install_ocr.title', 'OCR 模型'),
+      body,
     });
   }
   if (!captureReady) {
@@ -1677,10 +1711,19 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
 
   if (firstIncomplete.key === 'install_ocr') {
     const installAction = firstIncomplete.installAction || 'install_rapidocr';
-    const installActionKey = installAction === 'install_tesseract'
-      ? 'ui.first_run.action.install_tesseract'
-      : 'ui.first_run.action.install_rapidocr';
-    actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, primaryActionLabel(installAction)))}</button>`);
+    let installActionKey;
+    let fallbackLabel;
+    if (installAction === 'download_rapidocr_models') {
+      installActionKey = 'ui.first_run.action.download_rapidocr_models';
+      fallbackLabel = '立即下载模型';
+    } else if (installAction === 'install_tesseract') {
+      installActionKey = 'ui.first_run.action.install_tesseract';
+      fallbackLabel = primaryActionLabel(installAction);
+    } else {
+      installActionKey = 'ui.first_run.action.install_rapidocr';
+      fallbackLabel = primaryActionLabel(installAction);
+    }
+    actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
     actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', '一键安装 DXcam'))}</button>`);
@@ -4600,6 +4643,20 @@ function renderRapidOcr(status) {
   const body = document.getElementById('rapidocrPromptBody');
   const path = document.getElementById('rapidocrPathText');
   const installed = Boolean(rapidocr.installed);
+  const canDownloadModels = Boolean(rapidocr.can_download_models);
+  const downloadBtn = document.getElementById('rapidocrModelsDownloadBtn');
+  if (downloadBtn) {
+    downloadBtn.hidden = !canDownloadModels;
+    // Don't disable while a download is in flight — startInstall() handles
+    // its own pending state. Reset button label here in case a previous
+    // download finished and downloadBtn was left in retry text.
+    if (canDownloadModels && !installRuntime.rapidocr_models.inProgress) {
+      const config = getInstallConfig('rapidocr_models');
+      const isRetry = installRuntime.rapidocr_models.state
+        && installRuntime.rapidocr_models.state.status === 'failed';
+      downloadBtn.textContent = isRetry ? config.retryText : config.actionText;
+    }
+  }
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4650,6 +4707,45 @@ function renderRapidOcr(status) {
     path.textContent = [
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
+    ].filter(Boolean).join('\n');
+  } else if (rapidocr.detail === 'missing_model_files') {
+    banner.classList.add('warning');
+    kicker.textContent = uiT('ui.install.rapidocr.missing_models_kicker', 'OCR 主后端 — 模型未下载');
+    title.textContent = uiT('ui.install.rapidocr.missing_models_title', 'RapidOCR 已就绪，但所选语言模型未下载');
+    const missing = Array.isArray(rapidocr.missing_model_files) ? rapidocr.missing_model_files : [];
+    const fileList = missing.map((f) => `• ${f.name}`).join('\n');
+    const totalMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
+    const langType = rapidocr.lang_type || '';
+    const ocrVersion = rapidocr.ocr_version || '';
+    // After a failed download, append a manual-fallback hint so the user
+    // has a concrete recovery path (proxy / download manually + drop into
+    // model_cache_dir + refresh). Surfacing this in the banner — not just
+    // the install card — keeps it visible after the user dismisses or
+    // collapses the card.
+    const lastTask = installRuntime.rapidocr_models.state;
+    const downloadFailed = Boolean(lastTask && lastTask.status === 'failed');
+    const proxyHint = downloadFailed
+      ? '\n\n' + uiTf(
+          'ui.install.rapidocr.download_failure_proxy_hint',
+          '上次下载失败：{error}\n国内网络可能需要代理；或手动从 {source} 下载缺失文件到 {dir}，然后点击"刷新状态"。',
+          {
+            error: (lastTask && (lastTask.error || lastTask.message)) || '',
+            source: rapidocr.model_download_source || '',
+            dir: rapidocr.model_cache_dir || '',
+          },
+        )
+      : '';
+    body.textContent = [
+      uiTf(
+        'ui.install.rapidocr.missing_models_body',
+        '当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。点击下方按钮可一键下载；下载来自 RapidAI ModelScope。',
+        { lang: langType, version: ocrVersion, count: missing.length, size: totalMb },
+      ),
+      fileList,
+    ].filter(Boolean).join('\n') + proxyHint;
+    path.textContent = [
+      rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
+      rapidocr.model_download_source ? `${uiT('ui.install.rapidocr.download_source', '下载来源')}: ${rapidocr.model_download_source}` : '',
     ].filter(Boolean).join('\n');
   } else if (rapidocr.detail === 'broken_runtime') {
     banner.classList.add('warning');
@@ -5798,6 +5894,15 @@ async function installTesseract(force = false) {
   await startInstall('tesseract', force);
 }
 
+async function downloadRapidOcrModels(force = false) {
+  // Same task lifecycle as install actions — startInstall() routes via
+  // /rapidocr-models/download (POST), persists task_id, and connects the
+  // SSE stream. Network failures from ModelScope surface in the install
+  // task card with their original error text, so the user can tell whether
+  // it was a timeout, an HTTP 403, or a checksum mismatch.
+  await startInstall('rapidocr_models', force);
+}
+
 async function setOcrBackendSelection({ backendSelection = null, captureBackend = null } = {}) {
   const args = {};
   if (backendSelection) {
@@ -6701,6 +6806,15 @@ async function handleDiagnosisAction(action) {
     case 'install_tesseract':
       await installTesseract(false);
       break;
+    case 'download_rapidocr_models':
+      // Onboarding install_ocr step routes here when rapidocr is bundled
+      // but the user-selected language pack isn't on disk. Navigate to the
+      // RapidOCR banner so the missing-models card is visible, then kick
+      // off the model download (same lifecycle as install tasks).
+      navigateToInstallPanel('rapidocr', { scrollToSection: false });
+      expandAndScrollTo('rapidocrPrompt');
+      await downloadRapidOcrModels(false);
+      break;
     case 'install_dxcam':
       // DXcam is bundled now (see PR #1191) — there is no runtime-install
       // path. Onboarding routes here to expand Advanced Settings + scroll
@@ -6744,7 +6858,10 @@ async function handleDiagnosisAction(action) {
 }
 
 function isFirstRunInstallAction(action) {
-  return action === 'install_rapidocr' || action === 'install_tesseract' || action === 'install_dxcam';
+  return action === 'install_rapidocr'
+    || action === 'install_tesseract'
+    || action === 'install_dxcam'
+    || action === 'download_rapidocr_models';
 }
 
 function handleFirstRunActionClick(button, action) {
@@ -6842,6 +6959,16 @@ async function initialize() {
   } else {
     onboardingDismissed = true;
     forceShowOnboarding = false;
+    // Sync DOM with the dismissed flag. Without this, an initial render
+    // pass that placed the onboarding overlay before this branch ran
+    // (e.g. completed/skipped progress arrives mid-frame) would leave
+    // `onboardingView` visible and `onboarding-active` on body — the
+    // dismissed flag alone won't actively hide it again on the next render.
+    document.body.classList.remove('onboarding-active');
+    const onboardingView = document.getElementById('onboardingView');
+    if (onboardingView) {
+      onboardingView.hidden = true;
+    }
   }
 
   storageRemove(`${PLUGIN_ID}:last_ui_state:v1`);
@@ -6988,7 +7115,10 @@ document.getElementById('queryContextBtn').addEventListener('click', () => {
 document.getElementById('sendMessageBtn').addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-// rapidocrInstallBtn / dxcamInstallBtn event listeners removed — buttons gone from HTML.
+// rapidocrInstallBtn / dxcamInstallBtn event listeners removed — runtime
+// install machinery for both is gone; rapidocrModelsDownloadBtn is the new
+// rapidocr action and triggers a model-pack download (different operation).
+document.getElementById('rapidocrModelsDownloadBtn')?.addEventListener('click', () => downloadRapidOcrModels(false));
 document.getElementById('tesseractInstallBtn').addEventListener('click', () => installTesseract(false));
 document.getElementById('textractorInstallBtn').addEventListener('click', () => installTextractor(false));
 document.getElementById('rapidocrUseBtn').addEventListener('click', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));

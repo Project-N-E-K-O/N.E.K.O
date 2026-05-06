@@ -4,25 +4,30 @@
 
 ---
 
-## 一、安装 OCR 引擎
+## 一、OCR 引擎与模型
 
-插件需要 OCR 引擎来识别游戏画面中的文字：
+插件需要 OCR 引擎来识别游戏画面中的文字。RapidOCR 与 DXcam 已经随主程序打包，**默认不需要单独安装**：
 
-- **RapidOCR**（推荐）：轻量中文 OCR，支持 ONNX 推理，安装约 1-2 分钟
-- **Tesseract**（备选）：传统 OCR 引擎，对中文支持稍弱
+- **RapidOCR**（主后端）：轻量 ONNX OCR，已打包；默认模型为 **`ch + PP-OCRv4`**（中文，已内置在 wheel 中）
+- **Tesseract**（兼容兜底）：传统 OCR，需要单独安装；只在 RapidOCR 不可用时才使用
 
-> 点击插件页面的「安装 RapidOCR」按钮即可一键安装。如果安装失败，检查网络连接后重试。
+> **galgame 主要场景是日文，建议切到 `japan` 模型**：插件默认 `lang_type=japan + ocr_version=PP-OCRv4`，但日文 rec 模型不在 wheel 内，首次运行时 RapidOCR 横幅会提示"模型未下载"。点击横幅上的「**立即下载模型**」按钮，会从 RapidAI ModelScope 下载（约 10MB），下载完成后立即生效。
+>
+> 想用其他语言（korean / en / v5 ch）也是同样的流程：在 `[rapidocr] lang_type` / `ocr_version` 改成你需要的组合，按横幅提示下载。
+>
+> 如果下载失败，横幅会显示具体的错误（HTTP 状态、超时、校验和不匹配等）和恢复路径（"国内可能需要代理；或手动从源 URL 下载到模型缓存目录后刷新"）。
 
 ---
 
-## 二、安装截图工具
+## 二、截图后端
 
-OCR 需要稳定截取游戏画面，截图后端可在 `auto / smart / DXcam / MSS / PrintWindow` 中选择：
+OCR 需要稳定截取游戏画面。DXcam 已随主程序打包，截图后端可在 `auto / smart / DXcam / MSS / PyAutoGUI / PrintWindow` 中选择：
 
 - **DXcam**（推荐）：Windows 高性能截图，延迟低、帧率高
-- **MSS / PrintWindow**：兜底方案，无需安装
+- **MSS / PyAutoGUI**：跨平台兜底，无需额外安装
+- **PrintWindow**：可截取被遮挡的窗口，但部分 DirectX/Unity 游戏会拿到旧帧
 
-> 点击「安装 DXcam」按钮一键安装。如果 DXcam 截图黑屏，可在「高级设置 → 截图后端」切换到 MSS 或 PrintWindow。
+> 默认采用 smart 链：`DXcam → MSS → PyAutoGUI`。如果 DXcam 截图黑屏，可在「高级设置 → 截图后端」切到 MSS / PyAutoGUI / PrintWindow。
 >
 > **Textractor 不是截图后端**，而是内存读取（Memory Reader）兜底方案。部分游戏引擎（如 Unity、Kirikiri）可在「高级设置 → 内存读取」中接入 Textractor，跳过截图直接提取文字。
 
@@ -77,7 +82,7 @@ OCR 需要稳定截取游戏画面，截图后端可在 `auto / smart / DXcam / 
 | 模式 | 说明 |
 |------|------|
 | 自动推进 | 持续识别画面文字，检测到新台词时推送给 AI |
-| 手动模式 | 需要手动触发识别 |
+| 静默模式 | 仅识别与展示，不执行自动推进 |
 | 伴读模式 | 自动识别 + AI 根据台词生成陪伴对话 |
 
 当前识别到的文字会显示在「当前台词」区域，历史台词在「台词历史」中查看。

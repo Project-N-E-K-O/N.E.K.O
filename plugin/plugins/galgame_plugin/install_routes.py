@@ -486,13 +486,14 @@ async def galgame_plugin_stream_tesseract_install(
 
 
 # ====== RapidOCR model-download endpoints ======
-# Same task-state shape as the install endpoints (re-using install_tasks +
-# galgame_download_rapidocr_models SDK action). The only routing difference is
-# the URL prefix `/rapidocr-models/` vs the internal kind id `rapidocr_models`
-# (URL uses kebab-case, persisted task kind uses snake_case).
+# Mirrors the tesseract/textractor install pattern: POST to start, GET for
+# latest task, GET {task_id}, GET {task_id}/stream. URL base is
+# `/rapidocr-models` (kebab-case in URL, `rapidocr_models` snake_case as the
+# persisted task kind). The frontend's install task helper builds GET URLs as
+# `${config.url}/${task_id}` so POST and GET must share the same base prefix.
 
 
-@router.post("/plugin/{plugin_id}/ui-api/rapidocr-models/download")
+@router.post("/plugin/{plugin_id}/ui-api/rapidocr-models")
 async def galgame_plugin_start_rapidocr_models_download(
     plugin_id: str,
     payload: InstallStartPayload,
