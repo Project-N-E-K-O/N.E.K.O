@@ -71,6 +71,8 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
         "llm_result_fields",
         "llm_result_schema",
         "llm_result_model",
+        "quick_action",
+        "quick_action_config",
         "extra",
         "metadata",
     ]
@@ -271,14 +273,17 @@ async def test_call_chain_helpers_runtime() -> None:
 async def test_system_info_runtime_behaviors() -> None:
     class _CtxWithSystem(_Ctx):
         async def get_system_config(self, timeout: float = 5.0) -> dict[str, object]:
-            return {"config": {"plugin_dir": "/tmp/demo"}}
+            return {"config": {"plugin_dir": "/tmp/demo", "user_language_full": "zh-CN"}}
 
     info = rt.SystemInfo(_CtxWithSystem())
     config = await info.get_system_config()
     assert config.is_ok()
     settings = await info.get_server_settings()
     assert settings.is_ok()
-    assert settings.unwrap() == {"plugin_dir": "/tmp/demo"}
+    assert settings.unwrap() == {"plugin_dir": "/tmp/demo", "user_language_full": "zh-CN"}
+    language = await info.get_user_language()
+    assert language.is_ok()
+    assert language.unwrap() == "zh-CN"
     env = await info.get_python_env()
     assert env.is_ok()
     assert "python" in env.unwrap()

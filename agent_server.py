@@ -1233,6 +1233,32 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _extract_user_attachments(messages: Any) -> list[dict]:
+    """Extract image attachments from the latest user message."""
+    if not isinstance(messages, list):
+        return []
+    for m in reversed(messages[-AGENT_HISTORY_TURNS:]):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        raw = m.get("attachments") or []
+        attachments: list[dict] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str):
+                    url = item.strip()
+                elif isinstance(item, dict):
+                    url = str(item.get("url") or item.get("image_url") or "").strip()
+                else:
+                    url = ""
+                if url:
+                    attachments.append({"type": "image_url", "url": url})
+        if attachments:
+            return attachments
+        if str(m.get("text") or m.get("content") or "").strip():
+            return []
+    return []
+
+
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
         # 先检查超时的 deferred 任务并发送 task_update 通知
@@ -1620,12 +1646,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         # 注入任务跟踪记录，让 analyzer 知道哪些任务已经 assign / 完成，避免重复分派
         enriched_messages = _task_tracker.inject(messages, lanlan_name)
 
+        try:
+            _user_lang = _rp_lang(None)
+        except Exception:
+            _user_lang = "zh"
+
         # 一步完成：分析 + 执行
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            lang=_user_lang,
         )
 
         if result is None:
@@ -1748,6 +1780,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 plugin_args = result.tool_args or {}
                 entry_id = result.entry_id
                 up_start = _now_iso()
+                if isinstance(plugin_args, dict):
+                    user_attachments = _extract_user_attachments(messages)
+                    if user_attachments:
+                        plugin_args = dict(plugin_args)
+                        plugin_args["_attachments"] = user_attachments
                 # 获取插件友好名称（用于 HUD 显示）
                 plugin_name = await _get_plugin_friendly_name(plugin_id)
                 logger.info(
@@ -1833,6 +1870,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             conversation_id=conversation_id,
                             latest_user_request=getattr(result, "latest_user_request", "") or "",
                             on_progress=_on_plugin_progress,
+                            lang=_user_lang,
                         )
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
                         run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
@@ -3126,6 +3164,10 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     args = raw_args
     lanlan_name = (payload or {}).get("lanlan_name")
     conversation_id = (payload or {}).get("conversation_id")
+    try:
+        user_lang = str((payload or {}).get("lang") or _rp_lang(None) or "zh")
+    except Exception:
+        user_lang = "zh"
     if not plugin_id or not isinstance(plugin_id, str):
         raise HTTPException(400, "plugin_id required")
 
@@ -3209,6 +3251,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 entry_id=entry_id,
                 lanlan_name=lanlan_name,
                 conversation_id=conversation_id,
+                lang=user_lang,
                 on_progress=_on_plugin_progress,
             )
             if info.get("status") == "cancelled":

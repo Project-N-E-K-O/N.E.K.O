@@ -5,13 +5,16 @@ Primary import target for standard plugin development.
 
 from __future__ import annotations
 
+import importlib
+
 from . import base as _base
 from . import decorators as _decorators
-from . import llm_tool as _llm_tool
 from . import runtime as _runtime
 from . import settings as _settings
 from . import ui as ui
 from plugin.sdk.shared.i18n import PluginI18n, tr
+
+_llm_tool = importlib.import_module(f"{__name__}.llm_tool")
 
 # --- Base ---
 NEKO_PLUGIN_META_ATTR = _base.NEKO_PLUGIN_META_ATTR

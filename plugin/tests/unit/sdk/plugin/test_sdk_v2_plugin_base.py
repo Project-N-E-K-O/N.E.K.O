@@ -36,7 +36,10 @@ class _Ctx:
         }
         self.run_updates: list[dict[str, object]] = []
         self.exports: list[dict[str, object]] = []
+        self.image_exports: list[dict[str, object]] = []
         self.pushed_messages: list[dict[str, object]] = []
+        self.attachments: list[dict[str, object]] = []
+        self.user_language = ""
 
     async def get_own_config(self, timeout: float = 5.0) -> dict[str, object]:
         return {"config": {"feature": {"enabled": True}}}
@@ -71,6 +74,19 @@ class _Ctx:
     async def export_push_async(self, **kwargs: object) -> dict[str, object]:
         self.exports.append(dict(kwargs))
         return {"ok": True}
+
+    async def export_push_image_async(self, **kwargs: object) -> dict[str, object]:
+        self.image_exports.append(dict(kwargs))
+        return {"ok": True}
+
+    def get_attachments(self) -> list[dict[str, object]]:
+        return list(self.attachments)
+
+    def get_user_language(self) -> str:
+        return self.user_language
+
+    def set_user_language(self, lang: str) -> None:
+        self.user_language = lang
 
     def push_message(self, **kwargs: object) -> dict[str, object]:
         self.pushed_messages.append(dict(kwargs))
@@ -134,6 +150,30 @@ def test_base_constants_and_meta_defaults() -> None:
     assert meta.sdk_version == SDK_VERSION
     assert meta.sdk_recommended is None
     assert meta.sdk_conflicts == []
+
+
+@pytest.mark.asyncio
+async def test_base_agent_helpers_forward_to_context() -> None:
+    ctx = _Ctx()
+    ctx.attachments = [{"type": "image_url", "url": "data:image/png;base64,aaa"}]
+    plugin = _DemoPlugin(ctx)
+
+    assert plugin.get_attachments() == ctx.attachments
+    plugin.set_user_language("zh-CN")
+    assert plugin.get_user_language() == "zh-CN"
+
+    await plugin.export_push_image(image_url="https://example.test/a.png", description="image")
+    assert ctx.image_exports == [
+        {
+            "run_id": None,
+            "image_data": None,
+            "image_url": "https://example.test/a.png",
+            "mime": None,
+            "description": "image",
+            "metadata": None,
+            "timeout": 10.0,
+        }
+    ]
 
 
 def test_plugin_meta_conflicts_default_factory_isolated() -> None:

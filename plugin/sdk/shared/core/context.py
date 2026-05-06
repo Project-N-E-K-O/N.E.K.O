@@ -37,8 +37,12 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "query_memory",
     "run_update",
     "export_push",
+    "export_push_image",
     "finish",
     "push_message",
+    "get_attachments",
+    "get_user_language",
+    "set_user_language",
     "update_status",
 )
 
@@ -87,6 +91,14 @@ class _HostContextProtocol(Protocol):
     async def run_update_async(self, **kwargs: object) -> object: ...
 
     async def export_push_async(self, **kwargs: object) -> object: ...
+
+    async def export_push_image_async(self, **kwargs: object) -> object: ...
+
+    def get_attachments(self) -> list[dict[str, object]]: ...
+
+    def get_user_language(self) -> str: ...
+
+    def set_user_language(self, lang: str) -> None: ...
 
     def push_message(self, **kwargs: object) -> object: ...
 
@@ -341,6 +353,45 @@ class SdkContext:
             metadata=normalized_metadata,
             timeout=timeout,
         )
+
+    async def export_push_image(
+        self,
+        *,
+        run_id: str | None = None,
+        image_data: bytes | None = None,
+        image_url: str | None = None,
+        mime: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, object] | None = None,
+        timeout: float = 10.0,
+    ) -> object:
+        return await self._host_ctx.export_push_image_async(
+            run_id=run_id,
+            image_data=image_data,
+            image_url=image_url,
+            mime=mime,
+            description=description,
+            metadata=metadata,
+            timeout=timeout,
+        )
+
+    def get_attachments(self) -> list[dict[str, object]]:
+        getter = getattr(self._host_ctx, "get_attachments", None)
+        if not callable(getter):
+            return []
+        result = getter()
+        return list(result) if isinstance(result, list) else []
+
+    def get_user_language(self) -> str:
+        getter = getattr(self._host_ctx, "get_user_language", None)
+        if not callable(getter):
+            return ""
+        return str(getter() or "")
+
+    def set_user_language(self, lang: str) -> None:
+        setter = getattr(self._host_ctx, "set_user_language", None)
+        if callable(setter):
+            setter(lang)
 
     async def finish(
         self,

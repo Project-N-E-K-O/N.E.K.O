@@ -1057,12 +1057,27 @@ def _plugin_process_runner(
 
             run_id = None
             try:
+                ctx._current_lang = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     run_id = ctx_obj.get("run_id")
                     lanlan_name = ctx_obj.get("lanlan_name")
                     if lanlan_name:
                         ctx._current_lanlan = str(lanlan_name)
+                    lang = ctx_obj.get("lang")
+                    if lang:
+                        ctx._current_lang = str(lang)
+            except Exception:
+                pass
+
+            try:
+                raw_att = args.pop("_attachments", None) if isinstance(args, dict) else None
+                current_attachments = raw_att if isinstance(raw_att, list) and raw_att else []
+                if not hasattr(instance, "_run_attachments"):
+                    instance._run_attachments = {}
+                if run_id:
+                    instance._run_attachments[run_id] = current_attachments
+                instance._last_attachments = current_attachments
             except Exception:
                 pass
 
@@ -1116,6 +1131,12 @@ def _plugin_process_runner(
             finally:
                 if run_id:
                     _run_tasks.pop(run_id, None)
+                    try:
+                        run_att = getattr(instance, "_run_attachments", None)
+                        if isinstance(run_att, dict):
+                            run_att.pop(run_id, None)
+                    except Exception:
+                        pass
                 try:
                     res_sender.put(ret, timeout=10.0)
                 except Exception:
@@ -1130,11 +1151,15 @@ def _plugin_process_runner(
             logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
 
             try:
+                ctx._current_lang = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     lanlan_name = ctx_obj.get("lanlan_name")
                     if lanlan_name:
                         ctx._current_lanlan = str(lanlan_name)
+                    lang = ctx_obj.get("lang")
+                    if lang:
+                        ctx._current_lang = str(lang)
             except Exception:
                 pass
 

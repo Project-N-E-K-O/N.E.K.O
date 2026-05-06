@@ -1805,6 +1805,7 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         latest_user_request: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+        lang: Optional[str] = None,
     ) -> TaskResult:
         """
         Execute a user plugin via HTTP /runs endpoint.
@@ -1934,6 +1935,16 @@ class DirectTaskExecutor:
                 safe_args = dict(plugin_args)
             else:
                 safe_args = {}
+
+            attachment_bytes_estimate = 0
+            raw_attachments = safe_args.get("_attachments")
+            if isinstance(raw_attachments, list):
+                for att in raw_attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    url = att.get("url") or att.get("image_url") or ""
+                    if isinstance(url, str) and url.startswith("data:"):
+                        attachment_bytes_estimate += len(url)
             try:
                 # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
                 ctx_obj = safe_args.get("_ctx")
@@ -1944,6 +1955,8 @@ class DirectTaskExecutor:
                 # 添加 conversation_id，用于关联触发事件和对话上下文
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
+                if lang and "lang" not in ctx_obj:
+                    ctx_obj["lang"] = lang
                 # 用户最新原话：framework 在 dispatch 时已经提取过，通过 _ctx 暴露给
                 # plugin。plugin 在内部 NL 决策时，可以拿原文兜底，避免 LLM 改写过的
                 # plugin_args 里 string 字段丢失语气/连词等关键信号。是否使用由 plugin
@@ -1972,7 +1985,11 @@ class DirectTaskExecutor:
                 "args": safe_args,
             }
 
-            timeout = httpx.Timeout(10.0, connect=2.0)
+            http_timeout = 10.0
+            if attachment_bytes_estimate > 0:
+                extra_seconds = (attachment_bytes_estimate / (1024 * 1024)) * 5.0
+                http_timeout += min(extra_seconds, 60.0)
+            timeout = httpx.Timeout(http_timeout, connect=2.0)
             async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
@@ -2192,13 +2209,18 @@ class DirectTaskExecutor:
                 if r.status_code == 200:
                     export_data = r.json()
                     items = export_data.get("items") or []
+                    media_exports: list[Dict[str, Any]] = []
+                    primary_json_consumed = False
                     for item in items:
                         if not isinstance(item, dict):
                             continue
                         # Look for the system trigger_response export
                         if item.get("type") == "json" and (item.get("json") is not None or item.get("json_data") is not None):
+                            if primary_json_consumed:
+                                continue
                             raw = item.get("json") or item.get("json_data")
                             if isinstance(raw, dict):
+                                primary_json_consumed = True
                                 plugin_result["data"] = raw.get("data")
                                 plugin_result["meta"] = raw.get("meta")
                                 if raw.get("error"):
@@ -2207,7 +2229,31 @@ class DirectTaskExecutor:
                                         plugin_result["error"] = err.get("message") or str(err)
                                     elif isinstance(err, str):
                                         plugin_result["error"] = err
-                            break
+                        elif item.get("type") in ("binary_url", "binary", "url"):
+                            item_type = str(item.get("type"))
+                            raw_mime = item.get("mime")
+                            media_entry: Dict[str, Any] = {
+                                "type": item_type,
+                                "mime": str(raw_mime).lower() if isinstance(raw_mime, str) and raw_mime else None,
+                                "description": item.get("description"),
+                                "metadata": item.get("metadata"),
+                            }
+                            if item_type == "binary_url":
+                                media_entry["binary_url"] = item.get("binary_url")
+                            elif item_type == "binary":
+                                media_entry["binary"] = item.get("binary")
+                            elif item_type == "url":
+                                media_entry["url"] = item.get("url")
+                            media_exports.append(media_entry)
+                        elif item.get("type") == "text":
+                            media_exports.append({
+                                "type": "text",
+                                "text": item.get("text"),
+                                "description": item.get("description"),
+                                "metadata": item.get("metadata"),
+                            })
+                    if media_exports:
+                        plugin_result["media"] = media_exports
             except Exception as e:
                 logger.debug("[_await_run_completion] export fetch error: %s", e)
 
@@ -2223,6 +2269,7 @@ class DirectTaskExecutor:
         conversation_id: Optional[str] = None,
         latest_user_request: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+        lang: Optional[str] = None,
     ) -> TaskResult:
         """
         Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
@@ -2239,6 +2286,7 @@ class DirectTaskExecutor:
             conversation_id=conversation_id,
             latest_user_request=latest_user_request,
             on_progress=on_progress,
+            lang=lang,
         )
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
