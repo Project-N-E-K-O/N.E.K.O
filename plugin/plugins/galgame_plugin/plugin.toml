@@ -118,7 +118,7 @@ install_timeout_seconds = 180
 engine_type = "onnxruntime"
 lang_type = "ch"
 model_type = "mobile"
-ocr_version = "PP-OCRv5"
+ocr_version = "PP-OCRv4"
 
 [plugin.i18n]
 default_locale = "zh-CN"

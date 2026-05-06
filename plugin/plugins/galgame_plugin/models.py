@@ -581,7 +581,7 @@ class GalgameRapidOcrConfig:
     rapidocr_engine_type: str = "onnxruntime"
     rapidocr_lang_type: str = "ch"
     rapidocr_model_type: str = "mobile"
-    rapidocr_ocr_version: str = "PP-OCRv5"
+    rapidocr_ocr_version: str = "PP-OCRv4"
 
 
 @dataclass(slots=True, init=False)
