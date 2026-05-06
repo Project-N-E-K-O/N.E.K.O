@@ -30,6 +30,8 @@ DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
 DEFAULT_RAPIDOCR_PIP_SPEC = "rapidocr_onnxruntime"
 DEFAULT_ONNXRUNTIME_PIP_SPEC = "onnxruntime"
 _INSTALL_STATE_NAME = "install_state.json"
+# Leave one core free for the OS / interactive use; floor at 2 so 1-2 core hosts still parallelise.
+_RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, (os.cpu_count() or 2) - 1)
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _RAPIDOCR_IMPORT_CONTEXT_LOCK = threading.RLock()
 
@@ -417,6 +419,58 @@ def _build_runtime_constructor_kwargs(
     return kwargs
 
 
+_SESSION_OPTIONS_PATCH_TLS = threading.local()
+_SESSION_OPTIONS_PATCH_LOCK = threading.Lock()
+_SESSION_OPTIONS_PATCH_INSTALLED = False
+
+
+def _ensure_session_options_patch_installed() -> None:
+    """Patch ort.SessionOptions.__init__ once; the patch only acts on threads that opted in."""
+    global _SESSION_OPTIONS_PATCH_INSTALLED
+    if _SESSION_OPTIONS_PATCH_INSTALLED:
+        return
+    with _SESSION_OPTIONS_PATCH_LOCK:
+        if _SESSION_OPTIONS_PATCH_INSTALLED:
+            return
+        try:
+            import onnxruntime as _ort
+        except Exception:
+            return
+        options_cls = getattr(_ort, "SessionOptions", None)
+        if options_cls is None:
+            return
+        orig_init = options_cls.__init__
+
+        def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            orig_init(self, *args, **kwargs)
+            intra = getattr(_SESSION_OPTIONS_PATCH_TLS, "intra", None)
+            if intra is None:
+                return
+            if getattr(self, "intra_op_num_threads", 0) == 0:
+                self.intra_op_num_threads = intra
+
+        options_cls.__init__ = _patched_init
+        _SESSION_OPTIONS_PATCH_INSTALLED = True
+
+
+@contextmanager
+def _onnxruntime_intra_op_thread_cap(limit: int) -> Iterator[None]:
+    """Clamp SessionOptions.intra_op_num_threads on the calling thread only."""
+    _ensure_session_options_patch_installed()
+    prev = getattr(_SESSION_OPTIONS_PATCH_TLS, "intra", None)
+    _SESSION_OPTIONS_PATCH_TLS.intra = limit
+    try:
+        yield
+    finally:
+        if prev is None:
+            try:
+                del _SESSION_OPTIONS_PATCH_TLS.intra
+            except AttributeError:
+                pass
+        else:
+            _SESSION_OPTIONS_PATCH_TLS.intra = prev
+
+
 def load_rapidocr_runtime(
     *,
     install_target_dir_raw: str,
@@ -441,16 +495,17 @@ def load_rapidocr_runtime(
         runtime_class = getattr(module, "RapidOCR", None)
         if runtime_class is None:
             raise RuntimeError("RapidOCR runtime class not found")
-        runtime = runtime_class(
-            **_build_runtime_constructor_kwargs(
-                runtime_class,
-                engine_type=engine_type,
-                lang_type=lang_type,
-                model_type=model_type,
-                ocr_version=ocr_version,
-                model_cache_dir=model_cache_dir,
+        with _onnxruntime_intra_op_thread_cap(_RAPIDOCR_INFERENCE_THREAD_LIMIT):
+            runtime = runtime_class(
+                **_build_runtime_constructor_kwargs(
+                    runtime_class,
+                    engine_type=engine_type,
+                    lang_type=lang_type,
+                    model_type=model_type,
+                    ocr_version=ocr_version,
+                    model_cache_dir=model_cache_dir,
+                )
             )
-        )
     metadata = {
         "detected_path": str(Path(getattr(module, "__file__", "")).resolve().parent),
         "model_cache_dir": str(model_cache_dir),
