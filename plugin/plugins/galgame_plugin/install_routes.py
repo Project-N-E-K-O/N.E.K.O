@@ -9,10 +9,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from utils.config_manager import get_config_manager
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
     build_install_task_state,
@@ -20,6 +20,7 @@ from plugin.plugins.galgame_plugin.install_tasks import (
     load_latest_install_task_state,
     update_install_task_state,
 )
+from plugin.sdk.shared.storage import PluginStore
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
@@ -485,6 +486,22 @@ _TUTORIAL_DEFAULTS = {
     "started_at": 0.0,
     "completed_at": 0.0,
 }
+_tutorial_store_instance: GalgameStore | None = None
+
+
+def _tutorial_store() -> GalgameStore:
+    global _tutorial_store_instance
+    if _tutorial_store_instance is not None:
+        return _tutorial_store_instance
+    plugin_dir = Path(__file__).resolve().parent
+    plugin_store = PluginStore(
+        plugin_id="galgame_plugin",
+        plugin_dir=plugin_dir,
+        logger=logger,
+        enabled=True,
+    )
+    _tutorial_store_instance = GalgameStore(plugin_store, logger)
+    return _tutorial_store_instance
 
 
 class TutorialProgressPayload(BaseModel):
@@ -495,35 +512,20 @@ class TutorialProgressPayload(BaseModel):
     completed_at: float = 0.0
 
 
-def _tutorial_progress_path() -> Path:
-    runtime_root = get_config_manager().app_docs_dir / "plugin-runtime" / "galgame_plugin"
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    return runtime_root / "tutorial-progress.json"
-
-
 def _read_tutorial_progress() -> dict[str, Any] | None:
-    path = _tutorial_progress_path()
-    if not path.is_file():
-        return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return _tutorial_store().load_tutorial_progress()
     except Exception:
         logger.warning("tutorial progress read failed", exc_info=True)
         return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _write_tutorial_progress(progress: dict[str, Any]) -> None:
-    path = _tutorial_progress_path()
     try:
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(progress, ensure_ascii=False, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
-        tmp_path.replace(path)
+        _tutorial_store().save_tutorial_progress(progress)
     except Exception:
         logger.warning("tutorial progress write failed", exc_info=True)
+        raise
 
 
 def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -567,5 +569,11 @@ async def save_tutorial_progress(
     payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
     current = _normalize_tutorial_progress(_read_tutorial_progress())
     current.update(_normalize_tutorial_progress(payload))
-    _write_tutorial_progress(current)
+    try:
+        _write_tutorial_progress(current)
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": str(exc), "progress": current},
+            status_code=500,
+        )
     return JSONResponse({"ok": True, "progress": current})

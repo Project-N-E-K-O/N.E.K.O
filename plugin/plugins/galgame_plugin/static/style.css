@@ -175,7 +175,7 @@ h1 {
 
 .first-run-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
 }
 
@@ -1816,10 +1816,6 @@ details.panel-scroll-wide[open] {
     grid-template-columns: 1fr 1fr;
   }
 
-  .onboarding-steps {
-    grid-template-columns: 1fr;
-  }
-
   .first-run-actions {
     grid-column: 1 / -1;
     justify-content: flex-start;
@@ -1871,9 +1867,15 @@ body:not(.onboarding-active) #onboardingView {
 
 .onboarding-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 24px;
+}
+
+@media (max-width: 640px) {
+  .onboarding-steps {
+    grid-template-columns: 1fr;
+  }
 }
 
 .onboarding-actions {

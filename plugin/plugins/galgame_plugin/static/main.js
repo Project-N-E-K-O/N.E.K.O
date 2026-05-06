@@ -724,8 +724,10 @@ let latestSnapshotData = null;
 let latestMemoryProcessSnapshot = null;
 let latestOcrWindowSnapshot = null;
 let onboardingDismissed = false;
+let forceShowOnboarding = false;
 let lastSavedStepIndex = -1;
 let latestTutorialProgress = null;
+let tutorialProgressSaveQueue = Promise.resolve();
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
@@ -1705,9 +1707,10 @@ function renderFirstRunGuide(status = {}) {
   const onboardingView = document.getElementById('onboardingView');
 
   if (onboardingView) {
-    if (shouldHideOnboarding) {
+    if (shouldHideOnboarding && !forceShowOnboarding) {
       onboardingView.hidden = true;
       onboardingDismissed = true;
+      forceShowOnboarding = false;
       document.body.classList.remove('onboarding-active');
     } else if (!onboardingDismissed && !readSkipOnboarding()) {
       onboardingView.hidden = false;
@@ -1715,7 +1718,7 @@ function renderFirstRunGuide(status = {}) {
     }
   }
 
-  if (shouldHideMainGuide) {
+  if (shouldHideMainGuide && !forceShowOnboarding) {
     node.hidden = true;
     stepsNode.replaceChildren();
     document.body.classList.remove('onboarding-active');
@@ -1725,7 +1728,7 @@ function renderFirstRunGuide(status = {}) {
     }
     return;
   }
-  if (advancedOpen) {
+  if (advancedOpen && !forceShowOnboarding) {
     return;
   }
 
@@ -6635,25 +6638,31 @@ async function fetchTutorialProgress() {
 }
 
 async function saveTutorialProgress(partial) {
-  const current = latestTutorialProgress || await fetchTutorialProgress() || {};
-  const payload = { ...current, ...(partial || {}) };
-  try {
-    const response = await fetch(TUTORIAL_PROGRESS_URL, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      latestTutorialProgress = data && data.progress ? data.progress : payload;
-    } else {
+  const save = tutorialProgressSaveQueue.catch(() => {}).then(async () => {
+    if (!latestTutorialProgress) {
+      await fetchTutorialProgress();
+    }
+    const payload = { ...(latestTutorialProgress || {}), ...(partial || {}) };
+    try {
+      const response = await fetch(TUTORIAL_PROGRESS_URL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        latestTutorialProgress = data && data.progress ? data.progress : payload;
+      } else {
+        latestTutorialProgress = payload;
+      }
+    } catch (error) {
       latestTutorialProgress = payload;
     }
-  } catch (error) {
-    latestTutorialProgress = payload;
-  }
+  });
+  tutorialProgressSaveQueue = save.catch(() => {});
+  return save;
 }
 
 async function revealDxcamInstallAndTrigger() {
@@ -6663,6 +6672,7 @@ async function revealDxcamInstallAndTrigger() {
 
 async function resetTutorialGuide() {
   onboardingDismissed = false;
+  forceShowOnboarding = true;
   lastSavedStepIndex = -1;
   latestTutorialProgress = null;
   clearSkipOnboarding();
@@ -6757,6 +6767,7 @@ function navigateToInstallPanel(kind) {
 
   persistSkipOnboarding();
   onboardingDismissed = true;
+  forceShowOnboarding = false;
   saveTutorialProgress({ skipped: true }).catch(() => {});
   document.body.classList.remove('onboarding-active');
   const onboardingView = document.getElementById('onboardingView');
@@ -6811,6 +6822,7 @@ async function initialize() {
     });
   } else {
     onboardingDismissed = true;
+    forceShowOnboarding = false;
   }
 
   storageRemove(`${PLUGIN_ID}:last_ui_state:v1`);
@@ -7102,6 +7114,7 @@ document.querySelectorAll('[data-skip-onboarding]').forEach((btn) => {
   btn.addEventListener('click', () => {
     persistSkipOnboarding();
     onboardingDismissed = true;
+    forceShowOnboarding = false;
     document.body.classList.remove('onboarding-active');
     const onboardingView = document.getElementById('onboardingView');
     if (onboardingView) {
