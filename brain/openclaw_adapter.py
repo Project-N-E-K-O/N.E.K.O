@@ -108,6 +108,8 @@ def _extract_json_block(raw_text: str) -> str:
 
 
 class OpenClawAdapter:
+    AUTH_ERROR_STATUS_CODES = frozenset({401, 403})
+
     def __init__(self) -> None:
         self.base_url = DEFAULT_OPENCLAW_URL
         self.process_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_PROCESS_ENDPOINT_PATH}"
@@ -205,6 +207,7 @@ class OpenClawAdapter:
                         "enabled": True,
                         "ready": True,
                         "reasons": [f"OpenClaw(QwenPaw) reachable ({self.health_url})"],
+                        "status_code": response.status_code,
                         "provider": "qwenpaw",
                     }
                 self.last_error = f"HTTP {response.status_code}"
@@ -212,6 +215,7 @@ class OpenClawAdapter:
                     "enabled": True,
                     "ready": False,
                     "reasons": [f"OpenClaw(QwenPaw) responded {response.status_code} ({self.health_url})"],
+                    "status_code": response.status_code,
                     "provider": "qwenpaw",
                 }
         except Exception as exc:
