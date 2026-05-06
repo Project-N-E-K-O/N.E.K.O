@@ -6675,19 +6675,20 @@ async function saveTutorialProgress(partial) {
     if (!latestTutorialProgress) {
       await fetchTutorialProgress();
     }
-    const payload = { ...(latestTutorialProgress || {}), ...(partial || {}) };
     const response = await fetchWithTutorialTimeout(TUTORIAL_PROGRESS_URL, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(partial || {}),
     });
     if (!response.ok) {
       throw new Error(`tutorial progress save failed: HTTP ${response.status}`);
     }
     const data = await response.json();
-    latestTutorialProgress = data && data.progress ? data.progress : payload;
+    if (data && data.progress) {
+      latestTutorialProgress = data.progress;
+    }
     return latestTutorialProgress;
   });
   tutorialProgressSaveQueue = save.catch(() => {});
