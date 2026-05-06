@@ -138,6 +138,11 @@
         // 保存旧连接引用，finally 中确保关闭（防止 try 中途 throw 导致永久泄露）
         let _switchOldSocket = null;
         let _switchOldHeartbeat = null;
+        // MMD→非 MMD 切换时延后 dispose 旧 mmdManager 用的引用：
+        // 清理阶段无条件 dispose 会把旧 MMD 实例销毁，但失败回滚仅重启 Live2D ticker /
+        // VRM animation——MMD 没有恢复路径，从 MMD 切出去时任一步失败都留下空白模型区。
+        // 暂存到 commit 之后 dispose；rollback 时跳过 dispose + 重显容器/按钮。
+        let _mmdDeferredDispose = null;
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -565,11 +570,18 @@
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
-                // MMD→MMD 切换时需要完全销毁旧实例，避免状态残留导致的问题
+                // MMD→MMD 切换时需要完全销毁旧实例，避免新旧 GPU/物理 world 实例并存；
+                // MMD→非 MMD 切换时延后到 commit 之后销毁，让中途失败 rollback 还能让旧
+                // MMD 模型重新可见——否则用户看到空白模型区只能再切一次或刷新。
                 if (window.mmdManager && typeof window.mmdManager.dispose === 'function') {
-                    console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例');
-                    window.mmdManager.dispose();
-                    window.mmdManager = null;
+                    if (effectiveModelType === 'mmd') {
+                        console.log('[猫娘切换] 完全销毁旧 MMD 管理器实例（MMD→MMD）');
+                        window.mmdManager.dispose();
+                        window.mmdManager = null;
+                    } else {
+                        _mmdDeferredDispose = window.mmdManager;
+                        console.log('[猫娘切换] 延后旧 MMD 实例 dispose 到 commit（MMD→', effectiveModelType, '）');
+                    }
                 }
                 if (effectiveModelType !== 'mmd') {
                     document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
@@ -1556,6 +1568,21 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
+            // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
+            if (_mmdDeferredDispose) {
+                try {
+                    if (typeof _mmdDeferredDispose.dispose === 'function') {
+                        _mmdDeferredDispose.dispose();
+                    }
+                } catch (disposeErr) {
+                    console.warn('[猫娘切换] 延后 dispose 旧 MMD 出错:', disposeErr);
+                }
+                if (window.mmdManager === _mmdDeferredDispose) {
+                    window.mmdManager = null;
+                }
+                _mmdDeferredDispose = null;
+            }
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
@@ -1653,6 +1680,29 @@
                         window.vrmManager.startAnimation();
                     }
                 } catch (_e) { /* ignore */ }
+                // MMD rollback 恢复：清理阶段为防 MMD→非 MMD 切换中途失败让模型区空白，
+                // 把旧 mmdManager.dispose 延后到了 commit 之后。这里 commit 没到，旧实例
+                // 还活着；恢复 mmd-container 可见性 + 浮动按钮，让用户看到旧模型而不是空白。
+                if (_mmdDeferredDispose && window.mmdManager === _mmdDeferredDispose) {
+                    try {
+                        const mmdContainer = document.getElementById('mmd-container');
+                        if (mmdContainer) {
+                            mmdContainer.style.removeProperty('display');
+                            mmdContainer.classList.remove('hidden');
+                        }
+                        const mmdCanvas = document.getElementById('mmd-canvas');
+                        if (mmdCanvas) {
+                            clearMMDCanvasLoadingSession(mmdCanvas);
+                        }
+                        if (typeof _mmdDeferredDispose.setupFloatingButtons === 'function') {
+                            _mmdDeferredDispose.setupFloatingButtons();
+                        }
+                    } catch (recoveryErr) {
+                        console.warn('[猫娘切换] MMD rollback 恢复出错:', recoveryErr);
+                    }
+                    // 旧实例继续作为 active mmdManager；不再 commit 时 dispose。
+                    _mmdDeferredDispose = null;
+                }
             }
         } finally {
             clearTimeout(switchWatchdogId);
@@ -1677,6 +1727,19 @@
                     clearInterval(_switchOldHeartbeat);
                 }
             } catch (_e) { /* ignore */ }
+
+            // 兜底 dispose 延后保留的旧 MMD 实例：commit 成功 / rollback 恢复 / 抢占退出
+            // 三条路径都已把 _mmdDeferredDispose 置 null。这里只剩残余 case：catch 进了
+            // stale 分支或 guard 没匹配（如 S.socket !== _switchOldSocket）——orphan 引用
+            // 既不是 active mmdManager 也不会被 commit 路径清理，dispose 释放 GPU 资源。
+            if (_mmdDeferredDispose && window.mmdManager !== _mmdDeferredDispose) {
+                try {
+                    if (typeof _mmdDeferredDispose.dispose === 'function') {
+                        _mmdDeferredDispose.dispose();
+                    }
+                } catch (_e) { /* ignore */ }
+                _mmdDeferredDispose = null;
+            }
 
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
