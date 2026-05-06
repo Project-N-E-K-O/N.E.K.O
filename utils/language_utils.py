@@ -381,7 +381,14 @@ def refresh_global_language(language: str) -> bool:
         return False
 
     with _global_language_lock:
-        if _global_language_initialized and _global_language == short and _global_language_full == full:
+        # ``_global_region is not None`` 也要 hold，否则 ``set_global_language`` 这条
+        # pre-existing 路径（只置 ``_global_language_initialized=True``、不碰 region）
+        # 留下的 ``language=short, region=None`` 状态会让本次 refresh 走早 return，
+        # 漏掉 region 自愈，``get_global_region`` 永久卡 ``'non-china'`` fallback。
+        if (_global_language_initialized
+                and _global_language == short
+                and _global_language_full == full
+                and _global_region is not None):
             return False
         prev_short = _global_language
         prev_full = _global_language_full
