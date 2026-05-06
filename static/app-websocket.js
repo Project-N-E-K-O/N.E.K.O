@@ -1745,6 +1745,34 @@
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
+
+                    // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
+                    // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
+                    // 各自 hide 自己的 #text-input-area，不依赖
+                    // startMicCapture/syncVoiceChatComposerHidden 的 BroadcastChannel
+                    // 链路。原来 hide 只挂在主窗口 startMicCapture 上：
+                    //   - chat.html 子窗口无麦按钮永不调 startMicCapture
+                    //   - reload 后某些 audio session 启动路径不走 startMicCapture
+                    //   - BroadcastChannel 在 reload init 时序窗口里错过事件
+                    // 都会让子窗口的 #text-input-area 始终可见可输入，用户在
+                    // audio session 中打字 → 后端 start_session(text) → 撕重建
+                    // → 撞 PR #1176 修的 race（"neko 已离开"）。本路径与下方
+                    // session_ended_by_server 1844-1846 的 unhide 对偶，移动端
+                    // 维持原来"不 hide"设计（UI 上手机屏小希望保留文本框可见）。
+                    var _tiaStarted = document.getElementById('text-input-area');
+                    if (_tiaStarted) {
+                        if (response.input_mode === 'text') {
+                            _tiaStarted.classList.remove('hidden');
+                        } else if (!window.appUtils || !window.appUtils.isMobile()) {
+                            _tiaStarted.classList.add('hidden');
+                        }
+                    }
+                    if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                        var _shouldHide = response.input_mode !== 'text'
+                            && (!window.appUtils || !window.appUtils.isMobile());
+                        window.syncVoiceChatComposerHidden(_shouldHide);
+                    }
+
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {
