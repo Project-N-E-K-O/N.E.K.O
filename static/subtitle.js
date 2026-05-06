@@ -200,7 +200,6 @@ function splitSubtitleSentences(buffer) {
     function isBoundary(ch, next) {
         if (ch === '\n') return true;
         if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
-        if (isPunctForBoundary(ch) && !next) return false;
         if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
         if (ch === '!' || ch === '?') return true;
         if (ch === '\u2026') return true;
@@ -298,11 +297,13 @@ function writeSubtitleText(text) {
                 presetKey: preset.subtitleSize,
                 maxWidth: presetSize.width,
                 minHeight: presetSize.minHeight,
+                maxHeight: presetSize.maxHeight,
+                baseFont: presetSize.fontSize,
                 availableWidth: Math.max(0, (display.clientWidth || presetSize.width) - 48),
-                availableHeight: Math.max(display.offsetHeight || presetSize.minHeight, presetSize.minHeight)
+                availableHeight: presetSize.maxHeight
             })
             : { fontSize: 17 };
-        subtitleText.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        subtitleText.style.fontSize = layout.fontSize < presetSize.fontSize ? layout.fontSize + 'px' : '';
         syncSubtitleRenderState('subtitle-text-resize');
     }, 200);
 }
@@ -336,28 +337,21 @@ async function translateNewSentencesIncremental(newSentences, requestSnapId) {
         });
 
         if (!response.ok) {
-            appendIncrementalFallback(newSentences, requestSnapId);
+            markIncrementalSentencesHandled(newSentences, requestSnapId);
             return;
         }
 
         var result = await response.json();
         if (requestSnapId !== incrementalRequestId) return;
 
-        if (result.success && result.translated_text &&
-            result.source_lang && result.target_lang &&
-            result.source_lang !== result.target_lang &&
-            result.source_lang !== 'unknown') {
+        if (result.success && result.translated_text) {
             incrementalTranslatedSentences.push(result.translated_text.trim());
-        } else {
-            for (var j = 0; j < newSentences.length; j++) {
-                incrementalTranslatedSentences.push(newSentences[j]);
-            }
         }
         incrementalTranslatedCount += newSentences.length;
         updateIncrementalDisplay();
     } catch (error) {
         if (error.name === 'AbortError') return;
-        appendIncrementalFallback(newSentences, requestSnapId);
+        markIncrementalSentencesHandled(newSentences, requestSnapId);
     } finally {
         if (incrementalAbortController === abortCtrl) {
             incrementalAbortController = null;
@@ -365,11 +359,8 @@ async function translateNewSentencesIncremental(newSentences, requestSnapId) {
     }
 }
 
-function appendIncrementalFallback(sentences, requestSnapId) {
+function markIncrementalSentencesHandled(sentences, requestSnapId) {
     if (requestSnapId !== incrementalRequestId) return;
-    for (var i = 0; i < sentences.length; i++) {
-        incrementalTranslatedSentences.push(sentences[i]);
-    }
     incrementalTranslatedCount += sentences.length;
     updateIncrementalDisplay();
 }
@@ -413,21 +404,6 @@ function updateSubtitleStreamingText(text) {
             incrementalTranslateTimer = null;
             translateNewSentencesIncremental(newSentences, requestSnapId);
         }, 300);
-
-        // 防抖期间先显示原文 preview
-        var preview = incrementalTranslatedSentences.slice();
-        for (var i = 0; i < newSentences.length; i++) {
-            preview.push(newSentences[i]);
-        }
-        if (rest.trim()) preview.push(rest.trim());
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(preview.join(' '));
-    } else if (rest.trim()) {
-        // 无新句子但有尾部更新
-        var displayParts = incrementalTranslatedSentences.slice();
-        displayParts.push(rest.trim());
-        ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(displayParts.join(' '));
     }
 }
 
@@ -590,7 +566,7 @@ async function translateAndShowSubtitle(text) {
     // 无剩余 → 直接显示已有的增量翻译
     if (!remainingText.trim()) {
         ensureSubtitleVisibleIfEnabled();
-        writeSubtitleText(incrementalTranslatedSentences.join(' ') || text);
+        writeSubtitleText(incrementalTranslatedSentences.join(' '));
         return;
     }
 
@@ -618,11 +594,8 @@ async function translateAndShowSubtitle(text) {
 
         if (!response.ok) {
             console.warn('字幕翻译请求失败:', response.status);
-            var fallbackParts = incrementalTranslatedSentences.slice();
-            if (remainingSentences.length) fallbackParts = fallbackParts.concat(remainingSentences);
-            if (trailingRest && trailingRest.trim()) fallbackParts.push(trailingRest.trim());
             ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(fallbackParts.join(' ') || text);
+            writeSubtitleText(incrementalTranslatedSentences.join(' '));
             return;
         }
 
@@ -633,21 +606,12 @@ async function translateAndShowSubtitle(text) {
         }
         if (!subtitleEnabled) return;
 
-        if (result.success && result.translated_text &&
-            result.source_lang && result.target_lang &&
-            result.source_lang !== result.target_lang &&
-            result.source_lang !== 'unknown') {
+        if (result.success && result.translated_text) {
             incrementalTranslatedSentences.push(result.translated_text.trim());
             ensureSubtitleVisibleIfEnabled();
             writeSubtitleText(incrementalTranslatedSentences.join(' '));
             console.log('字幕翻译完成:', incrementalTranslatedSentences.join(' ').substring(0, 80));
         } else {
-            if (remainingSentences.length) {
-                incrementalTranslatedSentences = incrementalTranslatedSentences.concat(remainingSentences);
-            }
-            if (trailingRest && trailingRest.trim()) {
-                incrementalTranslatedSentences.push(trailingRest.trim());
-            }
             ensureSubtitleVisibleIfEnabled();
             writeSubtitleText(incrementalTranslatedSentences.join(' '));
         }
@@ -655,7 +619,7 @@ async function translateAndShowSubtitle(text) {
         if (error.name === 'AbortError') return;
         if (subtitleEnabled && requestTurnId === currentTurnId) {
             ensureSubtitleVisibleIfEnabled();
-            writeSubtitleText(text);
+            writeSubtitleText(incrementalTranslatedSentences.join(' '));
         }
         console.error('字幕翻译异常:', {
             error: error.message,
@@ -798,14 +762,14 @@ window.subtitleBridge = {
         });
 
         if (subtitleEnabled) {
-            // 优先显示已有的增量翻译，其次原文
+            // 只显示译文；翻译回来前不预览原文
             var incrementalText = incrementalTranslatedSentences.join(' ');
             if (incrementalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText(incrementalText);
             } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(currentTurnOriginalText);
+                writeSubtitleText('');
             } else {
                 ensureSubtitleVisibleIfEnabled();
                 writeSubtitleText('');
@@ -837,7 +801,7 @@ window.subtitleBridge = {
             }
             hideSubtitle();
         } else {
-            // 优先显示已有的增量翻译
+            // 只显示译文；翻译回来前不预览原文
             var incrementalText = incrementalTranslatedSentences.join(' ');
             if (incrementalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
@@ -847,7 +811,7 @@ window.subtitleBridge = {
                 }
             } else if (currentTurnOriginalText && currentTurnOriginalText.trim()) {
                 ensureSubtitleVisibleIfEnabled();
-                writeSubtitleText(currentTurnOriginalText);
+                writeSubtitleText('');
                 if (isCurrentTurnFinalized) {
                     translateAndShowSubtitle(currentTurnOriginalText);
                 }

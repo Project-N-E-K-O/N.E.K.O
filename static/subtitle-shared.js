@@ -19,9 +19,9 @@
         subtitleSize: 'subtitleSize'
     };
     var SIZE_PRESETS = {
-        small: { width: 400, minHeight: 60 },
-        medium: { width: 600, minHeight: 80 },
-        large: { width: 800, minHeight: 100 }
+        small:  { width: 400, minHeight: 36, maxHeight: 120, fontSize: 14 },
+        medium: { width: 600, minHeight: 40, maxHeight: 160, fontSize: 17 },
+        large:  { width: 800, minHeight: 48, maxHeight: 200, fontSize: 21 }
     };
     var UI_KEY_MAP = {
         settingsBtn: 'subtitle.settings.settingsBtn',
@@ -442,6 +442,10 @@
         var preset = getSizePreset(size);
         display.dataset.subtitleSize = normalizeSizePreset(size);
         display.style.minHeight = preset.minHeight + 'px';
+        display.style.maxHeight = preset.maxHeight + 'px';
+        display.style.fontSize = preset.fontSize + 'px';
+        display.style.setProperty('--subtitle-max-height', preset.maxHeight + 'px');
+        display.style.setProperty('--subtitle-content-max-height', Math.max(24, preset.maxHeight - 40) + 'px');
         if (!options || options.host !== 'window') {
             display.style.setProperty('--subtitle-max-width', preset.width + 'px');
         }
@@ -455,7 +459,7 @@
         applySubtitlePreset(refs.display, state.subtitleSize, { host: host });
         refs.display.classList.toggle('drag-anywhere', !!state.subtitleDragAnywhere);
         if (refs.dragHandle) {
-            refs.dragHandle.style.display = state.subtitleDragAnywhere ? 'none' : '';
+            refs.dragHandle.style.display = state.subtitleDragAnywhere ? '' : 'none';
         }
         if (refs.langSelect) {
             refs.langSelect.value = state.userLanguage;
@@ -691,12 +695,12 @@
         }
 
         function onHandleMouseDown(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             beginDrag(e);
         }
 
         function onHandleTouchStart(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             beginTouchDrag(e);
         }
 
@@ -795,13 +799,13 @@
         }
 
         function onHandleMouseDown(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             startDrag(e);
             refs.dragHandle.style.cursor = 'grabbing';
         }
 
         function onHandleTouchStart(e) {
-            if (isDragAnywhereMode()) return;
+            if (!isDragAnywhereMode()) return;
             startDrag(e);
             refs.dragHandle.style.cursor = 'grabbing';
         }
@@ -876,15 +880,25 @@
         }
 
         if (refs.settingsBtn && refs.settingsPanel) {
+            var notifySettingsPanelChanged = function(source) {
+                if (typeof options.onSettingsApplied === 'function') {
+                    options.onSettingsApplied(getSettings(), refs, {
+                        changedKeys: [],
+                        source: source
+                    });
+                }
+            };
             var onSettingsClick = function(e) {
                 e.stopPropagation();
                 refs.settingsPanel.classList.toggle('hidden');
+                notifySettingsPanelChanged('subtitle-ui-panel');
             };
             var onDocumentDown = function(e) {
                 if (refs.settingsPanel.classList.contains('hidden')) return;
                 if (refs.settingsPanel.contains(e.target)) return;
                 if (refs.settingsBtn.contains(e.target)) return;
                 refs.settingsPanel.classList.add('hidden');
+                notifySettingsPanelChanged('subtitle-ui-panel');
             };
             refs.settingsBtn.addEventListener('click', onSettingsClick);
             document.addEventListener('mousedown', onDocumentDown);

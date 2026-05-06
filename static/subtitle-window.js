@@ -17,14 +17,20 @@
         var api = window.nekoSubtitle;
         var state = SubtitleShared.getSettings();
         var preset = SubtitleShared.getSizePreset(state.subtitleSize);
+        var settingsPanelOpen = refs.settingsPanel && !refs.settingsPanel.classList.contains('hidden');
+        var panelHeight = settingsPanelOpen && refs.settingsPanel
+            ? refs.settingsPanel.offsetHeight
+            : 0;
+        var panelGap = settingsPanelOpen ? 8 : 0;
 
         SubtitleShared.applySubtitlePreset(refs.display, state.subtitleSize, { host: 'window' });
+        refs.display.style.maxHeight = preset.maxHeight + 'px';
 
         if (!refs.text) return;
         if (!currentTranscript.trim()) {
             refs.text.style.fontSize = '';
             if (api && typeof api.setSize === 'function') {
-                api.setSize(preset.width, Math.max(preset.minHeight, WINDOW_DROPDOWN_HEIGHT));
+                api.setSize(preset.width, preset.minHeight + panelGap + panelHeight);
             }
             return;
         }
@@ -35,11 +41,12 @@
             presetKey: state.subtitleSize,
             maxWidth: preset.width,
             minHeight: preset.minHeight,
-            maxHeight: 280
+            maxHeight: preset.maxHeight,
+            baseFont: preset.fontSize
         });
-        refs.text.style.fontSize = layout.fontSize < 17 ? layout.fontSize + 'px' : '';
+        refs.text.style.fontSize = layout.fontSize < preset.fontSize ? layout.fontSize + 'px' : '';
         if (api && typeof api.setSize === 'function') {
-            api.setSize(layout.width, Math.max(layout.height, WINDOW_DROPDOWN_HEIGHT));
+            api.setSize(layout.width, Math.max(layout.height + panelGap + panelHeight, preset.minHeight));
         }
     }
 
