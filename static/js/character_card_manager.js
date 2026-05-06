@@ -5517,6 +5517,12 @@ async function rebuildSavedCatgirlPanel(form, catgirlName) {
         const freshData = await loadCharacterData();
         const rawData = freshData?.['猫娘']?.[catgirlName] || {};
         const wrapper = container.closest('.catgirl-panel-wrapper');
+        // 新建→已创建 原地切换：跟 openCatgirlPanel 那条路径对偶，给 wrapper 也补上
+        // dataset.catgirlName，否则 _refreshOpenCatgirlPanelActions 找不到面板对应的角色名、
+        // 切角色后这个 panel 的按钮态不会被刷新。
+        if (wrapper && catgirlName) {
+            wrapper.dataset.catgirlName = catgirlName;
+        }
         const leftSection = wrapper?.querySelector('.catgirl-panel-left');
         const metaBlock = leftSection?.querySelector('#card-meta-block');
         if (metaBlock && typeof renderCardMetaBlock === 'function') {

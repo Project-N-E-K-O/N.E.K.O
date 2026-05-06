@@ -163,10 +163,19 @@
         // 永卡 true，后续 broadcast 触发的切换全在前面 isSwitchingCatgirl 早退分支被吞掉，
         // 且 ws 重连也救不回来——只能刷页面。墙钟兜底强制重置标志，让用户能再次触发切换自愈。
         // 45s 留足真实大模型加载空间（VRM/MMD 偶尔 20-30s），又不至于让用户等到放弃。
+        //
+        // attempt id 归属：watchdog 触发后用户重试新一轮切换时，老 attempt 的 promise 链
+        // 如果苏醒走到 finally，会把新 attempt 的标志也一并清掉、放第三次切换并发进来。
+        // 给每次切换一个 id，watchdog 和 finally 都只在 id 匹配时才动 isSwitchingCatgirl，
+        // 老 attempt 的副作用就被锁在自己 attempt 内。
+        const myAttemptId = (S._switchAttemptCounter = (S._switchAttemptCounter || 0) + 1);
+        S._currentSwitchAttemptId = myAttemptId;
         const switchWatchdogId = setTimeout(() => {
+            if (S._currentSwitchAttemptId !== myAttemptId) return;
             if (S.isSwitchingCatgirl) {
                 console.error('[猫娘切换] watchdog 超时 45s，强制重置 isSwitchingCatgirl；上一次切换很可能挂在某个无 timeout 的 await（如 _waitForModelVisualStability / oggOpusDecoder.reset / model load）');
                 S.isSwitchingCatgirl = false;
+                S._currentSwitchAttemptId = null;
                 try {
                     showStatusToast(window.t ? window.t('app.switchCatgirlWatchdog') : '上次切换似乎卡住了，请再点一次切换', 5000);
                 } catch (_e) { /* ignore toast failures */ }
@@ -1371,6 +1380,11 @@
             }
         } finally {
             clearTimeout(switchWatchdogId);
+            // attempt id 归属：watchdog 触发后老 attempt 苏醒走到这里时不能动新 attempt 的标志。
+            // 注意 socket / 模型清理仍要做（否则老 attempt 持有的旧资源会泄漏），只有
+            // isSwitchingCatgirl / _currentSwitchAttemptId 这两个全局门闩需要 attempt 隔离。
+            const isCurrentAttempt = (S._currentSwitchAttemptId === myAttemptId);
+
             // 双重保障：若新 socket 已接管，确保旧连接被关闭（即使 try 中途 throw）。
             // 真正的 stale-onclose guard 在 app-websocket.js 的 onclose 早退
             // (S.socket !== _thisSocket)，本层是第二道防线。
@@ -1388,7 +1402,12 @@
                 }
             } catch (_e) { /* ignore */ }
 
-            S.isSwitchingCatgirl = false;
+            if (isCurrentAttempt) {
+                S.isSwitchingCatgirl = false;
+                S._currentSwitchAttemptId = null;
+            } else {
+                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl 不动');
+            }
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;
 
