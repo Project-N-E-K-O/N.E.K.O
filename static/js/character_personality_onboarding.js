@@ -380,7 +380,13 @@
                     return;
                 }
                 const source = String(event.detail.source || '').trim().toLowerCase();
-                if (source === 'auto' && this.isTutorialPromptSettled(this.lastTutorialPromptState)) {
+                const tutorialActuallyRunning = !!(window.universalTutorialManager
+                    && window.universalTutorialManager.isTutorialRunning);
+                if (
+                    source === 'auto'
+                    && !tutorialActuallyRunning
+                    && this.isTutorialPromptSettled(this.lastTutorialPromptState)
+                ) {
                     return;
                 }
                 this.pendingResumeAfterTutorial = true;

@@ -485,6 +485,61 @@ def test_onboarding_ignores_stale_auto_home_tutorial_start_after_prompt_complete
 
 
 @pytest.mark.frontend
+def test_onboarding_hides_overlay_when_real_auto_tutorial_starts_after_overlay(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = true;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_hidden()
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
 def test_onboarding_does_not_treat_tutorial_prompt_fetch_failure_as_settled(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(
