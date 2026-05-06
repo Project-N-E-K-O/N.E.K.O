@@ -353,7 +353,8 @@ class BiliDMPlugin(NekoPluginBase):
             return Err(SdkError("INVALID_ARGUMENT: uid 必须是纯数字"))
 
         user_nickname = "" if level == "admin" else nickname
-        self.permission_mgr.add_user(uid_str, level, user_nickname)
+        if not self.permission_mgr.add_user(uid_str, level, user_nickname):
+            return Err(SdkError("INVALID_ARGUMENT: level 无效"))
         self._refresh_admin_uid()
 
         # 使现有会话失效
@@ -516,6 +517,7 @@ class BiliDMPlugin(NekoPluginBase):
         )
 
         # 构建消息文本
+        pending_image_b64: Optional[str] = None
         if content_type == "image_url":
             # 下载图片转 base64（用于 AI 分析）
             b64_url = None
@@ -523,7 +525,8 @@ class BiliDMPlugin(NekoPluginBase):
                 b64_url = await self.bili_client.download_image_as_base64(content)
             message_text = "[用户发送了一张图片]"
             if b64_url:
-                message_text = "[用户发送了一张图片，已下载为 base64]"
+                pending_image_b64 = b64_url
+                message_text = "[用户发送了一张图片]"
         elif msg_kind == "share_video":
             message_text = content  # 已经是格式化的视频信息
         else:
@@ -553,6 +556,7 @@ class BiliDMPlugin(NekoPluginBase):
             permission_level=permission_level,
             sender_uid=sender_uid,
             user_nickname=bili_nickname,
+            pending_image_b64=pending_image_b64,
         )
 
         if reply_text:
@@ -573,6 +577,7 @@ class BiliDMPlugin(NekoPluginBase):
         sender_uid: str,
         user_nickname: Optional[str] = None,
         persist_memory: Optional[bool] = None,
+        pending_image_b64: Optional[str] = None,
     ) -> Optional[str]:
         """生成 AI 回复内容"""
         if permission_level not in ("admin", "trusted"):
@@ -682,6 +687,10 @@ class BiliDMPlugin(NekoPluginBase):
 
             async with user_data["lock"]:
                 reply_chunks.clear()
+
+                # 如果有图片数据，先通过 stream_image 加入待发送队列
+                if pending_image_b64:
+                    await user_session.stream_image(pending_image_b64)
 
                 self.logger.info(f"发送消息到 AI (会话: {session_key}, 长度: {len(message)})")
                 await asyncio.wait_for(

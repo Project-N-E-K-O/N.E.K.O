@@ -41,19 +41,20 @@ class PermissionManager:
         level_text = str(level or "").strip().lower()
         return level_text if level_text in cls.VALID_LEVELS else None
 
-    def add_user(self, uid: str, level: str = "trusted", nickname: str = ""):
+    def add_user(self, uid: str, level: str = "trusted", nickname: str = "") -> bool:
         """添加用户"""
         uid_str = self._normalize_uid(uid)
         if not uid_str:
-            return
+            return False
         normalized = self._normalize_level(level)
         if not normalized:
-            return
+            return False
         self._users[uid_str] = normalized
         if nickname:
             self._nicknames[uid_str] = nickname
         elif uid_str in self._nicknames:
             del self._nicknames[uid_str]
+        return True
 
     def remove_user(self, uid: str):
         """移除用户"""
