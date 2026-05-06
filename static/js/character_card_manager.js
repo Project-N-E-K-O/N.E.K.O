@@ -2896,6 +2896,7 @@ async function loadCharacterCards() {
 
 // 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
 window._cardFaceNames = window._cardFaceNames || new Set();
+const CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
 async function loadCardFaceNames() {
     try {
         const resp = await fetch('/api/characters/card-faces');
@@ -2913,6 +2914,21 @@ function openManagedPopup(url, windowName, features) {
     window._openWindows = window._openWindows || {};
     const existingWindow = window._openWindows[windowName];
     if (existingWindow && !existingWindow.closed) {
+        const replacementName = `${windowName}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const replacementWindow = window.open(url, replacementName, features);
+        if (replacementWindow) {
+            window._openWindows[windowName] = replacementWindow;
+            try { replacementWindow.focus(); } catch (_) {}
+            try { existingWindow.close(); } catch (_) {}
+            return replacementWindow;
+        }
+
+        try {
+            // 新窗口被拦截时才复用旧窗口，仍然保证内容跟随最后一次打开。
+            existingWindow.location.href = new URL(url, window.location.origin).toString();
+        } catch (error) {
+            console.warn('更新弹窗地址失败:', error);
+        }
         existingWindow.focus();
         return existingWindow;
     }
@@ -2925,6 +2941,7 @@ function openManagedPopup(url, windowName, features) {
     }
     return popup;
 }
+window.openManagedPopup = openManagedPopup;
 
 function refreshOpenCardMetaBlock(name) {
     const panelWrapper = document.getElementById('catgirl-panel-wrapper');
@@ -4126,8 +4143,7 @@ function openCatgirlPanel(card, originEl) {
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
-        const windowName = `card_maker_${encodeURIComponent(currentName)}`;
-        openManagedPopup(makerUrl, windowName, 'width=1200,height=800');
+        openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
 
     // 点击卡面主体或右侧按钮打开角色卡制作页面
@@ -5680,7 +5696,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
-                    `card_maker_${encodeURIComponent(catgirlName)}`,
+                    CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
                     'width=1200,height=800'
                 );
                 if (!makerWindow) {
