@@ -2,7 +2,7 @@
 
 ## Overview
 
-`neko-plugin-cli` defines two package types:
+`neko_plugin_cli` defines two package types:
 
 - `.neko-plugin`: single plugin package
 - `.neko-bundle`: multi-plugin bundle package
@@ -24,11 +24,7 @@ Both package types are standard ZIP archives and must remain compatible with nor
 
 ## CLI Entry
 
-`neko-plugin-cli` now uses a single CLI entry. The directory was historically
-named `plugin/neko-plugin-cli/` (hyphen) to follow CLI naming conventions, but
-hyphens make the directory unimportable as a Python package and silently break
-Nuitka standalone bundling. It now lives at `plugin/neko_plugin_cli/` and is
-invoked via the standard `python -m` form:
+`neko_plugin_cli` now uses a single CLI entry:
 
 ```bash
 uv run python -m plugin.neko_plugin_cli.cli <command> ...
@@ -41,6 +37,12 @@ Current commands:
 - `verify`
 - `unpack`
 - `analyze`
+- `init`
+- `init-repo`
+- `setup-repo`
+- `doctor`
+- `release-check`
+- `validate`
 
 Examples:
 
@@ -313,7 +315,7 @@ Recommended pipeline for a bundle:
 
 ## Status
 
-This document is an initial draft for `neko-plugin-cli`.
+This document is an initial draft for `neko_plugin_cli`.
 
 Current intent:
 

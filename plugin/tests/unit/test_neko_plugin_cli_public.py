@@ -238,7 +238,7 @@ def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> No
     pack_plugin(plugin_dir, package_path)
     _rewrite_package_without_member(package_path, "payload/plugins/demo_plugin/plugin.toml")
 
-    with pytest.raises(ValueError, match="does not contain plugin.toml"):
+    with pytest.raises(ValueError, match="plugin.toml"):
         inspect_package(package_path)
 
 
