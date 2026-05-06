@@ -1738,20 +1738,19 @@ async def get_catgirl_voice_mode_status(name: str):
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
-        return JSONResponse({
+        return _json_no_store_response({
             'is_voice_mode': False,
             'is_current': is_current,
             'is_active': False,
             'is_starting': False,
             'is_voice_starting': False,
         })
-    
+
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
     is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
-    starting_input_mode = getattr(mgr, 'starting_input_mode', None)
-    is_audio_starting = bool(is_current and is_starting and (starting_input_mode or getattr(mgr, 'input_mode', '')) == 'audio')
-    
+    is_audio_starting = _is_current_catgirl_voice_session_starting(name, characters, session_manager)
+
     is_voice_mode = is_audio_starting
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
@@ -1760,8 +1759,8 @@ async def get_catgirl_voice_mode_status(name: str):
             getattr(mgr, 'input_mode', '') == 'audio'
             or (mgr.session and isinstance(mgr.session, OmniRealtimeClient))
         )
-    
-    return JSONResponse({
+
+    return _json_no_store_response({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
         'is_active': is_active,

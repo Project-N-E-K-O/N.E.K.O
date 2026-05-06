@@ -449,6 +449,10 @@
                 if (lanlanWaitTimer) { clearTimeout(lanlanWaitTimer); lanlanWaitTimer = null; }
                 if (socketPollTimer) { clearTimeout(socketPollTimer); socketPollTimer = null; }
                 clearAutoReconnectTimer();
+                // 这次 ensureWebSocketOpen 已结束，归零退避状态，避免下次调用继承旧 attempts
+                // 让退避一上来又是 ~2s 的 stale 节奏。
+                _lanlanNameWaitAttempts = 0;
+                _lanlanNameWaitLastLogAt = 0;
                 fn(arg);
             };
 
