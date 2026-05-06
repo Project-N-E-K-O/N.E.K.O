@@ -89,7 +89,10 @@ def _analyze_sdk_overlap(
     for source in sources:
         raw = source.sdk_supported if kind == "supported" else source.sdk_recommended
         plugin_specifiers[source.plugin_id] = raw
-        specifier_sets.append(SpecifierSet(raw or ""))
+        try:
+            specifier_sets.append(SpecifierSet(raw or ""))
+        except InvalidSpecifier:
+            specifier_sets.append(SpecifierSet(""))
 
     matching_versions = _probe_matching_versions(
         list(plugin_specifiers.values()),

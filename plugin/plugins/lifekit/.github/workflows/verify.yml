@@ -38,6 +38,7 @@ jobs:
       - name: Release check
         working-directory: neko/plugin
         run: |
+          set -euo pipefail
           mkdir -p neko_plugin_cli/target
           uv run python neko_plugin_cli/cli.py release-check "${PLUGIN_ID}" | tee "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import tempfile
 import zipfile
@@ -15,6 +16,20 @@ from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
 
 _SCHEMA_VERSION = "1.0"
+_SAFE_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_package_id(package_id: str, *, label: str = "package_id") -> str:
+    value = package_id.strip()
+    if not value:
+        raise ValueError(f"{label} must not be empty")
+    if not _SAFE_PACKAGE_ID_RE.fullmatch(value):
+        raise ValueError(
+            f"{label} must contain only ASCII letters, numbers, dots, underscores, or hyphens"
+        )
+    if value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError(f"{label} must be a safe single path segment")
+    return value
 
 
 @dataclass(slots=True)
@@ -86,7 +101,7 @@ class PluginPacker:
             self.write_metadata(
                 payload_hash=payload.payload_hash,
                 source_kind="local",
-                source_paths=[source.plugin_dir],
+                source_paths=[Path(source.plugin_id)],
                 paths=paths,
             )
 
@@ -142,7 +157,10 @@ class PluginPacker:
                 f"Each plugin in a bundle must have a unique [plugin].id in its plugin.toml."
             )
 
-        resolved_bundle_id = (bundle_id or self.build_bundle_id(plugin_ids)).strip()
+        resolved_bundle_id = _validate_package_id(
+            bundle_id or self.build_bundle_id(plugin_ids),
+            label="bundle_id",
+        )
         resolved_package_name = (package_name or f"{resolved_bundle_id} bundle").strip()
         resolved_description = (package_description or f"Bundle package for {', '.join(plugin_ids)}").strip()
         resolved_version = version.strip() or "0.1.0"
@@ -161,7 +179,7 @@ class PluginPacker:
             self.write_metadata(
                 payload_hash=payload.payload_hash,
                 source_kind="local_bundle",
-                source_paths=[source.plugin_dir for source in sources],
+                source_paths=[Path(source.plugin_id) for source in sources],
                 paths=paths,
             )
 
@@ -303,7 +321,14 @@ class PluginPacker:
         source_paths: list[Path],
         paths: PackPaths,
     ) -> None:
-        source_values = ", ".join(f'"{escape_string(str(item))}"' for item in source_paths)
+        safe_sources = []
+        for item in source_paths:
+            item_path = Path(item)
+            if item_path.is_absolute():
+                safe_sources.append(item_path.name)
+            else:
+                safe_sources.append(item_path.as_posix())
+        source_values = ", ".join(f'"{escape_string(item)}"' for item in safe_sources)
         content = "\n".join(
             [
                 "[payload]",

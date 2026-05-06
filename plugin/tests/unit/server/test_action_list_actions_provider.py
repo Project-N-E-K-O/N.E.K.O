@@ -69,16 +69,14 @@ class TestMapListAction:
         assert d is not None
         assert d.open_in == "same_tab"
 
-    def test_trigger_kinds_become_button(self) -> None:
+    def test_non_routable_kinds_are_skipped(self) -> None:
         for kind in ("toggle", "trigger", "action", "button", "run", "custom_kind"):
             d = module._map_list_action("demo", "Demo", {
                 "id": f"do_{kind}",
                 "kind": kind,
                 "label": f"Do {kind}",
             })
-            assert d is not None, f"kind={kind} should produce a descriptor"
-            assert d.control == "button", f"kind={kind} should map to button"
-            assert d.type == "instant"
+            assert d is None, f"kind={kind} is not executable through the actions service yet"
 
     def test_empty_kind_returns_none(self) -> None:
         d = module._map_list_action("demo", "Demo", {
@@ -95,7 +93,7 @@ class TestMapListAction:
     def test_action_id_format(self) -> None:
         d = module._map_list_action("my-plugin", "My Plugin", {
             "id": "do_stuff",
-            "kind": "action",
+            "kind": "ui",
             "label": "Do Stuff",
         })
         assert d is not None
@@ -121,14 +119,13 @@ class TestCollectListActions:
             ],
         }})
         actions = _collect(state)
-        assert len(actions) == 2
-        assert actions[0].control == "button"
-        assert actions[1].type == "chat_inject"
+        assert len(actions) == 1
+        assert actions[0].type == "chat_inject"
 
     def test_filter_by_plugin_id(self) -> None:
         state = _FakeState(plugins={
             "a": {"name": "A", "list_actions": [{"id": "x", "kind": "action", "label": "X"}]},
-            "b": {"name": "B", "list_actions": [{"id": "y", "kind": "action", "label": "Y"}]},
+            "b": {"name": "B", "list_actions": [{"id": "y", "kind": "ui", "label": "Y"}]},
         })
         actions = _collect(state, plugin_id="b")
         assert len(actions) == 1
@@ -140,10 +137,12 @@ class TestCollectListActions:
             "list_actions": [
                 "not-a-dict",
                 {"id": "ok", "kind": "action", "label": "OK"},
+                {"id": "open", "kind": "ui", "label": "Open"},
             ],
         }})
         actions = _collect(state)
         assert len(actions) == 1
+        assert actions[0].action_id == "demo:open"
 
     def test_non_mapping_meta_skipped(self) -> None:
         state = _FakeState(plugins={"bad": "not-a-dict"})

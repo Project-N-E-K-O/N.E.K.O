@@ -43,6 +43,7 @@ from .routers import (
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
+_SECRET_CONFIG_KEYS = frozenset({"amap_key", "baidu_map_key"})
 
 
 @neko_plugin
@@ -118,6 +119,14 @@ class LifeKitPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("lifekit", {}) if isinstance(cfg.get("lifekit"), dict) else {}
+
+    def _public_config(self) -> Dict[str, Any]:
+        """Return config safe to expose to hosted UI and plugin actions."""
+        public = dict(self._cfg)
+        for key in _SECRET_CONFIG_KEYS:
+            if public.get(key):
+                public[key] = "***"
+        return public
 
     # ── locale 解析（供 routers 调用）──
 
@@ -269,10 +278,16 @@ class LifeKitPlugin(NekoPluginBase):
 
             def _extract(loc: dict) -> Optional[Dict[str, Any]]:
                 city = loc.get("city")
-                lat = loc.get("lat")
-                lon = loc.get("lon")
-                if not city or lat is None or lon is None:
+                raw_lat = loc.get("lat")
+                raw_lon = loc.get("lon")
+                if not city or raw_lat is None or raw_lon is None:
                     self.logger.debug("Skipping saved location with missing fields: {}", loc.get("label", "?"))
+                    return None
+                try:
+                    lat = float(raw_lat)
+                    lon = float(raw_lon)
+                except (TypeError, ValueError):
+                    self.logger.debug("Skipping saved location with invalid coordinates: {}", loc.get("label", "?"))
                     return None
                 return {"city": city, "lat": lat, "lon": lon, "country": loc.get("country", "")}
 
@@ -305,7 +320,7 @@ class LifeKitPlugin(NekoPluginBase):
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         locations = await self._load_saved_locations_for_ui()
         return {
-            "config": dict(self._cfg),
+            "config": self._public_config(),
             "locations": locations,
             "location_count": len(locations),
             "default_location": next((dict(item) for item in locations if item.get("is_default")), None),
@@ -328,7 +343,7 @@ class LifeKitPlugin(NekoPluginBase):
         description=tr("entries.getConfig.description", default="获取生活助手当前配置。"),
     )
     async def get_config_entry(self, **_):
-        return Ok(dict(self._cfg))
+        return Ok(self._public_config())
 
     @ui.action(
         label=tr("actions.updateConfig.label", default="Save config"),

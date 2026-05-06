@@ -21,4 +21,5 @@ async def test_poi_service_reports_provider_errors() -> None:
 
     assert result.items == []
     assert "broken" in result.error
-    assert "upstream down" in result.error
+    assert "provider error" in result.error
+    assert "upstream down" not in result.error

@@ -244,9 +244,12 @@ class BaiduMapProvider:
         url = url_map.get(mode)
         if not url:
             return []
-        params: Dict[str, str] = {"ak": self.api_key, "origin": origin, "destination": dest}
-        if mode == "transit":
-            params["coord_type"] = "wgs84"
+        params: Dict[str, str] = {
+            "ak": self.api_key,
+            "origin": origin,
+            "destination": dest,
+            "coord_type": "wgs84",
+        }
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
@@ -307,7 +310,7 @@ class OSRMProvider:
     ) -> List[Route]:
         if mode == "transit":
             return []  # OSRM 不支持公交
-        profile_map = {"driving": "car", "bicycling": "bike", "walking": "foot"}
+        profile_map = {"driving": "driving", "bicycling": "cycling", "walking": "walking"}
         profile = profile_map.get(mode, "car")
         coords = f"{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
         url = f"{self.base_url}/route/v1/{profile}/{coords}"

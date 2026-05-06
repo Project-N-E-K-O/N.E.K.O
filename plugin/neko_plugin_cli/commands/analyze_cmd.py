@@ -21,9 +21,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    plugin_dirs = [resolve_plugin_dir_candidate(item, defaults=defaults) for item in args.plugins]
 
     try:
+        plugin_dirs = [resolve_plugin_dir_candidate(item, defaults=defaults) for item in args.plugins]
         result = analyze_bundle_plugins(plugin_dirs, current_sdk_version=args.current_sdk_version)
     except Exception as exc:
         print(f"[FAIL] analyze: {exc}", file=sys.stderr)

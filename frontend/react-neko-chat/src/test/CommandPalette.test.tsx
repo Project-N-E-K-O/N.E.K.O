@@ -45,6 +45,18 @@ const button: CommandItem = {
   keywords: ['demo', 'do_thing'],
 };
 
+const buttonWithParams: CommandItem = {
+  ...button,
+  action_id: 'system:demo:entry:with_params',
+  label: 'With Params',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Name' },
+    },
+  },
+};
+
 const inject: CommandItem = {
   action_id: 'demo:greet',
   type: 'chat_inject',
@@ -251,6 +263,17 @@ describe('Button control', () => {
     await waitFor(() => {
       expect(onExecute).toHaveBeenCalledWith('system:demo:entry:do_thing', null);
     });
+  });
+
+  it('opens parameter form instead of executing null from keyboard Enter', () => {
+    const { onExecute } = renderPalette([buttonWithParams]);
+    const input = screen.getByPlaceholderText('搜索操作...');
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.getByText('Name')).toBeInTheDocument();
+    expect(onExecute).not.toHaveBeenCalled();
   });
 });
 

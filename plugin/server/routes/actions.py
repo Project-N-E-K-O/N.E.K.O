@@ -53,8 +53,11 @@ async def get_chat_actions(
 async def get_action_preferences(
     _: str = require_admin,
 ) -> dict[str, object]:
-    prefs = await preferences_service.load()
-    return prefs.model_dump()
+    try:
+        prefs = await preferences_service.load()
+        return prefs.model_dump()
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/chat/actions/preferences")
@@ -62,8 +65,11 @@ async def save_action_preferences(
     payload: UserActionPreferences,
     _: str = require_admin,
 ) -> dict[str, object]:
-    prefs = await preferences_service.save(payload)
-    return prefs.model_dump()
+    try:
+        prefs = await preferences_service.save(payload)
+        return prefs.model_dump()
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 # ── Execute route uses {action_id:path} — must come last.

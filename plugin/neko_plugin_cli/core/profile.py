@@ -39,6 +39,10 @@ def write_default_profile(source: PluginSource, profiles_dir: Path) -> list[Path
 def write_bundle_profile(sources: list[PluginSource], profiles_dir: Path) -> list[Path]:
     if not sources:
         raise ValueError("sources must not be empty")
+    plugin_ids = [source.plugin_id for source in sources]
+    if len(set(plugin_ids)) != len(plugin_ids):
+        duplicates = sorted({pid for pid in plugin_ids if plugin_ids.count(pid) > 1})
+        raise ValueError(f"duplicate plugin_id values are not allowed in a profile: {', '.join(duplicates)}")
 
     profile_path = profiles_dir / "default.toml"
     enabled_plugins = ", ".join(f'"{escape_string(source.plugin_id)}"' for source in sources)

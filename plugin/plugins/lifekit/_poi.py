@@ -243,9 +243,9 @@ class POIService:
                     result.provider = provider.name
                     return result
             except Exception as exc:
-                message = f"{provider.name}: {type(exc).__name__}: {exc}"
+                message = f"{provider.name}: provider error"
                 errors.append(message)
-                logger.debug("POI provider failed: %s", message, exc_info=True)
+                logger.debug("POI provider failed: %s", provider.name, exc_info=True)
                 continue
         if errors:
             result.error = "; ".join(errors)

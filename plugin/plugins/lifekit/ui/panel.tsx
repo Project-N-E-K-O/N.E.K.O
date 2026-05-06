@@ -138,15 +138,19 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       toast.error(t("panel.errors.labelCityRequired"))
       return
     }
-    await props.api.call("add_location", {
-      label,
-      city,
-      address: locationForm.values.address.trim(),
-      set_default: !!locationForm.values.set_default,
-    })
-    locationForm.reset(emptyLocationForm)
-    await props.api.refresh()
-    toast.success(t("panel.messages.locationAdded", { label, city }))
+    try {
+      await props.api.call("add_location", {
+        label,
+        city,
+        address: locationForm.values.address.trim(),
+        set_default: !!locationForm.values.set_default,
+      })
+      locationForm.reset(emptyLocationForm)
+      await props.api.refresh()
+      toast.success(t("panel.messages.locationAdded", { label, city }))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   async function removeLocation(location: SavedLocation) {
@@ -164,9 +168,13 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       cancelLabel: t("panel.actions.cancel"),
     })
     if (!ok) return
-    await props.api.call("remove_location", { location_id: key })
-    await props.api.refresh()
-    toast.success(t("panel.messages.locationRemoved"))
+    try {
+      await props.api.call("remove_location", { location_id: key })
+      await props.api.refresh()
+      toast.success(t("panel.messages.locationRemoved"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   async function setDefaultLocation(location: SavedLocation) {
@@ -176,9 +184,13 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
     }
     const key = locationKey(location)
     if (!key) return
-    await props.api.call("set_default_location", { location_id: key })
-    await props.api.refresh()
-    toast.success(t("panel.messages.defaultSet"))
+    try {
+      await props.api.call("set_default_location", { location_id: key })
+      await props.api.refresh()
+      toast.success(t("panel.messages.defaultSet"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   return (

@@ -787,16 +787,11 @@ export default function CommandPalette({
       setHighlightIdx(prev => prev <= 0 ? displayItems.length - 1 : prev - 1);
     } else if (e.key === 'Enter' && highlightIdx >= 0 && highlightIdx < displayItems.length) {
       e.preventDefault();
-      const item = displayItems[highlightIdx];
-      if (item.type === 'chat_inject') {
-        handleInject(item.inject_text ?? '');
-      } else if (item.type === 'navigation') {
-        onNavigate(item.target ?? '', item.open_in ?? 'new_tab');
-      } else if (item.control === 'button') {
-        handleExecute(item.action_id, null);
-      }
+      panelRef.current
+        ?.querySelector<HTMLElement>('.cp-row-highlighted.cp-row-clickable')
+        ?.click();
     }
-  }, [displayItems, highlightIdx, handleInject, onNavigate, handleExecute]);
+  }, [displayItems.length, highlightIdx]);
 
   const sharedRowProps = {
     prefs: localPrefs,

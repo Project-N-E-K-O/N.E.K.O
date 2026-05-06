@@ -725,6 +725,7 @@ class PluginContext:
                 per_run = run_att.get(current_run_id)
                 if isinstance(per_run, list):
                     return list(per_run)
+            return []
 
         raw = getattr(instance, "_last_attachments", None)
         return list(raw) if isinstance(raw, list) else []

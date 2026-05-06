@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+
+_PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -59,6 +62,10 @@ class PluginSpec:
 
 def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
     """Generate all scaffold files and return the list of created paths."""
+    if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
+        raise ValueError(
+            "plugin_id must be a valid Python package name: use letters, numbers, and underscores only"
+        )
     target_dir.mkdir(parents=True, exist_ok=True)
     created: list[Path] = []
 
@@ -245,12 +252,12 @@ def _render_plugin_toml(spec: PluginSpec) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_init_py(spec: PluginSpec) -> str:
-    if spec.quick_start:
-        return _render_quick_start_init(spec)
     if spec.plugin_type == "extension":
         return _render_extension_init(spec)
     if spec.plugin_type == "adapter":
         return _render_adapter_init(spec)
+    if spec.quick_start:
+        return _render_quick_start_init(spec)
     return _render_plugin_init(spec)
 
 

@@ -1499,6 +1499,7 @@ export default function App({
 
   const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
     if (!target) return;
+    if (target.startsWith('//')) return;
     const isRelative = target.startsWith('/') || target.startsWith('./') || target.startsWith('../');
     const isHttp = /^https?:\/\//i.test(target);
     if (!isRelative && !isHttp) return;

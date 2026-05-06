@@ -22,6 +22,7 @@ logger = get_logger("server.application.actions.list_actions_provider")
 # ---------------------------------------------------------------------------
 
 _NAVIGATION_KINDS = frozenset({"ui", "url", "route"})
+_CHAT_INJECT_KIND = "chat_inject"
 
 
 def _map_list_action(
@@ -42,7 +43,7 @@ def _map_list_action(
     icon_override = action.get("icon")
     priority_override = action.get("priority")
 
-    if kind == "chat_inject":
+    if kind == _CHAT_INJECT_KIND:
         target = action.get("target")
         if not isinstance(target, str) or not target.strip():
             inject_text = f"@{plugin_name} /{action_id}"
@@ -82,23 +83,13 @@ def _map_list_action(
             priority=int(priority_override) if priority_override is not None else 0,
         )
 
-    # All other kinds (toggle, trigger, action, button, …) are
-    # one-shot calls with no persistent state — always a button.
     if kind:
-        return ActionDescriptor(
-            action_id=full_action_id,
-            type="instant",
-            label=label,
-            description=description,
-            category=plugin_name,
-            plugin_id=plugin_id,
-            control="button",
-            icon=icon_override or "⚡",
-            keywords=[plugin_id, plugin_name, action_id, label],
-            quick_action=quick,
-            priority=int(priority_override) if priority_override is not None else 0,
+        logger.debug(
+            "Skipping non-routable list_action plugin_id={} action_id={} kind={}",
+            plugin_id,
+            action_id,
+            kind,
         )
-
     return None
 
 

@@ -135,7 +135,7 @@ def normalize_archive_key(posix_path_str: str) -> str:
     suitable as a ``sorted()`` key so that file ordering is identical on every
     platform.
     """
-    return normalize_unicode(posix_path_str)
+    return normalize_unicode(posix_path_str.replace("\\", "/"))
 
 
 def normalize_relative_posix(path: Path, root: Path) -> str:

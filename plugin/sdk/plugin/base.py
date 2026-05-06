@@ -152,8 +152,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """Return image attachments forwarded from the user's chat message."""
         try:
             result = self.ctx.get_attachments()
-            if result:
-                return result
+            if result is not None:
+                return list(result) if isinstance(result, list) else []
         except Exception:
             pass
         raw = getattr(self, "_last_attachments", None)

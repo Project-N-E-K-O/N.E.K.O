@@ -74,7 +74,9 @@ def collect_plugin_folders(archive: zipfile.ZipFile) -> list[str]:
     plugin_folders: set[str] = set()
     for name in archive.namelist():
         path = safe_archive_path(name)
-        if len(path.parts) >= 3 and path.parts[:2] == ("payload", "plugins"):
+        if path.parts[:2] != ("payload", "plugins"):
+            continue
+        if len(path.parts) >= 4 or (name.endswith("/") and len(path.parts) == 3):
             plugin_folders.add(path.parts[2])
     if not plugin_folders:
         raise ValueError(

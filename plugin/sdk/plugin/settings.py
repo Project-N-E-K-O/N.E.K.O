@@ -124,15 +124,17 @@ def create_settings_safe(
             safe_data[name] = value
         except ValidationError as exc:
             _field_default = field_info.default
-            if _field_default is PydanticUndefined:
+            has_default_factory = field_info.default_factory is not None
+            if _field_default is PydanticUndefined and not has_default_factory:
                 # Required field with no default — we must include the bad
                 # value and let the final validation decide.
                 safe_data[name] = value
             else:
+                default_label = "<factory>" if has_default_factory else _field_default
                 logger.warning(
                     "PluginSettings field '{}' validation failed, using default ({}): {}",
                     name,
-                    _field_default,
+                    default_label,
                     exc,
                 )
                 # Omit from safe_data so pydantic uses the declared default.
