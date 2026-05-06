@@ -1138,6 +1138,10 @@
                         return;
                     }
 
+                    if (statusCode === 'GAME_ROUTE_MEDIA_SKIPPED') {
+                        return;
+                    }
+
                     var isGoodbyeActive = (window.live2dManager && window.live2dManager._goodbyeClicked) || (window.vrmManager && window.vrmManager._goodbyeClicked) || (window.mmdManager && window.mmdManager._goodbyeClicked);
                     if ((S.isSwitchingMode || isGoodbyeActive || S._suppressCharacterLeft) && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         S._suppressCharacterLeft = false;
