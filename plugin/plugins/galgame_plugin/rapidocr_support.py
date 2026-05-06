@@ -20,7 +20,7 @@ RAPIDOCR_PACKAGE_NAME = "rapidocr_onnxruntime"
 DEFAULT_RAPIDOCR_ENGINE_TYPE = "onnxruntime"
 DEFAULT_RAPIDOCR_LANG_TYPE = "ch"
 DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
-DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
+DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv4"
 _INSTALL_STATE_NAME = "install_state.json"
 # Leave one core free for the OS / interactive use; floor at 2 so 1-2 core hosts still parallelise.
 _RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, (os.cpu_count() or 2) - 1)
@@ -97,6 +97,50 @@ def rapidocr_selected_model_name(
             str(model_type or DEFAULT_RAPIDOCR_MODEL_TYPE).strip() or DEFAULT_RAPIDOCR_MODEL_TYPE,
         ]
     )
+
+
+def _resolve_rapidocr_model_paths(
+    *,
+    model_cache_dir: Path,
+    package_models_dir: Path | None,
+    lang_type: str,
+    ocr_version: str,
+    model_type: str,
+) -> tuple[str | None, str | None, str | None]:
+    lang = str(lang_type or DEFAULT_RAPIDOCR_LANG_TYPE).strip() or DEFAULT_RAPIDOCR_LANG_TYPE
+    version = str(ocr_version or DEFAULT_RAPIDOCR_OCR_VERSION).strip() or DEFAULT_RAPIDOCR_OCR_VERSION
+    # RapidOCR / PaddleOCR file naming (see SWHL/RapidOCR on HuggingFace):
+    #   mobile: ch_PP-OCRv4_det_infer.onnx
+    #   server: ch_PP-OCRv4_det_server_infer.onnx  (i.e. "_server" sits between "_det" and "_infer")
+    # Anything other than "server" falls back to mobile silently — invalid values
+    # would otherwise miss every candidate file and the runtime default mobile model
+    # would still load via RapidOCR's bundled config.yaml.
+    mt = (str(model_type or DEFAULT_RAPIDOCR_MODEL_TYPE).strip() or DEFAULT_RAPIDOCR_MODEL_TYPE).lower()
+    server_infix = "_server" if mt == "server" else ""
+    det_name = f"{lang}_{version}_det{server_infix}_infer.onnx"
+    rec_name = f"{lang}_{version}_rec{server_infix}_infer.onnx"
+    # cls is shared across mobile/server variants in PaddleOCR's released model zoo.
+    cls_name = "ch_ppocr_mobile_v2.0_cls_infer.onnx"
+
+    det_path: str | None = None
+    cls_path: str | None = None
+    rec_path: str | None = None
+    for search_dir in (model_cache_dir, package_models_dir):
+        if not search_dir or not search_dir.is_dir():
+            continue
+        if det_path is None:
+            candidate = search_dir / det_name
+            if candidate.is_file():
+                det_path = str(candidate)
+        if cls_path is None:
+            candidate = search_dir / cls_name
+            if candidate.is_file():
+                cls_path = str(candidate)
+        if rec_path is None:
+            candidate = search_dir / rec_name
+            if candidate.is_file():
+                rec_path = str(candidate)
+    return det_path, cls_path, rec_path
 
 
 @contextmanager
@@ -177,11 +221,35 @@ def _build_runtime_constructor_kwargs(
     model_type: str,
     ocr_version: str,
     model_cache_dir: Path,
+    package_models_dir: Path | None = None,
 ) -> dict[str, Any]:
     try:
         parameters = inspect.signature(runtime_class).parameters
     except (TypeError, ValueError):
         return {}
+
+    has_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if has_var_kwargs:
+        det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
+            model_cache_dir=model_cache_dir,
+            package_models_dir=package_models_dir,
+            lang_type=lang_type,
+            ocr_version=ocr_version,
+            model_type=model_type,
+        )
+        kwargs: dict[str, Any] = {}
+        if det_path and rec_path:
+            kwargs["det_model_path"] = det_path
+            kwargs["rec_model_path"] = rec_path
+            if cls_path:
+                kwargs["cls_model_path"] = cls_path
+        if engine_type:
+            kwargs["engine_type"] = engine_type
+        return kwargs
+
     kwargs: dict[str, Any] = {}
     direct_values = {
         "engine_type": engine_type,
@@ -273,6 +341,13 @@ def load_rapidocr_runtime(
         runtime_class = getattr(module, "RapidOCR", None)
         if runtime_class is None:
             raise RuntimeError("RapidOCR runtime class not found")
+        module_file = getattr(module, "__file__", "") or ""
+        # Sentinel must be None (not Path()) — Path() resolves to CWD and would
+        # let _resolve_rapidocr_model_paths inadvertently scan the working
+        # directory if `__file__` were ever missing.
+        package_models_dir: Path | None = (
+            Path(module_file).resolve().parent / "models" if module_file else None
+        )
         with _onnxruntime_intra_op_thread_cap(_RAPIDOCR_INFERENCE_THREAD_LIMIT):
             runtime = runtime_class(
                 **_build_runtime_constructor_kwargs(
@@ -282,6 +357,7 @@ def load_rapidocr_runtime(
                     model_type=model_type,
                     ocr_version=ocr_version,
                     model_cache_dir=model_cache_dir,
+                    package_models_dir=package_models_dir,
                 )
             )
     metadata = {

@@ -32,6 +32,7 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     TesseractOcrBackend,
     _default_window_scanner,
 )
+from plugin.plugins.galgame_plugin.rapidocr_support import DEFAULT_RAPIDOCR_OCR_VERSION
 
 
 def _noop_logger():
@@ -159,7 +160,7 @@ async def main() -> None:
         rapidocr_engine_type="onnxruntime",
         rapidocr_lang_type="ch",
         rapidocr_model_type="mobile",
-        rapidocr_ocr_version="PP-OCRv5",
+        rapidocr_ocr_version=DEFAULT_RAPIDOCR_OCR_VERSION,
     )
     mgr = OcrReaderManager(logger=_noop_logger(), config=config)
     tick = await mgr.tick(bridge_sdk_available=False, memory_reader_runtime={})
