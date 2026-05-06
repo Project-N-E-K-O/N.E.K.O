@@ -223,6 +223,16 @@
                 // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
                 // 后续分支走偏。
                 restorePreviousLanlanConfig();
+                // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
+                // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
+                // overlay 留着 block UI，用户看到 toast 也没法点。这里主动 fail 它。
+                if (mmdLoadingSessionId) {
+                    try {
+                        window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch watchdog timeout' });
+                        clearMMDCanvasLoadingSession(document.getElementById('mmd-canvas'));
+                    } catch (_e) { /* ignore overlay failures */ }
+                    mmdLoadingSessionId = '';
+                }
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
                 try {
@@ -1566,15 +1576,14 @@
             if (isCurrentAttempt) {
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
-                // 清理切换标识，取消所有 pending 的 applyLighting 定时器。
-                // 必须放在 isCurrentAttempt 守护内：window._currentCatgirlSwitchId 是 VRM 分支
-                // applyLighting retry loop 的 ownership token（line 794-800 用 Symbol() 标识当前
-                // attempt，retry 比对 !== currentSwitchId 自我退出）。stale attempt 苏醒到 finally
-                // 时如果无条件清成 null，会把新 attempt 刚设的 token 清掉，新 attempt 的 lighting
-                // retry 误以为自己被取消、退出循环 → 新角色 lighting 残缺。
-                window._currentCatgirlSwitchId = null;
+                // window._currentCatgirlSwitchId 故意不清——它是 VRM applyLighting retry loop
+                // 的 ownership token（line 794-800 用 Symbol() 标识 attempt，retry 比对
+                // !== currentSwitchId 自我退出）。retry 是 setTimeout 链，可能跨 finally 还在跑；
+                // 慢设备上首轮检查可能晚于 finally → null !== Symbol 判 true → retry 自杀，
+                // 灯光偶发不生效。留给下次切换 line 796 的新 Symbol() 自然覆盖；老 retry 比对
+                // 新 Symbol 仍然 !==，自然退出。stale attempt 苏醒走 else 分支也不动这个 token。
             } else {
-                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl / _currentCatgirlSwitchId 不动');
+                console.warn('[猫娘切换] attempt', myAttemptId, '苏醒走到 finally，但当前 attempt 已经是', S._currentSwitchAttemptId, '——保留新一轮的 isSwitchingCatgirl 不动');
             }
 
             // 重置 goodbyeClicked 标志，确保 showCurrentModel 可以正常运行
