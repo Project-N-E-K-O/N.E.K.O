@@ -1292,6 +1292,7 @@
                                 await window.live2dManager.loadModel(defaultConfig, {
                                     isMobile: window.innerWidth <= 768
                                 });
+                                throwIfStale();
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                                     window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
@@ -1444,8 +1445,15 @@
             // 如果 stale 在 MMD 分支已 begin 了 overlay 后才被取代、且新 attempt 是 non-MMD，
             // 新 attempt 不会 end/fail 这个 session → 老 overlay 一直挂着 block UI。
             // 必须由 stale 自己 fail 它持有的 session 才能让 overlay 退出。
-            if (error?.isStaleSwitchAttempt) {
-                console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）');
+            //
+            // stale 判定：除了 throwIfStale 抛的带 isStaleSwitchAttempt 标记的 error 外，
+            // 还要看 attempt ownership——某些路径上 await 真实 reject（如 network error）发生
+            // 在 watchdog 超时/新 attempt 接管之后，error 没 stale 标记但 attempt 已 stale，
+            // 走 else 分支会弹"切换失败"toast 给已被取代的 attempt，干扰新 attempt 的 UI。
+            const isStaleAttempt = !!error?.isStaleSwitchAttempt
+                || S._currentSwitchAttemptId !== myAttemptId;
+            if (isStaleAttempt) {
+                console.log('[猫娘切换] attempt', myAttemptId, '已 stale，主动退出（不影响新一轮切换状态）；error:', error?.message || error);
                 if (mmdLoadingSessionId) {
                     window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: 'switch superseded' });
                 }
@@ -1470,10 +1478,11 @@
             // 早期失败回滚：若新 socket 未接管（如 /api/characters fetch 抛错），
             // try 开头的"紧急制动"已停掉 L2D ticker 和 VRM 动画，此处重启回旧模型的渲染循环，
             // 否则用户看到的是切换失败 toast + 冻结画面。
-            // stale attempt 必须排除：watchdog 触发后 B 已启动但还没跑到 line 486 关 socket 时，
+            // stale attempt 必须排除：watchdog 触发后 B 已启动但还没跑到 line 486 关 socket 时,
             // S.socket 仍是 _switchOldSocket，A stale 苏醒进 catch 会满足条件错误地启动旧模型，
-            // 跟 B 后续清理/加载并发打架。
-            if (!error?.isStaleSwitchAttempt && _switchOldSocket && S.socket === _switchOldSocket) {
+            // 跟 B 后续清理/加载并发打架。用 isStaleAttempt 而非 error.isStaleSwitchAttempt：
+            // 同样覆盖 attempt ownership 检测出的隐式 stale（无标记的真实 reject）。
+            if (!isStaleAttempt && _switchOldSocket && S.socket === _switchOldSocket) {
                 try {
                     const ticker = window.live2dManager?.pixi_app?.ticker;
                     if (ticker && !ticker.started) ticker.start();
