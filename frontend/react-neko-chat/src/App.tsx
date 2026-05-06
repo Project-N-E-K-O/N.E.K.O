@@ -730,6 +730,47 @@ export default function App({
       clearActiveCursorToolSelection();
     }
   }, [_toolCursorResetKey, clearActiveCursorToolSelection]);
+
+  useEffect(() => {
+    const markImage = (img: HTMLImageElement) => {
+      img.draggable = false;
+      img.setAttribute('draggable', 'false');
+    };
+
+    const markImages = (root: ParentNode | HTMLImageElement = document) => {
+      if (root instanceof HTMLImageElement) {
+        markImage(root);
+        return;
+      }
+      root.querySelectorAll?.<HTMLImageElement>('img').forEach(markImage);
+    };
+
+    const handleDragStart = (event: DragEvent) => {
+      if (event.target instanceof HTMLImageElement) {
+        event.preventDefault();
+      }
+    };
+
+    markImages(document);
+    document.addEventListener('dragstart', handleDragStart, true);
+
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof Element) {
+            markImages(node);
+          }
+        });
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('dragstart', handleDragStart, true);
+    };
+  }, []);
+
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
