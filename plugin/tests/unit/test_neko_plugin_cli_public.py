@@ -238,7 +238,7 @@ def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> No
     pack_plugin(plugin_dir, package_path)
     _rewrite_package_without_member(package_path, "payload/plugins/demo_plugin/plugin.toml")
 
-    with pytest.raises(ValueError, match="does not contain plugin.toml"):
+    with pytest.raises(ValueError, match="plugin.toml"):
         inspect_package(package_path)
 
 
@@ -290,3 +290,28 @@ def test_pack_bundle_writes_multi_plugin_archive_and_unpacks(tmp_path: Path) -> 
     assert unpack_result.unpacked_plugin_count == 2
     assert (tmp_path / "plugins" / "bundle_one" / "plugin.toml").is_file()
     assert (tmp_path / "plugins" / "bundle_two" / "plugin.toml").is_file()
+
+
+def test_pack_bundle_rejects_unsafe_bundle_id(tmp_path: Path) -> None:
+    first_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_one")
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_two")
+
+    with pytest.raises(ValueError, match="bundle_id"):
+        pack_bundle(
+            [first_plugin, second_plugin],
+            tmp_path / "bad.neko-bundle",
+            bundle_id="../bad",
+        )
+
+
+def test_pack_metadata_does_not_store_absolute_source_paths(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, plugin_id="metadata_demo")
+    package_path = tmp_path / "metadata_demo.neko-plugin"
+
+    pack_plugin(plugin_dir, package_path)
+
+    with zipfile.ZipFile(package_path) as archive:
+        metadata = archive.read("metadata.toml").decode("utf-8")
+
+    assert str(plugin_dir.resolve()) not in metadata
+    assert 'paths = ["metadata_demo"]' in metadata

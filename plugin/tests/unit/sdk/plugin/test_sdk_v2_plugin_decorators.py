@@ -87,6 +87,28 @@ def test_plugin_entry_defaults_and_persist_flags() -> None:
     assert getattr(run2, dec.PERSIST_ATTR) is False
 
 
+def test_quick_action_decorator_supports_either_order() -> None:
+    @dec.plugin_entry(id="first")
+    @dec.quick_action(icon="*", priority=3)
+    def first() -> str:
+        return "ready"
+
+    @dec.quick_action(icon="#", priority=4)
+    @dec.plugin_entry(id="second")
+    def second() -> str:
+        return "ready"
+
+    first_meta = getattr(first, dec.EVENT_META_ATTR)
+    second_meta = getattr(second, dec.EVENT_META_ATTR)
+
+    assert first_meta.quick_action is True
+    assert first_meta.quick_action_config is not None
+    assert first_meta.quick_action_config.priority == 3
+    assert second_meta.quick_action is True
+    assert second_meta.quick_action_config is not None
+    assert second_meta.quick_action_config.priority == 4
+
+
 def test_plugin_entry_auto_infers_input_schema_from_signature() -> None:
     @dec.plugin_entry()
     def hello(name: str = "world", sleep_seconds: float = 0.6, enabled: bool | None = None, **kwargs) -> str:

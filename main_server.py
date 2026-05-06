@@ -1429,6 +1429,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.actions_proxy_router import router as actions_proxy_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
@@ -1496,6 +1497,7 @@ app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+app.include_router(actions_proxy_router)  # Quick Actions Panel: 代理到插件服务器
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务

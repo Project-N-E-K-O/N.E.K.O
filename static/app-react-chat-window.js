@@ -26,6 +26,9 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
+    var _cachedActions = [];
+    var _cachedPreferences = { pinned: [], hidden: [], recent: [] };
+    var _actionsLoading = false;
 
     var state = {
         viewProps: null,
@@ -519,6 +522,104 @@
         });
     }
 
+    var _fetchActionsSeq = 0;
+    var _saveActionPrefsSeq = 0;
+    var _pendingPreferencesUpdate = false;
+
+    function normalizeActionPreferences(preferences) {
+        var prefs = preferences && typeof preferences === 'object' ? preferences : {};
+        return {
+            pinned: Array.isArray(prefs.pinned) ? prefs.pinned.map(String) : [],
+            hidden: Array.isArray(prefs.hidden) ? prefs.hidden.map(String) : [],
+            recent: Array.isArray(prefs.recent) ? prefs.recent.map(String) : []
+        };
+    }
+
+    function fetchChatActions() {
+        var seq = ++_fetchActionsSeq;
+        _actionsLoading = true;
+        renderWindow();
+        return fetch('/chat/actions', {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+        })
+            .then(function (res) {
+                if (!res.ok) throw new Error('fetchChatActions: HTTP ' + res.status);
+                return res.json();
+            })
+            .then(function (data) {
+                if (seq !== _fetchActionsSeq) return _cachedActions;
+                _cachedActions = data && Array.isArray(data.actions) ? data.actions : [];
+                if (!_pendingPreferencesUpdate) {
+                    _cachedPreferences = normalizeActionPreferences(data && data.preferences);
+                }
+                _actionsLoading = false;
+                renderWindow();
+                return _cachedActions;
+            })
+            .catch(function (err) {
+                if (seq !== _fetchActionsSeq) return _cachedActions;
+                console.warn('[ReactChatWindow] fetchChatActions failed:', err);
+                _actionsLoading = false;
+                renderWindow();
+                return _cachedActions;
+            });
+    }
+
+    function executeChatAction(actionId, value) {
+        return fetch('/chat/actions/' + encodeURIComponent(actionId) + '/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ value: value !== undefined ? value : null })
+        })
+            .then(function (res) {
+                if (!res.ok) {
+                    return res.json().catch(function () { return null; }).then(function (body) {
+                        var detail = body && body.detail ? body.detail : 'HTTP ' + res.status;
+                        if (typeof detail !== 'string') detail = JSON.stringify(detail);
+                        throw new Error(detail);
+                    });
+                }
+                return res.json();
+            })
+            .then(function (data) {
+                if (data && data.success) {
+                    fetchChatActions();
+                    return data.action || null;
+                }
+                throw new Error(data && data.message ? data.message : 'Action failed');
+            })
+            .catch(function (err) {
+                console.error('[ReactChatWindow] executeChatAction failed:', err);
+                throw err;
+            });
+    }
+
+    function saveChatActionPreferences(preferences) {
+        var seq = ++_saveActionPrefsSeq;
+        var previousPreferences = _cachedPreferences;
+        _pendingPreferencesUpdate = true;
+        _cachedPreferences = normalizeActionPreferences(preferences);
+        renderWindow();
+        fetch('/chat/actions/preferences', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(_cachedPreferences)
+        }).then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            if (seq === _saveActionPrefsSeq) _pendingPreferencesUpdate = false;
+        }).catch(function (err) {
+            if (seq !== _saveActionPrefsSeq) return;
+            console.warn('[ReactChatWindow] saveChatActionPreferences failed, rolling back:', err);
+            _pendingPreferencesUpdate = false;
+            _cachedPreferences = previousPreferences;
+            renderWindow();
+        });
+    }
+
     function buildRenderProps() {
         if (state.rollbackDraft) {
             console.log('[ROLLBACK] buildRenderProps: rollbackDraftPresent=true length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
@@ -546,7 +647,19 @@
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
-            onChoiceSelect: handleChoiceSelect
+            onChoiceSelect: handleChoiceSelect,
+            quickActions: _cachedActions,
+            quickActionsPreferences: _cachedPreferences,
+            quickActionsLoading: _actionsLoading,
+            onQuickActionsRequest: function () {
+                fetchChatActions();
+            },
+            onQuickActionExecute: function (actionId, value) {
+                return executeChatAction(actionId, value);
+            },
+            onQuickActionsPreferencesChange: function (prefs) {
+                saveChatActionPreferences(prefs);
+            }
         });
     }
 
@@ -2104,6 +2217,7 @@
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
+                fetchChatActions();
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
                 // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
                 var wasMinimized = minimized;
@@ -2519,6 +2633,16 @@
 
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'plugin-state-change', function () {
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
+        });
+
+        window.addEventListener(EVENT_PREFIX + 'list-actions-update', function () {
+            var overlay = getOverlay();
+            if (overlay && !overlay.hidden) fetchChatActions();
         });
 
         window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {

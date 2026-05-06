@@ -148,6 +148,33 @@ class SystemInfo:
                 Err(self._normalize_impl_error(error, op_name="system_info.get_server_settings", timeout=timeout)),
             )
 
+    async def get_user_language(self, *, timeout: float = 5.0) -> Result[str, SystemInfoErrorLike]:
+        """Return the user's configured language code from the host."""
+        timeout_ok = self._validate_timeout(timeout)
+        if isinstance(timeout_ok, Err):
+            return cast(Result[str, SystemInfoErrorLike], timeout_ok)
+        try:
+            config_result = await self.get_system_config(timeout=timeout)
+            if isinstance(config_result, Err):
+                return cast(Result[str, SystemInfoErrorLike], config_result)
+            payload = config_result.value
+            if isinstance(payload.get("data"), dict):
+                payload = payload["data"]
+            cfg = payload.get("config") if isinstance(payload, dict) else payload
+            if isinstance(cfg, dict):
+                full = cfg.get("user_language_full")
+                if isinstance(full, str) and full:
+                    return Ok(full)
+                short = cfg.get("user_language")
+                if isinstance(short, str) and short:
+                    return Ok(short)
+            return Ok("")
+        except Exception as error:
+            return cast(
+                Result[str, SystemInfoErrorLike],
+                Err(self._normalize_impl_error(error, op_name="system_info.get_user_language", timeout=timeout)),
+            )
+
     async def get_python_env(self) -> Result[JsonObject, TransportError]:
         try:
             try:

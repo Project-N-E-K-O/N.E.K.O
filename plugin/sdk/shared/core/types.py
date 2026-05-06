@@ -152,6 +152,24 @@ class PluginContextProtocol(Protocol):
         timeout: float = 5.0,
     ) -> object: ...
 
+    async def export_push_image(
+        self,
+        *,
+        run_id: str | None = None,
+        image_data: bytes | None = None,
+        image_url: str | None = None,
+        mime: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, object] | None = None,
+        timeout: float = 10.0,
+    ) -> object: ...
+
+    def get_attachments(self) -> list[dict[str, object]]: ...
+
+    def get_user_language(self) -> str: ...
+
+    def set_user_language(self, lang: str) -> None: ...
+
     async def finish(
         self,
         *,

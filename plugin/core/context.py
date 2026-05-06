@@ -158,6 +158,8 @@ class PluginContext:
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
     _effective_config: Optional[Dict[str, Any]] = None
     _current_lanlan: Optional[str] = None
+    _current_lang: Optional[str] = None
+    _manual_lang_override: Optional[str] = None
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -593,6 +595,146 @@ class PluginContext:
 
     def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_coro_sync(self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout), operation="export_push_binary_url")
+
+    async def _export_push_image_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Push an image export, choosing inline binary or URL transport."""
+        meta = dict(metadata or {})
+        meta.setdefault("media_type", "image")
+
+        if image_data is not None and image_url is not None:
+            raise ValueError("export_push_image requires either image_data or image_url, not both")
+        if image_data is not None:
+            resolved_mime = mime or "image/png"
+            limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
+            if limit > 0 and len(image_data) > limit:
+                raise ValueError(
+                    f"image_data ({len(image_data)} bytes) exceeds inline limit "
+                    f"({limit} bytes). Upload to blob store and use image_url instead."
+                )
+            return await self._export_push_async(
+                export_type="binary",
+                run_id=run_id,
+                binary_data=image_data,
+                mime=resolved_mime,
+                description=description,
+                metadata=meta,
+                timeout=timeout,
+            )
+        if image_url is not None:
+            return await self._export_push_async(
+                export_type="binary_url",
+                run_id=run_id,
+                binary_url=image_url,
+                mime=mime,
+                description=description,
+                metadata=meta,
+                timeout=timeout,
+            )
+        raise ValueError("export_push_image requires either image_data or image_url")
+
+    def export_push_image(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ):
+        """Push an image export (smart sync/async proxy)."""
+        coro = self._export_push_image_async(
+            run_id=run_id,
+            image_data=image_data,
+            image_url=image_url,
+            mime=mime,
+            description=description,
+            metadata=metadata,
+            timeout=timeout,
+        )
+        if self._is_in_event_loop():
+            return coro
+        return self._run_coro_sync(coro, operation="export_push_image")
+
+    async def export_push_image_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        return await self._export_push_image_async(
+            run_id=run_id,
+            image_data=image_data,
+            image_url=image_url,
+            mime=mime,
+            description=description,
+            metadata=metadata,
+            timeout=timeout,
+        )
+
+    def export_push_image_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        image_data: Optional[bytes] = None,
+        image_url: Optional[str] = None,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self._export_push_image_async(
+                run_id=run_id,
+                image_data=image_data,
+                image_url=image_url,
+                mime=mime,
+                description=description,
+                metadata=metadata,
+                timeout=timeout,
+            ),
+            operation="export_push_image",
+        )
+
+    def get_attachments(self) -> list[dict]:
+        """Return image attachments forwarded from the user's chat message."""
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return []
+
+        current_run_id = self.run_id
+        if not current_run_id:
+            return []
+        run_att = getattr(instance, "_run_attachments", None)
+        if isinstance(run_att, dict):
+            per_run = run_att.get(current_run_id)
+            if isinstance(per_run, list):
+                return list(per_run)
+        return []
+
+    def get_user_language(self) -> str:
+        """Return the current user's language code for this plugin context."""
+        return self._manual_lang_override or self._current_lang or ""
+
+    def set_user_language(self, lang: str) -> None:
+        normalized = str(lang).strip() if lang else ""
+        self._manual_lang_override = normalized or None
 
     async def _run_update_async(
         self,

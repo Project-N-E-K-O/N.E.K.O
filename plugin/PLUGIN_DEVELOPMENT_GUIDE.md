@@ -485,6 +485,52 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html
 
 向宿主推送导出数据。
 
+当插件由 Agent 的 user_plugin 路径从聊天中触发时，Agent 会读取最新用户消息里的图片附件，并把它们放入本次运行的上下文。插件不要直接依赖原始 `_attachments` 参数，请使用 helper：
+
+```python
+@plugin_entry(id="inspect_image", llm_result_fields=["summary"])
+async def inspect_image(self, prompt: str = "", **_):
+    attachments = self.get_attachments()
+    if not attachments:
+        return await self.finish(
+            data={"summary": "没有收到图片附件"},
+            delivery="passive",
+        )
+
+    first_image_url = attachments[0]["url"]
+    # url 可能是普通 URL，也可能是 data:image/...;base64,...
+    summary = f"收到 {len(attachments)} 张图片，第一张地址长度为 {len(first_image_url)}"
+    return await self.finish(data={"summary": summary})
+```
+
+图片结果可以通过 `export_push_image()` 作为补充媒体导出。Agent 等待 run 完成时，会把 `binary_url` / `binary` / `url` / `text` export 收集到 `plugin_result["media"]`，同时继续把第一个 JSON export 作为主结果读取：
+
+```python
+@plugin_entry(id="draw", llm_result_fields=["summary"])
+async def draw(self, prompt: str, **_):
+    image_url = await self.image_service.generate(prompt)
+    await self.export_push_image(
+        image_url=image_url,
+        description="生成图",
+        metadata={"prompt": prompt},
+    )
+    return await self.finish(data={"summary": "图片生成完成"})
+```
+
+如果你已经有二进制图片数据，也可以传 `image_data=b"...", mime="image/png"`。内联二进制会受 `EXPORT_INLINE_BINARY_MAX_BYTES` 限制，超限时应先上传到可访问 URL，再用 `image_url`。
+
+Agent 也会把当前用户语言写入运行上下文。入口函数中可以直接读取：
+
+```python
+@plugin_entry(id="localized_reply")
+async def localized_reply(self, **_):
+    lang = self.get_user_language() or await self.fetch_user_language()
+    greeting = "你好" if lang.startswith("zh") else "Hello"
+    return await self.finish(data={"summary": greeting}, delivery="passive")
+```
+
+`get_user_language()` 读取本次运行的 `_ctx.lang` 或插件手动覆盖值；`fetch_user_language()` 会通过 `SystemInfo` 从主系统配置查询，并写回当前 context。对于定时器、startup 这类没有用户上下文的入口，优先使用 `fetch_user_language()`。
+
 #### `finish(**kwargs) -> Any` (async)
 
 通知宿主任务完成。

@@ -31,6 +31,67 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('preserves quick action props through the window props schema', async () => {
+    const action = {
+      action_id: 'plugin.demo.toggle',
+      type: 'instant',
+      label: 'Demo toggle',
+      description: 'Toggle demo mode',
+      category: 'settings',
+      plugin_id: 'demo',
+      control: 'toggle',
+      current_value: false,
+      quick_action: true,
+    } as const;
+    const onQuickActionExecute = vi.fn(async () => ({
+      ...action,
+      current_value: true,
+    }));
+    const onQuickActionsRequest = vi.fn();
+    const onQuickActionsPreferencesChange = vi.fn();
+    const props = parseChatWindowProps({
+      quickActions: [action],
+      quickActionsPreferences: {
+        pinned: [action.action_id],
+        hidden: [],
+        recent: [],
+      },
+      quickActionsLoading: true,
+      onQuickActionExecute,
+      onQuickActionsRequest,
+      onQuickActionsPreferencesChange,
+    });
+
+    expect(props.quickActions?.[0]?.action_id).toBe(action.action_id);
+    expect(props.quickActionsPreferences?.pinned).toEqual([action.action_id]);
+    expect(props.quickActionsLoading).toBe(true);
+    props.onQuickActionsRequest?.();
+    props.onQuickActionsPreferencesChange?.({ pinned: [], hidden: [action.action_id], recent: [] });
+    await expect(props.onQuickActionExecute?.(action.action_id, true)).resolves.toMatchObject({
+      action_id: action.action_id,
+      current_value: true,
+    });
+    expect(onQuickActionsRequest).toHaveBeenCalledTimes(1);
+    expect(onQuickActionsPreferencesChange).toHaveBeenCalledWith({
+      pinned: [],
+      hidden: [action.action_id],
+      recent: [],
+    });
+  });
+
+  it('accepts async quick action request and preference callbacks', async () => {
+    const onQuickActionsRequest = vi.fn(async () => {});
+    const onQuickActionsPreferencesChange = vi.fn(async () => {});
+    const props = parseChatWindowProps({
+      onQuickActionsRequest,
+      onQuickActionsPreferencesChange,
+    });
+
+    await expect(props.onQuickActionsRequest?.()).resolves.toBeUndefined();
+    await expect(props.onQuickActionsPreferencesChange?.({ pinned: [], hidden: [], recent: [] }))
+      .resolves.toBeUndefined();
+  });
+
   it('accepts an avatar interaction callback in window props', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });

@@ -145,6 +145,48 @@ class NekoPluginBase(_SharedNekoPluginBase):
     async def export_push(self, **kwargs: Any) -> object:
         return await self.ctx.export_push(**kwargs)
 
+    async def export_push_image(self, **kwargs: Any) -> object:
+        return await self.ctx.export_push_image(**kwargs)
+
+    def get_attachments(self) -> list[dict]:
+        """Return image attachments forwarded from the user's chat message."""
+        try:
+            result = self.ctx.get_attachments()
+            if result is not None:
+                return list(result) if isinstance(result, list) else []
+        except Exception:
+            pass
+        raw = getattr(self, "_last_attachments", None)
+        return list(raw) if isinstance(raw, list) else []
+
+    def get_user_language(self) -> str:
+        try:
+            getter = getattr(self.ctx, "get_user_language", None)
+            if callable(getter):
+                return str(getter() or "")
+        except Exception:
+            pass
+        return ""
+
+    def set_user_language(self, lang: str) -> None:
+        try:
+            setter = getattr(self.ctx, "set_user_language", None)
+            if callable(setter):
+                setter(lang)
+        except Exception:
+            pass
+
+    async def fetch_user_language(self, *, timeout: float = 5.0) -> str:
+        try:
+            result = await self.system_info.get_user_language(timeout=timeout)
+            if result.is_ok():
+                lang = str(result.value)
+                self.set_user_language(lang)
+                return lang
+        except Exception:
+            pass
+        return self.get_user_language()
+
     async def finish(self, **kwargs: Any) -> Any:
         return await self.ctx.finish(**kwargs)
 

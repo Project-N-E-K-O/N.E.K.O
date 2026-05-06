@@ -103,7 +103,7 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
         "source": {
             "kind": "local",
             "path_count": 1,
-            "paths": [str(plugin_dir.resolve())],
+            "paths": ["plugin_with_rules"],
         },
     }
 
@@ -183,7 +183,7 @@ def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) 
         "source": {
             "kind": "local_bundle",
             "path_count": 2,
-            "paths": [str(alpha_dir.resolve()), str(beta_dir.resolve())],
+            "paths": ["bundle_alpha", "bundle_beta"],
         },
     }
 

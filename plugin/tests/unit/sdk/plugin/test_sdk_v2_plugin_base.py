@@ -19,6 +19,7 @@ from plugin.sdk.plugin.base import (
     PluginMeta,
 )
 from plugin.sdk.plugin.decorators import plugin_entry
+from plugin.sdk.plugin.settings import PluginSettings, SettingsField, create_settings_safe, get_hot_fields
 from plugin.sdk.shared.constants import SDK_VERSION
 
 
@@ -36,7 +37,10 @@ class _Ctx:
         }
         self.run_updates: list[dict[str, object]] = []
         self.exports: list[dict[str, object]] = []
+        self.image_exports: list[dict[str, object]] = []
         self.pushed_messages: list[dict[str, object]] = []
+        self.attachments: list[dict[str, object]] = []
+        self.user_language = ""
 
     async def get_own_config(self, timeout: float = 5.0) -> dict[str, object]:
         return {"config": {"feature": {"enabled": True}}}
@@ -71,6 +75,19 @@ class _Ctx:
     async def export_push_async(self, **kwargs: object) -> dict[str, object]:
         self.exports.append(dict(kwargs))
         return {"ok": True}
+
+    async def export_push_image_async(self, **kwargs: object) -> dict[str, object]:
+        self.image_exports.append(dict(kwargs))
+        return {"ok": True}
+
+    def get_attachments(self) -> list[dict[str, object]]:
+        return list(self.attachments)
+
+    def get_user_language(self) -> str:
+        return self.user_language
+
+    def set_user_language(self, lang: str) -> None:
+        self.user_language = lang
 
     def push_message(self, **kwargs: object) -> dict[str, object]:
         self.pushed_messages.append(dict(kwargs))
@@ -134,6 +151,30 @@ def test_base_constants_and_meta_defaults() -> None:
     assert meta.sdk_version == SDK_VERSION
     assert meta.sdk_recommended is None
     assert meta.sdk_conflicts == []
+
+
+@pytest.mark.asyncio
+async def test_base_agent_helpers_forward_to_context() -> None:
+    ctx = _Ctx()
+    ctx.attachments = [{"type": "image_url", "url": "data:image/png;base64,aaa"}]
+    plugin = _DemoPlugin(ctx)
+
+    assert plugin.get_attachments() == ctx.attachments
+    plugin.set_user_language("zh-CN")
+    assert plugin.get_user_language() == "zh-CN"
+
+    await plugin.export_push_image(image_url="https://example.test/a.png", description="image")
+    assert ctx.image_exports == [
+        {
+            "run_id": None,
+            "image_data": None,
+            "image_url": "https://example.test/a.png",
+            "mime": None,
+            "description": "image",
+            "metadata": None,
+            "timeout": 10.0,
+        }
+    ]
 
 
 def test_plugin_meta_conflicts_default_factory_isolated() -> None:
@@ -526,3 +567,38 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
     assert "CallChain" not in mod.__all__
     assert "HookExecutorMixin" not in mod.__all__
     assert "EXTENDED_TYPES" not in mod.__all__
+
+
+def test_settings_field_preserves_callable_json_schema_extra() -> None:
+    def add_marker(schema: dict[str, object]) -> None:
+        schema["x-marker"] = "ok"
+
+    class _Settings(PluginSettings):
+        value: int = SettingsField(1, hot=True, json_schema_extra=add_marker)
+
+    props = _Settings.model_json_schema()["properties"]["value"]
+
+    assert props["hot"] is True
+    assert props["x-marker"] == "ok"
+    assert get_hot_fields(_Settings) == {"value"}
+
+
+def test_create_settings_safe_uses_default_factory_once() -> None:
+    calls = {"count": 0}
+
+    def make_items() -> list[str]:
+        calls["count"] += 1
+        return ["fallback"]
+
+    class _Settings(PluginSettings):
+        items: list[str] = SettingsField(default_factory=make_items)
+        count: int = SettingsField(1)
+
+    settings = create_settings_safe(_Settings, {"count": "bad"})
+
+    assert settings.items == ["fallback"]
+    assert settings.count == 1
+    # Pydantic's initial fast-path validation invokes the factory once before
+    # we fall back to per-field recovery; the recovery path should invoke it
+    # only once more, not once per field.
+    assert calls["count"] == 2

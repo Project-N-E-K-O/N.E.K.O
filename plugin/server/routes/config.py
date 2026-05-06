@@ -215,3 +215,42 @@ async def hot_update_plugin_config_endpoint(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+@router.get("/plugin/{plugin_id}/settings/schema")
+async def get_plugin_settings_schema_endpoint(
+    plugin_id: str,
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Return the PluginSettings JSON Schema for a plugin."""
+    try:
+        return _resolve_plugin_settings_schema(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+def _resolve_plugin_settings_schema(plugin_id: str) -> dict[str, object]:
+    """Resolve the PluginSettings class for *plugin_id* and return its schema."""
+    from plugin.core.state import state
+    from plugin.server.infrastructure.plugin_settings_resolver import resolve_settings_class
+
+    empty: dict[str, object] = {
+        "plugin_id": plugin_id,
+        "settings_class": None,
+        "toml_section": None,
+        "schema": None,
+    }
+
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+
+    settings_cls = resolve_settings_class(plugin_id, host=host)
+    if settings_cls is None:
+        return empty
+
+    return {
+        "plugin_id": plugin_id,
+        "settings_class": settings_cls.__name__,
+        "toml_section": settings_cls.model_config.get("toml_section", "settings"),
+        "schema": settings_cls.model_json_schema(),
+    }

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import zipfile
 
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.paths import CliDefaults
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -137,3 +140,85 @@ def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert "package_type=bundle" in captured.out
     assert "plugin_count=2" in captured.out
     assert "type=bundle" in captured.out
+
+
+def test_setup_repo_git_skips_when_inside_existing_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (tmp_path / "repo" / ".git").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run_git(command: list[str], *, cwd: Path) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(init_cmd, "_run_git", fake_run_git)
+
+    assert init_cmd._initialize_git_repo(plugin_dir) is False
+
+    assert calls == []
+
+
+def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (tmp_path / "repo" / ".git").mkdir()
+
+    with pytest.raises(RuntimeError, match="--remote"):
+        init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
+
+
+def test_git_preflight_remote_fails_before_writing_files(tmp_path: Path) -> None:
+    target_dir = tmp_path / "repo" / "demo_plugin"
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="--remote"):
+        init_cmd._preflight_git_request(
+            target_dir,
+            initialize_git=True,
+            remote="https://example.invalid/demo.git",
+        )
+
+    assert not target_dir.exists()
+
+
+def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = CliDefaults(
+        plugin_root=tmp_path / "plugin",
+        target_dir=tmp_path / "target",
+        plugins_root=tmp_path / "plugins",
+        profiles_root=tmp_path / "profiles",
+    )
+    args = argparse.Namespace(
+        plugin_id="demo_ext",
+        plugin_type="extension",
+        name="Demo Extension",
+        plugins_root=None,
+        git=False,
+        remote=None,
+        github_actions=False,
+        neko_repo="owner/N.E.K.O",
+        neko_ref="main",
+        no_readme=True,
+        no_tests=True,
+        no_gitignore=True,
+        no_vscode=True,
+    )
+
+    def fake_ask_confirm(message: str, *, default: bool = True) -> bool:
+        assert not message.startswith("快速开始")
+        return True
+
+    text_answers = iter(["", "", "host_plugin", "/extra"])
+    monkeypatch.setattr(init_cmd, "ask_confirm", fake_ask_confirm)
+    monkeypatch.setattr(init_cmd, "ask_text", lambda *_, **__: next(text_answers))
+    monkeypatch.setattr(init_cmd, "ask_checkbox", lambda *_, **__: ["lifecycle", "entry_point"])
+
+    assert init_cmd._handle_interactive(args, defaults=defaults) == 0
+
+    plugin_toml = (defaults.plugins_root / "demo_ext" / "plugin.toml").read_text(encoding="utf-8")
+    assert "[plugin.host]" in plugin_toml
+    assert 'plugin_id = "host_plugin"' in plugin_toml
