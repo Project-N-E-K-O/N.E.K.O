@@ -45,9 +45,11 @@ critical_packages = [
     'onnxruntime',
     'tokenizers',
     # galgame_plugin native deps. Installed by `uv sync --group galgame` (see
-    # build.bat / .github/workflows/build-desktop.yml). Skipped gracefully for
-    # source installs without the group — galgame plugin import-guards these
-    # so the plugin still loads with degraded OCR backend.
+    # build.bat / .github/workflows/build-desktop.yml). The build hard-fails
+    # below if any of the galgame_runtime_packages can't be collected — a
+    # packaged dist has no runtime install fallback (HTTP routes removed),
+    # so a maintainer who forgets the group sync would otherwise ship an
+    # OCR-permanently-broken artifact with no in-app recovery path.
     'rapidocr_onnxruntime',
     'cv2',  # provided by opencv-python-headless via [tool.uv].override-dependencies
     'shapely',
@@ -67,6 +69,14 @@ embedding_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
 )
 
+# galgame OCR cohort: bundling is the ONLY path post-refactor (in-app install
+# routes were removed). If the maintainer builds without `uv sync --group
+# galgame`, the resulting dist has OCR permanently broken with no recovery
+# at runtime — fail the build instead of silently shipping a degraded artifact.
+# `dxcam` skips this guard since it's win-only and would legitimately fail to
+# collect on macOS/Linux build hosts.
+galgame_runtime_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper', 'mss'}
+
 for pkg in critical_packages:
     try:
         tmp_ret = collect_all(pkg)
@@ -80,6 +90,13 @@ for pkg in critical_packages:
                 "present and will be bundled. Install with "
                 "`uv sync` or remove the embedding "
                 "assets directory before building."
+            ) from e
+        if pkg in galgame_runtime_packages:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, required for the bundled galgame "
+                "OCR pipeline. Run `uv sync --group galgame` before building "
+                "(see pyproject.toml [dependency-groups] galgame). Packaged "
+                "dist has no runtime install fallback to recover from this."
             ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 

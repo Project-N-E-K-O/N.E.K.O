@@ -543,7 +543,7 @@
   "ui.install.smart.using": "Используется Smart",
   "ui.install.smart.title": "Предпочитать DXcam на переднем плане и пробовать PrintWindow в фоне, чтобы не читать перекрытые пиксели",
   "ui.install.mss.using": "Используется MSS",
-  "ui.install.mss.title": "Использовать кросс-платформенный бэкенд скриншотов mss; окно игры должно быть видимым",
+  "ui.install.mss.title": "Использовать кросс-платформенный бэкенд скриншотов MSS; окно игры должно быть видимым",
   "ui.install.printwindow.using": "Используется PrintWindow",
   "ui.install.printwindow.title": "Использовать резервный Win32 PrintWindow; игры DirectX/Unity могут возвращать старые кадры",
   "ui.install.dxcam.using": "Используется DXcam",

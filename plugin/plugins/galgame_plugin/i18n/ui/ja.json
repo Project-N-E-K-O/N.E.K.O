@@ -543,7 +543,7 @@
   "ui.install.smart.using": "Smart を使用中",
   "ui.install.smart.title": "前面では DXcam を優先し、背景では PrintWindow のみを試して、遮蔽された表示ピクセルを読まないようにします",
   "ui.install.mss.using": "MSS を使用中",
-  "ui.install.mss.title": "クロスプラットフォーム mss スクリーンショットバックエンドを使用します。ゲームウィンドウは表示されている必要があります",
+  "ui.install.mss.title": "クロスプラットフォーム MSS スクリーンショットバックエンドを使用します。ゲームウィンドウは表示されている必要があります",
   "ui.install.printwindow.using": "PrintWindow を使用中",
   "ui.install.printwindow.title": "Win32 PrintWindow フォールバックを使用します。DirectX / Unity ゲームでは古いフレームになる場合があります",
   "ui.install.dxcam.using": "DXcam を使用中",

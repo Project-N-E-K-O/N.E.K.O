@@ -4461,7 +4461,7 @@ function renderDxcam(status) {
     text: (selectedCaptureBackend === 'mss' || selectedCaptureBackend === 'imagegrab')
       ? uiT('ui.install.mss.using', '正在使用 MSS')
       : uiT('ui.install.mss.use', '使用 MSS'),
-    title: uiT('ui.install.mss.title', '使用 mss 跨平台截图后端，游戏窗口需要可见'),
+    title: uiT('ui.install.mss.title', '使用 MSS 跨平台截图后端，游戏窗口需要可见'),
   });
   configureUseButton('printwindowUseBtn', {
     active: selectedCaptureBackend === 'printwindow',
