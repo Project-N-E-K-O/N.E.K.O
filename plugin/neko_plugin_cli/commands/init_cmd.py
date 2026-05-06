@@ -440,8 +440,11 @@ def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool
 def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: str | None = None) -> None:
     if not initialize_git:
         return
-    if remote and _find_parent_git_dir(target_dir) is not None:
-        raise RuntimeError("--remote can only be used when initializing a new git repository")
+    existing_git = _find_parent_git_dir(target_dir)
+    if existing_git is not None:
+        if remote:
+            raise RuntimeError("--remote can only be used when initializing a new git repository")
+        return
     if shutil.which("git") is None:
         raise RuntimeError("git executable not found; install git or omit --git")
 

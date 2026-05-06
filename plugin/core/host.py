@@ -1056,19 +1056,14 @@ def _plugin_process_runner(
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
 
             run_id = None
+            lanlan_name = None
+            lang = None
             try:
-                ctx._current_lang = None
-                ctx._current_lanlan = None
-                ctx._manual_lang_override = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     run_id = ctx_obj.get("run_id")
                     lanlan_name = ctx_obj.get("lanlan_name")
-                    if lanlan_name:
-                        ctx._current_lanlan = str(lanlan_name)
                     lang = ctx_obj.get("lang")
-                    if lang:
-                        ctx._current_lang = str(lang)
             except Exception:
                 pass
 
@@ -1094,7 +1089,10 @@ def _plugin_process_runner(
                 requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
                 timeout_seconds = _resolve_timeout(entry_id, requested_timeout)
 
-                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
+                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id), ctx._language_scope(
+                    str(lang) if lang else None,
+                    str(lanlan_name) if lanlan_name else None,
+                ):
                     result = await _run_with_watchdog(
                         method(**args), entry_id, timeout_seconds,
                     )
@@ -1152,18 +1150,13 @@ def _plugin_process_runner(
 
             logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
 
+            lanlan_name = None
+            lang = None
             try:
-                ctx._current_lang = None
-                ctx._current_lanlan = None
-                ctx._manual_lang_override = None
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     lanlan_name = ctx_obj.get("lanlan_name")
-                    if lanlan_name:
-                        ctx._current_lanlan = str(lanlan_name)
                     lang = ctx_obj.get("lang")
-                    if lang:
-                        ctx._current_lang = str(lang)
             except Exception:
                 pass
 
@@ -1180,7 +1173,10 @@ def _plugin_process_runner(
                     ret["error"] = f"Custom event '{event_type}.{event_id}' must be 'async def'."
                     return
 
-                with ctx._handler_scope(f"{event_type}.{event_id}"):
+                with ctx._handler_scope(f"{event_type}.{event_id}"), ctx._language_scope(
+                    str(lang) if lang else None,
+                    str(lanlan_name) if lanlan_name else None,
+                ):
                     result = await _run_with_watchdog(
                         method(**args),
                         f"{event_type}.{event_id}",

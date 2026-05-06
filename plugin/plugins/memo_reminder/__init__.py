@@ -600,7 +600,8 @@ class MemoReminderPlugin(NekoPluginBase):
         if isinstance(ctx_obj, dict):
             lanlan_name = ctx_obj.get("lanlan_name")
         if not lanlan_name:
-            lanlan_name = getattr(self.ctx, "_current_lanlan", None)
+            getter = getattr(self.ctx, "get_current_lanlan", None)
+            lanlan_name = getter() if callable(getter) else getattr(self.ctx, "_current_lanlan", None)
 
         # 只有当触发时间在 1 小时内时才需要 deferred 机制（与 agent_server 的 DEFERRED_TASK_TIMEOUT 对齐）
         trigger_delay = (trigger_dt - now).total_seconds()

@@ -182,6 +182,17 @@ def test_git_preflight_remote_fails_before_writing_files(tmp_path: Path) -> None
     assert not target_dir.exists()
 
 
+def test_git_preflight_skips_git_binary_check_inside_existing_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_dir = tmp_path / "repo" / "demo_plugin"
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(init_cmd.shutil, "which", lambda _: None)
+
+    init_cmd._preflight_git_request(target_dir, initialize_git=True)
+
+
 def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

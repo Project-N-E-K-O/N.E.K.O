@@ -61,6 +61,9 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+_CURRENT_LANG: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lang", default=None)
+_CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lanlan", default=None)
+_MANUAL_LANG_OVERRIDE: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_manual_lang_override", default=None)
 
 
 def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
@@ -321,6 +324,20 @@ class PluginContext:
             yield
         finally:
             _CURRENT_RUN_ID.reset(token)
+
+    @contextlib.contextmanager
+    def _language_scope(self, lang: Optional[str] = None, lanlan: Optional[str] = None):
+        lang_value = lang.strip() if isinstance(lang, str) and lang.strip() else None
+        lanlan_value = lanlan.strip() if isinstance(lanlan, str) and lanlan.strip() else None
+        lang_token = _CURRENT_LANG.set(lang_value)
+        lanlan_token = _CURRENT_LANLAN.set(lanlan_value)
+        override_token = _MANUAL_LANG_OVERRIDE.set(None)
+        try:
+            yield
+        finally:
+            _MANUAL_LANG_OVERRIDE.reset(override_token)
+            _CURRENT_LANLAN.reset(lanlan_token)
+            _CURRENT_LANG.reset(lang_token)
 
     @property
     def handler_ctx(self) -> Optional[str]:
@@ -730,11 +747,15 @@ class PluginContext:
 
     def get_user_language(self) -> str:
         """Return the current user's language code for this plugin context."""
-        return self._manual_lang_override or self._current_lang or ""
+        return _MANUAL_LANG_OVERRIDE.get() or _CURRENT_LANG.get() or self._manual_lang_override or self._current_lang or ""
 
     def set_user_language(self, lang: str) -> None:
         normalized = str(lang).strip() if lang else ""
-        self._manual_lang_override = normalized or None
+        _MANUAL_LANG_OVERRIDE.set(normalized or None)
+
+    def get_current_lanlan(self) -> str:
+        """Return the current lanlan name for this plugin context."""
+        return _CURRENT_LANLAN.get() or self._current_lanlan or ""
 
     async def _run_update_async(
         self,

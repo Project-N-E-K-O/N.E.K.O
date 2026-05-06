@@ -87,7 +87,7 @@ async def test_amap_provider_converts_wgs84_to_gcj02() -> None:
 
 
 @pytest.mark.asyncio
-async def test_amap_transit_does_not_send_invalid_national_city(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_amap_transit_sends_required_city_params(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     class Response:
@@ -109,9 +109,26 @@ async def test_amap_transit_does_not_send_invalid_national_city(monkeypatch: pyt
 
     monkeypatch.setattr(_routing.httpx, "AsyncClient", lambda **_: Client())
 
-    await AMapProvider("key")._transit("121.473700,31.230400", "121.460000,31.220000", timeout=1)
+    await AMapProvider("key")._transit(
+        "121.473700,31.230400",
+        "121.460000,31.220000",
+        timeout=1,
+        origin_city="上海",
+        destination_city="杭州",
+    )
 
-    assert "city" not in captured["params"]
+    assert captured["params"]["city"] == "上海"
+    assert captured["params"]["cityd"] == "杭州"
+
+
+@pytest.mark.asyncio
+async def test_amap_transit_requires_origin_city() -> None:
+    with pytest.raises(RoutingProviderError, match="origin city"):
+        await AMapProvider("key")._transit(
+            "121.473700,31.230400",
+            "121.460000,31.220000",
+            timeout=1,
+        )
 
 
 @pytest.mark.asyncio

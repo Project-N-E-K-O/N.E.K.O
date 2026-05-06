@@ -72,6 +72,9 @@ class RoutingProvider(Protocol):
         dest_lat: float, dest_lon: float,
         mode: str,  # "transit" | "walking" | "bicycling" | "driving"
         timeout: float = 10.0,
+        *,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
     ) -> List[Route]: ...
 
 
@@ -129,6 +132,9 @@ class AMapProvider:
         self, origin_lat: float, origin_lon: float,
         dest_lat: float, dest_lon: float,
         mode: str, timeout: float = 10.0,
+        *,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
     ) -> List[Route]:
         from ._poi import _wgs84_to_gcj02
 
@@ -139,7 +145,7 @@ class AMapProvider:
         dest = f"{dest_lon:.6f},{dest_lat:.6f}"
 
         if mode == "transit":
-            return await self._transit(origin, dest, timeout)
+            return await self._transit(origin, dest, timeout, origin_city=origin_city, destination_city=destination_city)
         elif mode == "walking":
             return await self._simple(f"{self._base}/walking", origin, dest, "walking", timeout)
         elif mode == "bicycling":
@@ -148,9 +154,23 @@ class AMapProvider:
             return await self._simple(f"{self._base}/driving", origin, dest, "driving", timeout)
         return []
 
-    async def _transit(self, origin: str, dest: str, timeout: float) -> List[Route]:
+    async def _transit(
+        self,
+        origin: str,
+        dest: str,
+        timeout: float,
+        *,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
+    ) -> List[Route]:
         url = f"{self._base}/transit/integrated"
-        params = {"key": self.api_key, "origin": origin, "destination": dest, "strategy": "0"}
+        city = str(origin_city or "").strip()
+        if not city:
+            raise RoutingProviderError(self.name, "origin city is required for transit")
+        params = {"key": self.api_key, "origin": origin, "destination": dest, "strategy": "0", "city": city}
+        cityd = str(destination_city or "").strip()
+        if cityd and cityd != city:
+            params["cityd"] = cityd
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
@@ -264,6 +284,9 @@ class BaiduMapProvider:
         self, origin_lat: float, origin_lon: float,
         dest_lat: float, dest_lon: float,
         mode: str, timeout: float = 10.0,
+        *,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
     ) -> List[Route]:
         # 百度坐标格式: lat,lon
         origin = f"{origin_lat:.6f},{origin_lon:.6f}"
@@ -344,11 +367,16 @@ class OSRMProvider:
         self, origin_lat: float, origin_lon: float,
         dest_lat: float, dest_lon: float,
         mode: str, timeout: float = 10.0,
+        *,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
     ) -> List[Route]:
         if mode == "transit":
             return []  # OSRM 不支持公交
         profile_map = {"driving": "driving", "bicycling": "cycling", "walking": "walking"}
-        profile = profile_map.get(mode, "car")
+        profile = profile_map.get(mode)
+        if profile is None:
+            return []
         coords = f"{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
         url = f"{self.base_url}/route/v1/{profile}/{coords}"
         params = {"overview": "false", "steps": "true"}
@@ -413,6 +441,8 @@ class RoutingService:
         origin_lat: float, origin_lon: float,
         dest_lat: float, dest_lon: float,
         modes: Optional[List[str]] = None,
+        origin_city: Optional[str] = None,
+        destination_city: Optional[str] = None,
     ) -> RoutingResult:
         dist_km = haversine_km(origin_lat, origin_lon, dest_lat, dest_lon)
         if modes is None:
@@ -426,7 +456,15 @@ class RoutingService:
                 if mode == "transit" and not getattr(provider, "supports_transit", False):
                     continue
                 try:
-                    routes = await provider.plan_route(origin_lat, origin_lon, dest_lat, dest_lon, mode)
+                    routes = await provider.plan_route(
+                        origin_lat,
+                        origin_lon,
+                        dest_lat,
+                        dest_lon,
+                        mode,
+                        origin_city=origin_city,
+                        destination_city=destination_city,
+                    )
                     if routes:
                         result.routes.extend(routes)
                         if provider.name not in used_providers:

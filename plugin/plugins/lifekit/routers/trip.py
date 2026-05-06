@@ -78,6 +78,8 @@ class TripRouter(PluginRouter):
             origin_loc["lat"], origin_loc["lon"],
             dest_loc["lat"], dest_loc["lon"],
             modes=modes,
+            origin_city=str(origin_loc.get("city") or ""),
+            destination_city=str(dest_loc.get("city") or ""),
         )
 
         # 两地天气
