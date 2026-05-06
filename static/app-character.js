@@ -243,6 +243,14 @@
 
         try {
             emitAssistantSpeechCancel('character_switch');
+            // VRM applyLighting retry ownership token：无论新角色是 VRM/Live2D/MMD 都先刷新。
+            // 之前只在 VRM 分支刷的话，VRM→Live2D/MMD 时旧 VRM retry 仍持有相同 token →
+            // 继续 mutate vrmManager.scene 灯光（即便 VRM 已隐藏，scene 状态被污染、下次切回
+            // VRM 时残留）。这里无条件刷成 attempt 级 token，旧 retry 比对 !== 立刻自杀。
+            // 提到 try 顶部还覆盖了"非 VRM 分支也参与 ownership 流转"的语义。
+            const currentSwitchId = Symbol();
+            window._currentCatgirlSwitchId = currentSwitchId;
+
             // 0. 紧急制动：立即停止所有渲染循环
             // 停止 Live2D Ticker
             if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
@@ -598,14 +606,8 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
             } else if (effectiveModelType === 'vrm') {
-                // 加载 VRM 模型
+                // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
                 console.log('[猫娘切换] 进入VRM加载分支');
-                // 进入 VRM 分支立刻刷新 ownership token：分支内有 initThreeJS / loadModel 等
-                // 长 await，旧 retry 在 await 期间仍持有旧 token 写到共享 vrmManager；尤其
-                // A→B 都 VRM 时旧 retry 可能把 A 的 lighting 写到 B 已 init 的 three.js scene。
-                // 必须在任何让 vrmManager 变可用的 await 之前刷新，旧 retry 比对 !== 立刻退出。
-                const currentSwitchId = Symbol();
-                window._currentCatgirlSwitchId = currentSwitchId;
 
                 // 安全获取 VRM 模型路径，处理各种边界情况
                 let vrmModelPath = null;
