@@ -410,10 +410,14 @@
 
     // ========================  ensureWebSocketOpen  ========================
 
+    // 区分"字段未注入"和"字段注入为空串"：未注入返回 null（继续等待 page config 注入），
+    // 注入为空串返回 ''（合法的"当前没有角色"，应直接尝试 connect 而不是无谓等待 5s 超时）。
     function getWebSocketLanlanName() {
-        return (window.lanlan_config && window.lanlan_config.lanlan_name)
-            ? window.lanlan_config.lanlan_name
-            : '';
+        var cfg = window.lanlan_config;
+        if (!cfg || typeof cfg !== 'object') return null;
+        if (!Object.prototype.hasOwnProperty.call(cfg, 'lanlan_name')) return null;
+        var v = cfg.lanlan_name;
+        return v == null ? '' : String(v);
     }
 
     /**
@@ -487,7 +491,7 @@
                 clearAutoReconnectTimer();
                 var connectWhenLanlanNameReady = function () {
                     if (settled) return;
-                    if (getWebSocketLanlanName()) {
+                    if (getWebSocketLanlanName() !== null) {
                         connectWebSocket();
                         return;
                     }
@@ -546,11 +550,12 @@
             clearTimeout(S.autoReconnectTimeoutId);
             S.autoReconnectTimeoutId = null;
         }
-        if (!currentLanlanName) {
+        // 仅在字段未注入（null）时退避等待；空串是合法"当前没有角色"，按下面正常 encode 走。
+        if (currentLanlanName === null) {
             _lanlanNameWaitAttempts += 1;
             var waitNow = Date.now();
             if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
-                console.warn('[WebSocket] lanlan_name not ready, waiting for page config');
+                console.warn('[WebSocket] lanlan_name not injected yet, waiting for page config');
                 _lanlanNameWaitLastLogAt = waitNow;
             }
             S.autoReconnectTimeoutId = setTimeout(
@@ -1319,7 +1324,12 @@
 
                                     S.isRecording = false;
                                     S.voiceChatActive = false;
+                                    S.voiceStartPending = false;
                                     window.isRecording = false;
+                                    // 必须在 syncVoiceChatComposerHidden(false) 之前清掉，
+                                    // 否则 shouldKeepVoiceComposerHidden() 还会按"启动中"判定要求隐藏，
+                                    // 重启失败的输入栏会被新守卫再次压回去。
+                                    window.isMicStarting = false;
 
                                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
