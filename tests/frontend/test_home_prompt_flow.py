@@ -808,6 +808,138 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
 
 
 @pytest.mark.frontend
+def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'false');
+            window.__agentFlagBodies = [];
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/tutorial-started') {
+                return jsonResponse({ ok: true, tutorial_run_token: 'run-token' });
+            }
+            if (requestUrl === '/api/agent/flags' && method === 'GET') {
+                return jsonResponse({
+                    success: true,
+                    analyzer_enabled: true,
+                    agent_flags: {
+                        computer_use_enabled: true,
+                        browser_use_enabled: false,
+                        user_plugin_enabled: false,
+                        openclaw_enabled: false,
+                        openfang_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/agent/flags' && method === 'POST') {
+                window.__agentFlagBodies.push(body);
+                return jsonResponse({ success: true });
+            }
+        """,
+        script_names=("app-prompt-shared.js", "app-tutorial-prompt.js"),
+        init_js="() => window.appTutorialPrompt.init()",
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app-react-chat-window.js"))
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.reactChatWindowHost.setGalgameModeEnabled(true, {
+                persist: false,
+                force: true,
+            });
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = true;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        """
+        () => window.reactChatWindowHost.isGalgameModeEnabled() === true
+            && window.localStorage.getItem('neko.reactChatWindow.galgameMode') === 'false'
+        """,
+        timeout=5000,
+    )
+    mock_page.wait_for_function(
+        "() => window.__agentFlagBodies.length === 2",
+        timeout=5000,
+    )
+    result = mock_page.evaluate(
+        """
+        () => ({
+            suppressed: window.NekoHomeTutorialFeatureController.isActive(),
+            agentFlagBodies: window.__agentFlagBodies.slice(),
+        })
+        """
+    )
+    assert result["suppressed"] is False
+    assert result["agentFlagBodies"][0]["flags"]["agent_enabled"] is False
+    assert result["agentFlagBodies"][0]["flags"]["computer_use_enabled"] is False
+    assert result["agentFlagBodies"][1]["flags"]["agent_enabled"] is True
+    assert result["agentFlagBodies"][1]["flags"]["computer_use_enabled"] is True
+
+
+@pytest.mark.frontend
 def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
     _bootstrap_page(
         mock_page,

@@ -8,6 +8,25 @@
     const HEARTBEAT_ENDPOINT = '/api/tutorial-prompt/heartbeat';
     const TUTORIAL_PROMPT_COORDINATION_KEY = 'home-tutorial-prompt';
     const TUTORIAL_PROMPT_PRIORITY = 200;
+    const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
+        'agent_enabled',
+        'computer_use_enabled',
+        'browser_use_enabled',
+        'user_plugin_enabled',
+        'openclaw_enabled',
+        'openfang_enabled',
+    ]);
+    const HOME_TUTORIAL_PROACTIVE_KEYS = Object.freeze([
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled',
+    ]);
 
     const promptShared = window.nekoPromptShared;
     if (!promptShared || typeof promptShared.createPromptTools !== 'function') {
@@ -53,6 +72,11 @@
         pendingTutorialStartPayload: null,
         userCohort: 'unknown',
         mobileResizeRetryBound: false,
+        featureSuppression: {
+            active: false,
+            token: 0,
+            snapshot: null,
+        },
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -96,6 +120,271 @@
         }
         return 'heartbeat-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     }
+
+    function getReactChatWindowHost() {
+        return window.reactChatWindowHost || null;
+    }
+
+    function getStoredGalgamePreference() {
+        try {
+            const raw = localStorage.getItem('neko.reactChatWindow.galgameMode');
+            if (raw === null) return true;
+            return raw === 'true';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function snapshotGalgameState() {
+        const host = getReactChatWindowHost();
+        if (host && typeof host.isGalgameModeEnabled === 'function') {
+            try {
+                return !!host.isGalgameModeEnabled();
+            } catch (_) {}
+        }
+        return getStoredGalgamePreference();
+    }
+
+    function setGalgameState(enabled, options) {
+        const requestOptions = options || {};
+        const host = getReactChatWindowHost();
+        if (host && typeof host.setGalgameModeEnabled === 'function') {
+            try {
+                host.setGalgameModeEnabled(!!enabled, {
+                    persist: false,
+                    suppressRefetch: true,
+                    force: !!requestOptions.force,
+                });
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to set GalGame state:', error);
+            }
+        }
+    }
+
+    function snapshotProactiveState() {
+        const snapshot = {};
+        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+            snapshot[key] = !!window[key];
+        });
+        return snapshot;
+    }
+
+    function applyProactiveState(values) {
+        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+            if (Object.prototype.hasOwnProperty.call(values, key)) {
+                window[key] = !!values[key];
+            }
+        });
+        if (typeof window.stopProactiveChatSchedule === 'function') {
+            try {
+                window.stopProactiveChatSchedule();
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to stop proactive schedule:', error);
+            }
+        }
+        if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+            try {
+                window.stopProactiveVisionDuringSpeech();
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to stop proactive vision:', error);
+            }
+        }
+        if (typeof window.releaseProactiveVisionStream === 'function') {
+            try {
+                window.releaseProactiveVisionStream();
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to release proactive vision stream:', error);
+            }
+        }
+    }
+
+    function maybeRestartProactiveSchedule(snapshot) {
+        if (!snapshot || !snapshot.proactiveChatEnabled) {
+            return;
+        }
+        const hasMode = HOME_TUTORIAL_PROACTIVE_KEYS.some(function (key) {
+            return key !== 'proactiveChatEnabled' && !!snapshot[key];
+        });
+        if (!hasMode) {
+            return;
+        }
+        const scheduler = window.appProactive && typeof window.appProactive.scheduleProactiveChat === 'function'
+            ? window.appProactive.scheduleProactiveChat
+            : window.scheduleProactiveChat;
+        if (typeof scheduler === 'function') {
+            try {
+                scheduler();
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to restart proactive schedule:', error);
+            }
+        }
+    }
+
+    async function fetchAgentFlagSnapshot() {
+        const response = await fetch('/api/agent/flags', {
+            method: 'GET',
+            cache: 'no-store',
+        });
+        if (!response || !response.ok) {
+            throw new Error('agent_flags_get_failed');
+        }
+        const payload = await response.json();
+        if (!payload || payload.success === false) {
+            throw new Error('agent_flags_payload_invalid');
+        }
+        const flags = Object.assign({}, payload.agent_flags || {});
+        if (typeof payload.analyzer_enabled === 'boolean') {
+            flags.agent_enabled = payload.analyzer_enabled;
+        } else if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
+            flags.agent_enabled = !!flags.agent_enabled;
+        }
+        return flags;
+    }
+
+    async function postAgentFlags(flags) {
+        const response = await fetch('/api/agent/flags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ flags: flags }),
+        });
+        if (!response || !response.ok) {
+            throw new Error('agent_flags_post_failed');
+        }
+        const payload = await response.json().catch(function () { return null; });
+        if (payload && payload.success === false) {
+            throw new Error(payload.error || 'agent_flags_post_rejected');
+        }
+    }
+
+    function buildDisabledAgentFlags() {
+        const flags = {};
+        HOME_TUTORIAL_AGENT_FLAG_KEYS.forEach(function (key) {
+            flags[key] = false;
+        });
+        return flags;
+    }
+
+    function syncAgentFlagsUi() {
+        if (typeof window.syncAgentFlagsFromBackend === 'function') {
+            try {
+                Promise.resolve(window.syncAgentFlagsFromBackend()).catch(function (error) {
+                    console.warn('[TutorialPrompt] agent flag UI sync failed:', error);
+                });
+            } catch (error) {
+                console.warn('[TutorialPrompt] agent flag UI sync failed:', error);
+            }
+        }
+        if (typeof window.checkAndToggleTaskHUD === 'function') {
+            try {
+                window.checkAndToggleTaskHUD();
+            } catch (error) {
+                console.warn('[TutorialPrompt] agent HUD sync failed:', error);
+            }
+        }
+    }
+
+    async function snapshotAndDisableAgentFlags(token) {
+        try {
+            const flags = await fetchAgentFlagSnapshot();
+            if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+                return;
+            }
+            if (state.featureSuppression.snapshot) {
+                state.featureSuppression.snapshot.agentFlags = flags;
+            }
+            await postAgentFlags(buildDisabledAgentFlags());
+            if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
+                try {
+                    await postAgentFlags(flags);
+                    syncAgentFlagsUi();
+                } catch (restoreError) {
+                    console.warn('[TutorialPrompt] failed to restore agent flags after stale suppress:', restoreError);
+                }
+                return;
+            }
+            syncAgentFlagsUi();
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to suppress agent flags:', error);
+        }
+    }
+
+    function beginHomeTutorialFeatureSuppression(reason) {
+        if (!isHomePage()) {
+            return;
+        }
+        const suppression = state.featureSuppression;
+        if (suppression.active) {
+            return;
+        }
+        const token = Date.now() + Math.random();
+        const snapshot = {
+            galgameEnabled: snapshotGalgameState(),
+            proactive: snapshotProactiveState(),
+            agentFlags: null,
+            reason: reason || 'tutorial-started',
+        };
+        suppression.active = true;
+        suppression.token = token;
+        suppression.snapshot = snapshot;
+
+        setGalgameState(false);
+        const proactiveOff = {};
+        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+            proactiveOff[key] = false;
+        });
+        applyProactiveState(proactiveOff);
+        void snapshotAndDisableAgentFlags(token);
+
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+            detail: { active: true, reason: reason || 'tutorial-started' },
+        }));
+    }
+
+    function endHomeTutorialFeatureSuppression(reason) {
+        const suppression = state.featureSuppression;
+        if (!suppression.active && !suppression.snapshot) {
+            return;
+        }
+        const snapshot = suppression.snapshot || {};
+        suppression.active = false;
+        suppression.token = Date.now() + Math.random();
+        const restoreToken = suppression.token;
+        suppression.snapshot = null;
+
+        setGalgameState(!!snapshot.galgameEnabled, { force: true });
+        setTimeout(function () {
+            if (state.featureSuppression.active || state.featureSuppression.token !== restoreToken) {
+                return;
+            }
+            setGalgameState(!!snapshot.galgameEnabled, { force: true });
+        }, 0);
+        if (snapshot.proactive) {
+            applyProactiveState(snapshot.proactive);
+            maybeRestartProactiveSchedule(snapshot.proactive);
+        }
+        if (snapshot.agentFlags) {
+            void postAgentFlags(snapshot.agentFlags)
+                .then(syncAgentFlagsUi)
+                .catch(function (error) {
+                    console.warn('[TutorialPrompt] failed to restore agent flags:', error);
+                });
+        }
+
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+            detail: { active: false, reason: reason || 'tutorial-ended' },
+        }));
+    }
+
+    mod.beginHomeTutorialFeatureSuppression = beginHomeTutorialFeatureSuppression;
+    mod.endHomeTutorialFeatureSuppression = endHomeTutorialFeatureSuppression;
+    mod.isHomeTutorialFeatureSuppressionActive = function () {
+        return !!state.featureSuppression.active;
+    };
+    window.NekoHomeTutorialFeatureController = {
+        begin: beginHomeTutorialFeatureSuppression,
+        end: endHomeTutorialFeatureSuppression,
+        isActive: mod.isHomeTutorialFeatureSuppressionActive,
+    };
 
     function getHomeTutorialStorageKeys() {
         const keys = [];
@@ -852,6 +1141,7 @@
             state.tutorialStartRequested = false;
             state.tutorialStarted = true;
             state.homeTutorialCompleted = true;
+            endHomeTutorialFeatureSuppression('tutorial-completed');
             emitHomeTutorialLockIfChanged('tutorial-completed');
             void (async function () {
                 const source = event.detail.source || 'manual';
@@ -887,6 +1177,7 @@
             if (!event || !event.detail || event.detail.page !== 'home') {
                 return;
             }
+            beginHomeTutorialFeatureSuppression('tutorial-started');
             state.tutorialRunning = true;
             state.tutorialStartRequested = false;
             state.tutorialStarted = true;
@@ -935,7 +1226,17 @@
             }
             state.tutorialRunning = false;
             state.tutorialStartRequested = false;
+            endHomeTutorialFeatureSuppression('tutorial-skipped');
             emitHomeTutorialLockIfChanged('tutorial-skipped');
+        });
+
+        window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (detail.locked === true && detail.reason === 'tutorial-start-requested') {
+                beginHomeTutorialFeatureSuppression('tutorial-start-requested');
+            } else if (detail.locked === false && !state.tutorialRunning && !state.tutorialStartRequested) {
+                endHomeTutorialFeatureSuppression(detail.reason || 'lock-released');
+            }
         });
 
         window.addEventListener('beforeunload', flushHeartbeatOnUnload);
