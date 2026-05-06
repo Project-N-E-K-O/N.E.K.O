@@ -13,6 +13,7 @@ const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
 const PLUGIN_RUN_LIGHT_TIMEOUT_MS = 30000;
+const TUTORIAL_PROGRESS_TIMEOUT_MS = 5000;
 const PLUGIN_RUN_INITIAL_POLL_MS = 250;
 const PLUGIN_RUN_MAX_POLL_MS = 2000;
 const CL_ZOOM_KEY = 'galgame_current_line_zoom';
@@ -747,6 +748,26 @@ let ocrScreenTemplatesUndoValue = '';
 let ocrRegionSnapshot = null;
 let ocrRegionSelection = null;
 let ocrRegionDragStart = null;
+
+function fetchWithTutorialTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, TUTORIAL_PROGRESS_TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
+
+function hideOnboardingWithoutSkipping() {
+  onboardingDismissed = true;
+  forceShowOnboarding = false;
+  document.body.classList.remove('onboarding-active');
+  const onboardingView = document.getElementById('onboardingView');
+  if (onboardingView) {
+    onboardingView.hidden = true;
+  }
+}
 
 const SETTINGS_CONTROL_IDS = new Set([
   'modeSelect',
@@ -6634,7 +6655,7 @@ async function switchToChoiceAdvisorMode() {
 
 async function fetchTutorialProgress() {
   try {
-    const response = await fetch(TUTORIAL_STATUS_URL, {
+    const response = await fetchWithTutorialTimeout(TUTORIAL_STATUS_URL, {
       credentials: 'same-origin',
       cache: 'no-store',
     });
@@ -6655,7 +6676,7 @@ async function saveTutorialProgress(partial) {
       await fetchTutorialProgress();
     }
     const payload = { ...(latestTutorialProgress || {}), ...(partial || {}) };
-    const response = await fetch(TUTORIAL_PROGRESS_URL, {
+    const response = await fetchWithTutorialTimeout(TUTORIAL_PROGRESS_URL, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
@@ -6751,6 +6772,19 @@ async function handleDiagnosisAction(action) {
       setFlash(uiT('ui.flash.action_unavailable', '这个操作暂时不可用。'), 'warning');
       break;
   }
+}
+
+function isFirstRunInstallAction(action) {
+  return action === 'install_rapidocr' || action === 'install_tesseract' || action === 'install_dxcam';
+}
+
+function handleFirstRunActionClick(button, action) {
+  return withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => {
+    if (isFirstRunInstallAction(action)) {
+      hideOnboardingWithoutSkipping();
+    }
+    return handleDiagnosisAction(action);
+  });
 }
 
 function switchInstallTab(tab) {
@@ -6910,7 +6944,7 @@ document.getElementById('firstRunGuide').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
+  handleFirstRunActionClick(button, action).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
@@ -7140,7 +7174,7 @@ document.getElementById('onboardingView').addEventListener('click', (event) => {
     return;
   }
   const action = button.getAttribute('data-first-run-action') || '';
-  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
+  handleFirstRunActionClick(button, action).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
