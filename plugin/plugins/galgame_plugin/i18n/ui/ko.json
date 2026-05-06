@@ -480,7 +480,7 @@
   "ui.action.recalibrate_ocr": "OCR 재보정",
   "ui.action.line_details": "인식 상세 보기",
   "ui.action.choice_advisor": "자동 진행 모드로 전환",
-  "ui.action.install_rapidocr": "RapidOCR 설치",
+  "ui.action.install_rapidocr": "RapidOCR 활성화 안내 보기",
   "ui.action.refresh_status": "상태 새로고침",
   "ui.pending.locking": "잠그는 중...",
   "ui.pending.clearing": "지우는 중...",
@@ -1014,5 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam 사용 불가 — Windows 전용, 패키지 버전 또는 소스의 `uv sync --group galgame` 필요",
   "ui.install.pyautogui.use": "PyAutoGUI 사용",
   "ui.install.pyautogui.using": "PyAutoGUI 사용 중",
-  "ui.install.pyautogui.title": "크로스 플랫폼 pyautogui 스크린샷 백엔드 사용(macOS/Linux에서 느림)"
+  "ui.install.pyautogui.title": "크로스 플랫폼 pyautogui 스크린샷 백엔드 사용(macOS/Linux에서 느림)",
+  "ui.flash.rapidocr_hint_revealed": "RapidOCR 상태 배너로 이동했습니다. 배너의 안내에 따라 진행하세요(패키지 버전 재설치 / uv sync --group galgame)."
 }

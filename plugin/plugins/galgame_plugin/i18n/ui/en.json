@@ -480,7 +480,7 @@
   "ui.action.recalibrate_ocr": "Recalibrate OCR",
   "ui.action.line_details": "View Recognition Details",
   "ui.action.choice_advisor": "Switch to Auto Advance",
-  "ui.action.install_rapidocr": "Install RapidOCR",
+  "ui.action.install_rapidocr": "View RapidOCR setup hint",
   "ui.action.refresh_status": "Refresh Status",
   "ui.pending.locking": "Locking...",
   "ui.pending.clearing": "Clearing...",
@@ -1014,5 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam unavailable — Windows only, requires packaged build or `uv sync --group galgame`",
   "ui.install.pyautogui.use": "Use PyAutoGUI",
   "ui.install.pyautogui.using": "Using PyAutoGUI",
-  "ui.install.pyautogui.title": "Use the cross-platform pyautogui screenshot backend (slower on macOS/Linux)"
+  "ui.install.pyautogui.title": "Use the cross-platform pyautogui screenshot backend (slower on macOS/Linux)",
+  "ui.flash.rapidocr_hint_revealed": "Scrolled to the RapidOCR status banner. Follow the on-banner steps (reinstall packaged build / uv sync --group galgame)."
 }

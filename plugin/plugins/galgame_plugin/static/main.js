@@ -591,7 +591,7 @@ const ACTION_LABELS_ZH = {
   recalibrate_ocr: '重新截图校准',
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
-  install_rapidocr: '一键安装 RapidOCR',
+  install_rapidocr: '查看 RapidOCR 启用提示',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
 };
@@ -6284,6 +6284,15 @@ async function handleDiagnosisAction(action) {
     case 'capture_backend':
       revealCaptureBackendSettings();
       setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。'), 'info');
+      break;
+    case 'install_rapidocr':
+      // The action ID is kept for backward compat with diagnosis emitters
+      // (`withRapidOcrInstallAction`, onboarding button). Behavior changed:
+      // RapidOCR is bundled now, no in-app install. Just scroll to the
+      // status banner where the bundled_hint copy explains what to do
+      // (reinstall packaged build / `uv sync --group galgame`).
+      expandAndScrollTo('rapidocrPrompt');
+      setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();

@@ -480,7 +480,7 @@
   "ui.action.recalibrate_ocr": "重新截图校准",
   "ui.action.line_details": "查看识别详情",
   "ui.action.choice_advisor": "切换到自动推进模式",
-  "ui.action.install_rapidocr": "一键安装 RapidOCR",
+  "ui.action.install_rapidocr": "查看 RapidOCR 启用提示",
   "ui.action.refresh_status": "刷新状态",
   "ui.pending.locking": "锁定中...",
   "ui.pending.clearing": "清除中...",
@@ -1014,5 +1014,6 @@
   "ui.install.dxcam.unavailable_title": "DXcam 不可用 — 仅 Windows 平台支持，且需要打包版本或源码 `uv sync --group galgame`",
   "ui.install.pyautogui.use": "使用 PyAutoGUI",
   "ui.install.pyautogui.using": "正在使用 PyAutoGUI",
-  "ui.install.pyautogui.title": "使用 pyautogui 截图后端，跨平台兜底（macOS/Linux 上较慢）"
+  "ui.install.pyautogui.title": "使用 pyautogui 截图后端，跨平台兜底（macOS/Linux 上较慢）",
+  "ui.flash.rapidocr_hint_revealed": "已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。"
 }
