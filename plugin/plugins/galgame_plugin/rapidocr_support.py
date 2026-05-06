@@ -107,11 +107,16 @@ def _resolve_rapidocr_model_paths(
     ocr_version: str,
     model_type: str,
 ) -> tuple[str | None, str | None, str | None]:
-    del model_type
     lang = str(lang_type or DEFAULT_RAPIDOCR_LANG_TYPE).strip() or DEFAULT_RAPIDOCR_LANG_TYPE
     version = str(ocr_version or DEFAULT_RAPIDOCR_OCR_VERSION).strip() or DEFAULT_RAPIDOCR_OCR_VERSION
-    det_name = f"{lang}_{version}_det_infer.onnx"
-    rec_name = f"{lang}_{version}_rec_infer.onnx"
+    # PaddleOCR file naming: mobile = no infix, server = "_server" infix before "_infer".
+    # Anything else falls back to mobile silently — invalid values would otherwise just
+    # miss every candidate file, and the runtime default model would still load.
+    mt = (str(model_type or DEFAULT_RAPIDOCR_MODEL_TYPE).strip() or DEFAULT_RAPIDOCR_MODEL_TYPE).lower()
+    server_infix = "_server" if mt == "server" else ""
+    det_name = f"{lang}_{version}{server_infix}_det_infer.onnx"
+    rec_name = f"{lang}_{version}{server_infix}_rec_infer.onnx"
+    # cls is shared across mobile/server variants in PaddleOCR's released model zoo.
     cls_name = "ch_ppocr_mobile_v2.0_cls_infer.onnx"
 
     det_path: str | None = None
@@ -219,7 +224,7 @@ def _build_runtime_constructor_kwargs(
     model_type: str,
     ocr_version: str,
     model_cache_dir: Path,
-    model_search_dirs: list[Path] | None = None,
+    package_models_dir: Path | None = None,
 ) -> dict[str, Any]:
     try:
         parameters = inspect.signature(runtime_class).parameters
@@ -231,23 +236,19 @@ def _build_runtime_constructor_kwargs(
         for parameter in parameters.values()
     )
     if has_var_kwargs:
-        search_dirs = list(model_search_dirs or [])
-        package_models_dir = search_dirs[1] if len(search_dirs) > 1 else Path()
         det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
             model_cache_dir=model_cache_dir,
-            package_models_dir=package_models_dir,
+            package_models_dir=package_models_dir or Path(),
             lang_type=lang_type,
             ocr_version=ocr_version,
             model_type=model_type,
         )
         kwargs: dict[str, Any] = {}
-        use_resolved_model_paths = bool(det_path and rec_path)
-        if use_resolved_model_paths and det_path:
+        if det_path and rec_path:
             kwargs["det_model_path"] = det_path
-        if use_resolved_model_paths and cls_path:
-            kwargs["cls_model_path"] = cls_path
-        if use_resolved_model_paths and rec_path:
             kwargs["rec_model_path"] = rec_path
+            if cls_path:
+                kwargs["cls_model_path"] = cls_path
         if engine_type:
             kwargs["engine_type"] = engine_type
         return kwargs
@@ -357,7 +358,7 @@ def load_rapidocr_runtime(
                     model_type=model_type,
                     ocr_version=ocr_version,
                     model_cache_dir=model_cache_dir,
-                    model_search_dirs=[model_cache_dir, package_models_dir],
+                    package_models_dir=package_models_dir,
                 )
             )
     metadata = {
