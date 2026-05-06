@@ -781,6 +781,33 @@ Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
     ));
 };
 
+Live2DManager.prototype._isEyeBlinkOwnedByExpression = function() {
+    if (!this._autoEyeBlinkEnabled || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return false;
+
+    if (this._activeExpressionParamIds instanceof Set) {
+        for (const id of this._activeExpressionParamIds) {
+            if (this._isEyeBlinkParamId(id)) return true;
+        }
+    }
+
+    if (Array.isArray(this._manualExpressionParams)) {
+        for (const param of this._manualExpressionParams) {
+            if (param && this._isEyeBlinkParamId(param.Id)) return true;
+        }
+    }
+
+    if (this.persistentExpressionParamsByName) {
+        for (const params of Object.values(this.persistentExpressionParamsByName)) {
+            if (!Array.isArray(params)) continue;
+            for (const param of params) {
+                if (param && this._isEyeBlinkParamId(param.Id)) return true;
+            }
+        }
+    }
+
+    return false;
+};
+
 // 自动扫描模型参数以识别眨眼相关参数
 Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     if (!model?.internalModel?.coreModel) return null;
@@ -1825,7 +1852,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isLookAtDrivenByMotion = false;
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
             const idleMotionPriority = Number(window.PIXI?.live2d?.MotionPriority?.IDLE ?? 1);
-            const shouldTreatMotionEyesAsAuthoritative = motionPriority > idleMotionPriority;
+            const expressionOwnsEyeBlink = this._isEyeBlinkOwnedByExpression();
+            const shouldTreatEyeChangesAsAuthoritative = motionPriority > idleMotionPriority || expressionOwnsEyeBlink;
             for (const id of lipSyncParams) {
                 try {
                     const idx = coreModel.getParameterIndex(id);
@@ -1845,7 +1873,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         const postVal = coreModel.getParameterValueByIndex(p.idx);
                         const preVal = preUpdateParams[p.id];
                         if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._isEyeDrivenByMotion = shouldTreatMotionEyesAsAuthoritative;
+                            this._isEyeDrivenByMotion = shouldTreatEyeChangesAsAuthoritative;
                             break;
                         }
                     } catch (_) {}
@@ -1956,7 +1984,6 @@ Live2DManager.prototype.installMouthOverride = function() {
                         if (Array.isArray(params)) {
                             for (const p of params) {
                                 if (lipSyncParams.includes(p.Id)) continue;
-                                if (this._isEyeBlinkParamId(p.Id)) continue;
                                 try {
                                     coreModel.setParameterValueById(p.Id, p.Value);
                                 } catch (_) {}
@@ -2016,7 +2043,10 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             }
             // 眨眼更新（仅当 Motion 未接管且未暂停时）
-            if (this._autoEyeBlinkEnabled && !this._suspendEyeBlinkOverride && !this._isEyeDrivenByMotion) {
+            if (this._autoEyeBlinkEnabled
+                && !this._suspendEyeBlinkOverride
+                && !this._isEyeDrivenByMotion
+                && !this._isEyeBlinkOwnedByExpression()) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateEyeBlink(delta);
             }
@@ -2029,7 +2059,6 @@ Live2DManager.prototype.installMouthOverride = function() {
                     if (Array.isArray(params)) {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
-                            if (this._isEyeBlinkParamId(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}

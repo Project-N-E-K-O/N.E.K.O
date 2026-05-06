@@ -768,7 +768,6 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
 
         for (const param of self._manualExpressionParams) {
             if (Array.isArray(window.LIPSYNC_PARAMS) && window.LIPSYNC_PARAMS.includes(param.Id)) continue;
-            if (typeof self._isEyeBlinkParamId === 'function' && self._isEyeBlinkParamId(param.Id)) continue;
             try {
                 // 每帧读取当前值（含 motion/focus/breathing 的实时贡献）
                 const current = coreModel.getParameterValueById(param.Id);
@@ -1610,7 +1609,6 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
             if (Array.isArray(params)) {
                 for (const p of params) {
                     if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
-                    if (typeof this._isEyeBlinkParamId === 'function' && this._isEyeBlinkParamId(p.Id)) continue;
                     // 如果还没有备份过这个参数，保存其当前值
                     if (this._persistentParamsBackup[p.Id] === undefined) {
                         try {
@@ -1639,7 +1637,6 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
                     if (core) {
                         for (const p of params) {
                             if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
-                            if (typeof this._isEyeBlinkParamId === 'function' && this._isEyeBlinkParamId(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }
@@ -1653,7 +1650,6 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
                     if (core) {
                         for (const p of params) {
                             if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
-                            if (typeof this._isEyeBlinkParamId === 'function' && this._isEyeBlinkParamId(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }
