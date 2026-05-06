@@ -1743,8 +1743,11 @@ function renderFirstRunGuide(status = {}) {
 
   const firstIncompleteIndex = steps.findIndex((step) => !step.done);
   if (firstIncompleteIndex >= 0 && firstIncompleteIndex !== lastSavedStepIndex) {
-    lastSavedStepIndex = firstIncompleteIndex;
-    saveTutorialProgress({ last_step_index: firstIncompleteIndex }).catch(() => {});
+    saveTutorialProgress({ last_step_index: firstIncompleteIndex })
+      .then(() => {
+        lastSavedStepIndex = firstIncompleteIndex;
+      })
+      .catch(() => {});
   }
   const html = steps.map((step, index) => {
     const stateClass = step.done ? 'done' : (index === firstIncompleteIndex ? 'active' : 'pending');
@@ -6652,23 +6655,19 @@ async function saveTutorialProgress(partial) {
       await fetchTutorialProgress();
     }
     const payload = { ...(latestTutorialProgress || {}), ...(partial || {}) };
-    try {
-      const response = await fetch(TUTORIAL_PROGRESS_URL, {
-        method: 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        latestTutorialProgress = data && data.progress ? data.progress : payload;
-      } else {
-        latestTutorialProgress = payload;
-      }
-    } catch (error) {
-      latestTutorialProgress = payload;
+    const response = await fetch(TUTORIAL_PROGRESS_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(`tutorial progress save failed: HTTP ${response.status}`);
     }
+    const data = await response.json();
+    latestTutorialProgress = data && data.progress ? data.progress : payload;
+    return latestTutorialProgress;
   });
   tutorialProgressSaveQueue = save.catch(() => {});
   return save;
@@ -6776,16 +6775,6 @@ function navigateToInstallPanel(kind) {
   const advancedToggleBtn = document.getElementById('advancedToggleBtn');
   const dependencyModule = document.getElementById('dependencyModule');
   const installSection = document.getElementById('installSection');
-
-  persistSkipOnboarding();
-  onboardingDismissed = true;
-  forceShowOnboarding = false;
-  saveTutorialProgress({ skipped: true }).catch(() => {});
-  document.body.classList.remove('onboarding-active');
-  const onboardingView = document.getElementById('onboardingView');
-  if (onboardingView) {
-    onboardingView.hidden = true;
-  }
 
   if (advancedSettings && !advancedSettings.classList.contains('open')) {
     advancedSettings.classList.add('open');

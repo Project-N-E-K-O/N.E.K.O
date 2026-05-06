@@ -556,7 +556,14 @@ def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
 @router.get("/plugin/{plugin_id}/ui-api/tutorial/status")
 async def get_tutorial_status(plugin_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    raw = _read_tutorial_progress()
+    try:
+        raw = _read_tutorial_progress()
+    except Exception:
+        logger.error("tutorial progress status read failed", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
+            status_code=500,
+        )
     return JSONResponse({"ok": True, "progress": _normalize_tutorial_progress(raw)})
 
 
