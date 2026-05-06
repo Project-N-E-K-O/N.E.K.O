@@ -3254,6 +3254,20 @@ class UniversalTutorialManager {
                 delete element.dataset.tutorialDisabled;
             }
         });
+        // 兜底：扫描整个文档中残留的 data-tutorial-disabled 节点。
+        // 模型管理 MMD 教程结束后曾出现 #vrm-model-select-btn / #mmd-animation-select-btn
+        // 等按钮被 pointer-events:none 卡死的情况，根因是 await 期间集合被提前 clear，
+        // 后续被遗漏。这里独立做一遍 DOM 兜底清理。
+        try {
+            document.querySelectorAll('[data-tutorial-disabled]').forEach(element => {
+                element.style.pointerEvents = '';
+                element.style.cursor = '';
+                element.style.userSelect = '';
+                delete element.dataset.tutorialDisabled;
+            });
+        } catch (error) {
+            console.warn('[Tutorial] 扫描残留 tutorial-disabled 元素失败:', error);
+        }
         this.tutorialInteractionStates.clear();
         this.tutorialControlledElements = new Set();
         this.tutorialMarkerDisplayCache = null;
@@ -3743,7 +3757,25 @@ class UniversalTutorialManager {
         }, 500);
 
         // 监听事件
-        this.driver.on('destroy', () => this.onTutorialEnd());
+        // driver.on('destroy') 触发后，先做关键 UI 清理（移除跳过按钮 +
+        // 还原 pointer-events），再走完整的 onTutorialEnd 流程。
+        // 这两步独立 try/catch，确保即便 onTutorialEnd 任一环节抛错或被早返回，
+        // 也不会留下右上角残余按钮 / 模型列表锁死。
+        // (MMD/VRM 模型管理教程结束后跳过按钮残留 & 模型列表锁死的修复路径。)
+        this.driver.on('destroy', () => {
+            console.log('[Tutorial] driver destroy → 执行关键 UI 清理');
+            try {
+                this.hideSkipButton();
+            } catch (error) {
+                console.warn('[Tutorial] destroy 清理 hideSkipButton 失败:', error);
+            }
+            try {
+                this.restoreTutorialInteractionState();
+            } catch (error) {
+                console.warn('[Tutorial] destroy 清理 restoreTutorialInteractionState 失败:', error);
+            }
+            this.onTutorialEnd();
+        });
         this.driver.on('next', () => this.onStepChange().catch(err => {
             console.error('[Tutorial] 步骤切换失败:', err);
         }));
@@ -4677,6 +4709,23 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
+        // 关键 UI 清理：必须先于 _teardownPromise early-return 守卫执行，
+        // 且必须幂等。MMD 模型管理教程曾出现：用户走到末步点「完成」后
+        // 跳过按钮残留、模型列表按钮 pointer-events:none 卡死。
+        // 根因是 teardown 触发时 _teardownPromise 已被前一次未完成的链占用，
+        // early-return 直接跳过了 hideSkipButton / restoreTutorialInteractionState。
+        // 把这两个操作提到守卫之前，可在任何重复/并发调用下都保证用户能继续操作。
+        try {
+            this.hideSkipButton();
+        } catch (error) {
+            console.warn('[Tutorial] hideSkipButton 失败:', error);
+        }
+        try {
+            this.restoreTutorialInteractionState();
+        } catch (error) {
+            console.warn('[Tutorial] restoreTutorialInteractionState 失败:', error);
+        }
+
         if (this._teardownPromise) {
             return this._teardownPromise;
         }
@@ -4693,9 +4742,6 @@ class UniversalTutorialManager {
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
         this.currentTutorialStartSource = 'auto';
-
-        // 移除跳过按钮
-        this.hideSkipButton();
 
         // 清除刷新定时器
         if (this._refreshTimers) {
