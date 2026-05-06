@@ -351,13 +351,27 @@ def inspect_rapidocr_installation(
         bundled_spec = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME)
     except (ImportError, ValueError):
         bundled_spec = None
-    package_present = package_dir.exists() or bundled_spec is not None
 
     if not supported:
         detail = "unsupported_platform"
-    elif not package_present:
+    elif bundled_spec is not None:
+        # Bundled main-program path: trust find_spec instead of constructing a
+        # full RapidOCR runtime (which inits an ONNX session) on every status
+        # probe. inspect_*_installation gets called from the bridge poll on a
+        # short cache TTL — running ORT init repeatedly would hammer CPU even
+        # when OCR is disabled. Real OCR errors will still surface from
+        # OcrReaderManager when capture/recognition is actually attempted.
+        detail = "installed"
+        spec_origin = getattr(bundled_spec, "origin", None) or ""
+        if spec_origin:
+            detected_path = str(Path(spec_origin).resolve().parent)
+    elif not package_dir.exists():
         detail = "missing"
     else:
+        # Legacy plugin-isolated install: still validated by full runtime load
+        # since this path is for upgrade users with potentially-stale installs
+        # that may legitimately be broken. Frequency is low (only when bundled
+        # path is unavailable AND legacy dir exists).
         try:
             _runtime, runtime_meta = load_rapidocr_runtime(
                 install_target_dir_raw=install_target_dir_raw,
