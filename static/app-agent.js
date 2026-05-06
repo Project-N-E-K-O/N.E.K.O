@@ -374,7 +374,8 @@
             const r = await fetch(config.url);
             if (!r.ok) return false;
             const j = await r.json();
-            if (!j.ready) {
+            const pending = kind === 'openclaw' && !!j.pending;
+            if (!j.ready && !pending) {
                 if (showError) {
                     const name = window.t ? window.t(`settings.toggles.${config.nameKey}`) : config.nameKey;
                     setFloatingAgentStatus(j.reasons?.[0] || (window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}\u4e0d\u53ef\u7528`));
