@@ -503,6 +503,7 @@ class LLMSessionManager:
         
         # 防止并发启动的标志（使用计数器避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count = 0
+        self._starting_input_mode = None
         self._last_cooldown_turn_end_time = 0.0  # 冷却路径 turn_end 去重时间戳
 
         # TTS缓存机制：确保不丢包
@@ -2744,6 +2745,13 @@ class LLMSessionManager:
         """
         return self._starting_session_count > 0
 
+    @property
+    def starting_input_mode(self):
+        """返回正在启动的目标模式，避免读取尚未切换完成的 input_mode。"""
+        if self._starting_session_count <= 0:
+            return None
+        return self._starting_input_mode
+
     def reset_session_start_circuit(self) -> None:
         """清掉熔断 + 失败计数 + memory 冷却。仅供 websocket_router 在收到用户
         显式 start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试，
@@ -2786,6 +2794,7 @@ class LLMSessionManager:
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
+        self._starting_input_mode = input_mode
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
@@ -3291,6 +3300,8 @@ class LLMSessionManager:
             # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
             if not _llm_concurrent_aborted:
                 self._starting_session_count = max(0, self._starting_session_count - 1)
+                if self._starting_session_count == 0:
+                    self._starting_input_mode = None
             # 保险：若 /new_dialog 预取任务早期异常后仍在跑（gather 没来得及
             # await 它就异常退出），这里统一 cancel + await，避免 "Task exception
             # was never retrieved" warning 和连接池泄漏。
@@ -4385,7 +4396,7 @@ class LLMSessionManager:
 
     def _is_voice_session_active_or_starting(self) -> bool:
         """语音 session 正在启动或已经活跃时返回 True，用于阻止 greeting 干扰语音流。"""
-        if self._starting_session_count > 0 and self.input_mode == 'audio':
+        if self._starting_session_count > 0 and (self._starting_input_mode or self.input_mode) == 'audio':
             return True
         if self.is_active and self.input_mode == 'audio':
             return True
@@ -5051,11 +5062,14 @@ class LLMSessionManager:
                     async with self.input_cache_lock:
                         self.session_ready = False
                     self._starting_session_count += 1
+                    self._starting_input_mode = 'text'
                     try:
                         if self.session:
                             await self.end_session(reset_starting_count=False)
                     finally:
                         self._starting_session_count = max(0, self._starting_session_count - 1)
+                        if self._starting_session_count == 0:
+                            self._starting_input_mode = None
                     # 释放 guard 与下面的 start_session 之间禁止 await，否则窗口
                     # 重新打开。start_session 入口的 +=1 (2781) 之前都是同步代码，
                     # 函数调用本身不让出控制权，安全。
@@ -5207,11 +5221,14 @@ class LLMSessionManager:
                     async with self.input_cache_lock:
                         self.session_ready = False
                     self._starting_session_count += 1
+                    self._starting_input_mode = 'audio'
                     try:
                         if self.session:
                             await self.end_session(reset_starting_count=False)
                     finally:
                         self._starting_session_count = max(0, self._starting_session_count - 1)
+                        if self._starting_session_count == 0:
+                            self._starting_input_mode = None
                     await self.start_session(self.websocket, new=False, input_mode='audio')
 
                     # 检查重建是否成功
@@ -5421,6 +5438,7 @@ class LLMSessionManager:
                 async with self.lock:
                     if expected_session is None or expected_session is self.session:
                         self._starting_session_count = 0
+                        self._starting_input_mode = None
             # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
             # 必须清理这些孤儿资源，否则线程/task 会泄漏
             await self._teardown_tts_runtime(
@@ -5449,6 +5467,7 @@ class LLMSessionManager:
             # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
             if reset_starting_count:
                 self._starting_session_count = 0
+                self._starting_input_mode = None
             self._audio_stream_epoch += 1
             self._clear_audio_stream_queue("end_session")
             self._cancel_audio_stream_worker("end_session")

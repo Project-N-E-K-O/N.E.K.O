@@ -136,7 +136,7 @@ def _is_current_catgirl_voice_session_starting(name: str, characters, session_ma
     return bool(
         getattr(mgr, "is_starting", False)
         and not getattr(mgr, "is_active", False)
-        and getattr(mgr, "input_mode", "") == "audio"
+        and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
     )
 
 
@@ -1749,7 +1749,8 @@ async def get_catgirl_voice_mode_status(name: str):
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
     is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
-    is_audio_starting = bool(is_current and is_starting and getattr(mgr, 'input_mode', '') == 'audio')
+    starting_input_mode = getattr(mgr, 'starting_input_mode', None)
+    is_audio_starting = bool(is_current and is_starting and (starting_input_mode or getattr(mgr, 'input_mode', '')) == 'audio')
     
     is_voice_mode = is_audio_starting
     if is_active and mgr:
