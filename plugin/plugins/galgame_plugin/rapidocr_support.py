@@ -420,32 +420,59 @@ def _build_runtime_constructor_kwargs(
     return kwargs
 
 
+_SESSION_OPTIONS_PATCH_TLS = threading.local()
+_SESSION_OPTIONS_PATCH_LOCK = threading.Lock()
+_SESSION_OPTIONS_PATCH_INSTALLED = False
+
+
+def _ensure_session_options_patch_installed() -> None:
+    """Patch ort.SessionOptions.__init__ once; the patch only acts on threads that opted in."""
+    global _SESSION_OPTIONS_PATCH_INSTALLED
+    if _SESSION_OPTIONS_PATCH_INSTALLED:
+        return
+    with _SESSION_OPTIONS_PATCH_LOCK:
+        if _SESSION_OPTIONS_PATCH_INSTALLED:
+            return
+        try:
+            import onnxruntime as _ort
+        except Exception:
+            return
+        options_cls = getattr(_ort, "SessionOptions", None)
+        if options_cls is None:
+            return
+        orig_init = options_cls.__init__
+
+        def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            orig_init(self, *args, **kwargs)
+            cap = getattr(_SESSION_OPTIONS_PATCH_TLS, "cap", None)
+            if cap is None:
+                return
+            intra, inter = cap
+            if getattr(self, "intra_op_num_threads", 0) == 0:
+                self.intra_op_num_threads = intra
+            if getattr(self, "inter_op_num_threads", 0) == 0:
+                self.inter_op_num_threads = inter
+
+        options_cls.__init__ = _patched_init
+        _SESSION_OPTIONS_PATCH_INSTALLED = True
+
+
 @contextmanager
 def _onnxruntime_intra_op_thread_cap(limit: int) -> Iterator[None]:
-    """Clamp default SessionOptions thread counts while RapidOCR builds its sessions."""
-    try:
-        import onnxruntime as _ort
-    except Exception:
-        yield
-        return
-    options_cls = getattr(_ort, "SessionOptions", None)
-    if options_cls is None:
-        yield
-        return
-    orig_init = options_cls.__init__
-
-    def _clamped_init(self: Any, *args: Any, **kwargs: Any) -> None:
-        orig_init(self, *args, **kwargs)
-        if getattr(self, "intra_op_num_threads", 0) == 0:
-            self.intra_op_num_threads = limit
-        if getattr(self, "inter_op_num_threads", 0) == 0:
-            self.inter_op_num_threads = 1
-
-    options_cls.__init__ = _clamped_init
+    """Clamp SessionOptions thread counts on the calling thread only."""
+    _ensure_session_options_patch_installed()
+    prev = getattr(_SESSION_OPTIONS_PATCH_TLS, "cap", None)
+    _SESSION_OPTIONS_PATCH_TLS.cap = (limit, 1)
     try:
         yield
     finally:
-        options_cls.__init__ = orig_init
+        if prev is None:
+            try:
+                del _SESSION_OPTIONS_PATCH_TLS.cap
+            except AttributeError:
+                pass
+        else:
+            _SESSION_OPTIONS_PATCH_TLS.cap = prev
 
 
 def load_rapidocr_runtime(
