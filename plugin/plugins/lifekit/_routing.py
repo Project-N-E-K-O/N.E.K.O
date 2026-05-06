@@ -441,6 +441,8 @@ class RoutingService:
                     logger.debug("Routing provider failed: provider=%s mode=%s", provider.name, mode, exc_info=True)
                     continue
         result.provider = ",".join(used_providers)
-        if not result.routes:
-            result.error = "no_route_found" if not errors else f"provider_error:{','.join(errors)}"
+        if errors:
+            result.error = f"provider_error:{','.join(errors)}"
+        elif not result.routes:
+            result.error = "no_route_found"
         return result

@@ -61,6 +61,7 @@
     "geocode_failed": "City lookup failed — please check your network",
     "fetch_failed": "Failed to fetch weather data ({city})",
     "forecast_timeout": "Weather data request timed out — please try again",
+    "no_air_quality_data": "Failed to get air quality data for {city}",
     "unknown_weather": "Unknown ({code})"
   },
   "trip": {

@@ -151,20 +151,18 @@ def create_settings_safe(
             else:
                 default_label = "<factory>" if has_default_factory else _field_default
                 logger.warning(
-                    "PluginSettings field '{}' validation failed, using default ({}): {}",
+                    "PluginSettings field '{}' validation failed, using default ({})",
                     name,
                     default_label,
-                    exc,
                 )
                 # Omit from safe_data so pydantic uses the declared default.
 
     try:
         return settings_cls.model_validate({**base_defaults, **safe_data})
-    except ValidationError as exc:
+    except ValidationError:
         # Last resort: all defaults.
         logger.warning(
-            "PluginSettings full fallback to defaults after per-field recovery failed: {}",
-            exc,
+            "PluginSettings full fallback to defaults after per-field recovery failed",
         )
         return settings_cls.model_validate({})
 

@@ -719,16 +719,14 @@ class PluginContext:
             return []
 
         current_run_id = self.run_id
-        if current_run_id:
-            run_att = getattr(instance, "_run_attachments", None)
-            if isinstance(run_att, dict):
-                per_run = run_att.get(current_run_id)
-                if isinstance(per_run, list):
-                    return list(per_run)
+        if not current_run_id:
             return []
-
-        raw = getattr(instance, "_last_attachments", None)
-        return list(raw) if isinstance(raw, list) else []
+        run_att = getattr(instance, "_run_attachments", None)
+        if isinstance(run_att, dict):
+            per_run = run_att.get(current_run_id)
+            if isinstance(per_run, list):
+                return list(per_run)
+        return []
 
     def get_user_language(self) -> str:
         """Return the current user's language code for this plugin context."""

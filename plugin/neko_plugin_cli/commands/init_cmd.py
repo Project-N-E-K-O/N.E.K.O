@@ -208,10 +208,13 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
     if not plugin_type:
         return _cancelled()
 
-    # Quick start?
-    quick_start = ask_confirm("快速开始? (生成 Hello World 模板，跳过高级配置)", default=True)
-    if quick_start is None:
-        return _cancelled()
+    # Quick start? Extensions must collect host plugin settings first.
+    if plugin_type == "extension":
+        quick_start = False
+    else:
+        quick_start = ask_confirm("快速开始? (生成 Hello World 模板，跳过高级配置)", default=True)
+        if quick_start is None:
+            return _cancelled()
 
     if quick_start:
         spec = PluginSpec(

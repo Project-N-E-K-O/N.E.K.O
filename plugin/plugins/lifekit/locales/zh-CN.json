@@ -61,6 +61,7 @@
     "geocode_failed": "城市查询失败，请检查网络连接",
     "fetch_failed": "获取天气数据失败 ({city})",
     "forecast_timeout": "天气数据请求超时，请稍后重试",
+    "no_air_quality_data": "无法获取 {city} 的空气质量数据",
     "unknown_weather": "未知({code})"
   },
   "trip": {

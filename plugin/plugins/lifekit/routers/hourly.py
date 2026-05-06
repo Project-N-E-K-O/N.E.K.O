@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List
 
 from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
@@ -54,12 +55,13 @@ class HourlyForecastRouter(PluginRouter):
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
         hours = max(1, min(int(hours), 168))
+        days = max(1, min(math.ceil(hours / 24), 7))
         tz = str(plugin._cfg.get("timezone") or "auto").strip() or "auto"
 
         try:
             data = await fetch_forecast(
                 loc["lat"], loc["lon"],
-                days=1,
+                days=days,
                 tz=tz,
                 hourly_vars=_HOURLY_VARS,
                 forecast_hours=hours,
@@ -117,7 +119,8 @@ class HourlyForecastRouter(PluginRouter):
         for h in result_hours[:8]:
             t_str = h["time"].split("T")[1][:5] if "T" in h["time"] else h["time"]
             temp_str = f"{h['temp']}°C" if h["temp"] is not None else "—"
-            hour_lines.append(f"{t_str}  {h['weather']}  {temp_str}  💧{h.get('precip_prob', 0)}%")
+            precip_prob = h.get("precip_prob")
+            hour_lines.append(f"{t_str}  {h['weather']}  {temp_str}  💧{precip_prob if precip_prob is not None else 0}%")
 
         blocks = [
             {"type": "text", "text": f"📊 {loc['city']} — {i18n.t('entry.hourly_forecast', fallback='逐小时预报')}"},

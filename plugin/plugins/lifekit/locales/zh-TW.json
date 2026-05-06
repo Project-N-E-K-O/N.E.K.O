@@ -61,6 +61,7 @@
     "geocode_failed": "城市查詢失敗，請檢查網路連線",
     "fetch_failed": "獲取天氣資料失敗 ({city})",
     "forecast_timeout": "天氣資料請求逾時，請稍後重試",
+    "no_air_quality_data": "無法取得 {city} 的空氣品質數據",
     "unknown_weather": "未知({code})"
   },
   "trip": {

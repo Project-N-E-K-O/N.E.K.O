@@ -124,6 +124,11 @@ def _build_descriptor_for_field(
         # Resolve effective min/max from ge/gt and le/lt
         eff_min = ge if ge is not None else gt
         eff_max = le if le is not None else lt
+        if core_type is int:
+            if ge is None and gt is not None:
+                eff_min = gt + 1
+            if le is None and lt is not None:
+                eff_max = lt - 1
 
         if eff_min is not None and eff_max is not None:
             step: float = 1.0 if core_type is int else 0.1

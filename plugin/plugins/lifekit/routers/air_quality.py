@@ -89,7 +89,7 @@ class AirQualityRouter(PluginRouter):
         current = data.get("current", {})
         aqi = current.get("european_aqi")
         if aqi is None:
-            return Err(SdkError(f"无法获取 {loc['city']} 的空气质量数据"))
+            return Err(SdkError(i18n.t("error.no_air_quality_data", city=loc["city"])))
 
         aqi = int(aqi)
         pm25 = current.get("pm2_5")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import zipfile
 
@@ -7,6 +8,7 @@ import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.paths import CliDefaults
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -156,3 +158,45 @@ def test_setup_repo_git_skips_when_inside_existing_repo(
     init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
 
     assert calls == []
+
+
+def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = CliDefaults(
+        plugin_root=tmp_path / "plugin",
+        target_dir=tmp_path / "target",
+        plugins_root=tmp_path / "plugins",
+        profiles_root=tmp_path / "profiles",
+    )
+    args = argparse.Namespace(
+        plugin_id="demo_ext",
+        plugin_type="extension",
+        name="Demo Extension",
+        plugins_root=None,
+        git=False,
+        remote=None,
+        github_actions=False,
+        neko_repo="owner/N.E.K.O",
+        neko_ref="main",
+        no_readme=True,
+        no_tests=True,
+        no_gitignore=True,
+        no_vscode=True,
+    )
+
+    def fake_ask_confirm(message: str, *, default: bool = True) -> bool:
+        assert not message.startswith("快速开始")
+        return True
+
+    text_answers = iter(["", "", "host_plugin", "/extra"])
+    monkeypatch.setattr(init_cmd, "ask_confirm", fake_ask_confirm)
+    monkeypatch.setattr(init_cmd, "ask_text", lambda *_, **__: next(text_answers))
+    monkeypatch.setattr(init_cmd, "ask_checkbox", lambda *_, **__: ["lifecycle", "entry_point"])
+
+    assert init_cmd._handle_interactive(args, defaults=defaults) == 0
+
+    plugin_toml = (defaults.plugins_root / "demo_ext" / "plugin.toml").read_text(encoding="utf-8")
+    assert "[plugin.host]" in plugin_toml
+    assert 'plugin_id = "host_plugin"' in plugin_toml

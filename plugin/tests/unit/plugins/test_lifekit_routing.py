@@ -27,6 +27,17 @@ class _EmptyProvider:
         return []
 
 
+class _SuccessProvider:
+    name = "ok"
+    supports_transit = True
+
+    async def plan_route(self, *args: object, **__: object):
+        mode = args[4] if len(args) > 4 else ""
+        if mode != "walking":
+            return []
+        return [_routing.Route(mode="walking", distance_m=1, duration_s=1)]
+
+
 def test_routing_provider_error_sanitizes_detail() -> None:
     error = RoutingProviderError("demo", "  one\n two  " + ("x" * 200))
 
@@ -44,6 +55,17 @@ async def test_routing_service_reports_provider_failures() -> None:
 
     assert result.routes == []
     assert result.error == "provider_error:broken:walking:timeout"
+
+
+@pytest.mark.asyncio
+async def test_routing_service_reports_partial_provider_failures() -> None:
+    service = RoutingService({})
+    service._providers = [_SuccessProvider(), _FailingProvider()]
+
+    result = await service.plan(31.2, 121.4, 31.3, 121.5, modes=["walking", "driving"])
+
+    assert result.routes
+    assert result.error == "provider_error:broken:driving:timeout"
 
 
 @pytest.mark.asyncio
