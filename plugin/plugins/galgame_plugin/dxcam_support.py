@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,57 @@ from typing import Any, Awaitable, Callable
 from .install_tasks import update_install_task_state
 from .memory_reader import is_windows_platform
 from .tesseract_support import _compute_phase_progress, _emit_progress
+
+
+def _find_python_executable() -> str:
+    """
+    Return a Python executable that can run pip.
+
+    In packaged builds, sys.executable may be projectneko_server.exe, which
+    refuses self-execution with "-m". Prefer real Python interpreters instead.
+    """
+
+    def _is_usable(path: str) -> bool:
+        try:
+            subprocess.run(
+                [path, "--version"],
+                check=True,
+                capture_output=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except Exception:
+            return False
+
+    base = getattr(sys, "_base_executable", None)
+    if base and os.path.isfile(base) and _is_usable(base):
+        return base
+
+    exe_dir = Path(sys.executable).parent
+    for candidate in ["python.exe", "python3.exe"]:
+        candidate_path = exe_dir / candidate
+        if candidate_path.is_file() and _is_usable(str(candidate_path)):
+            return str(candidate_path)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for candidate in ["python.exe", "python3.exe"]:
+            candidate_path = Path(meipass) / candidate
+            if candidate_path.is_file() and _is_usable(str(candidate_path)):
+                return str(candidate_path)
+
+    for candidate in ["python", "python3"]:
+        found = shutil.which(candidate)
+        if found and _is_usable(found):
+            return found
+
+    raise RuntimeError(
+        "找不到可用的 Python 解释器，无法安装 pip 依赖。"
+        "请安装 Python 3.9+ 并添加到 PATH，或联系开发者获取内置依赖的版本。"
+        f"当前程序路径: {sys.executable}"
+    )
+
 
 DXCAM_PACKAGE_NAME = "dxcam"
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -69,7 +121,7 @@ def _run_pip_install(*, timeout_seconds: float) -> None:
     env["TEMP"] = str(temp_root)
     env["TMPDIR"] = str(temp_root)
     command = [
-        sys.executable,
+        _find_python_executable(),
         "-m",
         "pip",
         "install",

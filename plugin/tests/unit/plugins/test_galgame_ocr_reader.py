@@ -16,6 +16,7 @@ import pytest
 from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
+from plugin.plugins.galgame_plugin import dxcam_support as galgame_dxcam_support
 from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
 from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
 from plugin.plugins.galgame_plugin.models import (
@@ -1772,6 +1773,11 @@ def test_rapidocr_pip_install_uses_require_hashes(
         "_ensure_pip_available",
         lambda **kwargs: None,
     )
+    monkeypatch.setattr(
+        galgame_rapidocr_support,
+        "_find_python_executable",
+        lambda: "discovered-python.exe",
+    )
 
     def _capture_subprocess(command, *, timeout_seconds, env=None):
         del timeout_seconds, env
@@ -1789,8 +1795,75 @@ def test_rapidocr_pip_install_uses_require_hashes(
 
     assert len(commands) == 1
     command = commands[0]
+    assert command[:3] == ["discovered-python.exe", "-m", "pip"]
     assert command.index("--require-hashes") < command.index("rapidocr_onnxruntime==1.4.4")
     assert command[-2:] == ["rapidocr_onnxruntime==1.4.4", f"--hash=sha256:{digest}"]
+
+
+def test_rapidocr_python_discovery_skips_packaged_server_exe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packaged_exe = tmp_path / "projectneko_server.exe"
+    bundled_python = tmp_path / "python.exe"
+    packaged_exe.write_text("", encoding="utf-8")
+    bundled_python.write_text("", encoding="utf-8")
+    checked: list[str] = []
+
+    monkeypatch.setattr(galgame_rapidocr_support.sys, "executable", str(packaged_exe))
+    monkeypatch.setattr(galgame_rapidocr_support.sys, "_base_executable", None, raising=False)
+    monkeypatch.setattr(galgame_rapidocr_support.sys, "_MEIPASS", None, raising=False)
+    monkeypatch.setattr(galgame_rapidocr_support.shutil, "which", lambda name: None)
+
+    def _fake_run(command, **kwargs):
+        del kwargs
+        checked.append(command[0])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(galgame_rapidocr_support.subprocess, "run", _fake_run)
+
+    assert galgame_rapidocr_support._find_python_executable() == str(bundled_python)
+    assert checked == [str(bundled_python)]
+
+
+def test_dxcam_pip_install_uses_discovered_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        galgame_dxcam_support,
+        "_find_python_executable",
+        lambda: "discovered-python.exe",
+    )
+
+    def _fake_run(command, **kwargs):
+        del kwargs
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(galgame_dxcam_support.subprocess, "run", _fake_run)
+
+    galgame_dxcam_support._run_pip_install(timeout_seconds=5.0)
+
+    assert len(commands) == 1
+    assert commands[0][:3] == ["discovered-python.exe", "-m", "pip"]
+
+
+def test_dxcam_python_discovery_reports_missing_python(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packaged_exe = tmp_path / "projectneko_server.exe"
+    packaged_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(galgame_dxcam_support.sys, "executable", str(packaged_exe))
+    monkeypatch.setattr(galgame_dxcam_support.sys, "_base_executable", None, raising=False)
+    monkeypatch.setattr(galgame_dxcam_support.sys, "_MEIPASS", None, raising=False)
+    monkeypatch.setattr(galgame_dxcam_support.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="Python 3.9\\+"):
+        galgame_dxcam_support._find_python_executable()
 
 
 def test_background_hash_excludes_bottom_dialogue_region() -> None:

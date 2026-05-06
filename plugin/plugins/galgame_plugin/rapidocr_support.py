@@ -22,6 +22,57 @@ from .memory_reader import is_windows_platform
 from .tesseract_support import _compute_phase_progress, _emit_progress
 from .install_tasks import update_install_task_state
 
+
+def _find_python_executable() -> str:
+    """
+    Return a Python executable that can run pip.
+
+    In packaged builds, sys.executable may be projectneko_server.exe, which
+    refuses self-execution with "-m". Prefer real Python interpreters instead.
+    """
+
+    def _is_usable(path: str) -> bool:
+        try:
+            subprocess.run(
+                [path, "--version"],
+                check=True,
+                capture_output=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except Exception:
+            return False
+
+    base = getattr(sys, "_base_executable", None)
+    if base and os.path.isfile(base) and _is_usable(base):
+        return base
+
+    exe_dir = Path(sys.executable).parent
+    for candidate in ["python.exe", "python3.exe"]:
+        candidate_path = exe_dir / candidate
+        if candidate_path.is_file() and _is_usable(str(candidate_path)):
+            return str(candidate_path)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for candidate in ["python.exe", "python3.exe"]:
+            candidate_path = Path(meipass) / candidate
+            if candidate_path.is_file() and _is_usable(str(candidate_path)):
+                return str(candidate_path)
+
+    for candidate in ["python", "python3"]:
+        found = shutil.which(candidate)
+        if found and _is_usable(found):
+            return found
+
+    raise RuntimeError(
+        "找不到可用的 Python 解释器，无法安装 pip 依赖。"
+        "请安装 Python 3.9+ 并添加到 PATH，或联系开发者获取内置依赖的版本。"
+        f"当前程序路径: {sys.executable}"
+    )
+
+
 RAPIDOCR_PACKAGE_NAME = "rapidocr_onnxruntime"
 DEFAULT_RAPIDOCR_ENGINE_TYPE = "onnxruntime"
 DEFAULT_RAPIDOCR_LANG_TYPE = "ch"
@@ -615,7 +666,7 @@ def _run_subprocess(
 def _ensure_pip_available(*, timeout_seconds: float, temp_root: Path) -> None:
     env = _rapidocr_temp_env(temp_root=temp_root)
     try:
-        _run_subprocess([sys.executable, "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
+        _run_subprocess([_find_python_executable(), "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
         return
     except subprocess.CalledProcessError as exc:
         message = " ".join(
@@ -624,8 +675,8 @@ def _ensure_pip_available(*, timeout_seconds: float, temp_root: Path) -> None:
         if "No module named pip" not in message:
             raise
 
-    _run_subprocess([sys.executable, "-m", "ensurepip", "--upgrade"], timeout_seconds=timeout_seconds, env=env)
-    _run_subprocess([sys.executable, "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
+    _run_subprocess([_find_python_executable(), "-m", "ensurepip", "--upgrade"], timeout_seconds=timeout_seconds, env=env)
+    _run_subprocess([_find_python_executable(), "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
 
 
 def _run_pip_install(
@@ -639,7 +690,7 @@ def _run_pip_install(
     env = _rapidocr_temp_env(temp_root=temp_root)
     _ensure_pip_available(timeout_seconds=timeout_seconds, temp_root=temp_root)
     command = [
-        sys.executable,
+        _find_python_executable(),
         "-m",
         "pip",
         "install",
