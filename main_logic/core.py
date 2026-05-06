@@ -190,7 +190,7 @@ from utils.api_config_loader import (
     get_livestream_config,
     is_livestream_active,
 )
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full, is_supported_language_code
 import threading
 from threading import Thread
 from queue import Queue, Empty
@@ -2760,8 +2760,15 @@ class LLMSessionManager:
         self._memory_error_retry_after = 0
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
-        # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
-        self.user_language = normalize_language_code(get_global_language(), format='short')
+        # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
+        # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
+        # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
+        # 全局缓存值（race 失败时的 'en'），让游戏 / proactive / memory 的 prompt
+        # 全部回退英文。改为：仅在 user_language 还没被设过时才 seed 一次，已经
+        # 有 session 真值就保留——全局缓存晚到的更新由 refresh_global_language
+        # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
+        if not getattr(self, 'user_language', None):
+            self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -5294,7 +5301,6 @@ class LLMSessionManager:
                         av_pos = message.get('avatar_position')
                         if av_pos and isinstance(av_pos, dict):
                             try:
-                                from utils.language_utils import get_global_language_full
                                 image_b64 = await asyncio.to_thread(
                                     overlay_avatar_annotation,
                                     image_b64, av_pos, self.lanlan_name,
@@ -5526,6 +5532,16 @@ class LLMSessionManager:
         """
         if not language:
             logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
+            return
+
+        # 校验原始输入：``normalize_language_code`` 对未识别值会默认回退 ``'en'``，
+        # 外部来源（ws ``message['language']`` 携带的 corrupted ``localStorage``、
+        # 第三方客户端发的 ``'undefined'`` / ``'null'`` / ``'estonian'`` 等 garbage）
+        # 会被静默归一成 ``'en'``，覆盖正确的 session locale。先用公共白名单挡掉。
+        if not is_supported_language_code(language):
+            logger.warning(
+                f"语言参数不支持: {language!r}，保持当前语言: {self.user_language}"
+            )
             return
 
         # 使用公共函数进行语言代码归一化

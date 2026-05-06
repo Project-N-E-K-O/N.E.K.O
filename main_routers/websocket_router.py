@@ -256,6 +256,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await websocket.send_text(json.dumps({"type": "pong"}))
                 # logger.debug(f"收到心跳ping，已回复pong")
 
+            elif action == "language_update":
+                # 前端 i18next 'languageChanged' fire 时发的纯语言同步消息：``language``
+                # 字段已被 line 136-139 通用 handler 处理（``set_user_language``），
+                # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
+                pass
+
             else:
                 logger.warning(f"Unknown action received: {action}")
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "UNKNOWN_ACTION", "details": {"action": action}}))
