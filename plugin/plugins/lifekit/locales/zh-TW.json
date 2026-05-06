@@ -145,7 +145,7 @@
   "panel.placeholders.city": "如：台北、Tokyo",
   "panel.placeholders.address": "如：信義區101大樓",
   "panel.options.auto": "自動",
-  "panel.options.zhCN": "简体中文",
+  "panel.options.zhCN": "簡體中文",
   "panel.options.zhTW": "繁體中文",
   "panel.options.en": "English",
   "panel.actions.saveConfig": "儲存設定",

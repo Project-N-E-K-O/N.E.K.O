@@ -68,7 +68,7 @@ def _map_list_action(
     if kind == _CHAT_INJECT_KIND:
         target = action.get("target")
         if not isinstance(target, str) or not target.strip():
-            inject_text = f"@{plugin_name} /{action_id}"
+            inject_text = f"@{plugin_id} /{action_id}"
         else:
             inject_text = target
         return ActionDescriptor(

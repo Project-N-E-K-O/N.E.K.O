@@ -44,7 +44,7 @@ class TestMapListAction:
             "label": "Greet",
         })
         assert d is not None
-        assert d.inject_text == "@Demo /greet"
+        assert d.inject_text == "@demo /greet"
 
     def test_navigation_kinds(self) -> None:
         for kind in ("ui", "url", "route"):

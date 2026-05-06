@@ -168,6 +168,20 @@ def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
         init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
 
 
+def test_git_preflight_remote_fails_before_writing_files(tmp_path: Path) -> None:
+    target_dir = tmp_path / "repo" / "demo_plugin"
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="--remote"):
+        init_cmd._preflight_git_request(
+            target_dir,
+            initialize_git=True,
+            remote="https://example.invalid/demo.git",
+        )
+
+    assert not target_dir.exists()
+
+
 def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

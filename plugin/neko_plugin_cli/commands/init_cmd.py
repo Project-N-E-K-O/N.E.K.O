@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -140,6 +141,7 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             neko_repository=args.neko_repo,
             neko_ref=args.neko_ref,
         )
+        _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
         created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
         git_initialized = False
         if args.git:
@@ -380,6 +382,7 @@ def _generate_and_report(
     remote: str | None = None,
 ) -> int:
     try:
+        _preflight_git_request(target_dir, initialize_git=initialize_git, remote=remote)
         created = generate_plugin(spec, target_dir)
         git_initialized = False
         if initialize_git:
@@ -432,6 +435,15 @@ def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
     return True
+
+
+def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: str | None = None) -> None:
+    if not initialize_git:
+        return
+    if remote and _find_parent_git_dir(target_dir) is not None:
+        raise RuntimeError("--remote can only be used when initializing a new git repository")
+    if shutil.which("git") is None:
+        raise RuntimeError("git executable not found; install git or omit --git")
 
 
 def _find_parent_git_dir(path: Path) -> Path | None:
