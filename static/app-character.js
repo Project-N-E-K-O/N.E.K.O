@@ -1490,6 +1490,12 @@
                     if (err?.isStaleSwitchAttempt) throw err;
                     console.error('解锁换肤成就失败:', err);
                 }
+                // unlockAchievement 是 try 体内最后一个 await。watchdog 在它期间触发会清门闩
+                // + 回滚 lanlan_config，attempt 苏醒后如果不 stale check 会"成功"落到 finally：
+                // line 1481 已经 emit 的"已切换"toast 留下来 + watchdog 后续 emit 的"卡住了"
+                // toast 矛盾，且状态半截（lanlan_config 被回滚但 ws/model 已切）。补一道让
+                // catch 走 stale 分支静默退场（watchdog 已弹的 toast 是用户唯一看到的）。
+                throwIfStale();
             }
 
         } catch (error) {
