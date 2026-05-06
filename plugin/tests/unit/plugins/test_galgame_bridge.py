@@ -4996,22 +4996,32 @@ def test_ocr_reader_capture_backend_config_is_sanitized(tmp_path: Path) -> None:
 
 @pytest.mark.plugin_unit
 def test_win32_capture_backend_selection_orders_dxcam_first_for_auto() -> None:
+    # Default chain: dxcam → mss → pyautogui (PrintWindow dropped from default
+    # fallback because it's a "render to DC" mechanism that often produces
+    # stale frames on DirectX/Unity games and is slower than BitBlt-based
+    # backends; still reachable as explicit selection + Smart background).
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="auto")
-    assert [item.kind for item in backend._backends] == ["dxcam", "mss", "printwindow"]
+    assert [item.kind for item in backend._backends] == ["dxcam", "mss", "pyautogui"]
 
     dxcam_backend = galgame_ocr_reader.Win32CaptureBackend(selection="dxcam")
-    assert [item.kind for item in dxcam_backend._backends] == ["dxcam", "mss", "printwindow"]
+    assert [item.kind for item in dxcam_backend._backends] == ["dxcam", "mss", "pyautogui"]
 
     mss_backend = galgame_ocr_reader.Win32CaptureBackend(selection="mss")
-    assert [item.kind for item in mss_backend._backends] == ["mss", "dxcam", "printwindow"]
+    assert [item.kind for item in mss_backend._backends] == ["mss", "dxcam", "pyautogui"]
+
+    pyautogui_backend = galgame_ocr_reader.Win32CaptureBackend(selection="pyautogui")
+    assert [item.kind for item in pyautogui_backend._backends] == ["pyautogui", "dxcam", "mss"]
 
     # Legacy "imagegrab" selection migrates to MSS for backward compatibility.
     legacy_imagegrab_backend = galgame_ocr_reader.Win32CaptureBackend(selection="imagegrab")
     assert legacy_imagegrab_backend.selection == "mss"
-    assert [item.kind for item in legacy_imagegrab_backend._backends] == ["mss", "dxcam", "printwindow"]
+    assert [item.kind for item in legacy_imagegrab_backend._backends] == ["mss", "dxcam", "pyautogui"]
 
+    # PrintWindow as explicit selection still falls through to all GDI backends.
     printwindow_backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
-    assert [item.kind for item in printwindow_backend._backends] == ["printwindow", "dxcam", "mss"]
+    assert [item.kind for item in printwindow_backend._backends] == [
+        "printwindow", "dxcam", "mss", "pyautogui"
+    ]
 
 
 @pytest.mark.plugin_unit
@@ -5035,7 +5045,42 @@ def test_win32_capture_backend_smart_uses_target_aware_order() -> None:
     assert [item.kind for item in backend._ordered_backends_for_target(foreground)] == [
         "dxcam",
         "mss",
+        "pyautogui",
+    ]
+    # Background target: only PrintWindow can plausibly capture occluded windows.
+    assert [item.kind for item in backend._ordered_backends_for_target(background)] == [
+        "printwindow"
+    ]
+
+
+@pytest.mark.plugin_unit
+def test_win32_capture_backend_printwindow_strict_for_background_target() -> None:
+    # Explicit `selection="printwindow"` should ONLY use PrintWindow on a
+    # background/occluded target. Falling through to dxcam/mss/pyautogui
+    # would silently OCR the occluding window (screen pixels, not target
+    # window) — defeats the whole reason a user picks PrintWindow explicitly.
+    # Foreground target keeps the fallback chain since the other backends
+    # would also see the correct window.
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
+    foreground = DetectedGameWindow(
+        hwnd=1,
+        title="Demo",
+        process_name="DemoGame.exe",
+        pid=200,
+        is_foreground=True,
+    )
+    background = DetectedGameWindow(
+        hwnd=2,
+        title="Demo",
+        process_name="DemoGame.exe",
+        pid=201,
+        is_foreground=False,
+    )
+    assert [item.kind for item in backend._ordered_backends_for_target(foreground)] == [
         "printwindow",
+        "dxcam",
+        "mss",
+        "pyautogui",
     ]
     assert [item.kind for item in backend._ordered_backends_for_target(background)] == [
         "printwindow"

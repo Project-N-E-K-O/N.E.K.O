@@ -292,6 +292,7 @@ _CAPTURE_BACKEND_AUTO = "auto"
 _CAPTURE_BACKEND_SMART = "smart"
 _CAPTURE_BACKEND_DXCAM = "dxcam"
 _CAPTURE_BACKEND_MSS = "mss"
+_CAPTURE_BACKEND_PYAUTOGUI = "pyautogui"
 # Legacy alias kept so existing user configs with "imagegrab" still load; mapped to MSS.
 _CAPTURE_BACKEND_IMAGEGRAB = "imagegrab"
 _CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
@@ -2474,6 +2475,67 @@ class MssCaptureBackend:
         )
 
 
+class PyAutoGuiCaptureBackend:
+    """Cross-platform fallback in the spirit of pyautogui's screenshot path.
+
+    Functionally similar to MssCaptureBackend on Windows (both go through GDI),
+    kept as a defense-in-depth fallback in case mss fails (e.g. handle
+    exhaustion).
+
+    Internally we call PIL ImageGrab.grab() directly with all_screens=True
+    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
+    ImageGrab without exposing all_screens — its capture silently truncates
+    to the primary monitor on multi-display setups, which would corrupt
+    OCR for any galgame window placed on a secondary screen or at negative
+    coordinates. The is_available() probe still gates on `import pyautogui`
+    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
+    """
+
+    kind = _CAPTURE_BACKEND_PYAUTOGUI
+
+    def __init__(self, *, logger=None) -> None:
+        self._logger = logger
+
+    def is_available(self) -> bool:
+        # `import pyautogui` can throw beyond ImportError in headless / WSL /
+        # missing-DISPLAY environments — pyautogui's mouse module touches
+        # platform display state at import time and may raise KeyError /
+        # RuntimeError. Catch broadly so backend probing degrades cleanly to
+        # "unavailable" instead of bubbling up and aborting capture preflight.
+        try:
+            import pyautogui  # noqa: F401 — gate on user-facing label
+            from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
+            return True
+        except Exception:
+            return False
+
+    def describe_target(self, target: DetectedGameWindow) -> str:
+        return f"{target.process_name}({target.pid}) {target.title}"
+
+    def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
+        from PIL import ImageGrab
+
+        _require_visible_capture_target(target, backend_kind=self.kind)
+        rect = _target_window_rect(target)
+        left, top, right, bottom = rect
+        # all_screens=True is Windows-only in Pillow but harmlessly ignored
+        # on macOS/Linux — covers multi-monitor layouts including secondary
+        # displays at negative coordinates relative to the primary screen.
+        image = ImageGrab.grab(
+            bbox=(int(left), int(top), int(right), int(bottom)),
+            all_screens=True,
+        )
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        return _crop_window_image(
+            image,
+            window_rect=rect,
+            profile=profile,
+            backend_kind=self.kind,
+            backend_detail="selected",
+        )
+
+
 class PrintWindowCaptureBackend:
     kind = _CAPTURE_BACKEND_PRINTWINDOW
 
@@ -2668,10 +2730,12 @@ class Win32CaptureBackend:
             _CAPTURE_BACKEND_SMART,
             _CAPTURE_BACKEND_DXCAM,
             _CAPTURE_BACKEND_MSS,
+            _CAPTURE_BACKEND_PYAUTOGUI,
             _CAPTURE_BACKEND_PRINTWINDOW,
         }:
             self.selection = _CAPTURE_BACKEND_AUTO
         self._mss_backend = MssCaptureBackend(logger=self._logger)
+        self._pyautogui_backend = PyAutoGuiCaptureBackend(logger=self._logger)
         self._printwindow_backend = PrintWindowCaptureBackend(logger=self._logger)
         self._dxcam_backend = DxcamCaptureBackend(logger=self._logger)
         self._backends = self._build_backends()
@@ -2696,23 +2760,51 @@ class Win32CaptureBackend:
             self._last_backend_detail = detail
 
     def _build_backends(self) -> list[CaptureBackend]:
+        # Default fallback chain: dxcam → mss → pyautogui (cross-platform GDI
+        # progression). PrintWindow is intentionally NOT in the default chain
+        # because it's a "render to DC" mechanism that often produces stale
+        # frames on DirectX/Unity games and is slower than BitBlt-based
+        # backends. It's still reachable as an explicit user selection
+        # (mainly for capturing occluded windows) and as the Smart-mode
+        # background-target backend.
         if self.selection == _CAPTURE_BACKEND_DXCAM:
-            return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
         if self.selection == _CAPTURE_BACKEND_MSS:
-            return [self._mss_backend, self._dxcam_backend, self._printwindow_backend]
+            return [self._mss_backend, self._dxcam_backend, self._pyautogui_backend]
+        if self.selection == _CAPTURE_BACKEND_PYAUTOGUI:
+            return [self._pyautogui_backend, self._dxcam_backend, self._mss_backend]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
-            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend]
+            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
         if self.selection == _CAPTURE_BACKEND_SMART:
-            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend]
-        return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend, self._printwindow_backend]
+        return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            # Explicit PrintWindow selection: user is opting into the only
+            # backend that can capture occluded / background windows. If we
+            # silently fell through to dxcam/mss/pyautogui on a background
+            # target after PrintWindow failed, those backends read whatever
+            # is on screen — usually the occluding window — and OCR would
+            # produce confident garbage from the wrong source. Match Smart
+            # mode's strictness for background targets here.
+            if bool(getattr(target, "is_minimized", False)):
+                raise RuntimeError("printwindow: target_window_minimized_for_capture")
+            if bool(getattr(target, "is_foreground", False)):
+                # Foreground: other backends would also see the right window,
+                # so falling through after PrintWindow failure is safe.
+                return list(self._backends)
+            return [self._printwindow_backend]
         if self.selection != _CAPTURE_BACKEND_SMART:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._mss_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+        # Background target: PrintWindow is the only backend that can plausibly
+        # capture occluded windows (others read screen pixels and would grab
+        # the overlapping window). Quality is unreliable; ocr_reader emits
+        # `backend_not_suitable_for_background` warning when it returns empty.
         return [self._printwindow_backend]
 
     def is_available(self) -> bool:
@@ -2934,7 +3026,6 @@ class RapidOcrBackend:
                         lang_type=self._lang_type,
                         model_type=self._model_type,
                         ocr_version=self._ocr_version,
-                        force_reload=False,
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
             self._runtime = runtime

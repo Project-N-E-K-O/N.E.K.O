@@ -145,7 +145,7 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
 
 
 _OCR_BACKEND_SELECTIONS = {"auto", "rapidocr", "tesseract"}
-_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "printwindow"}
+_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}
 
 
 def _migrate_legacy_capture_backend(value: object) -> object:
@@ -4055,7 +4055,7 @@ class GalgamePlugin(NekoPluginBase):
                 and str(getattr(self._cfg, "ocr_reader_capture_backend", "") or "")
                 .strip()
                 .lower()
-                in {"smart", "dxcam", "mss", "printwindow"}
+                in {"smart", "dxcam", "mss", "pyautogui", "printwindow"}
             )
         )
         memory_reader_default_is_unavailable = (

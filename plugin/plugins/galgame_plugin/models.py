@@ -575,9 +575,14 @@ class GalgameOcrReaderConfig:
 class GalgameRapidOcrConfig:
     rapidocr_enabled: bool = False
     rapidocr_enabled_explicit: bool = False
-    rapidocr_install_manifest_url: str = ""
+    # `rapidocr_install_target_dir` survived the install-removal because
+    # ocr_reader still treats it as the runtime model cache root path
+    # (where rapidocr writes downloaded model files). Name is misleading
+    # post-refactor — TODO rename to `rapidocr_model_cache_root` in a
+    # follow-up. `rapidocr_install_manifest_url` and
+    # `rapidocr_install_timeout_seconds` are gone — they only fed the
+    # deleted runtime install machinery.
     rapidocr_install_target_dir: str = ""
-    rapidocr_install_timeout_seconds: float = 180.0
     rapidocr_engine_type: str = "onnxruntime"
     rapidocr_lang_type: str = "ch"
     rapidocr_model_type: str = "mobile"
@@ -739,9 +744,7 @@ class GalgameConfig:
         ),
         "rapidocr_enabled": ("rapidocr", "rapidocr_enabled"),
         "rapidocr_enabled_explicit": ("rapidocr", "rapidocr_enabled_explicit"),
-        "rapidocr_install_manifest_url": ("rapidocr", "rapidocr_install_manifest_url"),
         "rapidocr_install_target_dir": ("rapidocr", "rapidocr_install_target_dir"),
-        "rapidocr_install_timeout_seconds": ("rapidocr", "rapidocr_install_timeout_seconds"),
         "rapidocr_engine_type": ("rapidocr", "rapidocr_engine_type"),
         "rapidocr_lang_type": ("rapidocr", "rapidocr_lang_type"),
         "rapidocr_model_type": ("rapidocr", "rapidocr_model_type"),
