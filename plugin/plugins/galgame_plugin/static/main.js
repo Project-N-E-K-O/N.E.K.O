@@ -2970,6 +2970,12 @@ function renderPluginUnavailable(error) {
     const title = document.getElementById(`${kind}PromptTitle`);
     const body = document.getElementById(`${kind}PromptBody`);
     const path = document.getElementById(`${kind}PathText`);
+    // Banners default to `hidden` in HTML and used to be unhidden by
+    // switchInstallTab. Post-refactor switchInstallTab only iterates
+    // OCR_INSTALL_TABS = ['tesseract'] so rapidocr/dxcam stay hidden in
+    // the plugin-unavailable failure path — explicitly clear it here so
+    // the degraded-state hint is actually visible to the user.
+    banner.hidden = false;
     banner.className = `install-banner install-banner-${kind} neutral`;
     if (kicker) kicker.textContent = PROMPT_LABELS[kind];
     if (title) title.textContent = pluginNotStarted;

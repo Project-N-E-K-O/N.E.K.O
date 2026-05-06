@@ -2497,11 +2497,16 @@ class PyAutoGuiCaptureBackend:
         self._logger = logger
 
     def is_available(self) -> bool:
+        # `import pyautogui` can throw beyond ImportError in headless / WSL /
+        # missing-DISPLAY environments — pyautogui's mouse module touches
+        # platform display state at import time and may raise KeyError /
+        # RuntimeError. Catch broadly so backend probing degrades cleanly to
+        # "unavailable" instead of bubbling up and aborting capture preflight.
         try:
             import pyautogui  # noqa: F401 — gate on user-facing label
             from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
             return True
-        except ImportError:
+        except Exception:
             return False
 
     def describe_target(self, target: DetectedGameWindow) -> str:
