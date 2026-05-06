@@ -254,7 +254,9 @@ function startMultiWindowPageConfigLoad() {
                     window.__nekoPendingAvatar = { dataUrl: d.avatarDataUrl, modelType: d.avatarModelType || '' };
                 }
             }
-            resolve(d);
+            // resolve 类型与 5s 超时分支（loadPageConfig() → bool）保持一致，
+            // 避免未来有 consumer 做 result === true 判断时 IPC 路径悄悄失效。
+            resolve(true);
         }
         // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
         var handler = function (event) {
