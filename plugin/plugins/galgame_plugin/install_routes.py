@@ -517,7 +517,7 @@ def _read_tutorial_progress() -> dict[str, Any] | None:
         return _tutorial_store().load_tutorial_progress()
     except Exception:
         logger.warning("tutorial progress read failed", exc_info=True)
-        return None
+        raise
 
 
 def _write_tutorial_progress(progress: dict[str, Any]) -> None:
@@ -571,7 +571,14 @@ async def save_tutorial_progress(
         if hasattr(body, "model_dump")
         else body.dict(exclude_unset=True)
     )
-    current = _normalize_tutorial_progress(_read_tutorial_progress())
+    try:
+        current = _normalize_tutorial_progress(_read_tutorial_progress())
+    except Exception:
+        logger.error("tutorial progress save aborted after read failure", exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": "Internal server error", "progress": _normalize_tutorial_progress(None)},
+            status_code=500,
+        )
     normalized_payload = _normalize_tutorial_progress(payload)
     current.update(
         {

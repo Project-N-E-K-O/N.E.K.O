@@ -1564,9 +1564,9 @@ function buildFirstRunSteps(status = {}) {
   const rapidocr = status.rapidocr || {};
   const tesseract = status.tesseract || {};
   const dxcam = status.dxcam || {};
-  const rapidocrSupported = rapidocr.install_supported !== false;
-  const tesseractSupported = tesseract.install_supported !== false;
-  const dxcamSupported = dxcam.install_supported !== false;
+  const rapidocrSupported = Boolean(rapidocr.install_supported) && rapidocr.can_install !== false;
+  const tesseractSupported = Boolean(tesseract.install_supported) && tesseract.can_install !== false;
+  const dxcamSupported = Boolean(dxcam.install_supported) && dxcam.can_install !== false;
   const ocrInstallAction = rapidocrSupported ? 'install_rapidocr' : 'install_tesseract';
   const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported));
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
