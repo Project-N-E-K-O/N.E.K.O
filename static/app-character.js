@@ -1742,17 +1742,35 @@
                 }
             } catch (_e) { /* ignore */ }
 
-            // 兜底 dispose 延后保留的旧 MMD 实例：commit 成功 / rollback 恢复 / 抢占退出
-            // 三条路径都已把 _mmdDeferredDispose 置 null。这里只剩残余 case：catch 进了
-            // stale 分支或 guard 没匹配（如 S.socket !== _switchOldSocket）——orphan 引用
-            // 既不是 active mmdManager 也不会被 commit 路径清理，dispose 释放 GPU 资源。
-            if (_mmdDeferredDispose && window.mmdManager !== _mmdDeferredDispose) {
-                try {
-                    if (typeof _mmdDeferredDispose.dispose === 'function') {
-                        _mmdDeferredDispose.dispose();
+            // 兜底 dispose 延后保留的旧 MMD 实例。commit 成功 / rollback 恢复 / 抢占
+            // 退出三条路径都已把 _mmdDeferredDispose 置 null。残余 case 需要分类处理：
+            //
+            // - **orphan**：stale 退出且新 attempt 已替换 mmdManager
+            //   （window.mmdManager !== ours）——必须 dispose 释放 GPU。
+            // - **failed-no-recovery**：catch 进了非 stale 分支但 socket guard 没匹配
+            //   （`S.socket !== _switchOldSocket`，常见于 connectWebSocket 已替换 S.socket
+            //   后再发生的 model load 失败），rollback helper 没被调用。这条路径上
+            //   isCurrentAttempt && !switchHasCommitted 同时成立、window.mmdManager 仍是
+            //   旧实例——只用 orphan 检查会漏掉，让旧 MMD 永远活着 + 容器隐藏，泄漏 GPU
+            //   memory（Codex P2 抓出来的回归）。这条路径 dispose 而不重显容器，保持
+            //   pre-PR 在此边界 case 的"空白但无泄漏"语义，与 L2D/VRM 在同一 guard 下
+            //   不重启 ticker/animation 的行为对偶。
+            // - **shared with new attempt**：stale 但新 attempt 也持有同一引用——orphan
+            //   检查命中 false 跳过，留给新 attempt 处理，避免双 dispose。
+            if (_mmdDeferredDispose) {
+                const isOrphan = window.mmdManager !== _mmdDeferredDispose;
+                const isFailedNoRecovery = isCurrentAttempt && !switchHasCommitted;
+                if (isOrphan || isFailedNoRecovery) {
+                    try {
+                        if (typeof _mmdDeferredDispose.dispose === 'function') {
+                            _mmdDeferredDispose.dispose();
+                        }
+                    } catch (_e) { /* ignore */ }
+                    if (window.mmdManager === _mmdDeferredDispose) {
+                        window.mmdManager = null;
                     }
-                } catch (_e) { /* ignore */ }
-                _mmdDeferredDispose = null;
+                    _mmdDeferredDispose = null;
+                }
             }
 
             if (isCurrentAttempt) {
