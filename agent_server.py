@@ -949,6 +949,7 @@ def _openclaw_reason_text(reasons: Any) -> str:
         reason = str(reasons[0] or "").strip()
     else:
         reason = "unknown"
+    reason = reason.replace("OpenClaw(QwenPaw)", "OpenClaw").replace("QwenPaw", "OpenClaw service")
     return reason[:USER_NOTIFICATION_REASON_MAX_CHARS] if reason else "unknown"
 
 
@@ -968,6 +969,7 @@ async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> No
                 return
             adapter = Modules.openclaw
             if not adapter:
+                last_reasons = ["AGENT_OPENCLAW_MODULE_NOT_LOADED"]
                 break
 
             status = await asyncio.to_thread(adapter.is_available)
@@ -3974,20 +3976,21 @@ async def openclaw_availability():
     status = await asyncio.to_thread(Modules.openclaw.is_available)
     ready = bool(status.get("ready")) if isinstance(status, dict) else False
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
+    pending = _openclaw_pending()
     if ready:
-        if _openclaw_pending():
+        if pending:
             _cancel_openclaw_enable_probe()
         _set_capability("openclaw", True, "")
-    elif _openclaw_pending() and Modules.agent_flags.get("openclaw_enabled"):
+        return status
+    if pending and Modules.agent_flags.get("openclaw_enabled"):
         _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
-    else:
-        _set_capability("openclaw", False, reasons[0] if reasons else "")
-    if not ready and Modules.agent_flags.get("openclaw_enabled"):
-        if _openclaw_pending():
-            if isinstance(status, dict):
-                status = dict(status)
-                status["pending"] = True
-            return status
+        if isinstance(status, dict):
+            status = dict(status)
+            status["pending"] = True
+        return status
+    reason = reasons[0] if reasons else ""
+    _set_capability("openclaw", False, reason)
+    if Modules.agent_flags.get("openclaw_enabled"):
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
     return status

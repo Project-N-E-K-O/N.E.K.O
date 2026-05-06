@@ -96,12 +96,30 @@
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
-    const formatOpenClawUnavailable = (reason, name) => {
+    const sanitizeOpenClawReason = (reason) => String(reason || '')
+            .replace(/OpenClaw\(QwenPaw\)/g, 'OpenClaw')
+            .replace(/QwenPaw/g, 'OpenClaw service')
+            .trim();
+    const translateAgentReasonCode = (reason) => {
         const reasonText = String(reason || '').trim();
+        if (reasonText && /^AGENT[A-Z0-9_-]*$/i.test(reasonText) && window.t) {
+            const normalizedReason = reasonText
+                .replace(/[^A-Za-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .toUpperCase();
+            const precheckKey = `agent.precheck.${normalizedReason}`;
+            const translated = window.t(precheckKey);
+            if (translated && translated !== precheckKey) return translated;
+        }
+        return reasonText;
+    };
+    const formatOpenClawUnavailable = (reason, name) => {
+        const reasonText = sanitizeOpenClawReason(reason);
         if (reasonText && !reasonText.includes('PENDING')) {
+            const displayReason = translateAgentReasonCode(reasonText);
             return window.t
-                ? window.t('settings.toggles.openclawUnavailableReason', { name, reason: reasonText })
-                : `${name}不可用：${reasonText}。请确认 QwenPaw 已启动，并监听 127.0.0.1:8088。`;
+                ? window.t('settings.toggles.openclawUnavailableReason', { name, reason: displayReason })
+                : `${name}不可用：${displayReason}。请确认猫爪连接服务已启动，并监听 127.0.0.1:8088。`;
         }
         return window.t
             ? window.t('settings.toggles.capabilityNotReady', { name })
@@ -295,14 +313,7 @@
                     target.title = window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关';
                 } else {
                     // Translate precheck reason code via i18n
-                    let reasonText = reason;
-                    if (reason && window.t) {
-                        const precheckKey = `agent.precheck.${reason}`;
-                        const translated = window.t(precheckKey);
-                        if (translated && translated !== precheckKey) {
-                            reasonText = translated;
-                        }
-                    }
+                    const reasonText = translateAgentReasonCode(reason);
                     target.title = reasonText
                         ? (window.t ? window.t('agent.status.precheckFailed', { reason: reasonText }) : reasonText)
                         : (window.t ? window.t('settings.toggles.capabilityNotReady', { name: getName(k) }) : `${getName(k)}尚未就绪，点击尝试启用`);
@@ -329,7 +340,7 @@
                 : !!flags['openclaw_enabled'];
             openclaw.forEach(cb => {
                 cb.checked = optimisticVal && (canUse || disabledByPending);
-                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || activating;
+                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled;
                 if (disabledByPending || activating) {
                     cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
                 } else if (canUse) {
