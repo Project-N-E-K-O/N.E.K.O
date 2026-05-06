@@ -715,7 +715,18 @@
             // socket 关掉、lanlan_name 覆盖回老目标、用老 lanlan_name 重连。
             throwIfStale();
             if (S.socket) S.socket.close();
-            if (S.heartbeatInterval) clearInterval(S.heartbeatInterval);
+            // 不在这里 clear 旧 heartbeat：新 connectWebSocket onopen（app-websocket.js
+            // line 594-602）会自己 clearInterval + 重建。中途 close 完老 ws 还没等到新
+            // onopen 这段窗口里，老 heartbeat 的 callback 已 fail-safe 检查
+            // `S.socket && readyState === OPEN`，老 ws CLOSING / 新 ws CONNECTING / null
+            // 期间都直接跳过，无害。
+            // 关键：rollback 路径上（catch line ~1645 / watchdog line ~301 把 S.socket 从
+            // null 恢复回 _switchOldSocket）老 heartbeat 必须仍活着，否则即便 socket 塞
+            // 回去也没有保活，连接很快被 server idle timeout 关掉、用户失败切角色后看到
+            // 莫名断线重连——pre-existing 自 PR #1167 引入 socket rollback 但漏了 heartbeat
+            // 重启的这一脉。finally line ~1762 的 `S.heartbeatInterval !== _switchOldHeartbeat`
+            // 已正确区分"成功路径 onopen 替换了 heartbeat → 关老的"和"失败路径 onopen 没
+            // 跑过 → 不动"，所以删掉这里的提前 clear 不会引入 success-path 残留。
 
             window.lanlan_config.lanlan_name = newCatgirl;
 
