@@ -2264,10 +2264,27 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
+                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
+                // start_session seed 的全局缓存），所以这里宁可送 navigator
+                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
+                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
+                // Steam API 时，navigator.language 通常已经是 zh-CN）。
+                var greetingLang = '';
+                try {
+                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                        greetingLang = window.i18next.language;
+                    } else if (typeof localStorage !== 'undefined') {
+                        greetingLang = localStorage.getItem('i18nextLng') || '';
+                    }
+                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
+                        greetingLang = navigator.language;
+                    }
+                } catch (_) { greetingLang = ''; }
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: !!S._greetingCheckIsSwitch,
-                    language: (window.i18next && window.i18next.language) || ''
+                    language: greetingLang
                 }));
                 S._greetingCheckPending = false;
                 _resetGreetingCheckRetry(true);

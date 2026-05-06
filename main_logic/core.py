@@ -2760,8 +2760,15 @@ class LLMSessionManager:
         self._memory_error_retry_after = 0
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
-        # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
-        self.user_language = normalize_language_code(get_global_language(), format='short')
+        # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
+        # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
+        # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
+        # 全局缓存值（race 失败时的 'en'），让游戏 / proactive / memory 的 prompt
+        # 全部回退英文。改为：仅在 user_language 还没被设过时才 seed 一次，已经
+        # 有 session 真值就保留——全局缓存晚到的更新由 refresh_global_language
+        # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
+        if not getattr(self, 'user_language', None):
+            self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0

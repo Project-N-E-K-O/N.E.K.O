@@ -311,6 +311,49 @@ def set_global_language(language: str) -> None:
         logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
 
 
+def refresh_global_language(language: str) -> bool:
+    """重新校准全局语言缓存（用于晚到的真值，例如 Steam SDK 启动期 race 失败后才拿到）。
+
+    与 ``set_global_language`` 的区别：
+    - 静默 no-op：若归一化后值与当前缓存相同，直接返回 ``False``，不打 INFO 日志
+      （前端 i18n bootstrap 会调 ``/api/config/steam_language``，每次冷启都触发刷新，
+      不应每次都刷屏）。
+    - 仅当值不同 / 缓存未初始化时才覆盖并 log。
+
+    设计动机：``initialize_global_language`` 在进程启动时只跑一次，Steam SDK 没就绪
+    就退化到系统 locale 然后**终生缓存**；前端的 ``/api/config/steam_language`` 端点
+    每次重读 Steam 拿得到对的值，但没有路径回写到全局缓存——所有依赖
+    ``get_global_language()`` 的下游（memory / reflection / tts / soccer 兜底等）就
+    一直用错的英文。该函数就是这条回写路径。
+
+    Returns:
+        ``True`` 表示发生了真实变更；``False`` 表示已是最新或参数无效。
+    """
+    global _global_language, _global_language_full, _global_language_initialized
+
+    if not language:
+        return False
+
+    short = normalize_language_code(language, format='short')
+    full = normalize_language_code(language, format='full')
+    if not short:
+        return False
+
+    with _global_language_lock:
+        if _global_language_initialized and _global_language == short and _global_language_full == full:
+            return False
+        prev_short = _global_language
+        prev_full = _global_language_full
+        _global_language = short
+        _global_language_full = full
+        _global_language_initialized = True
+        logger.info(
+            f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
+            f"(full: {prev_full} -> {full})"
+        )
+    return True
+
+
 def get_global_region() -> str:
     """
     获取全局区域标识
