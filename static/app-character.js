@@ -1118,7 +1118,10 @@
                             detail: (window.t && window.t('mmd.managerInitFailed')) || 'MMD 管理器初始化失败'
                         });
                         mmdLoadingSessionId = '';
-                        return;
+                        // 改 throw 而不 return：原本静默 return 会绕过外层 catch 的失败 toast +
+                        // lanlan_config 回滚，配合本 PR 入口加的 dedupe (lanlan_name === newCatgirl)
+                        // 会让用户重试同名角色被拦死、且 lanlan_config 残留半切换状态。
+                        throw new Error('MMD 管理器初始化失败');
                     }
                 }
 
@@ -1169,6 +1172,10 @@
                         try {
                             window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'idle' });
                             await window.mmdManager.loadAnimation(mmdIdleAnimation);
+                            // playAnimation 之前补 stale 检查：A 卡在 loadAnimation 上苏醒后会
+                            // 直接对 B 接管的 mmdManager 播放 A 的待机动作，串台。catch 已 rethrow
+                            // stale 不会被吞。
+                            throwIfStale();
                             window.mmdManager.playAnimation();
                             console.log('[猫娘切换] 已播放待机动作:', mmdIdleAnimation);
                         } catch (idleErr) {
@@ -1240,8 +1247,19 @@
 
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
                 throwIfStale();
+                if (!modelResponse.ok) {
+                    // 原本失败也走成功路径：configRes.ok 失败时跳进 fallback yui-origin，
+                    // 但 modelResponse 本身失败时 modelData.success/model_info 缺失，下面
+                    // `if (modelData.success && modelData.model_info)` 直接跳过整个加载块，
+                    // 用户看到的是空白容器但弹"已切换到 xxx"——配合本 PR 入口 dedupe，
+                    // 重试同名被拦死。明确抛错让外层 catch 走完整失败路径。
+                    throw new Error(`无法获取 Live2D 模型配置 (HTTP ${modelResponse.status})`);
+                }
                 const modelData = await modelResponse.json();
                 throwIfStale();
+                if (!modelData.success || !modelData.model_info?.path) {
+                    throw new Error(modelData.error || 'Live2D 模型配置无效（缺 success 或 model_info.path）');
+                }
 
                 // 确保 Manager 存在
                 if (!window.live2dManager && typeof window.Live2DManager === 'function') {
