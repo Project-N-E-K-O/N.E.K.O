@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._routing import RoutingService, format_duration, format_distance, haversine_km, suggest_modes
 from .._api import RAIN_CODES
+from .._chat import push_lifekit_content
 
 
 class TripRouter(PluginRouter):
@@ -127,7 +128,7 @@ class TripRouter(PluginRouter):
             card_lines.append(" ".join(weather_tips))
         if mode_advice:
             card_lines.append(mode_advice)
-        plugin.push_chat_content([
+        push_lifekit_content(plugin, [
             {"type": "text", "text": f"🗺️ {origin_loc['city']} → {dest_loc['city']}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])

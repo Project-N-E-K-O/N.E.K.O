@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import RAIN_CODES, SNOW_CODES
+from .._chat import push_lifekit_content
 from .._i18n import I18n
 
 
@@ -128,7 +129,7 @@ class TravelAdviceRouter(PluginRouter):
         if extras:
             card_lines.append(" | ".join(extras))
 
-        plugin.push_chat_content([
+        push_lifekit_content(plugin, [
             {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('entry.travel_advice', fallback='出行建议')}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])

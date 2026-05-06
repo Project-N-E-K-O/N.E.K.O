@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._poi import POIService
 from .._api import RAIN_CODES
+from .._chat import push_lifekit_content
 from .._routing import format_distance
 
 # 天气 → 推荐关键词映射
@@ -133,7 +134,7 @@ class FoodRecommendRouter(PluginRouter):
                 line += f"  ⭐{r['rating']}"
             card_lines.append(line)
 
-        plugin.push_chat_content([
+        push_lifekit_content(plugin, [
             {"type": "text", "text": f"🍜 {loc['city']} — {query}推荐"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])

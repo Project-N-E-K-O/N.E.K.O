@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
+from .._chat import push_lifekit_content
+
 # 常见节日/节气（公历固定日期）
 _KNOWN_DATES: Dict[str, tuple[int, int]] = {
     "元旦": (1, 1), "new year": (1, 1),
@@ -126,7 +128,7 @@ class CountdownRouter(PluginRouter):
         if abs(delta) > 7:
             blocks.append({"type": "text", "text": f"约 {weeks} 周 | {detail['weekday']}"})
 
-        self.main_plugin.push_chat_content(blocks)
+        push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({"summary": summary, "detail": detail})
 
@@ -179,7 +181,7 @@ class CountdownRouter(PluginRouter):
             parts.append(f"{months} 个月")
         parts.append(f"{delta} 天")
 
-        self.main_plugin.push_chat_content([
+        push_lifekit_content(self.main_plugin, [
             {"type": "text", "text": f"📅 {d1} → {d2}"},
             {"type": "text", "text": " | ".join(parts)},
         ])

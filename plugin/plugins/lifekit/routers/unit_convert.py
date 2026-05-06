@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional, Tuple
 from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
+from .._chat import push_lifekit_content
+
 # 换算表: (from_unit, to_unit) → (multiplier, from_label, to_label)
 # value_to = value_from * multiplier
 _CONVERSIONS: Dict[Tuple[str, str], Tuple[float, str, str]] = {
@@ -151,7 +153,7 @@ class UnitConvertRouter(PluginRouter):
 
         summary = f"{value} {fl} = {converted} {tl}"
 
-        self.main_plugin.push_chat_content([
+        push_lifekit_content(self.main_plugin, [
             {"type": "text", "text": f"📐 {value} {fl} → {converted} {tl}"},
         ])
 

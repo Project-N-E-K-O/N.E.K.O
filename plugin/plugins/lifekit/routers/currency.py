@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _currency as currency_api
+from .._chat import push_lifekit_content
 
 
 class CurrencyRouter(PluginRouter):
@@ -76,7 +77,7 @@ class CurrencyRouter(PluginRouter):
         if result.get("rate") and result["rate"] != 1.0:
             blocks.append({"type": "text", "text": f"汇率: 1 {result['from']} = {result['rate']} {result['to']}  ({result.get('date', '')})"})
 
-        self.main_plugin.push_chat_content(blocks)
+        push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
             "summary": summary,

@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
+from .._chat import push_lifekit_content
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -128,7 +129,7 @@ class HourlyForecastRouter(PluginRouter):
         if len(result_hours) > 8:
             blocks.append({"type": "text", "text": f"… +{len(result_hours) - 8} {i18n.t('summary.more_hours', fallback='小时')}"})
 
-        plugin.push_chat_content(blocks)
+        push_lifekit_content(plugin, blocks)
 
         return Ok({
             "city": loc["city"],

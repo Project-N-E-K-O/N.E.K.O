@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import fetch_air_quality, AirQualityError
+from .._chat import push_lifekit_content
 
 
 def _aqi_level(aqi: int) -> tuple[str, str]:
@@ -125,7 +126,7 @@ class AirQualityRouter(PluginRouter):
         if advice:
             blocks.append({"type": "text", "text": "\n".join(advice)})
 
-        plugin.push_chat_content(blocks)
+        push_lifekit_content(plugin, blocks)
 
         return Ok({
             "city": loc["city"],
