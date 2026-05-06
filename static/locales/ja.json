@@ -1986,6 +1986,8 @@
         "glmApiBug": "GLM APIが課金バグを発生しました。1元のチャージをご検討ください。",
         "aliApiOwed": "Alibaba APIの残高がありません。",
         "voiceSystemPreparing": "音声システム準備中...",
+    "voiceConfigSwitching": "音色を切り替え中、音声を準備しています...",
+    "voiceConfigSwitchTimeout": "音色の切り替えがまだ完了していません。少し待ってから音声を開始してください。",
         "textSystemPreparing": "テキストシステム準備中、お待ちください...",
         "connectingToServer": "サーバーに接続中...",
         "readyToSpeak": "話す準備ができました！",

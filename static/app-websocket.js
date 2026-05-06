@@ -21,6 +21,8 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _lanlanNameWaitAttempts = 0;
+    let _lanlanNameWaitLastLogAt = 0;
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -408,6 +410,16 @@
 
     // ========================  ensureWebSocketOpen  ========================
 
+    // 区分"字段未注入"和"字段注入为空串"：未注入返回 null（继续等待 page config 注入），
+    // 注入为空串返回 ''（合法的"当前没有角色"，应直接尝试 connect 而不是无谓等待 5s 超时）。
+    function getWebSocketLanlanName() {
+        var cfg = window.lanlan_config;
+        if (!cfg || typeof cfg !== 'object') return null;
+        if (!Object.prototype.hasOwnProperty.call(cfg, 'lanlan_name')) return null;
+        var v = cfg.lanlan_name;
+        return v == null ? '' : String(v);
+    }
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -424,11 +436,27 @@
 
             var settled = false;
             var timer = null;
+            var lanlanWaitTimer = null;
+            var socketPollTimer = null;
+
+            var clearAutoReconnectTimer = function () {
+                if (S.autoReconnectTimeoutId) {
+                    clearTimeout(S.autoReconnectTimeoutId);
+                    S.autoReconnectTimeoutId = null;
+                }
+            };
 
             var settle = function (fn, arg) {
                 if (settled) return;
                 settled = true;
                 if (timer) { clearTimeout(timer); timer = null; }
+                if (lanlanWaitTimer) { clearTimeout(lanlanWaitTimer); lanlanWaitTimer = null; }
+                if (socketPollTimer) { clearTimeout(socketPollTimer); socketPollTimer = null; }
+                clearAutoReconnectTimer();
+                // 这次 ensureWebSocketOpen 已结束，归零退避状态，避免下次调用继承旧 attempts
+                // 让退避一上来又是 ~2s 的 stale 节奏。
+                _lanlanNameWaitAttempts = 0;
+                _lanlanNameWaitLastLogAt = 0;
                 fn(arg);
             };
 
@@ -460,15 +488,36 @@
                 // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
-                if (S.autoReconnectTimeoutId) {
-                    clearTimeout(S.autoReconnectTimeoutId);
-                    S.autoReconnectTimeoutId = null;
-                }
-                connectWebSocket();
+                clearAutoReconnectTimer();
+                var connectWhenLanlanNameReady = function () {
+                    if (settled) return;
+                    if (getWebSocketLanlanName() !== null) {
+                        connectWebSocket();
+                        return;
+                    }
+                    _lanlanNameWaitAttempts += 1;
+                    var waitNow = Date.now();
+                    if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                        console.warn('[WebSocket] lanlan_name not ready, waiting for page config');
+                        _lanlanNameWaitLastLogAt = waitNow;
+                    }
+                    lanlanWaitTimer = setTimeout(function () {
+                        lanlanWaitTimer = null;
+                        connectWhenLanlanNameReady();
+                    }, Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250));
+                };
+                connectWhenLanlanNameReady();
             }
 
             // Polling fallback: track socket reference; re-attach when replaced
             var lastAttachedWs = null;
+            var scheduleSocketPoll = function (delay) {
+                if (settled) return;
+                socketPollTimer = setTimeout(function () {
+                    socketPollTimer = null;
+                    waitForNewSocket();
+                }, delay);
+            };
             var waitForNewSocket = function () {
                 if (settled) return;
                 if (S.socket) {
@@ -477,13 +526,13 @@
                         attachOpenListener(S.socket);
                     }
                     if (!settled) {
-                        setTimeout(waitForNewSocket, S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
+                        scheduleSocketPoll(S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
                     }
                 } else {
-                    setTimeout(waitForNewSocket, 50);
+                    scheduleSocketPoll(50);
                 }
             };
-            setTimeout(waitForNewSocket, 10);
+            scheduleSocketPoll(10);
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
@@ -491,9 +540,7 @@
     // ========================  connectWebSocket  ========================
 
     function connectWebSocket() {
-        var currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
-            ? window.lanlan_config.lanlan_name
-            : '';
+        var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
         // 切换档案时 Chat 窗口曾出现这样的 stale 序列：handleCatgirlSwitch 刚 connect 的新代理被
         // 旧 WS 生命周期的 CLOSED IPC 误触发 close，onclose 排了一个 3s auto-reconnect；紧接着
@@ -503,11 +550,22 @@
             clearTimeout(S.autoReconnectTimeoutId);
             S.autoReconnectTimeoutId = null;
         }
-        if (!currentLanlanName) {
-            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
-            S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+        // 仅在字段未注入（null）时退避等待；空串是合法"当前没有角色"，按下面正常 encode 走。
+        if (currentLanlanName === null) {
+            _lanlanNameWaitAttempts += 1;
+            var waitNow = Date.now();
+            if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                console.warn('[WebSocket] lanlan_name not injected yet, waiting for page config');
+                _lanlanNameWaitLastLogAt = waitNow;
+            }
+            S.autoReconnectTimeoutId = setTimeout(
+                connectWebSocket,
+                Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250)
+            );
             return;
         }
+        _lanlanNameWaitAttempts = 0;
+        _lanlanNameWaitLastLogAt = 0;
 
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
@@ -1265,7 +1323,13 @@
                                     if (sb2) sb2.classList.remove('active');
 
                                     S.isRecording = false;
+                                    S.voiceChatActive = false;
+                                    S.voiceStartPending = false;
                                     window.isRecording = false;
+                                    // 必须在 syncVoiceChatComposerHidden(false) 之前清掉，
+                                    // 否则 shouldKeepVoiceComposerHidden() 还会按"启动中"判定要求隐藏，
+                                    // 重启失败的输入栏会被新守卫再次压回去。
+                                    window.isMicStarting = false;
 
                                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
@@ -1745,6 +1809,8 @@
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
+                    S.voiceChatActive = response.input_mode !== 'text';
+                    S.voiceStartPending = false;
 
                     // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
                     // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
@@ -1804,6 +1870,8 @@
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
@@ -1821,6 +1889,7 @@
                         if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                         if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
                         window.isMicStarting = false;
+                        S.voiceChatActive = false;
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
@@ -1833,6 +1902,8 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
@@ -1871,12 +1942,12 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    window.isMicStarting = false;
                     if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-                    window.isMicStarting = false;
                     S.isSwitchingMode = false;
 
                 // -------- reload_page --------
@@ -2088,6 +2159,8 @@
                 S.isTextSessionActive = false;
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
+            S.voiceChatActive = false;
+            S.voiceStartPending = false;
 
             // Reset voice recording state & resources
             if (S.isRecording || window.isMicStarting) {

@@ -196,14 +196,37 @@ function resolvePageConfig(result) {
 function startMultiWindowPageConfigLoad() {
     return new Promise(function (resolve) {
         var settled = false;
-        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
-        var handler = function (event) {
+        var emptyConfigRetryTimer = null;
+        function requestInjectedConfig(delay) {
+            if (typeof window.__nekoRequestConfigInjection !== 'function') {
+                return;
+            }
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
+            emptyConfigRetryTimer = setTimeout(function () {
+                emptyConfigRetryTimer = null;
+                if (!settled && typeof window.__nekoRequestConfigInjection === 'function') {
+                    window.__nekoRequestConfigInjection();
+                }
+            }, typeof delay === 'number' ? delay : 0);
+        }
+        function applyInjectedConfig(detail) {
             if (settled) {
                 return;
             }
+            var d = detail || {};
+            if (!Object.prototype.hasOwnProperty.call(d, 'lanlan_name')) {
+                requestInjectedConfig(500);
+                return;
+            }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
-            var d = (event && event.detail) || {};
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
@@ -220,6 +243,8 @@ function startMultiWindowPageConfigLoad() {
             lanlan_config.master_profile_name = window.master_profile_name;
             lanlan_config.master_nickname = window.master_nickname;
             lanlan_config.master_display_name = window.master_display_name;
+            var pageTitleName = lanlan_config.master_display_name || lanlan_config.lanlan_name;
+            document.title = pageTitleName ? `${pageTitleName} Terminal - Project N.E.K.O.` : 'Project N.E.K.O.';
             // 头像：如果 IPC 注入了头像 dataUrl，设置到 appChatAvatar
             // appChatAvatar 可能尚未加载（脚本顺序靠后），先暂存到全局变量
             if (d.avatarDataUrl) {
@@ -229,15 +254,30 @@ function startMultiWindowPageConfigLoad() {
                     window.__nekoPendingAvatar = { dataUrl: d.avatarDataUrl, modelType: d.avatarModelType || '' };
                 }
             }
-            resolve(d);
+            // resolve 类型与 5s 超时分支（loadPageConfig() → bool）保持一致，
+            // 避免未来有 consumer 做 result === true 判断时 IPC 路径悄悄失效。
+            resolve(true);
+        }
+        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
+        var handler = function (event) {
+            applyInjectedConfig((event && event.detail) || {});
         };
         window.addEventListener('neko:config-injected', handler);
+        if (window.__nekoInjectedConfig && Object.prototype.hasOwnProperty.call(window.__nekoInjectedConfig, 'lanlan_name')) {
+            applyInjectedConfig(window.__nekoInjectedConfig);
+            return;
+        }
+        requestInjectedConfig(0);
         // 超时保护：5 秒后 fallback 到 HTTP API
         setTimeout(function () {
             if (settled) {
                 return;
             }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
             console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
             loadPageConfig().then(resolve);

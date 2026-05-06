@@ -56,6 +56,40 @@ function ensureReservedFieldsLoaded() {
     return _reservedFieldsReady || Promise.resolve();
 }
 
+function createVoiceConfigSwitchOpId(lanlanName) {
+    return 'voice-config-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '-' + (lanlanName || 'current');
+}
+
+function notifyVoiceConfigSwitching(lanlanName, active, opId) {
+    const payload = {
+        action: 'voice_config_switching',
+        type: 'voice_config_switching',
+        active: !!active,
+        op_id: opId || '',
+        lanlan_name: lanlanName || '',
+        timestamp: Date.now()
+    };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            const channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage(payload);
+            setTimeout(() => channel.close(), 1000);
+        } catch (_) { /* 跨窗口同步失败时继续走 postMessage 兜底 */ }
+    }
+
+    if (window.nekoElectronVoiceConfigSwitching && typeof window.nekoElectronVoiceConfigSwitching.send === 'function') {
+        try { window.nekoElectronVoiceConfigSwitching.send(payload); } catch (_) { }
+    }
+
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+}
+
 // 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
@@ -5634,6 +5668,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // voice_id 通过专用接口更新
         if (selectedVoiceId !== previousVoiceId) {
             if (selectedVoiceId) {
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
+                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
                 try {
                     const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
                         method: 'PUT',
@@ -5653,8 +5689,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         window.t ? window.t('character.partialSaveVoiceFailed', { error: voiceErr.message || String(voiceErr) }) : '角色已保存，但音色更新失败: ' + (voiceErr.message || String(voiceErr)),
                         'error'
                     );
+                } finally {
+                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
                 }
             } else if (previousVoiceId) {
+                const voiceSwitchOpId = createVoiceConfigSwitchOpId(data['档案名']);
+                notifyVoiceConfigSwitching(data['档案名'], true, voiceSwitchOpId);
                 try {
                     const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
                         method: 'POST'
@@ -5672,6 +5712,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         window.t ? window.t('character.partialSaveVoiceFailed', { error: clearErr.message || String(clearErr) }) : '角色已保存，但音色更新失败: ' + (clearErr.message || String(clearErr)),
                         'error'
                     );
+                } finally {
+                    notifyVoiceConfigSwitching(data['档案名'], false, voiceSwitchOpId);
                 }
             }
         }
@@ -7397,6 +7439,8 @@ function registerVoice() {
                 // 自动更新voice_id到后端
                 const lanlanName = document.getElementById('lanlan_name').value;
                 if (lanlanName) {
+                    const voiceSwitchOpId = createVoiceConfigSwitchOpId(lanlanName);
+                    notifyVoiceConfigSwitching(lanlanName, true, voiceSwitchOpId);
                     fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
@@ -7419,6 +7463,8 @@ function registerVoice() {
                         }
                     }).catch(e => {
                         resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
+                    }).finally(() => {
+                        notifyVoiceConfigSwitching(lanlanName, false, voiceSwitchOpId);
                     });
                 }
 
