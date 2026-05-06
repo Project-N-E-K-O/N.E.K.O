@@ -52,8 +52,6 @@ class PermissionManager:
         self._users[uid_str] = normalized
         if nickname:
             self._nicknames[uid_str] = nickname
-        elif uid_str in self._nicknames:
-            del self._nicknames[uid_str]
         return True
 
     def remove_user(self, uid: str):
@@ -122,4 +120,4 @@ class PermissionManager:
             return level != "none"
         elif permission_mode == "deny_list":
             return level != "normal"
-        return True
+        return permission_mode == "open"
