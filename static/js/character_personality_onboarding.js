@@ -88,6 +88,7 @@
             this.openReason = 'onboarding';
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
+            this.lastTutorialPromptState = null;
             this.bindTutorialLifecycleEvents();
         }
 
@@ -250,6 +251,7 @@
                     continue;
                 }
                 const status = this.normalizeTutorialPromptStatus(tutorialPromptState);
+                this.lastTutorialPromptState = tutorialPromptState;
                 if (this.isTutorialPromptSettled(tutorialPromptState)) {
                     return;
                 }
@@ -375,6 +377,10 @@
                     return;
                 }
                 if (!this.overlay || this.overlay.hidden) {
+                    return;
+                }
+                const source = String(event.detail.source || '').trim().toLowerCase();
+                if (source === 'auto' && this.isTutorialPromptSettled(this.lastTutorialPromptState)) {
                     return;
                 }
                 this.pendingResumeAfterTutorial = true;

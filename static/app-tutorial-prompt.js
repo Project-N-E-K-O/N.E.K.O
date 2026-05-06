@@ -97,14 +97,61 @@
         return 'heartbeat-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
     }
 
-    function getHomeTutorialStorageKey() {
+    function getHomeTutorialStorageKeys() {
+        const keys = [];
+        const manager = window.universalTutorialManager || null;
+        const addKey = function (value) {
+            const key = typeof value === 'string' ? value.trim() : '';
+            if (key && !keys.includes(key)) {
+                keys.push(key);
+            }
+        };
+
+        if (manager && typeof manager.getStorageKeysForPage === 'function') {
+            try {
+                const managerKeys = manager.getStorageKeysForPage('home');
+                if (Array.isArray(managerKeys)) {
+                    managerKeys.forEach(addKey);
+                }
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to read home tutorial storage keys:', error);
+            }
+        }
+        if (manager && typeof manager.getStorageKey === 'function' && manager.currentPage === 'home') {
+            try {
+                addKey(manager.getStorageKey());
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to read preferred home tutorial storage key:', error);
+            }
+        }
+        if (manager && typeof manager.getPreferredStoragePageKey === 'function'
+            && typeof window.getTutorialStorageKeyForPage === 'function') {
+            try {
+                addKey(window.getTutorialStorageKeyForPage(manager.getPreferredStoragePageKey('home')));
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to read versioned home tutorial storage key:', error);
+            }
+        }
         if (typeof window.getTutorialStorageKeyForPage === 'function') {
-            return window.getTutorialStorageKeyForPage('home');
+            addKey(window.getTutorialStorageKeyForPage('home'));
         }
-        if (window.universalTutorialManager && window.universalTutorialManager.STORAGE_KEY_PREFIX) {
-            return window.universalTutorialManager.STORAGE_KEY_PREFIX + 'home';
+        if (manager && manager.STORAGE_KEY_PREFIX) {
+            addKey(manager.STORAGE_KEY_PREFIX + 'home');
         }
-        return HOME_TUTORIAL_STORAGE_KEY_FALLBACK;
+        addKey(HOME_TUTORIAL_STORAGE_KEY_FALLBACK);
+
+        return keys;
+    }
+
+    function getHomeTutorialStorageKey() {
+        const keys = getHomeTutorialStorageKeys();
+        return keys.length ? keys[0] : HOME_TUTORIAL_STORAGE_KEY_FALLBACK;
+    }
+
+    function markHomeTutorialStorageSeen() {
+        getHomeTutorialStorageKeys().forEach(function (storageKey) {
+            localStorage.setItem(storageKey, 'true');
+        });
     }
 
     function isHomeTutorialSeen() {
@@ -200,6 +247,7 @@
             state.homeTutorialCompleted = true;
             state.tutorialRunToken = null;
             state.tutorialRunning = false;
+            markHomeTutorialStorageSeen();
         }
         if ((Number.isFinite(chatTurns) && chatTurns > 0) || (Number.isFinite(voiceSessions) && voiceSessions > 0)) {
             state.meaningfulActionTaken = true;
