@@ -329,7 +329,7 @@ def refresh_global_language(language: str) -> bool:
     Returns:
         ``True`` 表示发生了真实变更；``False`` 表示已是最新或参数无效。
     """
-    global _global_language, _global_language_full, _global_language_initialized
+    global _global_language, _global_language_full, _global_region, _global_language_initialized
 
     if not language:
         return False
@@ -365,6 +365,18 @@ def refresh_global_language(language: str) -> bool:
         prev_full = _global_language_full
         _global_language = short
         _global_language_full = full
+        # _global_region 必须和 _global_language_initialized 同时建立：``get_global_region``
+        # 看到 region 为 None 才会再调 ``initialize_global_language``，但后者一旦看到
+        # initialized=True 就 early-return，会把 region 永久卡在 None → 'non-china'
+        # fallback。startup 路径正常会先初始化 region；但 startup 异常 / 测试 / 子进程
+        # 等场景下若 refresh 先于 init 跑到这里，必须自补 region 来维持不变量。
+        if _global_region is None:
+            try:
+                _global_region = 'china' if _is_china_region() else 'non-china'
+                logger.info(f"系统区域判断（refresh 路径补齐）: {_global_region}")
+            except Exception:
+                _global_region = 'non-china'
+                logger.debug("refresh_global_language 补齐 region 失败，回落 non-china", exc_info=True)
         _global_language_initialized = True
         logger.info(
             f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
