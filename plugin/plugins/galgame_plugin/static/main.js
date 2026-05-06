@@ -658,6 +658,7 @@ const ACTION_LABELS_ZH = {
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
   install_rapidocr: '一键安装 RapidOCR',
+  install_tesseract: '一键安装 Tesseract',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
 };
@@ -1566,6 +1567,7 @@ function buildFirstRunSteps(status = {}) {
   const rapidocrSupported = rapidocr.install_supported !== false;
   const tesseractSupported = tesseract.install_supported !== false;
   const dxcamSupported = dxcam.install_supported !== false;
+  const ocrInstallAction = rapidocrSupported ? 'install_rapidocr' : 'install_tesseract';
   const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported));
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
@@ -1598,8 +1600,11 @@ function buildFirstRunSteps(status = {}) {
     steps.push({
       key: 'install_ocr',
       done: false,
+      installAction: ocrInstallAction,
       title: uiT('ui.first_run.install_ocr.title', '安装 OCR 依赖'),
-      body: uiT('ui.first_run.install_ocr.pending', '前往“依赖安装”面板一键安装 RapidOCR。'),
+      body: ocrInstallAction === 'install_tesseract'
+        ? uiT('ui.first_run.install_ocr.pending_tesseract', '前往“依赖安装”面板一键安装 Tesseract。')
+        : uiT('ui.first_run.install_ocr.pending', '前往“依赖安装”面板一键安装 RapidOCR。'),
     });
   }
   if (!captureReady) {
@@ -1667,7 +1672,11 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
   const actions = [];
 
   if (firstIncomplete.key === 'install_ocr') {
-    actions.push(`<button class="primary" data-first-run-action="install_rapidocr">${escapeHtml(uiT('ui.first_run.action.install_rapidocr', primaryActionLabel('install_rapidocr')))}</button>`);
+    const installAction = firstIncomplete.installAction || 'install_rapidocr';
+    const installActionKey = installAction === 'install_tesseract'
+      ? 'ui.first_run.action.install_tesseract'
+      : 'ui.first_run.action.install_rapidocr';
+    actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, primaryActionLabel(installAction)))}</button>`);
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
     actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', '一键安装 DXcam'))}</button>`);
@@ -6715,6 +6724,9 @@ async function handleDiagnosisAction(action) {
       break;
     case 'install_rapidocr':
       await installRapidOcr(false);
+      break;
+    case 'install_tesseract':
+      await installTesseract(false);
       break;
     case 'install_dxcam':
       await revealDxcamInstallAndTrigger();

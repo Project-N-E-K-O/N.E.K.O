@@ -566,14 +566,26 @@ async def save_tutorial_progress(
     body: TutorialProgressPayload,
 ) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+    payload = (
+        body.model_dump(exclude_unset=True)
+        if hasattr(body, "model_dump")
+        else body.dict(exclude_unset=True)
+    )
     current = _normalize_tutorial_progress(_read_tutorial_progress())
-    current.update(_normalize_tutorial_progress(payload))
+    normalized_payload = _normalize_tutorial_progress(payload)
+    current.update(
+        {
+            key: normalized_payload[key]
+            for key in payload
+            if key in _TUTORIAL_DEFAULTS
+        }
+    )
     try:
         _write_tutorial_progress(current)
-    except Exception as exc:
+    except Exception:
+        logger.warning("tutorial progress save failed", exc_info=True)
         return JSONResponse(
-            {"ok": False, "error": str(exc), "progress": current},
+            {"ok": False, "error": "Internal server error", "progress": current},
             status_code=500,
         )
     return JSONResponse({"ok": True, "progress": current})
