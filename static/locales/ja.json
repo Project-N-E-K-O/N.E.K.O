@@ -1966,6 +1966,7 @@
         "switchedCatgirl": "{{name}}に切り替えました",
         "switchCatgirlFailed": "{{name}}への切り替えに失敗しました",
         "switchCatgirlError": "切り替えに失敗しました: {{error}}",
+        "switchCatgirlWatchdog": "前回の切り替えが固まっているようです。もう一度切り替えをお試しください",
         "started": "{{name}}が起動しました",
         "voiceUpdated": "{{name}}の声が更新されました",
         "audioWorkletFailed": "AudioWorkletの読み込みに失敗しました",

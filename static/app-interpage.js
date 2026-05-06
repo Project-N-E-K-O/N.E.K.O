@@ -1469,6 +1469,20 @@
                     case 'reload_model':
                         await handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
                         break;
+                    case 'catgirl_switched': {
+                        // 兜底：character_card_manager 切角色后用 BroadcastChannel 通知主窗口热切换。
+                        // 后端的 catgirl_switched WebSocket 只送到有活跃 session 的连接，
+                        // 主窗口未启动 session 时会沉默；这里独立兜底。handleCatgirlSwitch 自带去重。
+                        const newCatgirl = event.data.new_catgirl || '';
+                        const oldCatgirl = event.data.old_catgirl || '';
+                        if (!newCatgirl) break;
+                        const currentName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        if (newCatgirl === currentName) break;
+                        if (typeof window.handleCatgirlSwitch === 'function') {
+                            window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
+                        }
+                        break;
+                    }
                     case 'hide_main_ui':
                         handleHideMainUI();
                         break;

@@ -4090,6 +4090,7 @@ function openCatgirlPanel(card, originEl) {
     const wrapper = document.createElement('div');
     wrapper.className = 'catgirl-panel-wrapper card-only';
     wrapper.id = 'catgirl-panel-wrapper';
+    if (name) wrapper.dataset.catgirlName = name;
 
     // 设置动画起点
     if (originEl) {
@@ -5538,6 +5539,12 @@ async function rebuildSavedCatgirlPanel(form, catgirlName) {
         const freshData = await loadCharacterData();
         const rawData = freshData?.['猫娘']?.[catgirlName] || {};
         const wrapper = container.closest('.catgirl-panel-wrapper');
+        // 新建→已创建 原地切换：跟 openCatgirlPanel 那条路径对偶，给 wrapper 也补上
+        // dataset.catgirlName，否则 _refreshOpenCatgirlPanelActions 找不到面板对应的角色名、
+        // 切角色后这个 panel 的按钮态不会被刷新。catgirlName 在函数顶部已 guard 过。
+        if (wrapper) {
+            wrapper.dataset.catgirlName = catgirlName;
+        }
         const leftSection = wrapper?.querySelector('.catgirl-panel-left');
         const metaBlock = leftSection?.querySelector('#card-meta-block');
         if (metaBlock && typeof renderCardMetaBlock === 'function') {
@@ -5776,12 +5783,62 @@ async function ensureCanModifyCardsOutsideVoiceMode() {
     }
 }
 
+// 跨窗口通知主窗口（index.html / chat.html）热切换角色
+// 后端的 WebSocket 通知只会送到已有活跃 session 的连接；用户从角色管理页直接切角色时，
+// 主窗口未必握着 session（比如还没点过开始），WebSocket 路径会沉默。BroadcastChannel
+// 兜底覆盖这一情况，且对端 handleCatgirlSwitch 自带 isSwitchingCatgirl/同名跳过的去重。
+let _nekoPageChannelForCharaSwitch = null;
+function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
+    if (!newCatgirl || newCatgirl === oldCatgirl) return;
+    if (typeof BroadcastChannel === 'undefined') return;
+    try {
+        if (!_nekoPageChannelForCharaSwitch) {
+            _nekoPageChannelForCharaSwitch = new BroadcastChannel('neko_page_channel');
+        }
+        _nekoPageChannelForCharaSwitch.postMessage({
+            action: 'catgirl_switched',
+            new_catgirl: newCatgirl,
+            old_catgirl: oldCatgirl,
+            timestamp: Date.now()
+        });
+    } catch (e) {
+        console.warn('[CharaCardManager] catgirl_switched 广播失败:', e);
+    }
+}
+
+// 角色卡详情面板（modal）目前只读取 _workshopCurrentCatgirl 的初始值来决定按钮态，
+// 切角色后必须主动同步开着的面板，否则用户在小窗里点完按钮会觉得"毫无反应"。
+//
+// 单一数据源：依赖 wrapper.dataset.catgirlName 判定面板对应角色。任何创建/重建面板的
+// 路径都必须设这个 dataset（目前是 openCatgirlPanel 和 rebuildSavedCatgirlPanel）；
+// 不从表单 [name="档案名"] 兜底读，避免拿到用户编辑中的脏值。
+function _refreshOpenCatgirlPanelActions() {
+    const wrapper = document.getElementById('catgirl-panel-wrapper');
+    if (!wrapper) return;
+    const panelName = wrapper.dataset.catgirlName || '';
+    if (!panelName) return;
+    const isCurrent = (window._workshopCurrentCatgirl || '') === panelName;
+    const switchBtn = wrapper.querySelector('.card-panel-actions .switch-btn');
+    if (switchBtn) {
+        switchBtn.disabled = isCurrent;
+    }
+    const deleteBtn = wrapper.querySelector('.card-panel-actions .delete-btn');
+    if (deleteBtn) {
+        deleteBtn.classList.toggle('disabled', isCurrent);
+        deleteBtn.title = isCurrent
+            ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+            : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+    }
+}
+
 // 切换猫娘
 async function workshopSwitchCatgirl(name) {
     const guard = await ensureCanModifyCardsOutsideVoiceMode();
     if (!guard.ok) {
         return;
     }
+
+    const oldCatgirl = guard.currentCatgirl || window._workshopCurrentCatgirl || '';
 
     try {
         const response = await fetch('/api/characters/current_catgirl', {
@@ -5793,6 +5850,8 @@ async function workshopSwitchCatgirl(name) {
         if (result.success) {
             window._workshopCurrentCatgirl = name;
             renderCharaCardsView();
+            _refreshOpenCatgirlPanelActions();
+            _broadcastCatgirlSwitched(name, oldCatgirl);
             showMessage(window.t ? window.t('character.switchSuccess') : '切换成功', 'success');
         } else {
             showMessage(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'), 'error');
