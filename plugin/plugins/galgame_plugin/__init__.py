@@ -1851,7 +1851,7 @@ class GalgamePlugin(NekoPluginBase):
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
             assign("plugin_error", str(payload["plugin_error"]))
-            assign_json(
+            assign_json_if_live_unchanged(
                 "dependency_status",
                 payload.get("dependency_status", self._state.dependency_status),
             )
@@ -4014,6 +4014,11 @@ class GalgamePlugin(NekoPluginBase):
             "active_data_source": str(local.get("active_data_source") or ""),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
+            # Track dependency_status in the snapshot base so a parallel
+            # _refresh_dependency_status() call (e.g. from install_textractor)
+            # isn't clobbered by the stale poll-snapshot when the bridge tick
+            # commits its payload.
+            "dependency_status": json_copy(local.get("dependency_status") or {}),
         }
         next_poll_at = float(local["next_poll_at_monotonic"])
         max_reasonable_interval = max(

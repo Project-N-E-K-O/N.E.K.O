@@ -171,13 +171,12 @@ class TestCommitInvalidatesCache:
             "checked_at": 0.0,
             "degraded": False,
             "missing": [],
-            "inspection_failed": False,
         }
         p._commit_state(snap1)
         snap2 = p._snapshot_state()
         assert snap1 is not snap2
         assert snap2["bound_game_id"] == "game1"
-        assert snap2["dependency_status"]["inspection_failed"] is False
+        assert snap2["dependency_status"]["missing"] == []
 
 
 class TestRecordErrorInvalidatesCache:
@@ -236,7 +235,6 @@ class TestConcurrentAccess:
                             "checked_at": 0.0,
                             "degraded": False,
                             "missing": [],
-                            "inspection_failed": False,
                         },
                     }
                     p._commit_state(payload)
