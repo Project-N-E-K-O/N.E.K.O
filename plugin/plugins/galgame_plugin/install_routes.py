@@ -85,7 +85,9 @@ def _get_install_kind_spec(kind: str) -> dict[str, str]:
     normalized = str(kind or "").strip().lower()
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
-    # galgame), so only textractor + tesseract still need the install machinery.
+    # galgame). textractor + tesseract still need runtime install. rapidocr_models
+    # is a model-pack download (not a package install) for non-bundled (lang,
+    # version) combos like japan + PP-OCRv4.
     mapping = {
         "textractor": {
             "kind": "textractor",
@@ -98,6 +100,12 @@ def _get_install_kind_spec(kind: str) -> dict[str, str]:
             "entry_id": "galgame_install_tesseract",
             "label": "Tesseract",
             "queued_message": "Tesseract install queued",
+        },
+        "rapidocr_models": {
+            "kind": "rapidocr_models",
+            "entry_id": "galgame_download_rapidocr_models",
+            "label": "RapidOCR Models",
+            "queued_message": "RapidOCR model download queued",
         },
     }
     spec = mapping.get(normalized)
@@ -472,6 +480,51 @@ async def galgame_plugin_stream_tesseract_install(
     return _install_stream_response(
         plugin_id=plugin_id,
         kind="tesseract",
+        task_id=task_id,
+        request=request,
+    )
+
+
+# ====== RapidOCR model-download endpoints ======
+# Same task-state shape as the install endpoints (re-using install_tasks +
+# galgame_download_rapidocr_models SDK action). The only routing difference is
+# the URL prefix `/rapidocr-models/` vs the internal kind id `rapidocr_models`
+# (URL uses kebab-case, persisted task kind uses snake_case).
+
+
+@router.post("/plugin/{plugin_id}/ui-api/rapidocr-models/download")
+async def galgame_plugin_start_rapidocr_models_download(
+    plugin_id: str,
+    payload: InstallStartPayload,
+    request: Request,
+):
+    return await _start_install_task(
+        plugin_id=plugin_id,
+        kind="rapidocr_models",
+        payload=payload,
+        request=request,
+    )
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/latest")
+async def galgame_plugin_latest_rapidocr_models_download(plugin_id: str):
+    return _latest_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models")
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}")
+async def galgame_plugin_get_rapidocr_models_download(plugin_id: str, task_id: str):
+    return _get_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models", task_id=task_id)
+
+
+@router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}/stream")
+async def galgame_plugin_stream_rapidocr_models_download(
+    plugin_id: str,
+    task_id: str,
+    request: Request,
+):
+    return _install_stream_response(
+        plugin_id=plugin_id,
+        kind="rapidocr_models",
         task_id=task_id,
         request=request,
     )

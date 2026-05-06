@@ -3770,9 +3770,22 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         "load_rapidocr_runtime",
         lambda **_kwargs: (object(), {"detected_path": str(package_dir)}),
     )
+    # Force the bundled-spec branch off so the legacy plugin-isolated path
+    # is exercised. In a uv-synced dev env rapidocr_onnxruntime is bundled
+    # and would shadow the legacy fixture; we want to test the fallback
+    # specifically. Also pin lang to "ch" so the (now-japan) default
+    # doesn't flip the result to `missing_model_files` for an unrelated
+    # reason — this test is about legacy path detection, not models.
+    monkeypatch.setattr(
+        galgame_rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: None,
+    )
 
     status = galgame_rapidocr_support.inspect_rapidocr_installation(
         install_target_dir_raw="",
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
         platform_fn=lambda: True,
     )
 

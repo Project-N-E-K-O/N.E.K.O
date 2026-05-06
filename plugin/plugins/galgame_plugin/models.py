@@ -586,9 +586,14 @@ class GalgameRapidOcrConfig:
     # deleted runtime install machinery.
     rapidocr_install_target_dir: str = ""
     rapidocr_engine_type: str = "onnxruntime"
-    rapidocr_lang_type: str = "ch"
+    # Default lang `japan` and version `PP-OCRv4` reflect galgame_plugin's
+    # primary use case (Japanese visual novels) and bundled-no-download
+    # constraint (v4 + japan rec is downloadable; v5 + japan has no upstream
+    # rec model). Existing configs that explicitly set other values are
+    # preserved by the loader; only unset values fall through to defaults.
+    rapidocr_lang_type: str = "japan"
     rapidocr_model_type: str = "mobile"
-    rapidocr_ocr_version: str = "PP-OCRv5"
+    rapidocr_ocr_version: str = "PP-OCRv4"
 
 
 @dataclass(slots=True, init=False)

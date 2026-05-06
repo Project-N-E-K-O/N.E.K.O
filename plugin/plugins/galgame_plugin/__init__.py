@@ -763,8 +763,12 @@ class GalgamePlugin(NekoPluginBase):
         self._bridge_poll_task_lock = threading.RLock()
         self._textractor_install_lock = threading.Lock()
         self._tesseract_install_lock = threading.Lock()
-        # rapidocr/dxcam install locks removed: both bundled into main program
-        # (see pyproject.toml [dependency-groups] galgame).
+        # rapidocr/dxcam *install* locks removed: both bundled into main program.
+        # rapidocr_models download lock is separate — it's not installing the
+        # package, it's pulling the user-selected language pack into the
+        # plugin model cache so RapidOCR can serve a non-bundled (lang, version)
+        # combo (e.g. japan + PP-OCRv4).
+        self._rapidocr_models_lock = threading.Lock()
         self._cfg = None
         self._state = build_initial_state(
             mode=MODE_COMPANION,
@@ -4451,6 +4455,59 @@ class GalgamePlugin(NekoPluginBase):
     # both packages are now bundled into the main program (see pyproject.toml
     # [dependency-groups] galgame). Run `uv sync --group galgame` for source
     # installs; packaged builds always include them.
+
+    @plugin_entry(
+        id="galgame_download_rapidocr_models",
+        name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean", "default": False},
+            },
+        },
+        timeout=600.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_download_rapidocr_models(self, force: bool = False, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        if not self._rapidocr_models_lock.acquire(blocking=False):
+            return Err(SdkError(self._install_in_progress_message("RapidOCR Models")))
+        current_run_id = self._resolve_current_run_id()
+        progress_callback = self._resolve_install_progress_callback(current_run_id)
+        try:
+            from .rapidocr_support import download_rapidocr_models
+
+            download_result = await download_rapidocr_models(
+                logger=self.logger,
+                install_target_dir_raw=self._cfg.ocr_reader_install_target_dir,
+                ocr_version=self._cfg.rapidocr_ocr_version,
+                lang_type=self._cfg.rapidocr_lang_type,
+                timeout_seconds=float(self._cfg.ocr_reader_install_timeout_seconds or 180.0),
+                force=bool(force),
+                task_id=current_run_id or None,
+                progress_callback=progress_callback,
+            )
+            clear_install_inspection_cache()
+            await self._poll_bridge(force=True)
+            downloaded = download_result.get("downloaded") or []
+            summary = (
+                f"RapidOCR models ready ({len(downloaded)} file(s) downloaded)"
+                if downloaded
+                else "RapidOCR models already present"
+            )
+            return Ok(
+                {
+                    "summary": summary,
+                    "download_result": download_result,
+                    "status": await self._build_status_payload_async(),
+                }
+            )
+        except Exception as exc:
+            return Err(SdkError(self._format_install_entry_error("rapidocr_models", "RapidOCR Models", exc)))
+        finally:
+            self._rapidocr_models_lock.release()
 
     @plugin_entry(
         id="galgame_get_snapshot",

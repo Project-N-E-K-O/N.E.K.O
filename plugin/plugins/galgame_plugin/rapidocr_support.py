@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
 import inspect
@@ -9,7 +10,9 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Awaitable, Callable, Iterator
+
+import httpx
 
 from utils.config_manager import get_config_manager
 
@@ -18,9 +21,84 @@ from .memory_reader import is_windows_platform
 
 RAPIDOCR_PACKAGE_NAME = "rapidocr_onnxruntime"
 DEFAULT_RAPIDOCR_ENGINE_TYPE = "onnxruntime"
-DEFAULT_RAPIDOCR_LANG_TYPE = "ch"
+# galgame_plugin's primary use case is Japanese visual novels — `japan` rec
+# is the right product default. The bundled wheel ships only ch+v4 models, so
+# the first run with `japan` will land on the `missing_model_files` flow and
+# offer the user an explicit, opt-in download (see download_rapidocr_models).
+DEFAULT_RAPIDOCR_LANG_TYPE = "japan"
 DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
-DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
+# PP-OCRv4 keeps the bundled-no-download path working for ch+v4. v5 has
+# better quality but requires a download for everything (no bundled v5).
+DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv4"
+
+# Models hosted on RapidAI's ModelScope mirror. URL pattern stable as of
+# RapidOCR v3.8.0 (the registry source). Each entry's `name` is the on-disk
+# filename (also forms the URL leaf) and is what we pass to RapidOCR via
+# det_model_path / rec_model_path / cls_model_path. SHA256 is from the
+# upstream default_models.yaml — used for integrity checks after download.
+_RAPIDOCR_MODELSCOPE_BASE = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx"
+)
+
+
+def _ms_url(version: str, kind: str, name: str) -> str:
+    return f"{_RAPIDOCR_MODELSCOPE_BASE}/{version}/{kind}/{name}"
+
+
+# (ocr_version, lang_type) -> {det/rec/cls: {name, url, sha256, size}}.
+# `det` is largely language-agnostic (we use ch det for all langs); `cls` is
+# orientation-only. Only `rec` truly varies by lang. PP-OCRv5 has no japan
+# rec model upstream, so we fall back to the v4 japan rec — det/cls stay v5.
+_RAPIDOCR_MODEL_REGISTRY: dict[tuple[str, str], dict[str, dict[str, Any]]] = {
+    ("PP-OCRv4", "ch"): {
+        "det": {"name": "ch_PP-OCRv4_det_mobile.onnx", "url": _ms_url("PP-OCRv4", "det", "ch_PP-OCRv4_det_mobile.onnx"), "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9", "size": 4_700_000},
+        "rec": {"name": "ch_PP-OCRv4_rec_mobile.onnx", "url": _ms_url("PP-OCRv4", "rec", "ch_PP-OCRv4_rec_mobile.onnx"), "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b", "size": 10_700_000},
+        "cls": {"name": "ch_ppocr_mobile_v2.0_cls_mobile.onnx", "url": _ms_url("PP-OCRv4", "cls", "ch_ppocr_mobile_v2.0_cls_mobile.onnx"), "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c", "size": 580_000},
+    },
+    ("PP-OCRv4", "japan"): {
+        "det": {"name": "ch_PP-OCRv4_det_mobile.onnx", "url": _ms_url("PP-OCRv4", "det", "ch_PP-OCRv4_det_mobile.onnx"), "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9", "size": 4_700_000},
+        "rec": {"name": "japan_PP-OCRv4_rec_mobile.onnx", "url": _ms_url("PP-OCRv4", "rec", "japan_PP-OCRv4_rec_mobile.onnx"), "sha256": "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a", "size": 9_753_335},
+        "cls": {"name": "ch_ppocr_mobile_v2.0_cls_mobile.onnx", "url": _ms_url("PP-OCRv4", "cls", "ch_ppocr_mobile_v2.0_cls_mobile.onnx"), "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c", "size": 580_000},
+    },
+    ("PP-OCRv4", "korean"): {
+        "det": {"name": "ch_PP-OCRv4_det_mobile.onnx", "url": _ms_url("PP-OCRv4", "det", "ch_PP-OCRv4_det_mobile.onnx"), "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9", "size": 4_700_000},
+        "rec": {"name": "korean_PP-OCRv4_rec_mobile.onnx", "url": _ms_url("PP-OCRv4", "rec", "korean_PP-OCRv4_rec_mobile.onnx"), "sha256": "ab151ba9065eccd98f884cf4d927db091be86137276392072edd4f9d43ad7426", "size": 9_500_000},
+        "cls": {"name": "ch_ppocr_mobile_v2.0_cls_mobile.onnx", "url": _ms_url("PP-OCRv4", "cls", "ch_ppocr_mobile_v2.0_cls_mobile.onnx"), "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c", "size": 580_000},
+    },
+    ("PP-OCRv4", "en"): {
+        "det": {"name": "ch_PP-OCRv4_det_mobile.onnx", "url": _ms_url("PP-OCRv4", "det", "ch_PP-OCRv4_det_mobile.onnx"), "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9", "size": 4_700_000},
+        "rec": {"name": "en_PP-OCRv4_rec_mobile.onnx", "url": _ms_url("PP-OCRv4", "rec", "en_PP-OCRv4_rec_mobile.onnx"), "sha256": "e8770c967605983d1570cdf5352041dfb68fa0c21664f49f47b155abd3e0e318", "size": 9_500_000},
+        "cls": {"name": "ch_ppocr_mobile_v2.0_cls_mobile.onnx", "url": _ms_url("PP-OCRv4", "cls", "ch_ppocr_mobile_v2.0_cls_mobile.onnx"), "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c", "size": 580_000},
+    },
+    ("PP-OCRv5", "ch"): {
+        "det": {"name": "ch_PP-OCRv5_det_mobile.onnx", "url": _ms_url("PP-OCRv5", "det", "ch_PP-OCRv5_det_mobile.onnx"), "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", "size": 5_000_000},
+        "rec": {"name": "ch_PP-OCRv5_rec_mobile.onnx", "url": _ms_url("PP-OCRv5", "rec", "ch_PP-OCRv5_rec_mobile.onnx"), "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5", "size": 11_500_000},
+        "cls": {"name": "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx", "url": _ms_url("PP-OCRv5", "cls", "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"), "sha256": "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7", "size": 600_000},
+    },
+    # PP-OCRv5 has no `japan` rec model upstream — fall back to v4 japan rec.
+    # Det + cls stay on v5; mixing release lines is supported by RapidOCR's
+    # per-stage model_path config.
+    ("PP-OCRv5", "japan"): {
+        "det": {"name": "ch_PP-OCRv5_det_mobile.onnx", "url": _ms_url("PP-OCRv5", "det", "ch_PP-OCRv5_det_mobile.onnx"), "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", "size": 5_000_000},
+        "rec": {"name": "japan_PP-OCRv4_rec_mobile.onnx", "url": _ms_url("PP-OCRv4", "rec", "japan_PP-OCRv4_rec_mobile.onnx"), "sha256": "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a", "size": 9_753_335},
+        "cls": {"name": "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx", "url": _ms_url("PP-OCRv5", "cls", "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"), "sha256": "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7", "size": 600_000},
+    },
+    ("PP-OCRv5", "korean"): {
+        "det": {"name": "ch_PP-OCRv5_det_mobile.onnx", "url": _ms_url("PP-OCRv5", "det", "ch_PP-OCRv5_det_mobile.onnx"), "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", "size": 5_000_000},
+        "rec": {"name": "korean_PP-OCRv5_rec_mobile.onnx", "url": _ms_url("PP-OCRv5", "rec", "korean_PP-OCRv5_rec_mobile.onnx"), "sha256": "cd6e2ea50f6943ca7271eb8c56a877a5a90720b7047fe9c41a2e541a25773c9b", "size": 10_000_000},
+        "cls": {"name": "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx", "url": _ms_url("PP-OCRv5", "cls", "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"), "sha256": "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7", "size": 600_000},
+    },
+    ("PP-OCRv5", "en"): {
+        "det": {"name": "ch_PP-OCRv5_det_mobile.onnx", "url": _ms_url("PP-OCRv5", "det", "ch_PP-OCRv5_det_mobile.onnx"), "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", "size": 5_000_000},
+        "rec": {"name": "en_PP-OCRv5_rec_mobile.onnx", "url": _ms_url("PP-OCRv5", "rec", "en_PP-OCRv5_rec_mobile.onnx"), "sha256": "c3461add59bb4323ecba96a492ab75e06dda42467c9e3d0c18db5d1d21924be8", "size": 10_000_000},
+        "cls": {"name": "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx", "url": _ms_url("PP-OCRv5", "cls", "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"), "sha256": "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7", "size": 600_000},
+    },
+}
+
+# Bundled ch+PP-OCRv4 models that ship inside the rapidocr_onnxruntime wheel.
+# When the user's selection matches this combo, no download is needed and we
+# pass no model paths — the runtime falls through to its packaged config.
+_BUNDLED_KEY: tuple[str, str] = ("PP-OCRv4", "ch")
 _INSTALL_STATE_NAME = "install_state.json"
 # Leave one core free for the OS / interactive use; floor at 2 so 1-2 core hosts still parallelise.
 _RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, (os.cpu_count() or 2) - 1)
@@ -169,6 +247,65 @@ def _rapidocr_package_dir(raw_target_dir: str) -> Path:
     return site_packages_dir / RAPIDOCR_PACKAGE_NAME if site_packages_dir else Path()
 
 
+def _normalize_model_key(ocr_version: str, lang_type: str) -> tuple[str, str]:
+    return (
+        str(ocr_version or DEFAULT_RAPIDOCR_OCR_VERSION).strip() or DEFAULT_RAPIDOCR_OCR_VERSION,
+        str(lang_type or DEFAULT_RAPIDOCR_LANG_TYPE).strip() or DEFAULT_RAPIDOCR_LANG_TYPE,
+    )
+
+
+def _registry_lookup(ocr_version: str, lang_type: str) -> dict[str, dict[str, Any]] | None:
+    """Return the (det, rec, cls) entries for a given selection, or None if not catalogued."""
+    return _RAPIDOCR_MODEL_REGISTRY.get(_normalize_model_key(ocr_version, lang_type))
+
+
+def required_rapidocr_model_files(
+    *,
+    install_target_dir_raw: str,
+    ocr_version: str,
+    lang_type: str,
+) -> list[dict[str, Any]]:
+    """Files that must exist on disk for a given selection. Empty for the bundled combo."""
+    key = _normalize_model_key(ocr_version, lang_type)
+    if key == _BUNDLED_KEY:
+        return []
+    registry = _RAPIDOCR_MODEL_REGISTRY.get(key)
+    if not registry:
+        return []
+    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    files: list[dict[str, Any]] = []
+    for kind in ("det", "rec", "cls"):
+        spec = registry.get(kind)
+        if not spec:
+            continue
+        files.append({
+            "kind": kind,
+            "name": str(spec["name"]),
+            "url": str(spec["url"]),
+            "sha256": str(spec.get("sha256") or ""),
+            "size": int(spec.get("size") or 0),
+            "target_path": str(cache_dir / spec["name"]) if cache_dir else "",
+        })
+    return files
+
+
+def missing_rapidocr_model_files(
+    *,
+    install_target_dir_raw: str,
+    ocr_version: str,
+    lang_type: str,
+) -> list[dict[str, Any]]:
+    """Required files that are NOT yet on disk."""
+    return [
+        spec for spec in required_rapidocr_model_files(
+            install_target_dir_raw=install_target_dir_raw,
+            ocr_version=ocr_version,
+            lang_type=lang_type,
+        )
+        if not (spec["target_path"] and Path(spec["target_path"]).is_file())
+    ]
+
+
 def _build_runtime_constructor_kwargs(
     runtime_class: type[Any],
     *,
@@ -178,11 +315,47 @@ def _build_runtime_constructor_kwargs(
     ocr_version: str,
     model_cache_dir: Path,
 ) -> dict[str, Any]:
+    """Build kwargs passed to RapidOCR(...).
+
+    Bug history: the previous implementation only kept keys whose name
+    appeared in `inspect.signature(RapidOCR).parameters`. RapidOCR's signature
+    is `(config_path: Optional[str] = None, **kwargs)`, so `'engine_type' in
+    parameters` etc. were always False — every direct_value was silently
+    dropped, and `lang_type` / `ocr_version` never reached the runtime.
+    Real routing happens inside `UpdateParameters.__call__` (rapidocr's
+    `parse_parameters.py`), which dispatches kwargs by *name prefix*
+    (`det_*` / `cls_*` / `rec_*` / global). When a class accepts **kwargs,
+    we passthrough the model paths directly so RapidOCR can route them.
+    """
     try:
         parameters = inspect.signature(runtime_class).parameters
     except (TypeError, ValueError):
         return {}
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+
     kwargs: dict[str, Any] = {}
+
+    # Passthrough mode: when the runtime accepts **kwargs, route per-stage
+    # model paths so RapidOCR's UpdateParameters picks them up. Only emit a
+    # model_path key when the file actually exists on disk — passing a
+    # non-existent path makes RapidOCR fall back to its bundled config in a
+    # confusing way (the user gets no error but the wrong model).
+    if has_var_keyword:
+        registry = _registry_lookup(ocr_version, lang_type)
+        if registry and _normalize_model_key(ocr_version, lang_type) != _BUNDLED_KEY:
+            for kind, kwarg_name in (("det", "det_model_path"), ("rec", "rec_model_path"), ("cls", "cls_model_path")):
+                spec = registry.get(kind)
+                if not spec:
+                    continue
+                target = model_cache_dir / spec["name"] if model_cache_dir else None
+                if target and target.is_file():
+                    kwargs[kwarg_name] = str(target)
+
+    # Legacy / explicit-arg mode: older RapidOCR builds may take some of
+    # these as named parameters. inspect-by-name only catches them if they
+    # actually exist in the signature (the original intent).
     direct_values = {
         "engine_type": engine_type,
         "lang_type": lang_type,
@@ -356,6 +529,17 @@ def inspect_rapidocr_installation(
         spec_origin = getattr(bundled_spec, "origin", None) or ""
         if spec_origin:
             detected_path = str(Path(spec_origin).resolve().parent)
+        # Non-bundled (ocr_version, lang_type) combos require additional
+        # ONNX files that the wheel doesn't ship. Surface that as its own
+        # state so the UI can offer an explicit, opt-in download instead
+        # of "installed but silently broken at first capture".
+        missing = missing_rapidocr_model_files(
+            install_target_dir_raw=install_target_dir_raw,
+            ocr_version=ocr_version,
+            lang_type=lang_type,
+        )
+        if missing:
+            detail = "missing_model_files"
     elif not package_dir.exists():
         detail = "missing"
     else:
@@ -378,6 +562,12 @@ def inspect_rapidocr_installation(
             runtime_error = str(exc)
 
     installed = detail == "installed"
+    missing_files = missing_rapidocr_model_files(
+        install_target_dir_raw=install_target_dir_raw,
+        ocr_version=ocr_version,
+        lang_type=lang_type,
+    )
+    total_size_estimate = sum(int(f.get("size") or 0) for f in missing_files)
     return {
         "install_supported": supported,
         "installed": installed,
@@ -387,6 +577,10 @@ def inspect_rapidocr_installation(
         # no in-app install action exists anymore (HTTP routes removed in this
         # refactor), so `can_install` stays False to keep the UI button hidden.
         "can_install": False,
+        # `can_download_models` is True only when the package is present but
+        # the user-selected language pack isn't on disk yet — that's the only
+        # condition under which the download UX is meaningful.
+        "can_download_models": detail == "missing_model_files",
         "detected_path": detected_path,
         "target_dir": str(target_dir) if target_dir else "",
         "runtime_dir": str(runtime_dir) if runtime_dir else "",
@@ -399,4 +593,245 @@ def inspect_rapidocr_installation(
         "ocr_version": str(install_state.get("ocr_version") or ocr_version),
         "detail": detail,
         "runtime_error": runtime_error,
+        "missing_model_files": missing_files,
+        "missing_model_total_size": total_size_estimate,
+        "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
     }
+
+
+# ====== Model download ======
+
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+
+async def _emit_model_progress(
+    progress_callback: ProgressCallback | None,
+    payload: dict[str, Any],
+) -> None:
+    if progress_callback is None:
+        return
+    maybe = progress_callback(dict(payload))
+    if inspect.isawaitable(maybe):
+        await maybe
+
+
+def _verify_model_sha256(path: Path, expected_sha256: str) -> None:
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        return
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    actual = hasher.hexdigest()
+    if actual != expected:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"downloaded model checksum mismatch for {path.name}: expected {expected}, got {actual}"
+        )
+
+
+async def download_rapidocr_models(
+    *,
+    logger,
+    install_target_dir_raw: str,
+    ocr_version: str,
+    lang_type: str,
+    timeout_seconds: float = 180.0,
+    force: bool = False,
+    task_id: str | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Download all model files required for the (ocr_version, lang_type) selection.
+
+    Bundled (PP-OCRv4 + ch) is a no-op. Otherwise downloads each missing file
+    from ModelScope into model_cache_dir, verifies SHA256, emits progress.
+    Failures preserve specific error text (HTTP status, timeout, network) so
+    the UI can show actionable copy.
+    """
+    from .install_tasks import update_install_task_state  # local import: avoid cycle
+
+    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    if not cache_dir:
+        raise RuntimeError("missing RapidOCR model cache directory")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    required = required_rapidocr_model_files(
+        install_target_dir_raw=install_target_dir_raw,
+        ocr_version=ocr_version,
+        lang_type=lang_type,
+    )
+    if not required:
+        if task_id:
+            update_install_task_state(
+                task_id,
+                kind="rapidocr_models",
+                status="completed",
+                phase="completed",
+                message="No download needed for bundled ch + PP-OCRv4 models",
+                progress=1.0,
+                target_dir=str(cache_dir),
+            )
+        await _emit_model_progress(
+            progress_callback,
+            {
+                "status": "completed",
+                "phase": "completed",
+                "message": "No download needed for bundled ch + PP-OCRv4 models",
+                "progress": 1.0,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "target_dir": str(cache_dir),
+            },
+        )
+        return {"downloaded": [], "skipped_bundled": True, "target_dir": str(cache_dir)}
+
+    pending = required if force else [
+        spec for spec in required
+        if not (spec["target_path"] and Path(spec["target_path"]).is_file())
+    ]
+    total_bytes = sum(int(spec.get("size") or 0) for spec in pending)
+
+    if not pending:
+        if task_id:
+            update_install_task_state(
+                task_id,
+                kind="rapidocr_models",
+                status="completed",
+                phase="completed",
+                message="All required RapidOCR models already on disk",
+                progress=1.0,
+                target_dir=str(cache_dir),
+            )
+        return {"downloaded": [], "already_present": True, "target_dir": str(cache_dir)}
+
+    downloaded_bytes = 0
+    downloaded: list[str] = []
+    async with httpx.AsyncClient(
+        timeout=timeout_seconds,
+        trust_env=True,
+        follow_redirects=True,
+    ) as client:
+        for index, spec in enumerate(pending):
+            asset_name = spec["name"]
+            destination = Path(spec["target_path"])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            running_message = f"Downloading {asset_name} ({index + 1}/{len(pending)})"
+            if task_id:
+                update_install_task_state(
+                    task_id,
+                    kind="rapidocr_models",
+                    status="running",
+                    phase="downloading",
+                    message=running_message,
+                    progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                    target_dir=str(cache_dir),
+                    asset_name=asset_name,
+                )
+            await _emit_model_progress(
+                progress_callback,
+                {
+                    "status": "running",
+                    "phase": "downloading",
+                    "message": running_message,
+                    "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                    "downloaded_bytes": downloaded_bytes,
+                    "total_bytes": total_bytes,
+                    "target_dir": str(cache_dir),
+                    "asset_name": asset_name,
+                },
+            )
+
+            tmp_path = destination.with_suffix(destination.suffix + ".part")
+            try:
+                async with client.stream(
+                    "GET",
+                    spec["url"],
+                    headers={
+                        "Accept": "application/octet-stream",
+                        "User-Agent": "N.E.K.O/galgame_plugin",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    asset_total = int(response.headers.get("Content-Length") or spec.get("size") or 0)
+                    asset_downloaded = 0
+                    last_emit = 0.0
+                    with tmp_path.open("wb") as fh:
+                        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                            if not chunk:
+                                continue
+                            fh.write(chunk)
+                            asset_downloaded += len(chunk)
+                            now = downloaded_bytes + asset_downloaded
+                            # Throttle progress emission to ~1% steps to keep
+                            # the SSE stream cheap.
+                            if total_bytes and (now - last_emit) > max(64 * 1024, total_bytes // 100):
+                                last_emit = float(now)
+                                if task_id:
+                                    update_install_task_state(
+                                        task_id,
+                                        kind="rapidocr_models",
+                                        status="running",
+                                        phase="downloading",
+                                        message=running_message,
+                                        progress=(now / total_bytes) if total_bytes else 0.0,
+                                        downloaded_bytes=now,
+                                        total_bytes=total_bytes,
+                                        target_dir=str(cache_dir),
+                                        asset_name=asset_name,
+                                    )
+                                await _emit_model_progress(
+                                    progress_callback,
+                                    {
+                                        "status": "running",
+                                        "phase": "downloading",
+                                        "message": running_message,
+                                        "progress": (now / total_bytes) if total_bytes else 0.0,
+                                        "downloaded_bytes": now,
+                                        "total_bytes": total_bytes,
+                                        "target_dir": str(cache_dir),
+                                        "asset_name": asset_name,
+                                    },
+                                )
+                _verify_model_sha256(tmp_path, str(spec.get("sha256") or ""))
+                if destination.exists():
+                    destination.unlink()
+                tmp_path.replace(destination)
+                downloaded_bytes += int(spec.get("size") or asset_downloaded)
+                downloaded.append(asset_name)
+            except httpx.HTTPError as exc:
+                tmp_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"failed to download {asset_name}: {type(exc).__name__}: {exc}"
+                ) from exc
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
+
+    if task_id:
+        update_install_task_state(
+            task_id,
+            kind="rapidocr_models",
+            status="completed",
+            phase="completed",
+            message=f"Downloaded {len(downloaded)} model file(s)",
+            progress=1.0,
+            downloaded_bytes=total_bytes,
+            total_bytes=total_bytes,
+            target_dir=str(cache_dir),
+        )
+    await _emit_model_progress(
+        progress_callback,
+        {
+            "status": "completed",
+            "phase": "completed",
+            "message": f"Downloaded {len(downloaded)} model file(s)",
+            "progress": 1.0,
+            "downloaded_bytes": total_bytes,
+            "total_bytes": total_bytes,
+            "target_dir": str(cache_dir),
+        },
+    )
+    return {"downloaded": downloaded, "target_dir": str(cache_dir)}
