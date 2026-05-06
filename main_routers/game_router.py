@@ -67,7 +67,7 @@ from utils.game_route_state import (
     is_game_route_active,
     register_voice_transcript_handler,
 )
-from utils.language_utils import get_global_language, normalize_language_code
+from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Game")
@@ -1002,6 +1002,11 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
         return None
     raw = data.get('i18n_language') or data.get('language') or data.get('lang')
     if not raw:
+        return None
+    # 前端 / 第三方客户端可能传 ``'undefined'`` / corrupted localStorage / 任意 garbage，
+    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``，会静默把 mgr.user_language
+    # 翻成英文。回写 session 状态前先用公共白名单 helper 挡掉。
+    if not is_supported_language_code(raw):
         return None
     try:
         normalized_short = normalize_language_code(str(raw), format='short')

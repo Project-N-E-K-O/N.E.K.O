@@ -52,6 +52,40 @@ def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None
     )
 
 
+_SUPPORTED_LANGUAGE_CODES: tuple = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_SUPPORTED_STEAM_LITERALS: frozenset = frozenset({
+    'schinese', 'tchinese', 'english', 'japanese',
+    'koreana', 'korean', 'russian', 'spanish', 'latam',
+    'portuguese', 'brazilian',
+})
+
+
+def is_supported_language_code(raw: Any) -> bool:
+    """判断原始输入是否落在 ``normalize_language_code`` 真正能识别的支持集合内。
+
+    背景：``normalize_language_code`` 对未识别的输入会默认回退到 ``'en'``，让 garbage
+    （``'undefined'`` / ``'estonian'`` / 空白）被静默当作英文写入下游状态（全局缓存
+    或 ``mgr.user_language``）。所有"接受请求体语言再回写状态"的入口（例如
+    ``refresh_global_language`` / ``_absorb_request_language``）必须先用此 helper
+    把输入挡在外面，再调归一化。
+
+    支持集合 = 与 ``normalize_language_code`` 实际真识别的码 / Steam literal 一致；
+    用 ``_matches_lang_code`` 而不是 ``startswith`` 避免 ``estonian`` / ``ptsd`` /
+    ``essential`` 这种无意义前缀通过校验。
+    """
+    if not raw:
+        return False
+    try:
+        s = str(raw).strip().lower()
+    except Exception:
+        return False
+    if not s:
+        return False
+    if s in _SUPPORTED_STEAM_LITERALS:
+        return True
+    return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
+
+
 def _is_china_region() -> bool:
     """
     判断当前系统是否在中文区
@@ -334,24 +368,12 @@ def refresh_global_language(language: str) -> bool:
     if not language:
         return False
 
-    # normalize_language_code 对未识别的输入会默认回退到 'en'，让 garbage / 空白
-    # 字符串能静默把缓存写成英文。该函数是公共 utility，未来可能被未校验的来源
-    # 调用，先把输入收紧到已知支持集合，不在白名单的直接 no-op。
-    # 用 ``_matches_lang_code`` 而不是裸 ``startswith``——后者会让 ``estonian`` /
-    # ``ptsd`` / ``essential`` 这类无意义前缀通过校验，再被 normalize 默认回退成
-    # ``en`` 误覆盖缓存，违背"无效就 no-op"的契约。
+    # 用 ``is_supported_language_code`` 把 garbage / ``'undefined'`` / ``'estonian'``
+    # 等未识别值挡在外面：normalize 对未识别输入会默认回退到 ``'en'``，会静默把缓存
+    # 误覆盖，违背"无效就 no-op"的契约。
+    if not is_supported_language_code(language):
+        return False
     raw = language.strip().lower()
-    if not raw:
-        return False
-    _supported_steam_literals = {
-        'schinese', 'tchinese', 'english', 'japanese',
-        'koreana', 'korean', 'russian', 'spanish', 'latam',
-        'portuguese', 'brazilian',
-    }
-    _supported_codes = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
-    if not (raw in _supported_steam_literals
-            or any(_matches_lang_code(raw, code) for code in _supported_codes)):
-        return False
 
     short = normalize_language_code(raw, format='short')
     full = normalize_language_code(raw, format='full')
