@@ -6699,9 +6699,6 @@ async function fetchTutorialProgress() {
 
 async function saveTutorialProgress(partial) {
   const save = tutorialProgressSaveQueue.catch(() => {}).then(async () => {
-    if (!latestTutorialProgress) {
-      await fetchTutorialProgress();
-    }
     const response = await fetchWithTutorialTimeout(TUTORIAL_PROGRESS_URL, {
       method: 'POST',
       credentials: 'same-origin',
