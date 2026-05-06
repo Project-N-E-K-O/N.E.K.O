@@ -2950,23 +2950,44 @@ function renderPluginUnavailable(error) {
     { label: 'status', value: pluginNotStarted },
   ]);
 
+  // Static label table — rapidocr/dxcam are no longer in `getInstallUIConfig`
+  // (no install machinery for bundled deps), so calling `getInstallConfig`
+  // for them would throw and break this whole fallback render. Touch banner
+  // text directly via static labels; only tesseract/textractor still have
+  // install button/card DOM to hide.
+  const PROMPT_LABELS = {
+    rapidocr: 'RapidOCR',
+    dxcam: 'DXcam',
+    tesseract: 'Tesseract',
+    textractor: 'Textractor',
+  };
   for (const kind of ['rapidocr', 'dxcam', 'tesseract', 'textractor']) {
-    const config = getInstallConfig(kind);
-    const { button, card } = getInstallNodes(kind);
-    const banner = document.getElementById(`${config.domPrefix}Prompt`);
-    const kicker = document.getElementById(`${config.domPrefix}PromptKicker`);
-    const title = document.getElementById(`${config.domPrefix}PromptTitle`);
-    const body = document.getElementById(`${config.domPrefix}PromptBody`);
-    const path = document.getElementById(`${config.domPrefix}PathText`);
+    const banner = document.getElementById(`${kind}Prompt`);
+    if (!banner) {
+      continue;
+    }
+    const kicker = document.getElementById(`${kind}PromptKicker`);
+    const title = document.getElementById(`${kind}PromptTitle`);
+    const body = document.getElementById(`${kind}PromptBody`);
+    const path = document.getElementById(`${kind}PathText`);
     banner.className = `install-banner install-banner-${kind} neutral`;
-    kicker.textContent = config.label;
-    title.textContent = pluginNotStarted;
-    body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
-    path.textContent = message;
-    card.hidden = true;
-    card.style.display = 'none';
-    button.hidden = true;
-    button.disabled = true;
+    if (kicker) kicker.textContent = PROMPT_LABELS[kind];
+    if (title) title.textContent = pluginNotStarted;
+    if (body) body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
+    if (path) path.textContent = message;
+    // Install button/card only exist for tesseract + textractor (bundled
+    // rapidocr/dxcam don't have install task DOM anymore).
+    if (kind === 'tesseract' || kind === 'textractor') {
+      const { button, card } = getInstallNodes(kind);
+      if (card) {
+        card.hidden = true;
+        card.style.display = 'none';
+      }
+      if (button) {
+        button.hidden = true;
+        button.disabled = true;
+      }
+    }
   }
 }
 
