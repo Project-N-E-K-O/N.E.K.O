@@ -447,7 +447,7 @@ async def get_steam_language():
     - 如果 IP 国家代码为 "CN"，则标记为中国大陆用户
     - 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
     """
-    from utils.language_utils import normalize_language_code, refresh_global_language
+    from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
 
     try:
         steamworks = get_steamworks()
@@ -478,9 +478,13 @@ async def get_steam_language():
         # 对的 schinese → zh-CN，把它顺手塞回缓存，下游 ``get_global_language()``
         # 全部受益（mini-game prompt / memory / reflection / tts ...）。函数自己有
         # "无变化即 no-op" 的守卫，前端反复刷新也不会刷屏。
-        if i18n_language:
+        # 注意校验**原始 steam_language**而非 normalize 后的 i18n_language——后者对空 /
+        # 未知输入会默认回退 'en'，那是一个合法值能通过 refresh 内部白名单，会把已经
+        # 正确的全局缓存（来自 startup init / 上一次有效刷新）误覆盖成 en；前端 i18n
+        # 兜底用 'en' 不受影响（i18n_language 仍正常返回）。
+        if is_supported_language_code(steam_language):
             try:
-                refresh_global_language(i18n_language)
+                refresh_global_language(steam_language)
             except Exception:
                 logger.debug("refresh_global_language 失败", exc_info=True)
 
