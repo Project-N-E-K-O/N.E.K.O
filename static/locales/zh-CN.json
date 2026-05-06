@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "回复过长，已自动截断到上一个完整句子",
         "STEAM_UNSUBSCRIBE_FAILED": "Steam 取消订阅失败",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "文本生成中断（{{error_type}}），已保留已输出部分",
-        "TTS_PROVIDER_INVALID": "无效的 TTS 服务商：{{provider}}",
+        "TTS_PROVIDER_INVALID": "无效的 TTS 服务商：{{provider}}。支持的服务商：{{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "存储维护中，操作已暂停，请稍后重试"
     },
     "camera": {

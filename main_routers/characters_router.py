@@ -3660,7 +3660,8 @@ async def voice_clone_direct(request: Request):
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
             'code': 'TTS_PROVIDER_INVALID',
-            'message': f'支持的服务商: {", ".join(valid_providers)}'
+            'message': f'支持的服务商: {", ".join(valid_providers)}',
+            'details': {'provider': provider, 'valid_providers': ', '.join(valid_providers)},
         }, status_code=400)
 
     # 获取 API Key

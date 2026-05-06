@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "返信が長すぎたため、直前の文末で自動的に切り詰めました",
         "STEAM_UNSUBSCRIBE_FAILED": "Steam の購読解除に失敗しました",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "テキスト生成が中断されました（{{error_type}}）。出力済み部分は保持されます",
-        "TTS_PROVIDER_INVALID": "無効な TTS プロバイダー: {{provider}}",
+        "TTS_PROVIDER_INVALID": "無効な TTS プロバイダー: {{provider}}。対応プロバイダー: {{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "ストレージメンテナンス中のため操作を一時停止しました。後ほど再試行してください"
     },
     "camera": {

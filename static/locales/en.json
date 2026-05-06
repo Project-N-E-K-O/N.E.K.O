@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "Reply too long, truncated to the last complete sentence",
         "STEAM_UNSUBSCRIBE_FAILED": "Steam unsubscribe failed",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "Text generation interrupted ({{error_type}}); partial output preserved",
-        "TTS_PROVIDER_INVALID": "Invalid TTS provider: {{provider}}",
+        "TTS_PROVIDER_INVALID": "Invalid TTS provider: {{provider}}. Supported: {{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "Storage maintenance in progress, operation paused. Please retry later."
     },
     "camera": {

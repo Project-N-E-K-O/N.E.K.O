@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "Resposta muito longa, truncada na última frase completa",
         "STEAM_UNSUBSCRIBE_FAILED": "Falha ao cancelar inscrição no Steam",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "Geração de texto interrompida ({{error_type}}); saída parcial preservada",
-        "TTS_PROVIDER_INVALID": "Provedor TTS inválido: {{provider}}",
+        "TTS_PROVIDER_INVALID": "Provedor TTS inválido: {{provider}}. Suportados: {{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "Manutenção de armazenamento em andamento, operação pausada. Tente novamente mais tarde"
     },
     "camera": {

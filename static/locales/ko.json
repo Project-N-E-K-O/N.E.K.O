@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "답변이 너무 길어 이전 완전한 문장에서 자동으로 잘렸습니다",
         "STEAM_UNSUBSCRIBE_FAILED": "Steam 구독 취소에 실패했습니다",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "텍스트 생성이 중단되었습니다 ({{error_type}}). 출력된 부분은 유지됩니다",
-        "TTS_PROVIDER_INVALID": "잘못된 TTS 제공업체: {{provider}}",
+        "TTS_PROVIDER_INVALID": "잘못된 TTS 제공업체: {{provider}}. 지원 제공업체: {{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "스토리지 유지보수 중이므로 작업이 일시 중지되었습니다. 잠시 후 다시 시도하세요"
     },
     "camera": {

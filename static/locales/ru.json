@@ -633,7 +633,7 @@
         "RESPONSE_LENGTH_TRUNCATED": "Ответ слишком длинный, автоматически обрезан до последнего полного предложения",
         "STEAM_UNSUBSCRIBE_FAILED": "Не удалось отписаться в Steam",
         "TEXT_GEN_ERROR_AFTER_PARTIAL": "Генерация текста прервана ({{error_type}}); частичный вывод сохранён",
-        "TTS_PROVIDER_INVALID": "Неверный TTS провайдер: {{provider}}",
+        "TTS_PROVIDER_INVALID": "Неверный TTS провайдер: {{provider}}. Поддерживаемые: {{valid_providers}}",
         "WRITE_FENCE_ACTIVE": "Идёт обслуживание хранилища, операция приостановлена. Повторите позже"
     },
     "camera": {
