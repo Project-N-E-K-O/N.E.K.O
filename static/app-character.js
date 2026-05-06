@@ -173,6 +173,21 @@
             // 旧实例继续作为 active mmdManager；不再 commit 时 dispose。
             _mmdDeferredDispose = null;
         };
+        // dispose 延后保留的旧 MMD 实例，commit / finally 兜底 / watchdog 错配三个路径
+        // 都用这个 helper（避免 dispose 调用 + window.mmdManager null 化 + 引用清空的
+        // 三步散在多处出现数字后缀的代码重复）。
+        const _disposeDeferredMmd = () => {
+            if (!_mmdDeferredDispose) return;
+            try {
+                if (typeof _mmdDeferredDispose.dispose === 'function') {
+                    _mmdDeferredDispose.dispose();
+                }
+            } catch (_e) { /* ignore */ }
+            if (window.mmdManager === _mmdDeferredDispose) {
+                window.mmdManager = null;
+            }
+            _mmdDeferredDispose = null;
+        };
 
         if (S.isSwitchingCatgirl) {
             console.log('[猫娘切换] 正在切换中，忽略本次请求');
@@ -306,10 +321,18 @@
                             clearInterval(_switchOldHeartbeat);
                         }
                     } catch (_e) { /* ignore socket cleanup failures */ }
-                    // MMD UI 恢复：watchdog 卡死路径下旧 mmdManager 实例还活着但 mmd-container
-                    // 已在清理阶段被隐藏 + 浮动按钮被移除——不恢复的话 lanlan_config 已回滚但
-                    // 模型区仍空白，跟 catch rollback 那条路径同样症状。
-                    _restoreDeferredMmdUi();
+                    // MMD UI 处理：只在 socket 也回滚到旧 ws 时才显示旧 MMD（与 catch 路径
+                    // line ~1716 的 `S.socket === _switchOldSocket` guard 对偶）。新 ws 已抢占
+                    // S.socket 时显示旧 MMD 会跟后端会话错配（前端 lanlan_config 回滚到旧角色
+                    // 但 server 在和新角色通过新 ws 对话），dispose 旧实例既消除错配又避免 GPU
+                    // 泄漏。watchdog 后 async chain 苏醒进 catch 是 stale 路径，finally 的
+                    // isFailedNoRecovery 因 isCurrentAttempt=false 不触发——这里不显式 dispose
+                    // 就漏（与连接态正常 commit 后的 connected-replaced 边界 case 同源）。
+                    if (_switchOldSocket && S.socket === _switchOldSocket) {
+                        _restoreDeferredMmdUi();
+                    } else {
+                        _disposeDeferredMmd();
+                    }
                 }
                 // 收掉可能还挂着的 MMD loading overlay：watchdog 触发说明某 await 永挂，
                 // catch 永远不进，里面 stale 分支的 MMDLoadingOverlay.fail 永远不执行 →
@@ -1602,19 +1625,7 @@
             switchHasCommitted = true;
             // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
-            if (_mmdDeferredDispose) {
-                try {
-                    if (typeof _mmdDeferredDispose.dispose === 'function') {
-                        _mmdDeferredDispose.dispose();
-                    }
-                } catch (disposeErr) {
-                    console.warn('[猫娘切换] 延后 dispose 旧 MMD 出错:', disposeErr);
-                }
-                if (window.mmdManager === _mmdDeferredDispose) {
-                    window.mmdManager = null;
-                }
-                _mmdDeferredDispose = null;
-            }
+            _disposeDeferredMmd();
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
@@ -1761,15 +1772,7 @@
                 const isOrphan = window.mmdManager !== _mmdDeferredDispose;
                 const isFailedNoRecovery = isCurrentAttempt && !switchHasCommitted;
                 if (isOrphan || isFailedNoRecovery) {
-                    try {
-                        if (typeof _mmdDeferredDispose.dispose === 'function') {
-                            _mmdDeferredDispose.dispose();
-                        }
-                    } catch (_e) { /* ignore */ }
-                    if (window.mmdManager === _mmdDeferredDispose) {
-                        window.mmdManager = null;
-                    }
-                    _mmdDeferredDispose = null;
+                    _disposeDeferredMmd();
                 }
             }
 
