@@ -572,6 +572,7 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
             const scrollStyle = getComputedStyle(document.getElementById('subtitle-scroll'));
             const scrollThumbStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar-thumb');
             const scrollBarStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar');
+            const scrollTrackStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar-track');
             const textStyle = getComputedStyle(document.getElementById('subtitle-text'));
             return {
                 emptySize,
@@ -591,6 +592,7 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
                 scrollBarColor: scrollStyle.scrollbarColor,
                 scrollBarGutter: scrollStyle.scrollbarGutter,
                 webkitScrollBarWidth: scrollBarStyle.width,
+                scrollTrackBackground: scrollTrackStyle.backgroundColor,
                 scrollThumbBackground: scrollThumbStyle.backgroundColor,
                 textMarginRight: textStyle.marginRight,
             };
@@ -611,8 +613,9 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
     assert result["scrollBarWidth"] == "thin"
     assert "rgba" in result["scrollBarColor"]
     assert result["scrollBarGutter"] == "stable"
-    assert result["webkitScrollBarWidth"] == "4px"
-    assert result["scrollThumbBackground"] != "rgba(0, 0, 0, 0)"
+    assert result["webkitScrollBarWidth"] == "3px"
+    assert result["scrollTrackBackground"] == "rgba(0, 0, 0, 0)"
+    assert result["scrollThumbBackground"] == "rgba(255, 255, 255, 0.42)"
     assert result["textMarginRight"] == "8px"
 
 
@@ -670,6 +673,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
             const scrollStyle = getComputedStyle(document.getElementById('subtitle-scroll'));
             const scrollThumbStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar-thumb');
             const scrollBarStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar');
+            const scrollTrackStyle = getComputedStyle(document.getElementById('subtitle-scroll'), '::-webkit-scrollbar-track');
             const textStyle = getComputedStyle(document.getElementById('subtitle-text'));
             return {
                 scrollTop: scrollRect.top,
@@ -688,6 +692,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
                 scrollBarColor: scrollStyle.scrollbarColor,
                 scrollBarGutter: scrollStyle.scrollbarGutter,
                 webkitScrollBarWidth: scrollBarStyle.width,
+                scrollTrackBackground: scrollTrackStyle.backgroundColor,
                 scrollThumbBackground: scrollThumbStyle.backgroundColor,
                 textMarginRight: textStyle.marginRight,
             };
@@ -705,8 +710,9 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
     assert result["scrollBarWidth"] == "thin"
     assert "rgba" in result["scrollBarColor"]
     assert result["scrollBarGutter"] == "stable"
-    assert result["webkitScrollBarWidth"] == "4px"
-    assert result["scrollThumbBackground"] != "rgba(0, 0, 0, 0)"
+    assert result["webkitScrollBarWidth"] == "3px"
+    assert result["scrollTrackBackground"] == "rgba(0, 0, 0, 0)"
+    assert result["scrollThumbBackground"] == "rgba(255, 255, 255, 0.42)"
     assert result["textMarginRight"] == "8px"
 
 
