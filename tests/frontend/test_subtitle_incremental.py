@@ -174,6 +174,268 @@ def test_subtitle_streaming_does_not_show_original_text_while_translation_is_pen
 
 
 @pytest.mark.frontend
+def test_subtitle_incremental_translation_does_not_merge_fast_streaming_sentences(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__translateRequests = [];
+            window.__translateResolvers = {};
+            window.fetch = async (url, options) => {
+                const requestUrl = String(url);
+                const body = options && options.body ? JSON.parse(options.body) : {};
+                if (requestUrl === '/api/config/user_language') {
+                    return new Response(JSON.stringify({ success: true, language: 'zh' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (requestUrl === '/api/translate') {
+                    window.__translateRequests.push(body);
+                    await new Promise((resolve) => {
+                        window.__translateResolvers[body.text] = resolve;
+                    });
+                    const translated = body.text === 'First sentence.'
+                        ? '第一句。'
+                        : '第二句。';
+                    return new Response(JSON.stringify({
+                        success: true,
+                        translated_text: translated,
+                        source_lang: 'en',
+                        target_lang: body.target_lang || 'zh',
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'zh');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.beginSubtitleTurn();
+            window.subtitleBridge.setSubtitleEnabled(true);
+            window.updateSubtitleStreamingText('First sentence.');
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            window.updateSubtitleStreamingText('First sentence. Second sentence.');
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            const requestsBeforeResolve = window.__translateRequests.map((request) => request.text);
+
+            window.__translateResolvers['First sentence.']();
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (document.getElementById('subtitle-text').textContent === '第一句。') {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('first translated subtitle did not render'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            const afterFirstResolve = document.getElementById('subtitle-text').textContent;
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (window.__translateRequests.map((request) => request.text).includes('Second sentence.')) {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('second sentence translation request did not start'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            const requestsAfterFirstResolve = window.__translateRequests.map((request) => request.text);
+
+            window.__translateResolvers['Second sentence.']();
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (document.getElementById('subtitle-text').textContent === '第一句。 第二句。') {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('second translated subtitle did not render'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            return {
+                requestsBeforeResolve,
+                requestsAfterFirstResolve,
+                afterFirstResolve,
+                finalText: document.getElementById('subtitle-text').textContent,
+            };
+        }
+        """
+    )
+
+    assert result["requestsBeforeResolve"] == ["First sentence."]
+    assert result["requestsAfterFirstResolve"] == ["First sentence.", "Second sentence."]
+    assert result["afterFirstResolve"] == "第一句。"
+    assert result["finalText"] == "第一句。 第二句。"
+
+
+@pytest.mark.frontend
+def test_subtitle_turn_end_keeps_pending_incremental_sentence_queue(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__translateRequests = [];
+            window.__translateResolvers = {};
+            window.fetch = async (url, options) => {
+                const requestUrl = String(url);
+                const body = options && options.body ? JSON.parse(options.body) : {};
+                if (requestUrl === '/api/config/user_language') {
+                    return new Response(JSON.stringify({ success: true, language: 'zh' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (requestUrl === '/api/translate') {
+                    window.__translateRequests.push(body);
+                    await new Promise((resolve) => {
+                        window.__translateResolvers[body.text] = resolve;
+                    });
+                    const translated = body.text === 'First sentence.'
+                        ? '第一句。'
+                        : '第二句。';
+                    return new Response(JSON.stringify({
+                        success: true,
+                        translated_text: translated,
+                        source_lang: 'en',
+                        target_lang: body.target_lang || 'zh',
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'zh');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.beginSubtitleTurn();
+            window.subtitleBridge.setSubtitleEnabled(true);
+            window.updateSubtitleStreamingText('First sentence.');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            window.updateSubtitleStreamingText('First sentence. Second sentence.');
+            window.translateAndShowSubtitle('First sentence. Second sentence.');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const requestsAfterTurnEnd = window.__translateRequests.map((request) => request.text);
+
+            window.__translateResolvers['First sentence.']();
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (document.getElementById('subtitle-text').textContent === '第一句。') {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('first translated subtitle did not render after turn end'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (window.__translateRequests.map((request) => request.text).includes('Second sentence.')) {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('second sentence translation request did not start after turn end'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            window.__translateResolvers['Second sentence.']();
+            await new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const poll = () => {
+                    if (document.getElementById('subtitle-text').textContent === '第一句。 第二句。') {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - startedAt > 1000) {
+                        reject(new Error('second translated subtitle did not render after turn end'));
+                        return;
+                    }
+                    setTimeout(poll, 20);
+                };
+                poll();
+            });
+            return {
+                requestsAfterTurnEnd,
+                finalRequests: window.__translateRequests.map((request) => request.text),
+                finalText: document.getElementById('subtitle-text').textContent,
+            };
+        }
+        """
+    )
+
+    assert result["requestsAfterTurnEnd"] == ["First sentence."]
+    assert result["finalRequests"] == ["First sentence.", "Second sentence."]
+    assert "First sentence. Second sentence." not in result["finalRequests"]
+    assert result["finalText"] == "第一句。 第二句。"
+
+
+@pytest.mark.frontend
 def test_subtitle_translation_failure_does_not_fall_back_to_original_text(
     mock_page: Page,
 ):
