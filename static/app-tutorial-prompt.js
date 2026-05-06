@@ -8,6 +8,7 @@
     const HEARTBEAT_ENDPOINT = '/api/tutorial-prompt/heartbeat';
     const TUTORIAL_PROMPT_COORDINATION_KEY = 'home-tutorial-prompt';
     const TUTORIAL_PROMPT_PRIORITY = 200;
+    const HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY = 'neko.homeTutorial.agentRestoreSnapshot.v1';
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
         'computer_use_enabled',
@@ -274,6 +275,54 @@
         }
     }
 
+    function readPersistedAgentRestoreSnapshot() {
+        try {
+            const raw = localStorage.getItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY);
+            if (!raw) {
+                return null;
+            }
+            const payload = JSON.parse(raw);
+            if (!payload || !payload.agentFlags || typeof payload.agentFlags !== 'object') {
+                return null;
+            }
+            return payload;
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to read persisted agent restore snapshot:', error);
+            return null;
+        }
+    }
+
+    function persistAgentRestoreSnapshot(flags, token, reason) {
+        if (!flags) {
+            return;
+        }
+        try {
+            localStorage.setItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY, JSON.stringify({
+                version: 1,
+                token: token,
+                createdAt: Date.now(),
+                reason: reason || 'home-tutorial-suppression',
+                agentFlags: flags,
+            }));
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to persist agent restore snapshot:', error);
+        }
+    }
+
+    function clearPersistedAgentRestoreSnapshot(token) {
+        try {
+            if (token !== undefined) {
+                const payload = readPersistedAgentRestoreSnapshot();
+                if (payload && payload.token !== token) {
+                    return;
+                }
+            }
+            localStorage.removeItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY);
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to clear persisted agent restore snapshot:', error);
+        }
+    }
+
     function buildAgentChildFlags(values) {
         const flags = {};
         HOME_TUTORIAL_AGENT_FLAG_KEYS.forEach(function (key) {
@@ -365,7 +414,9 @@
             }
             if (state.featureSuppression.snapshot) {
                 state.featureSuppression.snapshot.agentFlags = flags;
+                state.featureSuppression.snapshot.agentRestoreToken = token;
             }
+            persistAgentRestoreSnapshot(flags, token, 'tutorial-suppression');
             await postAgentCommand('set_agent_enabled', { enabled: false });
             if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
                 const restoreToken = state.featureSuppression.token;
@@ -375,6 +426,7 @@
                 try {
                     const restored = await restoreAgentSnapshot(flags, restoreToken);
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
                     }
                 } catch (restoreError) {
@@ -391,6 +443,7 @@
                 try {
                     const restored = await restoreAgentSnapshot(flags, restoreToken);
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
                     }
                 } catch (restoreError) {
@@ -462,6 +515,7 @@
             void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)
                 .then(function (restored) {
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                        clearPersistedAgentRestoreSnapshot(snapshot.agentRestoreToken);
                         syncAgentFlagsUi();
                     }
                 })
@@ -473,6 +527,30 @@
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
             detail: { active: false, reason: reason || 'tutorial-ended' },
         }));
+    }
+
+    function restoreInterruptedAgentSuppression(reason) {
+        if (state.featureSuppression.active) {
+            return;
+        }
+        const persisted = readPersistedAgentRestoreSnapshot();
+        if (!persisted) {
+            clearPersistedAgentRestoreSnapshot();
+            return;
+        }
+        const restoreToken = Date.now() + Math.random();
+        state.featureSuppression.token = restoreToken;
+        void restoreAgentSnapshot(persisted.agentFlags, restoreToken)
+            .then(function (restored) {
+                if (restored && canRestoreAgentSnapshot(restoreToken)) {
+                    clearPersistedAgentRestoreSnapshot(persisted.token);
+                    syncAgentFlagsUi();
+                    console.log('[TutorialPrompt] restored interrupted agent suppression:', reason || 'init');
+                }
+            })
+            .catch(function (error) {
+                console.warn('[TutorialPrompt] failed to restore interrupted agent suppression:', error);
+            });
     }
 
     mod.beginHomeTutorialFeatureSuppression = beginHomeTutorialFeatureSuppression;
@@ -1353,6 +1431,7 @@
         state.initialized = true;
         syncForegroundWindow();
         bindEvents();
+        restoreInterruptedAgentSuppression('init');
 
         state.heartbeatTimer = setInterval(function () {
             void sendHeartbeat();
