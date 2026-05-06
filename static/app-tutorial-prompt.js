@@ -155,7 +155,9 @@
     }
 
     function isHomeTutorialSeen() {
-        return localStorage.getItem(getHomeTutorialStorageKey()) === 'true';
+        return getHomeTutorialStorageKeys().some(function (storageKey) {
+            return localStorage.getItem(storageKey) === 'true';
+        });
     }
 
     function isHomePage() {

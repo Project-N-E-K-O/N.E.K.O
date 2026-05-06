@@ -425,6 +425,73 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
 
 
 @pytest.mark.frontend
+def test_legacy_home_tutorial_storage_key_counts_as_seen(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        setup_js="""
+            window.__heartbeatBodies = [];
+            window.localStorage.setItem('neko_tutorial_home', 'true');
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                getStorageKeysForPage: function(page) {
+                    return page === 'home'
+                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
+                        : [];
+                },
+                getStorageKey: function() {
+                    return 'neko_tutorial_home_yui_v1';
+                },
+                hasSeenTutorial: function() {
+                    return false;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                window.__heartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'idle_timeout',
+                    prompt_token: 'legacy-seen-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function("() => window.__heartbeatBodies.length > 0")
+
+    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is True
+    expect(mock_page.locator(".modal-overlay")).to_have_count(0)
+
+
+@pytest.mark.frontend
 def test_tutorial_prompt_prefers_window_t_over_safe_t(
     mock_page: Page,
 ):
