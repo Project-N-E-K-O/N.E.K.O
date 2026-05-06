@@ -256,7 +256,7 @@
                 S.isSwitchingCatgirl = false;
                 S._currentSwitchAttemptId = null;
                 try {
-                    showStatusToast(window.t ? window.t('app.switchCatgirlWatchdog') : '上次切换似乎卡住了，请再点一次切换', 5000);
+                    showStatusToast((window.t && window.t('app.switchCatgirlWatchdog')) || '上次切换似乎卡住了，请再点一次切换', 5000);
                 } catch (_e) { /* ignore toast failures */ }
             }
         }, 45000);
@@ -1559,7 +1559,7 @@
                         window.MMDLoadingOverlay?.fail(mmdLoadingSessionId, { detail: error?.message || String(error) });
                     } catch (overlayErr) { console.warn('[猫娘切换] MMDLoadingOverlay.fail 报错:', overlayErr); }
                 }
-                showStatusToast(window.t ? window.t('app.switchCatgirlError', { error: error.message }) : `切换失败: ${error.message}`, 4000);
+                showStatusToast((window.t && window.t('app.switchCatgirlError', { error: error.message })) || `切换失败: ${error.message}`, 4000);
                 // 失败时整套回滚 lanlan_config（lanlan_name + model_type + live3d_sub_type）：
                 // 三个字段都在 fallible await 之前被乐观写入，不回滚的话——name 让重试被入口
                 // dedupe 拦死、type 让全局类型跟实际旧模型不一致让后续分支走偏。
