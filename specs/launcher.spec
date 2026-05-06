@@ -55,8 +55,13 @@ critical_packages = [
     'shapely',
     'pyclipper',
     'mss',
-    'dxcam',  # win-only platform marker; collect_all warns and skips on macOS/Linux
 ]
+# `dxcam` is Windows-only (PEP 508 marker in pyproject.toml). Only add it on
+# Windows build hosts so non-Windows builds don't print a noisy "Could not
+# collect dxcam" warning every run; the runtime falls back to mss on those
+# platforms via DxcamCaptureBackend.is_available() returning False.
+if sys.platform == 'win32':
+    critical_packages.append('dxcam')
 
 # onnxruntime + tokenizers are only needed when the bundle ships embedding
 # weights. If the build is going to package data/embedding_models but the
@@ -73,11 +78,8 @@ embedding_assets_present = os.path.isdir(
 # routes were removed). If the maintainer builds without `uv sync --group
 # galgame`, the resulting dist has OCR permanently broken with no recovery
 # at runtime — fail the build instead of silently shipping a degraded artifact.
+# `dxcam` is added on Windows build hosts only (see critical_packages above).
 galgame_runtime_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper', 'mss'}
-# `dxcam` is Windows-only (PEP 508 marker `sys_platform == 'win32'` in
-# pyproject.toml). On Windows, it MUST be collectable — that's the intended
-# bundling target. On macOS/Linux build hosts the package legitimately isn't
-# installed; skip the guard there.
 if sys.platform == 'win32':
     galgame_runtime_packages = galgame_runtime_packages | {'dxcam'}
 
