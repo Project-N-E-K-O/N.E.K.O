@@ -14,6 +14,7 @@ import {
   type ChoicePrompt,
   type ChoicePromptSource,
 } from './message-schema';
+import CommandPalette, { type CommandItem, type UserPreferences } from './CommandPalette';
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
@@ -27,6 +28,12 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   onGalgameModeToggle?: () => void;
   onGalgameOptionSelect?: (option: GalgameOption) => void;
+  quickActions?: CommandItem[];
+  quickActionsPreferences?: UserPreferences;
+  quickActionsLoading?: boolean;
+  onQuickActionExecute?: (actionId: string, value: unknown) => Promise<CommandItem | null>;
+  onQuickActionsRequest?: () => void;
+  onQuickActionsPreferencesChange?: (prefs: UserPreferences) => void;
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）。
   // galgame mode 现有路径继续走 galgameOptions / onGalgameOptionSelect（BC）；
   // 本框架先只承载 mini_game_invite，未来可把 galgame 也迁过来。
@@ -586,6 +593,12 @@ export default function App({
   onTranslateToggle,
   onGalgameModeToggle,
   onGalgameOptionSelect,
+  quickActions,
+  quickActionsPreferences,
+  quickActionsLoading,
+  onQuickActionExecute,
+  onQuickActionsRequest,
+  onQuickActionsPreferencesChange,
   choicePrompt = null,
   onChoiceSelect,
   rollbackDraft,
@@ -594,6 +607,8 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [quickActionsPanelOpen, setQuickActionsPanelOpen] = useState(false);
+  const [quickActionsSlashMode, setQuickActionsSlashMode] = useState(false);
   // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 4 个工具按钮折叠成 ··· 菜单。
   // 用四态机让进出过渡都跑完动画再切稳态：
   //   expanded   → collapsing (右→左级联收起) → compact   (··· 入场)
@@ -647,6 +662,7 @@ export default function App({
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const submittingRef = useRef(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
   const canSubmit = !composerDisabled && (draft.trim().length > 0 || composerAttachments.length > 0);
@@ -1452,6 +1468,8 @@ export default function App({
   useEffect(() => {
     if (composerHidden || composerDisabled) {
       clearActiveCursorToolSelection();
+      setQuickActionsPanelOpen(false);
+      setQuickActionsSlashMode(false);
     }
   }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
 
@@ -1467,6 +1485,42 @@ export default function App({
     clearGlobalToolCursorState();
   }, []);
 
+  const handleQuickActionInjectText = useCallback((text: string) => {
+    setDraft(prev => {
+      if (!prev || !prev.trim()) return text;
+      return `${prev} ${text}`;
+    });
+    setQuickActionsPanelOpen(false);
+    setQuickActionsSlashMode(false);
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+    });
+  }, []);
+
+  const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
+    if (!target) return;
+    const isRelative = target.startsWith('/') || target.startsWith('./') || target.startsWith('../');
+    const isHttp = /^https?:\/\//i.test(target);
+    if (!isRelative && !isHttp) return;
+    if (openIn === 'same_tab') {
+      window.location.href = target;
+    } else {
+      window.open(target, '_blank', 'noopener,noreferrer');
+    }
+  }, []);
+
+  const handleQuickActionExecute = useCallback(async (
+    actionId: string,
+    value: unknown,
+  ): Promise<CommandItem | null> => {
+    if (!onQuickActionExecute) return null;
+    return onQuickActionExecute(actionId, value);
+  }, [onQuickActionExecute]);
+
+  const handleQuickActionsPreferencesChange = useCallback((prefs: UserPreferences) => {
+    onQuickActionsPreferencesChange?.(prefs);
+  }, [onQuickActionsPreferencesChange]);
+
   function submitDraft() {
     if (composerDisabled) return;
     if (submittingRef.current) return;
@@ -1481,8 +1535,32 @@ export default function App({
     }
   }
 
-  // 右侧 3 个工具按钮：在 compact 与 normal 两种布局中复用同一份 JSX，
+  // 右侧工具按钮：在 compact 与 normal 两种布局中复用同一份 JSX，
   // 既避免重复，也保证 ref/事件绑定在两种模式下行为一致。
+  const quickActionsButtonNode = (
+    <button
+      className={`composer-tool-btn composer-quick-actions-btn${quickActionsPanelOpen ? ' is-active' : ''}`}
+      type="button"
+      aria-label={i18n('chat.quickActionsAriaLabel', '快捷操作')}
+      title={i18n('chat.quickActionsLabel', '快捷操作')}
+      aria-pressed={quickActionsPanelOpen}
+      aria-expanded={quickActionsPanelOpen}
+      disabled={composerDisabled}
+      onClick={() => {
+        if (composerDisabled) return;
+        const willOpen = !quickActionsPanelOpen;
+        setQuickActionsPanelOpen(willOpen);
+        setOverflowMenuOpen(false);
+        if (willOpen) {
+          setQuickActionsSlashMode(false);
+          onQuickActionsRequest?.();
+        }
+      }}
+    >
+      <span className="composer-quick-actions-glyph" aria-hidden="true">⌘</span>
+    </button>
+  );
+
   const translateButtonNode = (
     <button
       className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
@@ -1785,12 +1863,29 @@ export default function App({
               ))}
             </div>
           ) : null}
+          {quickActionsPanelOpen ? (
+            <CommandPalette
+              items={quickActions ?? []}
+              preferences={quickActionsPreferences ?? { pinned: [], hidden: [], recent: [] }}
+              loading={quickActionsLoading}
+              slashMode={quickActionsSlashMode}
+              onExecute={handleQuickActionExecute}
+              onInjectText={handleQuickActionInjectText}
+              onNavigate={handleQuickActionNavigate}
+              onPreferencesChange={handleQuickActionsPreferencesChange}
+              onClose={() => {
+                setQuickActionsPanelOpen(false);
+                setQuickActionsSlashMode(false);
+              }}
+            />
+          ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
           }}>
             <div className="composer-input-shell">
               <textarea
+                ref={composerTextareaRef}
                 className="composer-input"
                 placeholder={inputPlaceholder}
                 aria-label={inputPlaceholder}
@@ -1798,7 +1893,16 @@ export default function App({
                 value={draft}
                 readOnly={composerDisabled}
                 disabled={composerDisabled}
-                onChange={(event) => { setDraft(event.target.value); }}
+                onChange={(event) => {
+                  const nextDraft = event.target.value;
+                  if (nextDraft === '/' && !draft && !quickActionsPanelOpen && !composerDisabled) {
+                    setQuickActionsSlashMode(true);
+                    setQuickActionsPanelOpen(true);
+                    onQuickActionsRequest?.();
+                    return;
+                  }
+                  setDraft(nextDraft);
+                }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
@@ -1947,6 +2051,8 @@ export default function App({
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {translateButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {quickActionsButtonNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {jukeboxButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {emojiToolMenuNode}
@@ -1988,6 +2094,7 @@ export default function App({
                         >
                           {galgameToggleButtonNode}
                           {translateButtonNode}
+                          {quickActionsButtonNode}
                           {jukeboxButtonNode}
                           {emojiToolMenuNode}
                         </div>
