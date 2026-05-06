@@ -1928,12 +1928,12 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    window.isMicStarting = false;
                     if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-                    window.isMicStarting = false;
                     S.isSwitchingMode = false;
 
                 // -------- reload_page --------
