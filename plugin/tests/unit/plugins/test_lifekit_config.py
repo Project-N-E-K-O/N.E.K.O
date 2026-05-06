@@ -5,6 +5,7 @@ import pytest
 from plugin.plugins import lifekit
 from plugin.plugins.lifekit import LifeKitPlugin
 from plugin.plugins.lifekit._i18n import LRUCache
+from plugin.plugins.lifekit.routers.hourly import _safe_idx
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -27,6 +28,10 @@ async def test_weather_data_uses_auto_timezone_for_blank_config(monkeypatch: pyt
     assert data == {"ok": True}
     assert error == ""
     assert captured["tz"] == "auto"
+
+
+def test_hourly_safe_idx_rejects_negative_index() -> None:
+    assert _safe_idx({"temperature": [1, 2, 3]}, "temperature", -1) is None
 
 
 @pytest.mark.asyncio

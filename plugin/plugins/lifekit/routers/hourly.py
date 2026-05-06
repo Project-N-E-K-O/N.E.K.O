@@ -141,6 +141,6 @@ class HourlyForecastRouter(PluginRouter):
 
 def _safe_idx(data: Dict[str, Any], field: str, idx: int) -> Any:
     arr = data.get(field)
-    if isinstance(arr, list) and idx < len(arr):
+    if isinstance(arr, list) and 0 <= idx < len(arr):
         return arr[idx]
     return None
