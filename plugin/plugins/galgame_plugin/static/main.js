@@ -730,6 +730,7 @@ let forceShowOnboarding = false;
 let lastSavedStepIndex = -1;
 let latestTutorialProgress = null;
 let tutorialProgressSaveQueue = Promise.resolve();
+const tutorialProgressPendingSaveKeys = new Set();
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
@@ -1585,9 +1586,9 @@ function buildFirstRunSteps(status = {}) {
   const rapidocr = status.rapidocr || {};
   const tesseract = status.tesseract || {};
   const dxcam = status.dxcam || {};
-  const rapidocrSupported = Boolean(rapidocr.install_supported) && rapidocr.can_install !== false;
-  const tesseractSupported = Boolean(tesseract.install_supported) && tesseract.can_install !== false;
-  const dxcamSupported = Boolean(dxcam.install_supported) && dxcam.can_install !== false;
+  const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
+  const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
+  const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
   const ocrInstallAction = rapidocrSupported ? 'install_rapidocr' : 'install_tesseract';
   const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported));
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
@@ -1717,6 +1718,23 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
   return actions.join('');
 }
 
+function saveTutorialProgressDeduped(key, partial) {
+  if (tutorialProgressPendingSaveKeys.has(key)) {
+    return null;
+  }
+  tutorialProgressPendingSaveKeys.add(key);
+  const save = saveTutorialProgress(partial);
+  save.then(
+    () => {
+      tutorialProgressPendingSaveKeys.delete(key);
+    },
+    () => {
+      tutorialProgressPendingSaveKeys.delete(key);
+    },
+  );
+  return save;
+}
+
 function renderFirstRunGuide(status = {}) {
   const node = document.getElementById('firstRunGuide');
   const stepsNode = document.getElementById('firstRunSteps');
@@ -1754,7 +1772,16 @@ function renderFirstRunGuide(status = {}) {
     document.body.classList.remove('onboarding-active');
     if (onboardingView) { onboardingView.hidden = true; }
     if (allDone && !latestTutorialProgress?.completed) {
-      saveTutorialProgress({ completed: true, completed_at: Date.now() / 1000 }).catch(() => {});
+      const completedAt = Date.now() / 1000;
+      saveTutorialProgressDeduped('completed', { completed: true, completed_at: completedAt })
+        ?.then(() => {
+          latestTutorialProgress = {
+            ...(latestTutorialProgress || {}),
+            completed: true,
+            completed_at: completedAt,
+          };
+        })
+        .catch(() => {});
     }
     return;
   }
@@ -1764,8 +1791,8 @@ function renderFirstRunGuide(status = {}) {
 
   const firstIncompleteIndex = steps.findIndex((step) => !step.done);
   if (firstIncompleteIndex >= 0 && firstIncompleteIndex !== lastSavedStepIndex) {
-    saveTutorialProgress({ last_step_index: firstIncompleteIndex })
-      .then(() => {
+    saveTutorialProgressDeduped(`last_step_index:${firstIncompleteIndex}`, { last_step_index: firstIncompleteIndex })
+      ?.then(() => {
         lastSavedStepIndex = firstIncompleteIndex;
       })
       .catch(() => {});
