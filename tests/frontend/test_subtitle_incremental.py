@@ -394,8 +394,40 @@ def test_subtitle_incremental_translation_waits_for_user_language_before_request
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    (
+        "original_text",
+        "source_lang",
+        "first_translation",
+        "second_translation",
+    ),
+    [
+        (
+            "明明没什么本事。你还到处惹麻烦。",
+            "zh",
+            "明明没什么本事, you still keep acting tough.",
+            "You keep causing trouble.",
+        ),
+        (
+            "こんにちは。まだ翻訳されていません。",
+            "ja",
+            "こんにちは, still not translated.",
+            "Still not translated.",
+        ),
+        (
+            "안녕하세요. 아직 번역되지 않았습니다.",
+            "ko",
+            "안녕하세요, still not translated.",
+            "Still not translated.",
+        ),
+    ],
+)
 def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
     mock_page: Page,
+    original_text: str,
+    source_lang: str,
+    first_translation: str,
+    second_translation: str,
 ):
     _open_subtitle_harness(
         mock_page,
@@ -408,7 +440,7 @@ def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
     )
     mock_page.evaluate(
         """
-        () => {
+        ({ sourceLang, firstTranslation, secondTranslation }) => {
             let requestCount = 0;
             window.fetch = async (url, options) => {
                 const requestUrl = String(url);
@@ -422,12 +454,12 @@ def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
                 if (requestUrl === '/api/translate') {
                     requestCount += 1;
                     const translated = requestCount === 1
-                        ? '明明没什么本事, you still keep acting tough.'
-                        : 'You keep causing trouble.';
+                        ? firstTranslation
+                        : secondTranslation;
                     return new Response(JSON.stringify({
                         success: true,
                         translated_text: translated,
-                        source_lang: 'zh',
+                        source_lang: sourceLang,
                         target_lang: body.target_lang || 'en',
                     }), {
                         status: 200,
@@ -439,22 +471,27 @@ def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
             window.localStorage.setItem('subtitleEnabled', 'true');
             window.localStorage.setItem('userLanguage', 'en');
         }
-        """
+        """,
+        {
+            "sourceLang": source_lang,
+            "firstTranslation": first_translation,
+            "secondTranslation": second_translation,
+        },
     )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
 
     result = mock_page.evaluate(
         """
-        async () => {
+        async ({ originalText, expectedText }) => {
             window.beginSubtitleTurn();
             window.subtitleBridge.setSubtitleEnabled(true);
-            window.updateSubtitleStreamingText('明明没什么本事。你还到处惹麻烦。');
+            window.updateSubtitleStreamingText(originalText);
             await new Promise((resolve, reject) => {
                 const startedAt = Date.now();
                 const poll = () => {
                     const text = document.getElementById('subtitle-text').textContent;
-                    if (text === 'You keep causing trouble.') {
+                    if (text === expectedText) {
                         resolve();
                         return;
                     }
@@ -468,10 +505,14 @@ def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
             });
             return document.getElementById('subtitle-text').textContent;
         }
-        """
+        """,
+        {
+            "originalText": original_text,
+            "expectedText": second_translation,
+        },
     )
 
-    assert result == "You keep causing trouble."
+    assert result == second_translation
 
 
 @pytest.mark.frontend

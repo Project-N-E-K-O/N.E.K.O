@@ -178,7 +178,6 @@ let turnBoundaryLatched = false;
 // --- 增量逐句翻译状态 ---
 let incrementalTranslatedCount = 0;
 let incrementalTranslatedSentences = [];
-let incrementalTranslateTimer = null;
 let incrementalAbortController = null;
 let incrementalRequestId = 0;
 let incrementalQueuedCount = 0;
@@ -326,10 +325,6 @@ function resetIncrementalTranslationState() {
     incrementalQueuedCount = 0;
     incrementalTranslationQueue = [];
     incrementalTranslationActive = false;
-    if (incrementalTranslateTimer) {
-        clearTimeout(incrementalTranslateTimer);
-        incrementalTranslateTimer = null;
-    }
     if (incrementalAbortController) {
         incrementalAbortController.abort();
         incrementalAbortController = null;
@@ -343,7 +338,7 @@ function resumeIncrementalTranslationQueue() {
 }
 
 function countCjkChars(text) {
-    var matches = (text || '').match(/[\u3400-\u9FFF\uF900-\uFAFF]/g);
+    var matches = (text || '').match(/[\u1100-\u11FF\u3040-\u30FF\u31F0-\u31FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/g);
     return matches ? matches.length : 0;
 }
 
@@ -586,12 +581,6 @@ async function translateAndShowSubtitle(text) {
     const requestTurnId = currentTurnId;
     const requestId = ++currentTranslationRequestId;
     isCurrentTurnFinalized = true;
-
-    // 取消 pending 的增量翻译定时器
-    if (incrementalTranslateTimer) {
-        clearTimeout(incrementalTranslateTimer);
-        incrementalTranslateTimer = null;
-    }
 
     if (userLanguage === null) {
         await getUserLanguage();
