@@ -5519,8 +5519,8 @@ async function rebuildSavedCatgirlPanel(form, catgirlName) {
         const wrapper = container.closest('.catgirl-panel-wrapper');
         // 新建→已创建 原地切换：跟 openCatgirlPanel 那条路径对偶，给 wrapper 也补上
         // dataset.catgirlName，否则 _refreshOpenCatgirlPanelActions 找不到面板对应的角色名、
-        // 切角色后这个 panel 的按钮态不会被刷新。
-        if (wrapper && catgirlName) {
+        // 切角色后这个 panel 的按钮态不会被刷新。catgirlName 在函数顶部已 guard 过。
+        if (wrapper) {
             wrapper.dataset.catgirlName = catgirlName;
         }
         const leftSection = wrapper?.querySelector('.catgirl-panel-left');
@@ -5786,6 +5786,10 @@ function _broadcastCatgirlSwitched(newCatgirl, oldCatgirl) {
 
 // 角色卡详情面板（modal）目前只读取 _workshopCurrentCatgirl 的初始值来决定按钮态，
 // 切角色后必须主动同步开着的面板，否则用户在小窗里点完按钮会觉得"毫无反应"。
+//
+// 单一数据源：依赖 wrapper.dataset.catgirlName 判定面板对应角色。任何创建/重建面板的
+// 路径都必须设这个 dataset（目前是 openCatgirlPanel 和 rebuildSavedCatgirlPanel）；
+// 不从表单 [name="档案名"] 兜底读，避免拿到用户编辑中的脏值。
 function _refreshOpenCatgirlPanelActions() {
     const wrapper = document.getElementById('catgirl-panel-wrapper');
     if (!wrapper) return;
