@@ -126,6 +126,32 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 エクスポートデータをホストにプッシュします。
 
+#### `export_push_image(**kwargs) -> object` (async)
+
+画像エクスポートをホストに送信します。`image_url`、または `image_data` と `mime` を渡せます。Agent から実行されたプラグインでは、JSON 以外の export が `plugin_result["media"]` に集約され、補助的な画像、リンク、テキストとして上位へ渡されます。
+
+```python
+await self.export_push_image(
+    image_url="https://example.test/result.png",
+    description="生成画像",
+)
+return await self.finish(data={"summary": "画像を生成しました"})
+```
+
+#### `get_attachments() -> list[dict]`
+
+Agent が最新のユーザーメッセージからこの実行へ転送した画像添付を読み取ります。各要素は通常 `{"type": "image_url", "url": "..."}` の形で、`url` は通常 URL または data URL です。
+
+```python
+attachments = self.get_attachments()
+if attachments:
+    image_url = attachments[0]["url"]
+```
+
+#### `get_user_language() -> str` / `fetch_user_language() -> str`
+
+現在のユーザー言語を読み取ります。`get_user_language()` は現在の Agent 実行から渡された `_ctx.lang` またはプラグイン側の上書きを使います。`fetch_user_language()` は `SystemInfo` 経由でホスト設定を問い合わせるため、startup や timer などユーザー文脈がない入口で使えます。
+
 #### `finish(**kwargs) -> Any` (async)
 
 タスク完了をホストに通知します。

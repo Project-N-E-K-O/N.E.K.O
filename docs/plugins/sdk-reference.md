@@ -126,6 +126,32 @@ Send an update to the host during long-running operations.
 
 Push export data to the host.
 
+#### `export_push_image(**kwargs) -> object` (async)
+
+Push an image export to the host. Pass `image_url`, or pass `image_data` with `mime`. When the plugin is run by Agent, non-JSON exports are collected into `plugin_result["media"]` so callers can surface supplementary images, links, or text.
+
+```python
+await self.export_push_image(
+    image_url="https://example.test/result.png",
+    description="Generated image",
+)
+return await self.finish(data={"summary": "Image generated"})
+```
+
+#### `get_attachments() -> list[dict]`
+
+Read image attachments forwarded by Agent from the latest user message for this run. Items are usually shaped like `{"type": "image_url", "url": "..."}`; `url` may be a regular URL or a data URL.
+
+```python
+attachments = self.get_attachments()
+if attachments:
+    image_url = attachments[0]["url"]
+```
+
+#### `get_user_language() -> str` / `fetch_user_language() -> str`
+
+Read the current user language. `get_user_language()` uses `_ctx.lang` from the current Agent run or a plugin override; `fetch_user_language()` queries host system config through `SystemInfo`, which is useful for startup and timer entries without user context.
+
 #### `finish(**kwargs) -> Any` (async)
 
 Signal task completion to the host.
