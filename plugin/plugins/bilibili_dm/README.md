@@ -81,7 +81,7 @@
 
 ## 文件结构
 
-```
+```text
 bilibili_dm/
 ├── __init__.py       # 插件主实现
 ├── plugin.toml       # 插件配置

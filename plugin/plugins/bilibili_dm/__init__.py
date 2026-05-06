@@ -61,6 +61,9 @@ class BiliDMPlugin(NekoPluginBase):
         self._ai_turn_timeout_seconds = 60.0
         self._handler_shutdown_timeout_seconds = 10.0
 
+        # 权限模式（从 plugin.toml 加载）
+        self._permission_mode: str = "allow_list"
+
         # 管理员 UID
         self._admin_uid: Optional[str] = None
 
@@ -146,6 +149,8 @@ class BiliDMPlugin(NekoPluginBase):
         self._refresh_admin_uid()
 
         # 读取配置
+        self._permission_mode = str(bili_cfg.get("permission_mode", "allow_list") or "allow_list")
+
         self._max_concurrent_messages = max(1, int(bili_cfg.get("max_concurrent_messages", 3) or 3))
         self._message_concurrency = asyncio.Semaphore(self._max_concurrent_messages)
         self._ai_connect_timeout_seconds = max(1.0, float(bili_cfg.get("ai_connect_timeout_seconds", 10.0) or 10.0))
@@ -173,15 +178,6 @@ class BiliDMPlugin(NekoPluginBase):
     async def shutdown(self, **_):
         """插件关闭时清理资源"""
         await self._stop_runtime()
-        await self._flush_all_sessions(reason="shutdown")
-
-        if self._session_housekeeping_task:
-            self._session_housekeeping_task.cancel()
-            try:
-                await self._session_housekeeping_task
-            except asyncio.CancelledError:
-                pass
-            self._session_housekeeping_task = None
 
         self.logger.info("B站私信插件已停止")
         return Ok({"status": "shutdown"})
@@ -244,6 +240,14 @@ class BiliDMPlugin(NekoPluginBase):
                 pass
             self._message_task = None
 
+        if self._session_housekeeping_task:
+            self._session_housekeeping_task.cancel()
+            try:
+                await self._session_housekeeping_task
+            except asyncio.CancelledError:
+                pass
+            self._session_housekeeping_task = None
+
         if self._handler_tasks:
             handler_tasks = list(self._handler_tasks)
             for task in handler_tasks:
@@ -256,6 +260,8 @@ class BiliDMPlugin(NekoPluginBase):
             except asyncio.TimeoutError:
                 self.logger.warning(f"等待 {len(handler_tasks)} 个消息处理任务停止超时")
             self._handler_tasks.clear()
+
+        await self._flush_all_sessions(reason="stop")
 
         if self.bili_client:
             await self.bili_client.disconnect()
@@ -297,8 +303,14 @@ class BiliDMPlugin(NekoPluginBase):
             if not msg_text:
                 return Err(SdkError("INVALID_ARGUMENT: message 不能为空"))
 
-            await self.bili_client.send_text(uid, msg_text)
-            self.logger.info(f"已发送私信给 {uid}: {msg_text[:100]}")
+            if msg_text.startswith(("http://", "https://")) and any(
+                msg_text.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+            ) or msg_text.startswith("data:image/"):
+                await self.bili_client.send_image(uid, msg_text)
+                self.logger.info(f"已发送图片私信给 {uid}")
+            else:
+                await self.bili_client.send_text(uid, msg_text)
+                self.logger.info(f"已发送私信给 {uid}: {msg_text[:100]}")
             return Ok({"user_id": uid, "message": msg_text})
         except Exception as e:
             self.logger.error(f"发送私信失败: {e}")
@@ -492,7 +504,7 @@ class BiliDMPlugin(NekoPluginBase):
         msg_kind = message.get("msg_kind", "text")
 
         # 检查权限
-        if not self.permission_mgr.should_process(sender_uid):
+        if not self.permission_mgr.should_process(sender_uid, self._permission_mode):
             self.logger.debug(f"忽略来自 {sender_uid} 的消息（权限不足）")
             return
 
@@ -831,8 +843,6 @@ class BiliDMPlugin(NekoPluginBase):
         now = time.time()
         idle_sessions = []
         for session_key, user_data in list(self._user_sessions.items()):
-            if not user_data.get("memory_enabled"):
-                continue
             last_activity_at = user_data.get("last_activity_at") or now
             if now - last_activity_at >= self.SESSION_IDLE_TIMEOUT_SECONDS:
                 idle_sessions.append(session_key)
@@ -840,7 +850,7 @@ class BiliDMPlugin(NekoPluginBase):
         for session_key in idle_sessions:
             async def _finalize_if_still_idle() -> bool:
                 current = self._user_sessions.get(session_key)
-                if not current or not current.get("memory_enabled"):
+                if not current:
                     return False
                 current_last_activity = current.get("last_activity_at") or now
                 if time.time() - current_last_activity < self.SESSION_IDLE_TIMEOUT_SECONDS:
@@ -854,12 +864,9 @@ class BiliDMPlugin(NekoPluginBase):
     async def _flush_all_sessions(self, reason: str):
         """回收所有会话"""
         for session_key, user_data in list(self._user_sessions.items()):
-            if not user_data.get("memory_enabled"):
-                continue
-
             async def _finalize_existing() -> bool:
                 current = self._user_sessions.get(session_key)
-                if not current or not current.get("memory_enabled"):
+                if not current:
                     return False
                 return await self._finalize_session(session_key, reason=reason)
 
@@ -870,39 +877,40 @@ class BiliDMPlugin(NekoPluginBase):
     async def _finalize_session(self, session_key: str, reason: str) -> bool:
         """结算并关闭会话"""
         user_data = self._user_sessions.get(session_key)
-        if not user_data or not user_data.get("memory_enabled"):
+        if not user_data:
             return False
 
         session = user_data.get("session")
         her_name = user_data.get("her_name")
-        if not session or not her_name:
+        if not session:
             self._user_sessions.pop(session_key, None)
             return False
 
         try:
-            conversation_history = getattr(session, "_conversation_history", []) or []
-            last_synced_index = int(user_data.get("last_synced_index", 0))
-            remaining_messages = self._conversation_slice_to_memory_messages(
-                conversation_history, last_synced_index
-            )
+            if user_data.get("memory_enabled") and her_name:
+                conversation_history = getattr(session, "_conversation_history", []) or []
+                last_synced_index = int(user_data.get("last_synced_index", 0))
+                remaining_messages = self._conversation_slice_to_memory_messages(
+                    conversation_history, last_synced_index
+                )
 
-            if remaining_messages:
-                result = await self._post_memory_history(
-                    "process", her_name, remaining_messages, timeout=30.0
-                )
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "process failed"))
-                self.logger.info(
-                    f"[{reason}] 已为用户 {session_key} 完成记忆结算，消息数: {len(remaining_messages)}"
-                )
-            elif user_data.get("has_cached_memory"):
-                settled_messages = self._conversation_slice_to_memory_messages(conversation_history, 0)
-                result = await self._post_memory_history(
-                    "settle", her_name, settled_messages, timeout=30.0
-                )
-                if result.get("status") == "error":
-                    raise RuntimeError(result.get("message", "settle failed"))
-                self.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
+                if remaining_messages:
+                    result = await self._post_memory_history(
+                        "process", her_name, remaining_messages, timeout=30.0
+                    )
+                    if result.get("status") == "error":
+                        raise RuntimeError(result.get("message", "process failed"))
+                    self.logger.info(
+                        f"[{reason}] 已为用户 {session_key} 完成记忆结算，消息数: {len(remaining_messages)}"
+                    )
+                elif user_data.get("has_cached_memory"):
+                    settled_messages = self._conversation_slice_to_memory_messages(conversation_history, 0)
+                    result = await self._post_memory_history(
+                        "settle", her_name, settled_messages, timeout=30.0
+                    )
+                    if result.get("status") == "error":
+                        raise RuntimeError(result.get("message", "settle failed"))
+                    self.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
 
             await session.close()
             self._user_sessions.pop(session_key, None)

@@ -25,9 +25,9 @@ class PermissionManager:
         if trusted_users:
             for user in trusted_users:
                 uid = self._normalize_uid(user.get("uid", ""))
-                level = self._normalize_level(user.get("level", "trusted"))
+                level = self._normalize_level(user.get("level", ""))
                 nickname = user.get("nickname", "")
-                if uid:
+                if uid and level:
                     self._users[uid] = level
                     if nickname:
                         self._nicknames[uid] = nickname
@@ -37,16 +37,19 @@ class PermissionManager:
         return str(uid or "").strip()
 
     @classmethod
-    def _normalize_level(cls, level: str) -> str:
-        level_text = str(level or "trusted").strip().lower()
-        return level_text if level_text in cls.VALID_LEVELS else "trusted"
+    def _normalize_level(cls, level: str) -> Optional[str]:
+        level_text = str(level or "").strip().lower()
+        return level_text if level_text in cls.VALID_LEVELS else None
 
     def add_user(self, uid: str, level: str = "trusted", nickname: str = ""):
         """添加用户"""
         uid_str = self._normalize_uid(uid)
         if not uid_str:
             return
-        self._users[uid_str] = self._normalize_level(level)
+        normalized = self._normalize_level(level)
+        if not normalized:
+            return
+        self._users[uid_str] = normalized
         if nickname:
             self._nicknames[uid_str] = nickname
         elif uid_str in self._nicknames:
