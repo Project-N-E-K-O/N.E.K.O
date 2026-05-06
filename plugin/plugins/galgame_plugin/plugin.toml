@@ -120,6 +120,15 @@ lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv5"
 
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "快速开始"
+entry = "docs/quickstart.md"
+permissions = ["state:read"]
+
 [plugin.i18n]
 default_locale = "zh-CN"
 locales_dir = "i18n"
