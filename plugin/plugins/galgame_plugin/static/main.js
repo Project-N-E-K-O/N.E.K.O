@@ -2954,10 +2954,8 @@ function renderInstallTaskState(kind) {
 
 function renderPluginUnavailable(error) {
   latestStatus = null;
-  const modeSwitchEl = document.getElementById('modeSwitch');
-  if (modeSwitchEl) {
-    modeSwitchEl.dataset.ready = 'false';
-  }
+  pendingModeSelection = '';
+  updateModeSwitchControl('', { ready: false });
   const pluginNotStarted = uiT('ui.diag.plugin_not_started.title', '插件尚未启动');
   const message = error instanceof Error ? error.message : String(error || pluginNotStarted);
   document.getElementById('summaryText').textContent = pluginNotStarted;
@@ -3208,10 +3206,17 @@ function updateModeSwitchControl(currentMode, { ready = true } = {}) {
     return;
   }
   document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.mode === currentMode);
+    btn.classList.toggle('active', ready && btn.dataset.mode === currentMode);
+    btn.disabled = !ready;
+    btn.setAttribute('aria-disabled', ready ? 'false' : 'true');
   });
-  modeSwitchEl.dataset.active = currentMode;
+  modeSwitchEl.dataset.active = ready ? currentMode : '';
   modeSwitchEl.dataset.ready = ready ? 'true' : 'false';
+  if (!ready) {
+    modeSwitchEl.style.removeProperty('--indicator-left');
+    modeSwitchEl.style.removeProperty('--indicator-width');
+    return;
+  }
   const activeBtn = modeSwitchEl.querySelector('.mode-btn.active');
   if (activeBtn) {
     const sr = modeSwitchEl.getBoundingClientRect();
@@ -6816,6 +6821,10 @@ document.querySelectorAll('.install-tab').forEach((btn) => {
 
 document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
+    const modeSwitchEl = document.getElementById('modeSwitch');
+    if (!modeSwitchEl || modeSwitchEl.dataset.ready !== 'true') {
+      return;
+    }
     const mode = btn.dataset.mode;
     const select = document.getElementById('modeSelect');
     if (select && mode) {

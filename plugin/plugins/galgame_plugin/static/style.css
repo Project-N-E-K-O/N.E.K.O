@@ -1212,7 +1212,7 @@ button.active {
   position: fixed;
   top: 18px;
   right: 24px;
-  z-index: 1000;
+  z-index: 1100;
   width: min(420px, calc(100vw - 32px));
   margin: 0;
   padding: 12px 14px;
