@@ -6257,7 +6257,10 @@ function revealCaptureBackendSettings() {
   // a still-collapsed parent and the user sees nothing. The 'dxcam' kind
   // skips the install-tab switch (not in OCR_INSTALL_TABS post-bundling)
   // but the expansion side-effects still apply.
-  navigateToInstallPanel('dxcam');
+  // `scrollToSection: false` so navigateToInstallPanel's queued
+  // installSection.scrollIntoView doesn't snap the viewport back to the
+  // top of installSection on the next frame and hide dxcamPrompt.
+  navigateToInstallPanel('dxcam', { scrollToSection: false });
   expandAndScrollTo('dxcamPrompt');
 }
 
@@ -6322,8 +6325,10 @@ async function handleDiagnosisAction(action) {
       // expands the Advanced Settings + dependencies containers so the
       // banner is actually visible after the scroll; bundled_hint copy on
       // the banner explains what to do (reinstall packaged build /
-      // `uv sync --group galgame`).
-      navigateToInstallPanel('rapidocr');
+      // `uv sync --group galgame`). `scrollToSection: false` keeps
+      // navigateToInstallPanel from snapping back to installSection top
+      // on the next frame and hiding rapidocrPrompt.
+      navigateToInstallPanel('rapidocr', { scrollToSection: false });
       expandAndScrollTo('rapidocrPrompt');
       setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态横幅。请按横幅说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
@@ -6360,7 +6365,14 @@ function switchInstallTab(tab) {
   }
 }
 
-function navigateToInstallPanel(kind) {
+function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
+  // `scrollToSection: false` callers (revealCaptureBackendSettings,
+  // case 'install_rapidocr') only want the parent-container expansion
+  // side effects — they do their own fine-grained scroll afterwards via
+  // expandAndScrollTo(banner). Without this opt-out, the queued
+  // installSection.scrollIntoView in the next frame snaps the viewport
+  // back to the top of installSection, hiding the banner the caller
+  // just scrolled to.
   const advancedSettings = document.getElementById('advancedSettings');
   const advancedToggleBtn = document.getElementById('advancedToggleBtn');
   const dependencyModule = document.getElementById('dependencyModule');
@@ -6396,7 +6408,7 @@ function navigateToInstallPanel(kind) {
     switchInstallTab(kind);
   }
 
-  if (installSection) {
+  if (scrollToSection && installSection) {
     requestAnimationFrame(() => {
       installSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
