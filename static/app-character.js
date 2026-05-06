@@ -699,6 +699,11 @@
                         };
                     });
                 }
+                // VRMRuntimeReady wait（5s timeout）resolve 后立刻做 stale 检查：stale attempt
+                // 苏醒后接下来的 vrmManager 创建 / canvas 创建 / initThreeJS 都会 mutate 共享
+                // three.js 状态，必须在调任何 mutation 之前拦下，否则即便 line 723 的 throwIfStale
+                // 抛错，污染已经发生了。
+                throwIfStale();
 
                 if (!window.vrmManager) {
                     window.vrmManager = new window.VRMManager();
@@ -1088,10 +1093,17 @@
                     try {
                         window.MMDLoadingOverlay?.update(mmdLoadingSessionId, { stage: 'settings' });
                         const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(newCatgirl) + '/mmd_settings');
+                        throwIfStale();
                         const settingsData = await settingsRes.json();
+                        throwIfStale();
                         if (settingsData.success && settingsData.settings) {
                             savedSettings = settingsData.settings;
                             if (savedSettings.physics?.enabled != null) {
+                                // mutation 之前再一次 stale 检查：上面两道 throwIfStale 已能拦下
+                                // stale 苏醒在 fetch / json await 之后的场景，但 catch 已加 stale
+                                // rethrow 兜底，这道是局部防御性双保险——将来 try 里多加一个 await
+                                // 时不至于漏。
+                                throwIfStale();
                                 window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
                             }
                         }
