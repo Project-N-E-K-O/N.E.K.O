@@ -164,16 +164,28 @@
 
     function snapshotProactiveState() {
         const snapshot = {};
+        const appState = window.appState || null;
         HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            snapshot[key] = !!window[key];
+            if (typeof window[key] !== 'undefined') {
+                snapshot[key] = !!window[key];
+            } else if (appState && typeof appState[key] !== 'undefined') {
+                snapshot[key] = !!appState[key];
+            } else {
+                snapshot[key] = false;
+            }
         });
         return snapshot;
     }
 
     function applyProactiveState(values) {
+        const appState = window.appState || null;
         HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
             if (Object.prototype.hasOwnProperty.call(values, key)) {
-                window[key] = !!values[key];
+                const next = !!values[key];
+                window[key] = next;
+                if (appState && typeof appState[key] !== 'undefined') {
+                    appState[key] = next;
+                }
             }
         });
         if (typeof window.stopProactiveChatSchedule === 'function') {
@@ -1408,6 +1420,12 @@
             emitHomeTutorialLockIfChanged('tutorial-skipped');
         });
 
+        // Keep this recovery bridge paired with handlePromptAcceptance:
+        // its catch path clears state.tutorialStartRequested, calls
+        // emitHomeTutorialLockIfChanged('tutorial-start-failed'), and this
+        // listener then rolls back beginHomeTutorialFeatureSuppression via
+        // endHomeTutorialFeatureSuppression. Removing it would leave feature
+        // suppression active for the early 'tutorial-start-requested' lock.
         window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
             const detail = event && event.detail ? event.detail : {};
             if (detail.locked === true && detail.reason === 'tutorial-start-requested') {
