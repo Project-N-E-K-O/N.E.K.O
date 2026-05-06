@@ -1025,12 +1025,18 @@ def _sync_game_language_from_payload(lanlan_name: str, data: dict | None) -> Non
     try:
         mgr = get_session_manager().get(lanlan_name)
         if mgr and hasattr(mgr, "set_user_language"):
-            normalized = normalize_language_code(language, format="full")
-            if str(getattr(mgr, "user_language", "") or "") == normalized:
+            normalized = normalize_language_code(language, format="short")
+            current_raw = str(getattr(mgr, "user_language", "") or "").strip()
+            current = normalize_language_code(current_raw, format="short") if current_raw else ""
+            if current == normalized:
                 return
             mgr.set_user_language(language)
     except Exception:
-        pass
+        logger.debug(
+            "🎮 游戏路由语言同步失败: lanlan=%s",
+            lanlan_name,
+            exc_info=True,
+        )
 
 
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
@@ -5371,7 +5377,7 @@ async def game_quick_lines(game_type: str, request: Request):
             data = await request.json()
         except Exception:
             data = {}
-        lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+        lanlan_name = _resolve_lanlan_name(data.get("lanlan_name") or request.query_params.get("lanlan_name"))
         if lanlan_name:
             _sync_game_language_from_payload(lanlan_name, data)
         char_info = _get_current_character_info()
