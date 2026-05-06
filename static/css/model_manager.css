@@ -370,6 +370,8 @@ body {
     z-index: 10;
     flex-shrink: 0;
     pointer-events: none;
+    -webkit-user-drag: none;
+    user-select: none;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
@@ -382,6 +384,8 @@ body {
     z-index: 10;
     flex-shrink: 0;
     pointer-events: none;
+    -webkit-user-drag: none;
+    user-select: none;
 }
 
 #backToMainBtn span {

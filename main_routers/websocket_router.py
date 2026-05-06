@@ -17,6 +17,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 import json
 import uuid
 import asyncio
+import time
 
 from utils.logger_config import get_module_logger
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
@@ -49,6 +50,22 @@ def _fire_task(coro):
 
 # 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
 _ws_disconnect_time: dict[str, float] = {}
+
+# 前端首页新手引导的轻量兜底状态。只用于阻止已经穿过前端的 greeting_check，
+# 带 TTL，避免断线或前端异常导致后端长期误判仍在教程中。
+_HOME_TUTORIAL_STATE_TTL_SECONDS = 60.0
+_home_tutorial_blocking_greeting: dict[str, tuple[bool, float]] = {}
+
+
+def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
+    state = _home_tutorial_blocking_greeting.get(lanlan_name)
+    if not state:
+        return False
+    blocking, updated_at = state
+    if time.time() - updated_at > _HOME_TUTORIAL_STATE_TTL_SECONDS:
+        _home_tutorial_blocking_greeting.pop(lanlan_name, None)
+        return False
+    return bool(blocking)
 
 
 @router.websocket("/ws/{lanlan_name}")
@@ -207,13 +224,23 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = None
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
+            elif action == "home_tutorial_state":
+                blocking = bool(message.get("blocking_greeting"))
+                _home_tutorial_blocking_greeting[lanlan_name] = (blocking, time.time())
+                logger.debug(
+                    "[%s] home_tutorial_state: blocking_greeting=%s reason=%s",
+                    lanlan_name, blocking, message.get("reason") or "",
+                )
+
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话
                 # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
-                import time as _time
+                if _is_home_tutorial_blocking_greeting(lanlan_name):
+                    logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")
+                    continue
                 is_switch = message.get("is_switch", False)
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
-                since_disconnect = _time.time() - last_disconnect if last_disconnect else float('inf')
+                since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
                 if is_switch or since_disconnect > 15:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s → new character greeting")
@@ -228,6 +255,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 心跳保活消息，回复pong
                 await websocket.send_text(json.dumps({"type": "pong"}))
                 # logger.debug(f"收到心跳ping，已回复pong")
+
+            elif action == "language_update":
+                # 前端 i18next 'languageChanged' fire 时发的纯语言同步消息：``language``
+                # 字段已被 line 136-139 通用 handler 处理（``set_user_language``），
+                # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
+                pass
 
             else:
                 logger.warning(f"Unknown action received: {action}")
@@ -246,8 +279,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
-        import time as _time
-        _ws_disconnect_time[lanlan_name] = _time.time()
+        _ws_disconnect_time[lanlan_name] = time.time()
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()

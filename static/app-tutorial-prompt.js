@@ -32,7 +32,9 @@
         inFlightHeartbeatSnapshot: null,
         pendingHeartbeatAfterFlight: false,
         promptOpen: false,
+        promptDisplayPending: false,
         tutorialRunning: false,
+        tutorialStartRequested: false,
         pendingForegroundMs: 0,
         foregroundStartedAt: null,
         pendingWeakHomeInteractions: 0,
@@ -108,6 +110,50 @@
     function isHomeTutorialSeen() {
         return localStorage.getItem(getHomeTutorialStorageKey()) === 'true';
     }
+
+    function isHomePage() {
+        if (window.location && typeof window.location.pathname === 'string') {
+            const path = window.location.pathname || '/';
+            return path === '/' || path === '/index.html';
+        }
+        const manager = window.universalTutorialManager || null;
+        return !!(manager && manager.currentPage === 'home');
+    }
+
+    function computeHomeTutorialInteractionLocked() {
+        if (!isHomePage()) {
+            return false;
+        }
+        const manager = window.universalTutorialManager || null;
+        return !!(
+            state.promptDisplayPending
+            || state.promptOpen
+            || state.tutorialStartRequested
+            || state.tutorialRunning
+            || window.isInTutorial === true
+            || (manager && manager.currentPage === 'home' && manager.isTutorialRunning)
+        );
+    }
+
+    function emitHomeTutorialLockIfChanged(reason) {
+        const locked = computeHomeTutorialInteractionLocked();
+        if (state.lastInteractionLocked === locked) {
+            return locked;
+        }
+        state.lastInteractionLocked = locked;
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-lock-changed', {
+            detail: {
+                locked: locked,
+                reason: reason || 'state-change',
+            },
+        }));
+        return locked;
+    }
+
+    mod.isHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
+    mod.isHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
+    window.isNekoHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
+    window.isNekoHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
 
     function markMeaningfulActionTaken() {
         if (!state.meaningfulActionTaken) {
@@ -560,6 +606,8 @@
     async function handlePromptAcceptance(promptToken) {
         const startWaiter = createHomeTutorialStartWaiter(HOME_TUTORIAL_START_WAIT_TIMEOUT_MS);
         state.promptDrivenTutorialToken = promptToken;
+        state.tutorialStartRequested = true;
+        emitHomeTutorialLockIfChanged('tutorial-start-requested');
         try {
             await startHomeTutorialFromPrompt();
             await startWaiter.promise;
@@ -587,6 +635,13 @@
                 );
             }
             state.promptDrivenTutorialToken = null;
+            state.tutorialStartRequested = false;
+            emitHomeTutorialLockIfChanged('tutorial-start-failed');
+        } finally {
+            if (!state.tutorialRunning) {
+                state.tutorialStartRequested = false;
+                emitHomeTutorialLockIfChanged('tutorial-start-settled');
+            }
         }
     }
 
@@ -608,6 +663,7 @@
 
     async function showPrompt(promptToken) {
         state.promptOpen = true;
+        emitHomeTutorialLockIfChanged('prompt-open');
         state.lastPromptTokenSeen = promptToken;
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
@@ -661,6 +717,7 @@
             }
         } finally {
             state.promptOpen = false;
+            emitHomeTutorialLockIfChanged('prompt-closed');
         }
     }
 
@@ -669,16 +726,23 @@
             return;
         }
 
-        await requestPromptDisplay({
-            key: TUTORIAL_PROMPT_COORDINATION_KEY,
-            priority: TUTORIAL_PROMPT_PRIORITY,
-            shouldDisplay: function () {
-                return canShowPrompt(promptToken);
-            },
-            display: function () {
-                return showPrompt(promptToken);
-            },
-        });
+        state.promptDisplayPending = true;
+        emitHomeTutorialLockIfChanged('prompt-display-pending');
+        try {
+            await requestPromptDisplay({
+                key: TUTORIAL_PROMPT_COORDINATION_KEY,
+                priority: TUTORIAL_PROMPT_PRIORITY,
+                shouldDisplay: function () {
+                    return canShowPrompt(promptToken);
+                },
+                display: function () {
+                    return showPrompt(promptToken);
+                },
+            });
+        } finally {
+            state.promptDisplayPending = false;
+            emitHomeTutorialLockIfChanged('prompt-display-settled');
+        }
     }
 
     function bindEvents() {
@@ -735,8 +799,10 @@
                 return;
             }
             state.tutorialRunning = false;
+            state.tutorialStartRequested = false;
             state.tutorialStarted = true;
             state.homeTutorialCompleted = true;
+            emitHomeTutorialLockIfChanged('tutorial-completed');
             void (async function () {
                 const source = event.detail.source || 'manual';
                 const tutorialRunToken = await waitForTutorialRunToken(2000);
@@ -772,7 +838,9 @@
                 return;
             }
             state.tutorialRunning = true;
+            state.tutorialStartRequested = false;
             state.tutorialStarted = true;
+            emitHomeTutorialLockIfChanged('tutorial-started');
             if (event.detail.source !== 'idle_prompt') {
                 state.promptDrivenTutorialToken = null;
             }
@@ -809,6 +877,15 @@
                 }
             });
             scheduleFastHeartbeat();
+        });
+
+        window.addEventListener('neko:tutorial-skipped', function (event) {
+            if (!event || !event.detail || event.detail.page !== 'home') {
+                return;
+            }
+            state.tutorialRunning = false;
+            state.tutorialStartRequested = false;
+            emitHomeTutorialLockIfChanged('tutorial-skipped');
         });
 
         window.addEventListener('beforeunload', flushHeartbeatOnUnload);

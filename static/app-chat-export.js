@@ -1783,6 +1783,7 @@
         var closeIcon = doc.createElement('img');
         closeIcon.src = '/static/icons/close_button.png';
         closeIcon.alt = translateLabel('common.close', 'Close');
+        closeIcon.draggable = false;
         closeButton.appendChild(closeIcon);
 
         header.appendChild(title);

@@ -52,6 +52,40 @@ def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None
     )
 
 
+_SUPPORTED_LANGUAGE_CODES: tuple = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_SUPPORTED_STEAM_LITERALS: frozenset = frozenset({
+    'schinese', 'tchinese', 'english', 'japanese',
+    'koreana', 'korean', 'russian', 'spanish', 'latam',
+    'portuguese', 'brazilian',
+})
+
+
+def is_supported_language_code(raw: Any) -> bool:
+    """判断原始输入是否落在 ``normalize_language_code`` 真正能识别的支持集合内。
+
+    背景：``normalize_language_code`` 对未识别的输入会默认回退到 ``'en'``，让 garbage
+    （``'undefined'`` / ``'estonian'`` / 空白）被静默当作英文写入下游状态（全局缓存
+    或 ``mgr.user_language``）。所有"接受请求体语言再回写状态"的入口（例如
+    ``refresh_global_language`` / ``_absorb_request_language``）必须先用此 helper
+    把输入挡在外面，再调归一化。
+
+    支持集合 = 与 ``normalize_language_code`` 实际真识别的码 / Steam literal 一致；
+    用 ``_matches_lang_code`` 而不是 ``startswith`` 避免 ``estonian`` / ``ptsd`` /
+    ``essential`` 这种无意义前缀通过校验。
+    """
+    if not raw:
+        return False
+    try:
+        s = str(raw).strip().lower()
+    except Exception:
+        return False
+    if not s:
+        return False
+    if s in _SUPPORTED_STEAM_LITERALS:
+        return True
+    return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
+
+
 def _is_china_region() -> bool:
     """
     判断当前系统是否在中文区
@@ -309,6 +343,75 @@ def set_global_language(language: str) -> None:
         _global_language_full = full_lang
         _global_language_initialized = True
         logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
+
+
+def refresh_global_language(language: str) -> bool:
+    """重新校准全局语言缓存（用于晚到的真值，例如 Steam SDK 启动期 race 失败后才拿到）。
+
+    与 ``set_global_language`` 的区别：
+    - 静默 no-op：若归一化后值与当前缓存相同，直接返回 ``False``，不打 INFO 日志
+      （前端 i18n bootstrap 会调 ``/api/config/steam_language``，每次冷启都触发刷新，
+      不应每次都刷屏）。
+    - 仅当值不同 / 缓存未初始化时才覆盖并 log。
+
+    设计动机：``initialize_global_language`` 在进程启动时只跑一次，Steam SDK 没就绪
+    就退化到系统 locale 然后**终生缓存**；前端的 ``/api/config/steam_language`` 端点
+    每次重读 Steam 拿得到对的值，但没有路径回写到全局缓存——所有依赖
+    ``get_global_language()`` 的下游（memory / reflection / tts / soccer 兜底等）就
+    一直用错的英文。该函数就是这条回写路径。
+
+    Returns:
+        ``True`` 表示发生了真实变更；``False`` 表示已是最新或参数无效。
+    """
+    global _global_language, _global_language_full, _global_region, _global_language_initialized
+
+    if not language:
+        return False
+
+    # 用 ``is_supported_language_code`` 把 garbage / ``'undefined'`` / ``'estonian'``
+    # 等未识别值挡在外面：normalize 对未识别输入会默认回退到 ``'en'``，会静默把缓存
+    # 误覆盖，违背"无效就 no-op"的契约。
+    if not is_supported_language_code(language):
+        return False
+    raw = language.strip().lower()
+
+    short = normalize_language_code(raw, format='short')
+    full = normalize_language_code(raw, format='full')
+    if not short:
+        return False
+
+    with _global_language_lock:
+        # ``_global_region is not None`` 也要 hold，否则 ``set_global_language`` 这条
+        # pre-existing 路径（只置 ``_global_language_initialized=True``、不碰 region）
+        # 留下的 ``language=short, region=None`` 状态会让本次 refresh 走早 return，
+        # 漏掉 region 自愈，``get_global_region`` 永久卡 ``'non-china'`` fallback。
+        if (_global_language_initialized
+                and _global_language == short
+                and _global_language_full == full
+                and _global_region is not None):
+            return False
+        prev_short = _global_language
+        prev_full = _global_language_full
+        _global_language = short
+        _global_language_full = full
+        # _global_region 必须和 _global_language_initialized 同时建立：``get_global_region``
+        # 看到 region 为 None 才会再调 ``initialize_global_language``，但后者一旦看到
+        # initialized=True 就 early-return，会把 region 永久卡在 None → 'non-china'
+        # fallback。startup 路径正常会先初始化 region；但 startup 异常 / 测试 / 子进程
+        # 等场景下若 refresh 先于 init 跑到这里，必须自补 region 来维持不变量。
+        if _global_region is None:
+            try:
+                _global_region = 'china' if _is_china_region() else 'non-china'
+                logger.info(f"系统区域判断（refresh 路径补齐）: {_global_region}")
+            except Exception:
+                _global_region = 'non-china'
+                logger.debug("refresh_global_language 补齐 region 失败，回落 non-china", exc_info=True)
+        _global_language_initialized = True
+        logger.info(
+            f"全局语言已刷新（晚到真值覆盖）: {prev_short} -> {short} "
+            f"(full: {prev_full} -> {full})"
+        )
+    return True
 
 
 def get_global_region() -> str:

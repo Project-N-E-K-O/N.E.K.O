@@ -134,7 +134,7 @@ from utils.screenshot_utils import (
     COMPRESS_TARGET_HEIGHT,
     COMPRESS_JPEG_QUALITY,
 )
-from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, is_supported_language_code
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
     fetch_window_context_content, format_window_context_content,
@@ -2321,7 +2321,11 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
     会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
-    if request_lang:
+    # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
+    # corrupted localStorage 可能传 ``'undefined'`` / ``'estonian'`` 等 garbage，
+    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
+    # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
+    if request_lang and is_supported_language_code(request_lang):
         normalized = normalize_language_code(request_lang, format='short')
         if normalized:
             return normalized
@@ -2375,12 +2379,17 @@ async def _maybe_deliver_mini_game_invite(
     if not MINI_GAME_INVITE_ENABLED:
         return None
 
-    # 调试旗标短路：非 None 时跳过所有用户/snapshot/cooldown/概率 gate，把 game_type
+    # 调试旗标短路：非 None 时跳过所有 snapshot/cooldown/概率 gate，把 game_type
     # 钉到旗标值上。仍然要求该 game_type 有对应文案；非法值 warn + 退出而不 raise，
     # 避免在配置抖动时把整个 proactive 流水线带挂。Force-first 标记成 True 让 caller
     # 路径与正常 first-time 邀请等价（不影响 ever_delivered 持久化）。
+    #
+    # 但用户级 toggle (proactiveMiniGameInviteEnabled) 仍要尊重——开发者本机
+    # 调试用旗标不应该绕过普通用户在前端关掉 mini-game source 的明确意图。
     force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
     debug_force = bool(force_game)
+    if debug_force and not user_toggle_enabled:
+        return None
     if debug_force:
         if force_game not in MINI_GAME_INVITE_LINES_BY_GAME:
             logger.warning(
@@ -4247,14 +4256,29 @@ async def proactive_chat(request: Request):
                 action=_text_advance_outcome.get('action', 'suppress'),
             )
 
+        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
+        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
+        # 旧客户端。提到 _debug_force_invite 计算之前——把 user toggle 关同时
+        # 服务端开了调试旗标的场景下，下游早退 gate（closed / skip_probability）
+        # 也维持原有抑制语义；不能因为旗标开了就把 gate 一并 bypass 掉。
+        # CodeRabbit Major review 指出原版只在 _maybe_deliver_mini_game_invite
+        # 入口拦 user toggle，旗标已经把上游 gate 绕过 → 进 _maybe_deliver
+        # 又被 toggle 拦 None → caller 走普通 source picking，封禁场景仍然漏过。
+        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
+
         # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
         # 上游早退 gate（closed / skip_probability / restricted_screen_only），
         # 让 ``_maybe_deliver_mini_game_invite`` 能稳定接到本轮调用——契约是
         # "开启后主动搭话必定触发特定小游戏"。仅本地手测使用；生产
         # ``MINI_GAME_INVITE_ENABLED`` 总开关 + 旗标默认 None 双保险。
+        # 用户 toggle 关时旗标无效（与 _maybe_deliver_mini_game_invite 入口
+        # 的 toggle 检查同语义，单一事实源在前端 toggle）。
         # CodeRabbit Major 指出：这条不在 ``_maybe_deliver_mini_game_invite``
         # 内部加是因为那时已经过了上游 gate，旗标做不到"必定"。
-        _debug_force_invite = MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+        _debug_force_invite = (
+            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+            and _user_invite_toggle
+        )
 
         # ========== Hard short-circuit: propensity=closed ==========
         # ``private`` state pins propensity to ``closed`` (see
@@ -4377,11 +4401,8 @@ async def proactive_chat(request: Request):
             invite_lang = _resolve_proactive_locale(data, mgr)
         except Exception:
             invite_lang = 'zh'
-        # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
-        # 通过 request body 的 ``mini_game_invite_enabled`` 字段透传。缺省 True 兼容
-        # 旧客户端（未携带该字段时维持现有行为）。MINI_GAME_INVITE_ENABLED 全局
-        # kill switch 仍是更上游的一道。
-        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
+        # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
+        # toggle 关时旗标也连带禁用，保证早退 gate 不被绕过。
         invite_outcome = await _maybe_deliver_mini_game_invite(
             lanlan_name=lanlan_name,
             mgr=mgr,

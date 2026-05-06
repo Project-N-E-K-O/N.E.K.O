@@ -1693,78 +1693,153 @@ class OmniOfflineClient:
             + [HumanMessage(content=instruction)]
         )
 
+        # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
+        # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
+        # 不发任何 status_message 给前端 —— 失败 = 这一轮 AI 根本没想说话。
+        # 唯一例外：欠费 / API Key / 配额这类账户级错误必须上报，否则用户
+        # 永远不知道为什么主动搭话不工作。
+        max_retries = 3
+        retry_delays = [1, 2]
         assistant_message = ""
-        is_first_chunk = True
-        chunk_usage = None
-        prefix_buffer = ""
-        prefix_checked = not bool(self._prefix_buffer_size)
 
         try:
             self._is_responding = True
             set_call_type("proactive")
-            # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
-            # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-            async for chunk in self._astream_with_tools(messages_to_send):
-                if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
-                    chunk_usage = chunk.usage_metadata
-                    logger.debug(f"🔍 [Usage-Proactive] {chunk_usage}")
-                if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
-                    if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
-                        logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
+            for attempt in range(max_retries):
+                # 每次 attempt 重置流式状态（assistant_message / prefix /
+                # is_first_chunk 全部归零）。
+                assistant_message = ""
+                is_first_chunk = True
+                prefix_buffer = ""
+                prefix_checked = not bool(self._prefix_buffer_size)
+                emitted_any = False  # 本 attempt 是否已经向前端 emit 过文本
 
-                if not self._is_responding:
-                    break
-                content = chunk.content if hasattr(chunk, "content") else str(chunk)
-                if content and content.strip():
-                    emit_content = content
+                try:
+                    # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
+                    # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
+                    async for chunk in self._astream_with_tools(messages_to_send):
+                        if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
+                            logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
+                        if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
+                            if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
+                                logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
-                    # ── 前缀检测阶段：缓冲初始输出，剥离角色名前缀 ──
-                    if not prefix_checked:
-                        prefix_buffer += emit_content
-                        if len(prefix_buffer) >= self._prefix_buffer_size:
-                            prefix_checked = True
-                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
-                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
-                            if master_match:
-                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
-                                emit_content = prefix_buffer[master_match:]
-                            elif lanlan_match:
-                                logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
-                                emit_content = prefix_buffer[lanlan_match:]
-                            else:
-                                emit_content = prefix_buffer
-                            if not (emit_content and emit_content.strip()):
-                                continue
+                        if not self._is_responding:
+                            break
+                        content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                        if content and content.strip():
+                            emit_content = content
+
+                            # ── 前缀检测阶段：缓冲初始输出，剥离角色名前缀 ──
+                            if not prefix_checked:
+                                prefix_buffer += emit_content
+                                if len(prefix_buffer) >= self._prefix_buffer_size:
+                                    prefix_checked = True
+                                    master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                                    lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                                    if master_match:
+                                        logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离主人名前缀 '{prefix_buffer[:master_match]}'")
+                                        emit_content = prefix_buffer[master_match:]
+                                    elif lanlan_match:
+                                        logger.info(f"OmniOfflineClient.prompt_ephemeral: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                        emit_content = prefix_buffer[lanlan_match:]
+                                    else:
+                                        emit_content = prefix_buffer
+                                    if not (emit_content and emit_content.strip()):
+                                        continue
+                                else:
+                                    continue  # 缓冲区未满，等更多 chunk
+
+                            assistant_message += emit_content
+                            if self.on_text_delta:
+                                await self.on_text_delta(emit_content, is_first_chunk)
+                            is_first_chunk = False
+                            emitted_any = True
+
+                    # ── flush 前缀缓冲区（流提前结束时） ──
+                    if prefix_buffer and not prefix_checked:
+                        prefix_checked = True
+                        master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                        lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                        if master_match:
+                            logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
+                            flush_text = prefix_buffer[master_match:]
+                        elif lanlan_match:
+                            logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
+                            flush_text = prefix_buffer[lanlan_match:]
                         else:
-                            continue  # 缓冲区未满，等更多 chunk
+                            flush_text = prefix_buffer
+                        if flush_text and flush_text.strip():
+                            assistant_message += flush_text
+                            if self.on_text_delta:
+                                await self.on_text_delta(flush_text, is_first_chunk)
+                            is_first_chunk = False
+                            emitted_any = True
 
-                    assistant_message += emit_content
-                    if self.on_text_delta:
-                        await self.on_text_delta(emit_content, is_first_chunk)
-                    is_first_chunk = False
+                    break  # 流正常结束，跳出 retry 循环
 
-            # ── flush 前缀缓冲区（流提前结束时） ──
-            if prefix_buffer and not prefix_checked:
-                prefix_checked = True
-                master_match = self._match_name_prefix(prefix_buffer, self.master_name)
-                lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
-                if master_match:
-                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
-                    flush_text = prefix_buffer[master_match:]
-                elif lanlan_match:
-                    logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
-                    flush_text = prefix_buffer[lanlan_match:]
-                else:
-                    flush_text = prefix_buffer
-                if flush_text and flush_text.strip():
-                    assistant_message += flush_text
-                    if self.on_text_delta:
-                        await self.on_text_delta(flush_text, is_first_chunk)
-                    is_first_chunk = False
+                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                    error_type = type(e).__name__
+                    error_str_lower = str(e).lower()
+                    logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
+
+                    # 账户级错误必须上报：欠费 / API Key 直接放弃 retry，
+                    # 配额错误上报后继续 retry（与 stream_text 对偶）。
+                    if '欠费' in error_str_lower or 'standing' in error_str_lower:
+                        logger.error(f"prompt_ephemeral: 检测到欠费错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
+                        assistant_message = ""
+                        return False
+                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
+                            or 'authentication' in error_str_lower
+                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                        logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
+                        assistant_message = ""
+                        return False
+                    elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
+                        logger.warning(f"prompt_ephemeral: 检测到配额错误，上报前端: {e}")
+                        if self.on_status_message:
+                            await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
+
+                    # 已经吐过文本就不能再 retry —— 否则前端会拼出"半截 + 重新生成"
+                    # 的怪异回复。直接 break 让半截文本走 finally 的 persist 路径。
+                    if emitted_any:
+                        logger.info(
+                            "prompt_ephemeral: %s 发生时已 emit 文本，放弃 retry",
+                            error_type,
+                        )
+                        break
+
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delays[attempt]
+                        logger.warning(
+                            "prompt_ephemeral: LLM 调用失败 (尝试 %d/%d)，%d 秒后重试: %s",
+                            attempt + 1, max_retries, wait_time, error_type,
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                    # Retry 用尽：B 部分语义 —— 静默放弃。主动搭话失败用户
+                    # 不需要知道，只 log 一条 warning（截断 str(e) 防 HTML
+                    # 错误页淹没日志）。
+                    logger.warning(
+                        "prompt_ephemeral: %s 重试 %d 次后仍失败，静默放弃: %s",
+                        error_type, max_retries, str(e)[:200],
+                    )
+                    assistant_message = ""
+                    return False
         except Exception as e:
-            logger.error("OmniOfflineClient.prompt_ephemeral error: %s", e, exc_info=True)
-            if self.on_status_message:
-                await self.on_status_message(json.dumps({"code": "PROACTIVE_GEN_FAILED", "details": {"error_type": type(e).__name__, "error": str(e)}}))
+            # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
+            # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
+            # 语义对偶 —— 都不向前端发 status_message。
+            logger.error(
+                "OmniOfflineClient.prompt_ephemeral 未分类异常 %s: %s",
+                type(e).__name__, str(e)[:200],
+                exc_info=True,
+            )
             assistant_message = ""
             return False
         finally:

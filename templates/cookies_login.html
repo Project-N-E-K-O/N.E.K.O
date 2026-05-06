@@ -40,7 +40,7 @@
         }
         .container-header h2 { margin: 0; font-size: 1.2rem; font-weight: 700; color: white; letter-spacing: 0.5px; }
         .container-header .close-btn { -webkit-app-region: no-drag; background: transparent; border: none; cursor: pointer; padding: 8px; margin-right: -8px; /* 增大点击热区 */ }
-        .container-header .close-btn img { width: 24px; height: 24px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.1)); }
+        .container-header .close-btn img { width: 24px; height: 24px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.1)); -webkit-user-drag: none; user-select: none; }
 
         /* 内容滚动容器 */
         .dashboard-wrapper { 
@@ -468,7 +468,7 @@
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
         <button class="close-btn" onclick="window.close()" title="关闭" aria-label="关闭" data-i18n-title="common.close" data-i18n-aria="common.close">
-            <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
+            <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
         </button>
     </div>
     <div class="dashboard-wrapper">

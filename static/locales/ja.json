@@ -583,7 +583,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM接続失敗（{{error_type}}）、{{max_retries}}回リトライ済み: {{error}}",
         "TEXT_GEN_ERROR": "💥 テキスト生成エラー: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLMから応答がありませんでした。API接続と設定を確認してください。",
-        "PROACTIVE_GEN_FAILED": "💥 プロアクティブ応答の生成に失敗: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}が別のターミナルに移動中...",
         "RELOAD_PAGE": "音声が更新されました。ページがまもなく更新されます",
         "AGENT_AUTO_DISABLED_COMPUTER": "キーボード/マウス制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
@@ -612,7 +611,30 @@
         "TTS_VOICE_NOT_REGISTERED": "このキャラクターには登録された音声がありません",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "必須パラメータが不足しています",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URLを入力してください",
-        "TTS_GPT_SOVITS_URL_INVALID": "無効なGPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "無効なGPT-SoVITS API URL",
+        "AGENT_NO_PLUGINS_FOUND": "ユーザープラグインが見つかりません",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw が利用できません: $t(agent.precheck.{{reason_code}})",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "OpenClaw を有効化できません: モジュールが読み込まれていません",
+        "AGENT_OPENCLAW_UNAVAILABLE": "OpenClaw を有効化できません: $t(agent.precheck.{{reason_code}})",
+        "AGENT_PLUGIN_SERVER_ERROR": "ユーザープラグインサーバーの起動に失敗しました",
+        "CURRENT_CATGIRL_IN_USE": "使用中のキャラクター「{{character_name}}」に対してこの操作はできません。先に別のキャラクターへ切り替えてください",
+        "DIRECT_LINK_INACCESSIBLE": "ダイレクトリンクにアクセスできません",
+        "DOWNLOAD_FAILED": "音声のダウンロードに失敗しました",
+        "FILE_TOO_LARGE": "ファイルが大きすぎます",
+        "GAME_ROUTE_ENDED": "ゲームルートを終了しました",
+        "GAME_ROUTE_LLM_FAILED": "ゲーム LLM が有効な出力を返しませんでした（{{error}}）",
+        "GAME_ROUTE_MEDIA_SKIPPED": "ゲーム中は画面/カメラフレームをスキップしました",
+        "GAME_VOICE_STT_GATE_ACTIVE": "ゲーム音声テイクオーバーが有効です",
+        "INTERNAL_IMPORT_ERROR": "内部コンポーネントの読み込みに失敗しました: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "ローカルキャラクター設定の構造が無効です",
+        "MEMORY_SERVER_RELEASE_FAILED": "キャラクター記憶ハンドルの解放に失敗しました。後ほど再試行してください",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API キーが未設定です。先に設定で入力してください",
+        "PRIVATE_IP_NOT_ALLOWED": "ダイレクトリンクはプライベート IP を指してはいけません",
+        "RESPONSE_LENGTH_TRUNCATED": "返信が長すぎたため、直前の文末で自動的に切り詰めました",
+        "STEAM_UNSUBSCRIBE_FAILED": "Steam の購読解除に失敗しました",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "テキスト生成が中断されました（{{error_type}}）。出力済み部分は保持されます",
+        "TTS_PROVIDER_INVALID": "無効な TTS プロバイダー: {{provider}}。対応プロバイダー: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "ストレージメンテナンス中のため操作を一時停止しました。後ほど再試行してください"
     },
     "camera": {
         "iosPermissionHint": "iOS設定 → Safari → カメラの権限が「許可」に設定されているか確認してください",
@@ -1778,6 +1800,7 @@
         "personalityModuleUnavailable": "性格選択モジュールがまだ読み込まれていません",
         "manageModel": "クリックしてモデルを管理",
         "fillProfileNameFirst": "まず neko プロフィール名を入力してから、モデルを設定してください",
+        "fillProfileNameFirstForCardFace": "まず neko プロフィール名を入力してから、カード面を設定してください",
         "registerNewVoice": "新しいボイスを登録",
         "systemPrompt": "システムプロンプト（注意して編集してください）",
         "systemPromptWarning": "システムプロンプト - 変更により予期しない動作が発生する可能性があります。自己責任で編集してください。",
@@ -2634,6 +2657,7 @@
         "serverNotReturnedValidJSON": "サーバーが有効な JSON データを返しませんでした"
     },
     "tutorial": {
+        "homeInteractionLocked": "チュートリアル中です。まず案内に沿って現在の手順を完了してください。",
         "step1": {
             "title": "👋 N.E.K.O へようこそ",
             "desc": "あなたのネコです！これから各機能を紹介します~"

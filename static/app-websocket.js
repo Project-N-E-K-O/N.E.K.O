@@ -35,6 +35,32 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    function isHomeTutorialLockedForGreeting() {
+        try {
+            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
+                return window.isNekoHomeTutorialBlockingGreeting() === true;
+            }
+            if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
+                return window.isNekoHomeTutorialInteractionLocked() === true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function sendHomeTutorialState(reason) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'home_tutorial_state',
+                blocking_greeting: isHomeTutorialLockedForGreeting(),
+                reason: reason || 'state-sync',
+                timestamp: Date.now(),
+            }));
+        } catch (error) {
+            console.warn('[HomeTutorial] failed to sync tutorial state:', error);
+        }
+    }
+
     function normalizeAssistantTurnId(turnId) {
         if (turnId === undefined || turnId === null || turnId === '') {
             return null;
@@ -575,12 +601,52 @@
             }, C.HEARTBEAT_INTERVAL);
             console.log(window.t('console.heartbeatStarted'));
 
+            sendHomeTutorialState('ws-open');
+
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
             S._greetingCheckPending = true;
             S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
+
+            // ── game-window-state 重连兜底（codex P2）──
+            // game_window_state_change 是 edge-triggered WS 事件——只在 activate
+            // / finalize 那一瞬推。WS 在 game 期间断开 + 期间 close 事件丢失 →
+            // _gameWindowActive 卡在 true，UI 永远停在收缩态。onopen 同时覆盖
+            // 首次连接和重连，主动查 /api/game/route/active 拿当前权威状态，
+            // dispatch 对应 CustomEvent 让既有 listener 走正常 minimize / restore
+            // 路径。idempotent：active=true + 已 minimize → _gameMinimizeForGame
+            // 早返回；active=false + 无 snap → _gameRestoreAfterGame 早返回。
+            (function syncGameWindowStateOnWsConnect() {
+                var lan = '';
+                try {
+                    if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                        lan = window.appState.lanlan_name;
+                    }
+                    if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                        lan = window.lanlan_config.lanlan_name;
+                    }
+                } catch (_) {}
+                if (!lan) return; // greeting 流水线还没解析角色 → 跳过本次，下次 onopen 再来
+                fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                    .then(function (resp) { return resp && resp.ok ? resp.json() : null; })
+                    .then(function (data) {
+                        if (!data) return;
+                        var action = data.active ? 'opened' : 'closed';
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                                detail: {
+                                    action: action,
+                                    lanlanName: data.lanlan_name || lan,
+                                    gameType: data.game_type || '',
+                                    sessionId: data.session_id || ''
+                                }
+                            }));
+                        } catch (_) {}
+                    })
+                    .catch(function () {});
+            })();
         };
 
         // ---- onmessage ----
@@ -1069,6 +1135,10 @@
                         } else {
                             console.warn('[GameVoiceSTT] startGameVoiceSttGate unavailable');
                         }
+                        return;
+                    }
+
+                    if (statusCode === 'GAME_ROUTE_MEDIA_SKIPPED') {
                         return;
                     }
 
@@ -1788,6 +1858,12 @@
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(reloadMsg || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
                     }
+                    // 后端在发 reload_page 之前已经 end_session，前端 2.5s 后才真
+                    // reload。这 2.5s 内 isTextSessionActive 若残留 true，用户敲
+                    // 文字会绕过 start_session action 直接送 stream_data，错过
+                    // websocket_router 的 reset_session_start_circuit 守卫，触发
+                    // 后端"未指定 ↔ 免费 音色切换后概率连接失败"那条路径。
+                    S.isTextSessionActive = false;
                     setTimeout(function () {
                         console.log(window.t('console.reloadPageStarting'));
                         if (window.closeAllSettingsWindows) window.closeAllSettingsWindows();
@@ -1930,6 +2006,26 @@
                             gameType: response.game_type || '',
                             url: response.game_url || '',
                         });
+                    }
+
+                // -------- game_window_state_change --------
+                // 后端 game_route_start 激活后推 'opened'，_finalize 翻 inactive
+                // 后推 'closed'。前端把它转成 DOM 自定义事件让 chat.html / pet
+                // index.html 各自挂监听做布局联动（chat.html → 触发内部 collapse
+                // + 移到左下角；index.html → 加 body class 隐藏 live2d/vrm/mmd
+                // 容器）。多窗口模式下 RAW_MESSAGE forwarding 把同一条 WS 转给
+                // chat.html，两边监听同一个 DOM 事件名即可。
+                } else if (response.type === 'game_window_state_change') {
+                    try {
+                        var detail = {
+                            action: response.action || '',
+                            lanlanName: response.lanlan_name || '',
+                            gameType: response.game_type || '',
+                            sessionId: response.session_id || ''
+                        };
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                    } catch (gwErr) {
+                        console.warn('[GameWindow] dispatch failed:', gwErr);
                     }
                 }
 
@@ -2119,8 +2215,7 @@
     function _isTutorialBlockingGreeting() {
         if (!_isHomeTutorialPage()) return false;
         try {
-            if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function'
-                    && window.isNekoHomeTutorialBlockingGreeting() === true) {
+            if (isHomeTutorialLockedForGreeting()) {
                 return true;
             }
         } catch (_) {}
@@ -2173,10 +2268,27 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
+                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
+                // start_session seed 的全局缓存），所以这里宁可送 navigator
+                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
+                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
+                // Steam API 时，navigator.language 通常已经是 zh-CN）。
+                var greetingLang = '';
+                try {
+                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                        greetingLang = window.i18next.language;
+                    } else if (typeof localStorage !== 'undefined') {
+                        greetingLang = localStorage.getItem('i18nextLng') || '';
+                    }
+                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
+                        greetingLang = navigator.language;
+                    }
+                } catch (_) { greetingLang = ''; }
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
                     is_switch: !!S._greetingCheckIsSwitch,
-                    language: (window.i18next && window.i18next.language) || ''
+                    language: greetingLang
                 }));
                 S._greetingCheckPending = false;
                 _resetGreetingCheckRetry(true);
@@ -2212,6 +2324,48 @@
     // VRM / MMD
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
+
+    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
+    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
+    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
+    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
+    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
+    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
+    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
+    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
+    // 即可。
+    function _syncLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] send failed:', e);
+        }
+    }
+    if (window.i18next && typeof window.i18next.on === 'function') {
+        window.i18next.on('languageChanged', _syncLanguageToBackend);
+    } else {
+        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
+        window.addEventListener('localechange', function () {
+            try {
+                var lng = (window.i18next && typeof window.i18next.language === 'string')
+                    ? window.i18next.language : '';
+                _syncLanguageToBackend(lng);
+            } catch (_) { /* noop */ }
+        });
+    }
+
+    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        sendHomeTutorialState(detail.reason || 'lock-changed');
+        if (detail.locked === false) {
+            _sendGreetingCheckIfReady();
+        }
+    });
 
     // ========================  Export module  ========================
     window.appWebSocket = mod;

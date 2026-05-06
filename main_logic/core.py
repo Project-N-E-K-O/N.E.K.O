@@ -190,7 +190,7 @@ from utils.api_config_loader import (
     get_livestream_config,
     is_livestream_active,
 )
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full, is_supported_language_code
 import threading
 from threading import Thread
 from queue import Queue, Empty
@@ -2498,20 +2498,43 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             if not self.pending_input_data:
                 return
-            
+
             if self.session and self.is_active:
+                # 缓存阶段（_stream_data_now）不知道 session 最终是 voice 还是
+                # text。如果最终启好的是 voice session，缓存里的 text 输入若
+                # 直接 flush 进 _process_stream_data_internal，会触发 4977-4995
+                # 的"硬撕 voice → 重建 text"自动切换路径，把刚 ready 的 voice
+                # session 撕成 CHARACTER_LEFT / "角色离开"——这是用户在切音色
+                # 后开语音、麦启动期打字的典型 race。这里只防御 text → voice
+                # 这一条不对偶的路径；screen / camera 等 vision 输入会在
+                # _process_stream_data_internal 里路由到
+                # OmniRealtimeClient.stream_image（5262-5278），是 voice session
+                # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
+                # 直接 return 不缓存，pending_input_data 不会出现 audio。
+                is_voice_session = isinstance(self.session, OmniRealtimeClient)
+                dropped_text_for_voice = 0
                 for message in self.pending_input_data:
+                    msg_input_type = message.get("input_type")
                     try:
                         # 重新调用stream_data处理缓存的数据
                         # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        if message.get("input_type") == "audio":
+                        if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
+                            if is_voice_session and msg_input_type == "text":
+                                dropped_text_for_voice += 1
+                                continue
                             await self._process_stream_data_internal(message)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
-            
+                if dropped_text_for_voice:
+                    logger.info(
+                        "[%s] _flush_pending_input_data: dropped %d cached text "
+                        "message(s) because final session is voice mode",
+                        self.lanlan_name, dropped_text_for_voice,
+                    )
+
             # 清空缓存
             self.pending_input_data.clear()
     
@@ -2737,8 +2760,15 @@ class LLMSessionManager:
         self._memory_error_retry_after = 0
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
-        # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
-        self.user_language = normalize_language_code(get_global_language(), format='short')
+        # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
+        # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
+        # 前端 i18n 真值（例如 Steam=zh / 系统=en 时正确的 'zh-CN'）一律打回错的
+        # 全局缓存值（race 失败时的 'en'），让游戏 / proactive / memory 的 prompt
+        # 全部回退英文。改为：仅在 user_language 还没被设过时才 seed 一次，已经
+        # 有 session 真值就保留——全局缓存晚到的更新由 refresh_global_language
+        # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
+        if not getattr(self, 'user_language', None):
+            self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -4491,7 +4521,26 @@ class LLMSessionManager:
                 await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
                 try:
-                    delivered = await self.session.prompt_ephemeral(instruction)
+                    # 防御 stale session: 4429 start_session 之后到这里又过了
+                    # 多次 await（holiday hint / try_start_proactive /
+                    # _proactive_write_lock / self.lock / state.fire ×2），
+                    # 期间 cleanup / disconnected_by_server / 切音色重建路径
+                    # 都可能把 self.session 置 None 或换为 OmniRealtimeClient。
+                    # 直接 self.session.prompt_ephemeral 会触发 AttributeError
+                    # 把 trigger_greeting task 整个挂掉（参考切音色后并发
+                    # session 重建期间 trigger_greeting 撞 self.session=None
+                    # 的崩溃 trace）。先快照本地引用 + 类型校验，stale 时
+                    # 静默 skip，外层 finally 会 fire PROACTIVE_DONE 让 SM
+                    # 不卡在 PHASE2 / CLAIM。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
                 finally:
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
@@ -4983,12 +5032,35 @@ class LLMSessionManager:
                         return
                     
                     logger.info(f"文本模式需要 OmniOfflineClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 先关闭旧 session
-                    if self.session:
-                        await self.end_session()
-                    # 再创建新的文本模式 session
+                    # 占用 _starting_session_count guard 跨过 end_session 窗口期。
+                    # 默认 end_session(reset_starting_count=True) 会把 guard 清零；
+                    # 它内部又有多个 await 拆 session，期间另一条 _stream_data_now
+                    # （比如 audio worker 拉到下一包）看到 session=None / count=0 会
+                    # 从 4941-4953 的 auto-create 分支抢跑 start_session(audio)，
+                    # 等本路径走到 await self.start_session(text) 时命中 2776 的
+                    # "Session正在启动中" guard 被静默忽略，重建静默失败
+                    # （ERROR "💥 文本模式Session重建失败"）。
+                    #
+                    # 同时把 session_ready 提前置 False，与 start_session 2867-2868
+                    # 的初始化对偶：rebuild 期间若 session_ready 仍是 True，并发
+                    # _stream_data_now 跳过 4926-4938 的 cache 分支（条件为
+                    # not session_ready），落到 _process_stream_data_internal 后
+                    # 命中 4975 的 count>0 早退被 silent drop——用户在 rebuild
+                    # 窗口内打的字直接丢失。提前置 False 让 cache 路径接住，
+                    # rebuild 完成后 _flush_pending_input_data 会 flush 出去。
+                    async with self.input_cache_lock:
+                        self.session_ready = False
+                    self._starting_session_count += 1
+                    try:
+                        if self.session:
+                            await self.end_session(reset_starting_count=False)
+                    finally:
+                        self._starting_session_count = max(0, self._starting_session_count - 1)
+                    # 释放 guard 与下面的 start_session 之间禁止 await，否则窗口
+                    # 重新打开。start_session 入口的 +=1 (2781) 之前都是同步代码，
+                    # 函数调用本身不让出控制权，安全。
                     await self.start_session(self.websocket, new=False, input_mode='text')
-                    
+
                     # 检查重建是否成功
                     if not self.session or not self.is_active or not isinstance(self.session, OmniOfflineClient):
                         logger.error("💥 文本模式Session重建失败，放弃本次数据流")
@@ -5127,12 +5199,21 @@ class LLMSessionManager:
                         return
                     
                     logger.info(f"语音模式需要 OmniRealtimeClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 先关闭旧 session
-                    if self.session:
-                        await self.end_session()
-                    # 再创建新的语音模式 session
+                    # 与上面 text 重建路径对偶：先置 session_ready=False 让 cache
+                    # 路径接住窗口期内的输入，再占用 guard 跨过 end_session，防止
+                    # 并发 _stream_data_now 抢跑 start_session(text) 造成本路径
+                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）
+                    # 或落到 _process_stream_data_internal 4975 早退被 silent drop。
+                    async with self.input_cache_lock:
+                        self.session_ready = False
+                    self._starting_session_count += 1
+                    try:
+                        if self.session:
+                            await self.end_session(reset_starting_count=False)
+                    finally:
+                        self._starting_session_count = max(0, self._starting_session_count - 1)
                     await self.start_session(self.websocket, new=False, input_mode='audio')
-                    
+
                     # 检查重建是否成功
                     if not self.session or not self.is_active or not isinstance(self.session, OmniRealtimeClient):
                         logger.error("💥 语音模式Session重建失败，放弃本次数据流")
@@ -5252,7 +5333,6 @@ class LLMSessionManager:
                         av_pos = message.get('avatar_position')
                         if av_pos and isinstance(av_pos, dict):
                             try:
-                                from utils.language_utils import get_global_language_full
                                 image_b64 = await asyncio.to_thread(
                                     overlay_avatar_annotation,
                                     image_b64, av_pos, self.lanlan_name,
@@ -5331,6 +5411,16 @@ class LLMSessionManager:
                 self._reset_tts_retry_state()
 
         if _inactive_early:
+            if reset_starting_count:
+                # 前端启动超时会在 session 尚未 active 时发送 end_session。
+                # 旧输入缓存必须在释放 start_session guard 之前清掉；释放后
+                # 新一轮启动可能已经开始缓存用户消息，旧收尾不能再碰它们。
+                async with self.input_cache_lock:
+                    self.session_ready = False
+                    self.pending_input_data.clear()
+                async with self.lock:
+                    if expected_session is None or expected_session is self.session:
+                        self._starting_session_count = 0
             # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
             # 必须清理这些孤儿资源，否则线程/task 会泄漏
             await self._teardown_tts_runtime(
@@ -5474,6 +5564,16 @@ class LLMSessionManager:
         """
         if not language:
             logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
+            return
+
+        # 校验原始输入：``normalize_language_code`` 对未识别值会默认回退 ``'en'``，
+        # 外部来源（ws ``message['language']`` 携带的 corrupted ``localStorage``、
+        # 第三方客户端发的 ``'undefined'`` / ``'null'`` / ``'estonian'`` 等 garbage）
+        # 会被静默归一成 ``'en'``，覆盖正确的 session locale。先用公共白名单挡掉。
+        if not is_supported_language_code(language):
+            logger.warning(
+                f"语言参数不支持: {language!r}，保持当前语言: {self.user_language}"
+            )
             return
 
         # 使用公共函数进行语言代码归一化

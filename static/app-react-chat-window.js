@@ -52,6 +52,7 @@
         galgameOptions: [],
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
+        homeTutorialInteractionLocked: false,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
         // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -421,7 +422,8 @@
             translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
-            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…')
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
+            composerDisabled: !!state.homeTutorialInteractionLocked
         };
     }
 
@@ -787,6 +789,9 @@
     }
 
     function handleComposerSubmit(payload) {
+        if (state.homeTutorialInteractionLocked) {
+            return;
+        }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
             ? payload.requestId
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1542,6 +1547,17 @@
             gameType: String(payload.gameType || ''),
             options: cleanedOptions
         };
+        // mini-game invite 占用 composer 底部 slot 视觉位 → galgame options
+        // 让位（App.tsx 已把 galgame slot 在 choicePromptHasOptions 下不挂树）。
+        // 这里同步 abort 任何 in-flight / pending wait 的 galgame fetch + 清掉
+        // 残留 loading/options state：
+        //   1) 不再浪费 summary tier 推理（proactive invite 文本基本是
+        //      sudden-context，galgame option 生成大概率 timeout / unparseable
+        //      → 全是 fallback，纯浪费）
+        //   2) 防止 fetch 在 invite 解决前才返回，写回 state.galgameOptions
+        //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
+        //      文本生成的，与后续对话无关）
+        invalidatePendingGalgameRequest();
         renderWindow();
     }
 
@@ -1663,6 +1679,18 @@
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function setHomeTutorialInteractionLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInteractionLocked === next) {
+            return;
+        }
+        state.homeTutorialInteractionLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            composerDisabled: next
+        });
         renderWindow();
     }
 
@@ -2127,6 +2155,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -2712,6 +2741,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

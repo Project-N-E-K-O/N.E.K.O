@@ -2262,6 +2262,7 @@ async def unsubscribe_workshop_item(request: Request):
                 "code": "CURRENT_CATGIRL_IN_USE",
                 "error": f"不能取消订阅当前正在使用的猫娘「{current_catgirl}」，请先切换到其他角色后再取消订阅。",
                 "character_name": current_catgirl,
+                "details": {"character_name": current_catgirl},
             }, status_code=400)
 
         # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
@@ -2284,6 +2285,7 @@ async def unsubscribe_workshop_item(request: Request):
                     "success": False,
                     "code": "INTERNAL_IMPORT_ERROR",
                     "error": f"内部组件加载失败: {exc}",
+                    "details": {"error": str(exc)},
                 }, status_code=500)
 
             async def _release_one(name: str) -> tuple[str, bool, str | None]:
@@ -2360,6 +2362,7 @@ async def unsubscribe_workshop_item(request: Request):
                     "success": False,
                     "code": "INTERNAL_IMPORT_ERROR",
                     "error": f"内部组件加载失败: {exc}",
+                    "details": {"error": str(exc)},
                 }, status_code=500)
 
             characters_mut = await config_mgr.aload_characters()
@@ -2401,6 +2404,7 @@ async def unsubscribe_workshop_item(request: Request):
                     "code": "CURRENT_CATGIRL_IN_USE",
                     "error": f"不能取消订阅当前正在使用的猫娘「{current_catgirl_now}」，请先切换到其他角色后再取消订阅。",
                     "character_name": current_catgirl_now,
+                    "details": {"character_name": current_catgirl_now},
                 }, status_code=400)
 
             async def _delete_memory_with_retry(name: str) -> list:

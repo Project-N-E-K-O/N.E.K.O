@@ -112,6 +112,7 @@ function getToolItemLabel(item: ToolIconItem): string {
 }
 
 const avatarToolRangePadding = 100;
+const avatarToolRangeHoldMs = 180;
 const compactCursorZoneSelector = [
   '.composer-bottom-tools',
   '.composer-tool-menu',
@@ -554,6 +555,7 @@ export default function App({
   messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerHidden = false,
+  composerDisabled = false,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -629,6 +631,8 @@ export default function App({
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
+  const avatarRangeHoldUntilRef = useRef(0);
+  const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
   const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
@@ -645,14 +649,66 @@ export default function App({
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
-  const canSubmit = draft.trim().length > 0 || composerAttachments.length > 0;
+  const canSubmit = !composerDisabled && (draft.trim().length > 0 || composerAttachments.length > 0);
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
+    avatarRangeHoldUntilRef.current = 0;
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     setActiveCursorToolId(null);
     setToolMenuOpen(false);
     setIsCursorOverAvatarRange(false);
     setIsCursorOverCompactCursorZone(false);
+  }, []);
+  const setCursorOverAvatarRange = useCallback((nextValue: boolean, options?: { allowHold?: boolean }) => {
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
+
+    if (nextValue) {
+      const holdUntil = performance.now() + avatarToolRangeHoldMs;
+      avatarRangeHoldUntilRef.current = holdUntil;
+      setIsCursorOverAvatarRange(previousValue => (
+        previousValue === true ? previousValue : true
+      ));
+      avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+        avatarRangeHoldTimerRef.current = null;
+        if (performance.now() < avatarRangeHoldUntilRef.current) return;
+        avatarRangeHoldUntilRef.current = 0;
+        setIsCursorOverAvatarRange(previousValue => (previousValue ? false : previousValue));
+      }, avatarToolRangeHoldMs);
+      return;
+    }
+
+    setIsCursorOverAvatarRange(previousValue => {
+      const shouldHold = options?.allowHold !== false
+        && previousValue
+        && performance.now() <= avatarRangeHoldUntilRef.current;
+      if (shouldHold) {
+        if (avatarRangeHoldTimerRef.current === null) {
+          const delay = Math.max(0, avatarRangeHoldUntilRef.current - performance.now());
+          avatarRangeHoldTimerRef.current = window.setTimeout(() => {
+            avatarRangeHoldTimerRef.current = null;
+            if (performance.now() < avatarRangeHoldUntilRef.current) return;
+            avatarRangeHoldUntilRef.current = 0;
+            setIsCursorOverAvatarRange(currentValue => (currentValue ? false : currentValue));
+          }, delay);
+        }
+        return true;
+      }
+      if (avatarRangeHoldTimerRef.current !== null) {
+        window.clearTimeout(avatarRangeHoldTimerRef.current);
+        avatarRangeHoldTimerRef.current = null;
+      }
+      if (avatarRangeHoldUntilRef.current !== 0) {
+        avatarRangeHoldUntilRef.current = 0;
+      }
+      return previousValue ? false : previousValue;
+    });
   }, []);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
@@ -678,10 +734,17 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  // ChoicePrompt（mini-game invite 等）和 galgame options 共用 composer 底部
+  // 同一块 slot 视觉位。两者同时活跃会渲染出 6 个按钮挤一起；invite 是少见
+  // 且需要用户即时响应的 transient event，galgame options 是常驻 mode →
+  // invite 优先，galgame slot 临时让位。invite resolve 后下一轮 assistant
+  // turn-end 会重新触发 galgame fetch，自然回归。
+  const choicePromptHasOptions = !!(choicePrompt && choicePrompt.options.length > 0);
   // 模式开启 ≠ 选项实际占位。光开开关、还没收到 AI 新一轮时 slot 不撑开；
   // 选项到位（loading 占位也算）才让 slot 长出来，输入壳跟着自然变高。
   const galgameOptionsVisible =
-    galgameModeEnabled && (galgameOptionsLoading || galgameOptions.length > 0);
+    galgameModeEnabled && !choicePromptHasOptions
+    && (galgameOptionsLoading || galgameOptions.length > 0);
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -1076,9 +1139,7 @@ export default function App({
       }
       const avatarRangeHit = getAvatarRangeHit(event.clientX, event.clientY, avatarToolCacheState);
       const isOverAvatarAtPointer = avatarRangeHit !== null;
-      setIsCursorOverAvatarRange(previousValue => (
-        previousValue === isOverAvatarAtPointer ? previousValue : isOverAvatarAtPointer
-      ));
+      setCursorOverAvatarRange(isOverAvatarAtPointer, { allowHold: true });
 
       if (activeCursorToolId === 'lollipop') {
         if (isOverAvatarAtPointer) {
@@ -1213,7 +1274,7 @@ export default function App({
       window.removeEventListener('pointercancel', handlePointerUp, true);
       window.removeEventListener('blur', handlePointerUp);
     };
-  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase]);
+  }, [activeCursorToolId, avatarRangeCursorVariants, hammerSwingPhase, setCursorOverAvatarRange]);
 
   useEffect(() => {
     if (activeCursorToolId === 'hammer') return;
@@ -1224,6 +1285,10 @@ export default function App({
   useEffect(() => () => {
     clearHammerSwingAnimation();
     clearOutsideHammerResetTimer();
+    if (avatarRangeHoldTimerRef.current !== null) {
+      window.clearTimeout(avatarRangeHoldTimerRef.current);
+      avatarRangeHoldTimerRef.current = null;
+    }
     floatingHeartTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
     floatingHeartTimeoutIdsRef.current = [];
     floatingFistDropTimeoutIdsRef.current.forEach(timeoutId => window.clearTimeout(timeoutId));
@@ -1232,7 +1297,7 @@ export default function App({
 
   useEffect(() => {
     if (!activeCursorToolId) {
-      setIsCursorOverAvatarRange(false);
+      setCursorOverAvatarRange(false, { allowHold: false });
       setIsCursorOverCompactCursorZone(false);
       return;
     }
@@ -1241,9 +1306,7 @@ export default function App({
 
     const updateCursorRangeState = (clientX: number, clientY: number) => {
       const nextValue = isPointerWithinAvatarRange(clientX, clientY, avatarToolCacheState);
-      setIsCursorOverAvatarRange(previousValue => (
-        previousValue === nextValue ? previousValue : nextValue
-      ));
+      setCursorOverAvatarRange(nextValue, { allowHold: true });
     };
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -1271,7 +1334,7 @@ export default function App({
     const hideLocalCursorOverlay = () => {
       clearAvatarBoundsCache(avatarToolCacheState);
       latestPointerTargetRef.current = null;
-      setIsCursorOverAvatarRange(false);
+      setCursorOverAvatarRange(false, { allowHold: false });
       setIsCursorOverCompactCursorZone(false);
       setIsCursorInsideHostWindow(false);
     };
@@ -1320,7 +1383,7 @@ export default function App({
       window.removeEventListener('blur', hideLocalCursorOverlay);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeCursorToolId]);
+  }, [activeCursorToolId, avatarToolCacheState, setCursorOverAvatarRange]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1387,10 +1450,10 @@ export default function App({
   }, [hammerCursorOverlayActive, hammerSwingPhase]);
 
   useEffect(() => {
-    if (composerHidden && activeCursorToolId) {
+    if (composerHidden || composerDisabled) {
       clearActiveCursorToolSelection();
     }
-  }, [activeCursorToolId, composerHidden]);
+  }, [clearActiveCursorToolSelection, composerHidden, composerDisabled]);
 
   useEffect(() => {
     function handleDeactivate() {
@@ -1405,6 +1468,7 @@ export default function App({
   }, []);
 
   function submitDraft() {
+    if (composerDisabled) return;
     if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
@@ -1426,6 +1490,7 @@ export default function App({
       aria-label={resolvedTranslateAriaLabel}
       aria-pressed={translateEnabled}
       title={translateButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onTranslateToggle?.()}
     >
       <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
@@ -1438,6 +1503,7 @@ export default function App({
       type="button"
       aria-label={jukeboxButtonAriaLabel}
       title={jukeboxButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onJukeboxClick?.()}
     >
       <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -1451,6 +1517,7 @@ export default function App({
       aria-label={resolvedGalgameAriaLabel}
       aria-pressed={galgameModeEnabled}
       title={galgameToggleButtonLabel}
+      disabled={composerDisabled}
       onClick={() => onGalgameModeToggle?.()}
     >
       <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
@@ -1466,6 +1533,7 @@ export default function App({
         title={selectedEmojiButtonAriaLabel}
         aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
         aria-expanded={toolMenuOpen}
+        disabled={composerDisabled}
         onClick={() => {
           if (activeToolItem) {
             clearActiveCursorToolSelection();
@@ -1489,6 +1557,7 @@ export default function App({
           type="button"
           aria-label={clearCursorToolAriaLabel}
           title={clearCursorToolAriaLabel}
+          disabled={composerDisabled}
           onClick={(event) => {
             event.stopPropagation();
             setIsCursorInsideHostWindow(true);
@@ -1520,6 +1589,7 @@ export default function App({
               aria-pressed={activeCursorToolId === item.id}
               aria-label={itemLabel}
               title={itemLabel}
+              disabled={composerDisabled}
               onClick={(event) => {
                 latestPointerPositionRef.current = {
                   x: event.clientX,
@@ -1528,7 +1598,10 @@ export default function App({
                 latestPointerTargetRef.current = event.currentTarget;
                 setIsCursorInsideHostWindow(true);
                 setIsCursorOverCompactCursorZone(true);
-                setIsCursorOverAvatarRange(isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState));
+                setCursorOverAvatarRange(
+                  isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
+                  { allowHold: true },
+                );
                 if (activeCursorToolId === item.id) {
                   setActiveCursorToolId(null);
                   setToolMenuOpen(false);
@@ -1698,7 +1771,13 @@ export default function App({
                     className="composer-attachment-remove"
                     type="button"
                     aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
-                    onClick={() => onComposerRemoveAttachment?.(attachment.id)}
+                    aria-disabled={composerDisabled}
+                    disabled={composerDisabled}
+                    onClick={() => {
+                      if (!composerDisabled) {
+                        onComposerRemoveAttachment?.(attachment.id);
+                      }
+                    }}
                   >
                     ×
                   </button>
@@ -1717,6 +1796,8 @@ export default function App({
                 aria-label={inputPlaceholder}
                 rows={1}
                 value={draft}
+                readOnly={composerDisabled}
+                disabled={composerDisabled}
                 onChange={(event) => { setDraft(event.target.value); }}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return;
@@ -1726,10 +1807,12 @@ export default function App({
                   }
                 }}
               />
-              {galgameModeEnabled ? (
+              {galgameModeEnabled && !choicePromptHasOptions ? (
                 // Slot 始终挂在树上，开/关靠 is-open（max-height + opacity 过渡）。
                 // 这样选项进/出时输入壳跟着自然长/缩，bottom-bar 锚在 panel 底
                 // 不动，textarea 顶端跟着 shell-top 上抬，视觉上是从下往上展开。
+                // mini-game invite 等 ChoicePrompt 占位时整块 slot 不挂树，避免
+                // 与下面 composer-choice-slot 视觉撞车（参见 choicePromptHasOptions）。
                 <div
                   className={`composer-galgame-slot${galgameOptionsVisible ? ' is-open' : ''}`}
                   aria-hidden={!galgameOptionsVisible}
@@ -1746,7 +1829,7 @@ export default function App({
                             type="button"
                             className="composer-galgame-option"
                             title={option.text}
-                            disabled={galgameOptionsLoading}
+                            disabled={composerDisabled || galgameOptionsLoading}
                             tabIndex={galgameOptionsVisible ? 0 : -1}
                             onClick={() => {
                               if (submittingRef.current) return;
@@ -1804,6 +1887,7 @@ export default function App({
                         type="button"
                         className="composer-galgame-option composer-choice-option"
                         title={option.label}
+                        disabled={composerDisabled}
                         onClick={() => {
                           if (submittingRef.current) return;
                           submittingRef.current = true;
@@ -1829,6 +1913,7 @@ export default function App({
                     type="button"
                     aria-label={resolvedImportImageAriaLabel}
                     title={importImageButtonLabel}
+                    disabled={composerDisabled}
                     onClick={() => onComposerImportImage?.()}
                   >
                     <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -1839,6 +1924,7 @@ export default function App({
                     type="button"
                     aria-label={resolvedScreenshotAriaLabel}
                     title={screenshotButtonLabel}
+                    disabled={composerDisabled}
                     onClick={() => onComposerScreenshot?.()}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -1878,6 +1964,7 @@ export default function App({
                         title={overflowMenuAriaLabel}
                         aria-haspopup="true"
                         aria-expanded={overflowMenuOpen}
+                        disabled={composerDisabled}
                         onClick={() => setOverflowMenuOpen(open => !open)}
                       >
                         <svg

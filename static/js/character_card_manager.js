@@ -2896,6 +2896,7 @@ async function loadCharacterCards() {
 
 // 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
 window._cardFaceNames = window._cardFaceNames || new Set();
+const CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
 async function loadCardFaceNames() {
     try {
         const resp = await fetch('/api/characters/card-faces');
@@ -2913,6 +2914,27 @@ function openManagedPopup(url, windowName, features) {
     window._openWindows = window._openWindows || {};
     const existingWindow = window._openWindows[windowName];
     if (existingWindow && !existingWindow.closed) {
+        const replacementName = `${windowName}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const replacementWindow = window.open(url, replacementName, features);
+        if (replacementWindow) {
+            try { existingWindow.close(); } catch (_) {}
+            try {
+                // 随机名只用于绕开旧窗口复用；新窗口接管后恢复固定名称，方便其他上下文继续定位。
+                replacementWindow.name = windowName;
+            } catch (error) {
+                console.warn('更新弹窗名称失败:', error);
+            }
+            window._openWindows[windowName] = replacementWindow;
+            try { replacementWindow.focus(); } catch (_) {}
+            return replacementWindow;
+        }
+
+        try {
+            // 新窗口被拦截时才复用旧窗口，仍然保证内容跟随最后一次打开。
+            existingWindow.location.href = new URL(url, window.location.origin).toString();
+        } catch (error) {
+            console.warn('更新弹窗地址失败:', error);
+        }
         existingWindow.focus();
         return existingWindow;
     }
@@ -2925,6 +2947,7 @@ function openManagedPopup(url, windowName, features) {
     }
     return popup;
 }
+window.openManagedPopup = openManagedPopup;
 
 function refreshOpenCardMetaBlock(name) {
     const panelWrapper = document.getElementById('catgirl-panel-wrapper');
@@ -3038,9 +3061,9 @@ function handleExternalCardFaceUpdated(data) {
 })();
 
 async function openModelManagerForCharacterForm(form, fallbackName) {
-    let catgirlName = form?.querySelector?.('[name="档案名"]')?.value || fallbackName;
+    let catgirlName = getProfileNameFromCharacterForm(form, fallbackName);
     if (!catgirlName) {
-        showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+        await showProfileNameRequiredDialog();
         return;
     }
 
@@ -3111,6 +3134,19 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
             loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
         }
     }, 500);
+}
+
+function getProfileNameFromCharacterForm(form, fallbackName) {
+    return String(form?.querySelector?.('[name="档案名"]')?.value || fallbackName || '').trim();
+}
+
+async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFirst', fallback = '请先填写猫娘档案名，然后再设置模型') {
+    const message = window.t ? window.t(key) : fallback;
+    if (typeof showAlertDialog === 'function') {
+        await showAlertDialog(message, { type: 'warning' });
+        return;
+    }
+    showMessage(message, 'warning');
 }
 
 // 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
@@ -4101,17 +4137,19 @@ function openCatgirlPanel(card, originEl) {
         img.src = cardFaceUrl + '?t=' + Date.now();
     }
 
-    const openCardMaker = () => {
+    const openCardMaker = async () => {
         // 优先使用表单中当前填写的档案名（新建猫娘可能已临时保存）
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        const currentName = form?.querySelector('[name="档案名"]')?.value || name;
+        const currentName = getProfileNameFromCharacterForm(form, name);
         if (!currentName) {
-            showMessage(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名', 'warning');
+            await showProfileNameRequiredDialog(
+                'character.fillProfileNameFirstForCardFace',
+                '请先填写猫娘档案名，然后再设置卡面'
+            );
             return;
         }
         const makerUrl = `/card_maker?name=${encodeURIComponent(currentName)}&mode=maker`;
-        const windowName = `card_maker_${encodeURIComponent(currentName)}`;
-        openManagedPopup(makerUrl, windowName, 'width=1200,height=800');
+        openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
 
     // 点击卡面主体或右侧按钮打开角色卡制作页面
@@ -4123,10 +4161,10 @@ function openCatgirlPanel(card, originEl) {
         event.stopPropagation();
         openCardMaker();
     });
-    modelSettingsAction.addEventListener('click', (event) => {
+    modelSettingsAction.addEventListener('click', async (event) => {
         event.stopPropagation();
         const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        openModelManagerForCharacterForm(form, name);
+        await openModelManagerForCharacterForm(form, name);
     });
 
     // 监听角色卡制作页面的保存消息
@@ -4269,6 +4307,7 @@ function openCatgirlPanel(card, originEl) {
     const closeBtnImg = document.createElement('img');
     closeBtnImg.src = '/static/icons/close_button.png';
     closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
+    closeBtnImg.draggable = false;
     closeBtn.appendChild(closeBtnImg);
     closeBtn.onclick = closeCatgirlPanel;
     headerBar.appendChild(closeBtn);
@@ -5663,7 +5702,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
-                    `card_maker_${encodeURIComponent(catgirlName)}`,
+                    CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
                     'width=1200,height=800'
                 );
                 if (!makerWindow) {

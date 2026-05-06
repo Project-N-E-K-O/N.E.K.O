@@ -5182,9 +5182,16 @@
                     normalizedTimeoutMs
                 );
                 if (openedWindow && !openedWindow.closed) {
+                    // If the popup was opened by the user clicking the highlighted tutorial
+                    // target, it still belongs to this tutorial step and should be closed
+                    // after the dashboard preview. Pre-existing dashboard windows are
+                    // handled before this manual prompt path and remain user-owned.
                     const createdByGuide = !!(
-                        guideOpenTriggeredBeforePrompt
-                        && !this.manualPluginDashboardOpenUserClicked
+                        this.manualPluginDashboardOpenUserClicked
+                        || (
+                            guideOpenTriggeredBeforePrompt
+                            && !this.manualPluginDashboardOpenUserClicked
+                        )
                     );
                     this.recordExperienceMetric('plugin_dashboard_popup_manual_opened', {
                         targetPage: 'plugin_dashboard',

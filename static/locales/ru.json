@@ -583,7 +583,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 Ошибка подключения LLM ({{error_type}}), исчерпано {{max_retries}} попыток: {{error}}",
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
-        "PROACTIVE_GEN_FAILED": "💥 Ошибка генерации проактивного ответа: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} переходит на другой терминал...",
         "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
@@ -612,7 +611,30 @@
         "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
-        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
+        "AGENT_NO_PLUGINS_FOUND": "Пользовательские плагины не найдены",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw недоступен: $t(agent.precheck.{{reason_code}})",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Не удалось включить OpenClaw: модуль не загружен",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Не удалось включить OpenClaw: $t(agent.precheck.{{reason_code}})",
+        "AGENT_PLUGIN_SERVER_ERROR": "Не удалось запустить сервер пользовательских плагинов",
+        "CURRENT_CATGIRL_IN_USE": "Нельзя выполнить это действие с активным персонажем «{{character_name}}». Сначала переключитесь на другого персонажа",
+        "DIRECT_LINK_INACCESSIBLE": "Прямая ссылка недоступна",
+        "DOWNLOAD_FAILED": "Не удалось скачать аудио",
+        "FILE_TOO_LARGE": "Файл слишком большой",
+        "GAME_ROUTE_ENDED": "Игровой маршрут завершён",
+        "GAME_ROUTE_LLM_FAILED": "Игровой LLM не вернул валидный ответ ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Кадры экрана/камеры пропущены во время игры",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Голосовой перехват игры активен",
+        "INTERNAL_IMPORT_ERROR": "Не удалось загрузить внутренний компонент: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Структура локальной конфигурации персонажа недействительна",
+        "MEMORY_SERVER_RELEASE_FAILED": "Не удалось освободить дескриптор памяти персонажа, повторите позже",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API Key не настроен. Сначала укажите его в настройках",
+        "PRIVATE_IP_NOT_ALLOWED": "Прямая ссылка не может указывать на частный IP",
+        "RESPONSE_LENGTH_TRUNCATED": "Ответ слишком длинный, автоматически обрезан до последнего полного предложения",
+        "STEAM_UNSUBSCRIBE_FAILED": "Не удалось отписаться в Steam",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Генерация текста прервана ({{error_type}}); частичный вывод сохранён",
+        "TTS_PROVIDER_INVALID": "Неверный TTS провайдер: {{provider}}. Поддерживаемые: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Идёт обслуживание хранилища, операция приостановлена. Повторите позже"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -1778,6 +1800,7 @@
         "personalityModuleUnavailable": "Модуль выбора характера еще не загружен",
         "manageModel": "Нажмите для управления моделью",
         "fillProfileNameFirst": "Сначала заполните имя профиля, затем задайте модель",
+        "fillProfileNameFirstForCardFace": "Сначала заполните имя профиля, затем задайте обложку карточки",
         "registerNewVoice": "Зарегистрировать новый голос",
         "systemPrompt": "Системный промпт (Редактируйте с осторожностью)",
         "systemPromptWarning": "Системный промпт — Изменения могут вызвать непредвиденное поведение.",
@@ -2634,6 +2657,7 @@
         "serverNotReturnedValidJSON": "Сервер не вернул допустимые данные JSON"
     },
     "tutorial": {
+        "homeInteractionLocked": "Обучение уже идет. Сначала следуйте подсказкам и завершите текущий шаг.",
         "step1": {
             "title": "👋 Добро пожаловать в N.E.K.O",
             "desc": "Это ваш Neko! Позвольте провести вас по функциям~"
