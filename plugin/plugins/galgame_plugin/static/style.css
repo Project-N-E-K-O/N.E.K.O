@@ -1209,10 +1209,16 @@ button.active {
 }
 
 .flash-message {
-  margin-top: 14px;
+  position: fixed;
+  top: 18px;
+  right: 24px;
+  z-index: 1000;
+  width: min(420px, calc(100vw - 32px));
+  margin: 0;
   padding: 12px 14px;
   border-radius: var(--radius-sm);
   font-size: 14px;
+  box-shadow: 0 12px 30px rgba(31, 42, 51, 0.14);
 }
 
 .flash-message.success {
@@ -1942,8 +1948,13 @@ body:not(.onboarding-active) #onboardingView {
   box-shadow: 0 2px 8px rgba(31, 42, 51, 0.1), 0 1px 2px rgba(31, 42, 51, 0.06);
   transition: left 300ms cubic-bezier(0.4, 0, 0.2, 1),
               width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
   z-index: 0;
   pointer-events: none;
+}
+
+.mode-switch[data-ready="true"]::before {
+  opacity: 1;
 }
 
 .mode-btn {
