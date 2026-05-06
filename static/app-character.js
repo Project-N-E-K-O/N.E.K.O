@@ -839,6 +839,14 @@
                     console.log('[猫娘切换] VRM渲染循环已启动，ID:', window.vrmManager._animationFrameId);
                 }
 
+                // 每次进入 VRM 分支都无条件刷新 ownership token，取消上一轮残留 retry。
+                // 不能放在 if (catgirlConfig.lighting) 块内：从 A（有 lighting）切到 B（没 lighting）
+                // 时 A 的 applyLighting retry 不会被取消（finally 故意不清这个 token），仍把
+                // A 的光照参数写到 B 的 VRM 场景。这里无条件设新 Symbol，旧 retry 比对 !==
+                // 自然退出。
+                const currentSwitchId = Symbol();
+                window._currentCatgirlSwitchId = currentSwitchId;
+
                 // 应用角色的光照配置
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
@@ -847,8 +855,6 @@
                     let applyLightingRetryCount = 0;
                     const MAX_RETRY_COUNT = 50; // 最多重试50次（5秒）
                     let applyLightingTimerId = null;
-                    const currentSwitchId = Symbol(); // 用于标识当前切换，防止旧切换的定时器继续执行
-                    window._currentCatgirlSwitchId = currentSwitchId;
 
                     const applyLighting = () => {
                         // 检查是否切换已被取消（新的切换已开始）
@@ -1356,11 +1362,16 @@
                                 }
                                 console.log('[猫娘切换] 已回退加载默认模型 yui-origin');
                             } else {
-                                console.error('[猫娘切换] 默认模型也无法加载');
+                                // throw 而非只 log：原本静默继续会让 showLive2d() + "已切换到 xxx"
+                                // toast 都跑，但实际模型没载起来。配合 dedupe 让用户看空白点不动。
+                                throw new Error(`默认 Live2D 模型加载失败 (HTTP ${defaultRes.status})`);
                             }
                         } catch (fallbackErr) {
                             if (fallbackErr?.isStaleSwitchAttempt) throw fallbackErr;
                             console.error('[猫娘切换] 默认模型加载失败:', fallbackErr);
+                            // rethrow 让外层 catch 走完整失败路径（toast + lanlan_config 回滚）。
+                            // 不 rethrow 的话同问题：UI 当成功但模型没载起来。
+                            throw fallbackErr;
                         }
                         // 内层 try 之外补 stale 检查（fallback try 内部多个 await 含 loadModel，
                         // stale 抛错会被上面 catch 吞成 console.error 让 stale attempt 继续）
@@ -1532,6 +1543,18 @@
                 if (S._currentSwitchAttemptId === myAttemptId) {
                     restorePreviousLanlanConfig();
                     console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
+                    // 恢复 S.socket 引用：line 530 早期 retire 把 S.socket 设成 null（让 stale
+                    // onmessage/onclose 在清空会话期间走 stale guard）。如果新 connectWebSocket
+                    // 还没替换 S.socket（即 S.socket 仍是 null），下面的 ticker/vrm rollback
+                    // 检查 S.socket === _switchOldSocket 永远 false → rollback 进不去，且 finally
+                    // 会把 _switchOldSocket 关掉 → "切换失败 + 旧角色掉线"。如果新 attempt 已建
+                    // 新 socket（S.socket 是别的对象），则它已接管，不动。
+                    if (_switchOldSocket && S.socket === null
+                        && _switchOldSocket.readyState !== WebSocket.CLOSED
+                        && _switchOldSocket.readyState !== WebSocket.CLOSING) {
+                        S.socket = _switchOldSocket;
+                        console.log('[猫娘切换] 切换失败，恢复 S.socket 引用到旧连接，避免角色掉线');
+                    }
                 }
             }
 
@@ -1542,6 +1565,8 @@
             // S.socket 仍是 _switchOldSocket，A stale 苏醒进 catch 会满足条件错误地启动旧模型，
             // 跟 B 后续清理/加载并发打架。用 isStaleAttempt 而非 error.isStaleSwitchAttempt：
             // 同样覆盖 attempt ownership 检测出的隐式 stale（无标记的真实 reject）。
+            // 注：上面 restorePreviousLanlanConfig 那段也会把 S.socket 从 null 恢复成
+            // _switchOldSocket，所以这里的 === _switchOldSocket 检查能命中。
             if (!isStaleAttempt && _switchOldSocket && S.socket === _switchOldSocket) {
                 try {
                     const ticker = window.live2dManager?.pixi_app?.ticker;
