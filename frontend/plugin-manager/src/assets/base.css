@@ -87,3 +87,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
+
+img,
+svg {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
