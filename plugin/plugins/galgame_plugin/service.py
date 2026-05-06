@@ -1402,7 +1402,15 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         or _status_text(textractor_obj.get("detail")) == "missing"
     )
     memory_reader_path_active = (
-        reader_mode == READER_MODE_MEMORY
+        # `invalid_textractor_path` on memory_reader_runtime means the memory
+        # reader pipeline is being actively attempted right now, regardless of
+        # whether `active_data_source` already flipped to MEMORY_READER. In
+        # AUTO mode the data_source switch only happens after the first
+        # successful read, so without this signal the textractor warning
+        # silently falls through into "插件运行出错" with the legacy English
+        # error string.
+        memory_runtime_detail == "invalid_textractor_path"
+        or reader_mode == READER_MODE_MEMORY
         or active_data_source == DATA_SOURCE_MEMORY_READER
         or ocr_tick_block_reason == "reader_mode_memory_only"
     )
@@ -2471,14 +2479,24 @@ def _build_dependency_status_payload(
         return payload
 
     # Inspection didn't run for some reason — fall back to whatever was
-    # snapshotted (could be empty defaults).
-    return {
+    # snapshotted (could be empty defaults). Preserve `inspection_failed`
+    # so a previously snapshotted "依赖检查失败" doesn't get silently
+    # dropped through this branch.
+    fallback_payload: dict[str, Any] = {
         "checked_at": float(fallback_obj.get("checked_at", 0.0) or 0.0),
         "degraded": bool(fallback_obj.get("degraded")),
         "missing": [
             str(item) for item in fallback_obj.get("missing", []) or [] if str(item or "").strip()
         ],
     }
+    fallback_inspection_failed = [
+        str(item)
+        for item in fallback_obj.get("inspection_failed", []) or []
+        if str(item or "").strip()
+    ]
+    if fallback_inspection_failed:
+        fallback_payload["inspection_failed"] = fallback_inspection_failed
+    return fallback_payload
 
 
 def build_snapshot_payload(state) -> dict[str, Any]:
