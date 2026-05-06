@@ -44,24 +44,10 @@ critical_packages = [
     # skipped gracefully for source installs that do not enable vectors.
     'onnxruntime',
     'tokenizers',
-    # galgame_plugin native deps. Installed by `uv sync --group galgame` (see
-    # build.bat / .github/workflows/build-desktop.yml). The build hard-fails
-    # below if any of the galgame_runtime_packages can't be collected — a
-    # packaged dist has no runtime install fallback (HTTP routes removed),
-    # so a maintainer who forgets the group sync would otherwise ship an
-    # OCR-permanently-broken artifact with no in-app recovery path.
-    'rapidocr_onnxruntime',
-    'cv2',  # provided by opencv-python-headless via [tool.uv].override-dependencies
-    'shapely',
-    'pyclipper',
-    'mss',
+    # NOTE: galgame OCR packages are NOT listed here — they're auto-merged
+    # below from galgame_group_packages + galgame_main_packages so the
+    # collection list and the hard-fail sets share a single source of truth.
 ]
-# `dxcam` is Windows-only (PEP 508 marker in pyproject.toml). Only add it on
-# Windows build hosts so non-Windows builds don't print a noisy "Could not
-# collect dxcam" warning every run; the runtime falls back to mss on those
-# platforms via DxcamCaptureBackend.is_available() returning False.
-if sys.platform == 'win32':
-    critical_packages.append('dxcam')
 
 # onnxruntime + tokenizers are only needed when the bundle ships embedding
 # weights. If the build is going to package data/embedding_models but the
@@ -74,14 +60,30 @@ embedding_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
 )
 
-# galgame OCR cohort: bundling is the ONLY path post-refactor (in-app install
-# routes were removed). If the maintainer builds without `uv sync --group
-# galgame`, the resulting dist has OCR permanently broken with no recovery
-# at runtime — fail the build instead of silently shipping a degraded artifact.
-# `dxcam` is added on Windows build hosts only (see critical_packages above).
-galgame_runtime_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper', 'mss'}
+# galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
+# routes were removed). Two distinct failure modes get distinct diagnostics:
+#
+#   - galgame_group_packages: live in [dependency-groups] galgame in
+#     pyproject.toml. Failure means maintainer ran plain `uv sync` instead
+#     of `uv sync --group galgame` — the actionable fix is the group sync.
+#     `cv2` is provided by opencv-python-headless via [tool.uv].override-dependencies.
+#
+#   - galgame_main_packages: live in [project.dependencies]. They're always
+#     installed by default `uv sync`; failure here means the main venv state
+#     is broken (interrupted install, manual deletion, etc) — actionable
+#     fix is recreating the venv. `dxcam` is in this set only on Windows
+#     (PEP 508 sys_platform marker keeps it out of macOS/Linux installs).
+galgame_group_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper'}
+galgame_main_packages = {'mss'}
 if sys.platform == 'win32':
-    galgame_runtime_packages = galgame_runtime_packages | {'dxcam'}
+    galgame_main_packages = galgame_main_packages | {'dxcam'}
+
+# Auto-merge galgame deps into the collection list so the sets above stay the
+# single source of truth — adding a package to either set automatically keeps
+# the bundling guard and the collection step in sync, no risk of drift.
+critical_packages.extend(
+    sorted((galgame_group_packages | galgame_main_packages) - set(critical_packages))
+)
 
 for pkg in critical_packages:
     try:
@@ -97,12 +99,20 @@ for pkg in critical_packages:
                 "`uv sync` or remove the embedding "
                 "assets directory before building."
             ) from e
-        if pkg in galgame_runtime_packages:
+        if pkg in galgame_group_packages:
             raise RuntimeError(
                 f"Cannot collect {pkg!r}, required for the bundled galgame "
                 "OCR pipeline. Run `uv sync --group galgame` before building "
                 "(see pyproject.toml [dependency-groups] galgame). Packaged "
                 "dist has no runtime install fallback to recover from this."
+            ) from e
+        if pkg in galgame_main_packages:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, a [project.dependencies] entry "
+                "required by the bundled galgame OCR pipeline. Default "
+                "`uv sync` should have installed it — your venv is in a "
+                "broken state. Recreate the venv (`uv sync` from a clean "
+                "`.venv`) before building."
             ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 
