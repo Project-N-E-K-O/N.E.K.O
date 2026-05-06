@@ -150,7 +150,7 @@ class AMapProvider:
 
     async def _transit(self, origin: str, dest: str, timeout: float) -> List[Route]:
         url = f"{self._base}/transit/integrated"
-        params = {"key": self.api_key, "origin": origin, "destination": dest, "city": "全国", "strategy": "0"}
+        params = {"key": self.api_key, "origin": origin, "destination": dest, "strategy": "0"}
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)

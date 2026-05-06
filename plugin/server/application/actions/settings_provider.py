@@ -189,9 +189,9 @@ def _build_descriptor_for_field(
         )
 
     # --- Literal (non-str) → dropdown ---
-    origin = get_origin(annotation)
+    origin = get_origin(core_type)
     if origin is typing.Literal:
-        args = get_args(annotation)
+        args = get_args(core_type)
         if args:
             return ActionDescriptor(
                 **base,

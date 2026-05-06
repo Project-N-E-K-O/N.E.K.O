@@ -90,6 +90,18 @@ class TestMapListAction:
         assert d is not None
         assert d.quick_action is False
 
+    def test_null_label_and_description_use_defaults(self) -> None:
+        d = module._map_list_action("demo", "Demo", {
+            "id": "greet",
+            "kind": "chat_inject",
+            "label": None,
+            "description": None,
+        })
+
+        assert d is not None
+        assert d.label == "greet"
+        assert d.description == ""
+
     def test_invalid_priority_falls_back_to_zero(self) -> None:
         d = module._map_list_action("demo", "Demo", {
             "id": "open",

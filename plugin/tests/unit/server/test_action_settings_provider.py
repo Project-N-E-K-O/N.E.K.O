@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
 from plugin.sdk.plugin.settings import PluginSettings, SettingsField
@@ -34,3 +36,21 @@ def test_int_exclusive_bounds_are_exposed_as_closed_ui_bounds() -> None:
     assert descriptor is not None
     assert descriptor.min == 1
     assert descriptor.max == 9
+
+
+def test_optional_literal_fields_build_dropdown() -> None:
+    class _Settings(PluginSettings):
+        mode: Literal["auto", "manual"] | None = SettingsField(None, hot=True)
+
+    descriptor = module._build_descriptor_for_field(
+        plugin_id="demo",
+        plugin_name="Demo",
+        field_name="mode",
+        field_info=_Settings.model_fields["mode"],
+        annotation=_Settings.model_fields["mode"].annotation,
+        current_value="auto",
+    )
+
+    assert descriptor is not None
+    assert descriptor.control == "dropdown"
+    assert descriptor.options == ["auto", "manual"]

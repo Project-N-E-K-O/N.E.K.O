@@ -87,6 +87,34 @@ async def test_amap_provider_converts_wgs84_to_gcj02() -> None:
 
 
 @pytest.mark.asyncio
+async def test_amap_transit_does_not_send_invalid_national_city(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"status": "1", "route": {"transits": []}}
+
+    class Client:
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs: object) -> Response:
+            captured.update(kwargs)
+            return Response()
+
+    monkeypatch.setattr(_routing.httpx, "AsyncClient", lambda **_: Client())
+
+    await AMapProvider("key")._transit("121.473700,31.230400", "121.460000,31.220000", timeout=1)
+
+    assert "city" not in captured["params"]
+
+
+@pytest.mark.asyncio
 async def test_osrm_no_route_remains_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     class Response:
         status_code = 200

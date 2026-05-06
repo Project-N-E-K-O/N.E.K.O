@@ -155,9 +155,17 @@ def test_setup_repo_git_skips_when_inside_existing_repo(
 
     monkeypatch.setattr(init_cmd, "_run_git", fake_run_git)
 
-    init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
+    assert init_cmd._initialize_git_repo(plugin_dir) is False
 
     assert calls == []
+
+
+def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (tmp_path / "repo" / ".git").mkdir()
+
+    with pytest.raises(RuntimeError, match="--remote"):
+        init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
 
 
 def test_interactive_extension_cannot_skip_host_prompt_with_quick_start(

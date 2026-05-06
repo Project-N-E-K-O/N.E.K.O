@@ -141,8 +141,9 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             neko_ref=args.neko_ref,
         )
         created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
+        git_initialized = False
         if args.git:
-            _initialize_git_repo(plugin_dir, remote=args.remote)
+            git_initialized = _initialize_git_repo(plugin_dir, remote=args.remote)
     except Exception as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
@@ -155,6 +156,12 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
         print("  support files already exist; use --overwrite to regenerate them")
     print(f"\n  plugin: {source.plugin_id}")
     print(f"  entry:  {source.entry_point}")
+    if git_initialized:
+        print("  git:    initialized")
+        if args.remote:
+            print(f"  remote: {args.remote}")
+    elif args.git:
+        print("  git:    skipped (already inside an existing repository)")
     return 0
 
 
@@ -374,8 +381,9 @@ def _generate_and_report(
 ) -> int:
     try:
         created = generate_plugin(spec, target_dir)
+        git_initialized = False
         if initialize_git:
-            _initialize_git_repo(target_dir, remote=remote)
+            git_initialized = _initialize_git_repo(target_dir, remote=remote)
     except Exception as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
@@ -385,10 +393,12 @@ def _generate_and_report(
         print(f"  └── {path.relative_to(target_dir)}")
     print(f"\n  入口类: {spec.class_name}")
     print(f"  entry:  {spec.entry_point}")
-    if initialize_git:
+    if git_initialized:
         print("  git:    initialized")
         if remote:
             print(f"  remote: {remote}")
+    elif initialize_git:
+        print("  git:    skipped (already inside an existing repository)")
     return 0
 
 
@@ -412,13 +422,16 @@ def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults
     return plugin_dir
 
 
-def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> None:
+def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool:
     existing_git = _find_parent_git_dir(target_dir)
     if existing_git is not None:
-        return
+        if remote:
+            raise RuntimeError("--remote can only be used when initializing a new git repository")
+        return False
     _run_git(["init"], cwd=target_dir)
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
+    return True
 
 
 def _find_parent_git_dir(path: Path) -> Path | None:

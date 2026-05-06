@@ -58,8 +58,8 @@ def _map_list_action(
         return None
 
     kind = str(action.get("kind", "")).strip().lower()
-    label = str(action.get("label", action_id))
-    description = str(action.get("description", ""))
+    label = str(action.get("label") or action_id)
+    description = str(action.get("description") or "")
     full_action_id = f"{plugin_id}:{action_id}"
     quick = _safe_bool(action.get("quick_action", False))
     icon_override = action.get("icon")
