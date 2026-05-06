@@ -444,6 +444,47 @@ def test_onboarding_does_not_preempt_new_user_tutorial_prompt_flow(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_onboarding_ignores_stale_auto_home_tutorial_start_after_prompt_completed(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptStatePayload = {
+                status: 'completed',
+                deferred_until: 0,
+                never_remind: false,
+                user_cohort: 'new',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home', source: 'auto' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
 def test_onboarding_does_not_treat_tutorial_prompt_fetch_failure_as_settled(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(
