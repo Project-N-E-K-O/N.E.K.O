@@ -46,10 +46,6 @@ body.subtitle-web-host #subtitle-display {
     pointer-events: none;
 }
 
-body.subtitle-web-host #subtitle-display.drag-anywhere {
-    pointer-events: auto;
-}
-
 body.subtitle-window-host #subtitle-display {
     position: absolute;
     top: 0;
@@ -288,6 +284,7 @@ body.subtitle-window-host #subtitle-settings-panel {
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95), 0 0 0 5px rgba(68, 183, 254, 0.35);
 }
 
+body.subtitle-web-host #subtitle-display.drag-anywhere,
 #subtitle-display.drag-anywhere {
     cursor: grab;
     pointer-events: auto;
