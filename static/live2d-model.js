@@ -641,29 +641,35 @@ Live2DManager.prototype._validateEyeBlinkGroup = function(settings, model) {
         return;
     }
 
-    let resolvedEyeBlinkParams = eyeBlinkIds.map(id => {
+    const resolveEyeBlinkParam = (id) => {
         try {
             const idx = coreModel.getParameterIndex(id);
             return idx >= 0 ? this._createEyeBlinkParamConfig(coreModel, id, idx) : null;
         } catch (_) {
             return null;
         }
-    }).filter(Boolean);
+    };
+    const dedupeEyeBlinkParams = (params) => {
+        const seenIndexes = new Set();
+        return params.filter(param => {
+            if (!param || seenIndexes.has(param.idx)) return false;
+            seenIndexes.add(param.idx);
+            return true;
+        });
+    };
 
-    if (resolvedEyeBlinkParams.length === 0 && !usedFallbackScan) {
+    let resolvedEyeBlinkParams = dedupeEyeBlinkParams(eyeBlinkIds.map(resolveEyeBlinkParam).filter(Boolean));
+
+    if (resolvedEyeBlinkParams.length < eyeBlinkIds.length && !usedFallbackScan) {
         const scanned = this._scanEyeBlinkParams(model);
         if (scanned && scanned.length > 0) {
             usedFallbackScan = true;
-            eyeBlinkIds = scanned;
-            console.warn(`[Live2D EyeBlink] EyeBlink 组参数索引无效，已改用 fallback-scan:`, eyeBlinkIds);
-            resolvedEyeBlinkParams = eyeBlinkIds.map(id => {
-                try {
-                    const idx = coreModel.getParameterIndex(id);
-                    return idx >= 0 ? this._createEyeBlinkParamConfig(coreModel, id, idx) : null;
-                } catch (_) {
-                    return null;
-                }
-            }).filter(Boolean);
+            console.warn(`[Live2D EyeBlink] EyeBlink 组参数索引不完整，合并 fallback-scan:`, scanned);
+            resolvedEyeBlinkParams = dedupeEyeBlinkParams([
+                ...resolvedEyeBlinkParams,
+                ...scanned.map(resolveEyeBlinkParam).filter(Boolean)
+            ]);
+            eyeBlinkIds = resolvedEyeBlinkParams.map(param => param.id);
         }
     }
 
@@ -788,33 +794,6 @@ Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
     return this._eyeBlinkParams.some(param => (
         param.id === id || `param_${param.idx}` === id
     ));
-};
-
-Live2DManager.prototype._isEyeBlinkOwnedByExpression = function() {
-    if (!this._autoEyeBlinkEnabled || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return false;
-
-    if (this._activeExpressionParamIds instanceof Set) {
-        for (const id of this._activeExpressionParamIds) {
-            if (this._isEyeBlinkParamId(id)) return true;
-        }
-    }
-
-    if (Array.isArray(this._manualExpressionParams)) {
-        for (const param of this._manualExpressionParams) {
-            if (param && this._isEyeBlinkParamId(param.Id)) return true;
-        }
-    }
-
-    if (this.persistentExpressionParamsByName) {
-        for (const params of Object.values(this.persistentExpressionParamsByName)) {
-            if (!Array.isArray(params)) continue;
-            for (const param of params) {
-                if (param && this._isEyeBlinkParamId(param.Id)) return true;
-            }
-        }
-    }
-
-    return false;
 };
 
 // 自动扫描模型参数以识别眨眼相关参数
@@ -1860,8 +1839,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
-            const expressionOwnsEyeBlink = this._isEyeBlinkOwnedByExpression();
-            const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE || expressionOwnsEyeBlink;
+            const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
             for (const id of lipSyncParams) {
                 try {
                     const idx = coreModel.getParameterIndex(id);
@@ -1992,6 +1970,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         if (Array.isArray(params)) {
                             for (const p of params) {
                                 if (lipSyncParams.includes(p.Id)) continue;
+                                if (this._isEyeBlinkParamId(p.Id)) continue;
                                 try {
                                     coreModel.setParameterValueById(p.Id, p.Value);
                                 } catch (_) {}
@@ -2053,8 +2032,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 眨眼更新（仅当 Motion 未接管且未暂停时）
             if (this._autoEyeBlinkEnabled
                 && !this._suspendEyeBlinkOverride
-                && !this._isEyeDrivenByMotion
-                && !this._isEyeBlinkOwnedByExpression()) {
+                && !this._isEyeDrivenByMotion) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateEyeBlink(delta);
             }
@@ -2067,6 +2045,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     if (Array.isArray(params)) {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
+                            if (this._isEyeBlinkParamId(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
