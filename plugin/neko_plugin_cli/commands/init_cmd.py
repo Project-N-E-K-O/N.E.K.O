@@ -20,7 +20,7 @@ from ..templates.generator import PluginSpec, generate_plugin, generate_repo_sup
 from ..core.plugin_source import load_plugin_source
 from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
 
-_PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
@@ -176,7 +176,7 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         return _cancelled()
     plugin_id = plugin_id.strip()
     if not _PLUGIN_ID_RE.fullmatch(plugin_id):
-        print(f"[FAIL] invalid plugin ID: '{plugin_id}' (only A-Z, a-z, 0-9, _, -)", file=sys.stderr)
+        print(f"[FAIL] invalid plugin ID: '{plugin_id}' (use a valid Python package name: A-Z, a-z, 0-9, _)", file=sys.stderr)
         return 1
 
     # Check if directory already exists
@@ -401,9 +401,23 @@ def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults
 
 
 def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> None:
+    existing_git = _find_parent_git_dir(target_dir)
+    if existing_git is not None and existing_git != target_dir / ".git":
+        raise RuntimeError(
+            f"refusing to create nested git repository inside existing repository: {existing_git.parent}"
+        )
     _run_git(["init"], cwd=target_dir)
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
+
+
+def _find_parent_git_dir(path: Path) -> Path | None:
+    current = path.resolve()
+    for candidate in (current, *current.parents):
+        git_dir = candidate / ".git"
+        if git_dir.exists():
+            return git_dir
+    return None
 
 
 def _run_git(command: list[str], *, cwd: Path) -> None:
@@ -433,7 +447,7 @@ def _validate_plugin_id(text: str) -> bool | str:
     if not text:
         return "Plugin ID 不能为空"
     if not _PLUGIN_ID_RE.fullmatch(text):
-        return "只允许字母、数字、下划线和连字符"
+        return "必须是合法 Python 包名：字母或下划线开头，只允许字母、数字、下划线"
     return True
 
 

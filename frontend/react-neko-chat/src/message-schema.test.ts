@@ -79,6 +79,19 @@ describe('message-schema', () => {
     });
   });
 
+  it('accepts async quick action request and preference callbacks', async () => {
+    const onQuickActionsRequest = vi.fn(async () => {});
+    const onQuickActionsPreferencesChange = vi.fn(async () => {});
+    const props = parseChatWindowProps({
+      onQuickActionsRequest,
+      onQuickActionsPreferencesChange,
+    });
+
+    await expect(props.onQuickActionsRequest?.()).resolves.toBeUndefined();
+    await expect(props.onQuickActionsPreferencesChange?.({ pinned: [], hidden: [], recent: [] }))
+      .resolves.toBeUndefined();
+  });
+
   it('accepts an avatar interaction callback in window props', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });

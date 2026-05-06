@@ -93,6 +93,8 @@ const commandPreferencesSchema = z.object({
   recent: z.array(z.string()),
 }).strict();
 
+const voidOrVoidPromiseSchema = z.union([z.void(), z.promise(z.void())]);
+
 // Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
 //
 // 当前 source：
@@ -304,11 +306,11 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   onQuickActionsRequest: z.function()
     .args()
-    .returns(z.void())
+    .returns(voidOrVoidPromiseSchema)
     .optional(),
   onQuickActionsPreferencesChange: z.function()
     .args(commandPreferencesSchema)
-    .returns(z.void())
+    .returns(voidOrVoidPromiseSchema)
     .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),

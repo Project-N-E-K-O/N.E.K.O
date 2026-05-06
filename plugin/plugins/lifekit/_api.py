@@ -49,12 +49,16 @@ class ForecastError(WeatherAPIError):
 
 # ── API 函数 ─────────────────────────────────────────────────────
 
+def _http_client(timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False)
+
+
 async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[Dict[str, Any]]:
     """IP 定位。成功返回 dict，无结果返回 None，网络问题抛 GeoIPError。"""
     lang = LOCALE_TO_GEOIP_LANG.get(locale, "en")
     url = f"{_GEOIP_BASE}?fields=city,lat,lon,countryCode,regionName,timezone&lang={lang}"
     try:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as c:
+        async with _http_client(timeout) as c:
             r = await c.get(url, headers={"User-Agent": _UA})
             d = r.json()
             lat, lon = d.get("lat"), d.get("lon")
@@ -84,7 +88,7 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
 
     # 1. Open-Meteo（快，但只支持城市名）
     try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
+        async with _http_client(timeout) as c:
             r = await c.get(_GEOCODE_URL, params={"name": city, "count": 1, "language": lang})
             results = r.json().get("results")
             if results:
@@ -104,7 +108,7 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
 
     # 2. Nominatim fallback（支持地址、POI、街道等）
     try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
+        async with _http_client(timeout) as c:
             r = await c.get(_NOMINATIM_URL, params={
                 "q": city, "format": "json", "limit": "1",
                 "accept-language": lang,
@@ -152,7 +156,7 @@ async def fetch_forecast(
     if forecast_hours is not None and forecast_hours > 0:
         params["forecast_hours"] = forecast_hours
     try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
+        async with _http_client(timeout) as c:
             r = await c.get(_FORECAST_URL, params=params)
             if r.status_code == 200:
                 return r.json()
@@ -198,7 +202,7 @@ async def fetch_air_quality(
         "timezone": tz,
     }
     try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
+        async with _http_client(timeout) as c:
             r = await c.get(_AIR_QUALITY_URL, params=params)
             if r.status_code == 200:
                 return r.json()

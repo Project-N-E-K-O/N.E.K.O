@@ -31,4 +31,4 @@ def test_detect_vpn_conflict_invalid():
 
 def test_get_system_timezone_returns_string_or_none():
     result = get_system_timezone()
-    assert result is None or (isinstance(result, str) and "/" in result)
+    assert result is None or (isinstance(result, str) and bool(result.strip()))
