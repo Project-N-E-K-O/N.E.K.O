@@ -1712,85 +1712,10 @@ def test_default_tesseract_install_manifest_includes_sha256() -> None:
     assert all("@main" not in item["url"] for item in manifest["languages"])
 
 
-def test_rapidocr_package_install_plan_includes_hash_args() -> None:
-    rapidocr_digest = "a" * 64
-    onnx_digest = "b" * 64
-
-    package_args, display_specs, require_hashes = (
-        galgame_rapidocr_support._rapidocr_package_install_plan(
-            [
-                {
-                    "name": "rapidocr",
-                    "spec": "rapidocr_onnxruntime==1.4.4",
-                    "sha256": rapidocr_digest,
-                },
-                {
-                    "name": "onnxruntime",
-                    "spec": "onnxruntime==1.17.3",
-                    "hashes": [f"sha256:{onnx_digest}"],
-                },
-            ]
-        )
-    )
-
-    assert display_specs == ["rapidocr_onnxruntime==1.4.4", "onnxruntime==1.17.3"]
-    assert package_args == [
-        "rapidocr_onnxruntime==1.4.4",
-        f"--hash=sha256:{rapidocr_digest}",
-        "onnxruntime==1.17.3",
-        f"--hash=sha256:{onnx_digest}",
-    ]
-    assert require_hashes is True
-
-
-def test_rapidocr_package_install_plan_rejects_partial_hash_manifest() -> None:
-    with pytest.raises(RuntimeError, match="sha256 hashes for every package"):
-        galgame_rapidocr_support._rapidocr_package_install_plan(
-            [
-                {
-                    "name": "rapidocr",
-                    "spec": "rapidocr_onnxruntime==1.4.4",
-                    "sha256": "a" * 64,
-                },
-                {
-                    "name": "onnxruntime",
-                    "spec": "onnxruntime==1.17.3",
-                },
-            ]
-        )
-
-
-def test_rapidocr_pip_install_uses_require_hashes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands: list[list[str]] = []
-    digest = "1" * 64
-
-    monkeypatch.setattr(
-        galgame_rapidocr_support,
-        "_ensure_pip_available",
-        lambda **kwargs: None,
-    )
-
-    def _capture_subprocess(command, *, timeout_seconds, env=None):
-        del timeout_seconds, env
-        commands.append(command)
-        return None
-
-    monkeypatch.setattr(galgame_rapidocr_support, "_run_subprocess", _capture_subprocess)
-
-    galgame_rapidocr_support._run_pip_install(
-        site_packages_dir=tmp_path / "runtime" / "site-packages",
-        packages=["rapidocr_onnxruntime==1.4.4", f"--hash=sha256:{digest}"],
-        timeout_seconds=5.0,
-        require_hashes=True,
-    )
-
-    assert len(commands) == 1
-    command = commands[0]
-    assert command.index("--require-hashes") < command.index("rapidocr_onnxruntime==1.4.4")
-    assert command[-2:] == ["rapidocr_onnxruntime==1.4.4", f"--hash=sha256:{digest}"]
+# NOTE: tests for `_rapidocr_package_install_plan` / `_run_pip_install` /
+# `_ensure_pip_available` removed — those helpers were the runtime-pip-install
+# machinery that's been replaced by bundling rapidocr-onnxruntime as a main
+# program dep (see pyproject.toml [dependency-groups] galgame).
 
 
 def test_background_hash_excludes_bottom_dialogue_region() -> None:

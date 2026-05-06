@@ -44,7 +44,24 @@ critical_packages = [
     # skipped gracefully for source installs that do not enable vectors.
     'onnxruntime',
     'tokenizers',
+    # galgame_plugin native deps. Installed by `uv sync --group galgame` (see
+    # build.bat / .github/workflows/build-desktop.yml). The build hard-fails
+    # below if any of the galgame_runtime_packages can't be collected — a
+    # packaged dist has no runtime install fallback (HTTP routes removed),
+    # so a maintainer who forgets the group sync would otherwise ship an
+    # OCR-permanently-broken artifact with no in-app recovery path.
+    'rapidocr_onnxruntime',
+    'cv2',  # provided by opencv-python-headless via [tool.uv].override-dependencies
+    'shapely',
+    'pyclipper',
+    'mss',
 ]
+# `dxcam` is Windows-only (PEP 508 marker in pyproject.toml). Only add it on
+# Windows build hosts so non-Windows builds don't print a noisy "Could not
+# collect dxcam" warning every run; the runtime falls back to mss on those
+# platforms via DxcamCaptureBackend.is_available() returning False.
+if sys.platform == 'win32':
+    critical_packages.append('dxcam')
 
 # onnxruntime + tokenizers are only needed when the bundle ships embedding
 # weights. If the build is going to package data/embedding_models but the
@@ -56,6 +73,15 @@ embedding_runtime_packages = {'onnxruntime', 'tokenizers'}
 embedding_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
 )
+
+# galgame OCR cohort: bundling is the ONLY path post-refactor (in-app install
+# routes were removed). If the maintainer builds without `uv sync --group
+# galgame`, the resulting dist has OCR permanently broken with no recovery
+# at runtime — fail the build instead of silently shipping a degraded artifact.
+# `dxcam` is added on Windows build hosts only (see critical_packages above).
+galgame_runtime_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper', 'mss'}
+if sys.platform == 'win32':
+    galgame_runtime_packages = galgame_runtime_packages | {'dxcam'}
 
 for pkg in critical_packages:
     try:
@@ -70,6 +96,13 @@ for pkg in critical_packages:
                 "present and will be bundled. Install with "
                 "`uv sync` or remove the embedding "
                 "assets directory before building."
+            ) from e
+        if pkg in galgame_runtime_packages:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, required for the bundled galgame "
+                "OCR pipeline. Run `uv sync --group galgame` before building "
+                "(see pyproject.toml [dependency-groups] galgame). Packaged "
+                "dist has no runtime install fallback to recover from this."
             ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 

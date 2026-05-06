@@ -1,38 +1,30 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
+import importlib.util
 import inspect
 import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator
-
-import httpx
+from typing import Any, Callable, Iterator
 
 from utils.config_manager import get_config_manager
 
 from .memory_reader import is_windows_platform
-from .tesseract_support import _compute_phase_progress, _emit_progress
-from .install_tasks import update_install_task_state
+
 
 RAPIDOCR_PACKAGE_NAME = "rapidocr_onnxruntime"
 DEFAULT_RAPIDOCR_ENGINE_TYPE = "onnxruntime"
 DEFAULT_RAPIDOCR_LANG_TYPE = "ch"
 DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
 DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv5"
-DEFAULT_RAPIDOCR_PIP_SPEC = "rapidocr_onnxruntime"
-DEFAULT_ONNXRUNTIME_PIP_SPEC = "onnxruntime"
 _INSTALL_STATE_NAME = "install_state.json"
 # Leave one core free for the OS / interactive use; floor at 2 so 1-2 core hosts still parallelise.
 _RAPIDOCR_INFERENCE_THREAD_LIMIT = max(2, (os.cpu_count() or 2) - 1)
-ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
 _RAPIDOCR_IMPORT_CONTEXT_LOCK = threading.RLock()
 
 
@@ -107,219 +99,6 @@ def rapidocr_selected_model_name(
     )
 
 
-def _default_install_manifest(
-    *,
-    engine_type: str,
-    lang_type: str,
-    model_type: str,
-    ocr_version: str,
-) -> dict[str, Any]:
-    return {
-        "name": "RapidOCR ONNXRuntime",
-        "packages": [
-            {"name": RAPIDOCR_PACKAGE_NAME, "spec": DEFAULT_RAPIDOCR_PIP_SPEC},
-            {"name": "onnxruntime", "spec": DEFAULT_ONNXRUNTIME_PIP_SPEC},
-        ],
-        "engine_type": engine_type,
-        "lang_type": lang_type,
-        "model_type": model_type,
-        "ocr_version": ocr_version,
-    }
-
-
-def _normalize_sha256(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if text.startswith("sha256:"):
-        text = text.split(":", 1)[1].strip()
-    if len(text) == 64 and all(char in "0123456789abcdef" for char in text):
-        return text
-    return ""
-
-
-def _package_hash_args(package: dict[str, Any]) -> list[str]:
-    hashes: list[str] = []
-    seen: set[str] = set()
-    for key in ("sha256", "digest", "checksum"):
-        digest = _normalize_sha256(package.get(key))
-        if digest and digest not in seen:
-            seen.add(digest)
-            hashes.append(f"--hash=sha256:{digest}")
-    hashes_obj = package.get("hashes")
-    if isinstance(hashes_obj, list):
-        for item in hashes_obj:
-            digest = _normalize_sha256(item)
-            if digest and digest not in seen:
-                seen.add(digest)
-                hashes.append(f"--hash=sha256:{digest}")
-    return hashes
-
-
-def _rapidocr_package_install_plan(
-    packages_obj: object,
-) -> tuple[list[str], list[str], bool]:
-    display_specs: list[str] = []
-    package_args: list[str] = []
-    package_hashes: list[list[str]] = []
-    if isinstance(packages_obj, list):
-        for item in packages_obj:
-            if not isinstance(item, dict):
-                continue
-            spec = str(item.get("spec") or "").strip()
-            if not spec:
-                continue
-            hashes = _package_hash_args(item)
-            display_specs.append(spec)
-            package_args.extend([spec, *hashes])
-            package_hashes.append(hashes)
-    if not display_specs:
-        return (
-            [DEFAULT_RAPIDOCR_PIP_SPEC, DEFAULT_ONNXRUNTIME_PIP_SPEC],
-            [DEFAULT_RAPIDOCR_PIP_SPEC, DEFAULT_ONNXRUNTIME_PIP_SPEC],
-            False,
-        )
-    has_any_hash = any(package_hashes)
-    if has_any_hash and not all(package_hashes):
-        raise RuntimeError(
-            "rapidocr install manifest must include sha256 hashes for every package "
-            "when package hashes are used"
-        )
-    return package_args, display_specs, has_any_hash
-
-
-def _localized_rapidocr_install_error(
-    exc: Exception,
-    *,
-    phase: str,
-    target_dir: Path,
-    package_specs: list[str] | None = None,
-) -> str:
-    packages = ", ".join(package_specs or []) or f"{DEFAULT_RAPIDOCR_PIP_SPEC}, {DEFAULT_ONNXRUNTIME_PIP_SPEC}"
-    target_dir_text = str(target_dir) if target_dir else "未解析"
-
-    stderr_text = ""
-    if isinstance(exc, subprocess.CalledProcessError):
-        stderr_text = str(getattr(exc, "stderr", "") or getattr(exc, "output", "") or "").strip()
-    combined_message = " ".join(
-        part for part in [stderr_text, str(exc or "").strip()] if part
-    ).strip()
-
-    if "No module named pip" in combined_message:
-        return (
-            "RapidOCR 安装失败：插件当前使用的 Python 运行时缺少 pip 模块，"
-            "因此无法下载 OCR 依赖。请先修复该 Python 环境的 pip，"
-            "或升级到包含 pip 的 N.E.K.O 运行环境后重试。"
-        )
-    if "No module named ensurepip" in combined_message:
-        return (
-            "RapidOCR 安装失败：插件 Python 环境同时缺少 pip 和 ensurepip，"
-            "无法自动补齐安装工具。请重建或替换 N.E.K.O 的 Python 运行环境后重试。"
-        )
-    if "ensurepip" in combined_message and "PermissionError" in combined_message:
-        return (
-            "RapidOCR 安装失败：插件在自动补齐 pip 时被文件权限拦截，"
-            "通常是临时目录或 Python 运行环境目录不可写。"
-            "请用管理员权限修复该 Python 环境，或重新安装/重建 N.E.K.O 运行环境后重试。"
-        )
-
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return (
-            "RapidOCR 安装超时：在限定时间内未能完成运行时依赖安装或模型预热。"
-            f"安装目录：{target_dir_text}。请检查网络连接和磁盘读写权限后重试。"
-        )
-
-    if isinstance(exc, subprocess.CalledProcessError):
-        return (
-            "RapidOCR 安装失败：插件在安装 OCR 运行时依赖时执行 pip 命令失败。"
-            f"目标目录：{target_dir_text}；依赖：{packages}。"
-            "常见原因包括无法访问 PyPI、代理或防火墙拦截、安装目录没有写权限，"
-            "或者当前 Python 环境中的 pip 不可用。请先检查网络和权限后重试。"
-        )
-
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = getattr(getattr(exc, "response", None), "status_code", "unknown")
-        return (
-            "RapidOCR 安装失败：获取安装清单时服务器返回了异常状态。"
-            f"HTTP 状态码：{status_code}。请稍后重试，或检查安装源地址是否可访问。"
-        )
-
-    if isinstance(exc, httpx.RequestError):
-        return (
-            "RapidOCR 安装失败：获取安装清单时网络请求没有成功完成。"
-            "请检查当前网络、代理设置或防火墙策略后重试。"
-        )
-
-    if isinstance(exc, PermissionError):
-        return (
-            "RapidOCR 安装失败：没有权限写入插件隔离安装目录。"
-            f"目标目录：{target_dir_text}。请确认目录权限或更换安装位置后重试。"
-        )
-
-    message = str(exc or "").strip()
-    if "RapidOCR install is only supported on Windows" in message:
-        return "RapidOCR 安装失败：当前仅支持在 Windows 上执行自动安装。"
-    if "missing RapidOCR install target directory" in message:
-        return "RapidOCR 安装失败：没有解析到有效的安装目录，请检查插件配置。"
-    if message.startswith("RapidOCR installation is incomplete"):
-        return (
-            "RapidOCR 安装未完成：运行时依赖已经下载，但初始化校验没有通过。"
-            "请重试；如果仍然失败，请查看插件日志中的原始错误详情。"
-        )
-    if "missing RapidOCR site-packages directory" in message:
-        return (
-            "RapidOCR 安装失败：依赖安装目录不完整，无法加载插件隔离的 site-packages。"
-            "请重试安装。"
-        )
-    if "RapidOCR runtime class not found" in message:
-        return (
-            "RapidOCR 安装失败：运行时包已下载，但没有找到可用的 RapidOCR 主类。"
-            "这通常表示安装包不完整或版本异常，请重试安装。"
-        )
-
-    if phase == "metadata":
-        return (
-            "RapidOCR 安装失败：准备安装信息时发生异常。"
-            "请检查网络或安装清单配置后重试。"
-        )
-    if phase == "verifying":
-        return (
-            "RapidOCR 安装失败：运行时预热或模型校验没有通过。"
-            "请重试；如果持续失败，请查看插件日志中的原始错误详情。"
-        )
-    return "RapidOCR 安装失败：安装运行时依赖时发生未知异常，请查看插件日志后重试。"
-
-
-async def _load_install_manifest(
-    *,
-    manifest_url: str,
-    timeout_seconds: float,
-    engine_type: str,
-    lang_type: str,
-    model_type: str,
-    ocr_version: str,
-    client: httpx.AsyncClient,
-) -> dict[str, Any]:
-    if not str(manifest_url or "").strip():
-        return _default_install_manifest(
-            engine_type=engine_type,
-            lang_type=lang_type,
-            model_type=model_type,
-            ocr_version=ocr_version,
-        )
-    response = await client.get(
-        str(manifest_url).strip(),
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "N.E.K.O/galgame_plugin",
-        },
-        timeout=timeout_seconds,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError("rapidocr install manifest returned an invalid payload")
-    return payload
-
-
 def _purge_modules(prefixes: tuple[str, ...]) -> None:
     for name in list(sys.modules.keys()):
         if any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes):
@@ -337,8 +116,18 @@ def _rapidocr_import_context(
         old_model_dir = os.environ.get("RAPIDOCR_MODEL_DIR")
         old_model_home = os.environ.get("RAPIDOCR_MODEL_HOME")
         dll_handles: list[Any] = []
-        if site_packages_dir:
-            site_packages_dir.mkdir(parents=True, exist_ok=True)
+        # Legacy plugin-isolated install layout: only injected as a fallback
+        # when the bundled main-program rapidocr_onnxruntime is NOT importable.
+        # Otherwise sys.path order would let a stale legacy install shadow the
+        # bundled (likely newer) version, breaking upgrades for users who
+        # haven't manually cleaned %LOCALAPPDATA%/.../RapidOCR/runtime.
+        bundled_available = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME) is not None
+        use_legacy_layout = (
+            site_packages_dir
+            and site_packages_dir.is_dir()
+            and not bundled_available
+        )
+        if use_legacy_layout:
             site_path = str(site_packages_dir)
             if site_path not in sys.path:
                 sys.path.insert(0, site_path)
@@ -482,8 +271,6 @@ def load_rapidocr_runtime(
 ) -> tuple[Any, dict[str, str]]:
     site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
     model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-    if not site_packages_dir:
-        raise RuntimeError("missing RapidOCR site-packages directory")
     with _rapidocr_import_context(
         site_packages_dir=site_packages_dir,
         model_cache_dir=model_cache_dir,
@@ -518,21 +305,6 @@ def load_rapidocr_runtime(
     return runtime, metadata
 
 
-def _write_install_state(
-    *,
-    raw_target_dir: str,
-    metadata: dict[str, Any],
-) -> None:
-    state_path = _rapidocr_install_state_path(raw_target_dir)
-    if not state_path:
-        return
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
 def inspect_rapidocr_installation(
     *,
     install_target_dir_raw: str,
@@ -560,6 +332,9 @@ def inspect_rapidocr_installation(
     install_state: dict[str, Any] = {}
     runtime_error = ""
 
+    # Legacy install_state.json holds metadata about which model variant the
+    # plugin-isolated install picked. Read it as a hint for callers; the bundled
+    # path (post-refactor) never writes it, so absence is fine.
     if supported and install_state_path.is_file():
         try:
             install_state_payload = json.loads(install_state_path.read_text(encoding="utf-8"))
@@ -568,13 +343,35 @@ def inspect_rapidocr_installation(
         except (OSError, ValueError, TypeError):
             install_state = {}
 
+    # rapidocr-onnxruntime is now bundled into the main program (see
+    # pyproject.toml [dependency-groups] galgame). Treat either source as
+    # "package present": main interpreter import OR legacy plugin-isolated dir.
+    bundled_spec = None
+    try:
+        bundled_spec = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME)
+    except (ImportError, ValueError):
+        bundled_spec = None
+
     if not supported:
         detail = "unsupported_platform"
+    elif bundled_spec is not None:
+        # Bundled main-program path: trust find_spec instead of constructing a
+        # full RapidOCR runtime (which inits an ONNX session) on every status
+        # probe. inspect_*_installation gets called from the bridge poll on a
+        # short cache TTL — running ORT init repeatedly would hammer CPU even
+        # when OCR is disabled. Real OCR errors will still surface from
+        # OcrReaderManager when capture/recognition is actually attempted.
+        detail = "installed"
+        spec_origin = getattr(bundled_spec, "origin", None) or ""
+        if spec_origin:
+            detected_path = str(Path(spec_origin).resolve().parent)
     elif not package_dir.exists():
         detail = "missing"
-    elif not install_state_path.is_file() or not model_cache_dir.exists():
-        detail = "missing_models"
     else:
+        # Legacy plugin-isolated install: still validated by full runtime load
+        # since this path is for upgrade users with potentially-stale installs
+        # that may legitimately be broken. Frequency is low (only when bundled
+        # path is unavailable AND legacy dir exists).
         try:
             _runtime, runtime_meta = load_rapidocr_runtime(
                 install_target_dir_raw=install_target_dir_raw,
@@ -594,7 +391,12 @@ def inspect_rapidocr_installation(
     return {
         "install_supported": supported,
         "installed": installed,
-        "can_install": supported and not installed,
+        # rapidocr-onnxruntime is now bundled into the main program (see
+        # pyproject.toml [dependency-groups] galgame). When it's not importable
+        # the user is on a source install without `uv sync --group galgame` —
+        # no in-app install action exists anymore (HTTP routes removed in this
+        # refactor), so `can_install` stays False to keep the UI button hidden.
+        "can_install": False,
         "detected_path": detected_path,
         "target_dir": str(target_dir) if target_dir else "",
         "runtime_dir": str(runtime_dir) if runtime_dir else "",
@@ -608,400 +410,3 @@ def inspect_rapidocr_installation(
         "detail": detail,
         "runtime_error": runtime_error,
     }
-
-
-def _blank_test_image() -> Any:
-    import numpy as np
-    from PIL import Image
-
-    return np.asarray(Image.new("RGB", (64, 32), "white"))
-
-
-def _warmup_rapidocr(
-    *,
-    install_target_dir_raw: str,
-    engine_type: str,
-    lang_type: str,
-    model_type: str,
-    ocr_version: str,
-) -> dict[str, str]:
-    runtime, metadata = load_rapidocr_runtime(
-        install_target_dir_raw=install_target_dir_raw,
-        engine_type=engine_type,
-        lang_type=lang_type,
-        model_type=model_type,
-        ocr_version=ocr_version,
-        force_reload=True,
-    )
-    test_image = _blank_test_image()
-    _ = runtime(test_image)
-    return metadata
-
-
-def _rapidocr_temp_env(*, temp_root: Path) -> dict[str, str]:
-    temp_root.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    temp_value = str(temp_root)
-    env["TMP"] = temp_value
-    env["TEMP"] = temp_value
-    env["TMPDIR"] = temp_value
-    return env
-
-
-def _run_subprocess(
-    command: list[str],
-    *,
-    timeout_seconds: float,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        check=True,
-        timeout=timeout_seconds,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-
-def _ensure_pip_available(*, timeout_seconds: float, temp_root: Path) -> None:
-    env = _rapidocr_temp_env(temp_root=temp_root)
-    try:
-        _run_subprocess([sys.executable, "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
-        return
-    except subprocess.CalledProcessError as exc:
-        message = " ".join(
-            part for part in [str(getattr(exc, "stderr", "") or "").strip(), str(exc).strip()] if part
-        )
-        if "No module named pip" not in message:
-            raise
-
-    _run_subprocess([sys.executable, "-m", "ensurepip", "--upgrade"], timeout_seconds=timeout_seconds, env=env)
-    _run_subprocess([sys.executable, "-m", "pip", "--version"], timeout_seconds=timeout_seconds, env=env)
-
-
-def _run_pip_install(
-    *,
-    site_packages_dir: Path,
-    packages: list[str],
-    timeout_seconds: float,
-    require_hashes: bool = False,
-) -> None:
-    temp_root = site_packages_dir.parent / "tmp"
-    env = _rapidocr_temp_env(temp_root=temp_root)
-    _ensure_pip_available(timeout_seconds=timeout_seconds, temp_root=temp_root)
-    command = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "--disable-pip-version-check",
-        "--no-warn-script-location",
-        "--target",
-        str(site_packages_dir),
-    ]
-    if require_hashes:
-        command.append("--require-hashes")
-    command.extend(packages)
-    _run_subprocess(command, timeout_seconds=timeout_seconds, env=env)
-
-
-async def install_rapidocr(
-    *,
-    logger,
-    install_target_dir_raw: str,
-    manifest_url: str,
-    timeout_seconds: float,
-    engine_type: str = DEFAULT_RAPIDOCR_ENGINE_TYPE,
-    lang_type: str = DEFAULT_RAPIDOCR_LANG_TYPE,
-    model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
-    ocr_version: str = DEFAULT_RAPIDOCR_OCR_VERSION,
-    force: bool = False,
-    platform_fn: Callable[[], bool] | None = None,
-    client_factory: Callable[[], Awaitable[httpx.AsyncClient] | httpx.AsyncClient] | None = None,
-    task_id: str | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> dict[str, Any]:
-    install_status = inspect_rapidocr_installation(
-        install_target_dir_raw=install_target_dir_raw,
-        engine_type=engine_type,
-        lang_type=lang_type,
-        model_type=model_type,
-        ocr_version=ocr_version,
-        platform_fn=platform_fn,
-    )
-    if not install_status["install_supported"]:
-        raise RuntimeError("RapidOCR install is only supported on Windows")
-    if install_status["installed"] and not force:
-        result = {
-            **install_status,
-            "already_installed": True,
-            "summary": f"RapidOCR installed: {install_status['detected_path']}",
-            "release_name": "RapidOCR ONNXRuntime",
-            "asset_name": RAPIDOCR_PACKAGE_NAME,
-        }
-        if task_id:
-            update_install_task_state(
-                task_id,
-                kind="rapidocr",
-                status="completed",
-                phase="completed",
-                message="RapidOCR is already installed",
-                progress=1.0,
-                target_dir=str(install_status.get("target_dir") or ""),
-                detected_path=str(install_status.get("detected_path") or ""),
-            )
-        await _emit_progress(
-            progress_callback,
-            {
-                "status": "completed",
-                "phase": "completed",
-                "message": "RapidOCR is already installed",
-                "progress": 1.0,
-                "downloaded_bytes": 0,
-                "total_bytes": 0,
-                "resume_from": 0,
-                "target_dir": str(install_status.get("target_dir") or ""),
-                "detected_path": str(install_status.get("detected_path") or ""),
-                "release_name": "RapidOCR ONNXRuntime",
-                "asset_name": RAPIDOCR_PACKAGE_NAME,
-            },
-        )
-        return result
-
-    target_dir = resolve_rapidocr_install_target(install_target_dir_raw)
-    if not target_dir:
-        raise RuntimeError("missing RapidOCR install target directory")
-    runtime_dir = resolve_rapidocr_runtime_dir(install_target_dir_raw)
-    site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
-    model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-
-    if task_id:
-        update_install_task_state(
-            task_id,
-            kind="rapidocr",
-            status="running",
-            phase="metadata",
-            message="Fetching RapidOCR install metadata",
-            progress=_compute_phase_progress("metadata"),
-            target_dir=str(target_dir),
-        )
-    await _emit_progress(
-        progress_callback,
-        {
-            "status": "running",
-            "phase": "metadata",
-            "message": "Fetching RapidOCR install metadata",
-            "progress": _compute_phase_progress("metadata"),
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "resume_from": 0,
-            "target_dir": str(target_dir),
-            "detected_path": "",
-            "release_name": "",
-            "asset_name": "",
-        },
-    )
-
-    owned_client = False
-    client: httpx.AsyncClient | None = None
-    current_phase = "metadata"
-    package_specs: list[str] = []
-    package_install_args: list[str] = []
-    require_package_hashes = False
-    install_succeeded = False
-    if client_factory is None:
-        client = httpx.AsyncClient(
-            timeout=timeout_seconds,
-            trust_env=True,
-            follow_redirects=True,
-        )
-        owned_client = True
-    else:
-        maybe_client = client_factory()
-        client = await maybe_client if hasattr(maybe_client, "__await__") else maybe_client
-
-    try:
-        manifest = await _load_install_manifest(
-            manifest_url=manifest_url,
-            timeout_seconds=timeout_seconds,
-            engine_type=engine_type,
-            lang_type=lang_type,
-            model_type=model_type,
-            ocr_version=ocr_version,
-            client=client,
-        )
-        release_name = str(manifest.get("name") or "RapidOCR ONNXRuntime")
-        package_install_args, package_specs, require_package_hashes = (
-            _rapidocr_package_install_plan(manifest.get("packages"))
-        )
-        asset_name = ", ".join(package_specs)
-
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        site_packages_dir.mkdir(parents=True, exist_ok=True)
-        model_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        installing_progress = {
-            "status": "running",
-            "phase": "installing",
-            "message": "Installing RapidOCR runtime packages",
-            "progress": _compute_phase_progress("installing"),
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "resume_from": 0,
-            "target_dir": str(target_dir),
-            "detected_path": "",
-            "release_name": release_name,
-            "asset_name": asset_name,
-            "error": "",
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="rapidocr", **installing_progress)
-        await _emit_progress(progress_callback, installing_progress)
-
-        current_phase = "installing"
-        await asyncio.to_thread(
-            _run_pip_install,
-            site_packages_dir=site_packages_dir,
-            packages=package_install_args,
-            timeout_seconds=timeout_seconds,
-            require_hashes=require_package_hashes,
-        )
-
-        verifying_progress = {
-            "status": "running",
-            "phase": "verifying",
-            "message": "Warming up RapidOCR runtime",
-            "progress": _compute_phase_progress("verifying"),
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "resume_from": 0,
-            "target_dir": str(target_dir),
-            "detected_path": "",
-            "release_name": release_name,
-            "asset_name": asset_name,
-            "error": "",
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="rapidocr", **verifying_progress)
-        await _emit_progress(progress_callback, verifying_progress)
-
-        current_phase = "verifying"
-        runtime_meta = await asyncio.to_thread(
-            _warmup_rapidocr,
-            install_target_dir_raw=install_target_dir_raw,
-            engine_type=engine_type,
-            lang_type=lang_type,
-            model_type=model_type,
-            ocr_version=ocr_version,
-        )
-        _write_install_state(
-            raw_target_dir=install_target_dir_raw,
-            metadata={
-                "engine_type": engine_type,
-                "lang_type": lang_type,
-                "model_type": model_type,
-                "ocr_version": ocr_version,
-                "selected_model": runtime_meta["selected_model"],
-                "detected_path": runtime_meta["detected_path"],
-                "model_cache_dir": runtime_meta["model_cache_dir"],
-            },
-        )
-
-        result_status = inspect_rapidocr_installation(
-            install_target_dir_raw=install_target_dir_raw,
-            engine_type=engine_type,
-            lang_type=lang_type,
-            model_type=model_type,
-            ocr_version=ocr_version,
-            platform_fn=platform_fn,
-        )
-        if not result_status["installed"]:
-            raise RuntimeError(
-                "RapidOCR installation is incomplete: "
-                + str(result_status.get("detail") or "unknown")
-            )
-        result = {
-            **result_status,
-            "already_installed": False,
-            "summary": f"RapidOCR installed to {result_status['target_dir']}",
-            "release_name": release_name,
-            "asset_name": asset_name,
-        }
-        completed_progress = {
-            "status": "completed",
-            "phase": "completed",
-            "message": "RapidOCR installation completed",
-            "progress": 1.0,
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "resume_from": 0,
-            "target_dir": str(result_status.get("target_dir") or target_dir),
-            "detected_path": str(result_status.get("detected_path") or ""),
-            "release_name": release_name,
-            "asset_name": asset_name,
-            "error": "",
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="rapidocr", **completed_progress)
-        await _emit_progress(progress_callback, completed_progress)
-        install_succeeded = True
-        return result
-    except Exception as exc:
-        if logger is not None:
-            logger.exception("RapidOCR install failed during {}: {}", current_phase, exc)
-            if isinstance(exc, subprocess.CalledProcessError):
-                stdout_text = str(getattr(exc, "stdout", "") or "").strip()
-                stderr_text = str(getattr(exc, "stderr", "") or "").strip()
-                if stdout_text:
-                    logger.error("RapidOCR pip stdout during {}:\n{}", current_phase, stdout_text)
-                if stderr_text:
-                    logger.error("RapidOCR pip stderr during {}:\n{}", current_phase, stderr_text)
-        error_message = _localized_rapidocr_install_error(
-            exc,
-            phase=current_phase,
-            target_dir=target_dir,
-            package_specs=package_specs,
-        )
-        if task_id:
-            update_install_task_state(
-                task_id,
-                kind="rapidocr",
-                status="failed",
-                phase="failed",
-                message=error_message,
-                progress=_compute_phase_progress("failed"),
-                target_dir=str(target_dir),
-                error=error_message,
-            )
-        await _emit_progress(
-            progress_callback,
-            {
-                "status": "failed",
-                "phase": "failed",
-                "message": error_message,
-                "progress": _compute_phase_progress("failed"),
-                "downloaded_bytes": 0,
-                "total_bytes": 0,
-                "resume_from": 0,
-                "target_dir": str(target_dir),
-                "detected_path": "",
-                "release_name": "",
-                "asset_name": "",
-                "error": error_message,
-            },
-        )
-        raise RuntimeError(error_message) from exc
-    finally:
-        if owned_client and client is not None:
-            await client.aclose()
-        if not install_succeeded:
-            try:
-                _purge_modules((RAPIDOCR_PACKAGE_NAME,))
-            except Exception as exc:
-                if logger is not None:
-                    logger.warning("RapidOCR module cleanup failed: {}", exc)

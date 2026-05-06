@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
 import importlib.util
-import os
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
-from .install_tasks import update_install_task_state
 from .memory_reader import is_windows_platform
-from .tesseract_support import _compute_phase_progress, _emit_progress
 
 DXCAM_PACKAGE_NAME = "dxcam"
-ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
 def _purge_module(module_name: str) -> None:
@@ -52,169 +44,14 @@ def inspect_dxcam_installation(
     return {
         "install_supported": supported,
         "installed": detail == "installed",
-        "can_install": supported and detail != "installed",
+        # dxcam is now a main-program dependency (see pyproject.toml). When the
+        # package is not importable the user is on a non-Windows platform or a
+        # source install without `uv sync --group galgame` — neither case is
+        # fixable from inside the running app, so `can_install` stays False.
+        "can_install": False,
         "detected_path": detected_path,
         "package_name": DXCAM_PACKAGE_NAME,
         "target_dir": "current_python_environment",
         "detail": detail,
         "runtime_error": runtime_error,
     }
-
-
-def _run_pip_install(*, timeout_seconds: float) -> None:
-    temp_root = Path(tempfile.gettempdir()) / "neko-galgame-dxcam-install"
-    temp_root.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    env["TMP"] = str(temp_root)
-    env["TEMP"] = str(temp_root)
-    env["TMPDIR"] = str(temp_root)
-    command = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "--disable-pip-version-check",
-        DXCAM_PACKAGE_NAME,
-    ]
-    subprocess.run(
-        command,
-        check=True,
-        timeout=timeout_seconds,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-
-def _localized_dxcam_install_error(exc: Exception) -> str:
-    stderr_text = ""
-    if isinstance(exc, subprocess.CalledProcessError):
-        stderr_text = str(getattr(exc, "stderr", "") or getattr(exc, "output", "") or "").strip()
-    combined = " ".join(part for part in [stderr_text, str(exc or "").strip()] if part).strip()
-    if "No module named pip" in combined:
-        return "DXcam 安装失败：当前 Python 环境缺少 pip，无法安装截图依赖。"
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return "DXcam 安装超时：请检查网络、代理或 PyPI 访问状态后重试。"
-    if isinstance(exc, subprocess.CalledProcessError):
-        return "DXcam 安装失败：pip 安装 dxcam 没有成功完成，请检查网络、代理、防火墙或当前 Python 环境权限。"
-    if "DXcam install is only supported on Windows" in combined:
-        return "DXcam 安装失败：DXcam 截图后端仅支持 Windows。"
-    return "DXcam 安装失败：安装截图依赖时发生未知异常，请查看插件日志后重试。"
-
-
-async def install_dxcam(
-    *,
-    logger,
-    timeout_seconds: float,
-    force: bool = False,
-    platform_fn: Callable[[], bool] | None = None,
-    task_id: str | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> dict[str, Any]:
-    install_status = inspect_dxcam_installation(platform_fn=platform_fn)
-    if not install_status["install_supported"]:
-        raise RuntimeError("DXcam install is only supported on Windows")
-    if install_status["installed"] and not force:
-        result = {
-            **install_status,
-            "already_installed": True,
-            "summary": f"DXcam installed: {install_status['detected_path']}",
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-        }
-        completed = {
-            "status": "completed",
-            "phase": "completed",
-            "message": "DXcam is already installed",
-            "progress": 1.0,
-            "target_dir": str(install_status.get("target_dir") or ""),
-            "detected_path": str(install_status.get("detected_path") or ""),
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="dxcam", **completed)
-        await _emit_progress(progress_callback, completed)
-        return result
-
-    installing = {
-        "status": "running",
-        "phase": "installing",
-        "message": "Installing DXcam dependency",
-        "progress": _compute_phase_progress("installing"),
-        "target_dir": "current_python_environment",
-        "detected_path": "",
-        "release_name": "DXcam",
-        "asset_name": DXCAM_PACKAGE_NAME,
-        "error": "",
-    }
-    if task_id:
-        update_install_task_state(task_id, kind="dxcam", **installing)
-    await _emit_progress(progress_callback, installing)
-
-    try:
-        await asyncio.to_thread(_run_pip_install, timeout_seconds=timeout_seconds)
-        _purge_module(DXCAM_PACKAGE_NAME)
-        importlib.invalidate_caches()
-        verifying = {
-            "status": "running",
-            "phase": "verifying",
-            "message": "Verifying DXcam dependency",
-            "progress": _compute_phase_progress("verifying"),
-            "target_dir": "current_python_environment",
-            "detected_path": "",
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-            "error": "",
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="dxcam", **verifying)
-        await _emit_progress(progress_callback, verifying)
-
-        result_status = inspect_dxcam_installation(platform_fn=platform_fn)
-        if not result_status["installed"]:
-            raise RuntimeError(f"DXcam installation is incomplete: {result_status.get('detail') or 'unknown'}")
-        result = {
-            **result_status,
-            "already_installed": False,
-            "summary": "DXcam dependency installed",
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-        }
-        completed = {
-            "status": "completed",
-            "phase": "completed",
-            "message": "DXcam installation completed",
-            "progress": 1.0,
-            "target_dir": str(result_status.get("target_dir") or ""),
-            "detected_path": str(result_status.get("detected_path") or ""),
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-            "error": "",
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="dxcam", **completed)
-        await _emit_progress(progress_callback, completed)
-        return result
-    except Exception as exc:
-        if logger is not None:
-            logger.exception("DXcam install failed: {}", exc)
-        error_message = _localized_dxcam_install_error(exc)
-        failed = {
-            "status": "failed",
-            "phase": "failed",
-            "message": error_message,
-            "progress": _compute_phase_progress("failed"),
-            "target_dir": "current_python_environment",
-            "release_name": "DXcam",
-            "asset_name": DXCAM_PACKAGE_NAME,
-            "error": error_message,
-        }
-        if task_id:
-            update_install_task_state(task_id, kind="dxcam", **failed)
-        await _emit_progress(progress_callback, failed)
-        raise RuntimeError(error_message) from exc

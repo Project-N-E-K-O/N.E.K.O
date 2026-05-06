@@ -104,6 +104,10 @@ class Modules:
     # Browser-use task tracking
     active_browser_use_task_id: Optional[str] = None
     active_browser_use_bg_task: Optional[asyncio.Task] = None
+    # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
+    # while a bounded background probe waits for the external health endpoint.
+    openclaw_enable_task: Optional[asyncio.Task] = None
+    openclaw_enable_seq: int = 0
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {
         "computer_use_enabled": False,
@@ -143,6 +147,8 @@ _plugin_name_cache_lock = asyncio.Lock()
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
+OPENCLAW_ENABLE_CHECK_ATTEMPTS: int = 24
+OPENCLAW_ENABLE_CHECK_INTERVAL: float = 1.0
 _task_registry_last_cleanup: float = 0.0
 
 # ---------------------------------------------------------------------------
@@ -887,6 +893,8 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return ""
         if text.startswith("AGENT_"):
             return text
+        if name == "openclaw":
+            return _openclaw_reason_code(text)
 
         lower = text.lower()
         # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
@@ -921,6 +929,119 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
+
+
+def _openclaw_pending() -> bool:
+    task = getattr(Modules, "openclaw_enable_task", None)
+    return bool(task and not task.done())
+
+
+def _cancel_openclaw_enable_probe() -> None:
+    Modules.openclaw_enable_seq += 1
+    task = getattr(Modules, "openclaw_enable_task", None)
+    if task and not task.done():
+        task.cancel()
+    Modules.openclaw_enable_task = None
+
+
+def _openclaw_first_reason(reasons: Any) -> str:
+    if isinstance(reasons, list) and reasons:
+        return str(reasons[0] or "").strip()
+    return str(reasons or "").strip()
+
+
+def _openclaw_reason_code(reasons: Any) -> str:
+    reason = _openclaw_first_reason(reasons)
+    if not reason:
+        return "AGENT_OPENCLAW_UNAVAILABLE"
+    if reason.startswith("AGENT_"):
+        return reason
+
+    lower = reason.lower()
+    if "pending" in lower or "未检查" in reason:
+        return "AGENT_PRECHECK_PENDING"
+    if "module not loaded" in lower or "adapter 未加载" in lower or "模块未加载" in reason:
+        return "AGENT_OPENCLAW_MODULE_NOT_LOADED"
+    if (
+        "unavailable" in lower
+        or "connect" in lower
+        or "connection" in lower
+        or "timeout" in lower
+        or "timed out" in lower
+        or "refused" in lower
+        or "连接" in reason
+    ):
+        return "AGENT_CONNECTIVITY_FAILED"
+    return "AGENT_OPENCLAW_UNAVAILABLE"
+
+
+def _openclaw_reason_text(reasons: Any) -> str:
+    reason = _openclaw_first_reason(reasons) or "unknown"
+    display_reasons = {
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "module not loaded",
+        "AGENT_OPENCLAW_UNAVAILABLE": "OpenClaw service unavailable",
+        "AGENT_PRECHECK_PENDING": "connectivity check pending",
+        "AGENT_CONNECTIVITY_FAILED": "OpenClaw service connection failed",
+    }
+    reason = display_reasons.get(reason, reason)
+    reason = reason.replace("OpenClaw(QwenPaw)", "OpenClaw").replace("QwenPaw", "OpenClaw service")
+    return reason[:USER_NOTIFICATION_REASON_MAX_CHARS] if reason else "unknown"
+
+
+def _openclaw_notification(code: str, reasons: Any) -> str:
+    reason = _openclaw_reason_text(reasons)
+    return json.dumps({
+        "code": code,
+        "details": {"reason": reason, "reason_code": _openclaw_reason_code(reasons)},
+    })
+
+
+async def _run_openclaw_enable_probe(seq: int, lanlan_name: Optional[str]) -> None:
+    last_reasons: list[str] = []
+    try:
+        for attempt in range(OPENCLAW_ENABLE_CHECK_ATTEMPTS):
+            if seq != Modules.openclaw_enable_seq or not Modules.agent_flags.get("openclaw_enabled"):
+                return
+            adapter = Modules.openclaw
+            if not adapter:
+                last_reasons = ["AGENT_OPENCLAW_MODULE_NOT_LOADED"]
+                break
+
+            status = await asyncio.to_thread(adapter.is_available)
+            ready = bool(status.get("ready")) if isinstance(status, dict) else False
+            last_reasons = status.get("reasons", []) if isinstance(status, dict) else []
+            status_code = status.get("status_code") if isinstance(status, dict) else None
+            if ready:
+                _set_capability("openclaw", True, "")
+                logger.info("[Agent] OpenClaw(QwenPaw) ready after enable probe attempt %s", attempt + 1)
+                _bump_state_revision()
+                await _emit_agent_status_update(lanlan_name=lanlan_name)
+                return
+
+            auth_error_codes = getattr(adapter, "AUTH_ERROR_STATUS_CODES", frozenset({401, 403}))
+            if status_code in auth_error_codes:
+                break
+            if attempt < OPENCLAW_ENABLE_CHECK_ATTEMPTS - 1:
+                await asyncio.sleep(OPENCLAW_ENABLE_CHECK_INTERVAL)
+
+        if seq == Modules.openclaw_enable_seq and Modules.agent_flags.get("openclaw_enabled"):
+            Modules.agent_flags["openclaw_enabled"] = False
+            _set_capability("openclaw", False, _openclaw_reason_text(last_reasons))
+            Modules.notification = _openclaw_notification("AGENT_OPENCLAW_UNAVAILABLE", last_reasons)
+            logger.warning("[Agent] Cannot enable OpenClaw: %s", last_reasons)
+            _bump_state_revision()
+            await _emit_agent_status_update(lanlan_name=lanlan_name)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if seq == Modules.openclaw_enable_seq and Modules.agent_flags.get("openclaw_enabled"):
+            reason = f"OpenClaw(QwenPaw) check failed: {exc}"
+            Modules.agent_flags["openclaw_enabled"] = False
+            _set_capability("openclaw", False, reason)
+            Modules.notification = _openclaw_notification("AGENT_OPENCLAW_UNAVAILABLE", [reason])
+            logger.warning("[Agent] OpenClaw enable probe failed: %s", exc)
+            _bump_state_revision()
+            await _emit_agent_status_update(lanlan_name=lanlan_name)
 
 
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
@@ -3891,13 +4012,23 @@ async def openclaw_availability():
     status = await asyncio.to_thread(Modules.openclaw.is_available)
     ready = bool(status.get("ready")) if isinstance(status, dict) else False
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("openclaw", ready, reasons[0] if reasons else "")
-    if not ready and Modules.agent_flags.get("openclaw_enabled"):
+    pending = _openclaw_pending()
+    if ready:
+        if pending:
+            _cancel_openclaw_enable_probe()
+        _set_capability("openclaw", True, "")
+        return status
+    if pending and Modules.agent_flags.get("openclaw_enabled"):
+        _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
+        if isinstance(status, dict):
+            status = dict(status)
+            status["pending"] = True
+        return status
+    reason = reasons[0] if reasons else ""
+    _set_capability("openclaw", False, reason)
+    if Modules.agent_flags.get("openclaw_enabled"):
         Modules.agent_flags["openclaw_enabled"] = False
-        Modules.notification = json.dumps({
-            "code": "AGENT_OPENCLAW_CAPABILITY_LOST",
-            "details": {"reason_code": reasons[0] if reasons else "unknown"},
-        })
+        Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
     return status
 
 
@@ -4101,6 +4232,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     of = (payload or {}).get("openfang_enabled")
     if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, nf, of)):
+        _cancel_openclaw_enable_probe()
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
@@ -4242,23 +4374,23 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if nf:
             adapter = Modules.openclaw
             if not adapter:
+                _cancel_openclaw_enable_probe()
                 Modules.agent_flags["openclaw_enabled"] = False
+                _set_capability("openclaw", False, "AGENT_OPENCLAW_MODULE_NOT_LOADED")
                 Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_MODULE_NOT_LOADED"})
             else:
-                status = await asyncio.to_thread(adapter.is_available)
-                ready = bool(status.get("ready")) if isinstance(status, dict) else False
-                reasons = status.get("reasons", []) if isinstance(status, dict) else []
-                _set_capability("openclaw", ready, reasons[0] if reasons else "")
-                if ready:
-                    Modules.agent_flags["openclaw_enabled"] = True
-                else:
-                    Modules.agent_flags["openclaw_enabled"] = False
-                    Modules.notification = json.dumps({
-                        "code": "AGENT_OPENCLAW_UNAVAILABLE",
-                        "details": {"reason_code": reasons[0] if reasons else "unknown"},
-                    })
+                _cancel_openclaw_enable_probe()
+                Modules.agent_flags["openclaw_enabled"] = True
+                _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
+                Modules.notification = json.dumps({"code": "AGENT_OPENCLAW_ENABLED_CHECKING"})
+                _bg = asyncio.create_task(_run_openclaw_enable_probe(Modules.openclaw_enable_seq, lanlan_name))
+                Modules.openclaw_enable_task = _bg
+                Modules._persistent_tasks.add(_bg)
+                _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:
+            _cancel_openclaw_enable_probe()
             Modules.agent_flags["openclaw_enabled"] = False
+            _set_capability("openclaw", False, "")
 
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
@@ -4324,12 +4456,14 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
+            _cancel_openclaw_enable_probe()
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
             Modules.agent_flags["openclaw_enabled"] = False
             Modules.agent_flags["openfang_enabled"] = False
             _set_capability("user_plugin", True, "")
+            _set_capability("openclaw", False, "")
             await admin_control({"action": "end_all"})
             await _ensure_plugin_lifecycle_stopped()
         _bump_state_revision()

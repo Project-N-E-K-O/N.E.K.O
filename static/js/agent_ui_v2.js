@@ -96,6 +96,35 @@
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
+    const sanitizeOpenClawReason = (reason) => String(reason || '')
+            .replace(/OpenClaw\(QwenPaw\)/g, 'OpenClaw')
+            .replace(/QwenPaw/g, 'OpenClaw service')
+            .trim();
+    const translateAgentReasonCode = (reason) => {
+        const reasonText = String(reason || '').trim();
+        if (reasonText && /^AGENT[A-Z0-9_-]*$/i.test(reasonText) && window.t) {
+            const normalizedReason = reasonText
+                .replace(/[^A-Za-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .toUpperCase();
+            const precheckKey = `agent.precheck.${normalizedReason}`;
+            const translated = window.t(precheckKey);
+            if (translated && translated !== precheckKey) return translated;
+        }
+        return reasonText;
+    };
+    const formatOpenClawUnavailable = (reason, name) => {
+        const reasonText = sanitizeOpenClawReason(reason);
+        if (reasonText && !reasonText.includes('PENDING')) {
+            const displayReason = translateAgentReasonCode(reasonText);
+            return window.t
+                ? window.t('settings.toggles.openclawUnavailableReason', { name, reason: displayReason })
+                : `${name}不可用：${displayReason}。请确认猫爪连接服务已启动，并监听 127.0.0.1:8088。`;
+        }
+        return window.t
+            ? window.t('settings.toggles.capabilityNotReady', { name })
+            : `${name}尚未就绪，点击尝试启用`;
+    };
 
     async function refreshOpenClawAvailability() {
         try {
@@ -184,6 +213,7 @@
             const prevInfo = prevCaps[capName];
             const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
             const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
+            if (capName === 'openclaw') continue;
             if (wasPending && nowFailed && typeof window.showStatusToast === 'function' && window.t) {
                 const precheckKey = `agent.precheck.${capInfo.reason}`;
                 let reasonText = window.t(precheckKey);
@@ -283,14 +313,7 @@
                     target.title = window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关';
                 } else {
                     // Translate precheck reason code via i18n
-                    let reasonText = reason;
-                    if (reason && window.t) {
-                        const precheckKey = `agent.precheck.${reason}`;
-                        const translated = window.t(precheckKey);
-                        if (translated && translated !== precheckKey) {
-                            reasonText = translated;
-                        }
-                    }
+                    const reasonText = translateAgentReasonCode(reason);
                     target.title = reasonText
                         ? (window.t ? window.t('agent.status.precheckFailed', { reason: reasonText }) : reasonText)
                         : (window.t ? window.t('settings.toggles.capabilityNotReady', { name: getName(k) }) : `${getName(k)}尚未就绪，点击尝试启用`);
@@ -300,27 +323,32 @@
         });
 
         if (openclaw.length) {
-            const ready = typeof state.openclawReady === 'boolean'
-                ? state.openclawReady
-                : capabilityReady(snap, 'openclaw_enabled');
-            const reason = state.openclawReason || capabilityReason(snap, 'openclaw_enabled');
+            const capabilityOpenClawReady = capabilityReady(snap, 'openclaw_enabled');
+            const capabilityOpenClawReason = capabilityReason(snap, 'openclaw_enabled');
             const disabledByPending = state.pending.has('openclaw_enabled');
-            const canUse = effectiveAnalyzerEnabled && ready && !disabledByPending;
+            const activating = !!flags['openclaw_enabled'] && capabilityOpenClawReason && capabilityOpenClawReason.includes('PENDING');
+            const ready = flags['openclaw_enabled'] && capabilityOpenClawReady
+                ? true
+                : (typeof state.openclawReady === 'boolean' ? state.openclawReady : capabilityOpenClawReady);
+            const reason = flags['openclaw_enabled'] && capabilityOpenClawReady
+                ? capabilityOpenClawReason
+                : (state.openclawReason || capabilityOpenClawReason);
+            const canUse = effectiveAnalyzerEnabled && (ready || activating) && !disabledByPending;
             const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
             const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openclaw_enabled')
                 ? !!state.optimistic['openclaw_enabled']
                 : !!flags['openclaw_enabled'];
             openclaw.forEach(cb => {
-                cb.checked = disabledByPending ? false : (optimisticVal && canUse);
-                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || !ready;
-                if (disabledByPending) {
+                cb.checked = optimisticVal && (canUse || disabledByPending);
+                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled;
+                if (disabledByPending || activating) {
                     cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
                 } else if (canUse) {
                     cb.title = openclawName;
                 } else if (!effectiveAnalyzerEnabled) {
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
                 } else {
-                    cb.title = reason || (window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`);
+                    cb.title = formatOpenClawUnavailable(reason, openclawName);
                 }
             });
             sync(openclaw);
@@ -457,20 +485,6 @@
                 if (state.suppressChange) { clearProcessing(openclaw); return; }
                 const value = !!e.target.checked;
                 const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
-                if (value) {
-                    const ready = await refreshOpenClawAvailability();
-                    if (!ready) {
-                        state.suppressChange = true;
-                        openclaw.forEach(c => { c.checked = false; });
-                        state.suppressChange = false;
-                        sync(openclaw);
-                        clearProcessing(openclaw);
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(window.t ? window.t('settings.toggles.unavailable', { name: openclawName }) : `${openclawName}\u4e0d\u53ef\u7528`, 2500);
-                        }
-                        return;
-                    }
-                }
                 state.pending.add('openclaw_enabled');
                 state.optimistic['openclaw_enabled'] = value;
                 setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '\u5df2\u63a5\u53d7\u64cd\u4f5c\uff0c\u5207\u6362\u4e2d...');
