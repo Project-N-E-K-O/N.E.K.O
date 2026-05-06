@@ -2785,4 +2785,25 @@
         handleMiniGameInviteResolved: handleMiniGameInviteResolved,
         isMounted: function () { return mounted; }
     };
+
+    // 独立 Chat 刷新时，语音态广播可能早于 React host 初始化到达。
+    // 初始化完成后补读一次共享状态，避免 composer 以默认显示态首绘。
+    try {
+        var initialComposerShouldHide = false;
+        if (typeof window.shouldKeepVoiceComposerHidden === 'function') {
+            initialComposerShouldHide = window.shouldKeepVoiceComposerHidden();
+        } else if (window.appState) {
+            initialComposerShouldHide = !!(
+                window.appState.isRecording ||
+                window.appState.voiceChatActive ||
+                window.appState.voiceStartPending ||
+                window.isMicStarting
+            );
+        }
+        if (initialComposerShouldHide) {
+            setComposerHidden(true);
+        }
+    } catch (_) {
+        // 首绘兜底失败不影响后续 session_started 同步
+    }
 })();

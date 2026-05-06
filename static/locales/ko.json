@@ -1985,6 +1985,7 @@
         "glmApiBug": "GLM API가 청구 버그를 유발했습니다. 1CNY 충전을 고려해 보세요.",
         "aliApiOwed": "Alibaba API의 균형이 맞지 않습니다.",
         "voiceSystemPreparing": "음성 시스템 준비 중...",
+        "voiceConfigSwitching": "음색 전환 중, 음성 준비 중...",
         "textSystemPreparing": "텍스트 시스템 준비 중입니다. 잠시 기다려 주세요...",
         "connectingToServer": "서버에 연결하는 중...",
         "readyToSpeak": "말할 준비가 되었습니다!",

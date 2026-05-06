@@ -112,6 +112,28 @@ logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+
+
+def _voice_session_starting_response():
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "VOICE_SESSION_STARTING",
+            "error": VOICE_SESSION_STARTING_ERROR,
+            "retryable": True,
+        },
+        status_code=409,
+    )
+
+
+def _is_current_catgirl_voice_session_starting(name: str, characters, session_manager) -> bool:
+    if name != characters.get("当前猫娘", ""):
+        return False
+    mgr = session_manager.get(name) if session_manager else None
+    if not mgr:
+        return False
+    return bool(getattr(mgr, "is_starting", False) and not getattr(mgr, "is_active", False))
 
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
@@ -1651,6 +1673,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
         logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
+    if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+        return _voice_session_starting_response()
+
     # 验证voice_id是否在voice_storage中
     if not _config_manager.validate_voice_id(voice_id):
         voices = _config_manager.get_voices_for_current_api()
@@ -1709,21 +1734,30 @@ async def get_catgirl_voice_mode_status(name: str):
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
-        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
+        return JSONResponse({
+            'is_voice_mode': False,
+            'is_current': is_current,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+        })
     
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
+    is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
     
-    is_voice_mode = False
+    is_voice_mode = bool(is_current and is_starting)
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
         from main_logic.omni_realtime_client import OmniRealtimeClient
-        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+        is_voice_mode = is_voice_mode or bool(mgr.session and isinstance(mgr.session, OmniRealtimeClient))
     
     return JSONResponse({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
-        'is_active': is_active
+        'is_active': is_active,
+        'is_starting': is_starting,
+        'is_voice_starting': bool(is_current and is_starting),
     })
 
 
@@ -1944,6 +1978,9 @@ async def unregister_voice(name: str):
         old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
+
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
@@ -2465,6 +2502,11 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
     old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    if voice_id_will_change:
+        session_manager = get_session_manager()
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
 
     if voice_id_in_payload and requested_voice_id:
         # 验证 voice_id 是否在 voice_storage 中

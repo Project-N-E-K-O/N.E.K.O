@@ -1985,6 +1985,7 @@
         "glmApiBug": "智谱API触发欠费bug。请考虑充值1元。",
         "aliApiOwed": "阿里API已欠费。",
         "voiceSystemPreparing": "语音系统准备中...",
+        "voiceConfigSwitching": "音色切换中，语音准备中...",
         "textSystemPreparing": "文本系统准备中，请稍候...",
         "connectingToServer": "正在连接服务器...",
         "readyToSpeak": "可以说话了！",

@@ -196,14 +196,37 @@ function resolvePageConfig(result) {
 function startMultiWindowPageConfigLoad() {
     return new Promise(function (resolve) {
         var settled = false;
-        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
-        var handler = function (event) {
+        var emptyConfigRetryTimer = null;
+        function requestInjectedConfig(delay) {
+            if (typeof window.__nekoRequestConfigInjection !== 'function') {
+                return;
+            }
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
+            emptyConfigRetryTimer = setTimeout(function () {
+                emptyConfigRetryTimer = null;
+                if (!settled && typeof window.__nekoRequestConfigInjection === 'function') {
+                    window.__nekoRequestConfigInjection();
+                }
+            }, typeof delay === 'number' ? delay : 0);
+        }
+        function applyInjectedConfig(detail) {
             if (settled) {
                 return;
             }
+            var d = detail || {};
+            if (!d.lanlan_name) {
+                requestInjectedConfig(500);
+                return;
+            }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
-            var d = (event && event.detail) || {};
             lanlan_config.lanlan_name = d.lanlan_name || '';
             lanlan_config.model_type = (d.model_type || 'live2d').toLowerCase();
             lanlan_config.live3d_sub_type = (d.live3d_sub_type || '').toLowerCase();
@@ -230,14 +253,27 @@ function startMultiWindowPageConfigLoad() {
                 }
             }
             resolve(d);
+        }
+        // preload 通过 IPC 拿到 Pet 窗口的 lanlan_config 后派发此事件
+        var handler = function (event) {
+            applyInjectedConfig((event && event.detail) || {});
         };
         window.addEventListener('neko:config-injected', handler);
+        if (window.__nekoInjectedConfig && window.__nekoInjectedConfig.lanlan_name) {
+            applyInjectedConfig(window.__nekoInjectedConfig);
+            return;
+        }
+        requestInjectedConfig(0);
         // 超时保护：5 秒后 fallback 到 HTTP API
         setTimeout(function () {
             if (settled) {
                 return;
             }
             settled = true;
+            if (emptyConfigRetryTimer) {
+                clearTimeout(emptyConfigRetryTimer);
+                emptyConfigRetryTimer = null;
+            }
             window.removeEventListener('neko:config-injected', handler);
             console.warn('[主页] 多窗口 IPC 配置超时，fallback 到 API');
             loadPageConfig().then(resolve);

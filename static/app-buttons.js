@@ -1056,6 +1056,7 @@
             micButton.classList.add('active');
             window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
+            S.voiceStartPending = true;
             micButton.disabled = true;
 
             // Show preparing toast
@@ -1109,6 +1110,17 @@
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
             try {
+                if (typeof window.waitForVoiceConfigSwitchReady === 'function') {
+                    await window.waitForVoiceConfigSwitchReady({
+                        timeoutMs: 30000,
+                        stableMs: 300,
+                        onWaiting: function () {
+                            window.showVoicePreparingToast(window.t ? window.t('app.voiceConfigSwitching') : '\u97F3\u8272\u5207\u6362\u4E2D\uFF0C\u8BED\u97F3\u51C6\u5907\u4E2D...');
+                        }
+                    });
+                    window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
+                }
+
                 // Create a promise for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
@@ -1193,6 +1205,7 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -1219,7 +1232,11 @@
                 micButton.classList.remove('recording');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
+                S.voiceStartPending = false;
                 window.isRecording = false;
+                window.isMicStarting = false;
+                S.isSwitchingMode = false;
 
                 window.syncFloatingMicButtonState(false);
                 window.syncFloatingScreenButtonState(false);
@@ -1234,9 +1251,6 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
                 window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
-
-                window.isMicStarting = false;
-                S.isSwitchingMode = false;
 
                 screenButton.classList.remove('active');
             }
@@ -1316,6 +1330,7 @@
                 }
 
                 var textInputArea = document.getElementById('text-input-area');
+                S.voiceChatActive = false;
                 textInputArea.classList.remove('hidden');
                 if (typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
@@ -1389,6 +1404,7 @@
                 screenButton.classList.remove('active');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
                 window.isRecording = false;
 
                 var textInputArea = document.getElementById('text-input-area');

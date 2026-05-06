@@ -21,6 +21,8 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _lanlanNameWaitAttempts = 0;
+    let _lanlanNameWaitLastLogAt = 0;
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -504,10 +506,20 @@
             S.autoReconnectTimeoutId = null;
         }
         if (!currentLanlanName) {
-            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
-            S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            _lanlanNameWaitAttempts += 1;
+            var waitNow = Date.now();
+            if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                console.warn('[WebSocket] lanlan_name not ready, waiting for page config');
+                _lanlanNameWaitLastLogAt = waitNow;
+            }
+            S.autoReconnectTimeoutId = setTimeout(
+                connectWebSocket,
+                Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250)
+            );
             return;
         }
+        _lanlanNameWaitAttempts = 0;
+        _lanlanNameWaitLastLogAt = 0;
 
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
@@ -1265,6 +1277,7 @@
                                     if (sb2) sb2.classList.remove('active');
 
                                     S.isRecording = false;
+                                    S.voiceChatActive = false;
                                     window.isRecording = false;
 
                                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
@@ -1745,6 +1758,8 @@
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
+                    S.voiceChatActive = response.input_mode !== 'text';
+                    S.voiceStartPending = false;
 
                     // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
                     // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
@@ -1804,6 +1819,8 @@
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
@@ -1821,6 +1838,7 @@
                         if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                         if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
                         window.isMicStarting = false;
+                        S.voiceChatActive = false;
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
@@ -1833,6 +1851,8 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
@@ -2088,6 +2108,8 @@
                 S.isTextSessionActive = false;
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
+            S.voiceChatActive = false;
+            S.voiceStartPending = false;
 
             // Reset voice recording state & resources
             if (S.isRecording || window.isMicStarting) {

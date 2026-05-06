@@ -1985,6 +1985,7 @@
         "glmApiBug": "GLM API triggered billing bug. Please consider recharging 1 CNY.",
         "aliApiOwed": "Alibaba API is out of balance.",
         "voiceSystemPreparing": "Voice system preparing...",
+        "voiceConfigSwitching": "Voice preset switching, preparing voice chat...",
         "textSystemPreparing": "Text system preparing, please wait...",
         "connectingToServer": "Connecting to server...",
         "readyToSpeak": "Ready to speak!",

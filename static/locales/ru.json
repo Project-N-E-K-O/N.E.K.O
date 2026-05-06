@@ -1985,6 +1985,7 @@
         "glmApiBug": "GLM API вызвал ошибку биллинга.",
         "aliApiOwed": "Alibaba API: недостаточно средств.",
         "voiceSystemPreparing": "Голосовая система готовится...",
+        "voiceConfigSwitching": "Переключение голоса, подготовка голосового чата...",
         "textSystemPreparing": "Текстовая система готовится, подождите...",
         "connectingToServer": "Подключение к серверу...",
         "readyToSpeak": "Готово к разговору!",
