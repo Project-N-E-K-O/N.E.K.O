@@ -93,6 +93,12 @@ from .models import (
     json_copy,
     make_error,
 )
+from .dependency_status import (
+    infer_inspection_failed_dependencies,
+    infer_missing_dependencies,
+)
+from .rapidocr_support import inspect_rapidocr_installation
+from .dxcam_support import inspect_dxcam_installation
 from .reader import tail_events_jsonl, warmup_replay_events
 from .service import (
     apply_event_to_histories,
@@ -1061,6 +1067,7 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_capture_profiles": dict(state.ocr_capture_profiles),
                 "ocr_window_target": dict(state.ocr_window_target),
                 "plugin_error": state.plugin_error,
+                "dependency_status": dict(state.dependency_status),
             }
             should_cache = not fresh
             if should_cache:
@@ -1102,6 +1109,7 @@ class GalgamePlugin(NekoPluginBase):
             "ocr_capture_profiles": json_copy(raw["ocr_capture_profiles"]),
             "ocr_window_target": json_copy(raw["ocr_window_target"]),
             "plugin_error": raw["plugin_error"],
+            "dependency_status": json_copy(raw["dependency_status"]),
         }
         if should_cache:
             with self._state_lock:
@@ -1843,6 +1851,10 @@ class GalgamePlugin(NekoPluginBase):
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
             assign("plugin_error", str(payload["plugin_error"]))
+            assign_json_if_live_unchanged(
+                "dependency_status",
+                payload.get("dependency_status", self._state.dependency_status),
+            )
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
@@ -2833,6 +2845,92 @@ class GalgamePlugin(NekoPluginBase):
             build_status_payload(state, config=self._cfg, state_is_snapshot=True)
         )
 
+    def _refresh_dependency_status(self) -> None:
+        """Recompute galgame dependency status (rapidocr/dxcam inspection).
+
+        After PR #1188 + #1191 the rapidocr/dxcam packages are bundled into
+        the main program and runtime pip-install was removed; both inspectors
+        now return ``can_install=False``, so missing-cohort dev environments
+        no longer surface a user-actionable warning here. The bundled_hint
+        banner from #1191 covers the source-install case directly. What this
+        method still buys us:
+
+        - ``inspection_failed`` detection — when rapidocr/dxcam imports raise
+          unexpectedly (e.g. corrupt wheel after a partial sync), the diag
+          surfaces a "依赖状态检查失败" warning instead of a confusing nothing.
+        - Snapshot of "checked_at / degraded" so the UI can show staleness.
+        """
+        if self._cfg is None:
+            return
+        clear_install_inspection_cache()
+        try:
+            rapidocr = inspect_rapidocr_installation(
+                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
+                engine_type=self._cfg.rapidocr_engine_type,
+                lang_type=self._cfg.rapidocr_lang_type,
+                model_type=self._cfg.rapidocr_model_type,
+                ocr_version=self._cfg.rapidocr_ocr_version,
+            )
+        except Exception as exc:
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame rapidocr dependency inspection failed: {}",
+                exc,
+            )
+            rapidocr = {
+                "installed": False,
+                "install_supported": True,
+                "can_install": False,
+                "detail": "inspection_failed",
+                "runtime_error": str(exc),
+            }
+        try:
+            dxcam = inspect_dxcam_installation()
+        except Exception as exc:
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame dxcam dependency inspection failed: {}",
+                exc,
+            )
+            dxcam = {
+                "installed": False,
+                "install_supported": True,
+                "can_install": False,
+                "detail": "inspection_failed",
+                "runtime_error": str(exc),
+            }
+
+        dependencies = (
+            ("rapidocr", rapidocr),
+            ("dxcam", dxcam),
+        )
+        missing_dependencies = infer_missing_dependencies(dependencies)
+        inspection_failed_dependencies = infer_inspection_failed_dependencies(dependencies)
+        dependency_status = {
+            "checked_at": time.time(),
+            "degraded": bool(missing_dependencies or inspection_failed_dependencies),
+            "missing": missing_dependencies,
+        }
+        if inspection_failed_dependencies:
+            dependency_status["inspection_failed"] = inspection_failed_dependencies
+
+        with self._state_lock:
+            self._state.dependency_status = dependency_status
+            self._state_dirty = True
+            self._cached_snapshot = None
+        if missing_dependencies:
+            self.logger.warning(
+                "GalgamePlugin dependency check: optional dependencies missing {}; degraded mode enabled",
+                missing_dependencies,
+            )
+        if inspection_failed_dependencies:
+            self.logger.warning(
+                "GalgamePlugin dependency check: dependency inspections failed {}; degraded mode enabled",
+                inspection_failed_dependencies,
+            )
+
     async def _build_status_payload_async(self) -> dict[str, Any]:
         if self._cfg is None:
             return self._current_status_payload()
@@ -2983,6 +3081,8 @@ class GalgamePlugin(NekoPluginBase):
         )
         self._ocr_reader_manager.update_capture_profiles(self._state.ocr_capture_profiles)
         self._ocr_reader_manager.update_window_target(self._state.ocr_window_target)
+
+        self._refresh_dependency_status()
 
         self.register_static_ui("static")
         self.set_list_actions(
@@ -3914,6 +4014,11 @@ class GalgamePlugin(NekoPluginBase):
             "active_data_source": str(local.get("active_data_source") or ""),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
+            # Track dependency_status in the snapshot base so a parallel
+            # _refresh_dependency_status() call (e.g. from install_textractor)
+            # isn't clobbered by the stale poll-snapshot when the bridge tick
+            # commits its payload.
+            "dependency_status": json_copy(local.get("dependency_status") or {}),
         }
         next_poll_at = float(local["next_poll_at_monotonic"])
         max_reasonable_interval = max(
@@ -4388,6 +4493,7 @@ class GalgamePlugin(NekoPluginBase):
                 progress_callback=progress_callback,
             )
             clear_install_inspection_cache()
+            self._refresh_dependency_status()
             await self._poll_bridge(force=True)
             return Ok(
                 {

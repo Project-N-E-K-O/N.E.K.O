@@ -59,6 +59,7 @@ class _FakePlugin:
                 "ocr_capture_profiles": json_copy(state.ocr_capture_profiles),
                 "ocr_window_target": json_copy(state.ocr_window_target),
                 "plugin_error": state.plugin_error,
+                "dependency_status": json_copy(state.dependency_status),
             }
             self._cached_snapshot = snap
             self._state_dirty = False
@@ -81,6 +82,7 @@ class _FakePlugin:
             state.next_poll_at_monotonic = float(payload["next_poll_at_monotonic"])
             state.current_connection_state = str(payload["current_connection_state"])
             state.plugin_error = str(payload["plugin_error"])
+            state.dependency_status = json_copy(payload["dependency_status"])
             self._state_dirty = True
             self._cached_snapshot = None
 
@@ -165,10 +167,16 @@ class TestCommitInvalidatesCache:
         snap1["current_connection_state"] = "idle"
         snap1["plugin_error"] = ""
         snap1["available_game_ids"] = []
+        snap1["dependency_status"] = {
+            "checked_at": 0.0,
+            "degraded": False,
+            "missing": [],
+        }
         p._commit_state(snap1)
         snap2 = p._snapshot_state()
         assert snap1 is not snap2
         assert snap2["bound_game_id"] == "game1"
+        assert snap2["dependency_status"]["missing"] == []
 
 
 class TestRecordErrorInvalidatesCache:
@@ -223,6 +231,11 @@ class TestConcurrentAccess:
                         "next_poll_at_monotonic": 0.0,
                         "current_connection_state": "idle",
                         "plugin_error": "",
+                        "dependency_status": {
+                            "checked_at": 0.0,
+                            "degraded": False,
+                            "missing": [],
+                        },
                     }
                     p._commit_state(payload)
             except Exception as exc:
