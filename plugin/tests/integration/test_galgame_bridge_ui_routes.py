@@ -151,13 +151,13 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert response.status_code == 200
     assert "javascript" in response.headers["content-type"]
     assert "const RUNS_URL = '/runs';" in response.text
-    assert "const RAPIDOCR_INSTALL_URL = `${UI_API_BASE}/rapidocr/install`;" in response.text
-    assert "const DXCAM_INSTALL_URL = `${UI_API_BASE}/dxcam/install`;" in response.text
+    # rapidocr / dxcam install URLs and restore state helpers removed —
+    # both packages are now bundled main-program deps (see pyproject.toml
+    # [dependency-groups] galgame). Only textractor + tesseract retain
+    # runtime install machinery (they're native binaries, not Python wheels).
     assert "const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;" in response.text
     assert "const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;" in response.text
     assert "new EventSource(" in response.text
-    assert "restoreRapidOcrInstallState" in response.text
-    assert "restoreDxcamInstallState" in response.text
     assert "restoreTextractorInstallState" in response.text
     assert "restoreTesseractInstallState" in response.text
     assert "session.json" not in response.text
@@ -220,7 +220,9 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
     assert "application/json" in bundle_response.headers["content-type"]
     bundle = bundle_response.json()
     assert bundle["ui.button.collapse"]
-    assert bundle["ui.install.rapidocr.action"]
+    # `ui.install.rapidocr.action` removed (no in-app install action). Use a
+    # remaining install-namespace key that exists in all 5 locales.
+    assert bundle["ui.install.tesseract.action"]
 
     missing_response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
