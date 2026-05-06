@@ -1382,7 +1382,13 @@
 
     function isVoiceConfigMessageForCurrentLanlan(data) {
         var currentName = getCurrentLanlanName();
-        return !data.lanlan_name || !currentName || data.lanlan_name === currentName;
+        // 没带 lanlan_name 的广播视为通用通知，所有窗口都接受。
+        // 带了 lanlan_name 但本窗口 config 还没注入（currentName 空）时拒绝：
+        // 否则别的角色的 op 会被存入 _voiceConfigSwitchOps，配好后又收不到对应的
+        // active=false（被 lanlan_name mismatch 滤掉），导致 waitForVoiceConfigSwitchReady
+        // 在最长 30s 超时前一直阻塞，触发误报的"音色切换超时"。
+        if (!data.lanlan_name) return true;
+        return !!currentName && data.lanlan_name === currentName;
     }
 
     function handleVoiceConfigSwitchingMessage(data) {
