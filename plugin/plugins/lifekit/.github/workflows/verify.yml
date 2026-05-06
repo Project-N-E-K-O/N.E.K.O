@@ -1,0 +1,76 @@
+name: Verify N.E.K.O Plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PLUGIN_ID: lifekit
+  NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O
+  NEKO_REF: main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin repository
+        uses: actions/checkout@v4
+        with:
+          path: plugin-repo
+
+      - name: Checkout N.E.K.O
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NEKO_REPOSITORY }}
+          ref: ${{ env.NEKO_REF }}
+          path: neko
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Mount plugin into N.E.K.O tree
+        run: |
+          rm -rf "neko/plugin/plugins/${PLUGIN_ID}"
+          mkdir -p neko/plugin/plugins
+          cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
+
+      - name: Release check
+        working-directory: neko/plugin
+        run: |
+          mkdir -p neko_plugin_cli/target
+          uv run python neko_plugin_cli/cli.py release-check "${PLUGIN_ID}" | tee "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
+
+      - name: Write verification summary
+        working-directory: neko/plugin
+        run: |
+          PACKAGE="neko_plugin_cli/target/${PLUGIN_ID}.neko-plugin"
+          PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{print $1}')"
+          NEKO_COMMIT="$(git -C .. rev-parse HEAD)"
+
+          {
+            echo "## N.E.K.O Plugin Verification"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Plugin ID | ${PLUGIN_ID} |"
+            echo "| Plugin commit | ${GITHUB_SHA} |"
+            echo "| N.E.K.O repository | ${NEKO_REPOSITORY} |"
+            echo "| N.E.K.O ref | ${NEKO_REF} |"
+            echo "| N.E.K.O commit | ${NEKO_COMMIT} |"
+            echo "| Package | ${PLUGIN_ID}.neko-plugin |"
+            echo "| Package SHA256 | ${PACKAGE_SHA256} |"
+            echo ""
+            echo "### Release Check"
+            echo '```text'
+            cat "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_ID }}-verification
+          path: |
+            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.neko-plugin
+            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.release-check.txt

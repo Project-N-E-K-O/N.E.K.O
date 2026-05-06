@@ -26,6 +26,7 @@ from plugin.sdk.shared.core.decorators import (
     neko_plugin as _neko_plugin,
     on_event as _on_event,
     plugin_entry as _plugin_entry,
+    quick_action as _quick_action,
     replace_entry as _replace_entry,
     timer_interval as _timer_interval,
 )
@@ -100,6 +101,7 @@ def plugin_entry(
     llm_result_model: type | None = None,
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
+    quick_action: bool = False,
     _localns: dict[str, object] | None = None,
 ) -> Callable[[F], F]:
     return _plugin_entry(
@@ -117,6 +119,7 @@ def plugin_entry(
         llm_result_model=llm_result_model,
         fields=fields,
         metadata=metadata,
+        quick_action=quick_action,
         _localns=_localns if _localns is not None else _capture_declaration_locals(),
     )
 
@@ -240,6 +243,14 @@ def replace_entry(
     return _replace_entry(target=target, priority=priority, condition=condition)
 
 
+def quick_action(
+    *,
+    icon: str | None = None,
+    priority: int = 0,
+) -> Callable[[F], F]:
+    return _quick_action(icon=icon, priority=priority)
+
+
 class _PluginDecorators:
     @staticmethod
     def entry(
@@ -258,6 +269,7 @@ class _PluginDecorators:
         llm_result_model: type | None = None,
         fields: type | None = None,
         metadata: dict[str, object] | None = None,
+        quick_action: bool = False,
     ) -> Callable[[F], F]:
         declaration_locals = _capture_declaration_locals()
         return plugin_entry(
@@ -275,6 +287,7 @@ class _PluginDecorators:
             llm_result_model=llm_result_model,
             fields=fields,
             metadata=metadata,
+            quick_action=quick_action,
             _localns=declaration_locals,
         )
 
@@ -413,6 +426,7 @@ __all__ = [
     "on_event",
     "plugin",
     "plugin_entry",
+    "quick_action",
     "replace_entry",
     "timer_interval",
 ]

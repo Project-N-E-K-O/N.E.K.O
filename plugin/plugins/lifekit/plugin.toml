@@ -1,0 +1,73 @@
+[plugin]
+id = "lifekit"
+name = "生活助手"
+description = "基于地理位置的多功能生活服务。天气查询、逐小时预报、出行建议、路线规划、常用地点管理、附近 POI 搜索。"
+short_description = "Location-based life services: weather, forecasts, travel advice, route planning, saved locations, nearby POI search."
+keywords = ["天气", "weather", "出行", "travel", "温度", "temperature", "预报", "forecast", "穿衣", "下雨", "rain", "紫外线", "UV", "附近", "nearby", "路线", "route", "地点", "location", "美食", "food", "菜谱", "recipe", "做菜", "cooking", "空气", "air", "PM2.5", "AQI", "汇率", "currency", "换算", "convert", "倒计时", "countdown", "纪念日", "单位", "unit", "생활", "生活", "날씨", "天気"]
+version = "0.2.0"
+entry = "plugin.plugins.lifekit:LifeKitPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "locales"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "生活助手"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = [
+    "state:read",
+    "config:read",
+    "action:call",
+]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "生活助手教程"
+entry = "docs/quickstart.tsx"
+context = "dashboard"
+permissions = [
+    "state:read",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.store]
+enabled = true
+
+[lifekit]
+# Open-Meteo 免费，无需 key；如需和风天气可在 profile 中覆盖
+provider = "open-meteo"
+# 默认城市（留空则 IP 自动定位）
+default_city = ""
+# 预报天数 (1-7)
+forecast_days = 3
+# 缓存有效期（秒）
+cache_ttl_seconds = 1800
+# 用户时区
+timezone = "Asia/Shanghai"
+# 语言（留空则从主干获取用户语言，再 fallback 到系统时区自动检测）
+# 支持: zh-CN, zh-TW, en
+locale = ""
+# 强制使用上面的 locale，忽略主干下发的语言（默认关闭）
+force_locale = false
+
+# 路线规划 API Key（至少配一个才能用公交/地铁路线）
+# 不配 key 也能用 OSRM（步行/骑行/驾车，无公交）
+# 高德地图: https://console.amap.com/dev/key/app
+amap_key = ""
+# 百度地图: https://lbsyun.baidu.com/apiconsole/key
+baidu_map_key = ""
