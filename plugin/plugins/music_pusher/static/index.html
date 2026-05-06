@@ -1,0 +1,2712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Music Pusher 舞台版</title>
+  <style>
+    :root {
+      --bg-1: #f2f9ff;
+      --bg-2: #e2efff;
+      --bg-3: #f9ecff;
+      --panel: rgba(255, 255, 255, 0.9);
+      --line: rgba(95, 168, 239, 0.36);
+      --line-strong: rgba(101, 168, 237, 0.56);
+      --text: #105baf;
+      --sub: #3879be;
+      --blue: #2c8df0;
+      --blue-deep: #0f5ec0;
+      --pink: #e877be;
+      --purple: #8a7dff;
+      --white: #ffffff;
+      --shadow-lg: 0 20px 50px rgba(37, 114, 190, 0.2);
+      --shadow-md: 0 10px 24px rgba(40, 121, 198, 0.16);
+      --radius-xl: 26px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      font-family: "STKaiti", "KaiTi", "Noto Serif SC", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1000px 500px at 0% -6%, rgba(180, 223, 255, 0.6), transparent 72%),
+        radial-gradient(880px 540px at 100% 0%, rgba(251, 196, 233, 0.4), transparent 72%),
+        linear-gradient(145deg, var(--bg-1), var(--bg-2) 54%, var(--bg-3));
+      overflow-x: hidden;
+      scroll-snap-type: y mandatory;
+    }
+
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.88;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      width: min(1460px, 100%);
+      margin: 0 auto;
+      padding: 0 18px 20px;
+    }
+
+    .page {
+      min-height: 100vh;
+      scroll-snap-align: start;
+      padding: 16px 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: var(--shadow-lg);
+      padding: 18px 22px;
+      backdrop-filter: blur(8px);
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(30px, 2.1vw, 43px);
+      background: linear-gradient(110deg, #ffffff 0%, #76b6ff 26%, #7f92ff 46%, #f09ad8 68%, #ffffff 100%);
+      background-size: 230% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 0 18px rgba(105, 162, 241, 0.34), 0 0 30px rgba(225, 145, 216, 0.22);
+      animation: title-flow 7.8s linear infinite, title-pulse 3.2s ease-in-out infinite;
+      letter-spacing: 0.03em;
+    }
+
+    .hero p {
+      margin: 6px 0 0;
+      color: var(--sub);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 10px 18px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      background: linear-gradient(120deg, #358ff0, #6b8fff);
+      box-shadow: 0 10px 22px rgba(79, 141, 223, 0.3);
+      white-space: nowrap;
+    }
+
+    .page-one-layout {
+      height: 1520px;
+      min-height: 1520px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: 760px 746px;
+      grid-template-areas:
+        "upload planner"
+        "library planner";
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      box-shadow: var(--shadow-md);
+      padding: 16px;
+      min-height: 0;
+    }
+
+    .upload-pane,
+    .planner-pane,
+    .library-pane,
+    .task-list-pane {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      gap: 10px;
+    }
+
+    .upload-pane {
+      grid-area: upload;
+      overflow: visible;
+    }
+
+    .planner-pane {
+      grid-area: planner;
+      overflow: hidden;
+    }
+
+    .library-pane {
+      grid-area: library;
+      min-height: 0;
+      overflow: hidden;
+      height: 100%;
+    }
+
+    .task-list-pane {
+      min-height: 0;
+      overflow: visible;
+      height: auto;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(104, 173, 241, 0.32);
+    }
+
+    .planner-scroll {
+      flex: 1;
+      min-height: 0;
+      margin-top: 10px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(23px, 1.5vw, 30px);
+      line-height: 1.1;
+      color: #0f63c5;
+      letter-spacing: 0.02em;
+    }
+
+    .subtitle {
+      margin: 5px 0 0;
+      font-size: 14px;
+      color: var(--sub);
+      line-height: 1.46;
+    }
+
+    .group {
+      margin-top: 8px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.8);
+    }
+
+    .group h3 {
+      margin: 0;
+      font-size: 18px;
+      color: #0f66cb;
+      letter-spacing: 0.01em;
+    }
+
+    .row {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .split {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .field label {
+      font-size: 14px;
+      color: #1f67b4;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    input, textarea {
+      width: 100%;
+      border: 1px solid rgba(100, 178, 249, 0.45);
+      border-radius: 14px;
+      background: #ffffff;
+      color: #1564af;
+      padding: 11px 13px;
+      font-family: inherit;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    input:focus, textarea:focus {
+      border-color: #5caeff;
+      box-shadow: 0 0 0 3px rgba(92, 174, 255, 0.22);
+    }
+
+    input[type="file"] { display: none; }
+
+    button,
+    .btn-primary,
+    .btn-soft,
+    .btn-accent,
+    .btn-danger,
+    .btn-warning {
+      border: none;
+      border-radius: 16px;
+      padding: 11px 19px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.16s ease, filter 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+    }
+
+    button:hover,
+    .btn-primary:hover,
+    .btn-soft:hover,
+    .btn-accent:hover,
+    .btn-danger:hover,
+    .btn-warning:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.03);
+      box-shadow: 0 12px 22px rgba(61, 133, 208, 0.23);
+    }
+
+    button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+    .btn-primary {
+      color: #ffffff;
+      background: linear-gradient(125deg, #2788ee, #4f75ec 52%, #756ff4);
+      box-shadow: 0 11px 22px rgba(53, 121, 216, 0.34);
+    }
+
+    .btn-accent {
+      color: #ffffff;
+      background: linear-gradient(126deg, #e878c1, #af7af0 48%, #7f94ff);
+      box-shadow: 0 11px 22px rgba(178, 112, 214, 0.34);
+    }
+
+    .btn-soft {
+      color: #1668be;
+      border: 1px solid rgba(94, 166, 239, 0.55);
+      background: linear-gradient(160deg, #f7fcff, #eaf5ff);
+      box-shadow: 0 8px 16px rgba(83, 148, 218, 0.2);
+    }
+
+    .btn-danger {
+      color: #ffffff;
+      background: linear-gradient(126deg, #ee7db7, #d26edc 58%, #ad7cf3);
+      box-shadow: 0 10px 20px rgba(199, 107, 193, 0.32);
+    }
+
+    .btn-warning {
+      color: #ffffff;
+      background: linear-gradient(124deg, #5da0ff, #7d80ff 56%, #b979ea);
+      box-shadow: 0 10px 20px rgba(100, 130, 235, 0.31);
+    }
+
+    .file-pick-primary {
+      color: #ffffff;
+      background: linear-gradient(128deg, #1f88f0, #4d73eb 52%, #9b73f0);
+      box-shadow: 0 14px 30px rgba(65, 126, 224, 0.38);
+      border-radius: 16px;
+      padding: 11px 20px;
+      min-height: 46px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+    }
+
+    .file-pick-primary:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.05);
+      box-shadow: 0 16px 34px rgba(73, 128, 224, 0.45);
+    }
+
+    .file-pick-lyric {
+      color: #ffffff;
+      background: linear-gradient(126deg, #58a9ff, #847dff 56%, #d67cd7);
+      border-radius: 16px;
+      padding: 11px 18px;
+      min-height: 46px;
+      border: 1px solid rgba(255, 255, 255, 0.26);
+      box-shadow: 0 12px 24px rgba(111, 126, 226, 0.34);
+    }
+
+    .file-pick-lyric:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.04);
+    }
+
+    .field label.file-pick-primary,
+    .field label.file-pick-lyric {
+      color: #ffffff;
+      font-weight: 800;
+      text-shadow: 0 2px 10px rgba(42, 87, 185, 0.36), 0 1px 2px rgba(255, 255, 255, 0.28);
+      letter-spacing: 0.01em;
+    }
+
+    .hint {
+      margin-top: 4px;
+      font-size: 13px;
+      color: #2f78c3;
+      line-height: 1.5;
+    }
+
+    .pill {
+      border-radius: 999px;
+      border: 1px solid rgba(86, 164, 239, 0.46);
+      background: rgba(233, 245, 255, 0.92);
+      color: #1663b6;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 12px;
+    }
+
+    .toggle-row {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .toggle-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #1f67b4;
+      font-weight: 700;
+    }
+
+    .toggle-switch input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      accent-color: #338ef0;
+    }
+
+    .scroll {
+      min-height: 0;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    .scroll::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: linear-gradient(160deg, rgba(85, 168, 241, 0.74), rgba(204, 134, 227, 0.7));
+    }
+
+    .music-grid,
+    .queue-wrap,
+    .task-wrap {
+      display: grid;
+      gap: 10px;
+    }
+
+    .music-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .card {
+      border: 1px solid rgba(96, 170, 241, 0.35);
+      border-radius: 14px;
+      background: #f9fcff;
+      box-shadow: 0 8px 16px rgba(63, 138, 212, 0.12);
+      padding: 10px;
+    }
+
+    .card strong {
+      color: #0f66cb;
+      font-size: 17px;
+      line-height: 1.25;
+    }
+
+    .meta {
+      margin-top: 4px;
+      color: #3b7dc0;
+      font-size: 13px;
+      word-break: break-all;
+      line-height: 1.45;
+    }
+
+    .actions {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .audio-preview {
+      margin-top: 8px;
+      width: 100%;
+      height: 34px;
+      border-radius: 12px;
+    }
+
+    .task-badge {
+      margin-left: 10px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      color: #fff;
+      font-size: 12px;
+      padding: 4px 10px;
+      font-weight: 700;
+    }
+
+    .s-pending { background: linear-gradient(130deg, #4ca8ff, #2f7fe7); }
+    .s-running { background: linear-gradient(130deg, #5da2ff, #847dff); }
+    .s-completed { background: linear-gradient(130deg, #47ca97, #29ae7d); }
+    .s-failed { background: linear-gradient(130deg, #f18ac0, #ce72d9); }
+    .s-stopped { background: linear-gradient(130deg, #8ea5c4, #748aac); }
+
+    .page-two {
+      padding-top: 8px;
+      padding-bottom: 10px;
+    }
+
+    .showcase-shell {
+      position: relative;
+      width: 100%;
+      margin: 0 auto;
+      height: calc(100vh - 26px);
+      border-radius: 30px;
+      border: 1px solid rgba(118, 183, 244, 0.45);
+      padding: 12px;
+      background:
+        radial-gradient(140% 90% at 10% 0%, rgba(150, 210, 255, 0.4), transparent 60%),
+        radial-gradient(120% 110% at 100% 100%, rgba(247, 170, 223, 0.26), transparent 62%),
+        rgba(239, 246, 255, 0.84);
+      box-shadow: 0 28px 56px rgba(56, 128, 202, 0.24);
+      display: grid;
+      grid-template-rows: minmax(0, 76fr) minmax(0, 24fr);
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .stage-panel,
+    .runtime-panel {
+      border-radius: 22px;
+      border: 1px solid rgba(130, 188, 247, 0.42);
+      background: rgba(255, 255, 255, 0.45);
+      padding: 12px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .stage-box {
+      width: 100%;
+      height: 100%;
+      border-radius: 18px;
+      border: 1px solid rgba(125, 175, 242, 0.44);
+      background:
+        radial-gradient(120% 80% at 50% 0%, rgba(60, 102, 214, 0.36), rgba(8, 12, 22, 0) 64%),
+        radial-gradient(120% 110% at 50% 100%, rgba(170, 102, 198, 0.3), rgba(6, 10, 20, 0) 74%),
+        #050812;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stage-box-wrap {
+      margin-top: 8px;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: stretch;
+      justify-content: stretch;
+      overflow: hidden;
+    }
+
+    #stage-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+
+    .stage-beam,
+    .stage-scan,
+    .stage-glow {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .stage-glow {
+      background:
+        radial-gradient(36% 52% at 50% 8%, rgba(130, 192, 255, 0.44), rgba(130, 192, 255, 0)),
+        radial-gradient(64% 56% at 50% 100%, rgba(233, 147, 213, 0.22), rgba(233, 147, 213, 0));
+    }
+
+    .stage-beam {
+      background: linear-gradient(116deg, rgba(108, 176, 255, 0) 0%, rgba(108, 176, 255, 0.2) 40%, rgba(218, 134, 232, 0.22) 60%, rgba(218, 134, 232, 0) 100%);
+      animation: beam-flow 8s linear infinite;
+      mix-blend-mode: screen;
+      opacity: 0.86;
+    }
+
+    .stage-scan {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(132, 194, 255, 0.24) 45%, rgba(255, 255, 255, 0) 100%);
+      animation: scan-down 4.6s linear infinite;
+      opacity: 0.62;
+    }
+
+    .music-notes {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 3;
+      overflow: hidden;
+    }
+
+    .music-notes span {
+      position: absolute;
+      bottom: -18px;
+      font-size: 22px;
+      color: rgba(212, 236, 255, 0.74);
+      text-shadow: 0 0 18px rgba(130, 209, 255, 0.85), 0 0 24px rgba(241, 157, 220, 0.6);
+      animation: note-rise linear infinite;
+    }
+
+    .music-notes span:nth-child(1) { left: 8%; animation-duration: 6.2s; animation-delay: 0s; }
+    .music-notes span:nth-child(2) { left: 20%; animation-duration: 5.1s; animation-delay: -1.8s; }
+    .music-notes span:nth-child(3) { left: 35%; animation-duration: 6.8s; animation-delay: -3.4s; }
+    .music-notes span:nth-child(4) { left: 55%; animation-duration: 5.6s; animation-delay: -2.2s; }
+    .music-notes span:nth-child(5) { left: 72%; animation-duration: 6.2s; animation-delay: -4.3s; }
+    .music-notes span:nth-child(6) { left: 85%; animation-duration: 5.4s; animation-delay: -1.1s; }
+
+    .runtime-panel {
+      padding: 10px 12px 10px;
+      gap: 8px;
+    }
+
+    .runtime-panel h2,
+    .runtime-panel > p.subtitle {
+      display: none;
+    }
+
+    .runtime-top {
+      margin-top: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .progress-track {
+      margin-top: 10px;
+      width: 100%;
+      height: 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(115, 179, 244, 0.44);
+      background: rgba(222, 238, 255, 0.8);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(120deg, #54b8ff, #808eff, #ed94d8);
+      transition: width 0.16s linear;
+      box-shadow: 0 0 14px rgba(112, 185, 255, 0.6);
+    }
+
+    .visualizer-wrap {
+      margin-top: 4px;
+      position: relative;
+      width: 100%;
+      flex: 1;
+      min-height: 116px;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(106, 175, 243, 0.44);
+      background:
+        radial-gradient(130% 120% at 50% 0%, rgba(93, 170, 255, 0.28), rgba(93, 170, 255, 0) 66%),
+        radial-gradient(100% 130% at 50% 100%, rgba(233, 133, 215, 0.22), rgba(233, 133, 215, 0) 72%),
+        rgba(228, 243, 255, 0.88);
+      box-shadow: inset 0 0 24px rgba(84, 154, 233, 0.18), 0 10px 26px rgba(66, 129, 208, 0.18);
+    }
+
+    .visualizer-wrap::before {
+      content: "";
+      position: absolute;
+      inset: -30% -25%;
+      background: conic-gradient(from 0deg, rgba(116, 199, 255, 0.06), rgba(188, 166, 255, 0.14), rgba(255, 177, 223, 0.08), rgba(116, 199, 255, 0.06));
+      animation: viz-sweep 8s linear infinite;
+      pointer-events: none;
+    }
+
+    .visualizer-wrap::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(100deg, rgba(255, 255, 255, 0) 12%, rgba(199, 236, 255, 0.16) 50%, rgba(255, 255, 255, 0) 88%);
+      transform: translateX(-100%);
+      animation: viz-glint 3.8s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    #visualizer {
+      margin-top: 0;
+      width: 100%;
+      flex: 1;
+      min-height: 116px;
+      border-radius: 16px;
+      border: none;
+      background: transparent;
+      position: relative;
+      z-index: 1;
+    }
+
+    @keyframes viz-sweep {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    @keyframes viz-glint {
+      0% { transform: translateX(-120%); opacity: 0.2; }
+      55% { transform: translateX(120%); opacity: 0.45; }
+      100% { transform: translateX(120%); opacity: 0.2; }
+    }
+
+    .page-sign {
+      text-align: center;
+      margin-top: 2px;
+      color: #3b77bc;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .task-media-controls {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .task-media-controls button {
+      min-height: 38px;
+      min-width: 86px;
+      font-size: 13px;
+      border-radius: 12px;
+      padding: 8px 12px;
+    }
+
+    .toast-box {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .toast {
+      pointer-events: auto;
+      min-width: 240px;
+      max-width: 400px;
+      border-radius: 12px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 10px 14px;
+      box-shadow: 0 14px 28px rgba(42, 102, 165, 0.28);
+      animation: toast-in 0.24s ease both;
+    }
+
+    .toast.info { background: linear-gradient(130deg, #4aacf5, #2e86de, #6f8ef4); }
+    .toast.ok { background: linear-gradient(130deg, #37c396, #1ea97b); }
+    .toast.err { background: linear-gradient(130deg, #f07db3, #d564c3); }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes note-rise {
+      0% { transform: translateY(0) scale(0.85) rotate(0deg); opacity: 0; }
+      15% { opacity: 0.9; }
+      100% { transform: translateY(-108%) scale(1.2) rotate(10deg); opacity: 0; }
+    }
+
+    @keyframes scan-down {
+      0% { transform: translateY(-110%); }
+      100% { transform: translateY(110%); }
+    }
+
+    @keyframes beam-flow {
+      0% { transform: translateX(-16%); }
+      100% { transform: translateX(16%); }
+    }
+
+    @keyframes title-flow {
+      0% { background-position: 0% 50%; }
+      100% { background-position: 220% 50%; }
+    }
+
+    @keyframes title-pulse {
+      0%, 100% { filter: drop-shadow(0 0 0 rgba(145, 193, 255, 0)); }
+      50% { filter: drop-shadow(0 0 10px rgba(148, 201, 255, 0.52)); }
+    }
+
+    @media (max-width: 1280px) {
+      .music-grid { grid-template-columns: 1fr; }
+      .page-one-layout { grid-template-columns: 1fr 1fr; }
+      .showcase-shell { width: 100%; }
+    }
+
+    @media (max-width: 1040px) {
+      html, body { scroll-snap-type: none; }
+      .app { padding: 0 12px 16px; }
+      .page { min-height: auto; }
+      .page-one-layout {
+        height: auto;
+        min-height: 0;
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        grid-template-areas:
+          "upload"
+          "planner"
+          "library"
+          "tasks";
+      }
+      .library-pane,
+      .task-list-pane { min-height: 560px; }
+      .showcase-shell {
+        width: 100%;
+        height: auto;
+        min-height: 700px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .split {
+        grid-template-columns: 1fr;
+      }
+      .showcase-shell { border-radius: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="app">
+    <section class="page page-one">
+      <header class="hero">
+        <div>
+          <h1>星韵流光 · Music Pusher</h1>
+          <p>音频/歌词配对上传、可中断定时推送、舞台联动可视化。</p>
+        </div>
+        <div class="chip" id="header-chip">系统就绪</div>
+      </header>
+
+      <main class="page-one-layout">
+        <section class="panel upload-pane">
+          <div>
+            <h2 class="title">音频素材管理</h2>
+            <p class="subtitle">音频必选，IRC/LRC/TXT 歌词可选；支持歌词自动提取歌曲名、歌手并联动推送。</p>
+          </div>
+
+          <div class="group">
+            <h3>本地音频 + 歌词配对上传</h3>
+            <div class="split">
+              <div class="field">
+                <label>音频文件（必选）</label>
+                <div class="row">
+                  <label class="file-pick-primary" for="audio-file">选择音频</label>
+                  <input id="audio-file" type="file" accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" />
+                  <span class="pill" id="audio-file-name">未选择</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>歌词文件（可选）</label>
+                <div class="row">
+                  <label class="file-pick-lyric" for="lyric-file">选择 IRC/LRC 歌词文件</label>
+                  <input id="lyric-file" type="file" accept=".irc,.lrc,.txt" />
+                  <span class="pill" id="lyric-file-name">未选择</span>
+                </div>
+              </div>
+            </div>
+            <div class="split">
+              <div class="field">
+                <label for="upload-title">歌曲名</label>
+                <input id="upload-title" type="text" maxlength="120" placeholder="留空自动使用文件名" />
+              </div>
+              <div class="field">
+                <label for="upload-artist">歌手</label>
+                <input id="upload-artist" type="text" maxlength="80" placeholder="留空默认为未知" />
+              </div>
+            </div>
+            <div class="row">
+              <button class="btn-accent" id="btn-upload-push">上传并自动推送</button>
+              <button class="btn-soft" id="btn-upload-only">仅上传入库</button>
+              <button class="btn-danger" id="btn-clear-upload">清空选择</button>
+            </div>
+            <div class="hint">上传后的素材只展示音频条目，歌词会后台绑定到对应歌曲并在推送时自动下发。</div>
+          </div>
+
+          <div class="group">
+            <h3>在线音频链接</h3>
+            <div class="toggle-row">
+              <label class="toggle-switch">
+                <input id="attach-prompt-toggle" type="checkbox" checked />
+                推歌时附带提示词（含歌词节选）
+              </label>
+              <span class="hint">关闭后仅推送音乐，不附带任何提示词与歌词内容。</span>
+            </div>
+            <div class="split">
+              <div class="field">
+                <label for="online-url">在线音频链接</label>
+                <input id="online-url" type="text" placeholder="https://example.com/song.mp3" />
+              </div>
+              <div class="field">
+                <label for="online-duration">时长(秒，可留空自动识别)</label>
+                <input id="online-duration" type="number" min="1" max="72000000" placeholder="自动识别失败时回退默认值" />
+              </div>
+            </div>
+            <div class="split">
+              <div class="field">
+                <label for="online-title">歌曲名</label>
+                <input id="online-title" type="text" maxlength="120" placeholder="留空自动命名" />
+              </div>
+              <div class="field">
+                <label for="online-artist">歌手</label>
+                <input id="online-artist" type="text" maxlength="80" placeholder="留空为未知" />
+              </div>
+            </div>
+            <div class="row">
+              <button class="btn-accent" id="btn-add-link">添加到素材库</button>
+              <button class="btn-primary" id="btn-push-link-now">立即推送该链接</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel planner-pane">
+          <h2 class="title">任务编辑区</h2>
+          <p class="subtitle">配置触发时间、播放队列与时长模式，便于快速创建或更新任务。</p>
+
+          <div class="split">
+            <div class="field">
+              <label for="task-time">触发时间</label>
+              <input id="task-time" type="datetime-local" />
+            </div>
+            <div class="field">
+              <label for="task-name">任务名称</label>
+              <input id="task-name" type="text" maxlength="60" placeholder="例如：晚安轮播" />
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:6px;">
+            <label class="pill"><input type="radio" name="dur-mode" value="auto_sum" checked /> 自动累加</label>
+            <label class="pill"><input type="radio" name="dur-mode" value="manual" /> 手动覆盖</label>
+            <span class="hint" id="queue-summary" style="margin:0">当前队列 0 首，总时长 0 秒。</span>
+          </div>
+
+          <div class="scroll" style="max-height: 230px;">
+            <div class="queue-wrap" id="queue-list"></div>
+          </div>
+
+          <div class="row">
+            <button class="btn-primary" id="btn-save-task">创建定时任务</button>
+            <button class="btn-soft" id="btn-cancel-edit">取消编辑</button>
+            <button class="btn-soft" id="btn-clear-queue">清空队列</button>
+          </div>
+
+          <div class="task-list-pane">
+            <h2 class="title">任务列表</h2>
+            <p class="subtitle">与左侧素材预览库严格同高同底齐，并支持每任务独立上一首/停止/下一首控制。</p>
+            <div class="scroll planner-scroll">
+              <div class="task-wrap" id="task-list"></div>
+            </div>
+          </div>
+        </section>
+
+          <section class="panel library-pane">
+            <h3 class="title" style="font-size:24px;">素材预览库</h3>
+            <p class="subtitle">做满左侧完整高度，支持大容量预览、滚动、播放、加入队列与删除。</p>
+            <div class="scroll" style="flex:1; min-height: 0;">
+              <div class="music-grid" id="music-list"></div>
+            </div>
+          </section>
+      </main>
+    </section>
+
+    <section class="page page-two">
+      <div class="showcase-shell">
+        <section class="stage-panel">
+          <h2 class="title">舞台窗格</h2>
+          <p class="subtitle" id="stage-text">舞台待命，等待音乐节拍，已启用沉浸式纯特效场景。</p>
+
+          <div class="stage-box-wrap" id="stage-box-wrap">
+            <div class="stage-box" id="stage-box">
+              <canvas id="stage-canvas"></canvas>
+              <div class="stage-glow"></div>
+              <div class="stage-beam"></div>
+              <div class="stage-scan"></div>
+              <div class="music-notes" aria-hidden="true">
+                <span>♪</span><span>♫</span><span>♬</span><span>♪</span><span>♫</span><span>♬</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="runtime-panel">
+          <h2 class="title">运行态与可视化窗格</h2>
+          <p class="subtitle" id="runtime-text">当前无执行中的任务。</p>
+
+          <div class="runtime-top">
+            <span class="pill" id="playback-pill">播放状态：idle</span>
+          </div>
+
+          <div class="progress-track"><div class="progress-fill" id="runtime-progress"></div></div>
+          <div class="visualizer-wrap">
+            <canvas id="visualizer"></canvas>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <audio id="sync-player" preload="metadata" crossorigin="anonymous" style="display:none"></audio>
+  <div class="toast-box" id="toast-box"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/postprocessing@6.35.6/build/postprocessing.min.js"></script>
+  <script>
+    "use strict";
+
+    const PLUGIN_ID = "music_pusher";
+    const RUNS_URL = "/runs";
+    const MAX_AUDIO_SIZE = 3 * 1024 * 1024 * 1024 * 1024;
+    const MAX_DURATION_SECONDS = 20000 * 3600;
+    const AUDIO_EXT = [".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"];
+
+    const state = {
+      audioFile: null,
+      lyricFile: null,
+      musicItems: [],
+      tasks: [],
+      runtime: { active: null, next_task: null, playback: null },
+      instantPlayback: {
+        active: false,
+        track_url: "",
+        track_title: "",
+        duration_sec: 0,
+      },
+      draftQueue: [],
+      editingTaskId: null,
+      refreshing: false,
+      lastRuntimeTrackUrl: "",
+      visualizerBars: [],
+      stageEnergy: 0.08,
+      audioViz: {
+        activeElement: null,
+      },
+      attachPromptOnPush: true,
+    };
+
+    const dom = {
+      chip: document.getElementById("header-chip"),
+      audioFile: document.getElementById("audio-file"),
+      lyricFile: document.getElementById("lyric-file"),
+      audioFileName: document.getElementById("audio-file-name"),
+      lyricFileName: document.getElementById("lyric-file-name"),
+      uploadTitle: document.getElementById("upload-title"),
+      uploadArtist: document.getElementById("upload-artist"),
+      onlineUrl: document.getElementById("online-url"),
+      onlineDuration: document.getElementById("online-duration"),
+      onlineTitle: document.getElementById("online-title"),
+      onlineArtist: document.getElementById("online-artist"),
+      musicList: document.getElementById("music-list"),
+      queueList: document.getElementById("queue-list"),
+      taskList: document.getElementById("task-list"),
+      queueSummary: document.getElementById("queue-summary"),
+      runtimeText: document.getElementById("runtime-text"),
+      stageText: document.getElementById("stage-text"),
+      runtimeProgress: document.getElementById("runtime-progress"),
+      visualizer: document.getElementById("visualizer"),
+      stageBoxWrap: document.getElementById("stage-box-wrap"),
+      stageBox: document.getElementById("stage-box"),
+      stageCanvas: document.getElementById("stage-canvas"),
+      playbackPill: document.getElementById("playback-pill"),
+      syncPlayer: document.getElementById("sync-player"),
+      attachPromptToggle: document.getElementById("attach-prompt-toggle"),
+    };
+
+    function currentAttachPromptOnPush() {
+      return Boolean(state.attachPromptOnPush);
+    }
+
+    async function loadPushSettings() {
+      try {
+        const result = await callEntry("get_push_settings", {}, 20000);
+        state.attachPromptOnPush = Boolean(result?.attach_prompt_on_push !== false);
+        if (dom.attachPromptToggle) {
+          dom.attachPromptToggle.checked = state.attachPromptOnPush;
+        }
+      } catch (_err) {
+        state.attachPromptOnPush = true;
+        if (dom.attachPromptToggle) {
+          dom.attachPromptToggle.checked = true;
+        }
+      }
+    }
+
+    async function savePushSettings(enabled) {
+      const val = Boolean(enabled);
+      state.attachPromptOnPush = val;
+      if (dom.attachPromptToggle) {
+        dom.attachPromptToggle.checked = val;
+      }
+      await callEntry("set_push_settings", { attach_prompt_on_push: val }, 20000);
+    }
+
+    function toast(msg, mode = "info") {
+      const box = document.getElementById("toast-box");
+      const el = document.createElement("div");
+      el.className = `toast ${mode === "error" ? "err" : (mode === "success" ? "ok" : "info")}`;
+      el.textContent = String(msg || "");
+      box.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = "0";
+        el.style.transform = "translateY(6px)";
+        setTimeout(() => el.remove(), 220);
+      }, 2400);
+    }
+
+    function setChip(text) {
+      dom.chip.textContent = String(text || "系统就绪");
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function startInstantPlayback(url, title, durationSec = 0) {
+      const link = String(url || "").trim();
+      if (!link) return;
+      state.instantPlayback = {
+        active: true,
+        track_url: link,
+        track_title: String(title || "未命名音乐"),
+        duration_sec: normalizeDuration(durationSec, 28),
+      };
+      syncRuntimePlayer({ track: { url: link } });
+      renderRuntime();
+    }
+
+    function stopInstantPlayback() {
+      state.instantPlayback.active = false;
+      state.instantPlayback.track_url = "";
+      state.instantPlayback.track_title = "";
+      state.instantPlayback.duration_sec = 0;
+    }
+
+    function getInstantPlaybackSnapshot() {
+      if (!state.instantPlayback.active || !state.instantPlayback.track_url) return null;
+
+      const player = dom.syncPlayer;
+      let duration = Number(player.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        duration = Number(state.instantPlayback.duration_sec || 0);
+      }
+      duration = Math.max(1, duration || 1);
+
+      const position = Math.max(0, Number(player.currentTime || 0));
+      const status = player.paused ? "paused" : "playing";
+      const progress = Math.max(0, Math.min(100, (position / duration) * 100));
+
+      if (player.ended || position >= duration - 0.15) {
+        stopInstantPlayback();
+      }
+
+      return {
+        status,
+        position_sec: position,
+        duration_sec: duration,
+        progress_percent: progress,
+        track_url: state.instantPlayback.track_url,
+        track_title: state.instantPlayback.track_title,
+      };
+    }
+
+    function normalizeDuration(raw, fallback = 28) {
+      const val = Number(raw);
+      if (!Number.isFinite(val)) return fallback;
+      return Math.max(1, Math.min(MAX_DURATION_SECONDS, Math.floor(val)));
+    }
+
+    function formatTime(isoText) {
+      if (!isoText) return "-";
+      const dt = new Date(isoText);
+      if (Number.isNaN(dt.getTime())) return String(isoText);
+      return dt.toLocaleString();
+    }
+
+    function toDatetimeLocal(isoText) {
+      if (!isoText) return "";
+      const dt = new Date(isoText);
+      if (Number.isNaN(dt.getTime())) return "";
+      const offset = dt.getTimezoneOffset() * 60000;
+      return new Date(dt.getTime() - offset).toISOString().slice(0, 16);
+    }
+
+    function extOf(fileName) {
+      const text = String(fileName || "");
+      const idx = text.lastIndexOf(".");
+      return idx >= 0 ? text.slice(idx).toLowerCase() : "";
+    }
+
+    function toPlayableUrl(rawUrl) {
+      const text = String(rawUrl || "").trim();
+      if (!text) return "";
+      try {
+        const parsed = new URL(text, window.location.href);
+        const isPluginUpload = parsed.pathname.includes(`/plugin/${PLUGIN_ID}/ui/uploads/`);
+        if (isPluginUpload) {
+          return `http://127.0.0.1:48916${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+        return parsed.href;
+      } catch (_err) {
+        return text;
+      }
+    }
+
+    function guessAudioMime(url) {
+      const text = String(url || "").toLowerCase();
+      if (text.endsWith(".mp3")) return "audio/mpeg";
+      if (text.endsWith(".wav")) return "audio/wav";
+      if (text.endsWith(".ogg")) return "audio/ogg";
+      if (text.endsWith(".m4a")) return "audio/mp4";
+      if (text.endsWith(".aac")) return "audio/aac";
+      if (text.endsWith(".flac")) return "audio/flac";
+      return "";
+    }
+
+    function applyAudioSource(audioEl, rawUrl) {
+      if (!audioEl) return;
+      const sourceUrl = toPlayableUrl(rawUrl);
+      if (!sourceUrl) {
+        audioEl.removeAttribute("src");
+        audioEl.innerHTML = "";
+        return;
+      }
+      const mime = guessAudioMime(sourceUrl);
+      audioEl.innerHTML = "";
+      const source = document.createElement("source");
+      source.src = sourceUrl;
+      if (mime) source.type = mime;
+      audioEl.appendChild(source);
+      audioEl.load();
+    }
+
+    async function playMediaElement(mediaEl) {
+      if (!mediaEl) return;
+      try {
+        await mediaEl.play();
+      } catch (_err) {
+        mediaEl.load();
+        await mediaEl.play();
+      }
+    }
+
+    function extractErrorMessage(obj, fallback = "执行失败") {
+      if (!obj || typeof obj !== "object") return fallback;
+      const direct = obj.message || obj.error?.message || obj.error;
+      return typeof direct === "string" && direct.trim() ? direct.trim() : fallback;
+    }
+
+    function unwrapPluginResponse(raw) {
+      let cur = raw;
+      for (let i = 0; i < 10; i++) {
+        if (!cur || typeof cur !== "object") break;
+        if (cur.success === false) {
+          throw new Error(extractErrorMessage(cur, "插件返回失败"));
+        }
+        if (!Object.prototype.hasOwnProperty.call(cur, "data")) {
+          return cur;
+        }
+        const next = cur.data;
+        if (next === null || next === undefined) return {};
+        if (typeof next !== "object") return next;
+        cur = next;
+      }
+      return cur || {};
+    }
+
+    async function callEntry(entryId, args = {}, timeoutMs = 90000) {
+      const createResp = await fetch(RUNS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
+      });
+
+      if (!createResp.ok) {
+        const rawText = await createResp.text().catch(() => "");
+        throw new Error(`创建任务失败: HTTP ${createResp.status} ${rawText}`);
+      }
+
+      const createData = await createResp.json().catch(() => ({}));
+      const runId = createData.run_id || createData.id;
+      if (!runId) throw new Error("未拿到 run_id");
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        await sleep(230);
+        const pollResp = await fetch(`${RUNS_URL}/${runId}`);
+        if (!pollResp.ok) continue;
+
+        const rec = await pollResp.json().catch(() => ({}));
+        const status = String(rec.status || "").toLowerCase();
+
+        if (status === "succeeded") {
+          const exportResp = await fetch(`${RUNS_URL}/${runId}/export`);
+          if (!exportResp.ok) return {};
+
+          const exportData = await exportResp.json().catch(() => ({}));
+          const items = Array.isArray(exportData.items) ? exportData.items : [];
+          let payload = {};
+
+          for (const item of items) {
+            if (!item || typeof item !== "object") continue;
+            if (item.type === "json" && item.json) {
+              payload = item.json;
+              break;
+            }
+            if (item.type === "text" && typeof item.text === "string") {
+              try {
+                payload = JSON.parse(item.text);
+                break;
+              } catch (_e) {}
+            }
+          }
+
+          return unwrapPluginResponse(payload);
+        }
+
+        if (status === "failed" || status === "canceled" || status === "timeout") {
+          throw new Error(extractErrorMessage(rec, `任务状态: ${status}`));
+        }
+      }
+
+      throw new Error("执行超时");
+    }
+
+    async function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("文件读取失败"));
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function fileToText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("文本读取失败"));
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.readAsText(file, "utf-8");
+      });
+    }
+
+    function parseLyricMeta(text, fileName = "") {
+      const src = String(text || "").replace(/\r\n/g, "\n");
+      const result = { title: "", artist: "" };
+
+      const titleMatch = src.match(/\[(?:ti|title)\s*:\s*([^\]]{1,120})\]/i);
+      const artistMatch = src.match(/\[(?:ar|artist)\s*:\s*([^\]]{1,80})\]/i);
+      if (titleMatch) result.title = String(titleMatch[1] || "").trim();
+      if (artistMatch) result.artist = String(artistMatch[1] || "").trim();
+
+      if (!result.title || !result.artist) {
+        const cleanName = String(fileName || "").replace(/\.[^.]+$/, "").trim();
+        const splitByDash = cleanName.split(/\s*[-_]\s*/).filter(Boolean);
+        if (splitByDash.length >= 2) {
+          if (!result.title) result.title = splitByDash[0].trim();
+          if (!result.artist) result.artist = splitByDash.slice(1).join(" - ").trim();
+        } else if (!result.title && cleanName) {
+          result.title = cleanName;
+        }
+      }
+
+      if (!result.title) {
+        const lines = src.split("\n").map((line) => line.replace(/^\[[^\]]+\]/g, "").trim()).filter(Boolean);
+        if (lines.length) result.title = lines[0].slice(0, 80);
+      }
+      return result;
+    }
+
+    function attachAudioToVisualizer(audioEl) {
+      state.audioViz.activeElement = audioEl || null;
+    }
+
+    function statusClass(status) {
+      const key = String(status || "pending").toLowerCase();
+      if (key === "running") return "s-running";
+      if (key === "completed") return "s-completed";
+      if (key === "failed") return "s-failed";
+      if (key === "stopped") return "s-stopped";
+      return "s-pending";
+    }
+
+    function statusText(status) {
+      const key = String(status || "pending").toLowerCase();
+      if (key === "running") return "执行中";
+      if (key === "completed") return "已完成";
+      if (key === "failed") return "失败";
+      if (key === "stopped") return "已停止";
+      return "待执行";
+    }
+
+    function currentDurationMode() {
+      const checked = document.querySelector('input[name="dur-mode"]:checked');
+      return checked ? String(checked.value || "auto_sum") : "auto_sum";
+    }
+
+    function calcQueueTotalDuration() {
+      return state.draftQueue.reduce((sum, it) => sum + normalizeDuration(it.duration_sec, 0), 0);
+    }
+
+    function renderQueueSummary() {
+      const total = calcQueueTotalDuration();
+      const mode = currentDurationMode();
+      dom.queueSummary.textContent = mode === "manual"
+        ? `当前队列 ${state.draftQueue.length} 首，手动模式，总时长 ${total} 秒。`
+        : `当前队列 ${state.draftQueue.length} 首，自动累加，总时长 ${total} 秒。`;
+    }
+
+    function resetUploadPickers() {
+      state.audioFile = null;
+      state.lyricFile = null;
+      dom.audioFile.value = "";
+      dom.lyricFile.value = "";
+      dom.audioFileName.textContent = "未选择";
+      dom.lyricFileName.textContent = "未选择";
+    }
+
+    function makeDraftQueueItem(item) {
+      return {
+        item_id: item.item_id || null,
+        url: item.url,
+        title: item.title || "未命名音乐",
+        artist: item.artist || "未知",
+        duration_sec: normalizeDuration(item.duration_sec),
+      };
+    }
+
+    function renderMusicList() {
+      dom.musicList.innerHTML = "";
+      if (!state.musicItems.length) {
+        dom.musicList.innerHTML = '<div class="hint">暂无素材，请先上传或添加链接。</div>';
+        return;
+      }
+
+      state.musicItems.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const title = document.createElement("strong");
+        title.textContent = item.title || "未命名音乐";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const lyricTag = item.lyric_bound ? ` | 歌词:${item.lyric_filename || "已绑定"}` : " | 歌词:无";
+        meta.textContent = `${item.artist || "未知"} | ${normalizeDuration(item.duration_sec)}s | ${item.source || "link"}${lyricTag}`;
+
+        const link = document.createElement("div");
+        link.className = "meta";
+        link.textContent = item.url || "";
+
+        const audio = document.createElement("audio");
+        audio.className = "audio-preview";
+        audio.controls = true;
+        audio.preload = "metadata";
+        applyAudioSource(audio, item.url || "");
+        audio.addEventListener("play", () => attachAudioToVisualizer(audio));
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+
+        const playBtn = document.createElement("button");
+        playBtn.className = "btn-primary";
+        playBtn.textContent = "播放";
+        playBtn.onclick = async () => {
+          try {
+            await playMediaElement(audio);
+            attachAudioToVisualizer(audio);
+            setChip("本地预览播放中");
+          } catch (err) {
+            toast(`播放失败: ${err.message || err}`, "error");
+          }
+        };
+
+        const addBtn = document.createElement("button");
+        addBtn.className = "btn-soft";
+        addBtn.textContent = "加入队列";
+        addBtn.onclick = () => {
+          state.draftQueue.push(makeDraftQueueItem(item));
+          renderDraftQueue();
+          toast("已加入队列", "info");
+        };
+
+        const pushBtn = document.createElement("button");
+        pushBtn.className = "btn-accent";
+        pushBtn.textContent = "立即推送";
+        pushBtn.onclick = async () => {
+          try {
+            pushBtn.disabled = true;
+            const result = await callEntry("push_music_url", {
+              url: item.url,
+              item_id: item.item_id,
+              title: item.title,
+              artist: item.artist,
+              auto_push: true,
+              add_to_library: false,
+              duration_sec: normalizeDuration(item.duration_sec),
+              attach_prompt_on_push: currentAttachPromptOnPush(),
+            });
+            startInstantPlayback(
+              result?.url || item.url,
+              result?.title || item.title,
+              normalizeDuration(result?.duration_sec || item.duration_sec)
+            );
+            toast("获取成功，已自动推送", "success");
+            setChip("获取成功，已自动推送");
+          } catch (err) {
+            toast(`推送失败: ${err.message || err}`, "error");
+          } finally {
+            pushBtn.disabled = false;
+          }
+        };
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-danger";
+        delBtn.textContent = "删除";
+        delBtn.onclick = async () => {
+          try {
+            delBtn.disabled = true;
+            await callEntry("delete_music_item", { item_id: item.item_id });
+            toast("素材已删除", "info");
+            await refreshAll();
+          } catch (err) {
+            toast(`删除失败: ${err.message || err}`, "error");
+          } finally {
+            delBtn.disabled = false;
+          }
+        };
+
+        actions.appendChild(playBtn);
+        actions.appendChild(addBtn);
+        actions.appendChild(pushBtn);
+        actions.appendChild(delBtn);
+
+        card.appendChild(title);
+        card.appendChild(meta);
+        card.appendChild(link);
+        card.appendChild(audio);
+        card.appendChild(actions);
+        dom.musicList.appendChild(card);
+      });
+    }
+
+    function renderDraftQueue() {
+      dom.queueList.innerHTML = "";
+      const mode = currentDurationMode();
+
+      if (!state.draftQueue.length) {
+        dom.queueList.innerHTML = '<div class="hint">队列为空，先从素材库加入音频。</div>';
+        renderQueueSummary();
+        return;
+      }
+
+      state.draftQueue.forEach((item, idx) => {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const title = document.createElement("strong");
+        title.textContent = `${idx + 1}. ${item.title || "未命名音乐"}`;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${item.artist || "未知"} | ${item.url}`;
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+
+        if (mode === "manual") {
+          const input = document.createElement("input");
+          input.type = "number";
+          input.min = "1";
+          input.max = String(MAX_DURATION_SECONDS);
+          input.value = String(normalizeDuration(item.duration_sec));
+          input.style.width = "110px";
+          input.onchange = () => {
+            item.duration_sec = normalizeDuration(input.value);
+            renderQueueSummary();
+          };
+          actions.appendChild(input);
+        } else {
+          const tip = document.createElement("span");
+          tip.className = "pill";
+          tip.textContent = `自动 ${normalizeDuration(item.duration_sec)} 秒`;
+          actions.appendChild(tip);
+        }
+
+        const up = document.createElement("button");
+        up.className = "btn-soft";
+        up.textContent = "上移";
+        up.disabled = idx === 0;
+        up.onclick = () => {
+          const prev = state.draftQueue[idx - 1];
+          state.draftQueue[idx - 1] = item;
+          state.draftQueue[idx] = prev;
+          renderDraftQueue();
+        };
+
+        const down = document.createElement("button");
+        down.className = "btn-soft";
+        down.textContent = "下移";
+        down.disabled = idx === state.draftQueue.length - 1;
+        down.onclick = () => {
+          const next = state.draftQueue[idx + 1];
+          state.draftQueue[idx + 1] = item;
+          state.draftQueue[idx] = next;
+          renderDraftQueue();
+        };
+
+        const rm = document.createElement("button");
+        rm.className = "btn-danger";
+        rm.textContent = "移除";
+        rm.onclick = () => {
+          state.draftQueue.splice(idx, 1);
+          renderDraftQueue();
+        };
+
+        actions.appendChild(up);
+        actions.appendChild(down);
+        actions.appendChild(rm);
+
+        card.appendChild(title);
+        card.appendChild(meta);
+        card.appendChild(actions);
+        dom.queueList.appendChild(card);
+      });
+
+      renderQueueSummary();
+    }
+
+    function applyTaskToEditor(task) {
+      state.editingTaskId = task.task_id;
+      document.getElementById("task-time").value = toDatetimeLocal(task.trigger_at);
+      document.getElementById("task-name").value = task.name || "";
+      state.draftQueue = Array.isArray(task.queue) ? task.queue.map((q) => makeDraftQueueItem(q)) : [];
+
+      const mode = String(task.duration_mode || "auto_sum");
+      const radio = document.querySelector(`input[name="dur-mode"][value="${mode}"]`);
+      if (radio) radio.checked = true;
+
+      document.getElementById("btn-save-task").textContent = "保存任务修改";
+      renderDraftQueue();
+      toast("已加载任务到编辑区", "info");
+    }
+
+    function resetEditor() {
+      state.editingTaskId = null;
+      document.getElementById("task-time").value = "";
+      document.getElementById("task-name").value = "";
+      state.draftQueue = [];
+      const radio = document.querySelector('input[name="dur-mode"][value="auto_sum"]');
+      if (radio) radio.checked = true;
+      document.getElementById("btn-save-task").textContent = "创建定时任务";
+      renderDraftQueue();
+    }
+
+    function renderTasks() {
+      dom.taskList.innerHTML = "";
+      if (!state.tasks.length) {
+        dom.taskList.innerHTML = '<div class="hint">暂无任务，先创建一个排程。</div>';
+        return;
+      }
+
+      state.tasks.forEach((task) => {
+        const row = document.createElement("div");
+        row.className = "card";
+
+        const title = document.createElement("strong");
+        title.textContent = task.name || `任务 ${task.task_id}`;
+
+        const badge = document.createElement("span");
+        badge.className = `task-badge ${statusClass(task.status)}`;
+        badge.textContent = statusText(task.status);
+        title.appendChild(badge);
+
+        const modeText = String(task.duration_mode || "auto_sum") === "manual" ? "手动" : "自动累加";
+        const totalSec = normalizeDuration(task.total_duration_sec, 0);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `触发: ${formatTime(task.trigger_at)} | 队列: ${task.total || (task.queue || []).length} 首 | 模式: ${modeText} | 总时长: ${totalSec}s`;
+
+        const names = Array.isArray(task.queue)
+          ? task.queue.map((q, i) => `${i + 1}.${q.title || "未命名"}`).join(" · ")
+          : "";
+        const queueText = document.createElement("div");
+        queueText.className = "meta";
+        queueText.textContent = names || "无队列";
+
+        const err = String(task.last_error || "").trim();
+        if (err) {
+          const errEl = document.createElement("div");
+          errEl.className = "meta";
+          errEl.style.color = "#d45f5f";
+          errEl.textContent = `提示: ${err}`;
+          row.appendChild(errEl);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn-soft";
+        editBtn.textContent = "编辑";
+        editBtn.disabled = String(task.status || "") === "running";
+        editBtn.onclick = () => applyTaskToEditor(task);
+
+        const runNowBtn = document.createElement("button");
+        runNowBtn.className = "btn-primary";
+        runNowBtn.textContent = "立即执行";
+        runNowBtn.disabled = String(task.status || "") === "running";
+        runNowBtn.onclick = async () => {
+          try {
+            runNowBtn.disabled = true;
+            await callEntry("run_schedule_task_now", { task_id: task.task_id });
+            toast("任务已开始执行", "success");
+            await refreshAll();
+          } catch (err2) {
+            toast(`启动失败: ${err2.message || err2}`, "error");
+          } finally {
+            runNowBtn.disabled = false;
+          }
+        };
+
+        const toggleBtn = document.createElement("button");
+        const running = String(task.status || "") === "running";
+        toggleBtn.className = running ? "btn-danger" : "btn-warning";
+        toggleBtn.textContent = running ? "停止" : "运行";
+        toggleBtn.onclick = async () => {
+          try {
+            toggleBtn.disabled = true;
+            await callEntry("toggle_schedule_task", { task_id: task.task_id });
+            toast(running ? "已发送停止指令" : "任务已启动", "success");
+            await refreshAll();
+          } catch (err2) {
+            toast(`切换失败: ${err2.message || err2}`, "error");
+          } finally {
+            toggleBtn.disabled = false;
+          }
+        };
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-danger";
+        delBtn.textContent = "删除";
+        delBtn.disabled = String(task.status || "") === "running";
+        delBtn.onclick = async () => {
+          try {
+            delBtn.disabled = true;
+            await callEntry("delete_schedule_task", { task_id: task.task_id });
+            toast("任务已删除", "info");
+            if (state.editingTaskId === task.task_id) resetEditor();
+            await refreshAll();
+          } catch (err2) {
+            toast(`删除失败: ${err2.message || err2}`, "error");
+          } finally {
+            delBtn.disabled = false;
+          }
+        };
+
+        const mediaControls = document.createElement("div");
+        mediaControls.className = "task-media-controls";
+
+        const prevBtn = document.createElement("button");
+        prevBtn.className = "btn-soft";
+        prevBtn.textContent = "上一首";
+        prevBtn.disabled = !running;
+        prevBtn.onclick = async () => {
+          try {
+            await callEntry("skip_current_track", { task_id: task.task_id, direction: "prev" });
+            toast("已切换上一首", "success");
+            await refreshAll();
+          } catch (err2) {
+            toast(`切换失败: ${err2.message || err2}`, "error");
+          }
+        };
+
+        const stopBtn = document.createElement("button");
+        stopBtn.className = "btn-danger";
+        stopBtn.textContent = "停止";
+        stopBtn.disabled = !running;
+        stopBtn.onclick = async () => {
+          try {
+            await callEntry("stop_schedule_task", { task_id: task.task_id });
+            toast("已发送停止指令", "success");
+            await refreshAll();
+          } catch (err2) {
+            toast(`停止失败: ${err2.message || err2}`, "error");
+          }
+        };
+
+        const nextBtn = document.createElement("button");
+        nextBtn.className = "btn-warning";
+        nextBtn.textContent = "下一首";
+        nextBtn.disabled = !running;
+        nextBtn.onclick = async () => {
+          try {
+            await callEntry("skip_current_track", { task_id: task.task_id, direction: "next" });
+            toast("已切换下一首", "success");
+            await refreshAll();
+          } catch (err2) {
+            toast(`切换失败: ${err2.message || err2}`, "error");
+          }
+        };
+
+        actions.appendChild(editBtn);
+        actions.appendChild(runNowBtn);
+        actions.appendChild(toggleBtn);
+        actions.appendChild(delBtn);
+        mediaControls.appendChild(prevBtn);
+        mediaControls.appendChild(stopBtn);
+        mediaControls.appendChild(nextBtn);
+
+        row.appendChild(title);
+        row.appendChild(meta);
+        row.appendChild(queueText);
+        row.appendChild(actions);
+        row.appendChild(mediaControls);
+        dom.taskList.appendChild(row);
+      });
+    }
+
+    function syncRuntimePlayer(active) {
+      const player = dom.syncPlayer;
+      const runtimeTrack = active && active.track && active.track.url
+        ? String(active.track.url || "").trim()
+        : "";
+      const instantTrack = state.instantPlayback.active
+        ? String(state.instantPlayback.track_url || "").trim()
+        : "";
+      const targetUrl = runtimeTrack || instantTrack;
+
+      if (!targetUrl) {
+        if (!player.paused) {
+          player.pause();
+        }
+        state.lastRuntimeTrackUrl = "";
+        return;
+      }
+
+      if (state.lastRuntimeTrackUrl !== targetUrl) {
+        state.lastRuntimeTrackUrl = targetUrl;
+        applyAudioSource(player, targetUrl);
+        player.muted = true;
+        player.volume = 0;
+        playMediaElement(player).catch(() => {});
+        attachAudioToVisualizer(player);
+      } else if (player.paused) {
+        playMediaElement(player).catch(() => {});
+      }
+    }
+
+    function renderRuntime() {
+      const runtime = state.runtime || {};
+      const active = runtime.active;
+      const playback = runtime.playback || {};
+      const instant = getInstantPlaybackSnapshot();
+
+      if (active && active.track) {
+        stopInstantPlayback();
+        let progress = Number(active.progress_percent || 0);
+        let current = Number(active.elapsed_sec || 0);
+        let duration = Number(active.duration_sec || 0);
+
+        if (playback && Number(playback.duration_sec || 0) > 0) {
+          duration = Number(playback.duration_sec || duration);
+          current = Number(playback.position_sec || current);
+          progress = Math.max(0, Math.min(100, duration > 0 ? (current / duration) * 100 : progress));
+        }
+
+        dom.runtimeText.textContent = `正在推送: ${active.track.title || "未命名"} - ${active.track.artist || "未知"} | ${current.toFixed(1)}s / ${duration.toFixed(1)}s`;
+        dom.runtimeProgress.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+        dom.playbackPill.textContent = `播放状态：${playback.status || "running"}`;
+        dom.stageText.textContent = `舞台演出中：${active.track.title || "未命名"}`;
+        setChip("任务执行中");
+        syncRuntimePlayer(active);
+      } else if (instant) {
+        const current = Number(instant.position_sec || 0);
+        const duration = Number(instant.duration_sec || 0);
+        const progress = Number(instant.progress_percent || 0);
+        const title = instant.track_title || "未命名音乐";
+
+        dom.runtimeText.textContent = `即时推送联动: ${title} | ${current.toFixed(1)}s / ${duration.toFixed(1)}s`;
+        dom.runtimeProgress.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+        dom.playbackPill.textContent = `播放状态：${instant.status || "playing"}`;
+        dom.stageText.textContent = `舞台即时联动中：${title}`;
+        setChip("即时推送联动中");
+        syncRuntimePlayer(null);
+      } else {
+        const nextTask = runtime.next_task;
+        if (nextTask && nextTask.trigger_at) {
+          dom.runtimeText.textContent = `当前无执行任务，下一个任务: ${nextTask.name || nextTask.task_id} (${formatTime(nextTask.trigger_at)})`;
+          setChip("等待触发中");
+        } else {
+          dom.runtimeText.textContent = "当前无执行中的任务。";
+          setChip("系统就绪");
+        }
+        dom.runtimeProgress.style.width = "0%";
+        dom.playbackPill.textContent = `播放状态：${playback.status || "idle"}`;
+        dom.stageText.textContent = "舞台待命，等待音乐节拍。";
+        syncRuntimePlayer(null);
+      }
+    }
+
+    async function refreshAll() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      try {
+        const [music, tasks] = await Promise.all([
+          callEntry("list_music_items", {}, 30000),
+          callEntry("list_schedule_tasks", {}, 30000),
+        ]);
+
+        state.musicItems = Array.isArray(music.items) ? music.items : [];
+        state.tasks = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+        state.runtime = tasks.runtime || { active: null, next_task: null, playback: null };
+
+        renderMusicList();
+        renderTasks();
+        renderRuntime();
+      } catch (err) {
+        toast(`刷新失败: ${err.message || err}`, "error");
+      } finally {
+        state.refreshing = false;
+      }
+    }
+
+    async function uploadSelected(autoPush) {
+      if (!state.audioFile) {
+        toast("音频文件是必选项", "error");
+        return;
+      }
+
+      const audioExt = extOf(state.audioFile.name);
+      if (!AUDIO_EXT.includes(audioExt)) {
+        toast("音频格式不支持", "error");
+        return;
+      }
+      if (state.audioFile.size > MAX_AUDIO_SIZE) {
+        toast("音频文件超出大小限制", "error");
+        return;
+      }
+
+      const btnPush = document.getElementById("btn-upload-push");
+      const btnOnly = document.getElementById("btn-upload-only");
+      btnPush.disabled = true;
+      btnOnly.disabled = true;
+
+      try {
+        const audioData = await fileToDataUrl(state.audioFile);
+        let lyricData = "";
+        let lyricName = "";
+        if (state.lyricFile) {
+          lyricData = await fileToDataUrl(state.lyricFile);
+          lyricName = state.lyricFile.name;
+        }
+
+        const result = await callEntry("upload_music_file", {
+          audio_base64: audioData,
+          filename: state.audioFile.name,
+          lyric_base64: lyricData,
+          lyric_filename: lyricName,
+          title: String(dom.uploadTitle.value || "").trim(),
+          artist: String(dom.uploadArtist.value || "").trim(),
+          auto_push: Boolean(autoPush),
+          attach_prompt_on_push: currentAttachPromptOnPush(),
+        });
+
+        if (autoPush) {
+          startInstantPlayback(
+            result?.music_url_absolute || result?.music_url || "",
+            result?.title || state.audioFile.name,
+            normalizeDuration(result?.duration_sec, 28)
+          );
+          toast("获取成功，已自动推送", "success");
+          setChip("获取成功，已自动推送");
+        } else {
+          toast("上传成功，已加入素材库", "success");
+        }
+
+        dom.uploadTitle.value = "";
+        dom.uploadArtist.value = "";
+        resetUploadPickers();
+        await refreshAll();
+      } catch (err) {
+        toast(`上传失败: ${err.message || err}`, "error");
+      } finally {
+        btnPush.disabled = false;
+        btnOnly.disabled = false;
+      }
+    }
+
+    async function addOnlineLink(pushNow) {
+      const url = String(dom.onlineUrl.value || "").trim();
+      const title = String(dom.onlineTitle.value || "").trim();
+      const artist = String(dom.onlineArtist.value || "").trim();
+      const durationRaw = String(dom.onlineDuration.value || "").trim();
+
+      if (!url) {
+        toast("请填写在线音频链接", "error");
+        return;
+      }
+
+      const btnAdd = document.getElementById("btn-add-link");
+      const btnPush = document.getElementById("btn-push-link-now");
+      btnAdd.disabled = true;
+      btnPush.disabled = true;
+
+      try {
+        const args = { url, title, artist, auto_push: Boolean(pushNow), add_to_library: true };
+        args.attach_prompt_on_push = currentAttachPromptOnPush();
+        if (durationRaw) args.duration_sec = normalizeDuration(durationRaw);
+
+        const result = await callEntry("push_music_url", args);
+        const finalDuration = normalizeDuration(result?.duration_sec, 0);
+
+        if (pushNow) {
+          startInstantPlayback(
+            result?.url || url,
+            result?.title || title || "主人分享的音乐",
+            finalDuration
+          );
+          toast(`获取成功，已自动推送（时长 ${finalDuration}s）`, "success");
+          setChip("获取成功，已自动推送");
+        } else {
+          toast(`链接已加入素材库（时长 ${finalDuration}s）`, "success");
+        }
+
+        dom.onlineUrl.value = "";
+        dom.onlineTitle.value = "";
+        dom.onlineArtist.value = "";
+        dom.onlineDuration.value = "";
+        await refreshAll();
+      } catch (err) {
+        toast(`处理失败: ${err.message || err}`, "error");
+      } finally {
+        btnAdd.disabled = false;
+        btnPush.disabled = false;
+      }
+    }
+
+    async function saveTask() {
+      const triggerRaw = String(document.getElementById("task-time").value || "").trim();
+      const name = String(document.getElementById("task-name").value || "").trim();
+      const mode = currentDurationMode();
+
+      if (!triggerRaw) {
+        toast("请设置触发时间", "error");
+        return;
+      }
+      if (!state.draftQueue.length) {
+        toast("请先加入队列音频", "error");
+        return;
+      }
+
+      const triggerIso = new Date(triggerRaw).toISOString();
+      const queueItems = state.draftQueue.map((q) => ({
+        item_id: q.item_id,
+        url: q.url,
+        title: q.title,
+        artist: q.artist,
+        duration_sec: normalizeDuration(q.duration_sec),
+      }));
+
+      const payload = { trigger_at: triggerIso, name, duration_mode: mode, queue_items: queueItems };
+      const saveBtn = document.getElementById("btn-save-task");
+      saveBtn.disabled = true;
+
+      try {
+        if (state.editingTaskId) {
+          await callEntry("update_schedule_task", { task_id: state.editingTaskId, ...payload });
+          toast("任务已更新", "success");
+        } else {
+          await callEntry("create_schedule_task", payload);
+          toast("任务创建成功", "success");
+        }
+        resetEditor();
+        await refreshAll();
+      } catch (err) {
+        toast(`保存失败: ${err.message || err}`, "error");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    }
+
+    function startBackground() {
+      const canvas = document.getElementById("bg-canvas");
+      const ctx = canvas.getContext("2d");
+      const petals = [];
+      const stars = [];
+
+      function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      for (let i = 0; i < 30; i++) {
+        petals.push({
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight,
+          w: 6 + Math.random() * 8,
+          h: 4 + Math.random() * 7,
+          vx: -0.16 + Math.random() * 0.36,
+          vy: 0.25 + Math.random() * 0.7,
+          rot: Math.random() * Math.PI,
+          vr: -0.02 + Math.random() * 0.04,
+        });
+      }
+
+      for (let i = 0; i < 46; i++) {
+        stars.push({
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight,
+          r: 0.8 + Math.random() * 1.8,
+          a: 0.2 + Math.random() * 0.4,
+          va: 0.003 + Math.random() * 0.013,
+        });
+      }
+
+      function frame() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        for (const s of stars) {
+          s.a += s.va;
+          if (s.a > 0.75 || s.a < 0.15) s.va = -s.va;
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(147, 208, 255, ${s.a})`;
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        for (const p of petals) {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.rot += p.vr;
+
+          if (p.y > canvas.height + 12) {
+            p.y = -10;
+            p.x = Math.random() * canvas.width;
+          }
+          if (p.x < -16) p.x = canvas.width + 12;
+          if (p.x > canvas.width + 16) p.x = -12;
+
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot);
+          ctx.fillStyle = "rgba(245, 170, 220, 0.56)";
+          ctx.beginPath();
+          ctx.ellipse(0, 0, p.w, p.h, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        requestAnimationFrame(frame);
+      }
+
+      frame();
+    }
+
+    function startStage() {
+      const canvas = dom.stageCanvas;
+      const THREE = window.THREE;
+      if (!canvas || !THREE) {
+        return;
+      }
+
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({
+          canvas,
+          antialias: true,
+          alpha: true,
+          powerPreference: "high-performance",
+        });
+      } catch (_err) {
+        return;
+      }
+      if ("outputColorSpace" in renderer && THREE.SRGBColorSpace) {
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+      }
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.08;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+      const PP = window.POSTPROCESSING;
+      let composer = null;
+      let bloomFx = null;
+      let chromaFx = null;
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x090f26, 0.072);
+
+      const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 100);
+      camera.position.set(0, 1.05, 6.35);
+
+      const ambient = new THREE.AmbientLight(0x87b5ff, 0.62);
+      const keyLight = new THREE.PointLight(0x7fc0ff, 1.35, 26, 2);
+      keyLight.position.set(2.3, 4.1, 2.8);
+      const rimLight = new THREE.PointLight(0xe89dff, 1.22, 24, 2);
+      rimLight.position.set(-3.2, 2.7, -2.4);
+      scene.add(ambient, keyLight, rimLight);
+
+      function buildStars(count, spread, size, opacity) {
+        const pos = new Float32Array(count * 3);
+        const col = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+          const k = i * 3;
+          pos[k] = (Math.random() - 0.5) * spread;
+          pos[k + 1] = (Math.random() - 0.5) * spread * 0.65;
+          pos[k + 2] = -Math.random() * spread;
+
+          const mix = Math.random();
+          col[k] = 0.56 + mix * 0.4;
+          col[k + 1] = 0.66 + mix * 0.28;
+          col[k + 2] = 0.88 + Math.random() * 0.12;
+        }
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+        const mat = new THREE.PointsMaterial({
+          size,
+          vertexColors: true,
+          transparent: true,
+          opacity,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+        return points;
+      }
+
+      const starFieldFar = buildStars(2600, 36, 0.03, 0.72);
+      const starFieldNear = buildStars(1300, 22, 0.048, 0.9);
+
+      function createGlowTexture(hexColorA, hexColorB) {
+        const gCanvas = document.createElement("canvas");
+        gCanvas.width = 256;
+        gCanvas.height = 256;
+        const gctx = gCanvas.getContext("2d");
+        const grd = gctx.createRadialGradient(128, 128, 10, 128, 128, 124);
+        grd.addColorStop(0, hexColorA);
+        grd.addColorStop(0.42, hexColorB);
+        grd.addColorStop(1, "rgba(0,0,0,0)");
+        gctx.fillStyle = grd;
+        gctx.fillRect(0, 0, 256, 256);
+        const tex = new THREE.CanvasTexture(gCanvas);
+        tex.needsUpdate = true;
+        return tex;
+      }
+
+      const glowBlue = createGlowTexture("rgba(126, 184, 255, 0.9)", "rgba(89, 142, 255, 0.42)");
+      const glowPurple = createGlowTexture("rgba(239, 154, 242, 0.86)", "rgba(179, 107, 225, 0.4)");
+      const nebula = [];
+      for (let i = 0; i < 8; i++) {
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: i % 2 === 0 ? glowBlue : glowPurple,
+            transparent: true,
+            opacity: 0.16 + Math.random() * 0.16,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          })
+        );
+        sprite.position.set((Math.random() - 0.5) * 12, -0.6 + Math.random() * 3.6, -3.5 - Math.random() * 8);
+        const s = 3.2 + Math.random() * 2.6;
+        sprite.scale.set(s * 1.7, s, 1);
+        scene.add(sprite);
+        nebula.push(sprite);
+      }
+
+      const waveLines = [];
+      const xSegments = 110;
+      const xMin = -6.2;
+      const xMax = 6.2;
+      const xStep = (xMax - xMin) / xSegments;
+
+      for (let i = 0; i < 11; i++) {
+        const positions = new Float32Array((xSegments + 1) * 3);
+        for (let s = 0; s <= xSegments; s++) {
+          const k = s * 3;
+          positions[k] = xMin + s * xStep;
+          positions[k + 1] = -1.85 + i * 0.23;
+          positions[k + 2] = -2.1 - i * 0.24;
+        }
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.LineBasicMaterial({
+          color: i % 2 === 0 ? 0x6fc1ff : 0xd998ff,
+          transparent: true,
+          opacity: 0.2 + i * 0.038,
+          blending: THREE.AdditiveBlending,
+        });
+        const line = new THREE.Line(geo, mat);
+        line.userData.baseY = -1.85 + i * 0.23;
+        line.userData.baseZ = -2.1 - i * 0.24;
+        line.userData.phase = i * 0.72;
+        scene.add(line);
+        waveLines.push(line);
+      }
+
+      const streaks = [];
+      for (let i = 0; i < 6; i++) {
+        const material = new THREE.LineBasicMaterial({
+          color: i % 2 === 0 ? 0x8ecbff : 0xe1a8ff,
+          transparent: true,
+          opacity: 0.35,
+          blending: THREE.AdditiveBlending,
+        });
+        const points = [
+          new THREE.Vector3(-1.2, 1.8 + i * 0.28, -2 - i * 0.9),
+          new THREE.Vector3(1.4 + i * 0.45, 1.5 + i * 0.22, -2.7 - i * 0.9),
+        ];
+        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+        const line = new THREE.Line(geometry, material);
+        line.userData.speed = 0.00012 + i * 0.00004;
+        line.userData.offset = Math.random();
+        scene.add(line);
+        streaks.push(line);
+      }
+
+      const beamGroup = new THREE.Group();
+      const volumetricBeams = [];
+      for (let i = 0; i < 7; i++) {
+        const beamGeo = new THREE.ConeGeometry(0.22 + Math.random() * 0.2, 6.6 + Math.random() * 2.2, 22, 1, true);
+        const beamMat = new THREE.MeshBasicMaterial({
+          color: i % 2 === 0 ? 0x8cc8ff : 0xe4a6ff,
+          transparent: true,
+          opacity: 0.08 + Math.random() * 0.08,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const beam = new THREE.Mesh(beamGeo, beamMat);
+        beam.position.set(-3.2 + i * 1.05, -1.18, -2.1 - Math.random() * 1.8);
+        beam.rotation.z = (Math.random() - 0.5) * 0.13;
+        beam.rotation.x = (Math.random() - 0.5) * 0.08;
+        beam.userData.pulse = Math.random() * Math.PI * 2;
+        beam.userData.swing = 0.2 + Math.random() * 0.3;
+        beamGroup.add(beam);
+        volumetricBeams.push(beam);
+      }
+      scene.add(beamGroup);
+
+      if (PP && PP.EffectComposer && PP.RenderPass && PP.EffectPass) {
+        try {
+          composer = new PP.EffectComposer(renderer, {
+            frameBufferType: THREE.HalfFloatType,
+            multisampling: 0,
+          });
+
+          composer.addPass(new PP.RenderPass(scene, camera));
+
+          bloomFx = new PP.BloomEffect({
+            intensity: 1.22,
+            luminanceThreshold: 0.12,
+            luminanceSmoothing: 0.28,
+            radius: 0.78,
+          });
+          chromaFx = new PP.ChromaticAberrationEffect({
+            offset: new THREE.Vector2(0.0008, 0.0011),
+            radialModulation: true,
+            modulationOffset: 0.15,
+          });
+          const noiseFx = new PP.NoiseEffect({
+            blendFunction: PP.BlendFunction.SOFT_LIGHT,
+            premultiply: true,
+          });
+          const vignetteFx = new PP.VignetteEffect({
+            darkness: 0.46,
+            offset: 0.24,
+          });
+
+          let scanlineFx = null;
+          let gradeFxA = null;
+          let gradeFxB = null;
+          if (PP.ScanlineEffect) {
+            scanlineFx = new PP.ScanlineEffect({
+              density: 1.12,
+            });
+          }
+          if (PP.HueSaturationEffect) {
+            gradeFxA = new PP.HueSaturationEffect({
+              hue: 0.015,
+              saturation: 0.1,
+            });
+          }
+          if (PP.BrightnessContrastEffect) {
+            gradeFxB = new PP.BrightnessContrastEffect({
+              brightness: 0.015,
+              contrast: 0.14,
+            });
+          }
+
+          const effectList = [bloomFx, chromaFx, noiseFx, vignetteFx, scanlineFx, gradeFxA, gradeFxB].filter(Boolean);
+          const fxPass = new PP.EffectPass(camera, ...effectList);
+          fxPass.renderToScreen = true;
+          composer.addPass(fxPass);
+        } catch (_e) {
+          composer = null;
+          bloomFx = null;
+          chromaFx = null;
+        }
+      }
+
+      function resize() {
+        const w = canvas.clientWidth || 2;
+        const h = canvas.clientHeight || 2;
+        renderer.setSize(w, h, false);
+        if (composer) {
+          composer.setSize(w, h);
+        }
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      function frame(ms) {
+        const t = ms * 0.001;
+        const energy = Math.max(0.05, Math.min(1, state.stageEnergy));
+        const delta = Math.min(0.05, clock.getDelta());
+
+        starFieldFar.rotation.y += 0.0002 + energy * 0.00042;
+        starFieldNear.rotation.y -= 0.00015 + energy * 0.00034;
+        starFieldNear.rotation.x = Math.sin(t * 0.16) * 0.05;
+
+        for (let i = 0; i < nebula.length; i++) {
+          const n = nebula[i];
+          n.position.x += Math.sin(t * 0.13 + i) * 0.0025;
+          n.position.y += Math.cos(t * 0.19 + i * 1.4) * 0.0018;
+          n.material.opacity = 0.12 + (0.08 + i * 0.012) * (0.55 + energy * 0.65);
+        }
+
+        for (let i = 0; i < waveLines.length; i++) {
+          const line = waveLines[i];
+          const attr = line.geometry.getAttribute("position");
+          const baseY = line.userData.baseY;
+          const baseZ = line.userData.baseZ;
+          const phase = line.userData.phase;
+          for (let s = 0; s <= xSegments; s++) {
+            const x = xMin + s * xStep;
+            const idx = s * 3;
+            const wave = Math.sin(t * 2.35 + x * 0.95 + phase) * (0.015 + energy * 0.05);
+            attr.array[idx + 1] = baseY + wave;
+            attr.array[idx + 2] = baseZ + Math.cos(t * 1.85 + x * 0.42 + phase) * (0.02 + energy * 0.06);
+          }
+          attr.needsUpdate = true;
+        }
+
+        for (const s of streaks) {
+          const shift = ((t * s.userData.speed + s.userData.offset) % 1) * 8 - 4;
+          s.position.x = shift;
+          s.material.opacity = 0.16 + energy * 0.35;
+        }
+
+        for (let i = 0; i < volumetricBeams.length; i++) {
+          const b = volumetricBeams[i];
+          const pulse = Math.sin(t * (1.2 + i * 0.12) + b.userData.pulse);
+          const amp = 0.05 + energy * 0.32;
+          b.scale.x = 0.82 + amp * (0.6 + pulse * 0.3);
+          b.scale.z = 0.82 + amp * (0.55 - pulse * 0.28);
+          b.rotation.y += 0.0025 + b.userData.swing * 0.002;
+          b.material.opacity = 0.05 + (0.1 + i * 0.01) * (0.45 + energy * 0.9);
+        }
+        beamGroup.rotation.y = Math.sin(t * 0.22) * 0.08;
+
+        if (bloomFx && typeof bloomFx.intensity === "number") {
+          bloomFx.intensity = 1.02 + energy * 0.92;
+        }
+        if (chromaFx && chromaFx.offset) {
+          const base = 0.00055 + energy * 0.0019;
+          chromaFx.offset.set(base * 0.9, base * 1.1);
+        }
+
+        camera.position.x = Math.sin(t * 0.26) * (0.12 + energy * 0.22);
+        camera.position.y = 1.05 + Math.cos(t * 0.32) * 0.06;
+        camera.lookAt(0, -0.45, -2.9);
+
+        if (composer) {
+          composer.render(delta);
+        } else {
+          renderer.render(scene, camera);
+        }
+        requestAnimationFrame(frame);
+      }
+
+      const clock = new THREE.Clock();
+      requestAnimationFrame(frame);
+    }
+
+    function startVisualizer() {
+      const canvas = dom.visualizer;
+      const ctx = canvas.getContext("2d");
+      const sparkle = Array.from({ length: 46 }, () => ({
+        x: Math.random(),
+        y: Math.random(),
+        r: 0.6 + Math.random() * 2.2,
+        a: 0.2 + Math.random() * 0.6,
+        va: 0.004 + Math.random() * 0.012,
+      }));
+
+      function resize() {
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      const barCount = 52;
+      state.visualizerBars = Array.from({ length: barCount }, () => 0.08 + Math.random() * 0.08);
+
+      function frame(t) {
+        const active = state.runtime && state.runtime.active;
+        const playback = state.runtime && state.runtime.playback;
+        const instant = getInstantPlaybackSnapshot();
+        const hasTimelineTrack = Boolean(active || instant);
+        const ratio = active
+          ? Number(active.progress_ratio || 0)
+          : instant
+            ? Math.max(0, Math.min(1, Number(instant.position_sec || 0) / Number(instant.duration_sec || 1)))
+            : 0;
+
+        const runtimeProgress = (playback && Number(playback.duration_sec || 0) > 0)
+          ? Math.max(0, Math.min(1, Number(playback.position_sec || 0) / Number(playback.duration_sec || 1)))
+          : ratio;
+        const syncedProgress = instant
+          ? Math.max(0, Math.min(1, Number(instant.position_sec || 0) / Number(instant.duration_sec || 1)))
+          : runtimeProgress;
+
+        const energy = hasTimelineTrack
+          ? 0.38 + 0.37 * Math.abs(Math.sin(t * 0.004 + syncedProgress * 6))
+          : 0.08 + 0.04 * Math.abs(Math.sin(t * 0.002));
+
+        state.stageEnergy = energy;
+
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        const bg = ctx.createLinearGradient(0, 0, 0, h);
+        bg.addColorStop(0, "rgba(23, 50, 101, 0.12)");
+        bg.addColorStop(1, "rgba(39, 27, 85, 0.16)");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        const gap = 2.6;
+        const bw = (w - gap * (barCount - 1)) / barCount;
+
+        for (let i = 0; i < barCount; i++) {
+          const noise = (Math.sin(t * 0.007 + i * 0.33) + 1) * 0.5;
+          let target = hasTimelineTrack ? (0.14 + energy * (0.44 + noise * 0.66)) : (0.06 + noise * 0.11);
+          state.visualizerBars[i] = state.visualizerBars[i] * 0.79 + target * 0.21;
+
+          const bh = Math.max(4, h * state.visualizerBars[i]);
+          const x = i * (bw + gap);
+          const y = h - bh;
+
+          const grad = ctx.createLinearGradient(0, y, 0, h);
+          grad.addColorStop(0, "rgba(146, 225, 255, 0.98)");
+          grad.addColorStop(0.46, "rgba(112, 176, 255, 0.94)");
+          grad.addColorStop(0.74, "rgba(157, 133, 246, 0.91)");
+          grad.addColorStop(1, "rgba(244, 153, 221, 0.9)");
+
+          ctx.fillStyle = grad;
+          ctx.fillRect(x, y, bw, bh);
+
+          const glow = ctx.createRadialGradient(x + bw * 0.5, y + 2, 1, x + bw * 0.5, y + 2, 14);
+          glow.addColorStop(0, "rgba(211, 239, 255, 0.88)");
+          glow.addColorStop(1, "rgba(211, 239, 255, 0)");
+          ctx.fillStyle = glow;
+          ctx.fillRect(x - 6, y - 12, bw + 12, 28);
+        }
+
+        const trail = ctx.createLinearGradient(0, h * 0.68, w, h * 0.92);
+        trail.addColorStop(0, `rgba(99, 188, 255, ${0.14 + energy * 0.1})`);
+        trail.addColorStop(0.5, `rgba(146, 143, 246, ${0.18 + energy * 0.14})`);
+        trail.addColorStop(1, `rgba(243, 154, 221, ${0.16 + energy * 0.1})`);
+        ctx.strokeStyle = trail;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(0, h * 0.78);
+        for (let x = 0; x <= w; x += 7) {
+          const y = h * 0.78 + Math.sin(t * 0.003 + x * 0.019) * (2 + energy * 9);
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        for (const s of sparkle) {
+          s.a += s.va;
+          if (s.a > 0.9 || s.a < 0.14) s.va = -s.va;
+          const sx = s.x * w;
+          const sy = s.y * h;
+          const rg = ctx.createRadialGradient(sx, sy, 0.2, sx, sy, s.r * 5.2);
+          rg.addColorStop(0, `rgba(223, 242, 255, ${s.a * (0.5 + energy * 0.42)})`);
+          rg.addColorStop(1, "rgba(223, 242, 255, 0)");
+          ctx.fillStyle = rg;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const sweepX = ((t * 0.00035) % 1) * w;
+        const sweep = ctx.createLinearGradient(sweepX - 90, 0, sweepX + 90, 0);
+        sweep.addColorStop(0, "rgba(255,255,255,0)");
+        sweep.addColorStop(0.5, `rgba(199, 233, 255, ${0.11 + energy * 0.1})`);
+        sweep.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = sweep;
+        ctx.fillRect(0, 0, w, h);
+
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    }
+
+    function bindEvents() {
+      dom.audioFile.addEventListener("change", (ev) => {
+        const file = (ev.target.files || [])[0] || null;
+        state.audioFile = file;
+        dom.audioFileName.textContent = file ? file.name : "未选择";
+        if (file && !String(dom.uploadTitle.value || "").trim()) {
+          const raw = String(file.name || "").replace(/\.[^.]+$/, "").trim();
+          if (raw) dom.uploadTitle.value = raw;
+        }
+      });
+
+      dom.lyricFile.addEventListener("change", async (ev) => {
+        const file = (ev.target.files || [])[0] || null;
+        state.lyricFile = file;
+        dom.lyricFileName.textContent = file ? file.name : "未选择";
+
+        if (!file) return;
+        try {
+          const text = await fileToText(file);
+          const meta = parseLyricMeta(text, file.name);
+          if (meta.title) dom.uploadTitle.value = meta.title;
+          if (meta.artist) dom.uploadArtist.value = meta.artist;
+          if (meta.title || meta.artist) {
+            toast("已从歌词自动识别歌曲名/歌手", "success");
+          }
+        } catch (_e) {
+        }
+      });
+
+      document.getElementById("btn-upload-push").addEventListener("click", () => uploadSelected(true));
+      document.getElementById("btn-upload-only").addEventListener("click", () => uploadSelected(false));
+      document.getElementById("btn-clear-upload").addEventListener("click", resetUploadPickers);
+
+      document.getElementById("btn-add-link").addEventListener("click", () => addOnlineLink(false));
+      document.getElementById("btn-push-link-now").addEventListener("click", () => addOnlineLink(true));
+
+      document.getElementById("btn-save-task").addEventListener("click", saveTask);
+      document.getElementById("btn-cancel-edit").addEventListener("click", resetEditor);
+      document.getElementById("btn-clear-queue").addEventListener("click", () => {
+        state.draftQueue = [];
+        renderDraftQueue();
+      });
+
+      document.querySelectorAll('input[name="dur-mode"]').forEach((el) => {
+        el.addEventListener("change", renderDraftQueue);
+      });
+
+      if (dom.attachPromptToggle) {
+        dom.attachPromptToggle.addEventListener("change", async (ev) => {
+          const target = ev.target;
+          const enabled = Boolean(target && target.checked);
+          dom.attachPromptToggle.disabled = true;
+          try {
+            await savePushSettings(enabled);
+            toast(enabled ? "已开启提示词链路" : "已切换为纯推歌链路", "success");
+          } catch (err) {
+            state.attachPromptOnPush = !enabled;
+            dom.attachPromptToggle.checked = state.attachPromptOnPush;
+            toast(`开关保存失败: ${err.message || err}`, "error");
+          } finally {
+            dom.attachPromptToggle.disabled = false;
+          }
+        });
+      }
+
+      dom.syncPlayer.addEventListener("play", () => {
+        attachAudioToVisualizer(dom.syncPlayer);
+      });
+      dom.syncPlayer.addEventListener("ended", () => {
+        stopInstantPlayback();
+        renderRuntime();
+      });
+    }
+
+    async function init() {
+      bindEvents();
+      renderDraftQueue();
+      resetUploadPickers();
+      await loadPushSettings();
+      startBackground();
+      startStage();
+      startVisualizer();
+      await refreshAll();
+      setInterval(refreshAll, 900);
+    }
+
+    init();
+  </script>
+</body>
+</html>
