@@ -1,6 +1,8 @@
 const PLUGIN_ID = 'galgame_plugin';
 const RUNS_URL = '/runs';
 const UI_API_BASE = `/plugin/${PLUGIN_ID}/ui-api`;
+const TUTORIAL_STATUS_URL = `${UI_API_BASE}/tutorial/status`;
+const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
 const RAPIDOCR_INSTALL_URL = `${UI_API_BASE}/rapidocr/install`;
 const DXCAM_INSTALL_URL = `${UI_API_BASE}/dxcam/install`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
@@ -47,6 +49,47 @@ function uiDynamicT(prefix, key, fallback) {
     return fallback || '';
   }
   return uiT(`${prefix}.${normalized}`, fallback || normalized);
+}
+
+function storageGet(key, fallback = '') {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage read failed', error);
+    return fallback;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage write failed', error);
+    return false;
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+    return true;
+  } catch (error) {
+    console.warn('[galgame_plugin ui] localStorage remove failed', error);
+    return false;
+  }
+}
+
+function readSkipOnboarding() {
+  return storageGet('galgame_skip_onboarding') === '1';
+}
+
+function persistSkipOnboarding() {
+  storageSet('galgame_skip_onboarding', '1');
+}
+
+function clearSkipOnboarding() {
+  storageRemove('galgame_skip_onboarding');
 }
 
 function getInstallUIConfig() {
@@ -125,12 +168,12 @@ const installRuntime = {
 };
 
 function readCurrentLineZoom() {
-  const raw = parseInt(localStorage.getItem(CL_ZOOM_KEY) || '', 10);
+  const raw = parseInt(storageGet(CL_ZOOM_KEY), 10);
   return Number.isFinite(raw) ? raw : CL_ZOOM_DEFAULT;
 }
 
 function readCurrentLineCollapsed() {
-  const raw = localStorage.getItem(CL_COLLAPSED_KEY);
+  const raw = storageGet(CL_COLLAPSED_KEY);
   if (raw === '1') { return true; }
   if (raw === '0') { return false; }
   return CL_COLLAPSED_DEFAULT;
@@ -139,24 +182,24 @@ function readCurrentLineCollapsed() {
 function applyCurrentLineZoom(px) {
   const clamped = Math.max(CL_ZOOM_MIN, Math.min(CL_ZOOM_MAX, px));
   document.documentElement.style.setProperty('--galgame-line-font-size', `${clamped}px`);
-  localStorage.setItem(CL_ZOOM_KEY, String(clamped));
+  storageSet(CL_ZOOM_KEY, String(clamped));
   return clamped;
 }
 
 function readPipelineZoom() {
-  const raw = parseInt(localStorage.getItem(PIPELINE_ZOOM_KEY) || '', 10);
+  const raw = parseInt(storageGet(PIPELINE_ZOOM_KEY), 10);
   return Number.isFinite(raw) ? raw : PIPELINE_ZOOM_DEFAULT;
 }
 
 function applyPipelineZoom(px) {
   const clamped = Math.max(PIPELINE_ZOOM_MIN, Math.min(PIPELINE_ZOOM_MAX, px));
   document.documentElement.style.setProperty('--ocr-pipeline-font-size', `${clamped}px`);
-  localStorage.setItem(PIPELINE_ZOOM_KEY, String(clamped));
+  storageSet(PIPELINE_ZOOM_KEY, String(clamped));
   return clamped;
 }
 
 function readPipelineCollapsed() {
-  return localStorage.getItem(PIPELINE_COLLAPSED_KEY) === '1';
+  return storageGet(PIPELINE_COLLAPSED_KEY) === '1';
 }
 
 function applyPipelineCollapsed(on) {
@@ -180,7 +223,7 @@ function applyPipelineCollapsed(on) {
       : uiT('ui.ocr.pipeline.collapse_title', '隐藏 OCR 链路步骤');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
-  localStorage.setItem(PIPELINE_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(PIPELINE_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function applyCurrentLineCollapsed(on) {
@@ -206,7 +249,7 @@ function applyCurrentLineCollapsed(on) {
       : uiT('ui.current_line.collapse_title', '隐藏当前台词内容');
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
-  localStorage.setItem(CL_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(CL_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function initCurrentLineUiPrefs() {
@@ -250,7 +293,7 @@ function initPipelineCollapse() {
 }
 
 function readOcrWindowCollapsed() {
-  return localStorage.getItem(OCR_WINDOW_COLLAPSED_KEY) === '1';
+  return storageGet(OCR_WINDOW_COLLAPSED_KEY) === '1';
 }
 
 function applyOcrWindowCollapsed(on) {
@@ -276,7 +319,7 @@ function applyOcrWindowCollapsed(on) {
     button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 
-  localStorage.setItem(OCR_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
+  storageSet(OCR_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function initOcrWindowCollapse() {
@@ -680,6 +723,9 @@ let latestStatus = null;
 let latestSnapshotData = null;
 let latestMemoryProcessSnapshot = null;
 let latestOcrWindowSnapshot = null;
+let onboardingDismissed = false;
+let lastSavedStepIndex = -1;
+let latestTutorialProgress = null;
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
@@ -1377,7 +1423,7 @@ function renderPrimaryDiagnosis(status = {}) {
   `).join('');
 }
 
-function buildFirstRunSteps(status = {}) {
+function buildFirstRunStepsLegacy(status = {}) {
   const runtime = status.ocr_reader_runtime || {};
   const memoryRuntime = status.memory_reader_runtime || {};
   const snapshotWindows = latestOcrWindowSnapshot && Array.isArray(latestOcrWindowSnapshot.windows)
@@ -1441,7 +1487,7 @@ function buildFirstRunSteps(status = {}) {
   ];
 }
 
-function renderFirstRunGuide(status = {}) {
+function renderFirstRunGuideLegacy(status = {}) {
   const node = document.getElementById('firstRunGuide');
   const stepsNode = document.getElementById('firstRunSteps');
   if (!node || !stepsNode) {
@@ -1500,6 +1546,218 @@ function renderFirstRunGuide(status = {}) {
       actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(primaryActionLabel('refresh_status'))}</button>`);
     }
     onboardingActions.innerHTML = actions.join('');
+  }
+}
+
+function buildFirstRunSteps(status = {}) {
+  const runtime = status.ocr_reader_runtime || {};
+  const memoryRuntime = status.memory_reader_runtime || {};
+  const snapshotWindows = latestOcrWindowSnapshot && Array.isArray(latestOcrWindowSnapshot.windows)
+    ? latestOcrWindowSnapshot.windows
+    : [];
+  const availableGameIds = Array.isArray(status.available_game_ids) ? status.available_game_ids : [];
+  const detail = textValue(runtime.target_selection_detail);
+  const lastExcludeReason = textValue(runtime.last_exclude_reason);
+  const rapidocr = status.rapidocr || {};
+  const tesseract = status.tesseract || {};
+  const dxcam = status.dxcam || {};
+  const rapidocrSupported = rapidocr.install_supported !== false;
+  const tesseractSupported = tesseract.install_supported !== false;
+  const dxcamSupported = dxcam.install_supported !== false;
+  const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported));
+  const captureReady = Boolean(dxcam.installed || !dxcamSupported);
+  const hasGame = Boolean(
+    textValue(status.active_session_id)
+    || availableGameIds.length
+    || Number(runtime.pid || 0)
+    || textValue(runtime.process_name)
+    || textValue(runtime.window_title)
+    || Number(memoryRuntime.pid || 0)
+    || textValue(memoryRuntime.process_name)
+  );
+  const hasWindow = Boolean(
+    textValue(runtime.effective_window_key)
+    || Number(runtime.candidate_count || 0) > 0
+    || snapshotWindows.length > 0
+  );
+  const hasConfirmedWindow = Boolean(
+    textValue(runtime.effective_window_key)
+    && detail !== 'no_eligible_window'
+    && detail !== 'memory_reader_window_minimized'
+    && lastExcludeReason !== 'excluded_minimized_window'
+  );
+  const processName = textValue(runtime.process_name);
+  const hasProfile = Boolean(processName && findStoredCaptureProfileEntry(status, processName));
+  const { observedText, stableText, effectiveText } = getCurrentLineTexts(status);
+  const hasLine = Boolean(effectiveText || stableText || observedText);
+  const steps = [];
+
+  if (!ocrReady) {
+    steps.push({
+      key: 'install_ocr',
+      done: false,
+      title: uiT('ui.first_run.install_ocr.title', '安装 OCR 依赖'),
+      body: uiT('ui.first_run.install_ocr.pending', '前往“依赖安装”面板一键安装 RapidOCR。'),
+    });
+  }
+  if (!captureReady) {
+    steps.push({
+      key: 'install_capture',
+      done: false,
+      title: uiT('ui.first_run.install_capture.title', '安装截图依赖'),
+      body: uiT('ui.first_run.install_capture.pending', '前往“依赖安装”面板一键安装 DXcam。'),
+    });
+  }
+
+  steps.push(
+    {
+      key: 'start_game',
+      done: hasGame,
+      title: uiT('ui.first_run.start_game.title', '启动或恢复游戏'),
+      body: hasGame
+        ? uiT('ui.first_run.start_game.done', '已发现游戏状态。')
+        : uiT('ui.first_run.start_game.pending', '打开游戏，并停在有文字的画面。'),
+    },
+    {
+      key: 'refresh_window',
+      done: hasWindow,
+      title: uiT('ui.first_run.refresh_window.title', '刷新窗口'),
+      body: hasWindow
+        ? uiT('ui.first_run.refresh_window.done', '已找到可检查的窗口。')
+        : uiT('ui.first_run.refresh_window.pending', '回到插件页，点击“刷新窗口”。'),
+    },
+    {
+      key: 'select_window',
+      done: hasConfirmedWindow,
+      title: uiT('ui.first_run.select_window.title', '选择游戏窗口'),
+      body: hasConfirmedWindow
+        ? uiT('ui.first_run.select_window.done', '已确认识别窗口。')
+        : uiT('ui.first_run.select_window.pending', '如果没有自动选中，请手动选择游戏窗口。'),
+    },
+  );
+
+  if (hasConfirmedWindow && processName && !hasProfile) {
+    steps.push({
+      key: 'calibrate',
+      done: false,
+      title: uiT('ui.first_run.calibrate.title', '校准截图区域'),
+      body: uiT('ui.first_run.calibrate.pending', '打开“高级设置”，在 OCR 截图校准中设置裁剪区域。'),
+    });
+  }
+
+  steps.push({
+    key: 'recognize',
+    done: hasLine,
+    title: uiT('ui.first_run.recognize.title', '开始识别'),
+    body: hasLine
+      ? uiT('ui.first_run.recognize.done', '已读到台词。')
+      : uiT('ui.first_run.recognize.pending', '开始自动识别，或在游戏中推进到下一句台词。'),
+  });
+
+  return steps;
+}
+
+function buildFirstRunActions(steps, firstIncompleteIndex) {
+  if (firstIncompleteIndex < 0) {
+    return '';
+  }
+  const firstIncomplete = steps[firstIncompleteIndex] || {};
+  const actions = [];
+
+  if (firstIncomplete.key === 'install_ocr') {
+    actions.push(`<button class="primary" data-first-run-action="install_rapidocr">${escapeHtml(uiT('ui.first_run.action.install_rapidocr', primaryActionLabel('install_rapidocr')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'install_capture') {
+    actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', '一键安装 DXcam'))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'start_game' || firstIncomplete.key === 'refresh_window') {
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'select_window') {
+    actions.push(`<button class="primary" data-first-run-action="select_ocr_window">${escapeHtml(uiT('ui.first_run.action.select_window', primaryActionLabel('select_ocr_window')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_ocr_windows">${escapeHtml(primaryActionLabel('refresh_ocr_windows'))}</button>`);
+  } else if (firstIncomplete.key === 'calibrate') {
+    actions.push(`<button class="primary" data-first-run-action="recalibrate_ocr">${escapeHtml(uiT('ui.first_run.action.auto_calibrate', primaryActionLabel('recalibrate_ocr')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  } else if (firstIncomplete.key === 'recognize') {
+    actions.push(`<button class="primary" data-first-run-action="choice_advisor">${escapeHtml(uiT('ui.first_run.action.start_recognition', primaryActionLabel('start_recognition')))}</button>`);
+    actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
+  }
+  return actions.join('');
+}
+
+function renderFirstRunGuide(status = {}) {
+  const node = document.getElementById('firstRunGuide');
+  const stepsNode = document.getElementById('firstRunSteps');
+  if (!node || !stepsNode) {
+    return;
+  }
+  const steps = buildFirstRunSteps(status);
+  const allDone = steps.every((step) => step.done);
+  const gameStepIndex = steps.findIndex((step) => step.key === 'start_game');
+  const readyThreshold = gameStepIndex >= 0
+    ? Math.min(steps.length, gameStepIndex + 2)
+    : Math.min(3, steps.length);
+  const readyToStart = readyThreshold > 0 && steps.slice(0, readyThreshold).every((step) => step.done);
+  const advancedSettings = document.getElementById('advancedSettings');
+  const advancedOpen = Boolean(advancedSettings && advancedSettings.classList.contains('open'));
+  const shouldHideOnboarding = advancedOpen || allDone || readyToStart;
+  const shouldHideMainGuide = advancedOpen || allDone;
+  const onboardingView = document.getElementById('onboardingView');
+
+  if (onboardingView) {
+    if (shouldHideOnboarding) {
+      onboardingView.hidden = true;
+      onboardingDismissed = true;
+      document.body.classList.remove('onboarding-active');
+    } else if (!onboardingDismissed && !readSkipOnboarding()) {
+      onboardingView.hidden = false;
+      document.body.classList.add('onboarding-active');
+    }
+  }
+
+  if (shouldHideMainGuide) {
+    node.hidden = true;
+    stepsNode.replaceChildren();
+    document.body.classList.remove('onboarding-active');
+    if (onboardingView) { onboardingView.hidden = true; }
+    if (allDone && !latestTutorialProgress?.completed) {
+      saveTutorialProgress({ completed: true, completed_at: Date.now() / 1000 }).catch(() => {});
+    }
+    return;
+  }
+  if (advancedOpen) {
+    return;
+  }
+
+  const firstIncompleteIndex = steps.findIndex((step) => !step.done);
+  if (firstIncompleteIndex >= 0 && firstIncompleteIndex !== lastSavedStepIndex) {
+    lastSavedStepIndex = firstIncompleteIndex;
+    saveTutorialProgress({ last_step_index: firstIncompleteIndex }).catch(() => {});
+  }
+  const html = steps.map((step, index) => {
+    const stateClass = step.done ? 'done' : (index === firstIncompleteIndex ? 'active' : 'pending');
+    const marker = step.done ? uiT('ui.first_run.done_marker', '完成') : String(index + 1);
+    return `
+      <article class="first-run-step ${stateClass}">
+        <span class="first-run-step-marker">${escapeHtml(marker)}</span>
+        <div>
+          <h3>${escapeHtml(step.title)}</h3>
+          <p>${escapeHtml(step.body)}</p>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  stepsNode.innerHTML = html;
+  node.hidden = false;
+
+  const onboardingSteps = document.getElementById('onboardingSteps');
+  const onboardingActions = document.getElementById('onboardingActions');
+  if (onboardingSteps) {
+    onboardingSteps.innerHTML = html;
+  }
+  if (onboardingActions) {
+    onboardingActions.innerHTML = buildFirstRunActions(steps, firstIncompleteIndex);
   }
 }
 
@@ -2630,27 +2888,15 @@ function persistInstallTaskId(kind, taskId) {
   if (!taskId) {
     return;
   }
-  try {
-    localStorage.setItem(getInstallConfig(kind).storageKey, taskId);
-  } catch (_) {
-    // Ignore storage failures in embedded browsers.
-  }
+  storageSet(getInstallConfig(kind).storageKey, taskId);
 }
 
 function readPersistedInstallTaskId(kind) {
-  try {
-    return localStorage.getItem(getInstallConfig(kind).storageKey) || '';
-  } catch (_) {
-    return '';
-  }
+  return storageGet(getInstallConfig(kind).storageKey);
 }
 
 function clearPersistedInstallTaskId(kind) {
-  try {
-    localStorage.removeItem(getInstallConfig(kind).storageKey);
-  } catch (_) {
-    // Ignore storage failures in embedded browsers.
-  }
+  storageRemove(getInstallConfig(kind).storageKey);
 }
 
 function clearInstallReconnectTimer(kind) {
@@ -6371,6 +6617,70 @@ async function switchToChoiceAdvisorMode() {
   await saveMode();
 }
 
+async function fetchTutorialProgress() {
+  try {
+    const response = await fetch(TUTORIAL_STATUS_URL, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    latestTutorialProgress = payload && payload.progress ? payload.progress : null;
+    return latestTutorialProgress;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function saveTutorialProgress(partial) {
+  const current = latestTutorialProgress || await fetchTutorialProgress() || {};
+  const payload = { ...current, ...(partial || {}) };
+  try {
+    const response = await fetch(TUTORIAL_PROGRESS_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      latestTutorialProgress = data && data.progress ? data.progress : payload;
+    } else {
+      latestTutorialProgress = payload;
+    }
+  } catch (error) {
+    latestTutorialProgress = payload;
+  }
+}
+
+async function revealDxcamInstallAndTrigger() {
+  navigateToInstallPanel('dxcam');
+  await installDxcam(false);
+}
+
+async function resetTutorialGuide() {
+  onboardingDismissed = false;
+  lastSavedStepIndex = -1;
+  latestTutorialProgress = null;
+  clearSkipOnboarding();
+  await saveTutorialProgress({
+    completed: false,
+    skipped: false,
+    last_step_index: 0,
+    started_at: Date.now() / 1000,
+    completed_at: 0,
+  });
+  const onboardingView = document.getElementById('onboardingView');
+  if (onboardingView) {
+    onboardingView.hidden = false;
+  }
+  document.body.classList.add('onboarding-active');
+  await refreshStatusAndWindowsFromAction();
+}
+
 async function handleDiagnosisAction(action) {
   switch (action) {
     case 'refresh_all':
@@ -6396,12 +6706,18 @@ async function handleDiagnosisAction(action) {
     case 'install_rapidocr':
       await installRapidOcr(false);
       break;
+    case 'install_dxcam':
+      await revealDxcamInstallAndTrigger();
+      break;
     case 'capture_backend':
       revealCaptureBackendSettings();
       setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS 或 PrintWindow。'), 'info');
       break;
     case 'choice_advisor':
       await switchToChoiceAdvisorMode();
+      break;
+    case 'reset_tutorial':
+      await resetTutorialGuide();
       break;
     case 'focus_game':
       setFlash(uiT('ui.flash.focus_game_window', '请切回游戏窗口。窗口回到前台后，插件会在下一轮刷新中继续识别。'), 'info');
@@ -6439,11 +6755,9 @@ function navigateToInstallPanel(kind) {
   const dependencyModule = document.getElementById('dependencyModule');
   const installSection = document.getElementById('installSection');
 
-  try {
-    localStorage.setItem('galgame_skip_onboarding', '1');
-  } catch (error) {
-    console.warn('[galgame_plugin ui] persist onboarding skip failed', error);
-  }
+  persistSkipOnboarding();
+  onboardingDismissed = true;
+  saveTutorialProgress({ skipped: true }).catch(() => {});
   document.body.classList.remove('onboarding-active');
   const onboardingView = document.getElementById('onboardingView');
   if (onboardingView) {
@@ -6485,18 +6799,21 @@ async function initialize() {
   updateSettingsDirtyHint();
   switchInstallTab(activeInstallTab);
 
-  const skipOnboarding = localStorage.getItem('galgame_skip_onboarding') === '1';
+  const progress = await fetchTutorialProgress();
+  const skipOnboarding = readSkipOnboarding() || Boolean(progress && (progress.completed || progress.skipped));
   if (!skipOnboarding) {
+    onboardingDismissed = false;
     document.body.classList.add('onboarding-active');
     const onboardingView = document.getElementById('onboardingView');
     if (onboardingView) { onboardingView.hidden = false; }
+    await saveTutorialProgress({
+      started_at: Number(progress?.started_at || 0) || Date.now() / 1000,
+    });
+  } else {
+    onboardingDismissed = true;
   }
 
-  try {
-    localStorage.removeItem(`${PLUGIN_ID}:last_ui_state:v1`);
-  } catch (error) {
-    console.warn('[galgame_plugin ui] clear cached state failed', error);
-  }
+  storageRemove(`${PLUGIN_ID}:last_ui_state:v1`);
   renderInsightsPending(uiT('ui.suggest.initial_pending', '等待首轮状态刷新；选项建议会在后台更新。'));
     setFlash(uiT('ui.flash.loading_status', '正在加载插件状态...'), 'info');
   const loaded = await refreshAll({ forceInsights: false, showInsightPending: true });
@@ -6573,6 +6890,15 @@ document.getElementById('firstRunGuide').addEventListener('click', (event) => {
   }
   const action = button.getAttribute('data-first-run-action') || '';
   withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction(action)).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('resetTutorialBtn')?.addEventListener('click', (event) => {
+  const button = eventElement(event.currentTarget);
+  if (!button) {
+    return;
+  }
+  withButtonPending(button, uiT('ui.pending.processing', '处理中...'), () => handleDiagnosisAction('reset_tutorial')).catch((error) => {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   });
 });
@@ -6774,8 +7100,14 @@ document.querySelectorAll('#speedSwitch .speed-btn').forEach((btn) => {
 
 document.querySelectorAll('[data-skip-onboarding]').forEach((btn) => {
   btn.addEventListener('click', () => {
-    localStorage.setItem('galgame_skip_onboarding', '1');
+    persistSkipOnboarding();
+    onboardingDismissed = true;
     document.body.classList.remove('onboarding-active');
+    const onboardingView = document.getElementById('onboardingView');
+    if (onboardingView) {
+      onboardingView.hidden = true;
+    }
+    saveTutorialProgress({ skipped: true, last_step_index: 0 }).catch(() => {});
   });
 });
 

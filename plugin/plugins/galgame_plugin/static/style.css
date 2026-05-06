@@ -175,7 +175,7 @@ h1 {
 
 .first-run-steps {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
 }
 
@@ -1812,8 +1812,7 @@ details.panel-scroll-wide[open] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .first-run-guide,
-  .first-run-steps {
+  .first-run-guide {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -1872,7 +1871,7 @@ body:not(.onboarding-active) #onboardingView {
 
 .onboarding-steps {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 24px;
 }
@@ -2097,6 +2096,12 @@ body:not(.onboarding-active) #onboardingView {
 .advanced-toggle-btn {
   font-size: 14px;
   padding: 10px 24px;
+}
+
+.advanced-guide-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 
 #advancedSettings {

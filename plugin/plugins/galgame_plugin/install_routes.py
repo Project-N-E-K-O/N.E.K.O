@@ -4,10 +4,12 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
+from utils.config_manager import get_config_manager
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
@@ -472,3 +474,98 @@ async def galgame_plugin_stream_tesseract_install(
         task_id=task_id,
         request=request,
     )
+
+
+# ====== Tutorial progress endpoints ======
+
+_TUTORIAL_DEFAULTS = {
+    "completed": False,
+    "skipped": False,
+    "last_step_index": 0,
+    "started_at": 0.0,
+    "completed_at": 0.0,
+}
+
+
+class TutorialProgressPayload(BaseModel):
+    completed: bool = False
+    skipped: bool = False
+    last_step_index: int = 0
+    started_at: float = 0.0
+    completed_at: float = 0.0
+
+
+def _tutorial_progress_path() -> Path:
+    runtime_root = get_config_manager().app_docs_dir / "plugin-runtime" / "galgame_plugin"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    return runtime_root / "tutorial-progress.json"
+
+
+def _read_tutorial_progress() -> dict[str, Any] | None:
+    path = _tutorial_progress_path()
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("tutorial progress read failed", exc_info=True)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_tutorial_progress(progress: dict[str, Any]) -> None:
+    path = _tutorial_progress_path()
+    try:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps(progress, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(path)
+    except Exception:
+        logger.warning("tutorial progress write failed", exc_info=True)
+
+
+def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return dict(_TUTORIAL_DEFAULTS)
+
+    result = dict(_TUTORIAL_DEFAULTS)
+    for key in _TUTORIAL_DEFAULTS:
+        if key in raw:
+            result[key] = raw[key]
+    result["completed"] = bool(result["completed"])
+    result["skipped"] = bool(result["skipped"])
+    try:
+        result["last_step_index"] = max(0, int(result["last_step_index"] or 0))
+    except (TypeError, ValueError):
+        result["last_step_index"] = 0
+    try:
+        result["started_at"] = max(0.0, float(result["started_at"] or 0.0))
+    except (TypeError, ValueError):
+        result["started_at"] = 0.0
+    try:
+        result["completed_at"] = max(0.0, float(result["completed_at"] or 0.0))
+    except (TypeError, ValueError):
+        result["completed_at"] = 0.0
+    return result
+
+
+@router.get("/plugin/{plugin_id}/ui-api/tutorial/status")
+async def get_tutorial_status(plugin_id: str) -> JSONResponse:
+    _ensure_has_install(plugin_id)
+    raw = _read_tutorial_progress()
+    return JSONResponse({"ok": True, "progress": _normalize_tutorial_progress(raw)})
+
+
+@router.post("/plugin/{plugin_id}/ui-api/tutorial/progress")
+async def save_tutorial_progress(
+    plugin_id: str,
+    body: TutorialProgressPayload,
+) -> JSONResponse:
+    _ensure_has_install(plugin_id)
+    payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+    current = _normalize_tutorial_progress(_read_tutorial_progress())
+    current.update(_normalize_tutorial_progress(payload))
+    _write_tutorial_progress(current)
+    return JSONResponse({"ok": True, "progress": current})
