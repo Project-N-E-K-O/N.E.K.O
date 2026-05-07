@@ -22,8 +22,6 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-LOCAL_LIGHTWEIGHT_TTS_PREFIXES = ("kokoro:", "melotts:", "melo:", "chattts:")
-
 # 关闭哨兵：core.py 通过 request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
 # 通知 worker 退出主循环。不能复用 (None, None)，因为它已被用作"本轮 utterance
 # 结束、flush/commit 缓冲区"的信号（见 _non_bistream_tts_main_loop、step/qwen
@@ -2841,11 +2839,6 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     return None
 
 
-def _is_local_lightweight_tts_voice(voice_id: str) -> bool:
-    normalized = (voice_id or '').strip().lower()
-    return normalized.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES)
-
-
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     根据 core_api 类型和是否有自定义音色，返回一个 callable。
@@ -2895,10 +2888,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
-            if (
-                (gsv_enabled or _is_local_lightweight_tts_voice(voice_id))
-                and (base_url.startswith('ws://') or base_url.startswith('wss://'))
-            ):
+            if base_url.startswith('ws://') or base_url.startswith('wss://'):
                 return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
