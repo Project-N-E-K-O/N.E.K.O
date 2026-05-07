@@ -418,7 +418,11 @@ def test_loader_drops_invalid_threshold_values():
     ('chatting',        None,           None,     'warm'),
     ('stale_returning', None,           None,     'warm'),
     ('focused_work',    None,           None,     'concise'),
-    ('idle',            None,           None,     'concise'),
+    # ``idle`` while desk-pet is up reads as 摸鱼 territory — pair with
+    # ``playful`` (matches casual_browsing) instead of the businesslike
+    # ``concise``. ``transitioning`` and ``away`` keep ``concise``:
+    # the former is mid-context-switch, the latter doesn't render.
+    ('idle',            None,           None,     'playful'),
     ('away',            None,           None,     'concise'),
     ('casual_browsing', None,           None,     'playful'),
     ('private',         None,           None,     'concise'),
@@ -923,3 +927,231 @@ def test_loader_canonical_falls_back_to_override_key(tmp_path):
     # Title override falls back the same way
     assert 'mydashboard' in prefs.user_title_overrides
     assert prefs.user_title_overrides['mydashboard'].canonical == 'MyDashboard'
+
+
+# ── Break-reminder accumulator + transition detection ──────────────
+
+
+def _make_tracker_for_break_tests(
+    *,
+    work_break_minutes: float = 30,
+    anti_slack_min_focus_minutes: float = 5,
+    anti_slack_cooldown_minutes: float = 15,
+):
+    """Build a UserActivityTracker with break-reminder thresholds set.
+
+    Bypasses collector startup — tests drive ``_tick_break_reminders``
+    directly with synthetic ActivitySnapshots, so the collector + system
+    signal pipeline never run.
+    """
+    from main_logic.activity.tracker import UserActivityTracker
+    tracker = UserActivityTracker('test_lanlan')
+    tracker._sm._prefs = ActivityPreferences(thresholds={
+        'work_break_minutes': work_break_minutes,
+        'anti_slack_min_focus_minutes': anti_slack_min_focus_minutes,
+        'anti_slack_cooldown_minutes': anti_slack_cooldown_minutes,
+    })
+    return tracker
+
+
+def _snap_for_state(state: str, *, app: str | None = 'VS Code'):
+    """Minimal ActivitySnapshot with the fields _tick_break_reminders reads."""
+    from main_logic.activity.snapshot import ActivitySnapshot, WindowObservation
+    win = (
+        WindowObservation(
+            process_name=None, title=None, category='work',
+            subcategory='ide', canonical=app, is_browser=False,
+        )
+        if app else None
+    )
+    return ActivitySnapshot(
+        state=state,
+        state_age_seconds=10.0,
+        previous_state=None,
+        transitioned_recently=False,
+        stale_returning=False,
+        propensity='open',
+        active_window=win,
+    )
+
+
+def _tick_for_seconds(tracker, *, state: str, seconds: float, step: float = 20.0,
+                     app: str | None = 'VS Code', start: float = 1000.0) -> float:
+    """Drive _tick_break_reminders forward by ``seconds`` total via ``step`` slices.
+
+    Per-tick advance is capped by ``_BREAK_REMINDER_TICK_MAX_DELTA_SECONDS``
+    (default 30s); using 20s steps mirrors the real activity_guess loop
+    cadence and keeps every step credited fully. Returns the final ``now``.
+    """
+    now = start
+    end = start + seconds
+    snap = _snap_for_state(state, app=app)
+    # First tick records the baseline timestamp (no delta credited).
+    tracker._tick_break_reminders(snap, now=now)
+    while now < end:
+        now = min(now + step, end)
+        tracker._tick_break_reminders(snap, now=now)
+    return now
+
+
+def test_break_acc_advances_during_focused_work():
+    """Accumulator credits real time spent in focused_work."""
+    tracker = _make_tracker_for_break_tests()
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=600)
+    # 600s ± a tick — first call records timestamp without delta.
+    assert 540 <= tracker._work_acc_seconds <= 610
+
+
+def test_break_acc_extends_through_transitioning_when_already_started():
+    """Transitioning during a real focus session keeps the timer running."""
+    tracker = _make_tracker_for_break_tests()
+    # Build up 5 minutes of focused_work.
+    t = _tick_for_seconds(tracker, state='focused_work', seconds=300)
+    pre_acc = tracker._work_acc_seconds
+    assert pre_acc >= 280  # tolerance for first-tick init
+    # Now flick to transitioning for 30 seconds — accumulator should keep growing.
+    snap_transitioning = _snap_for_state('transitioning')
+    tracker._tick_break_reminders(snap_transitioning, now=t + 20)
+    tracker._tick_break_reminders(snap_transitioning, now=t + 40)
+    assert tracker._work_acc_seconds > pre_acc
+
+
+def test_break_acc_resets_on_any_other_state():
+    """Anything other than focused_work / transitioning resets immediately."""
+    tracker = _make_tracker_for_break_tests()
+    _tick_for_seconds(tracker, state='focused_work', seconds=600)
+    assert tracker._work_acc_seconds > 500
+
+    # One tick of casual_browsing → reset
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=tracker._break_tick_last_at + 20)
+    assert tracker._work_acc_seconds == 0
+
+
+def test_break_acc_transitioning_alone_cannot_start_timer():
+    """Pure transitioning (acc==0) does not arm the timer."""
+    tracker = _make_tracker_for_break_tests()
+    snap = _snap_for_state('transitioning')
+    tracker._tick_break_reminders(snap, now=1000.0)
+    tracker._tick_break_reminders(snap, now=1020.0)
+    tracker._tick_break_reminders(snap, now=1040.0)
+    assert tracker._work_acc_seconds == 0
+    assert tracker._work_break_pending is None
+
+
+def test_work_break_pending_armed_at_threshold():
+    """work_break_pending populates once accumulator crosses threshold."""
+    tracker = _make_tracker_for_break_tests(work_break_minutes=2)  # 120s for fast test
+    _tick_for_seconds(tracker, state='focused_work', seconds=60)
+    assert tracker._work_break_pending is None  # below threshold
+    _tick_for_seconds(
+        tracker, state='focused_work', seconds=120,
+        start=tracker._break_tick_last_at,
+    )
+    assert tracker._work_break_pending is not None
+    assert tracker._work_break_pending['minutes'] >= 2
+    assert tracker._work_break_pending['app'] == 'VS Code'
+
+
+def test_work_break_pending_persists_until_cleared():
+    """Pending stays armed across ticks until mark_work_break_used."""
+    tracker = _make_tracker_for_break_tests(work_break_minutes=1)
+    _tick_for_seconds(tracker, state='focused_work', seconds=120)
+    assert tracker._work_break_pending is not None
+    # More focused_work ticks — pending stays, minutes refresh upward.
+    base_minutes = tracker._work_break_pending['minutes']
+    _tick_for_seconds(tracker, state='focused_work', seconds=120, start=tracker._break_tick_last_at)
+    assert tracker._work_break_pending is not None
+    assert tracker._work_break_pending['minutes'] >= base_minutes
+    # Clearing via the public API resets accumulator + drops pending.
+    tracker.mark_work_break_used()
+    assert tracker._work_break_pending is None
+    assert tracker._work_acc_seconds == 0
+
+
+def test_anti_slack_pending_fires_on_focus_to_leisure():
+    """Transitioning focused_work → casual_browsing arms anti-slack pending."""
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=2)
+    # 3 minutes of focused_work
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=180)
+    # Pivot to casual_browsing
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=end_t + 20)
+    assert tracker._anti_slack_pending is not None
+    assert tracker._anti_slack_pending['prev_app'] == 'VS Code'
+    assert tracker._anti_slack_pending['new_app'] == 'YouTube'
+    assert tracker._anti_slack_pending['minutes'] >= 2
+
+
+def test_anti_slack_skipped_when_focus_too_short():
+    """Below anti_slack_min_focus_minutes, the transition is silent."""
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=5)
+    # Only 90s of focus
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=90)
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=end_t + 20)
+    assert tracker._anti_slack_pending is None
+
+
+def test_anti_slack_skipped_for_idle_target():
+    """focused_work → idle does NOT fire (idle ≠ slacking; could be thinking)."""
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=2)
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=180)
+    snap_idle = _snap_for_state('idle', app=None)
+    tracker._tick_break_reminders(snap_idle, now=end_t + 20)
+    assert tracker._anti_slack_pending is None
+
+
+def test_anti_slack_respects_cooldown():
+    """Within cooldown, no new anti-slack pending is emitted."""
+    tracker = _make_tracker_for_break_tests(
+        anti_slack_min_focus_minutes=2, anti_slack_cooldown_minutes=15,
+    )
+    # First focus → leisure: emits, then mark_used to start cooldown.
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=180)
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=end_t + 20)
+    assert tracker._anti_slack_pending is not None
+    tracker.mark_anti_slack_used(now=end_t + 30)
+
+    # Second focus → leisure within cooldown: no pending.
+    end_t2 = _tick_for_seconds(
+        tracker, state='focused_work', seconds=180,
+        start=end_t + 30,
+    )
+    snap_browsing2 = _snap_for_state('casual_browsing', app='Reddit')
+    tracker._tick_break_reminders(snap_browsing2, now=end_t2 + 20)
+    assert tracker._anti_slack_pending is None
+
+
+def test_anti_slack_pending_cleared_on_return_to_focus():
+    """If user goes back to focused_work, the pending is dropped (no longer slacking)."""
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=2)
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=180)
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=end_t + 20)
+    assert tracker._anti_slack_pending is not None
+    # Return to focused_work
+    snap_back = _snap_for_state('focused_work', app='VS Code')
+    tracker._tick_break_reminders(snap_back, now=end_t + 40)
+    assert tracker._anti_slack_pending is None
+
+
+def test_break_acc_tolerates_long_gaps():
+    """Long gap between ticks doesn't credit the user fake minutes.
+
+    If something pauses the loop (process suspend, idle deployment),
+    the accumulator should not silently jump 30 minutes — the cap
+    discards the suspect delta.
+    """
+    tracker = _make_tracker_for_break_tests()
+    snap = _snap_for_state('focused_work')
+    tracker._tick_break_reminders(snap, now=1000.0)
+    # Tick again with a 1-hour gap → should be discarded
+    tracker._tick_break_reminders(snap, now=1000.0 + 3600.0)
+    # Accumulator stays at 0 (or near it) — the 3600s delta exceeds the cap
+    assert tracker._work_acc_seconds < 60
+    # Subsequent normal ticks credit normally
+    tracker._tick_break_reminders(snap, now=1000.0 + 3620.0)
+    assert tracker._work_acc_seconds > 0
+    assert tracker._work_acc_seconds < 60

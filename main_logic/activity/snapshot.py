@@ -134,6 +134,40 @@ class WindowObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkBreakPending:
+    """A water-break reminder is ready to fire on the next proactive turn.
+
+    Set by the tracker when its focused_work accumulator crosses
+    ``work_break_minutes`` (default 30) AND the live state is
+    ``focused_work``. Cleared by ``mark_work_break_used`` once the
+    reminder is delivered (which also resets the accumulator).
+
+    The seed for *what* to suggest (drink water / stretch / rest eyes /
+    etc.) is picked at delivery time in the router — not pinned here —
+    so consecutive failed-then-retried deliveries naturally rotate copy.
+    """
+    minutes: int                # Accumulated focused-work minutes
+    app: str                    # Canonical app the user is focused in (or generic fallback)
+
+
+@dataclass(frozen=True, slots=True)
+class AntiSlackPending:
+    """A "back to work" reminder is queued by a recent focused→leisure transition.
+
+    Set by the tracker when state transitions
+    ``focused_work → casual_browsing | gaming`` after at least
+    ``anti_slack_min_focus_minutes`` (default 5) of focused work and
+    while the per-character anti-slack cooldown has elapsed (default
+    15 min). Cleared by ``mark_anti_slack_used``, by the pending
+    window expiring (default 5 min), or by the user returning to
+    focused_work / a non-leisure state.
+    """
+    minutes: int                # How long the just-ended focused_work session was
+    prev_app: str               # Canonical name of the work app they left
+    new_app: str                # Canonical name of the leisure app they switched to
+
+
+@dataclass(frozen=True, slots=True)
 class UnfinishedThread:
     """An open conversation thread the AI may follow up on.
 
@@ -267,6 +301,17 @@ class ActivitySnapshot:
     # threads, etc.). Cache invalidates on the next user message.
     open_threads: list[str] = field(default_factory=list)
 
+    # --- Break-reminder pending flags (must-fire over normal proactive) ---
+    # When either is non-None on a snapshot fetched at proactive_chat
+    # entry, the router takes the dedicated minimal-Phase-2 delivery
+    # branch (skipping Phase 1 source fetching, propensity gating, and
+    # skip_probability rolls). Anti-slack outranks water-break — the
+    # transition trigger is more time-sensitive than the cumulative one.
+    # Populated/cleared exclusively by ``main_logic/activity/tracker.py``;
+    # see WorkBreakPending / AntiSlackPending docstrings for lifecycle.
+    work_break_pending: WorkBreakPending | None = None
+    anti_slack_pending: AntiSlackPending | None = None
+
 
 # ── State → propensity mapping ──────────────────────────────────────
 
@@ -372,11 +417,17 @@ def derive_tone(
             return 'playful'
         # game_intensity in {'varied', None}
         return 'concise'
-    if state in ('casual_browsing',):
+    if state in ('casual_browsing', 'idle'):
+        # Idle while the desk pet is foreground = the user is around but
+        # not driving any task. Pairing it with ``concise`` reads as
+        # businesslike when the natural register is light banter — same
+        # as casual_browsing. ``transitioning`` and ``away`` stay on
+        # ``concise`` deliberately: the former is mid-context-switch
+        # (short reactive lines fit), the latter doesn't render anyway.
         return 'playful'
     if state in ('chatting', 'stale_returning'):
         return 'warm'
-    # focused_work / idle / transitioning / away
+    # focused_work / transitioning / away
     return 'concise'
 
 

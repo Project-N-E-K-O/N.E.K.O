@@ -28,8 +28,14 @@ global settings. The activity sub-dict lives there:
         "unfinished_thread_window_seconds": 300,
         "unfinished_thread_max_followups": 2,
         "gaming_gpu_threshold_percent": 60,
-        "gaming_gpu_max_idle_seconds": 60
+        "gaming_gpu_max_idle_seconds": 60,
+        "work_break_minutes": 30,
+        "work_break_pending_window_seconds": 300,
+        "anti_slack_min_focus_minutes": 5,
+        "anti_slack_cooldown_minutes": 15,
+        "anti_slack_pending_window_seconds": 300
       },
+      "work_break_game_invite_probability": 0.5,
       "user_app_overrides": {
         "MyCompanyApp.exe": {"category": "work", "subcategory": "office", "canonical": "MyCompanyApp"},
         "OurGameLauncher.exe": {"category": "gaming", "subcategory": "game"}
@@ -164,6 +170,13 @@ class ActivityPreferences:
     # Skip probability overrides. Keys are intensity-only ('competitive')
     # or intensity_genre ('immersive_horror'); values in [0, 1].
     skip_probability_overrides: dict[str, float] = field(default_factory=dict)
+
+    # Probability that a fired water-break reminder pivots into a "rest +
+    # mini-game invite" branch instead of the regular drink/stretch nudge.
+    # Lives outside ``thresholds`` because 0 is a meaningful value here
+    # ("disable the game-invite branch entirely") and ``_parse_thresholds``
+    # rejects non-positive numbers. None == use code default (0.5).
+    work_break_game_invite_probability: float | None = None
 
 
 # ── Module-level cache ────────────────────────────────────────────────
@@ -344,7 +357,27 @@ def _parse_activity_section(section: dict) -> ActivityPreferences:
         skip_probability_overrides=_parse_skip_overrides(
             section.get('skip_probability_overrides'),
         ),
+        work_break_game_invite_probability=_parse_unit_probability(
+            section.get('work_break_game_invite_probability'),
+        ),
     )
+
+
+def _parse_unit_probability(raw: Any) -> float | None:
+    """Probability value in [0, 1]. None / non-numeric / out-of-range → None.
+
+    Distinct from ``_parse_thresholds`` because 0 is a meaningful value
+    (disabled), so the >0 invariant doesn't apply. Returns None when the
+    user didn't supply this key, signalling "fall through to the code
+    default" rather than "disabled".
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if not isinstance(raw, (int, float)):
+        return None
+    return max(0.0, min(1.0, float(raw)))
 
 
 def _parse_thresholds(raw: Any) -> dict[str, float]:
