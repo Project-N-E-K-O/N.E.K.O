@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "Last download failed: {error}\nMainland China networks may need a proxy. You can also manually download the missing files from {source} into {dir}, then click \"Refresh Status\".",
   "ui.install.rapidocr.download_source": "Download source",
   "ui.first_run.action.download_rapidocr_models": "Download Models Now",
-  "ui.first_run.install_ocr.pending_models": "The selected language models are not downloaded. Click \"Download Models Now\" to fetch them from ModelScope (~10 MB for the default japan + PP-OCRv4 combo)."
+  "ui.first_run.install_ocr.pending_models": "The selected language models ({lang} + {version}) are not downloaded. Click \"Download Models Now\" to fetch them from ModelScope (~{size} MB)."
 }

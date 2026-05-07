@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "前回のダウンロードに失敗しました：{error}\nプロキシが必要な場合があります。または手動で {source} から不足ファイルを {dir} へダウンロードし、「ステータス更新」をクリックしてください。",
   "ui.install.rapidocr.download_source": "ダウンロード元",
   "ui.first_run.action.download_rapidocr_models": "今すぐモデルをダウンロード",
-  "ui.first_run.install_ocr.pending_models": "選択した言語モデルがダウンロードされていません。「今すぐモデルをダウンロード」をクリックして ModelScope から取得してください（デフォルト japan + PP-OCRv4 組合せで約 10 MB）。"
+  "ui.first_run.install_ocr.pending_models": "選択した言語モデル ({lang} + {version}) がダウンロードされていません。「今すぐモデルをダウンロード」をクリックして ModelScope から約 {size} MB を取得してください。"
 }

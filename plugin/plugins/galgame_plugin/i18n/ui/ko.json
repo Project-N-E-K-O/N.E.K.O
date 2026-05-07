@@ -1006,7 +1006,7 @@
   "ui.error.plugin_call_failed": "Plugin call failed",
   "ui.error.plugin_call_timeout": "Plugin call timed out",
   "ui.settings.saving_hint": "Saving...",
-  "ui.common.auto_value": "(auto)",
+  "ui.common.auto_value": "(자동)",
   "ui.common.none_value": "(없음)",
   "ui.action.install_dxcam": "DXcam 설치",
   "ui.action.reset_tutorial": "설정 가이드 다시 열기",
@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "지난 다운로드 실패: {error}\n프록시가 필요할 수 있습니다. 또는 {source}에서 누락된 파일을 수동으로 {dir}에 다운로드한 후 \"상태 새로고침\"을 클릭하세요.",
   "ui.install.rapidocr.download_source": "다운로드 출처",
   "ui.first_run.action.download_rapidocr_models": "지금 모델 다운로드",
-  "ui.first_run.install_ocr.pending_models": "선택한 언어 모델이 다운로드되지 않았습니다. \"지금 모델 다운로드\"를 클릭해 ModelScope에서 가져오세요(기본 japan + PP-OCRv4 조합 약 10 MB)."
+  "ui.first_run.install_ocr.pending_models": "선택한 언어 모델 ({lang} + {version})이 다운로드되지 않았습니다. \"지금 모델 다운로드\"를 클릭해 ModelScope에서 약 {size} MB를 가져오세요."
 }

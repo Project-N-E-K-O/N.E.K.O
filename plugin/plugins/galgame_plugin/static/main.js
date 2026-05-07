@@ -136,7 +136,14 @@ function getInstallUIConfig() {
       // rapidocrPrompt — that card was orphaned after PR #1191 stripped the
       // rapidocr runtime install machinery. We bring it back to surface
       // model-download progress (different operation, same UI shape).
+      // buttonId is required because the card's progress button
+      // (`rapidocrInstallBtn`) was removed alongside the install flow; the
+      // visible CTA is `rapidocrModelsDownloadBtn` next to "使用 RapidOCR".
+      // Without this override, getInstallNodes('rapidocr_models').button is
+      // null and startInstall() crashes on `button.disabled = true` before
+      // sending the POST.
       domPrefix: 'rapidocr',
+      buttonId: 'rapidocrModelsDownloadBtn',
       actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
       retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
       runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
@@ -801,7 +808,14 @@ function getInstallState(kind) {
 }
 
 function getInstallNodes(kind) {
-  const prefix = getInstallConfig(kind).domPrefix;
+  const config = getInstallConfig(kind);
+  const prefix = config.domPrefix;
+  // `buttonId` overrides the default `${prefix}InstallBtn` lookup. Used by
+  // `rapidocr_models`: it shares the rapidocrInstallState card markup with
+  // the (removed in PR #1191) rapidocr install flow, but its action button
+  // lives at `rapidocrModelsDownloadBtn` — there is no `rapidocrInstallBtn`
+  // anymore. Without this override, getElementById returns null and
+  // startInstall crashes on `button.disabled = true` before sending the POST.
   return {
     card: document.getElementById(`${prefix}InstallState`),
     statusText: document.getElementById(`${prefix}InstallStatusText`),
@@ -809,7 +823,7 @@ function getInstallNodes(kind) {
     messageText: document.getElementById(`${prefix}InstallMessage`),
     detailText: document.getElementById(`${prefix}InstallDetail`),
     progressBar: document.getElementById(`${prefix}InstallBar`),
-    button: document.getElementById(`${prefix}InstallBtn`),
+    button: document.getElementById(config.buttonId || `${prefix}InstallBtn`),
   };
 }
 
@@ -1630,9 +1644,15 @@ function buildFirstRunSteps(status = {}) {
   if (!ocrReady) {
     let body;
     if (ocrInstallAction === 'download_rapidocr_models') {
-      body = uiT(
+      const sizeMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
+      body = uiTf(
         'ui.first_run.install_ocr.pending_models',
-        '默认语言模型 (japan + PP-OCRv4) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 10MB 的模型文件。',
+        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。',
+        {
+          lang: rapidocr.lang_type || 'japan',
+          version: rapidocr.ocr_version || 'PP-OCRv4',
+          size: sizeMb,
+        },
       );
     } else if (ocrInstallAction === 'install_tesseract') {
       body = uiT('ui.first_run.install_ocr.pending_tesseract', '前往"依赖安装"面板一键安装 Tesseract。');

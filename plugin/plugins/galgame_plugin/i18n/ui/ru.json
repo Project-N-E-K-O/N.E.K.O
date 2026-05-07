@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "Последнее скачивание не удалось: {error}\nВозможно, требуется прокси. Также можно вручную скачать недостающие файлы с {source} в {dir} и нажать \"Обновить статус\".",
   "ui.install.rapidocr.download_source": "Источник скачивания",
   "ui.first_run.action.download_rapidocr_models": "Скачать модели сейчас",
-  "ui.first_run.install_ocr.pending_models": "Выбранные языковые модели не скачаны. Нажмите «Скачать модели сейчас», чтобы получить их с ModelScope (по умолчанию для japan + PP-OCRv4 ~10 МБ)."
+  "ui.first_run.install_ocr.pending_models": "Выбранные языковые модели ({lang} + {version}) не скачаны. Нажмите «Скачать модели сейчас», чтобы получить их с ModelScope (~{size} МБ)."
 }
