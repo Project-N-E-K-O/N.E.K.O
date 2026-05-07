@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import importlib.util
@@ -831,6 +832,7 @@ async def download_rapidocr_models(
     force: bool = False,
     task_id: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
     """Download all model files required for the (ocr_version, lang_type) selection.
 
@@ -840,6 +842,21 @@ async def download_rapidocr_models(
     the UI can show actionable copy.
     """
     from .install_tasks import update_install_task_state  # local import: avoid cycle
+
+    async def _before_completed() -> None:
+        if before_completed_callback is None:
+            return
+        result = before_completed_callback()
+        if inspect.isawaitable(result):
+            await result
+
+    async def _before_completed_safely() -> None:
+        try:
+            await _before_completed()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("failed to run rapidocr_models completion callback", exc_info=True)
 
     cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
     if not cache_dir:
@@ -852,6 +869,7 @@ async def download_rapidocr_models(
         lang_type=lang_type,
     )
     if not required:
+        await _before_completed_safely()
         if task_id:
             update_install_task_state(
                 task_id,
@@ -884,6 +902,7 @@ async def download_rapidocr_models(
 
     if not pending:
         already_present_message = "All required RapidOCR models already on disk"
+        await _before_completed_safely()
         if task_id:
             update_install_task_state(
                 task_id,
@@ -1064,6 +1083,8 @@ async def download_rapidocr_models(
                 if isinstance(exc, httpx.HTTPError):
                     raise RuntimeError(err_message) from exc
                 raise
+
+    await _before_completed_safely()
 
     if task_id:
         update_install_task_state(

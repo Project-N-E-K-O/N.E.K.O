@@ -2451,6 +2451,11 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时退回 PR 前 yui-origin 历史值。
+    from utils.api_config_loader import get_free_voices
+    default_free_voice_id = (get_free_voices() or {}).get('cuteGirl') or 'voice-tone-PGLiyZt65w'
+    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 

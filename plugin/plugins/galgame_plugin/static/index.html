@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title data-i18n="ui.app.title">Galgame 游玩助手</title>
-  <link rel="stylesheet" href="./style.css?v=20260502-ocr-window-collapse">
+  <link rel="stylesheet" href="./style.css?v=20260507-style-harmonization">
 </head>
 <body>
   <div class="page-shell">
@@ -32,7 +32,7 @@
 
       <header class="hero">
         <div>
-          <h1 class="hero-title" data-i18n="ui.app.title">Galgame 游玩助手</h1>
+          <h1 class="hero-title"><span class="neko-ears" aria-hidden="true">🐱</span> <span data-i18n="ui.app.title">Galgame 游玩助手</span></h1>
           <span id="summaryText" class="summary-pill" data-i18n="ui.summary.waiting_refresh">等待首次刷新</span>
         </div>
         <div class="hero-right">
@@ -63,6 +63,14 @@
           </div>
         </div>
       </header>
+
+      <section id="firstRunGuide" class="first-run-guide" hidden>
+        <div class="first-run-guide-head">
+          <h2 class="first-run-guide-title" data-i18n="ui.first_run.section_title">首次配置引导</h2>
+          <p class="first-run-guide-subtitle" data-i18n="ui.first_run.section_subtitle">按下面几步把识别流程接起来。</p>
+        </div>
+        <div id="firstRunSteps" class="first-run-steps"></div>
+      </section>
 
       <section id="primaryDiagnosisPanel" class="primary-diagnosis info" aria-live="polite">
         <div class="primary-diagnosis-copy">
@@ -408,11 +416,10 @@
                   <p class="install-module-summary" data-i18n="ui.install.ocr_desc">RapidOCR 是主识别后端，DXcam 负责稳定截图，Tesseract 仅作为兼容兜底。</p>
                 </div>
                 <div class="install-tabs">
-                  <!-- rapidocr / dxcam tab buttons removed: their banners are
-                       always visible (no install-task tab logic anymore since
-                       both are bundled main-program deps). Only tesseract
-                       still has runtime install machinery. -->
-                  <button class="install-tab active" data-install-tab="tesseract">Tesseract</button>
+                  <!-- Keep these buttons in sync with OCR_INSTALL_TABS in main.js. -->
+                  <button class="install-tab active" data-install-tab="rapidocr">RapidOCR</button>
+                  <button class="install-tab" data-install-tab="dxcam">DXcam</button>
+                  <button class="install-tab" data-install-tab="tesseract">Tesseract</button>
                 </div>
                 <div class="install-panels install-panels-ocr">
               <div id="rapidocrPrompt" class="install-banner install-banner-rapidocr" hidden>
@@ -637,14 +644,9 @@
 
     </div><!-- /mainView -->
 
-    <!-- 隐藏的 firstRunGuide 供现有 JS 引用 -->
-    <section id="firstRunGuide" hidden>
-      <div id="firstRunSteps" class="first-run-steps"></div>
-    </section>
-
   </div>
 
   <script src="./i18n.js?v=20260505-ui-i18n"></script>
-  <script src="./main.js?v=20260505-ui-i18n"></script>
+  <script src="./main.js?v=20260507-rapidocr-model-refresh"></script>
 </body>
 </html>
