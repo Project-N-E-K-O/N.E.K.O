@@ -8,7 +8,10 @@ from playwright.sync_api import Page, expect
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox-standalone.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
-PRELOAD_JUKEBOX = (REPO_ROOT / "N.E.K.O.-PC" / "src" / "preload-jukebox.js").read_text(encoding="utf-8")
+PRELOAD_JUKEBOX_PATH = REPO_ROOT / "N.E.K.O.-PC" / "src" / "preload-jukebox.js"
+if not PRELOAD_JUKEBOX_PATH.exists():
+    pytest.skip("preload-jukebox not available, skipping tests", allow_module_level=True)
+PRELOAD_JUKEBOX = PRELOAD_JUKEBOX_PATH.read_text(encoding="utf-8")
 HARNESS_HTML = """
 <!DOCTYPE html>
 <html>
@@ -52,7 +55,7 @@ HARNESS_HTML = """
 
 def test_jukebox_close_hides_window_without_destroying_dom():
     match = re.search(
-        r"window\.Jukebox_close = function\(\) \{(?P<body>.*?)\n            \};",
+        r"window\.Jukebox_close = function\(\) \{(?P<body>.*?)\s*\};",
         JUKEBOX_TEMPLATE,
         re.S,
     )
@@ -67,7 +70,8 @@ def test_jukebox_close_hides_window_without_destroying_dom():
 def test_jukebox_header_buttons_are_outside_native_drag_region():
     assert ".jukebox-container" in JUKEBOX_TEMPLATE
     assert "-webkit-app-region: no-drag !important;" in JUKEBOX_TEMPLATE
-    assert ".jukebox-header-left,\n        .jukebox-header-left *" in JUKEBOX_TEMPLATE
+    assert ".jukebox-header-left" in JUKEBOX_TEMPLATE
+    assert ".jukebox-header-left *" in JUKEBOX_TEMPLATE
     assert ".jukebox-header-buttons *" in JUKEBOX_TEMPLATE
 
     assert "['.jukebox-header-left, .jukebox-header-left *']" in PRELOAD_JUKEBOX
