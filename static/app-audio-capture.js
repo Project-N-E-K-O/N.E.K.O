@@ -1156,6 +1156,9 @@
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
         let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
+        // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
+        // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
+        let timeDomainBuffer = null;
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -1182,21 +1185,27 @@
                 // 用时域数据反映 worklet/AI 实际收到的线性振幅。
                 // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
                 // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
+                //
+                // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
+                // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
+                // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
                 const fftSize = S.inputAnalyser.fftSize;
-                const dataArray = new Uint8Array(fftSize);
-                S.inputAnalyser.getByteTimeDomainData(dataArray);
+                if (!timeDomainBuffer || timeDomainBuffer.length !== fftSize) {
+                    timeDomainBuffer = new Float32Array(fftSize);
+                }
+                S.inputAnalyser.getFloatTimeDomainData(timeDomainBuffer);
 
                 let peak = 0;
                 let sumSq = 0;
                 let clippedCount = 0;
                 for (let i = 0; i < fftSize; i++) {
-                    const val = (dataArray[i] - 128) / 128.0;
+                    const val = timeDomainBuffer[i];
                     const abs = val < 0 ? -val : val;
                     if (abs > peak) peak = abs;
                     sumSq += val * val;
-                    // |val|>=0.99：byte 触到 0/255 量化边界，下游 worklet
-                    // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 会把波形削顶
-                    if (abs >= 0.99) clippedCount++;
+                    // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
+                    // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
+                    if (abs >= 0.999) clippedCount++;
                 }
                 const rms = Math.sqrt(sumSq / fftSize);
 
