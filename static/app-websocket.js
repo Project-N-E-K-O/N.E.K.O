@@ -679,7 +679,10 @@
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(!!S._pendingGreetingSwitch, 'ws-open');
+            _markGreetingCheckPending(
+                !!S._pendingGreetingSwitch || !!S._greetingCheckIsSwitch,
+                S._greetingCheckReason || 'ws-open'
+            );
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
 
