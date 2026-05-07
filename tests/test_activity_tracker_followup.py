@@ -1236,6 +1236,40 @@ def test_long_gap_does_not_fire_anti_slack_on_first_post_gap_leisure():
     assert tracker._anti_slack_pending is None
 
 
+def test_clock_rollback_resets_accumulator():
+    """Non-monotonic tick (NTP rollback / duplicate ts) clears stale focus.
+
+    Codex P2 (PR #1226): symmetric to the long-gap branch — without
+    the reset, a post-rollback focused_work tick would inherit
+    pre-rollback minutes and trip water_break early. Also verifies
+    that the unsafe-delta branch treats the post-rollback focused_work
+    state as a fresh session entry (session_started_at refreshes).
+    """
+    tracker = _make_tracker_for_break_tests()
+    snap_focus = _snap_for_state('focused_work')
+    # Build up some focus
+    tracker._tick_break_reminders(snap_focus, now=1000.0)
+    tracker._tick_break_reminders(snap_focus, now=1020.0)
+    tracker._tick_break_reminders(snap_focus, now=1040.0)
+    assert tracker._work_acc_seconds > 0
+    pre_rollback_session_start = tracker._focused_work_session_started_at
+    assert pre_rollback_session_start is not None
+    # NTP rollback — wall clock goes backward
+    tracker._tick_break_reminders(snap_focus, now=900.0)
+    assert tracker._work_acc_seconds == 0
+    # session_started_at refreshed to the post-rollback time, proving
+    # the bookkeeping branch saw prev_known==None and treated this as a
+    # fresh entry (rather than carrying the pre-rollback session).
+    assert tracker._focused_work_session_started_at == 900.0
+    # Duplicate timestamp (raw_delta == 0) also gets the reset
+    tracker._tick_break_reminders(snap_focus, now=1100.0)
+    tracker._tick_break_reminders(snap_focus, now=1100.0)
+    # First call credits delta, second call has raw_delta=0 → reset
+    # (we don't differentiate "0 is harmless" from "<0 is dangerous";
+    # both fall outside the `0 < raw_delta` window so both reset)
+    assert tracker._work_acc_seconds == 0
+
+
 def test_long_gap_clears_work_break_pending_too():
     """Pre-gap water_break_pending shouldn't persist across long gaps."""
     tracker = _make_tracker_for_break_tests(work_break_minutes=2)

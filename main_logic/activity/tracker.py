@@ -567,22 +567,31 @@ class UserActivityTracker:
                 else:
                     # Any other state immediately resets — per user spec.
                     self._work_acc_seconds = 0.0
-            elif raw_delta > _BREAK_REMINDER_TICK_MAX_DELTA_SECONDS:
-                # Long gap (process suspend / sleep / clock jump /
-                # forgot-to-tick). We don't know what state the user
-                # was in during the gap, so we can't safely credit OR
-                # carry forward accumulator minutes. Conservative reset
-                # of everything that could carry stale pre-gap context:
-                #   * accumulator → 0 (otherwise a post-gap focused_work
-                #     stretch would credit pre-gap minutes and trigger
-                #     water-break much earlier than the user's real
-                #     post-gap focus warrants — Codex P2 review).
+            else:
+                # Unsafe delta — two buckets, same conservative cleanup:
+                #   * ``raw_delta > cap`` — long gap (process suspend /
+                #     sleep / forgot-to-tick). Don't know what state
+                #     the user was in during the gap.
+                #   * ``raw_delta <= 0`` — non-monotonic clock (NTP
+                #     rollback, manual time change, duplicate ts). Can't
+                #     credit; pre-rollback focus also can't be trusted
+                #     to extend through the inverted segment.
+                # In both cases, allowing the in-range branch above to
+                # not run means the "any other state immediately resets"
+                # rule never fires for non-focus ticks — pre-transition
+                # focus minutes leak forward into post-gap focused_work
+                # and trip water_break_pending earlier than 30 min of
+                # genuine post-gap focus warrants. Codex P2 reviews:
+                # PR #1226 (long-gap and non-positive-delta findings).
+                #
+                # Conservative reset of everything that could carry
+                # stale pre-event context:
+                #   * accumulator → 0
                 #   * _last_known_state → None forces the bookkeeping
-                #     below to treat any post-gap focused_work as a
+                #     below to treat any post-event focused_work as a
                 #     fresh session entry, AND prevents anti-slack from
                 #     firing on a focused_work → leisure transition
-                #     observed across the gap (we have no idea whether
-                #     the gap itself was the slacking).
+                #     observed across the unsafe-delta tick.
                 #   * Pending dicts cleared since the snapshot they
                 #     reference is now ancient.
                 self._work_acc_seconds = 0.0
