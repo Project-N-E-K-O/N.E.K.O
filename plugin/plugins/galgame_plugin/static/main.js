@@ -12,9 +12,7 @@ const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
-// Only tesseract retains an install tab; rapidocr / dxcam status is now
-// shown as plain banners (always visible, no install action).
-const OCR_INSTALL_TABS = ['tesseract'];
+const OCR_INSTALL_TABS = ['rapidocr', 'dxcam', 'tesseract'];
 const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
@@ -745,7 +743,7 @@ let lastOcrWindowRefreshAt = 0;
 let emptyOcrWindowFocusForceRefreshDone = false;
 let autoRefreshTimer = null;
 let autoRefreshIntervalMs = AUTO_REFRESH_INTERVAL_MS;
-let activeInstallTab = 'tesseract';
+let activeInstallTab = 'rapidocr';
 let settingsDirty = false;
 let settingsSaveInFlight = false;
 let pendingModeSelection = '';
@@ -2367,10 +2365,7 @@ function dependencySummaryItem(kind, status = {}) {
     };
   }
 
-  // rapidocr / dxcam used to have install-summary branches here; both are now
-  // bundled main-program deps, so they're not in OCR_INSTALL_TABS and this
-  // function is never called with those kinds. Their status is shown
-  // exclusively via the always-visible rapidocrPrompt / dxcamPrompt banners.
+  // All three OCR banners are now tab-controlled via install-tab buttons.
 
   if (kind === 'tesseract') {
     const tesseract = status.tesseract || {};
@@ -3401,11 +3396,9 @@ function renderPluginUnavailable(error) {
     const title = document.getElementById(`${kind}PromptTitle`);
     const body = document.getElementById(`${kind}PromptBody`);
     const path = document.getElementById(`${kind}PathText`);
-    // Banners default to `hidden` in HTML and used to be unhidden by
-    // switchInstallTab. Post-refactor switchInstallTab only iterates
-    // OCR_INSTALL_TABS = ['tesseract'] so rapidocr/dxcam stay hidden in
-    // the plugin-unavailable failure path — explicitly clear it here so
-    // the degraded-state hint is actually visible to the user.
+    // Banners default to `hidden` in HTML and are unhidden by switchInstallTab.
+    // Explicitly clear hidden here for all OCR/memory banners so the
+    // plugin-unavailable hint is visible regardless of tab state.
     banner.hidden = false;
     banner.className = `install-banner install-banner-${kind} neutral`;
     if (kicker) kicker.textContent = PROMPT_LABELS[kind];
@@ -3473,6 +3466,13 @@ function applyInstallTaskState(kind, state, { allowRefresh = true } = {}) {
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
       setFlash(error instanceof Error ? error.message : String(error), 'error');
     });
+    if (kind === 'rapidocr_models' && state.status === 'completed') {
+      setTimeout(() => {
+        refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true }).catch((error) => {
+          setFlash(error instanceof Error ? error.message : String(error), 'error');
+        });
+      }, 750);
+    }
   }
 }
 
@@ -3973,6 +3973,9 @@ function renderStatus(status) {
   renderOcrScreenTemplates(status);
   renderOcrProfile(status);
   renderGameBinding(status);
+
+  // Re-assert tab visibility: degraded-state may have unhidden all banners.
+  switchInstallTab(activeInstallTab);
 }
 
 function renderGameBinding(status) {
@@ -4507,7 +4510,7 @@ function renderLockedMemoryProcess(status) {
         <p class="list-kicker">${escapeHtml(processName || uiT('ui.window.unknown_process', '未知进程'))}${pid ? ` · PID ${escapeHtml(pid)}` : ''}</p>
         <h3>${escapeHtml(engine || 'unknown')}</h3>
         <p class="result-note mono">${escapeHtml(exePath || target.process_key || '')}</p>
-        <div class="window-candidate-meta" style="margin-top:8px;">
+        <div class="window-candidate-meta">
           <span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>
           ${detail ? `<span class="status-chip">${escapeHtml(detail)}</span>` : ''}
         </div>
@@ -4519,7 +4522,7 @@ function renderLockedMemoryProcess(status) {
         <p class="list-kicker">${escapeHtml(runtime.process_name)}${runtime.pid ? ` · PID ${escapeHtml(runtime.pid)}` : ''}</p>
         <h3>${escapeHtml(runtime.engine || 'unknown')}</h3>
         <p class="result-note">${escapeHtml(detail || uiT('ui.memory.auto_detected_target', '自动检测到 Memory Reader 目标'))}</p>
-        <div class="window-candidate-meta" style="margin-top:8px;">
+        <div class="window-candidate-meta">
           <span class="status-chip active">${escapeHtml(uiT('ui.window.auto_detected', '自动检测'))}</span>
         </div>
       </div>
@@ -4676,7 +4679,7 @@ function renderLockedWindow(status) {
         <p class="list-kicker">${escapeHtml(processName)}${pid ? ` · PID ${escapeHtml(pid)}` : ''}</p>
         <h3>${escapeHtml(title || uiT('ui.window.untitled', '未命名窗口'))}</h3>
         <p class="result-note mono">${escapeHtml(windowKey)}</p>
-        <div class="window-candidate-meta" style="margin-top:8px;">
+        <div class="window-candidate-meta">
           <span class="status-chip active">${escapeHtml(uiT('ui.window.manual_locked', '手动锁定'))}</span>
         </div>
       </div>
@@ -4688,7 +4691,7 @@ function renderLockedWindow(status) {
         <p class="list-kicker">${escapeHtml(effectiveProcess || uiT('ui.window.auto_detect_target', '自动检测目标'))}${runtime.pid ? ` · PID ${escapeHtml(runtime.pid)}` : ''}</p>
         <h3>${escapeHtml(effectiveTitle || uiT('ui.window.untitled', '未命名窗口'))}</h3>
         <p class="result-note">${escapeHtml(detail || uiT('ui.ocr.window.auto_detected_target', '自动检测到可信游戏窗口'))}</p>
-        <div class="window-candidate-meta" style="margin-top:8px;">
+        <div class="window-candidate-meta">
           <span class="status-chip active">${escapeHtml(uiT('ui.window.auto_detected', '自动检测'))}</span>
           ${runtime.target_is_foreground ? `<span class="status-chip active">${escapeHtml(uiT('ui.window.foreground', '前台窗口'))}</span>` : `<span class="status-chip warning">${escapeHtml(uiT('ui.window.not_foreground', '非前台'))}</span>`}
         </div>
@@ -4847,8 +4850,6 @@ function renderRapidOcr(status) {
     title: uiT('ui.install.ocr_auto.title', '按 RapidOCR 优先、Tesseract 兜底自动选择 OCR 后端'),
   });
 
-  // rapidocrPrompt is no longer tab-controlled — show it whenever we render.
-  banner.hidden = false;
   banner.className = 'install-banner install-banner-rapidocr';
 
   if (!rapidocr.install_supported) {
@@ -4999,8 +5000,6 @@ function renderDxcam(status) {
     title: uiT('ui.install.printwindow.title', '使用 Win32 PrintWindow，主要用于截被遮挡窗口；DirectX/Unity 游戏可能旧帧或黑屏'),
   });
 
-  // dxcamPrompt is no longer tab-controlled — show it whenever we render.
-  banner.hidden = false;
   banner.className = 'install-banner install-banner-dxcam';
 
   if (!dxcam.install_supported) {
@@ -6888,8 +6887,6 @@ function revealCaptureBackendSettings() {
   // navigateToInstallPanel expands the Advanced Settings container + the
   // dependencies <details>, otherwise expandAndScrollTo would scroll past
   // a still-collapsed parent and the user sees nothing. The 'dxcam' kind
-  // skips the install-tab switch (not in OCR_INSTALL_TABS post-bundling)
-  // but the expansion side-effects still apply.
   // `scrollToSection: false` so navigateToInstallPanel's queued
   // installSection.scrollIntoView doesn't snap the viewport back to the
   // top of installSection on the next frame and hide dxcamPrompt.
