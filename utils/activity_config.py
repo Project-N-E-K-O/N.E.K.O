@@ -370,6 +370,12 @@ def _parse_unit_probability(raw: Any) -> float | None:
     (disabled), so the >0 invariant doesn't apply. Returns None when the
     user didn't supply this key, signalling "fall through to the code
     default" rather than "disabled".
+
+    Out-of-range (``< 0`` / ``> 1``) is rejected, NOT clamped: a typo
+    like ``2`` or ``-1`` should fall through to the default (0.5) rather
+    than silently flip to "always invite" (1.0) or "never invite" (0.0).
+    Same fail-soft contract the rest of this module uses for invalid
+    user input. Codex P2 review: PR #1226.
     """
     if raw is None:
         return None
@@ -377,7 +383,10 @@ def _parse_unit_probability(raw: Any) -> float | None:
         return None
     if not isinstance(raw, (int, float)):
         return None
-    return max(0.0, min(1.0, float(raw)))
+    value = float(raw)
+    if value < 0.0 or value > 1.0:
+        return None
+    return value
 
 
 def _parse_thresholds(raw: Any) -> dict[str, float]:

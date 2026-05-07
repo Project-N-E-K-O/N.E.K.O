@@ -534,6 +534,15 @@ class UserActivityTracker:
 
         state = snap.state
 
+        # Capture accumulator BEFORE advance/reset. Used as the
+        # authoritative session length when the anti-slack branch fires
+        # below — wall-clock ``now - session_started_at`` would inflate
+        # after a long process suspend / sleep / stall (the gap discard
+        # in the advance block prevents the accumulator from ticking
+        # through the dead window, but ``session_started_at`` still
+        # points at pre-suspend time). Codex P1 review: PR #1226.
+        session_acc_at_start = self._work_acc_seconds
+
         # ── Accumulator advance ─────────────────────────────────
         # First tick has no delta to credit — record now and exit. The
         # next call computes a real delta against this point.
@@ -596,7 +605,11 @@ class UserActivityTracker:
                 session_started is not None
                 and state in _ANTI_SLACK_LEISURE_STATES
             ):
-                session_seconds = max(0.0, now - session_started)
+                # Use the accumulator value captured at tick start
+                # (before reset) — it honors the long-gap discard rule,
+                # while ``now - session_started`` would credit the user
+                # with sleep/suspend time as if they'd been working.
+                session_seconds = session_acc_at_start
                 cooldown_ok = (
                     self._anti_slack_last_fired_at == 0.0
                     or (now - self._anti_slack_last_fired_at) >= anti_slack_cooldown_seconds
@@ -662,9 +675,13 @@ class UserActivityTracker:
         # and the user keeps grinding, the pending stays valid (intent
         # of must-fire) — but if the snapshot pipeline is wedged for
         # >window_seconds and the moment is conceptually gone, reset.
-        # In practice this branch rarely fires because focused_work
-        # constantly refreshes set_at via the minutes-update above; but
-        # it keeps an upper bound on stale pending state.
+        # ``set_at`` is captured once on first arming and NOT refreshed
+        # by the minutes-update branch above, so this expiry check
+        # actually bites for any state that holds the pending — most
+        # commonly ``transitioning`` lingering past the window. The
+        # ``state != 'focused_work'`` gate keeps focused_work itself
+        # exempt: as long as the user is actively focused, the pending
+        # is canonical and shouldn't time out. CodeRabbit nitpick: PR #1226.
         if (
             self._work_break_pending is not None
             and state != 'focused_work'

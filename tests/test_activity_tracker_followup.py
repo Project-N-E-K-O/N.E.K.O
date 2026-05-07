@@ -997,7 +997,7 @@ def _tick_for_seconds(tracker, *, state: str, seconds: float, step: float = 20.0
 def test_break_acc_advances_during_focused_work():
     """Accumulator credits real time spent in focused_work."""
     tracker = _make_tracker_for_break_tests()
-    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=600)
+    _tick_for_seconds(tracker, state='focused_work', seconds=600)
     # 600s ± a tick — first call records timestamp without delta.
     assert 540 <= tracker._work_acc_seconds <= 610
 
@@ -1155,3 +1155,77 @@ def test_break_acc_tolerates_long_gaps():
     tracker._tick_break_reminders(snap, now=1000.0 + 3620.0)
     assert tracker._work_acc_seconds > 0
     assert tracker._work_acc_seconds < 60
+
+
+def test_anti_slack_uses_accumulator_not_wall_clock_after_suspend():
+    """Long suspend → resume → leisure does NOT inflate session minutes.
+
+    Regression test for Codex P1 (PR #1226): without the fix,
+    ``session_seconds`` was computed from ``now - session_started_at``,
+    so a 1-hour laptop sleep mid-focus session would emit anti-slack
+    pending claiming the user worked for 60+ minutes when the
+    accumulator only credited the genuine pre-sleep focus time.
+    """
+    # Set anti-slack threshold high enough that pre-sleep alone wouldn't
+    # trip it, so any inflation would be detected as a false positive.
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=5)
+    # Pre-sleep: only 1 minute of real focused_work (well below threshold).
+    snap_focus = _snap_for_state('focused_work')
+    tracker._tick_break_reminders(snap_focus, now=1000.0)
+    tracker._tick_break_reminders(snap_focus, now=1020.0)
+    tracker._tick_break_reminders(snap_focus, now=1040.0)
+    tracker._tick_break_reminders(snap_focus, now=1060.0)
+    pre_sleep_acc = tracker._work_acc_seconds
+    assert pre_sleep_acc < 100  # ~60s of real focus
+    # 1 hour of nothing — process suspended.
+    suspended_until = 1060.0 + 3600.0
+    # Resume: still in focused_work briefly (long delta gets discarded).
+    tracker._tick_break_reminders(snap_focus, now=suspended_until)
+    # Accumulator should NOT have ballooned — long gap was discarded.
+    assert tracker._work_acc_seconds < 100
+    # User immediately switches to YouTube post-resume.
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=suspended_until + 20.0)
+    # No anti-slack pending — real focused minutes were below threshold,
+    # wall-clock-based logic would have spuriously triggered with 61min.
+    assert tracker._anti_slack_pending is None
+
+
+def test_anti_slack_minutes_match_accumulator_not_wall_clock():
+    """When anti-slack DOES fire, reported minutes match real focus time."""
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=5)
+    # 6 minutes of real focused_work
+    end_t = _tick_for_seconds(tracker, state='focused_work', seconds=360)
+    real_focus_minutes = int(tracker._work_acc_seconds / 60)
+    assert real_focus_minutes >= 5
+    # 30-minute suspend (no ticks)
+    suspended_until = end_t + 1800.0
+    # User comes back and immediately goes to YouTube
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(snap_browsing, now=suspended_until)
+    assert tracker._anti_slack_pending is not None
+    # Reported minutes should reflect the genuine pre-suspend focus time,
+    # not the inflated wall-clock 36 minutes (6min + 30min suspend).
+    reported = tracker._anti_slack_pending['minutes']
+    assert reported <= real_focus_minutes + 1  # ±1 for rounding
+
+
+def test_unit_probability_rejects_out_of_range():
+    """Out-of-range probabilities → None (use default), not clamped.
+
+    Codex P2 (PR #1226): docstring contract says invalid → None,
+    consistent with the rest of activity_config's fail-soft parsers.
+    Without this, a typo like ``2`` would become ``always invite``.
+    """
+    from utils.activity_config import _parse_unit_probability
+    assert _parse_unit_probability(0.5) == 0.5
+    assert _parse_unit_probability(0) == 0.0
+    assert _parse_unit_probability(1) == 1.0
+    # Out of range → None (not clamped)
+    assert _parse_unit_probability(2) is None
+    assert _parse_unit_probability(-0.1) is None
+    assert _parse_unit_probability(1.5) is None
+    # Non-numeric / None / bool still rejected
+    assert _parse_unit_probability(None) is None
+    assert _parse_unit_probability('0.5') is None
+    assert _parse_unit_probability(True) is None

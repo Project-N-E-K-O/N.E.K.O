@@ -4585,6 +4585,25 @@ async def proactive_chat(request: Request):
             except Exception:
                 _break_lang = 'zh'
 
+            # Resolve character_prompt up front and prepend it to every
+            # break-reminder SystemMessage. Without this the model would
+            # see only the env-notice template and lose its persona —
+            # CodeRabbit Major review (PR #1226). Mirrors the
+            # placeholder substitution the normal Phase 2 path does at
+            # line ~5300 (LANLAN_NAME / MASTER_NAME).
+            _break_character_prompt = lanlan_prompt_map.get(lanlan_name, '')
+            if _break_character_prompt:
+                _break_character_prompt = (
+                    _break_character_prompt
+                    .replace('{LANLAN_NAME}', lanlan_name)
+                    .replace('{MASTER_NAME}', master_name_current)
+                )
+
+            def _compose_break_system_prompt(env_notice: str) -> str:
+                if not _break_character_prompt:
+                    return env_notice
+                return f'{_break_character_prompt}\n\n{env_notice}'
+
             # Anti-slack first — single-behavior 'back to work' nudge.
             if activity_snapshot.anti_slack_pending is not None:
                 anti_pending = activity_snapshot.anti_slack_pending
@@ -4596,7 +4615,7 @@ async def proactive_chat(request: Request):
                 delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
-                    system_prompt=anti_prompt,
+                    system_prompt=_compose_break_system_prompt(anti_prompt),
                     channel='anti_slack',
                     lang=_break_lang,
                 )
@@ -4662,7 +4681,7 @@ async def proactive_chat(request: Request):
                 delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
                     lanlan_name=lanlan_name,
                     mgr=mgr,
-                    system_prompt=gi_prompt,
+                    system_prompt=_compose_break_system_prompt(gi_prompt),
                     channel='work_break_game_invite',
                     lang=_break_lang,
                 )
@@ -4670,8 +4689,16 @@ async def proactive_chat(request: Request):
                     invite_session_id = str(uuid4())
                     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
                     _mini_game_invite_get_state(lanlan_name)['last_game_type'] = chosen_game_type
+                    # Persist counter+1 + ever_delivered atomically (mini-game cooldown
+                    # contract). Track success so we can fall back to the plain
+                    # _increment_proactive_chat_total if persistence fails — otherwise
+                    # the chat-total counter would skip this round entirely.
+                    # CodeRabbit Major: don't double-count — the persistent record
+                    # already does the +1, so plain counter is only the fallback.
+                    _persist_ok = False
                     try:
                         await _record_invite_delivery_persistent(lanlan_name)
+                        _persist_ok = True
                     except Exception as _persist_err:
                         logger.warning(
                             "[%s] record_invite_delivery_persistent failed: %s",
@@ -4699,7 +4726,11 @@ async def proactive_chat(request: Request):
                             "[%s] mark_work_break_used failed: %s",
                             lanlan_name, _mark_err,
                         )
-                    await _increment_proactive_chat_total(lanlan_name)
+                    if not _persist_ok:
+                        # Persistence path failed → counter wasn't bumped.
+                        # Fall back to the plain in-memory increment so the
+                        # round still counts toward proactive_chat totals.
+                        await _increment_proactive_chat_total(lanlan_name)
                     return await _end_proactive(JSONResponse({
                         "success": True,
                         "action": "chat",
@@ -4726,7 +4757,7 @@ async def proactive_chat(request: Request):
             delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
                 lanlan_name=lanlan_name,
                 mgr=mgr,
-                system_prompt=wb_prompt,
+                system_prompt=_compose_break_system_prompt(wb_prompt),
                 channel='work_break',
                 lang=_break_lang,
             )
