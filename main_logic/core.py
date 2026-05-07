@@ -592,6 +592,7 @@ class LLMSessionManager:
         self._current_ai_turn_text: str = ''
         self._recent_ai_voice_echo_text: str = ''
         self._recent_ai_voice_echo_at: float = 0.0
+        self._pending_ai_voice_echo_text: str = ''
 
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
@@ -782,7 +783,7 @@ class LLMSessionManager:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
-        self._remember_recent_ai_voice_echo(text)
+        self._remember_pending_ai_voice_echo(text)
 
     def _reset_tts_stream_normalizer(self) -> None:
         """清空所有 TTS 文本 stripper 状态。中断 / 轮次结束 / session 重建时调用。"""
@@ -820,7 +821,7 @@ class LLMSessionManager:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
-            self._remember_recent_ai_voice_echo(flushed)
+            self._remember_pending_ai_voice_echo(flushed)
 
         self.tts_request_queue.put((None, None))
         self._tts_done_queued_for_turn = True
@@ -952,9 +953,9 @@ class LLMSessionManager:
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
-            # Any text cached from project TTS enqueue may not have reached the
-            # frontend if this pipeline was interrupted or discarded.
-            self._reset_voice_echo_suppression_cache()
+            # Drop only queued-but-unconfirmed TTS text. Already-confirmed
+            # audio may still be echoed by STT shortly after an interrupt.
+            self._discard_pending_ai_voice_echo()
 
     @property
     def is_tts_pipeline_ready(self) -> bool:
@@ -1475,6 +1476,7 @@ class LLMSessionManager:
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
+        self._pending_ai_voice_echo_text = ''
 
     def _remember_recent_ai_voice_echo(self, text: str) -> None:
         if not text:
@@ -1482,6 +1484,22 @@ class LLMSessionManager:
         recent_echo_text = (getattr(self, "_recent_ai_voice_echo_text", "") or "") + text
         self._recent_ai_voice_echo_text = recent_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
         self._recent_ai_voice_echo_at = time.time()
+
+    def _remember_pending_ai_voice_echo(self, text: str) -> None:
+        if not text:
+            return
+        pending_echo_text = (getattr(self, "_pending_ai_voice_echo_text", "") or "") + text
+        self._pending_ai_voice_echo_text = pending_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
+
+    def _confirm_pending_ai_voice_echo(self) -> None:
+        pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
+        if not pending_echo_text:
+            return
+        self._pending_ai_voice_echo_text = ''
+        self._remember_recent_ai_voice_echo(pending_echo_text)
+
+    def _discard_pending_ai_voice_echo(self) -> None:
+        self._pending_ai_voice_echo_text = ''
 
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
@@ -5795,13 +5813,17 @@ class LLMSessionManager:
                 self._last_speech_output_time = time.time()
                 self._last_speech_output_bytes = len(tts_audio)
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+                return True
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
                 logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
+                return False
         except WebSocketDisconnect:
             logger.warning("⚠️ send_speech: WebSocket disconnected")
+            return False
         except Exception as e:
             logger.error(f"💥 WS Send Response Error: {e}")
+            return False
 
     async def tts_response_handler(self):
         q = self.tts_response_queue
@@ -5951,12 +5973,14 @@ class LLMSessionManager:
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
-                    await self.send_speech(audio_payload, speech_id=speech_id)
+                    if await self.send_speech(audio_payload, speech_id=speech_id):
+                        self._confirm_pending_ai_voice_echo()
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                await self.send_speech(data)
+                if await self.send_speech(data):
+                    self._confirm_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
                 # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
