@@ -916,7 +916,8 @@
             const btn = document.getElementById('maximizeBtn');
             const labelKey = isMaximized ? 'common.restore' : 'common.maximize';
             const fallbackLabel = isMaximized ? '恢复' : '最大化';
-            const label = window.t ? window.t(labelKey) : fallbackLabel;
+            const translated = typeof window.t === 'function' ? window.t(labelKey) : null;
+            const label = translated && translated !== labelKey ? translated : fallbackLabel;
             if (isMaximized) {
                 icon.classList.add('restored');
             } else {

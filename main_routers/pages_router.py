@@ -204,7 +204,11 @@ async def character_card_manager_page(request: Request, lanlan_name: str = ""):
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/memory_browser', response_class=HTMLResponse)
