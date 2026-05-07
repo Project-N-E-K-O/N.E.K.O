@@ -404,10 +404,9 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_send_lanlan_response_defaults_to_skip_display_echo_when_tts_enabled(monkeypatch):
+async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
-    mgr.use_tts = True
 
     await core_module.LLMSessionManager.send_lanlan_response(mgr, "显示文本（括号也显示）")
 
@@ -430,19 +429,6 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
     )
 
     assert mgr._recent_ai_voice_echo_text == "确认已经播报的文本"
-    assert mgr._recent_ai_voice_echo_at == FIXED_TS
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_send_lanlan_response_defaults_to_remember_echo_without_tts(monkeypatch):
-    mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
-    mgr.use_tts = False
-
-    await core_module.LLMSessionManager.send_lanlan_response(mgr, "原生语音输出文本")
-
-    assert mgr._recent_ai_voice_echo_text == "原生语音输出文本"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
 
 
