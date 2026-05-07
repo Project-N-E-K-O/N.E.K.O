@@ -3,6 +3,7 @@
         "load": "Load",
         "minimize": "Minimize",
         "maximize": "Maximize",
+        "restore": "Restore",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",

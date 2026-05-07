@@ -131,6 +131,9 @@ function openCloudsaveManager() {
             if (existingWindow.location.href !== targetUrl) {
                 existingWindow.location.href = targetUrl;
             }
+            if (typeof window.requestOpenedWindowRestore === 'function') {
+                window.requestOpenedWindowRestore(existingWindow);
+            }
             existingWindow.focus();
             return;
         } catch (error) {
@@ -2968,6 +2971,9 @@ function openManagedPopup(url, windowName, features) {
             existingWindow.location.href = new URL(url, window.location.origin).toString();
         } catch (error) {
             console.warn('更新弹窗地址失败:', error);
+        }
+        if (typeof window.requestOpenedWindowRestore === 'function') {
+            window.requestOpenedWindowRestore(existingWindow);
         }
         existingWindow.focus();
         return existingWindow;

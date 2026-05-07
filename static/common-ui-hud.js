@@ -314,6 +314,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     } catch (_) {
                         existingWindow.location.href = targetUrl;
                     }
+                    if (typeof window.requestOpenedWindowRestore === 'function') {
+                        window.requestOpenedWindowRestore(existingWindow);
+                    }
                     existingWindow.focus();
                     openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {

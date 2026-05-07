@@ -1163,9 +1163,21 @@ class OmniOfflineClient:
                         fence_triggered = False  # 围栏是否已触发
                         guard_triggered = False
                         discard_reason = None
+                        length_guard_recovery_text = ""
+                        length_guard_persisted_prefix = ""
+                        length_guard_original_tokens = 0
                         chunk_usage = None
                         prefix_buffer = ""
                         prefix_checked = not bool(self._prefix_buffer_size)
+
+                        def _has_unpersisted_recovery_suffix(recovery_text: str) -> bool:
+                            if not recovery_text:
+                                return False
+                            if not length_guard_persisted_prefix:
+                                return True
+                            if not recovery_text.startswith(length_guard_persisted_prefix):
+                                return False
+                            return bool(recovery_text[len(length_guard_persisted_prefix):].strip())
 
                         # Tool-aware streaming: ``_astream_with_tools`` runs
                         # the multi-turn tool loop inside (executing tools and
@@ -1187,6 +1199,7 @@ class OmniOfflineClient:
                             # 第二次写进 history。``_total`` 不重置——重复检测
                             # / token 长度 guard 仍要看完整一轮的实际文本量。
                             if getattr(chunk, "tool_round_persisted", False):
+                                length_guard_persisted_prefix = assistant_message_total
                                 assistant_message = ""
                                 # 重置围栏 / prefix buffer：下一段是新的语义
                                 # 单元（模型基于 tool 结果重新出文本），不应
@@ -1240,23 +1253,48 @@ class OmniOfflineClient:
                                             break
 
                                 if truncated_content and truncated_content.strip():
-                                    assistant_message += truncated_content
-                                    assistant_message_total += truncated_content
-                                    if self.on_text_delta:
-                                        await self.on_text_delta(truncated_content, is_first_chunk)
-                                    is_first_chunk = False
-
+                                    emit_content = truncated_content
                                     if self.enable_response_guard:
-                                        # 长度 guard 看完整一轮（含 pre-tool）的 token 量，
-                                        # 不能只看 final-segment，否则 tool 轮前长篇大论 +
-                                        # tool 轮后短短一句也能逃过 guard。
-                                        current_length = count_tokens(assistant_message_total)
+                                        # 长度 guard 看完整一轮（含 pre-tool）的 token 量。
+                                        # 必须在 on_text_delta 前裁剪本 chunk，否则 UI/TTS
+                                        # 会先收到超限尾巴，而 history 只保存截断文本。
+                                        candidate_total = assistant_message_total + truncated_content
+                                        current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
-                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备重试")
+                                            length_guard_original_tokens = current_length
+                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备停止生成")
                                             self._is_responding = False
-                                            break
+                                            emit_content = ""
+                                            if not _is_gibberish_response(candidate_total):
+                                                capped = truncate_to_tokens(
+                                                    candidate_total, self.max_response_length,
+                                                )
+                                                candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                                if candidate_recovery:
+                                                    if candidate_recovery.startswith(assistant_message_total):
+                                                        recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                        if recovery_suffix.strip():
+                                                            emit_content = recovery_suffix
+                                                            length_guard_recovery_text = candidate_recovery
+                                                    elif (
+                                                        assistant_message_total
+                                                        and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                    ):
+                                                        # 已流式发出的前缀无法撤回；保持 history 与
+                                                        # UI/TTS 一致，避免可见文本和上下文分叉。
+                                                        length_guard_recovery_text = assistant_message_total
+
+                                    if emit_content and emit_content.strip():
+                                        assistant_message += emit_content
+                                        assistant_message_total += emit_content
+                                        if self.on_text_delta:
+                                            await self.on_text_delta(emit_content, is_first_chunk)
+                                        is_first_chunk = False
+
+                                    if guard_triggered:
+                                        break
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
 
@@ -1283,17 +1321,38 @@ class OmniOfflineClient:
                                             fence_triggered = True
                                             break
                                 if flush_text and flush_text.strip():
-                                    assistant_message += flush_text
-                                    assistant_message_total += flush_text
-                                    if self.on_text_delta:
-                                        await self.on_text_delta(flush_text, is_first_chunk)
-                                    is_first_chunk = False
+                                    emit_flush_text = flush_text
                                     if self.enable_response_guard:
-                                        # 长度 guard 看整轮（含 pre-tool），与上方主累加块对偶
-                                        current_length = count_tokens(assistant_message_total)
+                                        # 长度 guard 看整轮（含 pre-tool），与上方主累加块对偶。
+                                        candidate_total = assistant_message_total + flush_text
+                                        current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
                                             guard_triggered = True
                                             discard_reason = f"length>{self.max_response_length}"
+                                            length_guard_original_tokens = current_length
+                                            emit_flush_text = ""
+                                            if not _is_gibberish_response(candidate_total):
+                                                capped = truncate_to_tokens(
+                                                    candidate_total, self.max_response_length,
+                                                )
+                                                candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                                if candidate_recovery:
+                                                    if candidate_recovery.startswith(assistant_message_total):
+                                                        recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                        if recovery_suffix.strip():
+                                                            emit_flush_text = recovery_suffix
+                                                            length_guard_recovery_text = candidate_recovery
+                                                    elif (
+                                                        assistant_message_total
+                                                        and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                    ):
+                                                        length_guard_recovery_text = assistant_message_total
+                                    if emit_flush_text and emit_flush_text.strip():
+                                        assistant_message += emit_flush_text
+                                        assistant_message_total += emit_flush_text
+                                        if self.on_text_delta:
+                                            await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                        is_first_chunk = False
 
                         if guard_triggered:
                             guard_attempt += 1
@@ -1304,6 +1363,34 @@ class OmniOfflineClient:
                             # rerolls 次数（rerolls 不含首次尝试）。前端 attempt
                             # / max_attempts 进度条要 1/2 → 2/2 才合理。
                             total_attempts = self.max_response_rerolls + 1
+
+                            recovery_text = length_guard_recovery_text
+                            if discard_reason and "length>" in discard_reason:
+                                # 长回复若是正常可读文本，直接按已发出的截断文本
+                                # 收尾，不 reroll，避免 UI/TTS 和 history 分叉。
+                                if not recovery_text and not _is_gibberish_response(assistant_message_total):
+                                    capped = truncate_to_tokens(
+                                        assistant_message_total, self.max_response_length,
+                                    )
+                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                    if _has_unpersisted_recovery_suffix(candidate_recovery):
+                                        recovery_text = candidate_recovery
+
+                            if recovery_text and _has_unpersisted_recovery_suffix(recovery_text):
+                                history_recovery_text = assistant_message
+                                original_tokens = length_guard_original_tokens or count_tokens(assistant_message_total)
+                                logger.info(
+                                    "OmniOfflineClient: 长回复已流式输出，停止生成并按最后句末入历史 "
+                                    "(原 %d tokens → 截断后 %d tokens)",
+                                    original_tokens, count_tokens(recovery_text),
+                                )
+                                if history_recovery_text:
+                                    self._conversation_history.append(AIMessage(content=history_recovery_text))
+                                await self._check_repetition(recovery_text)
+                                assistant_message = history_recovery_text
+                                guard_exhausted = True
+                                break
+                            recovery_text = ""
 
                             if will_retry:
                                 # 还能 retry：发 will_retry 通知，循环继续。前端
@@ -1339,7 +1426,6 @@ class OmniOfflineClient:
                             # max_response_length 再找句末，否则截出来的句末仍
                             # 可能在 token 上限之外（比如最后一个句号在 950 token
                             # 处但 cap 是 300）。
-                            recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
                                 # 整轮判定：gibberish / 截断必须看 _total，否则
                                 # tool 轮 sentinel 把 final-segment 清空之后整段
@@ -1348,13 +1434,16 @@ class OmniOfflineClient:
                                     capped = truncate_to_tokens(
                                         assistant_message_total, self.max_response_length,
                                     )
-                                    recovery_text = _truncate_to_last_sentence_end(capped)
+                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                    if _has_unpersisted_recovery_suffix(candidate_recovery):
+                                        recovery_text = candidate_recovery
 
                             if recovery_text:
+                                original_tokens = length_guard_original_tokens or count_tokens(assistant_message_total)
                                 logger.info(
                                     "OmniOfflineClient: guard 重试耗尽，截断至最后句末 "
                                     "(原 %d tokens → 截断后 %d tokens)",
-                                    count_tokens(assistant_message_total), count_tokens(recovery_text),
+                                    original_tokens, count_tokens(recovery_text),
                                 )
                                 truncate_msg = json.dumps({
                                     "code": "RESPONSE_LENGTH_TRUNCATED",

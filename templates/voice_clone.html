@@ -7,19 +7,32 @@
     <title data-i18n="voice.title">音色注册 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <div class="container">
         <div class="container-header">
             <h2 data-i18n="voice.title" data-text="Voice Registration">音色注册</h2>
-            <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
-            <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close">
-                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false">
-            </button>
+            <div class="neko-window-actions">
+                <a href="javascript:void(0)" onclick="openApiSettings()" class="goto-api-settings-btn" data-i18n="voice.gotoApiSettings">前往API设置</a>
+                <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                        <span class="neko-window-minimize-icon"></span>
+                    </button>
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                        <span class="neko-window-maximize-icon"></span>
+                    </button>
+                    <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭">
+                        <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
+                    </button>
+                </div>
+            </div>
         </div>
         <div class="container-content">
             <div class="field-row">

@@ -722,6 +722,7 @@
         // 检查窗口是否已打开且未关闭
         const existingWindow = window._openedWindows[windowName];
         if (existingWindow && !existingWindow.closed) {
+            requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
         }
@@ -745,6 +746,27 @@
         }
         return newWindow;
     };
+
+    function requestOpenedWindowRestore(targetWindow) {
+        if (!targetWindow || targetWindow.closed) return;
+        try {
+            targetWindow.postMessage({ type: 'neko:restore-window' }, window.location.origin);
+        } catch (error) {
+            // 目标窗口可能跨域或正在关闭，聚焦兜底即可
+        }
+    }
+
+    window.requestOpenedWindowRestore = requestOpenedWindowRestore;
+
+    window.addEventListener('message', function(event) {
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.type !== 'neko:restore-window') return;
+        const api = window.nekoWindowControl;
+        if (!api || typeof api.restore !== 'function') return;
+        Promise.resolve(api.restore()).catch(function() {
+            // 非 Electron 环境下忽略
+        });
+    });
     
     /**
      * 关闭指定名称的窗口
