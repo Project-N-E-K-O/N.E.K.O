@@ -1533,6 +1533,7 @@ class LLMSessionManager:
         if confirmed_speech_ids is None:
             confirmed_speech_ids = set()
             self._confirmed_ai_voice_echo_audio_speech_ids = confirmed_speech_ids
+        # Without chunk-level playback confirmation, one speech id can only safely promote one chunk.
         if speech_id in confirmed_speech_ids:
             return
 

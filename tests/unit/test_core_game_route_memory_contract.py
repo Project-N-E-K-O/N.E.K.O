@@ -580,8 +580,8 @@ async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
     task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
     await asyncio.wait_for(send_called.wait(), timeout=1)
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    cancelled_result = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
 
     assert mgr._recent_ai_voice_echo_text == ""
     assert mgr._pending_ai_voice_echo_text == "new turn pending text"
