@@ -1050,5 +1050,6 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "Последнее скачивание не удалось: {error}\nВозможно, требуется прокси. Также можно вручную скачать недостающие файлы с {source} в {dir} и нажать \"Обновить статус\".",
   "ui.install.rapidocr.download_source": "Источник скачивания",
   "ui.first_run.action.download_rapidocr_models": "Скачать модели сейчас",
-  "ui.first_run.install_ocr.pending_models": "Выбранные языковые модели ({lang} + {version}) не скачаны. Нажмите «Скачать модели сейчас», чтобы получить их с ModelScope (~{size} МБ)."
+  "ui.first_run.install_ocr.pending_models": "Выбранные языковые модели ({lang} + {version}) не скачаны. Нажмите «Скачать модели сейчас», чтобы получить их с ModelScope (~{size} МБ).",
+  "ui.first_run.install_ocr.pending_models_manual": "Выбранные языковые модели ({lang} + {version}) не скачаны. В этой среде автоматическая загрузка недоступна — следуйте инструкциям на баннере RapidOCR, чтобы разместить модели вручную, затем обновите статус."
 }

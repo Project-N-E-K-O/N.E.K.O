@@ -1605,13 +1605,30 @@ function buildFirstRunSteps(status = {}) {
   const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
   const rapidocrModelsMissing = rapidocr.detail === 'missing_model_files';
-  // Route the install_ocr CTA: model download if rapidocr is bundled but the
-  // user-selected language pack isn't on disk (the common japan-default
-  // first-run case); rapidocr install if a runtime install path is somehow
-  // available; tesseract as last-resort fallback.
-  const ocrInstallAction = rapidocrModelsMissing
-    ? 'download_rapidocr_models'
-    : (rapidocrSupported ? 'install_rapidocr' : 'install_tesseract');
+  // Only route to the download CTA when the backend confirms it CAN run the
+  // download. `can_download_models` is the same signal renderRapidOcr uses
+  // to show/hide rapidocrModelsDownloadBtn, so the tutorial CTA stays in
+  // sync with the visible button — without this, an env where the backend
+  // gates download (e.g. permanent network block) would still hand the
+  // user a "Download Now" CTA that points at a hidden button.
+  const rapidocrModelsDownloadable = rapidocrModelsMissing && Boolean(rapidocr.can_download_models);
+  // Route the install_ocr CTA:
+  //   - download_rapidocr_models when models are missing AND auto-download is possible
+  //   - null (no primary button) when models are missing but auto-download isn't —
+  //     the body copy directs the user to the manual recovery path on the banner;
+  //     don't offer install_tesseract as a fake "fix" for a rapidocr-models problem
+  //   - install_rapidocr if a runtime install path is somehow still available (legacy)
+  //   - install_tesseract as last-resort fallback (rapidocr completely unavailable)
+  let ocrInstallAction;
+  if (rapidocrModelsDownloadable) {
+    ocrInstallAction = 'download_rapidocr_models';
+  } else if (rapidocrModelsMissing) {
+    ocrInstallAction = null;
+  } else if (rapidocrSupported) {
+    ocrInstallAction = 'install_rapidocr';
+  } else {
+    ocrInstallAction = 'install_tesseract';
+  }
   const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing));
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
@@ -1652,6 +1669,18 @@ function buildFirstRunSteps(status = {}) {
           lang: rapidocr.lang_type || 'japan',
           version: rapidocr.ocr_version || 'PP-OCRv4',
           size: sizeMb,
+        },
+      );
+    } else if (rapidocrModelsMissing) {
+      // Models missing but backend says auto-download isn't available — point
+      // user at the manual recovery path (the RapidOCR banner has the source
+      // URL + cache directory + manual-fallback hint already visible).
+      body = uiTf(
+        'ui.first_run.install_ocr.pending_models_manual',
+        '所选语言模型 ({lang} + {version}) 未下载。当前环境不能自动下载，请按下方 RapidOCR 横幅说明手动放置模型后再刷新状态。',
+        {
+          lang: rapidocr.lang_type || 'japan',
+          version: rapidocr.ocr_version || 'PP-OCRv4',
         },
       );
     } else if (ocrInstallAction === 'install_tesseract') {
@@ -1732,20 +1761,27 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
   const actions = [];
 
   if (firstIncomplete.key === 'install_ocr') {
-    const installAction = firstIncomplete.installAction || 'install_rapidocr';
-    let installActionKey;
-    let fallbackLabel;
-    if (installAction === 'download_rapidocr_models') {
-      installActionKey = 'ui.first_run.action.download_rapidocr_models';
-      fallbackLabel = '立即下载模型';
-    } else if (installAction === 'install_tesseract') {
-      installActionKey = 'ui.first_run.action.install_tesseract';
-      fallbackLabel = primaryActionLabel(installAction);
-    } else {
-      installActionKey = 'ui.first_run.action.install_rapidocr';
-      fallbackLabel = primaryActionLabel(installAction);
+    // installAction may be null when models are missing but the backend
+    // can't auto-download — in that case skip the primary button and
+    // show only refresh_all; the body copy already points the user at
+    // the RapidOCR banner for manual recovery, and a fake "Install
+    // Tesseract" CTA here would mislead.
+    const installAction = firstIncomplete.installAction;
+    if (installAction) {
+      let installActionKey;
+      let fallbackLabel;
+      if (installAction === 'download_rapidocr_models') {
+        installActionKey = 'ui.first_run.action.download_rapidocr_models';
+        fallbackLabel = '立即下载模型';
+      } else if (installAction === 'install_tesseract') {
+        installActionKey = 'ui.first_run.action.install_tesseract';
+        fallbackLabel = primaryActionLabel(installAction);
+      } else {
+        installActionKey = 'ui.first_run.action.install_rapidocr';
+        fallbackLabel = primaryActionLabel(installAction);
+      }
+      actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
     }
-    actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
     // install_dxcam no longer runs an installer (PR #1191 bundled DXcam); the
@@ -5908,10 +5944,19 @@ async function withButtonPending(buttonOrId, pendingText, fn) {
   }
 }
 
-async function startInstall(kind, force = false) {
+async function startInstall(kind, force = false, { navigate = true } = {}) {
   const config = getInstallConfig(kind);
 
-  navigateToInstallPanel(kind);
+  // Caller may already have positioned the viewport on a specific banner
+  // (e.g. handleDiagnosisAction routes to rapidocrPrompt before kicking off
+  // the download); the unconditional `navigateToInstallPanel(kind)` would
+  // re-snap the viewport to installSection top on the next frame and undo
+  // that careful scroll. The opt-out lets such callers reuse the existing
+  // positioning. The default `navigate: true` preserves the original
+  // tesseract/textractor install flow behavior.
+  if (navigate) {
+    navigateToInstallPanel(kind);
+  }
 
   const state = getInstallState(kind);
   const { button } = getInstallNodes(kind);
@@ -6005,7 +6050,13 @@ async function downloadRapidOcrModels(force = false) {
   // SSE stream. Network failures from ModelScope surface in the install
   // task card with their original error text, so the user can tell whether
   // it was a timeout, an HTTP 403, or a checksum mismatch.
-  await startInstall('rapidocr_models', force);
+  //
+  // navigate: false because both call sites already have the right view
+  // positioning: handleDiagnosisAction explicitly scrolls to rapidocrPrompt
+  // (and a second navigateToInstallPanel would snap back to installSection
+  // top), and the rapidocrModelsDownloadBtn click handler runs from inside
+  // the already-visible banner — re-navigating would be disorienting.
+  await startInstall('rapidocr_models', force, { navigate: false });
 }
 
 async function setOcrBackendSelection({ backendSelection = null, captureBackend = null } = {}) {

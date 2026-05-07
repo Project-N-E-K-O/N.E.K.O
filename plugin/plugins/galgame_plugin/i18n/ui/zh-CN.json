@@ -1050,5 +1050,6 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "上次下载失败：{error}\n国内网络可能需要代理；或手动从 {source} 下载缺失文件到 {dir}，然后点击\"刷新状态\"。",
   "ui.install.rapidocr.download_source": "下载来源",
   "ui.first_run.action.download_rapidocr_models": "立即下载模型",
-  "ui.first_run.install_ocr.pending_models": "所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。"
+  "ui.first_run.install_ocr.pending_models": "所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。",
+  "ui.first_run.install_ocr.pending_models_manual": "所选语言模型 ({lang} + {version}) 未下载。当前环境不能自动下载，请按下方 RapidOCR 横幅说明手动放置模型后再刷新状态。"
 }
