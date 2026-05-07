@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import fields
 import hashlib
 import json
@@ -1706,10 +1706,11 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
     assert abandoned.set_running_or_notify_cancel()
     current: Future[OcrExtractionResult] = Future()
     assert current.set_running_or_notify_cancel()
-    executor = manager._capture_executor
-    assert executor is not None
+    abandoned_executor = ThreadPoolExecutor(max_workers=1)
+    current_executor = manager._capture_executor
+    assert current_executor is not None
     with manager._capture_worker_lock:
-        manager._abandoned_capture_workers = [(executor, abandoned)]
+        manager._abandoned_capture_workers = [(abandoned_executor, abandoned)]
         manager._capture_future = current
         manager._capture_future_started_at = time.monotonic() - 1.0
         manager._capture_future_timed_out = True
@@ -1728,6 +1729,10 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
             assert manager._capture_future is None
             assert manager._capture_executor is None
             assert manager._capture_future_timed_out is False
+            assert manager._abandoned_capture_workers == [
+                (abandoned_executor, abandoned),
+                (current_executor, current),
+            ]
 
         retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 

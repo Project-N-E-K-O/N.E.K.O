@@ -6547,6 +6547,7 @@ class OcrReaderManager:
                             >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
                         ):
                             if executor is not None:
+                                self._abandoned_capture_workers.append((executor, current))
                                 executors_to_shutdown.append(executor)
                             self._capture_executor = None
                             self._capture_future = None
