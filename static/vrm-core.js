@@ -88,6 +88,7 @@ class VRMCore {
 
         // 旧逻辑可能把漏判的 VRM0.x 朝向自动保存为 identity。
         // 对有明确 VRM0.x 版本默认旋转的模型，将该缓存视为可迁移旧值。
+        // 这也会迁移用户有意保存的 VRM0 identity；特殊背对模型需保存非 identity 旋转或按个案处理。
         if (this.vrmVersion === '0.0' &&
             VRMCore._isIdentityRotation(savedRotation) &&
             VRMCore._isFiniteRotation(versionDefaultRotation) &&
@@ -916,7 +917,7 @@ class VRMCore {
             // 先通过检测器检测并修复方向，然后应用最终的旋转值
             const savedRotation = this.getEffectiveSavedRotation(preferences?.rotation, versionDefaultRotation);
             
-            const detectedRotation = window.VRMOrientationDetector 
+            let detectedRotation = window.VRMOrientationDetector
                 ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation, {
                     defaultRotation: versionDefaultRotation
                 })
@@ -932,12 +933,14 @@ class VRMCore {
                     Number.isFinite(savedRotation.z)) {
                     vrm.scene.rotation.set(savedRotation.x, savedRotation.y, savedRotation.z);
                     vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
                 } else if (versionDefaultRotation &&
                     Number.isFinite(versionDefaultRotation.x) &&
                     Number.isFinite(versionDefaultRotation.y) &&
                     Number.isFinite(versionDefaultRotation.z)) {
                     vrm.scene.rotation.set(versionDefaultRotation.x, versionDefaultRotation.y, versionDefaultRotation.z);
                     vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
                 }
             }
             
