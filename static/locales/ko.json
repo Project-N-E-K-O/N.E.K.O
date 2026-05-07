@@ -1861,6 +1861,7 @@
         "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
         "freePresetVoices": "── 무료 사전 설정 음색 ──",
         "geminiNativeVoices": "Gemini 네이티브 음성",
+        "savedVoiceFallback": "현재 저장된 음성",
         "gptsovitsVoices": "GPT-SoVITS 음성",
         "loadFailed": "캐릭터 데이터 로드 실패",
         "renameError": "이름 변경 실패: {{error}}",

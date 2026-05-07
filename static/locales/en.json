@@ -1861,6 +1861,7 @@
         "switchError": "An error occurred while switching neko",
         "freePresetVoices": "Free Preset Voices",
         "geminiNativeVoices": "Gemini Native Voices",
+        "savedVoiceFallback": "Currently saved voice",
         "gptsovitsVoices": "GPT-SoVITS Voices",
         "loadFailed": "Failed to load character data",
         "renameError": "Rename failed: {{error}}",

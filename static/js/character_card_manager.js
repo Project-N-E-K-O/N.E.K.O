@@ -5501,12 +5501,18 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             }
 
             // Gemini 原生音色（仅在 CORE_API_TYPE=gemini 时由后端注入）
-            // 与已注册自定义音色冲突时（如用户克隆了名为 Puck 的音色），优先保留自定义条目，
-            // 与 _has_custom_tts 路由优先级保持一致。
+            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
             if (data.native_voices && Object.keys(data.native_voices).length > 0) {
-                const registeredVoiceIds = data.voices ? new Set(Object.keys(data.voices)) : new Set();
+                const renderedVoiceIds = new Set(data.voices ? Object.keys(data.voices) : []);
+                if (data.free_voices) {
+                    Object.values(data.free_voices).forEach(function (id) {
+                        if (id) renderedVoiceIds.add(String(id));
+                    });
+                }
                 const nativeEntries = Object.entries(data.native_voices)
-                    .filter(function ([voiceId]) { return !registeredVoiceIds.has(voiceId); });
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(voiceId); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
                     const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';
@@ -5520,6 +5526,25 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                         nativeGroup.appendChild(option);
                     });
                     selectEl.appendChild(nativeGroup);
+                }
+
+                // 保底：currentVoiceId 是 Gemini 别名（"中文男"、"male" 等）或本轮 catalog 没暴露
+                // 该 ID 时，下拉里没有匹配项 select 会回到首项；下次保存表单会被误判为
+                // "已清空"走 unregister_voice 分支，把用户保存的音色丢掉。这里仿 GSV 兜底，
+                // 给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+                if (currentVoiceId
+                    && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                    const fallbackGroup = document.createElement('optgroup');
+                    const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+                    fallbackGroup.label = '── ' + fallbackLabel + ' ──';
+                    fallbackGroup.dataset.geminiFallbackGroup = 'true';
+                    const fallbackOption = document.createElement('option');
+                    fallbackOption.value = currentVoiceId;
+                    fallbackOption.textContent = currentVoiceId + ' (?)';
+                    fallbackOption.title = currentVoiceId;
+                    fallbackOption.selected = true;
+                    fallbackGroup.appendChild(fallbackOption);
+                    selectEl.appendChild(fallbackGroup);
                 }
             }
         }

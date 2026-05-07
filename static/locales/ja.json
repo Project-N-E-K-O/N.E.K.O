@@ -1861,6 +1861,7 @@
         "switchError": "neko の切り替え中にエラーが発生しました",
         "freePresetVoices": "── 無料プリセット音色 ──",
         "geminiNativeVoices": "Gemini ネイティブ音声",
+        "savedVoiceFallback": "現在保存中の音声",
         "gptsovitsVoices": "GPT-SoVITS 音声",
         "loadFailed": "キャラクターデータの読み込みに失敗しました",
         "renameError": "名前の変更に失敗しました: {{error}}",

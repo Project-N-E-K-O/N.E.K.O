@@ -1861,6 +1861,7 @@
         "switchError": "Ocorreu um erro ao trocar de neko",
         "freePresetVoices": "Vozes predefinidas gratuitas",
         "geminiNativeVoices": "Vozes nativas do Gemini",
+        "savedVoiceFallback": "Voz atualmente salva",
         "gptsovitsVoices": "Vozes GPT-SoVITS",
         "loadFailed": "Falha ao carregar dados de caracteres",
         "renameError": "Falha ao renomear: {{error}}",

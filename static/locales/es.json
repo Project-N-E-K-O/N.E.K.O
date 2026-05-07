@@ -1861,6 +1861,7 @@
         "switchError": "Se produjo un error al cambiar de Neko.",
         "freePresetVoices": "Voces preestablecidas gratuitas",
         "geminiNativeVoices": "Voces nativas de Gemini",
+        "savedVoiceFallback": "Voz actualmente guardada",
         "gptsovitsVoices": "Voces GPT-SoVITS",
         "loadFailed": "No se pudieron cargar los datos del personaje",
         "renameError": "Error al cambiar el nombre: {{error}}",

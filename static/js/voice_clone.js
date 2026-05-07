@@ -1255,12 +1255,17 @@ async function loadVoices() {
         }
 
         // 渲染 Gemini 原生音色（CORE_API_TYPE=gemini 时由后端注入）
-        // 与已注册自定义音色冲突时（如用户克隆了名为 Puck 的音色），优先保留自定义条目，
-        // 与 _has_custom_tts 路由优先级保持一致。
+        // 去重范围：自定义注册音色 + 免费预设音色 ID，避免冲突时列表里重复条目和多重选中态。
+        // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
         if (data.native_voices && Object.keys(data.native_voices).length > 0) {
-            const registeredVoiceIds = new Set(voicesArray.map((v) => v.voiceId));
+            const renderedVoiceIds = new Set(voicesArray.map((v) => v.voiceId));
+            if (data.free_voices) {
+                Object.values(data.free_voices).forEach((id) => {
+                    if (id) renderedVoiceIds.add(String(id));
+                });
+            }
             const nativeEntries = Object.entries(data.native_voices)
-                .filter(([voiceId]) => !registeredVoiceIds.has(voiceId));
+                .filter(([voiceId]) => !renderedVoiceIds.has(voiceId));
             if (nativeEntries.length > 0) {
                 const hasPriorContent = voicesArray.length > 0
                     || (data.free_voices && Object.keys(data.free_voices).length > 0);

@@ -1861,6 +1861,7 @@
         "switchError": "Ошибка при переключении NEKO",
         "freePresetVoices": "Бесплатные предустановленные голоса",
         "geminiNativeVoices": "Нативные голоса Gemini",
+        "savedVoiceFallback": "Текущий сохранённый голос",
         "gptsovitsVoices": "Голоса GPT-SoVITS",
         "loadFailed": "Ошибка загрузки данных персонажа",
         "renameError": "Ошибка переименования: {{error}}",

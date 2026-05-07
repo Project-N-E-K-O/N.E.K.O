@@ -1861,6 +1861,7 @@
         "switchError": "切換貓娘時發生錯誤",
         "freePresetVoices": "── 免費預設音色 ──",
         "geminiNativeVoices": "Gemini 原生音色",
+        "savedVoiceFallback": "目前已保存音色",
         "gptsovitsVoices": "GPT-SoVITS 聲音",
         "loadFailed": "載入角色資料失敗",
         "renameError": "重新命名失敗: {{error}}",

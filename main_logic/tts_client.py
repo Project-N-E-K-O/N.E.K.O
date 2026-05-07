@@ -20,6 +20,7 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
+    is_gemini_tts_voice,
     normalize_gemini_tts_voice,
 )
 from utils.logger_config import get_module_logger
@@ -2886,6 +2887,17 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             )
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
+
+    # core=gemini + 选了 Gemini 原生声线 (Puck/Leda/中文男 等) 时优先走 Gemini，
+    # 不能被 has_custom_voice=False 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 ——
+    # _has_custom_tts 已经判断 voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，
+    # 是用户显式选择的 Gemini 原生路径，应当尊重该选择喵。
+    if (
+        not has_custom_voice
+        and core_api_type == 'gemini'
+        and is_gemini_tts_voice(voice_id)
+    ):
+        return gemini_tts_worker, None, 'gemini'
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
