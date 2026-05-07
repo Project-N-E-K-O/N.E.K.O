@@ -662,6 +662,19 @@ def inspect_rapidocr_installation(
             )
             detected_path = str(runtime_meta.get("detected_path") or detected_path)
             detail = "installed"
+            # Same missing-models check as the bundled branch above. Without
+            # this, an upgrade user on a legacy plugin-isolated install with
+            # `lang_type=japan` (default) would land on `installed` even when
+            # `japan_PP-OCRv4_rec_mobile.onnx` is absent — `can_download_models`
+            # would stay False and OCR would silently fall back to the
+            # bundled ch model with no UI affordance to fix it.
+            legacy_missing = missing_rapidocr_model_files(
+                install_target_dir_raw=install_target_dir_raw,
+                ocr_version=ocr_version,
+                lang_type=lang_type,
+            )
+            if legacy_missing:
+                detail = "missing_model_files"
         except Exception as exc:
             detail = "broken_runtime"
             runtime_error = str(exc)
