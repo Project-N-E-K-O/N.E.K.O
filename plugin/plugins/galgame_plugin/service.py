@@ -1784,6 +1784,7 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         last_poll_duration > 5.0
         and has_ocr_runtime_signal
         and (effective_text or stable_text)
+        and active_data_source == DATA_SOURCE_OCR_READER
     ):
         sa_latency = _coerce_float(
             runtime_obj.get("screen_awareness_model_last_latency_seconds"), 0.0, minimum=0.0

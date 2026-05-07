@@ -1023,12 +1023,31 @@ def test_primary_diagnosis_warns_when_ocr_poll_is_too_slow() -> None:
     assert diagnosis["severity"] == "warning"
     assert diagnosis["title"] == "OCR 识别耗时过长"
     assert f"{total_time:.1f}s" in diagnosis["message"]
-    assert "Screen Awareness" not in diagnosis["message"]
+    assert "画面感知模型延迟也较高" not in diagnosis["message"]
     assert [action["id"] for action in diagnosis["actions"]] == [
         "select_ocr_window",
         "recalibrate_ocr",
         "capture_backend",
     ]
+
+
+def test_primary_diagnosis_ignores_stale_slow_ocr_poll_in_memory_mode() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_MEMORY_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "内存读取文本。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "旧 OCR 文本。",
+                "last_poll_duration_seconds": 8.0,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "ok"
+    assert diagnosis["title"] == "正在识别台词"
 
 
 def test_primary_diagnosis_mentions_screen_awareness_when_slow_poll_has_sa_latency() -> None:

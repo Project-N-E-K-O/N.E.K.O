@@ -1528,7 +1528,12 @@ function buildPrimaryDiagnosis(status = {}) {
   }
 
   const lastPollDuration = Number(runtime.last_poll_duration_seconds || 0);
-  if (lastPollDuration > 5.0 && hasOcrRuntimeSignal && (effectiveText || stableText)) {
+  if (
+    lastPollDuration > 5.0
+    && hasOcrRuntimeSignal
+    && (effectiveText || stableText)
+    && textValue(status.active_data_source) === 'ocr_reader'
+  ) {
     const saLatency = Number(runtime.screen_awareness_model_last_latency_seconds || 0);
     if (saLatency > 3.0) {
       const body = uiTf('ui.diag.ocr_poll_too_slow.body_with_sa',
