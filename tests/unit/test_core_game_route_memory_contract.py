@@ -1,3 +1,4 @@
+import asyncio
 from collections import deque
 import queue
 from unittest.mock import Mock
@@ -537,6 +538,37 @@ def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
     assert mgr._recent_ai_voice_echo_text == "第一段文本"
     assert mgr._pending_ai_voice_echo_text == "第二段未播文本"
     assert list(mgr._pending_ai_voice_echo_chunks) == ["第二段未播文本"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.tts_response_queue = queue.Queue()
+    mgr.tts_response_queue.put(b"sidless-audio")
+    mgr.current_speech_id = "new-turn"
+    send_called = asyncio.Event()
+
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "new turn pending text")
+
+    async def send_speech(audio, speech_id=None):
+        assert audio == b"sidless-audio"
+        assert speech_id is None
+        send_called.set()
+        return True
+
+    monkeypatch.setattr(mgr, "send_speech", send_speech)
+
+    task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(send_called.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._pending_ai_voice_echo_text == "new turn pending text"
+    assert list(mgr._pending_ai_voice_echo_chunks) == ["new turn pending text"]
 
 
 @pytest.mark.unit

@@ -6039,8 +6039,7 @@ class LLMSessionManager:
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                if await self.send_speech(data):
-                    self._confirm_pending_ai_voice_echo(getattr(self, "current_speech_id", None))
+                await self.send_speech(data)
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
                 # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
