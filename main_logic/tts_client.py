@@ -2904,8 +2904,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
-    # 注：Gemini 原生 voice (Puck/Leda 等) 不会进入此分支 ——
-    # core.py 的 _has_custom_tts 已对 core_api_type=='gemini' + Gemini voice 短路返回 False。
+    # 注：core.py 的 _has_custom_tts 对 core_api_type=='gemini' + Gemini voice 短路返回 False，
+    # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
+    # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):

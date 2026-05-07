@@ -2303,7 +2303,14 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        if self.core_api_type == 'gemini' and is_gemini_tts_voice(self.voice_id):
+        # Gemini 原生声线短路前必须排除"用户已克隆的同名自定义音色"——
+        # 例如用户保存了名为 Puck 的克隆音色，应优先走 custom 路径，
+        # 否则会被静默换成 Gemini 内置 Puck，丢失用户上传的音色喵。
+        if (
+            self.core_api_type == 'gemini'
+            and is_gemini_tts_voice(self.voice_id)
+            and self.voice_id not in self._config_manager.get_voices_for_current_api()
+        ):
             return False
         # 克隆音色始终走 custom 路径；
         # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，

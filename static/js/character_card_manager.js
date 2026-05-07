@@ -5499,6 +5499,29 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
                 selectEl.appendChild(freeGroup);
             }
+
+            // Gemini 原生音色（仅在 CORE_API_TYPE=gemini 时由后端注入）
+            // 与已注册自定义音色冲突时（如用户克隆了名为 Puck 的音色），优先保留自定义条目，
+            // 与 _has_custom_tts 路由优先级保持一致。
+            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                const registeredVoiceIds = data.voices ? new Set(Object.keys(data.voices)) : new Set();
+                const nativeEntries = Object.entries(data.native_voices)
+                    .filter(function ([voiceId]) { return !registeredVoiceIds.has(voiceId); });
+                if (nativeEntries.length > 0) {
+                    const nativeGroup = document.createElement('optgroup');
+                    const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';
+                    nativeGroup.label = '── ' + nativeLabel + ' ──';
+                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.title = voiceId;
+                        if (voiceId === currentVoiceId) option.selected = true;
+                        nativeGroup.appendChild(option);
+                    });
+                    selectEl.appendChild(nativeGroup);
+                }
+            }
         }
 
         // 加载 GPT-SoVITS 声音列表
