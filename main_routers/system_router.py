@@ -2305,6 +2305,270 @@ async def _maybe_deliver_mini_game_invite(
     }
 
 
+# ---------- Break-reminder rendering + minimal-Phase-2 delivery ----------
+# Two reminder paths emitted by ``main_logic/activity/tracker.py``:
+#   * Anti-slack — fired when state transitions focused_work → leisure
+#     after a real focus session. Higher priority (transition is more
+#     time-sensitive than the cumulative water-break trigger).
+#   * Water-break — fired when focused_work accumulator crosses
+#     ``work_break_minutes``. 50% of the time, branches into a
+#     "rest + game-invite" combo (LLM-generated) that shares the
+#     mini-game cooldown so the two channels don't double-deliver.
+#
+# Both deliveries skip Phase 1 entirely (no source fetching, no
+# enabled_modes parsing, no propensity gating). Phase 2 runs with a
+# minimal SystemMessage (character_prompt + the env-notice template)
+# so the model focuses on the single nudge instead of juggling sources.
+# Mirrors ``_maybe_deliver_mini_game_invite`` in shape: try → fall
+# through OR skip; never falls through to normal proactive flow when
+# a pending exists (must-fire semantics).
+
+def _resolve_break_reminder_label(
+    canonical: str | None, lang: str, fallback_table: dict[str, str],
+) -> str:
+    """Pick a renderable app label, falling back to a localized generic."""
+    label = (canonical or '').strip()
+    if label:
+        return label
+    return fallback_table.get(lang, fallback_table.get('en', ''))
+
+
+def _render_work_break_prompt(
+    *,
+    pending,                       # WorkBreakPending
+    master_name: str,
+    lang: str,
+) -> tuple[str, str]:
+    """Pick a seed + render the regular drink/stretch nudge prompt.
+
+    Returns ``(system_prompt_text, seed)`` so the caller can log /
+    record which seed was used. Seed is picked at delivery time (not
+    pinned to the snapshot) so consecutive failed-then-retried
+    deliveries naturally rotate the suggested action.
+    """
+    from config.prompts_activity import (
+        WORK_BREAK_REMINDER_PROMPT, WORK_BREAK_SEED_HINTS,
+        WORK_BREAK_GENERIC_WORK_LABEL,
+    )
+    import random as _random
+    template = WORK_BREAK_REMINDER_PROMPT.get(
+        lang, WORK_BREAK_REMINDER_PROMPT.get('en', WORK_BREAK_REMINDER_PROMPT['zh']),
+    )
+    seeds = WORK_BREAK_SEED_HINTS.get(
+        lang, WORK_BREAK_SEED_HINTS.get('en', WORK_BREAK_SEED_HINTS['zh']),
+    ) or ['']
+    seed = _random.choice(seeds)
+    app_label = _resolve_break_reminder_label(pending.app, lang, WORK_BREAK_GENERIC_WORK_LABEL)
+    rendered = template.format(
+        master=master_name or '',
+        app=app_label,
+        minutes=pending.minutes,
+        seed=seed,
+    )
+    return rendered, seed
+
+
+def _render_anti_slack_prompt(
+    *,
+    pending,                       # AntiSlackPending
+    master_name: str,
+    lang: str,
+) -> str:
+    """Render the focused→leisure 'back to work' nudge prompt.
+
+    No seed slot — single behaviour, variation comes from prev/new app
+    names + minute count + AI persona. Returns the system prompt text.
+    """
+    from config.prompts_activity import (
+        ANTI_SLACK_REMINDER_PROMPT,
+        WORK_BREAK_GENERIC_WORK_LABEL, WORK_BREAK_GENERIC_LEISURE_LABEL,
+    )
+    template = ANTI_SLACK_REMINDER_PROMPT.get(
+        lang, ANTI_SLACK_REMINDER_PROMPT.get('en', ANTI_SLACK_REMINDER_PROMPT['zh']),
+    )
+    prev_app_label = _resolve_break_reminder_label(pending.prev_app, lang, WORK_BREAK_GENERIC_WORK_LABEL)
+    new_app_label = _resolve_break_reminder_label(pending.new_app, lang, WORK_BREAK_GENERIC_LEISURE_LABEL)
+    return template.format(
+        master=master_name or '',
+        prev_app=prev_app_label,
+        new_app=new_app_label,
+        minutes=pending.minutes,
+    )
+
+
+def _render_work_break_game_invite_prompt(
+    *,
+    pending,                       # WorkBreakPending
+    game_type: str,
+    master_name: str,
+    lang: str,
+) -> str | None:
+    """Render the rest+game-invite combo prompt (50% branch).
+
+    Returns the system prompt text, or None when no template exists for
+    the given game_type (caller falls back to the regular water-break
+    branch).
+    """
+    from config.prompts_activity import (
+        WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME, WORK_BREAK_GENERIC_WORK_LABEL,
+    )
+    per_lang = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME.get(game_type)
+    if not per_lang:
+        return None
+    template = per_lang.get(lang, per_lang.get('en', per_lang.get('zh')))
+    if not template:
+        return None
+    app_label = _resolve_break_reminder_label(pending.app, lang, WORK_BREAK_GENERIC_WORK_LABEL)
+    return template.format(
+        master=master_name or '',
+        app=app_label,
+        minutes=pending.minutes,
+    )
+
+
+async def _deliver_break_reminder_via_llm(
+    *,
+    lanlan_name: str,
+    mgr,
+    system_prompt: str,
+    channel: str,                 # 'work_break' | 'anti_slack' | 'work_break_game_invite'
+    lang: str,
+    timeout_seconds: float = 25.0,
+) -> tuple[str | None, str | None]:
+    """Minimal Phase 2 LLM stream delivery for break reminders.
+
+    No Phase 1, no sources, no full activity_state_section in the
+    prompt — just ``character_prompt`` (already baked into
+    ``system_prompt`` by the caller) + the env-notice block, so the
+    model puts all attention on the single nudge.
+
+    Returns ``(delivered_text, proactive_sid)`` on success.
+    Returns ``(None, None)`` on:
+      * ``prepare_proactive_delivery`` rejection (user just spoke /
+        WS offline / etc — leave the source pending alone, next round
+        can retry)
+      * LLM error / timeout / preempt
+      * Empty output / [PASS] emission (defensive)
+
+    Caller is responsible for ``mark_*_used`` on success and for any
+    follow-up UI push (e.g. the mini-game options popup in the
+    work_break_game_invite branch).
+    """
+    # Model config — fetched here so the helper is self-contained
+    # (caller in proactive_chat doesn't need to load it before our
+    # must-fire branches, since those run before the existing config
+    # fetch block at line ~4700). Returns None on any misconfig: a
+    # working break reminder is strictly better than crashing the whole
+    # proactive_chat round, and the source pending stays armed for the
+    # next attempt once config is fixed.
+    config_manager = get_config_manager()
+    try:
+        correction_config = config_manager.get_model_api_config('correction')
+        correction_model = correction_config.get('model')
+        correction_base_url = correction_config.get('base_url')
+        correction_api_key = correction_config.get('api_key')
+        if not correction_model or not correction_api_key:
+            logger.warning(
+                "[%s] break reminder skipped: correction model misconfigured",
+                lanlan_name,
+            )
+            return None, None
+    except Exception as cfg_err:
+        logger.warning(
+            "[%s] break reminder skipped: model config fetch failed: %s",
+            lanlan_name, cfg_err,
+        )
+        return None, None
+
+    # Idle gate (10s) — same threshold mini-game invite uses. If the
+    # user just typed/spoke, don't interrupt.
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+        return None, None
+
+    proactive_sid = mgr.current_speech_id
+    from main_logic.session_state import SessionEvent as _SE
+    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+
+    # Minimal HumanMessage — just ask the model to begin. The localized
+    # ``BEGIN_GENERATE`` matches what normal Phase 2 uses, so the model
+    # interprets the cue identically.
+    begin_text = _loc(BEGIN_GENERATE, lang)
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=begin_text),
+    ]
+
+    print(
+        f"\n{'='*60}\n[BREAK-REMINDER] channel={channel} lang={lang} model={correction_model}\n"
+        f"{'='*60}\n{system_prompt}\n{'='*60}\n"
+    )
+
+    from utils.token_tracker import set_call_type
+    set_call_type("proactive")
+    full_text = ''
+    aborted = False
+    pass_probe = ''
+    _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
+
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with create_chat_llm(
+                correction_model, correction_base_url, correction_api_key,
+                temperature=1.0,
+                max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                streaming=True,
+            ) as llm:
+                async for chunk in llm.astream(messages):
+                    if mgr.state.is_proactive_preempted(proactive_sid):
+                        aborted = True
+                        break
+                    content = chunk.content if hasattr(chunk, 'content') else ''
+                    if not content:
+                        continue
+                    combined = pass_probe + content
+                    if '[PASS]' in combined.upper():
+                        aborted = True
+                        break
+                    safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
+                    pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
+                    if safe_text:
+                        # Token-budget cap mirrors the normal Phase 2
+                        # path — break-reminder output should be short
+                        # in any case, but defensive.
+                        n_tokens = count_tokens(full_text + safe_text)
+                        if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+                            aborted = True
+                            break
+                        full_text += safe_text
+                        await mgr.feed_tts_chunk(safe_text, expected_speech_id=proactive_sid)
+        # Flush remaining pass_probe (if it doesn't itself contain [PASS])
+        if not aborted and pass_probe and '[PASS]' not in pass_probe.upper():
+            full_text += pass_probe
+            await mgr.feed_tts_chunk(pass_probe, expected_speech_id=proactive_sid)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(
+            "[%s] break reminder LLM stream failed (channel=%s): %s: %s",
+            lanlan_name, channel, type(e).__name__, e,
+        )
+        aborted = True
+
+    if aborted or not full_text.strip():
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        return None, None
+
+    text = full_text.strip()
+    committed = await mgr.finish_proactive_delivery(text, expected_speech_id=proactive_sid)
+    if not committed:
+        return None, None
+
+    _record_proactive_chat(lanlan_name, text, channel=channel)
+    print(
+        f"[{lanlan_name}] break reminder delivered (channel={channel}): {text[:80]}…"
+    )
+    return text, proactive_sid
+
+
 def _build_mini_game_invite_options_payload(
     *,
     invite_lang: str,
@@ -4071,6 +4335,233 @@ async def proactive_chat(request: Request):
                 "success": True,
                 "action": "pass",
                 "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
+            }))
+
+        # ========== Must-fire: break-reminder branches ==========
+        # Anti-slack outranks water-break (transition trigger more
+        # time-sensitive than the cumulative one). Both bypass Phase 1
+        # entirely and run via _deliver_break_reminder_via_llm — see
+        # the helper docstring above. ``private`` state already cleared
+        # both pendings inside the tracker, so reaching here implies
+        # not-private. Debug-force-invite still takes precedence so the
+        # mini-game force flag keeps its "guaranteed mini-game" contract.
+        if (
+            not _debug_force_invite
+            and activity_snapshot is not None
+            and (
+                activity_snapshot.anti_slack_pending is not None
+                or activity_snapshot.work_break_pending is not None
+            )
+        ):
+            try:
+                _break_lang = _resolve_proactive_locale(data, mgr)
+            except Exception:
+                _break_lang = 'zh'
+
+            # Resolve character_prompt up front and prepend it to every
+            # break-reminder SystemMessage. Without this the model would
+            # see only the env-notice template and lose its persona —
+            # CodeRabbit Major review (PR #1226). Mirrors the
+            # placeholder substitution the normal Phase 2 path does at
+            # line ~5300 (LANLAN_NAME / MASTER_NAME).
+            _break_character_prompt = lanlan_prompt_map.get(lanlan_name, '')
+            if _break_character_prompt:
+                _break_character_prompt = (
+                    _break_character_prompt
+                    .replace('{LANLAN_NAME}', lanlan_name)
+                    .replace('{MASTER_NAME}', master_name_current)
+                )
+
+            def _compose_break_system_prompt(env_notice: str) -> str:
+                if not _break_character_prompt:
+                    return env_notice
+                return f'{_break_character_prompt}\n\n{env_notice}'
+
+            # Anti-slack first — single-behavior 'back to work' nudge.
+            if activity_snapshot.anti_slack_pending is not None:
+                anti_pending = activity_snapshot.anti_slack_pending
+                anti_prompt = _render_anti_slack_prompt(
+                    pending=anti_pending,
+                    master_name=master_name_current,
+                    lang=_break_lang,
+                )
+                delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
+                    lanlan_name=lanlan_name,
+                    mgr=mgr,
+                    system_prompt=_compose_break_system_prompt(anti_prompt),
+                    channel='anti_slack',
+                    lang=_break_lang,
+                )
+                if delivered_text:
+                    try:
+                        mgr._activity_tracker.mark_anti_slack_used()
+                    except Exception as _mark_err:
+                        logger.warning(
+                            "[%s] mark_anti_slack_used failed: %s",
+                            lanlan_name, _mark_err,
+                        )
+                    # Mini-game cooldown counter — same contract as the
+                    # normal text proactive path at ~6253: any successful
+                    # proactive emission counts as one of the "10 chats
+                    # since user responded" gate. No-op when no prior
+                    # invite is pending. Codex/CodeRabbit Minor: PR #1226.
+                    _mini_game_invite_count_post_response_chat(lanlan_name)
+                    await _increment_proactive_chat_total(lanlan_name)
+                    return await _end_proactive(JSONResponse({
+                        "success": True,
+                        "action": "chat",
+                        "message": "anti-slack reminder delivered",
+                        "channel": "anti_slack",
+                    }))
+                # Delivery rejected (user took over / config issue).
+                # Don't fall through to normal proactive — must-fire
+                # semantics: leave pending armed for the next round.
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "anti-slack reminder pending but delivery skipped",
+                }))
+
+            # Water-break — 50% pivots to a rest+game-invite combo
+            # (gated on mini-game cooldown / user toggle / global
+            # kill switch / existence of a valid game_type). Any of
+            # those gates failing falls through to the regular
+            # drink/stretch nudge instead of breaking the must-fire.
+            water_pending = activity_snapshot.work_break_pending
+            prefs_for_break = mgr._activity_tracker._sm._prefs
+            _gi_prob = prefs_for_break.work_break_game_invite_probability
+            if _gi_prob is None:
+                # Resolved at import time — see tracker.py defaults.
+                from main_logic.activity.tracker import _WORK_BREAK_GAME_INVITE_PROBABILITY as _gi_prob_default
+                _gi_prob = _gi_prob_default
+            branch_game_invite = False
+            chosen_game_type: str | None = None
+            gi_prompt: str | None = None
+            if (
+                MINI_GAME_INVITE_ENABLED
+                and _user_invite_toggle
+                and not _mini_game_invite_in_cooldown(lanlan_name)
+                and _gi_prob > 0
+            ):
+                import random as _random
+                if _random.random() < _gi_prob:
+                    chosen_game_type = _pick_mini_game_type()
+                    if chosen_game_type is not None:
+                        gi_prompt = _render_work_break_game_invite_prompt(
+                            pending=water_pending,
+                            game_type=chosen_game_type,
+                            master_name=master_name_current,
+                            lang=_break_lang,
+                        )
+                        if gi_prompt is not None:
+                            branch_game_invite = True
+
+            if branch_game_invite and chosen_game_type is not None and gi_prompt is not None:
+                delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
+                    lanlan_name=lanlan_name,
+                    mgr=mgr,
+                    system_prompt=_compose_break_system_prompt(gi_prompt),
+                    channel='work_break_game_invite',
+                    lang=_break_lang,
+                )
+                if delivered_text:
+                    invite_session_id = str(uuid4())
+                    _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
+                    _mini_game_invite_get_state(lanlan_name)['last_game_type'] = chosen_game_type
+                    # Persist counter+1 + ever_delivered atomically (mini-game cooldown
+                    # contract). Track success so we can fall back to the plain
+                    # _increment_proactive_chat_total if persistence fails — otherwise
+                    # the chat-total counter would skip this round entirely.
+                    # CodeRabbit Major: don't double-count — the persistent record
+                    # already does the +1, so plain counter is only the fallback.
+                    _persist_ok = False
+                    try:
+                        await _record_invite_delivery_persistent(lanlan_name)
+                        _persist_ok = True
+                    except Exception as _persist_err:
+                        logger.warning(
+                            "[%s] record_invite_delivery_persistent failed: %s",
+                            lanlan_name, _persist_err,
+                        )
+                    options_payload = _build_mini_game_invite_options_payload(
+                        invite_lang=_break_lang,
+                        game_type=chosen_game_type,
+                        session_id=invite_session_id,
+                    )
+                    try:
+                        if mgr.websocket and hasattr(mgr.websocket, 'send_json'):
+                            client_state = getattr(mgr.websocket, 'client_state', None)
+                            if client_state is None or client_state == client_state.CONNECTED:
+                                await mgr.websocket.send_json(options_payload)
+                    except Exception as _ws_err:
+                        logger.warning(
+                            "[%s] work_break+game_invite options WS push failed: %s",
+                            lanlan_name, _ws_err,
+                        )
+                    try:
+                        mgr._activity_tracker.mark_work_break_used()
+                    except Exception as _mark_err:
+                        logger.warning(
+                            "[%s] mark_work_break_used failed: %s",
+                            lanlan_name, _mark_err,
+                        )
+                    if not _persist_ok:
+                        # Persistence path failed → counter wasn't bumped.
+                        # Fall back to the plain in-memory increment so the
+                        # round still counts toward proactive_chat totals.
+                        await _increment_proactive_chat_total(lanlan_name)
+                    return await _end_proactive(JSONResponse({
+                        "success": True,
+                        "action": "chat",
+                        "message": "work-break + game-invite delivered",
+                        "channel": "work_break_game_invite",
+                        "game_type": chosen_game_type,
+                        "invite_session_id": invite_session_id,
+                    }))
+                # Combo branch delivery failed → don't fall through to
+                # regular drink branch (would double-charge the user's
+                # attention). Pending stays armed for next round.
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "work-break + game-invite pending but delivery skipped",
+                }))
+
+            # Regular drink/stretch nudge branch
+            wb_prompt, wb_seed = _render_work_break_prompt(
+                pending=water_pending,
+                master_name=master_name_current,
+                lang=_break_lang,
+            )
+            delivered_text, _proactive_sid_unused = await _deliver_break_reminder_via_llm(
+                lanlan_name=lanlan_name,
+                mgr=mgr,
+                system_prompt=_compose_break_system_prompt(wb_prompt),
+                channel='work_break',
+                lang=_break_lang,
+            )
+            if delivered_text:
+                try:
+                    mgr._activity_tracker.mark_work_break_used()
+                except Exception as _mark_err:
+                    logger.warning(
+                        "[%s] mark_work_break_used failed: %s",
+                        lanlan_name, _mark_err,
+                    )
+                # Same chats-since-response counter as anti_slack branch.
+                _mini_game_invite_count_post_response_chat(lanlan_name)
+                await _increment_proactive_chat_total(lanlan_name)
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "chat",
+                    "message": "work-break reminder delivered",
+                    "channel": "work_break",
+                    "seed": wb_seed,
+                }))
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "work-break reminder pending but delivery skipped",
             }))
 
         # ========== Probabilistic skip (intensity-driven gate) ==========
