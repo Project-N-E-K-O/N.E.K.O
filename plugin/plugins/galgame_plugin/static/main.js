@@ -3905,7 +3905,8 @@ async function restoreInstallState(kind) {
     return;
   }
 
-  applyInstallTaskState(kind, { ...restoredState, __restored: true }, { allowRefresh: false, showTerminalFlash: false });
+  const restoredStateForApply = { ...restoredState, __restored: true };
+  applyInstallTaskState(kind, restoredStateForApply, { allowRefresh: false, showTerminalFlash: false });
   if (restoredTaskId && !isInstallTaskTerminal(restoredState)) {
     connectInstallStream(kind, restoredTaskId);
   }
