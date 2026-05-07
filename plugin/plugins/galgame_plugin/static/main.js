@@ -986,6 +986,14 @@ function shouldOfferRapidOcrInstall(status = {}) {
   return Boolean(status.rapidocr_enabled) && rapidocr.installed !== true;
 }
 
+function hasMissingRapidOcrModelFiles(rapidocr = {}) {
+  return rapidocr.detail === 'missing_model_files';
+}
+
+function isRapidOcrUsable(rapidocr = {}) {
+  return Boolean(rapidocr.installed) && !hasMissingRapidOcrModelFiles(rapidocr);
+}
+
 function withRapidOcrInstallAction(diagnosis, status = {}) {
   if (!diagnosis || !shouldOfferRapidOcrInstall(status)) {
     return diagnosis;
@@ -1615,7 +1623,8 @@ function buildFirstRunSteps(status = {}) {
   const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
   const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
-  const rapidocrModelsMissing = rapidocr.detail === 'missing_model_files';
+  const rapidocrModelsMissing = hasMissingRapidOcrModelFiles(rapidocr);
+  const rapidocrUsable = isRapidOcrUsable(rapidocr);
   // Only route to the download CTA when the backend confirms it CAN run the
   // download. `can_download_models` is the same signal renderRapidOcr uses
   // to show/hide rapidocrModelsDownloadBtn, so the tutorial CTA stays in
@@ -1647,7 +1656,7 @@ function buildFirstRunSteps(status = {}) {
   // a fallback for `rapidocr COMPLETELY unavailable`, not for `rapidocr is
   // there but the configured model isn't`.
   const ocrReady = Boolean(
-    rapidocr.installed
+    rapidocrUsable
     || (!rapidocrModelsMissing && tesseract.installed)
     || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing)
   );
@@ -2376,7 +2385,10 @@ function dependencySummaryItem(kind, status = {}) {
     const rapidocrModelsStillMissing = kind !== 'rapidocr'
       || rapidocr.detail === 'missing_model_files'
       || !rapidocr.installed;
-    if (taskState && rapidocrModelsStillMissing) {
+    const taskCompletedButModelsMissing = kind === 'rapidocr'
+      && taskState?.state === 'installed'
+      && hasMissingRapidOcrModelFiles(rapidocr);
+    if (taskState && rapidocrModelsStillMissing && !taskCompletedButModelsMissing) {
       return {
         kind,
         label: kind === 'rapidocr' ? 'RapidOCR' : getInstallConfig(taskKind).label,
@@ -2387,14 +2399,15 @@ function dependencySummaryItem(kind, status = {}) {
 
   if (kind === 'rapidocr') {
     const rapidocr = status.rapidocr || {};
+    const rapidocrModelsMissing = hasMissingRapidOcrModelFiles(rapidocr);
     if (!rapidocr.install_supported) {
       return { kind, label: 'RapidOCR', state: 'optional', labelText: uiT('ui.install.summary.platform_unsupported', '平台不支持'), needsAttention: false };
     }
-    if (rapidocr.installed) {
-      return { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.ready', '已就绪'), needsAttention: false };
-    }
-    if (rapidocr.detail === 'missing_model_files') {
+    if (rapidocrModelsMissing) {
       return { kind, label: 'RapidOCR', state: 'warning', labelText: uiT('ui.install.summary.models_missing', '模型缺失'), needsAttention: true };
+    }
+    if (isRapidOcrUsable(rapidocr)) {
+      return { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.ready', '已就绪'), needsAttention: false };
     }
     return { kind, label: 'RapidOCR', state: 'missing', labelText: uiT('ui.install.summary.not_found', '未检测到'), needsAttention: true };
   }
