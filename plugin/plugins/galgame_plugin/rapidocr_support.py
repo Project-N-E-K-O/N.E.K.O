@@ -220,13 +220,30 @@ def _resolve_rapidocr_model_paths(
                 out.append(item)
         return out
 
+    def _alt_infer(name: str) -> str:
+        """Wheel/Paddle pattern: same prefix but `_infer.onnx` instead of
+        `_mobile.onnx` / `_server.onnx`. Lets us pick up wheel-bundled
+        files even when the registry lists the modelscope `_mobile` name.
+        Example: `ch_PP-OCRv4_det_mobile.onnx` ↔ `ch_PP-OCRv4_det_infer.onnx`.
+        """
+        for suf in ("_mobile.onnx", "_server.onnx"):
+            if name.endswith(suf):
+                return name[: -len(suf)] + "_infer.onnx"
+        return ""
+
+    reg_det = str((registry.get("det") or {}).get("name") or "")
+    reg_rec = str((registry.get("rec") or {}).get("name") or "")
+    reg_cls = str((registry.get("cls") or {}).get("name") or "")
+
     det_names = _names(
-        str((registry.get("det") or {}).get("name") or ""),
+        reg_det,
+        _alt_infer(reg_det),
         f"{lang}_{version}_det{server_infix}_infer.onnx",  # paddle / wheel
         f"{lang}_{version}_det{type_suffix}.onnx",          # modelscope v3.x
     )
     rec_names = _names(
-        str((registry.get("rec") or {}).get("name") or ""),
+        reg_rec,
+        _alt_infer(reg_rec),
         f"{lang}_{version}_rec{server_infix}_infer.onnx",
         f"{lang}_{version}_rec{type_suffix}.onnx",
     )
@@ -234,7 +251,8 @@ def _resolve_rapidocr_model_paths(
     # legacy v2.0 mobile cls; PP-OCRv5 introduces a new textline-orientation
     # cls. Consult the registry first, then list the known generics.
     cls_names = _names(
-        str((registry.get("cls") or {}).get("name") or ""),
+        reg_cls,
+        _alt_infer(reg_cls),
         "ch_ppocr_mobile_v2.0_cls_infer.onnx",
         "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
         "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
@@ -380,14 +398,47 @@ def missing_rapidocr_model_files(
     ocr_version: str,
     lang_type: str,
 ) -> list[dict[str, Any]]:
-    """Required files that are NOT yet on disk."""
+    """Required files that the resolver can't locate on disk.
+
+    Delegates to `_resolve_rapidocr_model_paths` so we accept the same files
+    RapidOCR will actually load: both filename conventions (`_infer.onnx` for
+    the wheel/PaddleOCR pattern, `_mobile.onnx`/`_server.onnx` for ModelScope
+    v3.x) and both locations (model_cache_dir + the imported package's
+    bundled `models/` dir). Marking a stage missing only because the
+    registry's preferred filename isn't at the exact target_path would have
+    caused inspect_rapidocr_installation to keep returning
+    `detail="missing_model_files"` even when RapidOCR could already serve
+    OCR successfully from a wheel-bundled file or a manually-dropped
+    alternate-name file — locking the user into a perpetual download banner.
+    """
+    required = required_rapidocr_model_files(
+        install_target_dir_raw=install_target_dir_raw,
+        ocr_version=ocr_version,
+        lang_type=lang_type,
+    )
+    if not required:
+        return []
+
+    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    package_models_dir: Path | None = None
+    try:
+        spec = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME)
+        if spec is not None and spec.origin:
+            package_models_dir = Path(spec.origin).resolve().parent / "models"
+    except (ImportError, ValueError):
+        package_models_dir = None
+
+    det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
+        model_cache_dir=cache_dir,
+        package_models_dir=package_models_dir,
+        lang_type=lang_type,
+        ocr_version=ocr_version,
+        model_type=DEFAULT_RAPIDOCR_MODEL_TYPE,
+    )
+    found_by_kind = {"det": det_path, "cls": cls_path, "rec": rec_path}
     return [
-        spec for spec in required_rapidocr_model_files(
-            install_target_dir_raw=install_target_dir_raw,
-            ocr_version=ocr_version,
-            lang_type=lang_type,
-        )
-        if not (spec["target_path"] and Path(spec["target_path"]).is_file())
+        item for item in required
+        if not found_by_kind.get(item["kind"])
     ]
 
 
