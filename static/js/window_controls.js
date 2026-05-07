@@ -84,9 +84,36 @@
         });
     }
 
+    function closeCurrentWindow() {
+        try {
+            window.close();
+        } catch (error) {
+            // 某些浏览器环境会拒绝关闭非脚本打开的页面
+        }
+        window.setTimeout(() => {
+            if (window.closed) return;
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = '/';
+            }
+        }, 120);
+    }
+
+    function bindCloseButton() {
+        const closeButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="close"]`);
+        if (!closeButton || closeButton.dataset.nekoWindowControlBound === '1') return;
+        closeButton.dataset.nekoWindowControlBound = '1';
+        closeButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            closeCurrentWindow();
+        });
+    }
+
     function initWindowControls() {
         bindMinimizeButton();
         bindMaximizeButton();
+        bindCloseButton();
         refreshMaximizeState();
         if (!window.__nekoWindowControlsResizeBound) {
             window.__nekoWindowControlsResizeBound = true;
