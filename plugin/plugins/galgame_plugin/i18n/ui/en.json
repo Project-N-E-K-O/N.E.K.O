@@ -1046,6 +1046,7 @@
   "ui.install.rapidocr.missing_models_kicker": "OCR Primary Backend - Models Not Downloaded",
   "ui.install.rapidocr.missing_models_title": "RapidOCR is ready, but the selected language models haven't been downloaded",
   "ui.install.rapidocr.missing_models_body": "Current selection lang_type={lang} + ocr_version={version} requires the following model files in the local cache ({count} files, ~{size} MB total). Click the button below to download them; downloads come from RapidAI's ModelScope mirror.",
+  "ui.install.rapidocr.missing_models_manual_body": "Current selection lang_type={lang} + ocr_version={version} requires the following model files in the local cache ({count} files, ~{size} MB total). Automatic download is unavailable right now. Download the missing files manually from {source} into {dir}, then click \"Refresh Status\".",
   "ui.install.rapidocr.download_models.action": "Download Models Now",
   "ui.install.rapidocr.download_models.retry": "Retry Model Download",
   "ui.install.rapidocr.download_models.running": "Downloading models in background...",

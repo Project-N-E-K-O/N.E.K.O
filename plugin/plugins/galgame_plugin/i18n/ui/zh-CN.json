@@ -1046,6 +1046,7 @@
   "ui.install.rapidocr.missing_models_kicker": "OCR 主后端 — 模型未下载",
   "ui.install.rapidocr.missing_models_title": "RapidOCR 已就绪，但所选语言模型未下载",
   "ui.install.rapidocr.missing_models_body": "当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。点击下方按钮可一键下载；下载来自 RapidAI ModelScope。",
+  "ui.install.rapidocr.missing_models_manual_body": "当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。当前无法自动下载，请手动从 {source} 下载缺失文件到 {dir}，然后点击\"刷新状态\"。",
   "ui.install.rapidocr.download_models.action": "立即下载模型",
   "ui.install.rapidocr.download_models.retry": "重试下载模型",
   "ui.install.rapidocr.download_models.running": "后台下载模型中...",

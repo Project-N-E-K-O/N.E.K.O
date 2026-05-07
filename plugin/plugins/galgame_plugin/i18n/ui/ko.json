@@ -1046,6 +1046,7 @@
   "ui.install.rapidocr.missing_models_kicker": "OCR 주 백엔드 — 모델 미다운로드",
   "ui.install.rapidocr.missing_models_title": "RapidOCR은 준비되었지만 선택한 언어 모델이 다운로드되지 않았습니다",
   "ui.install.rapidocr.missing_models_body": "현재 선택 lang_type={lang} + ocr_version={version}에는 다음 모델 파일을 로컬 캐시로 다운로드해야 합니다({count}개, 약 {size} MB). 아래 버튼을 클릭하면 한 번에 다운로드할 수 있으며, RapidAI ModelScope에서 가져옵니다.",
+  "ui.install.rapidocr.missing_models_manual_body": "현재 선택 lang_type={lang} + ocr_version={version}에는 다음 모델 파일을 로컬 캐시에 다운로드해야 합니다({count}개, 약 {size} MB). 현재 자동 다운로드를 사용할 수 없습니다. {source}에서 누락된 파일을 {dir}에 수동으로 다운로드한 뒤 \"상태 새로고침\"을 클릭하세요.",
   "ui.install.rapidocr.download_models.action": "지금 모델 다운로드",
   "ui.install.rapidocr.download_models.retry": "모델 다운로드 재시도",
   "ui.install.rapidocr.download_models.running": "백그라운드에서 모델 다운로드 중...",

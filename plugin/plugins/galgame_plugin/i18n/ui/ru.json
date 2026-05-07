@@ -1046,6 +1046,7 @@
   "ui.install.rapidocr.missing_models_kicker": "Основной OCR — модели не скачаны",
   "ui.install.rapidocr.missing_models_title": "RapidOCR готов, но выбранные языковые модели не скачаны",
   "ui.install.rapidocr.missing_models_body": "Текущий выбор lang_type={lang} + ocr_version={version} требует скачать следующие модели в локальный кеш ({count} файлов, ~{size} МБ). Нажмите кнопку ниже для скачивания; источник — RapidAI ModelScope.",
+  "ui.install.rapidocr.missing_models_manual_body": "Текущий выбор lang_type={lang} + ocr_version={version} требует скачать следующие модели в локальный кеш ({count} файлов, ~{size} МБ). Автоматическое скачивание сейчас недоступно. Скачайте недостающие файлы вручную с {source} в {dir}, затем нажмите \"Обновить статус\".",
   "ui.install.rapidocr.download_models.action": "Скачать модели сейчас",
   "ui.install.rapidocr.download_models.retry": "Повторить скачивание моделей",
   "ui.install.rapidocr.download_models.running": "Скачивание моделей в фоне...",

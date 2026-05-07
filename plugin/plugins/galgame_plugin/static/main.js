@@ -160,6 +160,7 @@ function createInstallRuntimeState() {
     eventSource: null,
     reconnectTimer: null,
     handledTerminalKey: '',
+    generation: 0,
   };
 }
 
@@ -3040,9 +3041,15 @@ function shouldRestoreInstallTaskState(kind, state, status = latestStatus) {
   return !isInstallTaskTerminal(state);
 }
 
-function canApplyRestoredInstallTaskState(kind, restoredTaskId) {
+function canApplyRestoredInstallTaskState(kind, restoredTaskId, restoreGeneration) {
   const runtime = installRuntime[kind];
-  if (!runtime || !runtime.inProgress) {
+  if (!runtime) {
+    return true;
+  }
+  if (Number(runtime.generation || 0) !== Number(restoreGeneration || 0)) {
+    return false;
+  }
+  if (!runtime.inProgress) {
     return true;
   }
   const currentTaskId = String(runtime.currentTaskId || '');
@@ -3691,6 +3698,8 @@ function connectInstallStream(kind, taskId) {
 }
 
 async function restoreInstallState(kind) {
+  const runtime = installRuntime[kind];
+  const restoreGeneration = Number((runtime && runtime.generation) || 0);
   const persistedTaskId = readPersistedInstallTaskId(kind);
   let persistedState = null;
   let latestState = null;
@@ -3724,7 +3733,7 @@ async function restoreInstallState(kind) {
   }
 
   const restoredTaskId = restoredState.task_id || restoredState.run_id || '';
-  if (!canApplyRestoredInstallTaskState(kind, restoredTaskId)) {
+  if (!canApplyRestoredInstallTaskState(kind, restoredTaskId, restoreGeneration)) {
     return;
   }
 
@@ -4918,6 +4927,7 @@ function renderRapidOcr(status) {
   const installed = Boolean(rapidocr.installed);
   renderInstallTaskState('rapidocr_models');
   applyRapidOcrModelsGate(rapidocr);
+  const modelsDownloadable = shouldOfferRapidOcrModelsDownload(rapidocr);
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4976,30 +4986,41 @@ function renderRapidOcr(status) {
     const totalMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
     const langType = rapidocr.lang_type || '';
     const ocrVersion = rapidocr.ocr_version || '';
-    // After a failed download, append a manual-fallback hint so the user
-    // has a concrete recovery path (proxy / download manually + drop into
-    // model_cache_dir + refresh). Surfacing this in the banner — not just
-    // the install card — keeps it visible after the user dismisses or
-    // collapses the card.
+    const modelSource = rapidocr.model_download_source || uiT('ui.status.unknown', '未知');
+    const modelCacheDir = rapidocr.model_cache_dir || uiT('ui.status.unknown', '未知');
     const lastTask = installRuntime.rapidocr_models.state;
     const downloadFailed = Boolean(lastTask && lastTask.status === 'failed');
-    const proxyHint = downloadFailed
+    const manualRecoveryBody = uiTf(
+      'ui.install.rapidocr.missing_models_manual_body',
+      '当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。当前无法自动下载，请手动从 {source} 下载缺失文件到 {dir}，然后点击"刷新状态"。',
+      {
+        lang: langType,
+        version: ocrVersion,
+        count: missing.length,
+        size: totalMb,
+        source: modelSource,
+        dir: modelCacheDir,
+      },
+    );
+    const proxyHint = modelsDownloadable && downloadFailed
       ? '\n\n' + uiTf(
           'ui.install.rapidocr.download_failure_proxy_hint',
           '上次下载失败：{error}\n国内网络可能需要代理；或手动从 {source} 下载缺失文件到 {dir}，然后点击"刷新状态"。',
           {
             error: (lastTask && (lastTask.error || lastTask.message)) || '',
-            source: rapidocr.model_download_source || '',
-            dir: rapidocr.model_cache_dir || '',
+            source: modelSource,
+            dir: modelCacheDir,
           },
         )
       : '';
     body.textContent = [
-      uiTf(
-        'ui.install.rapidocr.missing_models_body',
-        '当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。点击下方按钮可一键下载；下载来自 RapidAI ModelScope。',
-        { lang: langType, version: ocrVersion, count: missing.length, size: totalMb },
-      ),
+      modelsDownloadable
+        ? uiTf(
+            'ui.install.rapidocr.missing_models_body',
+            '当前选择 lang_type={lang} + ocr_version={version}，需要下载以下模型文件到本地缓存（{count} 个，预计约 {size} MB）。点击下方按钮可一键下载；下载来自 RapidAI ModelScope。',
+            { lang: langType, version: ocrVersion, count: missing.length, size: totalMb },
+          )
+        : manualRecoveryBody,
       fileList,
     ].filter(Boolean).join('\n') + proxyHint;
     path.textContent = [
@@ -6076,6 +6097,7 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
 
   const state = getInstallState(kind);
   const { button } = getInstallNodes(kind);
+  state.generation = Number(state.generation || 0) + 1;
   state.inProgress = true;
   state.state = {
     kind,
