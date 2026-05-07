@@ -1460,6 +1460,10 @@ class LLMSessionManager:
                     self.lanlan_name, bucket, exc,
                 )
 
+    def _reset_voice_echo_suppression_cache(self) -> None:
+        self._recent_ai_voice_echo_text = ''
+        self._recent_ai_voice_echo_at = 0.0
+
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
             return False
@@ -2883,6 +2887,7 @@ class LLMSessionManager:
             logger.info(f"启动新session: input_mode={input_mode}, new={new}")
             self.websocket = websocket
             self.input_mode = input_mode
+            self._reset_voice_echo_suppression_cache()
         
             # 立即通知前端系统正在准备（静默期开始）
             await self.send_session_preparing(input_mode)
@@ -5483,6 +5488,7 @@ class LLMSessionManager:
                 self._audio_stream_epoch += 1
                 self._clear_audio_stream_queue("end_session_inactive")
                 self._cancel_audio_stream_worker("end_session_inactive")
+                self._reset_voice_echo_suppression_cache()
                 _inactive_early = True
                 # start_tts_if_needed 可能已启动 TTS 线程/handler，
                 # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
@@ -5525,6 +5531,7 @@ class LLMSessionManager:
                 self._audio_stream_epoch += 1
                 self._clear_audio_stream_queue("end_session_post_init_inactive")
                 self._cancel_audio_stream_worker("end_session_post_init_inactive")
+                self._reset_voice_echo_suppression_cache()
                 return
             if expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
@@ -5542,6 +5549,7 @@ class LLMSessionManager:
             self._audio_stream_epoch += 1
             self._clear_audio_stream_queue("end_session")
             self._cancel_audio_stream_worker("end_session")
+            self._reset_voice_echo_suppression_cache()
 
             # Activity tracker：session 关闭，voice_engaged 不再可能触发。
             self._activity_tracker.on_voice_mode(False)

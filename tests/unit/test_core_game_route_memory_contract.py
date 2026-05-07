@@ -338,6 +338,18 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 
 
 @pytest.mark.unit
+def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
+    mgr = _make_transcript_manager()
+    mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
+    mgr._recent_ai_voice_echo_at = core_module.time.time()
+
+    core_module.LLMSessionManager._reset_voice_echo_suppression_cache(mgr)
+
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._recent_ai_voice_echo_at == 0.0
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_no_takeover_non_voice_transcript_reuse_keeps_existing_ordinary_flow():
     mgr = _make_transcript_manager()
