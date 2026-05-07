@@ -1516,11 +1516,14 @@ async def test_ocr_reader_backpressure_skip_is_not_capture_error(
         manager._capture_future = pending
         manager._capture_future_started_at = time.monotonic()
         manager._capture_future_timed_out = False
+    manager._last_capture_error = "previous capture failed"
+    manager._runtime.detail = "capture_failed"
+    manager._runtime.last_capture_error = "previous capture failed"
 
     try:
         result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
-        assert result.runtime["detail"] != "capture_failed"
+        assert result.runtime["detail"] == "capture_backpressure"
         assert result.runtime["last_capture_error"] == ""
         assert any("tick skipped" in warning and "still running" in warning for warning in result.warnings)
     finally:
@@ -1529,7 +1532,7 @@ async def test_ocr_reader_backpressure_skip_is_not_capture_error(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_capture_timeout_replaces_stuck_worker(
+async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1584,11 +1587,23 @@ async def test_ocr_reader_capture_timeout_replaces_stuck_worker(
 
         second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
-        assert backend.calls == 2
-        assert second.runtime["detail"] == "receiving_text"
-        assert second.runtime["last_raw_ocr_text"] == "雪乃：恢复后的台词。"
-        assert any(
+        assert backend.calls == 1
+        assert second.runtime["detail"] == "capture_backpressure"
+        assert second.runtime["last_capture_error"] == ""
+        assert not any(
             warning[0] == "ocr_reader replacing stuck capture worker after %.1fs timeout"
+            for warning in logger.warnings
+        )
+
+        with manager._capture_worker_lock:
+            manager._capture_future_started_at = time.monotonic() - 1.0
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 2
+        assert third.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
             for warning in logger.warnings
         )
     finally:

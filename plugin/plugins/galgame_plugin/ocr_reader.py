@@ -6492,19 +6492,36 @@ class OcrReaderManager:
         collect_background_hash: bool,
         allow_separate_background_capture: bool,
     ) -> Future[OcrExtractionResult]:
+        executor_to_shutdown: ThreadPoolExecutor | None = None
+        recovered_elapsed = 0.0
+        cancel_requested = False
         with self._capture_worker_lock:
             current = self._capture_future
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
                 if self._capture_future_timed_out:
+                    timeout_seconds = float(_OCR_CAPTURE_TIMEOUT_SECONDS)
+                    if timeout_seconds <= 0.0:
+                        timeout_seconds = 12.0
+                    recovery_after = timeout_seconds + max(timeout_seconds, 0.25)
+                    if elapsed >= recovery_after:
+                        cancel_requested = current.cancel()
+                        executor_to_shutdown = self._capture_executor
+                        self._capture_executor = None
+                        self._capture_future = None
+                        self._capture_future_started_at = 0.0
+                        self._capture_future_timed_out = False
+                        recovered_elapsed = elapsed
+                    else:
+                        raise _CaptureStillRunning(
+                            f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                            "skipping new capture to avoid accumulating blocked OCR threads"
+                        )
+                else:
                     raise _CaptureStillRunning(
-                        f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
-                        "skipping new capture to avoid accumulating blocked OCR threads"
+                        f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
+                        "skipping new capture to avoid overlapping OCR work"
                     )
-                raise _CaptureStillRunning(
-                    f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
-                    "skipping new capture to avoid overlapping OCR work"
-                )
             executor = self._capture_executor
             if executor is None:
                 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
@@ -6521,7 +6538,14 @@ class OcrReaderManager:
             self._capture_future = future
             self._capture_future_started_at = time.monotonic()
             self._capture_future_timed_out = False
-            return future
+        if executor_to_shutdown is not None:
+            self._logger.warning(
+                "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}",
+                recovered_elapsed,
+                cancel_requested,
+            )
+            executor_to_shutdown.shutdown(wait=False, cancel_futures=True)
+        return future
 
     async def _capture_and_extract_text_with_timeout(
         self,
@@ -7618,6 +7642,9 @@ class OcrReaderManager:
         except _CaptureStillRunning as exc:
             self._logger.debug("ocr_reader tick skipped (backpressure): {}", exc)
             result.warnings.append(f"ocr_reader tick skipped: {exc}")
+            self._last_capture_error = ""
+            self._runtime.last_capture_error = ""
+            self._runtime.detail = "capture_backpressure"
             capture_attempted = False
         except _CaptureTimedOut as exc:
             self._logger.warning("ocr_reader capture/OCR timed out: {}", exc)
