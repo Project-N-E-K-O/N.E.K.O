@@ -1473,43 +1473,9 @@ function buildPrimaryDiagnosis(status = {}) {
     });
   }
 
-  if (observedKey && observedKey !== stableKey) {
-    return diagnose({
-      severity: 'info',
-      title: uiT('ui.diag.observed_new.title', '刚读到新文字'),
-      body: uiT('ui.diag.observed_new.body', '文字识别已经看到候选台词，正在确认这是不是同一句台词。'),
-      actions: [
-        diagnosisAction('line_details'),
-      ],
-    });
-  }
-
-  if (agentPauseKind === 'window_not_foreground' || agentUserStatus === 'paused_window_not_foreground') {
-    return diagnose({
-      severity: 'info',
-      title: uiT('ui.diag.not_foreground.title', '游戏不在前台'),
-      body: uiT('ui.diag.not_foreground.body', '自动推进已暂停。切回游戏窗口后会继续，伴读信息仍会刷新。'),
-      actions: [
-        diagnosisAction('focus_game'),
-      ],
-    });
-  }
-
-  if (agentPauseKind === 'read_only' || agentUserStatus === 'read_only') {
-    return diagnose({
-      severity: 'info',
-      title: uiT('ui.diag.read_only.title', '当前是伴读模式'),
-      body: uiT('ui.diag.read_only.body', '会显示台词和建议，但不会自动点击。需要自动推进时请切换模式。'),
-      actions: [
-        diagnosisAction('choice_advisor'),
-      ],
-    });
-  }
-
   if (
     rawText.length > 400
     && hasOcrRuntimeSignal
-    && (effectiveText || stableText)
     && textValue(status.active_data_source) === 'ocr_reader'
   ) {
     return diagnose({
@@ -1531,7 +1497,6 @@ function buildPrimaryDiagnosis(status = {}) {
   if (
     lastPollDuration > 5.0
     && hasOcrRuntimeSignal
-    && (effectiveText || stableText)
     && textValue(status.active_data_source) === 'ocr_reader'
   ) {
     const saLatency = Number(runtime.screen_awareness_model_last_latency_seconds || 0);
@@ -1562,6 +1527,39 @@ function buildPrimaryDiagnosis(status = {}) {
         diagnosisAction('select_ocr_window'),
         diagnosisAction('recalibrate_ocr'),
         diagnosisAction('capture_backend'),
+      ],
+    });
+  }
+
+  if (observedKey && observedKey !== stableKey) {
+    return diagnose({
+      severity: 'info',
+      title: uiT('ui.diag.observed_new.title', '刚读到新文字'),
+      body: uiT('ui.diag.observed_new.body', '文字识别已经看到候选台词，正在确认这是不是同一句台词。'),
+      actions: [
+        diagnosisAction('line_details'),
+      ],
+    });
+  }
+
+  if (agentPauseKind === 'window_not_foreground' || agentUserStatus === 'paused_window_not_foreground') {
+    return diagnose({
+      severity: 'info',
+      title: uiT('ui.diag.not_foreground.title', '游戏不在前台'),
+      body: uiT('ui.diag.not_foreground.body', '自动推进已暂停。切回游戏窗口后会继续，伴读信息仍会刷新。'),
+      actions: [
+        diagnosisAction('focus_game'),
+      ],
+    });
+  }
+
+  if (agentPauseKind === 'read_only' || agentUserStatus === 'read_only') {
+    return diagnose({
+      severity: 'info',
+      title: uiT('ui.diag.read_only.title', '当前是伴读模式'),
+      body: uiT('ui.diag.read_only.body', '会显示台词和建议，但不会自动点击。需要自动推进时请切换模式。'),
+      actions: [
+        diagnosisAction('choice_advisor'),
       ],
     });
   }
