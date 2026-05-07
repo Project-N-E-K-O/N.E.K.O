@@ -831,22 +831,95 @@ function configureUseButton(id, { active = false, disabled = false, text = '', t
   button.title = title || '';
 }
 
+function setActionButtonDisabled(button, disabled) {
+  const nextDisabled = Boolean(disabled);
+  if (button.disabled !== nextDisabled) {
+    button.disabled = nextDisabled;
+  }
+  button.__galgameActionDesiredDisabled = nextDisabled;
+}
+
+function syncActionButtonElement(current, next) {
+  const nextDisabled = next.hasAttribute('disabled');
+  const attributeNames = new Set([
+    ...Array.from(current.attributes, (attr) => attr.name),
+    ...Array.from(next.attributes, (attr) => attr.name),
+  ]);
+  attributeNames.forEach((name) => {
+    if (name === 'disabled') {
+      return;
+    }
+    const nextValue = next.getAttribute(name);
+    if (nextValue == null) {
+      current.removeAttribute(name);
+    } else if (current.getAttribute(name) !== nextValue) {
+      current.setAttribute(name, nextValue);
+    }
+  });
+  if (current.textContent !== next.textContent) {
+    current.textContent = next.textContent;
+  }
+  setActionButtonDisabled(current, nextDisabled);
+}
+
+function canPatchActionButtons(currentChildren, nextChildren) {
+  return currentChildren.length === nextChildren.length
+    && nextChildren.every((next, index) => {
+      const current = currentChildren[index];
+      return current
+        && current.tagName === next.tagName
+        && (current.id || '') === (next.id || '')
+        && (current.getAttribute('data-primary-action') || '') === (next.getAttribute('data-primary-action') || '');
+    });
+}
+
+function syncActionButtons(actions, html) {
+  const nextHtml = html || '';
+  if (!actions || actions.dataset.renderedHtml === nextHtml) {
+    return;
+  }
+  const template = document.createElement('template');
+  template.innerHTML = nextHtml.trim();
+  const currentChildren = Array.from(actions.children);
+  const nextChildren = Array.from(template.content.children);
+  if (!canPatchActionButtons(currentChildren, nextChildren)) {
+    actions.innerHTML = nextHtml;
+    actions.dataset.renderedHtml = nextHtml;
+    Array.from(actions.children).forEach((button) => {
+      if (button instanceof HTMLButtonElement) {
+        setActionButtonDisabled(button, button.disabled);
+      }
+    });
+    return;
+  }
+  currentChildren.forEach((current, index) => {
+    syncActionButtonElement(current, nextChildren[index]);
+  });
+  actions.dataset.renderedHtml = nextHtml;
+}
+
 function rebindCardButton(id, handler) {
   const button = document.getElementById(id);
   if (!button) {
     return;
   }
-  const clone = button.cloneNode(true);
-  button.parentNode.replaceChild(clone, button);
-  clone.addEventListener('click', async () => {
-    if (clone.disabled) {
+  button.__galgameCardClickHandler = handler;
+  if (button.__galgameCardClickBound) {
+    return;
+  }
+  button.__galgameCardClickBound = true;
+  button.addEventListener('click', async () => {
+    if (button.disabled) {
       return;
     }
-    clone.disabled = true;
+    button.disabled = true;
     try {
-      await handler();
+      const currentHandler = button.__galgameCardClickHandler;
+      if (typeof currentHandler === 'function') {
+        await currentHandler();
+      }
     } finally {
-      clone.disabled = false;
+      button.disabled = Boolean(button.__galgameActionDesiredDisabled);
     }
   });
 }
@@ -1475,11 +1548,11 @@ function renderPrimaryDiagnosis(status = {}) {
   kicker.textContent = uiT('ui.diag.kicker', '运行诊断');
   title.textContent = diagnosis.title;
   body.textContent = diagnosis.body;
-  actions.innerHTML = (diagnosis.actions || []).map((action, index) => `
+  syncActionButtons(actions, (diagnosis.actions || []).map((action, index) => `
     <button class="${index === 0 ? 'primary' : 'secondary'}" data-primary-action="${escapeHtml(action.id)}">
       ${escapeHtml(primaryActionLabel(action.id, action.label))}
     </button>
-  `).join('');
+  `).join(''));
 }
 
 function buildFirstRunStepsLegacy(status = {}) {
@@ -3392,7 +3465,7 @@ function renderInstallTaskState(kind) {
     card.style.display = '';
     if (button) {
       button.hidden = false;
-      button.disabled = false;
+      setActionButtonDisabled(button, false);
     }
     statusText.textContent = uiTf('ui.install.task.waiting', '等待 {label} 安装任务', { label });
     percentText.textContent = '0%';
@@ -3433,7 +3506,7 @@ function renderInstallTaskState(kind) {
     if (button) {
       const terminalCompleted = !rapidocrModelsStillMissing;
       button.hidden = terminalCompleted;
-      button.disabled = terminalCompleted;
+      setActionButtonDisabled(button, terminalCompleted);
       if (rapidocrModelsStillMissing) {
         button.textContent = getInstallConfig(kind).retryText;
       }
@@ -3441,7 +3514,7 @@ function renderInstallTaskState(kind) {
   } else if (state.status === 'failed') {
     if (button) {
       button.hidden = false;
-      button.disabled = false;
+      setActionButtonDisabled(button, false);
       button.textContent = getInstallConfig(kind).retryText;
     }
   }
@@ -3558,7 +3631,7 @@ function renderPluginUnavailable(error) {
     if (chip) chip.textContent = pluginNotStarted;
     if (desc) desc.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
     if (meta) meta.textContent = `${PROMPT_LABELS[kind]} · ${message}`;
-    if (actions) actions.innerHTML = '';
+    if (actions) syncActionButtons(actions, '');
     if (kind === 'rapidocr') {
       const card = document.getElementById('rapidocrInstallCard');
       if (card) {
@@ -5088,7 +5161,7 @@ function renderRapidOcr(status) {
   chip.textContent = chipText;
   desc.textContent = descText;
   meta.textContent = metaText;
-  actions.innerHTML = buttons.join('');
+  syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
@@ -5120,14 +5193,14 @@ function renderDxcam(status) {
       ? selectedCaptureBackend === 'mss' || selectedCaptureBackend === 'imagegrab'
       : selectedCaptureBackend === value
   );
-  actions.innerHTML = [
+  syncActionButtons(actions, [
     `<button id="smartCaptureUseBtn" class="secondary" ${captureActive('smart') ? 'disabled' : ''}>${escapeHtml(captureActive('smart') ? uiT('ui.install.smart.using', '正在使用 Smart') : uiT('ui.install.smart.use', '使用 Smart'))}</button>`,
     `<button id="dxcamUseBtn" class="secondary" ${(!installed || captureActive('dxcam')) ? 'disabled' : ''}>${escapeHtml(captureActive('dxcam') ? uiT('ui.install.dxcam.using', '正在使用 DXcam') : uiT('ui.install.dxcam.use', '使用 DXcam'))}</button>`,
     `<button id="captureBackendAutoBtn" class="ghost" ${captureActive('auto') ? 'disabled' : ''}>${escapeHtml(captureActive('auto') ? uiT('ui.install.capture_auto.using', '截图自动选择中') : uiT('ui.install.capture_auto', '截图自动'))}</button>`,
     `<button id="mssUseBtn" class="ghost" ${captureActive('mss') ? 'disabled' : ''}>${escapeHtml(captureActive('mss') ? uiT('ui.install.mss.using', '正在使用 MSS') : uiT('ui.install.mss.use', '使用 MSS'))}</button>`,
     `<button id="pyautoguiUseBtn" class="ghost" ${captureActive('pyautogui') ? 'disabled' : ''}>${escapeHtml(captureActive('pyautogui') ? uiT('ui.install.pyautogui.using', '正在使用 PyAutoGUI') : uiT('ui.install.pyautogui.use', '使用 PyAutoGUI'))}</button>`,
     `<button id="printwindowUseBtn" class="ghost" ${captureActive('printwindow') ? 'disabled' : ''}>${escapeHtml(captureActive('printwindow') ? uiT('ui.install.printwindow.using', '正在使用 PrintWindow') : uiT('ui.install.printwindow.use', '使用 PrintWindow'))}</button>`,
-  ].join('');
+  ].join(''));
 
   if (!dxcam.install_supported) {
     card.className = 'install-card neutral';
@@ -5222,7 +5295,7 @@ function renderTesseract(status) {
   chip.textContent = chipText;
   desc.textContent = descText;
   meta.textContent = metaText;
-  actions.innerHTML = buttons.join('');
+  syncActionButtons(actions, buttons.join(''));
   if (installed) {
     const nodes = getInstallNodes('tesseract');
     if (nodes.card) nodes.card.hidden = true;
@@ -5288,7 +5361,7 @@ function renderTextractor(status) {
   chip.textContent = chipText;
   desc.textContent = descText;
   meta.textContent = metaText;
-  actions.innerHTML = installButtonHtml('textractor', installable, installed);
+  syncActionButtons(actions, installButtonHtml('textractor', installable, installed));
   if (installed) {
     const nodes = getInstallNodes('textractor');
     if (nodes.card) nodes.card.hidden = true;
