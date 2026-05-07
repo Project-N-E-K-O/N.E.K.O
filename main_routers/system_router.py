@@ -4627,6 +4627,12 @@ async def proactive_chat(request: Request):
                             "[%s] mark_anti_slack_used failed: %s",
                             lanlan_name, _mark_err,
                         )
+                    # Mini-game cooldown counter — same contract as the
+                    # normal text proactive path at ~6253: any successful
+                    # proactive emission counts as one of the "10 chats
+                    # since user responded" gate. No-op when no prior
+                    # invite is pending. Codex/CodeRabbit Minor: PR #1226.
+                    _mini_game_invite_count_post_response_chat(lanlan_name)
                     await _increment_proactive_chat_total(lanlan_name)
                     return await _end_proactive(JSONResponse({
                         "success": True,
@@ -4769,6 +4775,8 @@ async def proactive_chat(request: Request):
                         "[%s] mark_work_break_used failed: %s",
                         lanlan_name, _mark_err,
                     )
+                # Same chats-since-response counter as anti_slack branch.
+                _mini_game_invite_count_post_response_chat(lanlan_name)
                 await _increment_proactive_chat_total(lanlan_name)
                 return await _end_proactive(JSONResponse({
                     "success": True,

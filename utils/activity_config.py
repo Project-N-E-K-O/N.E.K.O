@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -384,6 +385,11 @@ def _parse_unit_probability(raw: Any) -> float | None:
     if not isinstance(raw, (int, float)):
         return None
     value = float(raw)
+    # NaN/Inf would slip past the range checks below (NaN comparisons are
+    # always False; +Inf > 1 catches it but -Inf < 0 also does, leaving
+    # NaN as the real concern). Reject them up front. CodeRabbit Minor: PR #1226.
+    if not math.isfinite(value):
+        return None
     if value < 0.0 or value > 1.0:
         return None
     return value

@@ -1229,3 +1229,59 @@ def test_unit_probability_rejects_out_of_range():
     assert _parse_unit_probability(None) is None
     assert _parse_unit_probability('0.5') is None
     assert _parse_unit_probability(True) is None
+    # NaN / Inf must fall through too — NaN comparisons are always False so
+    # the range checks alone don't catch it. CodeRabbit Minor: PR #1226.
+    assert _parse_unit_probability(float('nan')) is None
+    assert _parse_unit_probability(float('inf')) is None
+    assert _parse_unit_probability(float('-inf')) is None
+
+
+def test_loader_wires_work_break_game_invite_probability(tmp_path):
+    """File → _load_from_file → ActivityPreferences carries the new field.
+
+    Pins the JSON loader path end-to-end so renaming the key or breaking
+    ``_parse_activity_section`` wiring fails loud here, not silently
+    falls back to the code default. CodeRabbit Nitpick: PR #1226.
+    """
+    import json
+    from utils.activity_config import _GLOBAL_CONVERSATION_KEY, _load_from_file
+
+    pref_file = tmp_path / 'user_preferences.json'
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {
+                'work_break_game_invite_probability': 0.25,
+            },
+        }]),
+        encoding='utf-8',
+    )
+    prefs = _load_from_file(str(pref_file))
+    assert prefs is not None
+    assert prefs.work_break_game_invite_probability == 0.25
+
+    # Negative case: invalid value falls through to None (uses code default).
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {
+                'work_break_game_invite_probability': 2,  # out of range
+            },
+        }]),
+        encoding='utf-8',
+    )
+    prefs = _load_from_file(str(pref_file))
+    assert prefs is not None
+    assert prefs.work_break_game_invite_probability is None
+
+    # Missing field → None (default).
+    pref_file.write_text(
+        json.dumps([{
+            'model_path': _GLOBAL_CONVERSATION_KEY,
+            'activity': {},
+        }]),
+        encoding='utf-8',
+    )
+    prefs = _load_from_file(str(pref_file))
+    assert prefs is not None
+    assert prefs.work_break_game_invite_probability is None
