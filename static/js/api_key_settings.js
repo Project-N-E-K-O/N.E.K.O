@@ -45,6 +45,152 @@ function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelAp
         || lowerUrl.startsWith('https://localhost:');
 }
 
+function normalizeLocalKokoroWsUrl(value) {
+    const raw = (value || '').trim();
+    if (!raw) return 'ws://127.0.0.1:50000';
+    return raw;
+}
+
+function localKokoroHttpBaseFromWs(wsUrl) {
+    const raw = (wsUrl || '').trim();
+    if (!raw) return 'http://127.0.0.1:50000';
+    try {
+        const url = new URL(raw);
+        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) {
+            return null;
+        }
+        url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+        url.pathname = '';
+        url.search = '';
+        url.hash = '';
+        return url.toString().replace(/\/$/, '');
+    } catch (e) {
+        return null;
+    }
+}
+
+async function fetchLocalKokoroJson(url, timeoutMs = 3000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const resp = await fetch(url, {
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+        return await resp.json();
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function ensureLocalKokoroVoiceOption(voiceId) {
+    const select = document.getElementById('localKokoroVoiceSelect');
+    if (!select || !voiceId) return;
+    const exists = Array.from(select.options).some(opt => opt.value === voiceId);
+    if (!exists) {
+        const option = document.createElement('option');
+        option.value = voiceId;
+        option.textContent = voiceId.replace(/^kokoro:/, '');
+        select.appendChild(option);
+    }
+}
+
+async function refreshLocalKokoroVoiceOptions(silent = true) {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (!localUrlInput || !localVoiceSelect) return;
+
+    const currentVoice = localVoiceSelect.value || 'kokoro:zf_001';
+    const httpBase = localKokoroHttpBaseFromWs(localUrlInput.value);
+    if (!httpBase) return;
+    try {
+        const result = await fetchLocalKokoroJson(`${httpBase}/v1/voices`);
+        const voices = result?.data?.kokoro || [];
+        if (!Array.isArray(voices) || voices.length === 0) return;
+
+        localVoiceSelect.innerHTML = '';
+        voices.forEach(v => {
+            const voiceId = v.voice_id || `kokoro:${v.id || v.name}`;
+            if (!voiceId || voiceId === 'kokoro:') return;
+            const option = document.createElement('option');
+            option.value = voiceId;
+            option.textContent = v.name || voiceId.replace(/^kokoro:/, '');
+            option.title = voiceId;
+            localVoiceSelect.appendChild(option);
+        });
+        ensureLocalKokoroVoiceOption(currentVoice);
+        localVoiceSelect.value = Array.from(localVoiceSelect.options).some(opt => opt.value === currentVoice)
+            ? currentVoice
+            : 'kokoro:zf_001';
+    } catch (e) {
+        if (!silent) {
+            showStatus(`Local Kokoro voice list unavailable: ${e.message || e}`, 'error');
+        }
+    }
+}
+
+function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId) {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (!localUrlInput || !localVoiceSelect) return;
+
+    const savedUrl = (ttsModelUrl || '').trim();
+    const savedVoice = (ttsVoiceId || '').trim();
+    if (/^wss?:\/\//i.test(savedUrl)) {
+        localUrlInput.value = savedUrl;
+    } else if (!localUrlInput.value) {
+        localUrlInput.value = 'ws://127.0.0.1:50000';
+    }
+
+    const voice = savedVoice.startsWith('kokoro:') ? savedVoice : 'kokoro:zf_001';
+    ensureLocalKokoroVoiceOption(voice);
+    localVoiceSelect.value = voice;
+    refreshLocalKokoroVoiceOptions(true);
+}
+
+function applyLocalKokoroTtsConfig() {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    const providerSelect = document.getElementById('ttsModelProvider');
+    const urlInput = document.getElementById('ttsModelUrl');
+    const voiceInput = document.getElementById('ttsVoiceId');
+    const modelIdInput = document.getElementById('ttsModelId');
+    const apiKeyInput = document.getElementById('ttsModelApiKey');
+
+    const wsUrl = normalizeLocalKokoroWsUrl(localUrlInput ? localUrlInput.value : '');
+    const voiceId = localVoiceSelect ? (localVoiceSelect.value || 'kokoro:zf_001') : 'kokoro:zf_001';
+
+    if (providerSelect) {
+        providerSelect.value = 'custom';
+        onCustomModelProviderChange('tts');
+    }
+    if (urlInput) {
+        urlInput.removeAttribute('readonly');
+        urlInput.value = wsUrl;
+    }
+    if (voiceInput) {
+        voiceInput.value = voiceId;
+    }
+    if (modelIdInput && !modelIdInput.value.trim()) {
+        modelIdInput.value = 'kokoro-v1.1-zh';
+    }
+    if (apiKeyInput) {
+        apiKeyInput.removeAttribute('readonly');
+        apiKeyInput.dataset.realKey = '';
+        apiKeyInput.value = '';
+    }
+
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
+    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
+        gptsovitsEnabled.checked = false;
+        toggleGptSovitsConfig();
+    }
+
+    markTtsConfigDirty();
+    syncProviderSelectDropdowns(providerSelect);
+}
+
 /**
  * 遮蔽 API Key：只显示前6位和后6位，中间用 *** 替代。
  * 短于14位的 key 原样返回（不够遮蔽）。
@@ -1140,6 +1286,7 @@ async function loadCurrentApiKey() {
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
             );
+            loadLocalKokoroTtsConfig(data.ttsModelUrl, data.ttsVoiceId);
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -1605,6 +1752,15 @@ document.addEventListener('DOMContentLoaded', function () {
         el.addEventListener('change', markTtsConfigDirty);
         if (el.tagName !== 'SELECT') {
             el.addEventListener('input', markTtsConfigDirty);
+        }
+    });
+
+    ['localKokoroWsUrl', 'localKokoroVoiceSelect'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('change', applyLocalKokoroTtsConfig);
+        if (el.tagName !== 'SELECT') {
+            el.addEventListener('input', applyLocalKokoroTtsConfig);
         }
     });
 

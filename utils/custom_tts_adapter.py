@@ -9,6 +9,8 @@ from typing import Callable, Optional
 
 from config import GSV_VOICE_PREFIX
 
+LOCAL_LIGHTWEIGHT_TTS_PREFIXES = ("kokoro:", "melotts:", "melo:", "chattts:")
+
 
 def check_custom_tts_voice_allowed(
     voice_id: str,
@@ -20,6 +22,16 @@ def check_custom_tts_voice_allowed(
         - True / False when the voice_id is recognized by this adapter.
         - None when this adapter does not handle the given voice_id.
     """
+    lowered_voice_id = voice_id.lower()
+    if lowered_voice_id.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES):
+        suffix = voice_id.split(":", 1)[1].strip()
+        if not suffix:
+            return False
+        tts_config = get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url') or ''
+        is_custom = tts_config.get('is_custom', False)
+        return bool(is_custom and base_url.startswith(('ws://', 'wss://')))
+
     if not voice_id.startswith(GSV_VOICE_PREFIX):
         return None
 

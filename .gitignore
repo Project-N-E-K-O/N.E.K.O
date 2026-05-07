@@ -191,3 +191,10 @@ tests/testbench/docs/dev_note.txt
 
 # yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
 /static/yui-origin/
+
+# Local lightweight TTS model files are large runtime assets. Keep directory
+# placeholders in git, but do not commit downloaded ONNX / voice data files.
+local_server/local_tts_server/kokoro_models/*
+!local_server/local_tts_server/kokoro_models/.gitkeep
+.uv-cache-local/
+.venv-local-tts/
