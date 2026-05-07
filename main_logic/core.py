@@ -78,6 +78,7 @@ _STATUS_EMOJI = {
 _VOICE_ECHO_LOOKBACK_SECONDS = 20.0
 _VOICE_ECHO_LOOKBACK_CHARS = 1200
 _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
+_VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
 
@@ -99,10 +100,12 @@ def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
     recent_norm = _normalize_voice_echo_text(recent_ai_text)
     if len(recent_norm) < _VOICE_ECHO_MIN_NORMALIZED_CHARS:
         return False
-    if transcript_norm in recent_norm:
-        return True
     if len(transcript_norm) > len(recent_norm):
         return SequenceMatcher(None, transcript_norm, recent_norm).ratio() >= _VOICE_ECHO_SIMILARITY_THRESHOLD
+    if len(transcript_norm) < _VOICE_ECHO_MIN_WINDOW_CHARS:
+        return False
+    if transcript_norm in recent_norm:
+        return True
 
     window_len = len(transcript_norm)
     step = max(1, window_len // 3)

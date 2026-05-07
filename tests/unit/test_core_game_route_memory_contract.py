@@ -349,6 +349,30 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_short_keyword_barge_in_from_recent_ai_text_is_not_suppressed(monkeypatch):
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr._recent_ai_voice_echo_text = "Do you want tea or coffee?"
+    mgr._recent_ai_voice_echo_at = FIXED_TS
+
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "coffee", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["coffee"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "coffee",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "coffee"},
+    }]
+
+
+@pytest.mark.unit
 def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
     mgr = _make_transcript_manager()
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
