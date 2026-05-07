@@ -2372,7 +2372,11 @@ function dependencySummaryItem(kind, status = {}) {
   const taskKind = kind === 'rapidocr' ? 'rapidocr_models' : kind;
   if (taskKind === 'tesseract' || taskKind === 'textractor' || taskKind === 'rapidocr_models') {
     const taskState = installTaskDisplayState(taskKind);
-    if (taskState) {
+    const rapidocr = kind === 'rapidocr' ? (status.rapidocr || {}) : {};
+    const rapidocrModelsStillMissing = kind !== 'rapidocr'
+      || rapidocr.detail === 'missing_model_files'
+      || !rapidocr.installed;
+    if (taskState && rapidocrModelsStillMissing) {
       return {
         kind,
         label: kind === 'rapidocr' ? 'RapidOCR' : getInstallConfig(taskKind).label,
@@ -2384,7 +2388,7 @@ function dependencySummaryItem(kind, status = {}) {
   if (kind === 'rapidocr') {
     const rapidocr = status.rapidocr || {};
     if (!rapidocr.install_supported) {
-      return { kind, label: 'RapidOCR', state: 'optional', labelText: uiT('ui.install.summary.unsupported', '不支持'), needsAttention: false };
+      return { kind, label: 'RapidOCR', state: 'optional', labelText: uiT('ui.install.summary.platform_unsupported', '平台不支持'), needsAttention: false };
     }
     if (rapidocr.installed) {
       return { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.ready', '已就绪'), needsAttention: false };
@@ -2398,7 +2402,7 @@ function dependencySummaryItem(kind, status = {}) {
   if (kind === 'dxcam') {
     const dxcam = status.dxcam || {};
     if (!dxcam.install_supported) {
-      return { kind, label: 'DXcam', state: 'optional', labelText: uiT('ui.install.summary.unsupported', '不支持'), needsAttention: false };
+      return { kind, label: 'DXcam', state: 'optional', labelText: uiT('ui.install.summary.platform_unsupported', '平台不支持'), needsAttention: false };
     }
     return dxcam.installed
       ? { kind, label: 'DXcam', state: 'installed', labelText: uiT('ui.install.summary.ready', '已就绪'), needsAttention: false }
@@ -3934,6 +3938,20 @@ function renderStatus(status) {
   const ocrBackgroundStatus = status.ocr_background_status || {};
   const ocrBackgroundState = textValue(status.ocr_background_state || ocrBackgroundStatus.state);
   const ocrBackgroundMessage = textValue(status.ocr_background_message || ocrBackgroundStatus.message);
+
+  const rapidocrModelsState = getInstallState('rapidocr_models');
+  if (
+    rapidocr.installed
+    && rapidocr.detail !== 'missing_model_files'
+    && rapidocrModelsState.state
+    && isInstallTaskTerminal(rapidocrModelsState.state)
+  ) {
+    rapidocrModelsState.state = null;
+    rapidocrModelsState.inProgress = false;
+    clearPersistedInstallTaskId('rapidocr_models');
+    closeInstallStream('rapidocr_models');
+    clearInstallReconnectTimer('rapidocr_models');
+  }
 
   renderPrimaryDiagnosis(status);
   renderFirstRunGuide(status);

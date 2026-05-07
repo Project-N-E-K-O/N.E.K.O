@@ -879,7 +879,7 @@
   "ui.install.status.completed": "Completed",
   "ui.install.summary.ready": "Ready",
   "ui.install.summary.not_found": "Not Found",
-  "ui.install.summary.unsupported": "N/A",
+  "ui.install.summary.platform_unsupported": "Unsupported",
   "ui.install.summary.models_missing": "Models Missing",
   "ui.install.rapidocr.card_title": "RapidOCR",
   "ui.install.dxcam.card_title": "DXcam",

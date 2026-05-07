@@ -2364,6 +2364,7 @@ body:not(.onboarding-active) #onboardingView {
 .install-card {
   display: flex;
   gap: 14px;
+  min-width: 0;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -2407,35 +2408,44 @@ body:not(.onboarding-active) #onboardingView {
 .install-card-body {
   flex: 1;
   min-width: 0;
+  max-width: 100%;
 }
 
 .install-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
   margin-bottom: 4px;
 }
 
 .install-card-head h3 {
+  min-width: 0;
   margin: 0;
   font-size: 15px;
   font-weight: 700;
   color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .install-card-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  max-width: 100%;
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
   line-height: 1.3;
-  white-space: nowrap;
-  background: rgba(31, 35, 41, 0.07);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  background: rgba(31, 42, 51, 0.07);
   color: var(--muted);
-  flex-shrink: 0;
+  flex: 0 1 auto;
 }
 
 .install-card.ok .install-card-chip {
@@ -2450,7 +2460,7 @@ body:not(.onboarding-active) #onboardingView {
 
 .install-card.error .install-card-chip {
   background: rgba(210, 95, 69, 0.14);
-  color: var(--accent);
+  color: #8c2f21;
 }
 
 .install-card-desc {
@@ -2458,24 +2468,41 @@ body:not(.onboarding-active) #onboardingView {
   color: var(--ink);
   font-size: 13px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .install-card-meta {
+  display: block;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-width: 0;
   margin: 6px 0 0;
+  overflow: hidden;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
-  white-space: pre-line;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .install-card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   margin-top: 10px;
 }
 
+.install-card-actions button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .install-card .install-task-card {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 10px;
 }
 

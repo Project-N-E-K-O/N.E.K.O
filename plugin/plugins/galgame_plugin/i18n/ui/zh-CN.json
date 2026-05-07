@@ -879,7 +879,7 @@
   "ui.install.status.completed": "已完成",
   "ui.install.summary.ready": "已就绪",
   "ui.install.summary.not_found": "未检测到",
-  "ui.install.summary.unsupported": "不支持",
+  "ui.install.summary.platform_unsupported": "平台不支持",
   "ui.install.summary.models_missing": "模型缺失",
   "ui.install.rapidocr.card_title": "RapidOCR",
   "ui.install.dxcam.card_title": "DXcam",
