@@ -8,7 +8,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title data-i18n="ui.app.title">Galgame 游玩助手</title>
-  <link rel="stylesheet" href="./style.css?v=20260507-style-harmonization">
+  <link rel="stylesheet" href="./style.css?v=20260507-install-card-merge">
 </head>
 <body>
   <div class="page-shell">
@@ -406,134 +406,93 @@
               <span data-i18n="ui.install.title">依赖安装</span>
               <small id="installCompactSummary" data-i18n="ui.install.summary">OCR 识别依赖与内存读取依赖分开管理</small>
             </summary>
-            <div class="module-body install-stack">
-              <section class="install-module install-module-ocr">
-                <div class="install-module-head">
-                  <div>
-                    <p class="list-kicker" data-i18n="ui.install.ocr_module">OCR 识别模块</p>
-                    <h3 data-i18n="ui.install.ocr_deps">OCR Reader 依赖</h3>
-                  </div>
-                  <p class="install-module-summary" data-i18n="ui.install.ocr_desc">RapidOCR 是主识别后端，DXcam 负责稳定截图，Tesseract 仅作为兼容兜底。</p>
-                </div>
-                <div class="install-tabs">
-                  <!-- Keep these buttons in sync with OCR_INSTALL_TABS in main.js. -->
-                  <button class="install-tab active" data-install-tab="rapidocr">RapidOCR</button>
-                  <button class="install-tab" data-install-tab="dxcam">DXcam</button>
-                  <button class="install-tab" data-install-tab="tesseract">Tesseract</button>
-                </div>
-                <div class="install-panels install-panels-ocr">
-              <div id="rapidocrPrompt" class="install-banner install-banner-rapidocr" hidden>
-                <div class="install-copy">
-                  <p id="rapidocrPromptKicker" class="list-kicker" data-i18n="ui.install.rapidocr.kicker">OCR 主后端</p>
-                  <h3 id="rapidocrPromptTitle" data-i18n="ui.install.rapidocr.checking">正在检测 RapidOCR</h3>
-                  <p id="rapidocrPromptBody" data-i18n="ui.install.rapidocr.body">插件隔离的 RapidOCR 运行时检测结果会显示在这里。</p>
-                  <p id="rapidocrPathText" class="result-note"></p>
-                  <div id="rapidocrInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="rapidocrInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="rapidocrInstallPercent" class="install-task-percent">0%</p>
+            <div class="module-body">
+              <div class="install-card-grid">
+                <div id="rapidocrCard" class="install-card" data-dep="rapidocr">
+                  <div class="install-card-icon">🔍</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.rapidocr.card_title">RapidOCR</h3>
+                      <span id="rapidocrCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="rapidocrInstallBar" class="install-task-bar-fill"></div>
+                    <p id="rapidocrCardDesc" class="install-card-desc" data-i18n="ui.install.rapidocr.body">OCR 文字识别主后端</p>
+                    <p id="rapidocrCardMeta" class="install-card-meta"></p>
+                    <div id="rapidocrInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="rapidocrInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="rapidocrInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="rapidocrInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="rapidocrInstallMessage" class="result-note"></p>
+                      <p id="rapidocrInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="rapidocrInstallMessage" class="result-note"></p>
-                    <p id="rapidocrInstallDetail" class="result-note"></p>
+                    <div id="rapidocrCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="rapidocrUseBtn" class="secondary" data-i18n="ui.install.rapidocr.use">使用 RapidOCR</button>
-                  <button id="ocrBackendAutoBtn" class="ghost" data-i18n="ui.install.ocr_auto">OCR 自动</button>
-                  <button id="rapidocrModelsDownloadBtn" class="primary" data-i18n="ui.install.rapidocr.download_models.action" hidden>立即下载模型</button>
-                </div>
-              </div>
 
-              <div id="dxcamPrompt" class="install-banner install-banner-dxcam" hidden>
-                <div class="install-copy">
-                  <p id="dxcamPromptKicker" class="list-kicker" data-i18n="ui.install.dxcam.kicker">截图依赖</p>
-                  <h3 id="dxcamPromptTitle" data-i18n="ui.install.dxcam.checking">正在检测 DXcam</h3>
-                  <p id="dxcamPromptBody" data-i18n="ui.install.dxcam.body">DXcam 用于更可靠地截取前台游戏画面，降低被插件页面遮挡或旧帧影响的概率。</p>
-                  <p id="dxcamPathText" class="result-note"></p>
-                  <div id="dxcamInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="dxcamInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="dxcamInstallPercent" class="install-task-percent">0%</p>
+                <div id="dxcamCard" class="install-card" data-dep="dxcam">
+                  <div class="install-card-icon">📷</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.dxcam.card_title">DXcam</h3>
+                      <span id="dxcamCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="dxcamInstallBar" class="install-task-bar-fill"></div>
-                    </div>
-                    <p id="dxcamInstallMessage" class="result-note"></p>
-                    <p id="dxcamInstallDetail" class="result-note"></p>
+                    <p id="dxcamCardDesc" class="install-card-desc" data-i18n="ui.install.dxcam.body">屏幕截图依赖</p>
+                    <p id="dxcamCardMeta" class="install-card-meta"></p>
+                    <div id="dxcamCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="smartCaptureUseBtn" class="secondary" data-i18n="ui.install.smart.use">使用 Smart</button>
-                  <button id="dxcamUseBtn" class="secondary" data-i18n="ui.install.dxcam.use">使用 DXcam</button>
-                  <button id="captureBackendAutoBtn" class="ghost" data-i18n="ui.install.capture_auto">截图自动</button>
-                  <button id="mssUseBtn" class="ghost" data-i18n="ui.install.mss.use">使用 MSS</button>
-                  <button id="pyautoguiUseBtn" class="ghost" data-i18n="ui.install.pyautogui.use">使用 PyAutoGUI</button>
-                  <button id="printwindowUseBtn" class="ghost" data-i18n="ui.install.printwindow.use">使用 PrintWindow</button>
-                </div>
-              </div>
 
-              <div id="tesseractPrompt" class="install-banner install-banner-tesseract" hidden>
-                <div class="install-copy">
-                  <p id="tesseractPromptKicker" class="list-kicker" data-i18n="ui.install.tesseract.kicker">OCR 兼容兜底</p>
-                  <h3 id="tesseractPromptTitle" data-i18n="ui.install.tesseract.checking">正在检测 Tesseract</h3>
-                  <p id="tesseractPromptBody" data-i18n="ui.install.tesseract.body">本地 Tesseract 与 `chi_sim+jpn+eng` 语言包的兼容兜底检测结果会显示在这里。</p>
-                  <p id="tesseractPathText" class="result-note"></p>
-                  <div id="tesseractInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="tesseractInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="tesseractInstallPercent" class="install-task-percent">0%</p>
+                <div id="tesseractCard" class="install-card" data-dep="tesseract">
+                  <div class="install-card-icon">📝</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.tesseract.card_title">Tesseract</h3>
+                      <span id="tesseractCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="tesseractInstallBar" class="install-task-bar-fill"></div>
+                    <p id="tesseractCardDesc" class="install-card-desc" data-i18n="ui.install.tesseract.body">OCR 兼容兜底</p>
+                    <p id="tesseractCardMeta" class="install-card-meta"></p>
+                    <div id="tesseractInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="tesseractInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="tesseractInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="tesseractInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="tesseractInstallMessage" class="result-note"></p>
+                      <p id="tesseractInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="tesseractInstallMessage" class="result-note"></p>
-                    <p id="tesseractInstallDetail" class="result-note"></p>
+                    <div id="tesseractCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="tesseractUseBtn" class="secondary" data-i18n="ui.install.tesseract.use">使用 Tesseract</button>
-                  <button id="tesseractInstallBtn" class="primary" data-i18n="ui.install.tesseract.action">一键安装 Tesseract</button>
-                </div>
-              </div>
-                </div>
-              </section>
 
-              <section class="install-module install-module-memory">
-                <div class="install-module-head">
-                  <div>
-                    <p class="list-kicker" data-i18n="ui.install.memory_module">内存读取模块</p>
-                    <h3 data-i18n="ui.install.memory_deps">Memory Reader 依赖</h3>
-                  </div>
-                  <p class="install-module-summary" data-i18n="ui.install.memory_desc">Textractor 只服务于内存读取兜底路径，不影响 OCR 截图识别链路。</p>
-                </div>
-                <div class="install-panels install-panels-memory">
-              <div id="textractorPrompt" class="install-banner install-banner-textractor">
-                <div class="install-copy">
-                  <p id="textractorPromptKicker" class="list-kicker" data-i18n="ui.install.textractor.kicker">实验性兜底</p>
-                  <h3 id="textractorPromptTitle" data-i18n="ui.install.textractor.checking">正在检测 Textractor</h3>
-                  <p id="textractorPromptBody" data-i18n="ui.install.textractor.body">Textractor 仍保留为 Memory Reader 的实验性兜底，不再是当前首发主线。</p>
-                  <p id="textractorPathText" class="result-note"></p>
-                  <div id="textractorInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="textractorInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="textractorInstallPercent" class="install-task-percent">0%</p>
+                <div id="textractorCard" class="install-card" data-dep="textractor">
+                  <div class="install-card-icon">🧵</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.textractor.card_title">Textractor</h3>
+                      <span id="textractorCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="textractorInstallBar" class="install-task-bar-fill"></div>
+                    <p id="textractorCardDesc" class="install-card-desc" data-i18n="ui.install.textractor.body">内存读取兜底</p>
+                    <p id="textractorCardMeta" class="install-card-meta"></p>
+                    <div id="textractorInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="textractorInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="textractorInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="textractorInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="textractorInstallMessage" class="result-note"></p>
+                      <p id="textractorInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="textractorInstallMessage" class="result-note"></p>
-                    <p id="textractorInstallDetail" class="result-note"></p>
+                    <div id="textractorCardActions" class="install-card-actions"></div>
                   </div>
-                </div>
-                <div class="install-actions">
-                  <button id="textractorInstallBtn" class="secondary" data-i18n="ui.install.textractor.action">一键安装 Textractor</button>
                 </div>
               </div>
-                </div>
-              </section>
             </div>
           </details>
         </section>
