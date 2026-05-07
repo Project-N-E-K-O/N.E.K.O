@@ -3015,12 +3015,27 @@ function isInstallTaskTerminal(state) {
   return Boolean(state) && INSTALL_TERMINAL_STATUSES.has(String(state.status || ''));
 }
 
-function shouldRestoreInstallTaskState(kind, state) {
+function shouldOfferRapidOcrModelsDownload(rapidocr = {}) {
+  return Boolean(
+    rapidocr.detail === 'missing_model_files'
+    && rapidocr.can_download_models
+    && !rapidocr.installed
+  );
+}
+
+function shouldRestoreRapidOcrModelsFailure(state, status = latestStatus) {
+  if (String((state || {}).status || '') !== 'failed') {
+    return false;
+  }
+  return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});
+}
+
+function shouldRestoreInstallTaskState(kind, state, status = latestStatus) {
   if (!state) {
     return false;
   }
   if (kind === 'rapidocr_models' && String(state.status || '') === 'failed') {
-    return true;
+    return shouldRestoreRapidOcrModelsFailure(state, status);
   }
   return !isInstallTaskTerminal(state);
 }
@@ -3383,15 +3398,22 @@ function renderInstallTaskState(kind) {
 
 function applyRapidOcrModelsGate(rapidocr = {}) {
   const { card, button } = getInstallNodes('rapidocr_models');
-  const state = installRuntime.rapidocr_models.state;
+  const runtime = installRuntime.rapidocr_models;
+  let state = runtime.state;
   const config = getInstallConfig('rapidocr_models');
   const installed = Boolean(rapidocr.installed);
   const missingModels = rapidocr.detail === 'missing_model_files';
-  const canDownloadModels = Boolean(rapidocr.can_download_models);
+  const downloadable = shouldOfferRapidOcrModelsDownload(rapidocr);
+  if (state && state.status === 'failed' && !downloadable) {
+    clearPersistedInstallTaskId('rapidocr_models');
+    runtime.state = null;
+    runtime.currentTaskId = '';
+    runtime.inProgress = false;
+    state = null;
+  }
   const running = Boolean(state && !isInstallTaskTerminal(state));
   const waitingRefresh = Boolean(state && state.status === 'completed' && missingModels && !installed);
-  const retryableFailure = Boolean(state && state.status === 'failed' && missingModels && canDownloadModels && !installed);
-  const downloadable = missingModels && canDownloadModels && !installed;
+  const retryableFailure = Boolean(state && state.status === 'failed' && downloadable);
 
   if (card) {
     card.hidden = !(state && (running || waitingRefresh || retryableFailure));
@@ -3512,7 +3534,7 @@ function renderPluginUnavailable(error) {
   clearRapidOcrModelsControls();
 }
 
-function applyInstallTaskState(kind, state, { allowRefresh = true } = {}) {
+function applyInstallTaskState(kind, state, { allowRefresh = true, showTerminalFlash = true } = {}) {
   if (!state) {
     return;
   }
@@ -3548,11 +3570,13 @@ function applyInstallTaskState(kind, state, { allowRefresh = true } = {}) {
   }
   installState.handledTerminalKey = terminalKey;
 
-  const config = getInstallConfig(kind);
-  if (state.status === 'completed') {
-    setFlash(state.message || config.successFlash, 'success');
-  } else {
-    setFlash(state.error || state.message || config.failureFlash, 'error');
+  if (showTerminalFlash) {
+    const config = getInstallConfig(kind);
+    if (state.status === 'completed') {
+      setFlash(state.message || config.successFlash, 'success');
+    } else {
+      setFlash(state.error || state.message || config.failureFlash, 'error');
+    }
   }
 
   if (allowRefresh) {
@@ -3667,7 +3691,7 @@ async function restoreInstallState(kind) {
       persistedState = await fetchInstallTaskState(kind, persistedTaskId);
       if (!persistedState) {
         clearPersistedInstallTaskId(kind);
-      } else if (!shouldRestoreInstallTaskState(kind, persistedState)) {
+      } else if (!shouldRestoreInstallTaskState(kind, persistedState, latestStatus)) {
         clearPersistedInstallTaskId(kind);
         persistedState = null;
       }
@@ -3678,7 +3702,7 @@ async function restoreInstallState(kind) {
 
   try {
     latestState = await fetchLatestInstallTaskState(kind);
-    if (!shouldRestoreInstallTaskState(kind, latestState)) {
+    if (!shouldRestoreInstallTaskState(kind, latestState, latestStatus)) {
       latestState = null;
     }
   } catch (_) {
@@ -3690,7 +3714,7 @@ async function restoreInstallState(kind) {
     return;
   }
 
-  applyInstallTaskState(kind, restoredState, { allowRefresh: false });
+  applyInstallTaskState(kind, restoredState, { allowRefresh: false, showTerminalFlash: false });
   const restoredTaskId = restoredState.task_id || restoredState.run_id || '';
   if (restoredTaskId && !isInstallTaskTerminal(restoredState)) {
     connectInstallStream(kind, restoredTaskId);
@@ -4880,6 +4904,7 @@ function renderRapidOcr(status) {
   const path = document.getElementById('rapidocrPathText');
   const installed = Boolean(rapidocr.installed);
   renderInstallTaskState('rapidocr_models');
+  applyRapidOcrModelsGate(rapidocr);
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4909,7 +4934,6 @@ function renderRapidOcr(status) {
     title.textContent = uiT('ui.install.rapidocr.unsupported_title', '当前平台暂不支持 RapidOCR');
     body.textContent = uiT('ui.install.rapidocr.unsupported_body', 'RapidOCR 主后端目前只支持 Windows。');
     path.textContent = '';
-    applyRapidOcrModelsGate(rapidocr);
     return;
   }
 
@@ -4988,7 +5012,6 @@ function renderRapidOcr(status) {
     );
     path.textContent = '';
   }
-  applyRapidOcrModelsGate(rapidocr);
 }
 
 function renderDxcam(status) {

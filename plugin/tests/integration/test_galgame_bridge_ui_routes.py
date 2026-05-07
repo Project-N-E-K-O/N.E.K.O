@@ -194,6 +194,25 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
 
 
 @pytest.mark.asyncio
+async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+) -> None:
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/main.js")
+
+    assert response.status_code == 200
+    script = response.text
+    assert "function shouldOfferRapidOcrModelsDownload" in script
+    assert "function shouldRestoreRapidOcrModelsFailure" in script
+    assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
+    assert "showTerminalFlash: false" in script
+    assert "clearPersistedInstallTaskId('rapidocr_models');" in script
+    assert script.index("applyRapidOcrModelsGate(rapidocr);") < script.index(
+        "const lastTask = installRuntime.rapidocr_models.state;"
+    )
+
+
+@pytest.mark.asyncio
 async def test_galgame_plugin_ui_i18n_script_is_served(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
