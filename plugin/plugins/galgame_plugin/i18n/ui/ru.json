@@ -145,6 +145,8 @@
   "ui.agent.tab_status": "Статус",
   "ui.agent.tab_suggest": "Советы",
   "ui.agent.tab_pushes": "Push-журнал",
+  "ui.agent.empty_status": "Agent приводит заметки в порядок и ждет первое обновление статуса.",
+  "ui.agent.empty_suggest": "Советов пока нет. Они появятся, когда на экране будут варианты выбора.",
   "ui.agent_status.running": "Выполняется",
   "ui.agent_status.read_only": "Режим чтения",
   "ui.agent_status.paused_by_user": "Ожидание пользователя",

@@ -5641,6 +5641,7 @@ function renderAgentStatusGrid(rows, summaryRows) {
   const container = document.getElementById('agentStatusGrid');
   const debugWasOpen = Boolean(container?.querySelector('.status-debug-panel')?.open);
   renderPreservingScroll(container, () => {
+    container.className = 'data-grid scroll-region';
     container.innerHTML = `
       ${renderDataRows(rows)}
       <details class="status-debug-panel"${debugWasOpen ? ' open' : ''}>
@@ -5699,7 +5700,7 @@ function renderSuggest(payload) {
             <h3>${escapeHtml(item.text || '')}</h3>
             <p>${escapeHtml(item.reason || '')}</p>
           </article>
-        `).join('') : `<div class="empty-inline">${escapeHtml(payload.diagnostic || 'No suggestion yet')}</div>`}
+        `).join('') : `<div class="empty-inline agent-suggest-empty">${escapeHtml(payload.diagnostic || uiT('ui.agent.empty_suggest', '还没有建议，等画面出现选项再轻轻递上来。'))}</div>`}
       </div>
     `;
   });

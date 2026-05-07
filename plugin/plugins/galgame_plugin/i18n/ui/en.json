@@ -145,6 +145,8 @@
   "ui.agent.tab_status": "Status",
   "ui.agent.tab_suggest": "Suggest",
   "ui.agent.tab_pushes": "Pushes",
+  "ui.agent.empty_status": "Agent is tidying its notes and waiting for the first status refresh.",
+  "ui.agent.empty_suggest": "No suggestions yet. They will appear once choices show up on screen.",
   "ui.agent_status.running": "Running",
   "ui.agent_status.read_only": "Read-only companion",
   "ui.agent_status.paused_by_user": "User standby",

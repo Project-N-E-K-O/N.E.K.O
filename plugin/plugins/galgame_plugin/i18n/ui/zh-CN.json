@@ -145,6 +145,8 @@
   "ui.agent.tab_status": "状态",
   "ui.agent.tab_suggest": "建议",
   "ui.agent.tab_pushes": "推送记录",
+  "ui.agent.empty_status": "Agent 正在整理小本本，等第一次状态刷新。",
+  "ui.agent.empty_suggest": "还没有建议，等画面出现选项再轻轻递上来。",
   "ui.agent_status.running": "运行中",
   "ui.agent_status.read_only": "只读伴读",
   "ui.agent_status.paused_by_user": "用户待机",

@@ -145,6 +145,8 @@
   "ui.agent.tab_status": "상태",
   "ui.agent.tab_suggest": "제안",
   "ui.agent.tab_pushes": "푸시 기록",
+  "ui.agent.empty_status": "Agent가 메모를 정리하며 첫 상태 새로고침을 기다리고 있습니다.",
+  "ui.agent.empty_suggest": "아직 제안이 없습니다. 화면에 선택지가 나타나면 살짝 건네드릴게요.",
   "ui.agent_status.running": "실행 중",
   "ui.agent_status.read_only": "읽기 전용 동행",
   "ui.agent_status.paused_by_user": "사용자 대기",

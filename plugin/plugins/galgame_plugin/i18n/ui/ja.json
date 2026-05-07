@@ -145,6 +145,8 @@
   "ui.agent.tab_status": "状態",
   "ui.agent.tab_suggest": "提案",
   "ui.agent.tab_pushes": "プッシュ履歴",
+  "ui.agent.empty_status": "Agent はメモを整えながら、最初の状態更新を待っています。",
+  "ui.agent.empty_suggest": "まだ提案はありません。画面に選択肢が出たらそっと表示します。",
   "ui.agent_status.running": "実行中",
   "ui.agent_status.read_only": "読み取り専用の伴読",
   "ui.agent_status.paused_by_user": "ユーザー待機",
