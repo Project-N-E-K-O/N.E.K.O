@@ -438,7 +438,7 @@ class Live2DManager {
     _getRenderResolutionForQuality(quality) {
         const deviceRatio = Math.max(1, window.devicePixelRatio || 1);
         if (quality === 'low') {
-            return Math.max(0.75, Math.min(deviceRatio, 1));
+            return Math.max(0.75, Math.min(deviceRatio * 0.75, 1));
         }
         if (quality === 'high') {
             return deviceRatio;
