@@ -39,6 +39,8 @@ _DIALOGUE_COLON_RE = re.compile(r"^[^:：]{1,40}[:：]\s*.+\S$")
 _SPEAKER_QUOTE_RE = re.compile(r"^[^「」『』:：]{1,40}[「『].+[」』]$")
 _BRACKET_SPEAKER_RE = re.compile(r"^[【\[][^\]】]{1,40}[\]】]\s*.+\S$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_TEMPERATURE_STATUS_RE = re.compile(r"^\s*[+-]?\d{1,2}\s*(?:°\s*[cC℃]?|℃)\s*$")
+_ASCII_ID_RE = re.compile(r"[a-z0-9]+")
 _LOGGER = logging.getLogger(__name__)
 _DEFAULT_MODEL_FEATURE_SCALES = {
     "mean_luminance": 255.0,
@@ -265,12 +267,23 @@ def classify_screen_from_ocr(
     )
     lines = _merged_ocr_lines(regions)
     ui_elements = _merged_screen_ui_elements(regions, lines=lines)
+    ui_elements, filtered_count = _filter_chrome_noise_ui_elements(
+        ui_elements,
+        window_title=str((template_context or {}).get("window_title") or ""),
+    )
+    if filtered_count > 0:
+        lines = _dedupe_preserve_order(
+            _clean_line(str(element.get("text") or ""))
+            for element in ui_elements
+            if _clean_line(str(element.get("text") or ""))
+        )
     visual = dict(visual_features or {})
     layout = _layout_features(ui_elements)
     debug: dict[str, Any] = {
         "sources": [region.source for region in regions if region.source],
         "line_count": len(lines),
         "ui_element_count": len(ui_elements),
+        "chrome_filtered_count": filtered_count,
         "visual": _bounded_debug_value(visual),
         "layout": layout,
         "reason": "",
@@ -679,6 +692,52 @@ def _ocr_lines(ocr_text: str, *, boxes: Iterable[Any] | None) -> list[str]:
         return _dedupe_preserve_order(lines)
     box_lines = [_clean_line(_box_text(box)) for box in list(boxes or [])]
     return _dedupe_preserve_order(line for line in box_lines if line)
+
+
+def _compact_ascii_id(value: str) -> str:
+    return "".join(_ASCII_ID_RE.findall(str(value or "").casefold()))
+
+
+def _looks_like_window_title_line(line: str, window_title: str) -> bool:
+    title_key = _compact_ascii_id(window_title)
+    if len(title_key) < 4:
+        return False
+    line_key = _compact_ascii_id(line)
+    if not line_key:
+        return False
+    if line_key == title_key:
+        return True
+    return line_key.startswith(title_key) and len(line_key) <= len(title_key) + 3
+
+
+def _filter_chrome_noise_ui_elements(
+    elements: list[dict[str, Any]],
+    *,
+    window_title: str,
+) -> tuple[list[dict[str, Any]], int]:
+    filtered: list[dict[str, Any]] = []
+    removed = 0
+    for element in elements:
+        text = _clean_line(str(element.get("text") or ""))
+        bounds = element.get("normalized_bounds")
+        if not isinstance(bounds, dict):
+            filtered.append(element)
+            continue
+        try:
+            top = float(bounds.get("top"))
+            bottom = float(bounds.get("bottom"))
+            left = float(bounds.get("left"))
+        except (TypeError, ValueError):
+            filtered.append(element)
+            continue
+        if top <= 0.06 and _looks_like_window_title_line(text, window_title):
+            removed += 1
+            continue
+        if bottom >= 0.95 and left <= 0.20 and _TEMPERATURE_STATUS_RE.match(text):
+            removed += 1
+            continue
+        filtered.append(element)
+    return filtered, removed
 
 
 def _screen_ui_elements(

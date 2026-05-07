@@ -116,11 +116,10 @@ install_manifest_url = ""
 install_target_dir = ""
 install_timeout_seconds = 180
 engine_type = "onnxruntime"
-# Default `japan` rec + `PP-OCRv4` matches the primary use case (Japanese
-# visual novels). v4 + ch is bundled in the wheel; v4 + japan triggers an
-# explicit user-confirmed model download on first run (see install_routes
-# /rapidocr-models/download).
-lang_type = "japan"
+# Default to the bundled Chinese model for better Chinese VN OCR. Japanese
+# games can switch this back to `japan`; discrete GPUs may prefer
+# `model_type = "server"` for higher accuracy at higher latency.
+lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv4"
 

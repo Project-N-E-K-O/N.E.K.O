@@ -39,6 +39,7 @@ from plugin.plugins.galgame_plugin.models import (
 )
 from plugin.plugins.galgame_plugin.ocr_reader import (
     DetectedGameWindow,
+    OcrBackendDescriptor,
     OcrCaptureProfile,
     OcrExtractionResult,
     OcrReaderBridgeWriter,
@@ -596,6 +597,38 @@ def test_screen_classifier_merges_full_frame_ocr_regions() -> None:
     assert classified.ui_elements[0]["text_source"] == "full_frame"
     assert classified.ui_elements[0]["normalized_bounds"]["left"] == pytest.approx(120.0 / 1280.0)
     assert classified.debug["sources"] == ["bottom_region", "full_frame"]
+
+
+def test_screen_classifier_filters_window_chrome_noise_from_regions() -> None:
+    boxes = [
+        OcrTextBox("TheLamentingGeese口×", 12.0, 4.0, 1260.0, 28.0, 0.9),
+        OcrTextBox("有人是猪马牛羊，有人是虎豹豺狼。", 140.0, 734.0, 780.0, 760.0, 0.96),
+        OcrTextBox("16°℃", 40.0, 980.0, 74.0, 996.0, 0.88),
+    ]
+
+    classified = classify_screen_from_ocr(
+        "",
+        ocr_regions=[
+            {
+                "source": "full_frame",
+                "text": "\n".join(box.text for box in boxes),
+                "boxes": boxes,
+                "bounds_metadata": {
+                    "bounds_coordinate_space": "capture",
+                    "source_size": {"width": 1296.0, "height": 999.0},
+                    "capture_rect": {"left": 5.0, "top": 61.0, "right": 1301.0, "bottom": 1060.0},
+                    "window_rect": {"left": 5.0, "top": 61.0, "right": 1301.0, "bottom": 1060.0},
+                },
+            }
+        ],
+        template_context={"window_title": "TheLamentingGeese"},
+    )
+
+    assert classified.raw_ocr_text == ["有人是猪马牛羊，有人是虎豹豺狼。"]
+    assert [element["text"] for element in classified.ui_elements] == [
+        "有人是猪马牛羊，有人是虎豹豺狼。"
+    ]
+    assert classified.debug["chrome_filtered_count"] == 2
 
 
 def test_screen_classifier_detects_blank_visual_transition_without_ocr() -> None:
@@ -1957,6 +1990,67 @@ def test_background_hash_excludes_bottom_dialogue_region() -> None:
         cropped_first.info["galgame_source_background_hash"]
         == cropped_second.info["galgame_source_background_hash"]
     )
+
+
+def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _window()[0]
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda _target: (5, 92, 1301, 1060),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+
+    rect = galgame_ocr_reader._target_screen_capture_rect(target)
+
+    assert rect == (5, 92, 1301, 1040)
+
+
+def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (120, 100), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 119, 19), fill=(255, 0, 0))
+    draw.rectangle((0, 20, 119, 99), fill=(0, 255, 0))
+
+    client_image = galgame_ocr_reader._crop_image_to_screen_rect(
+        image,
+        image_rect=(10, 10, 130, 110),
+        crop_rect=(10, 30, 130, 110),
+    )
+    cropped = galgame_ocr_reader._crop_window_image(
+        client_image,
+        window_rect=(10, 30, 130, 110),
+        profile=galgame_ocr_reader.OcrCaptureProfile(
+            left_inset_ratio=0.0,
+            right_inset_ratio=0.0,
+            top_ratio=0.0,
+            bottom_inset_ratio=0.0,
+        ),
+        backend_kind="test",
+        backend_detail="test",
+    )
+
+    assert cropped.size == (120, 80)
+    assert cropped.getpixel((0, 0)) == (0, 255, 0)
+    assert cropped.info["galgame_window_rect"] == {
+        "left": 10.0,
+        "top": 30.0,
+        "right": 130.0,
+        "bottom": 110.0,
+    }
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -5091,6 +5185,29 @@ def test_rapidocr_text_adapter_groups_lines_and_filters_low_confidence() -> None
     assert _rapidocr_text_from_output(output) == "雪乃Hello\n今天回家"
 
 
+def test_fix_ocr_punctuation_confusion_for_cjk_dialogue() -> None:
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.") == "这是对白。"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("但是, 另一个") == "但是、另一个"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("真的吗?") == "真的吗？"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("对白。") == "对白。"
+
+
+def test_ocr_dialogue_detection_accepts_fixed_cjk_punctuation() -> None:
+    fixed = galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.")
+    assert galgame_ocr_reader._looks_like_ocr_dialogue_normalized_text(fixed)
+
+
+def test_drop_ocr_chrome_noise_lines_keeps_dialogue() -> None:
+    raw_text = "TheLamentingGeese\n有人是猪马牛羊，有人是虎豹豺狼。\n16°℃"
+
+    filtered = galgame_ocr_reader._drop_ocr_chrome_noise_lines(
+        raw_text,
+        window_title="TheLamentingGeese",
+    )
+
+    assert filtered == "有人是猪马牛羊，有人是虎豹豺狼。"
+
+
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     tmp_path: Path,
@@ -5227,6 +5344,53 @@ async def test_ocr_reader_manager_falls_back_to_tesseract_after_rapidocr_runtime
     assert second.runtime["backend_kind"] == "tesseract"
     assert second.runtime["backend_detail"] == "fallback_after_runtime_error"
     assert any("rapidocr failed" in warning for warning in second.warnings)
+
+
+def test_extract_text_from_image_falls_back_when_rapidocr_boxes_are_empty(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+
+    class _EmptyRapidOcrBackend(galgame_ocr_reader.RapidOcrBackend):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract_text_with_boxes(self, image):
+            del image
+            self.calls += 1
+            return "", []
+
+    rapidocr = _EmptyRapidOcrBackend()
+    tesseract = _FakeOcrBackend(["雪乃：你好。"])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+    plan = SelectedOcrBackendPlan(
+        primary=OcrBackendDescriptor(
+            kind="rapidocr",
+            backend=rapidocr,
+            available=True,
+            detail="selected_primary",
+        ),
+        fallback=OcrBackendDescriptor(
+            kind="tesseract",
+            backend=tesseract,
+            available=True,
+            detail="auto_fallback_from_rapidocr",
+        ),
+    )
+
+    result = manager._extract_text_from_image("image", plan=plan)
+
+    assert result.text == "雪乃：你好。"
+    assert result.backend.kind == "tesseract"
+    assert result.backend_detail == "fallback_after_runtime_error"
+    assert rapidocr.calls == 1
+    assert tesseract.calls == 1
+    assert any("rapidocr returned empty text" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
