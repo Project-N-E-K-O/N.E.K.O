@@ -94,6 +94,7 @@ def _make_manager():
     mgr._recent_ai_voice_echo_at = 0.0
     mgr._pending_ai_voice_echo_text = ""
     mgr._pending_ai_voice_echo_chunks = deque()
+    mgr._confirmed_ai_voice_echo_audio_speech_ids = set()
     mgr.tts_ready = False
     mgr.tts_thread = None
     mgr.tts_request_queue = _FakeQueue()
@@ -425,6 +426,7 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
     mgr._recent_ai_voice_echo_at = FIXED_TS
     mgr._pending_ai_voice_echo_text = "还没确认播放的文本"
     mgr._pending_ai_voice_echo_chunks.append("还没确认播放的文本")
+    mgr._confirmed_ai_voice_echo_audio_speech_ids.add("old-speech")
 
     core_module.LLMSessionManager._reset_voice_echo_suppression_cache(mgr)
 
@@ -432,6 +434,7 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
     assert mgr._recent_ai_voice_echo_at == 0.0
     assert mgr._pending_ai_voice_echo_text == ""
     assert list(mgr._pending_ai_voice_echo_chunks) == []
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
 
 
 @pytest.mark.unit
@@ -491,13 +494,15 @@ async def test_mirror_assistant_speech_confirms_audio_echo_after_tts_audio(monke
     assert mgr.tts_request_queue.messages[0][1] == "要不要休息一下喝点水"
     assert mgr._pending_ai_voice_echo_text == "要不要休息一下喝点水"
     assert list(mgr._pending_ai_voice_echo_chunks) == ["要不要休息一下喝点水"]
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
     assert mgr._recent_ai_voice_echo_text == ""
     assert mgr._recent_ai_voice_echo_at == 0.0
 
-    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr)
+    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr, "old-speech")
 
     assert mgr._pending_ai_voice_echo_text == ""
     assert list(mgr._pending_ai_voice_echo_chunks) == []
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == {"old-speech"}
     assert mgr._recent_ai_voice_echo_text == "要不要休息一下喝点水"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
 
@@ -519,6 +524,22 @@ def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypat
 
 
 @pytest.mark.unit
+def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "第一段文本")
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "第二段未播文本")
+
+    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr, "speech-1")
+    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr, "speech-1")
+
+    assert mgr._recent_ai_voice_echo_text == "第一段文本"
+    assert mgr._pending_ai_voice_echo_text == "第二段未播文本"
+    assert list(mgr._pending_ai_voice_echo_chunks) == ["第二段未播文本"]
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr = _make_manager()
@@ -528,6 +549,7 @@ async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr._recent_ai_voice_echo_at = FIXED_TS
     mgr._pending_ai_voice_echo_text = "还没来得及播放的队列文本"
     mgr._pending_ai_voice_echo_chunks.append("还没来得及播放的队列文本")
+    mgr._confirmed_ai_voice_echo_audio_speech_ids.add("old-speech")
     mgr.tts_pending_chunks = [("sid-old", "pending text")]
 
     await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
@@ -536,6 +558,7 @@ async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     assert mgr.tts_pending_chunks == []
     assert mgr._pending_ai_voice_echo_text == ""
     assert list(mgr._pending_ai_voice_echo_chunks) == []
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
     assert mgr._recent_ai_voice_echo_text == "已经播出的尾音"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
 

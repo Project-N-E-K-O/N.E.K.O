@@ -594,6 +594,7 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_at: float = 0.0
         self._pending_ai_voice_echo_text: str = ''
         self._pending_ai_voice_echo_chunks = deque()
+        self._confirmed_ai_voice_echo_audio_speech_ids: set[str | None] = set()
 
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
@@ -1483,6 +1484,11 @@ class LLMSessionManager:
             self._pending_ai_voice_echo_chunks = deque()
         else:
             pending_chunks.clear()
+        confirmed_speech_ids = getattr(self, "_confirmed_ai_voice_echo_audio_speech_ids", None)
+        if confirmed_speech_ids is None:
+            self._confirmed_ai_voice_echo_audio_speech_ids = set()
+        else:
+            confirmed_speech_ids.clear()
 
     def _remember_recent_ai_voice_echo(self, text: str) -> None:
         if not text:
@@ -1519,13 +1525,21 @@ class LLMSessionManager:
 
         self._pending_ai_voice_echo_text = "".join(pending_chunks)
 
-    def _confirm_pending_ai_voice_echo(self) -> None:
+    def _confirm_pending_ai_voice_echo(self, speech_id: str | None = None) -> None:
+        confirmed_speech_ids = getattr(self, "_confirmed_ai_voice_echo_audio_speech_ids", None)
+        if confirmed_speech_ids is None:
+            confirmed_speech_ids = set()
+            self._confirmed_ai_voice_echo_audio_speech_ids = confirmed_speech_ids
+        if speech_id in confirmed_speech_ids:
+            return
+
         pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
         if pending_chunks is None:
             pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
             if not pending_echo_text:
                 return
             self._pending_ai_voice_echo_text = ''
+            confirmed_speech_ids.add(speech_id)
             self._remember_recent_ai_voice_echo(pending_echo_text)
             return
 
@@ -1535,6 +1549,7 @@ class LLMSessionManager:
 
         pending_echo_text = pending_chunks.popleft()
         self._sync_pending_ai_voice_echo_text()
+        confirmed_speech_ids.add(speech_id)
         self._remember_recent_ai_voice_echo(pending_echo_text)
 
     def _discard_pending_ai_voice_echo(self) -> None:
@@ -1542,6 +1557,9 @@ class LLMSessionManager:
         pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
         if pending_chunks is not None:
             pending_chunks.clear()
+        confirmed_speech_ids = getattr(self, "_confirmed_ai_voice_echo_audio_speech_ids", None)
+        if confirmed_speech_ids is not None:
+            confirmed_speech_ids.clear()
 
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
@@ -6016,13 +6034,13 @@ class LLMSessionManager:
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
-                        self._confirm_pending_ai_voice_echo()
+                        self._confirm_pending_ai_voice_echo(speech_id)
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 if await self.send_speech(data):
-                    self._confirm_pending_ai_voice_echo()
+                    self._confirm_pending_ai_voice_echo(getattr(self, "current_speech_id", None))
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
                 # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
