@@ -205,6 +205,12 @@ if ($useGpu) {
 
 $serverScript = Join-Path $scriptDir "server.py"
 $launcherScript = Join-Path $repoRoot "launcher.py"
+$launcherPython = if ($env:NEKO_LAUNCHER_PYTHON) {
+    $env:NEKO_LAUNCHER_PYTHON
+} else {
+    $repoVenvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    if (Test-Path $repoVenvPython) { $repoVenvPython } else { "python" }
+}
 $wsUrl = "ws://{0}:{1}" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $healthUrl = "http://{0}:{1}/health" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $existingLocalTtsKept = $false
@@ -302,6 +308,7 @@ Write-Host "Mode      : $env:LOCAL_TTS_SYNTHESIS_MODE"
 Write-Host "Device    : $env:LOCAL_TTS_KOKORO_DEVICE"
 Write-Host "Warmup    : on_connect=$env:LOCAL_TTS_WARMUP_ON_CONNECT startup=$env:LOCAL_TTS_STARTUP_WARMUP"
 Write-Host "Runtime   : uv isolated venv at $localTtsVenv"
+Write-Host "Launcher  : $launcherPython"
 Write-Host "UV Cache  : $env:UV_CACHE_DIR"
 Write-Host "WS URL    : $wsUrl"
 Write-Host "Health    : $healthUrl"
@@ -399,7 +406,7 @@ try {
     }
 
     Write-Host "Kokoro local TTS server ready, launching NEKO launcher..." -ForegroundColor Green
-    & python $launcherScript
+    & $launcherPython $launcherScript
     exit $LASTEXITCODE
 }
 finally {

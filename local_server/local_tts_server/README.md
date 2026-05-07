@@ -1,4 +1,4 @@
-﻿# NEKO Local Lightweight TTS
+# NEKO Local Lightweight TTS
 
 This service is the first-phase local TTS bridge for NEKO. It deliberately
 implements the same WebSocket protocol expected by `local_cosyvoice_worker`, so
@@ -53,6 +53,7 @@ The service accepts a model prefix in `voice`:
 ```text
 kokoro:<voice>
 melotts:<voice>
+melo:<voice>
 chattts:<voice>
 ```
 

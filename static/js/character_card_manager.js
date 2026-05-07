@@ -5509,18 +5509,24 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
     }
 }
 
-function _panelLocalKokoroHttpBaseFromWs(wsUrl) {
+function _panelLocalKokoroVoicesUrlFromWs(wsUrl) {
     const raw = (wsUrl || 'ws://127.0.0.1:50000').trim();
     try {
         const url = new URL(raw);
-        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) {
+        if (url.protocol === 'ws:') {
+            url.protocol = 'http:';
+        } else if (url.protocol === 'wss:') {
+            url.protocol = 'https:';
+        } else if (!['http:', 'https:'].includes(url.protocol)) {
             return null;
         }
-        url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-        url.pathname = '';
         url.search = '';
         url.hash = '';
-        return url.toString().replace(/\/$/, '');
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        url.pathname = `${pathname}/v1/voices`.replace(/\/{2,}/g, '/');
+        return url.toString();
     } catch (e) {
         return null;
     }
@@ -5545,9 +5551,9 @@ async function _fetchPanelKokoroVoices() {
     try {
         const config = await fetchJson('/api/config/core_api');
         const ttsUrl = config?.ttsModelUrl || 'ws://127.0.0.1:50000';
-        const httpBase = _panelLocalKokoroHttpBaseFromWs(ttsUrl);
-        if (!httpBase) return [];
-        const result = await fetchJson(`${httpBase}/v1/voices`);
+        const voicesUrl = _panelLocalKokoroVoicesUrlFromWs(ttsUrl);
+        if (!voicesUrl) return [];
+        const result = await fetchJson(voicesUrl);
         const voices = result?.data?.kokoro || [];
         if (Array.isArray(voices) && voices.length > 0) {
             return voices.map(v => ({

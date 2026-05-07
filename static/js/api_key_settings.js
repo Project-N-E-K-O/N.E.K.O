@@ -51,19 +51,25 @@ function normalizeLocalKokoroWsUrl(value) {
     return raw;
 }
 
-function localKokoroHttpBaseFromWs(wsUrl) {
+function localKokoroVoicesUrlFromWs(wsUrl) {
     const raw = (wsUrl || '').trim();
-    if (!raw) return 'http://127.0.0.1:50000';
+    if (!raw) return 'http://127.0.0.1:50000/v1/voices';
     try {
         const url = new URL(raw);
-        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) {
+        if (url.protocol === 'ws:') {
+            url.protocol = 'http:';
+        } else if (url.protocol === 'wss:') {
+            url.protocol = 'https:';
+        } else if (!['http:', 'https:'].includes(url.protocol)) {
             return null;
         }
-        url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-        url.pathname = '';
         url.search = '';
         url.hash = '';
-        return url.toString().replace(/\/$/, '');
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        url.pathname = `${pathname}/v1/voices`.replace(/\/{2,}/g, '/');
+        return url.toString();
     } catch (e) {
         return null;
     }
@@ -102,10 +108,10 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
     if (!localUrlInput || !localVoiceSelect) return;
 
     const currentVoice = localVoiceSelect.value || 'kokoro:zf_001';
-    const httpBase = localKokoroHttpBaseFromWs(localUrlInput.value);
-    if (!httpBase) return;
+    const voicesUrl = localKokoroVoicesUrlFromWs(localUrlInput.value);
+    if (!voicesUrl) return;
     try {
-        const result = await fetchLocalKokoroJson(`${httpBase}/v1/voices`);
+        const result = await fetchLocalKokoroJson(voicesUrl);
         const voices = result?.data?.kokoro || [];
         if (!Array.isArray(voices) || voices.length === 0) return;
 
