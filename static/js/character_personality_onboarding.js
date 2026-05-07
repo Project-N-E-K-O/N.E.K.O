@@ -89,6 +89,9 @@
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
+            // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
+            // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
+            this._tutorialFlowAborted = false;
             // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
             // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
             let settledResolveFn = null;
@@ -130,6 +133,7 @@
                     }),
                 ]);
                 if (!tutorialSettled) {
+                    this._tutorialFlowAborted = true;
                     console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
                 }
                 if (await this.openIfManualReselectPending()) {
@@ -280,6 +284,9 @@
             await this.waitForTutorialCompletion();
 
             while (true) {
+                if (this._tutorialFlowAborted) {
+                    return;
+                }
                 if (window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning) {
                     await this.waitForTutorialCompletion();
                     continue;
