@@ -35,8 +35,11 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/avatar-ui-buttons.js",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.png",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.png",
-    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3-click.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")

@@ -878,35 +878,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
  * 添加"请她回来"按钮的呼吸灯动画效果（与 Live2D 保持一致）
  */
 VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
-    // 检查是否已经添加过样式
-    const opts = this._avatarButtonOptions;
-    if (document.getElementById(opts.returnBreathingStyleId)) {
-        return;
-    }
-
-    const style = document.createElement('style');
-    style.id = opts.returnBreathingStyleId;
-    style.textContent = `
-        /* 请她回来按钮呼吸特效 */
-        @keyframes vrmReturnButtonBreathing {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-            50% {
-                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-        }
-        
-        #vrm-btn-return {
-            animation: vrmReturnButtonBreathing 2s ease-in-out infinite;
-            will-change: box-shadow;
-        }
-        
-        #vrm-btn-return:hover {
-            animation: none;
-        }
-    `;
-    document.head.appendChild(style);
+    // No-op: breathing animation removed, images provide visual identity.
 };
 
 /**

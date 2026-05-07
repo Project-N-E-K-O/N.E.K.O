@@ -361,53 +361,14 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-size: clamp(104px, 16vw, 136px);
     width: var(--neko-idle-return-size);
     height: var(--neko-idle-return-size);
-    border-radius: 28px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.9);
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 249, 252, 0.94));
-    box-shadow:
-        0 12px 24px rgba(17, 24, 39, 0.14),
-        0 4px 10px rgba(17, 24, 39, 0.1);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
-    isolation: isolate;
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
-    box-shadow:
-        0 10px 20px rgba(51, 65, 85, 0.15),
-        0 3px 8px rgba(51, 65, 85, 0.1);
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat3"] {
     --neko-idle-return-size: clamp(88px, 13vw, 112px);
-    box-shadow:
-        0 8px 18px rgba(71, 85, 105, 0.16),
-        0 2px 6px rgba(71, 85, 105, 0.12);
-    filter: saturate(0.96) brightness(0.985);
-}
-
-.neko-idle-return-btn::before {
-    content: '';
-    position: absolute;
-    inset: 8px;
-    border-radius: 22px;
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    pointer-events: none;
-}
-
-.neko-idle-return-btn:active {
-    transform: translateY(0) scale(0.985);
-}
-
-.neko-idle-return-button-container[data-dragging="true"] .neko-idle-return-btn {
-    transform: none !important;
-    box-shadow:
-        0 14px 30px rgba(17, 24, 39, 0.18),
-        0 6px 14px rgba(17, 24, 39, 0.12);
 }
 
 .neko-idle-return-art {
@@ -421,7 +382,6 @@ body.neko-game-active [id$="-lock-icon"] {
 @media (max-width: 768px) {
     .neko-idle-return-btn {
         --neko-idle-return-size: clamp(96px, 26vw, 120px);
-        border-radius: 24px;
     }
 
     .neko-idle-return-btn[data-neko-idle-tier="cat2"] {
@@ -430,11 +390,6 @@ body.neko-game-active [id$="-lock-icon"] {
 
     .neko-idle-return-btn[data-neko-idle-tier="cat3"] {
         --neko-idle-return-size: clamp(82px, 22vw, 100px);
-    }
-
-    .neko-idle-return-btn::before {
-        inset: 6px;
-        border-radius: 18px;
     }
 }
 

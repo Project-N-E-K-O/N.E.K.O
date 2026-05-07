@@ -220,9 +220,24 @@ function _getNekoIdleReturnAssetUrl(tier) {
         return `/static/assets/neko-idle/cat-idle-cat2.png${versionSuffix}`;
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
-        return `/static/assets/neko-idle/cat-idle-cat3.png${versionSuffix}`;
+        return `/static/assets/neko-idle/cat-idle-cat3.gif${versionSuffix}`;
     }
     return `/static/assets/neko-idle/cat-idle-cat1.png${versionSuffix}`;
+}
+
+function _getNekoIdleReturnClickAssetUrl(tier) {
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const versionSuffix = _NEKO_IDLE_RETURN_ASSET_VERSION
+        ? `?v=${encodeURIComponent(_NEKO_IDLE_RETURN_ASSET_VERSION)}`
+        : '';
+
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
+        return `/static/assets/neko-idle/cat-idle-cat2-click.png${versionSuffix}`;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
+        return `/static/assets/neko-idle/cat-idle-cat3-click.png${versionSuffix}`;
+    }
+    return `/static/assets/neko-idle/cat-idle-cat1-click.png${versionSuffix}`;
 }
 
 function _applyNekoIdleReturnPresentation(button, tier) {
@@ -684,17 +699,17 @@ const AvatarButtonMixin = {
             });
 
             returnBtn.addEventListener('mouseenter', () => {
-                returnBtn.style.transform = 'translateY(-2px) scale(1.03)';
-                returnBtn.style.boxShadow = '0 16px 28px rgba(17, 24, 39, 0.18), 0 5px 12px rgba(17, 24, 39, 0.14)';
-                returnArt.style.transform = 'scale(1.02)';
-                returnArt.style.filter = 'brightness(1.03) saturate(1.02)';
+                const tier = returnBtn.getAttribute('data-neko-idle-tier');
+                if (tier && tier !== 'none') {
+                    returnArt.src = _getNekoIdleReturnClickAssetUrl(tier);
+                }
             });
 
             returnBtn.addEventListener('mouseleave', () => {
-                returnBtn.style.transform = '';
-                returnBtn.style.boxShadow = '';
-                returnArt.style.transform = '';
-                returnArt.style.filter = '';
+                const tier = returnBtn.getAttribute('data-neko-idle-tier');
+                if (tier && tier !== 'none') {
+                    returnArt.src = _getNekoIdleReturnAssetUrl(tier);
+                }
             });
 
             returnBtn.addEventListener('click', (e) => {
@@ -806,28 +821,7 @@ const AvatarButtonMixin = {
          * 添加返回按钮呼吸灯动画
          */
         ManagerPrototype._addReturnButtonBreathingAnimation = function() {
-            const opts = this._avatarButtonOptions;
-            if (document.getElementById(opts.returnBreathingStyleId)) return;
-
-            const style = document.createElement('style');
-            style.id = opts.returnBreathingStyleId;
-            style.textContent = `
-                @keyframes ${this._avatarPrefix}ReturnButtonBreathing {
-                    0%, 100% {
-                        box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08);
-                    }
-                    50% {
-                        box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08);
-                    }
-                }
-                #${opts.returnBtnId} {
-                    animation: ${this._avatarPrefix}ReturnButtonBreathing 2s ease-in-out infinite;
-                }
-                #${opts.returnBtnId}:hover {
-                    animation: none;
-                }
-            `;
-            document.head.appendChild(style);
+            // No-op: breathing animation removed, images provide visual identity.
         };
 
         /**
