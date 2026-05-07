@@ -1005,6 +1005,7 @@ def test_primary_diagnosis_does_not_warn_for_long_stale_ocr_text_in_memory_mode(
 
 
 def test_primary_diagnosis_warns_when_ocr_poll_is_too_slow() -> None:
+    total_time = 5.1
     diagnosis = galgame_service.build_primary_diagnosis(
         {
             "active_data_source": DATA_SOURCE_OCR_READER,
@@ -1014,14 +1015,14 @@ def test_primary_diagnosis_warns_when_ocr_poll_is_too_slow() -> None:
                 "status": "active",
                 "effective_window_key": "pid:100:hwnd:200",
                 "last_raw_ocr_text": "短对白。",
-                "last_poll_duration_seconds": 5.1,
+                "last_poll_duration_seconds": total_time,
             },
         }
     )
 
     assert diagnosis["severity"] == "warning"
     assert diagnosis["title"] == "OCR 识别耗时过长"
-    assert "5.1s" in diagnosis["message"]
+    assert f"{total_time:.1f}s" in diagnosis["message"]
     assert "Screen Awareness" not in diagnosis["message"]
     assert [action["id"] for action in diagnosis["actions"]] == [
         "select_ocr_window",
@@ -1031,6 +1032,8 @@ def test_primary_diagnosis_warns_when_ocr_poll_is_too_slow() -> None:
 
 
 def test_primary_diagnosis_mentions_screen_awareness_when_slow_poll_has_sa_latency() -> None:
+    total_time = 5.8
+    sa_latency = 3.2
     diagnosis = galgame_service.build_primary_diagnosis(
         {
             "active_data_source": DATA_SOURCE_OCR_READER,
@@ -1040,16 +1043,16 @@ def test_primary_diagnosis_mentions_screen_awareness_when_slow_poll_has_sa_laten
                 "status": "active",
                 "effective_window_key": "pid:100:hwnd:200",
                 "last_raw_ocr_text": "短对白。",
-                "last_poll_duration_seconds": 5.8,
-                "screen_awareness_model_last_latency_seconds": 3.2,
+                "last_poll_duration_seconds": total_time,
+                "screen_awareness_model_last_latency_seconds": sa_latency,
             },
         }
     )
 
     assert diagnosis["severity"] == "warning"
     assert diagnosis["title"] == "OCR 识别耗时过长"
-    assert "5.8s" in diagnosis["message"]
-    assert "Screen Awareness 模型延迟也较高（3.2s）" in diagnosis["message"]
+    assert f"{total_time:.1f}s" in diagnosis["message"]
+    assert f"画面感知模型延迟也较高（{sa_latency:.1f}s）" in diagnosis["message"]
 
 
 def test_primary_diagnosis_prefers_long_ocr_text_over_slow_poll() -> None:

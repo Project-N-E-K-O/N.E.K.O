@@ -1791,8 +1791,8 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         if sa_latency > 3.0:
             message = (
                 f"最近一次 OCR 轮询耗时 {last_poll_duration:.1f}s，远超正常水平。"
-                f"Screen Awareness 模型延迟也较高（{sa_latency:.1f}s），"
-                "建议锁定窗口并校准对白区域，也可尝试降低 awareness 频率或关闭全帧 OCR。"
+                f"画面感知模型延迟也较高（{sa_latency:.1f}s），"
+                "建议锁定窗口并校准对白区域，也可尝试降低画面感知频率或关闭全帧 OCR。"
             )
         else:
             message = (

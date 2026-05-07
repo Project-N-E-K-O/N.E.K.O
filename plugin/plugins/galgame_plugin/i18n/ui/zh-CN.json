@@ -729,7 +729,7 @@
   "ui.diag.ocr_text_too_long.body": "当前识别到 {length} 字，远超正常对白长度。截图区域可能包含了非对白内容，建议锁定正确窗口并校准对白区域。",
   "ui.diag.ocr_poll_too_slow.title": "OCR 识别耗时过长",
   "ui.diag.ocr_poll_too_slow.body": "最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。通常是因为截图区域过大或截图方式不匹配，建议锁定窗口并校准对白区域，也可尝试切换截图方式。",
-  "ui.diag.ocr_poll_too_slow.body_with_sa": "最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。Screen Awareness 模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低 awareness 频率或关闭全帧 OCR。",
+  "ui.diag.ocr_poll_too_slow.body_with_sa": "最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。画面感知模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低画面感知频率或关闭全帧 OCR。",
   "ui.first_run.section_title": "首次配置引导",
   "ui.first_run.section_subtitle": "按下面几步把识别流程接起来。",
   "ui.first_run.start_game.title": "启动或恢复游戏",

@@ -1535,7 +1535,7 @@ function buildPrimaryDiagnosis(status = {}) {
     const saLatency = Number(runtime.screen_awareness_model_last_latency_seconds || 0);
     if (saLatency > 3.0) {
       const body = uiTf('ui.diag.ocr_poll_too_slow.body_with_sa',
-        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。Screen Awareness 模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低 awareness 频率或关闭全帧 OCR。',
+        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。画面感知模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低画面感知频率或关闭全帧 OCR。',
         { seconds: lastPollDuration.toFixed(1), saLatency: saLatency.toFixed(1) });
       return diagnose({
         severity: 'warning',
@@ -3895,7 +3895,7 @@ async function restoreInstallState(kind) {
     return;
   }
 
-  applyInstallTaskState(kind, restoredState, { allowRefresh: false, showTerminalFlash: false });
+  applyInstallTaskState(kind, { ...restoredState, __restored: true }, { allowRefresh: false, showTerminalFlash: false });
   if (restoredTaskId && !isInstallTaskTerminal(restoredState)) {
     connectInstallStream(kind, restoredTaskId);
   }
