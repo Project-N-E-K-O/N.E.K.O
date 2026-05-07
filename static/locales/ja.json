@@ -2311,6 +2311,7 @@
             "avatarReactionBubble": "表情バブル",
             "proactiveChat": "自発的会話",
             "proactiveVision": "プライバシーモード",
+            "proactiveVisionTooltip": "オフのとき：ネコ娘はアクティブウィンドウのタイトルに応じて活発さや会話モードを変え、話しかけるときに画面の内容を取り入れることがあります。\nオンのとき：ネコ娘は自分から画面を見ることができず、あなたが何をしているか把握できません。スクリーンショットの手動送信は引き続き可能です。",
             "proactiveVisionChat": "画面共有",
             "proactiveVisionChatTooltip": "自発的会話を有効にし、プライバシーモードを無効にする必要があります",
             "proactiveNewsChat": "ニュースサイト",

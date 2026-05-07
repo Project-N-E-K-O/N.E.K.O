@@ -3,6 +3,7 @@
 
     const CONTROL_SELECTOR = '[data-neko-window-control]';
     const MAXIMIZE_ICON_SELECTOR = '.neko-window-maximize-icon';
+    const NATIVE_DRAG_SOURCE_SELECTOR = 'a[href], img, svg, video, audio';
 
     function translate(key, fallback) {
         try {
@@ -121,6 +122,26 @@
         }
     }
 
+    function initNativeDragGuard() {
+        if (window.__nekoNativeDragGuardBound) return;
+        window.__nekoNativeDragGuardBound = true;
+
+        document.addEventListener('dragstart', (event) => {
+            const rawTarget = event.target;
+            let targetEl = null;
+            if (rawTarget && rawTarget.nodeType === Node.ELEMENT_NODE) {
+                targetEl = rawTarget;
+            } else if (rawTarget && rawTarget.parentElement) {
+                targetEl = rawTarget.parentElement;
+            }
+
+            if (!targetEl || typeof targetEl.closest !== 'function') return;
+            const source = targetEl.closest(NATIVE_DRAG_SOURCE_SELECTOR);
+            if (!source) return;
+            event.preventDefault();
+        }, true);
+    }
+
     async function restoreCurrentWindowFromOpener() {
         const api = window.nekoWindowControl;
         if (!api || typeof api.restore !== 'function') return;
@@ -139,8 +160,12 @@
     });
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initWindowControls);
+        document.addEventListener('DOMContentLoaded', () => {
+            initWindowControls();
+            initNativeDragGuard();
+        });
     } else {
         initWindowControls();
+        initNativeDragGuard();
     }
 })();

@@ -2311,6 +2311,7 @@
             "avatarReactionBubble": "Expression Bubble",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
+            "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",
             "proactiveVisionChat": "Screen Share",
             "proactiveVisionChatTooltip": "Requires Proactive Chat enabled and Privacy Mode disabled",
             "proactiveNewsChat": "News Website",

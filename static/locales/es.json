@@ -2311,6 +2311,7 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
+            "proactiveVisionTooltip": "Desactivado: Neko ajusta su nivel de actividad y modo de chat según el título de la ventana activa, y puede incorporar el contenido de la pantalla al iniciar una conversación.\nActivado: Neko no puede mirar tu pantalla por sí misma ni saber qué estás haciendo. Aún puedes enviar capturas de pantalla manualmente.",
             "proactiveVisionChat": "Compartir pantalla",
             "proactiveVisionChatTooltip": "Requiere chat proactivo habilitado y Modo Privacidad deshabilitado",
             "proactiveNewsChat": "Sitio web de noticias",
