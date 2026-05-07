@@ -1093,16 +1093,6 @@ svg {
   min-width: 0;
 }
 
-.composer {
-  /* 同上：作为 .composer-panel 的 grid item，显式 min-width: 0
-     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
-  min-width: 0;
-}
-
-.composer-input-shell {
-  min-width: 0;
-}
-
 /* Hide empty music-player-mount so it doesn't occupy a grid row */
 #music-player-mount:empty {
   display: none;
@@ -1155,12 +1145,16 @@ svg {
 /* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
+  /* 作为 .composer-panel 的 grid item，显式 min-width: 0
+     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
+  min-width: 0;
 }
 
 .composer-input-shell {
   display: flex;
   flex-direction: column;
   min-height: 98px;
+  min-width: 0;
   padding: 0 16px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.91);
@@ -1706,7 +1700,6 @@ svg {
   /* 关键：默认 min-width: auto 会让长文本沿 flex 链向上传染，把整个输入壳撑宽；
      置 0 后按钮严格遵循 width:100%，长文本走下面的 ellipsis 路径。 */
   min-width: 0;
-  max-width: 100%;
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid rgba(127, 144, 170, 0.22);
