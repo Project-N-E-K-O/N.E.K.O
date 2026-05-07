@@ -127,9 +127,16 @@
         window.__nekoNativeDragGuardBound = true;
 
         document.addEventListener('dragstart', (event) => {
-            const target = event.target;
-            if (!target || typeof target.closest !== 'function') return;
-            const source = target.closest(NATIVE_DRAG_SOURCE_SELECTOR);
+            const rawTarget = event.target;
+            let targetEl = null;
+            if (rawTarget && rawTarget.nodeType === Node.ELEMENT_NODE) {
+                targetEl = rawTarget;
+            } else if (rawTarget && rawTarget.parentElement) {
+                targetEl = rawTarget.parentElement;
+            }
+
+            if (!targetEl || typeof targetEl.closest !== 'function') return;
+            const source = targetEl.closest(NATIVE_DRAG_SOURCE_SELECTOR);
             if (!source) return;
             event.preventDefault();
         }, true);

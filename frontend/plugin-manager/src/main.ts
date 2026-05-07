@@ -42,11 +42,18 @@ function initNativeDragGuard() {
   }
 
   const handleDragStart = (event: DragEvent) => {
-    const target = event.target
+    const rawTarget = event.target
+    let target: Element | null = null
+    if (rawTarget instanceof Element) {
+      target = rawTarget
+    } else if (rawTarget instanceof Node) {
+      target = rawTarget.parentElement
+    }
+
     if (
       target instanceof HTMLAnchorElement
       || target instanceof HTMLImageElement
-      || (target instanceof Element && target.closest('a[href], img'))
+      || target?.closest('a[href], img')
     ) {
       event.preventDefault()
     }
