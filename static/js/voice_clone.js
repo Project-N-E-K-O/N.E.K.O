@@ -10,7 +10,10 @@ let isApplyingVoice = false;
 
 // 打开API设置页（带弹窗拦截回退）
 function openApiSettings() {
-    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+    const features = 'width=820,height=700,scrollbars=yes,resizable=yes';
+    const win = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow('/api_key', 'apiSettings', features)
+        : window.open('/api_key', 'apiSettings', features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
