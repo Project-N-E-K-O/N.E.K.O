@@ -97,6 +97,7 @@
   "ui.install.memory_desc": "Textractor is only used for the memory reader fallback path and does not affect OCR capture recognition.",
   "ui.install.running": "Installing in background...",
   "ui.install.rapidocr.action": "Install RapidOCR",
+  "ui.install.rapidocr.retry": "Retry RapidOCR Installation",
   "ui.install.tesseract.action": "Install Tesseract",
   "ui.install.tesseract.retry": "Retry Tesseract Installation",
   "ui.install.tesseract.queued": "Background installation task created. It will download Tesseract and language packs over HTTPS and stream progress via SSE.",

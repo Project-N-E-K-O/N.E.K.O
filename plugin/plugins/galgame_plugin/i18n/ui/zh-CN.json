@@ -97,6 +97,7 @@
   "ui.install.memory_desc": "Textractor 只服务于内存读取兜底路径，不影响 OCR 截图识别链路。",
   "ui.install.running": "后台安装中...",
   "ui.install.rapidocr.action": "一键安装 RapidOCR",
+  "ui.install.rapidocr.retry": "重试安装 RapidOCR",
   "ui.install.tesseract.action": "一键安装 Tesseract",
   "ui.install.tesseract.retry": "重试安装 Tesseract",
   "ui.install.tesseract.queued": "已创建后台安装任务，接下来会通过 HTTPS 下载 Tesseract 和语言包，并通过 SSE 推送实时进度。",

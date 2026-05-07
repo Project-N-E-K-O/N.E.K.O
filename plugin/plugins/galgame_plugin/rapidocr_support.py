@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import importlib.util
@@ -852,7 +853,9 @@ async def download_rapidocr_models(
     async def _before_completed_safely() -> None:
         try:
             await _before_completed()
-        except BaseException:  # noqa: BLE001
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
             logger.warning("failed to run rapidocr_models completion callback", exc_info=True)
 
     cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)

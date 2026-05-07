@@ -1079,11 +1079,7 @@ button.active {
   border-color: var(--brand);
 }
 
-.install-panels {
-  /* Banners stack in normal flow; the tab system hides non-active ones via [hidden].
-     Each install-panels-* section is independent — no more grid stacking overlap. */
-}
-
+/* Banners stack in normal flow; the tab system hides non-active ones via [hidden]. */
 .install-panels > .install-banner[hidden] {
   display: none;
 }
@@ -2408,7 +2404,6 @@ body:not(.onboarding-active) #onboardingView {
   .dashboard-section-grid,
   .dashboard-section-grid-three,
   .capture-profile-grid,
-  .first-run-guide,
   .current-line-grid {
     grid-template-columns: 1fr;
   }

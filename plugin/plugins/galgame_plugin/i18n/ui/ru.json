@@ -97,6 +97,7 @@
   "ui.install.memory_desc": "Textractor используется только для резервного чтения памяти и не влияет на OCR-распознавание.",
   "ui.install.running": "Установка в фоне...",
   "ui.install.rapidocr.action": "Установить RapidOCR",
+  "ui.install.rapidocr.retry": "Повторить установку RapidOCR",
   "ui.install.tesseract.action": "Установить Tesseract",
   "ui.install.tesseract.retry": "Повторить установку Tesseract",
   "ui.install.tesseract.queued": "Фоновая задача установки создана. Tesseract и языковые пакеты будут загружены по HTTPS, прогресс придет через SSE.",

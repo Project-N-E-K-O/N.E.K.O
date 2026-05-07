@@ -3015,8 +3015,14 @@ function isInstallTaskTerminal(state) {
   return Boolean(state) && INSTALL_TERMINAL_STATUSES.has(String(state.status || ''));
 }
 
-function shouldRestoreInstallTaskState(state) {
-  return Boolean(state) && !isInstallTaskTerminal(state);
+function shouldRestoreInstallTaskState(kind, state) {
+  if (!state) {
+    return false;
+  }
+  if (kind === 'rapidocr_models' && String(state.status || '') === 'failed') {
+    return true;
+  }
+  return !isInstallTaskTerminal(state);
 }
 
 function installStatusPriority(status) {
@@ -3375,6 +3381,55 @@ function renderInstallTaskState(kind) {
   }
 }
 
+function applyRapidOcrModelsGate(rapidocr = {}) {
+  const { card, button } = getInstallNodes('rapidocr_models');
+  const state = installRuntime.rapidocr_models.state;
+  const config = getInstallConfig('rapidocr_models');
+  const installed = Boolean(rapidocr.installed);
+  const missingModels = rapidocr.detail === 'missing_model_files';
+  const canDownloadModels = Boolean(rapidocr.can_download_models);
+  const running = Boolean(state && !isInstallTaskTerminal(state));
+  const waitingRefresh = Boolean(state && state.status === 'completed' && missingModels && !installed);
+  const retryableFailure = Boolean(state && state.status === 'failed' && missingModels && canDownloadModels && !installed);
+  const downloadable = missingModels && canDownloadModels && !installed;
+
+  if (card) {
+    card.hidden = !(state && (running || waitingRefresh || retryableFailure));
+  }
+  if (!button) {
+    return;
+  }
+
+  button.hidden = !(running || waitingRefresh || retryableFailure || downloadable);
+  button.disabled = running || waitingRefresh || (!downloadable && !retryableFailure);
+  if (running) {
+    button.textContent = config.runningText;
+  } else if (waitingRefresh) {
+    button.textContent = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
+  } else if (retryableFailure) {
+    button.textContent = config.retryText;
+  } else {
+    button.textContent = config.actionText;
+  }
+}
+
+function clearRapidOcrModelsControls() {
+  const { card, statusText, percentText, messageText, detailText, progressBar, button } = getInstallNodes('rapidocr_models');
+  if (card) {
+    card.hidden = true;
+  }
+  if (statusText) statusText.textContent = uiT('ui.install.waiting_task', '等待安装任务');
+  if (percentText) percentText.textContent = '0%';
+  if (messageText) messageText.textContent = '';
+  if (detailText) detailText.textContent = '';
+  if (progressBar) progressBar.style.width = '0%';
+  if (button) {
+    button.hidden = true;
+    button.disabled = true;
+    button.textContent = getInstallConfig('rapidocr_models').actionText;
+  }
+}
+
 function renderPluginUnavailable(error) {
   latestStatus = null;
   pendingModeSelection = '';
@@ -3414,8 +3469,9 @@ function renderPluginUnavailable(error) {
   // Static label table — rapidocr/dxcam are no longer in `getInstallUIConfig`
   // (no install machinery for bundled deps), so calling `getInstallConfig`
   // for them would throw and break this whole fallback render. Touch banner
-  // text directly via static labels; only tesseract/textractor still have
-  // install button/card DOM to hide.
+  // text directly via static labels. Tesseract/textractor install controls
+  // are hidden inline; rapidocr_models controls are cleared after the loop
+  // because they reuse the RapidOCR banner DOM.
   const PROMPT_LABELS = {
     rapidocr: 'RapidOCR',
     dxcam: 'DXcam',
@@ -3440,8 +3496,7 @@ function renderPluginUnavailable(error) {
     if (title) title.textContent = pluginNotStarted;
     if (body) body.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
     if (path) path.textContent = message;
-    // Install button/card only exist for tesseract + textractor (bundled
-    // rapidocr/dxcam don't have install task DOM anymore).
+    // Install button/card only exist for tesseract + textractor in this loop.
     if (kind === 'tesseract' || kind === 'textractor') {
       const { button, card } = getInstallNodes(kind);
       if (card) {
@@ -3454,6 +3509,7 @@ function renderPluginUnavailable(error) {
       }
     }
   }
+  clearRapidOcrModelsControls();
 }
 
 function applyInstallTaskState(kind, state, { allowRefresh = true } = {}) {
@@ -3465,7 +3521,9 @@ function applyInstallTaskState(kind, state, { allowRefresh = true } = {}) {
   installState.currentTaskId = state.task_id || state.run_id || installState.currentTaskId;
   if (installState.currentTaskId) {
     if (isInstallTaskTerminal(state)) {
-      clearPersistedInstallTaskId(kind);
+      if (!(kind === 'rapidocr_models' && String(state.status || '') === 'failed')) {
+        clearPersistedInstallTaskId(kind);
+      }
     } else {
       persistInstallTaskId(kind, installState.currentTaskId);
     }
@@ -3609,7 +3667,7 @@ async function restoreInstallState(kind) {
       persistedState = await fetchInstallTaskState(kind, persistedTaskId);
       if (!persistedState) {
         clearPersistedInstallTaskId(kind);
-      } else if (!shouldRestoreInstallTaskState(persistedState)) {
+      } else if (!shouldRestoreInstallTaskState(kind, persistedState)) {
         clearPersistedInstallTaskId(kind);
         persistedState = null;
       }
@@ -3620,7 +3678,7 @@ async function restoreInstallState(kind) {
 
   try {
     latestState = await fetchLatestInstallTaskState(kind);
-    if (!shouldRestoreInstallTaskState(latestState)) {
+    if (!shouldRestoreInstallTaskState(kind, latestState)) {
       latestState = null;
     }
   } catch (_) {
@@ -4821,49 +4879,7 @@ function renderRapidOcr(status) {
   const body = document.getElementById('rapidocrPromptBody');
   const path = document.getElementById('rapidocrPathText');
   const installed = Boolean(rapidocr.installed);
-  const canDownloadModels = Boolean(rapidocr.can_download_models);
-  const downloadBtn = document.getElementById('rapidocrModelsDownloadBtn');
-  if (downloadBtn) {
-    downloadBtn.hidden = !canDownloadModels;
-    // Reflect the install runtime state on the visible banner button:
-    //   - inProgress → disable + show "后台下载模型中..." so re-clicks can't
-    //     spawn duplicate concurrent download tasks. The install card's own
-    //     button (rapidocrInstallBtn, same domPrefix) gets identical
-    //     treatment from renderInstallTaskState; this keeps the two button
-    //     instances in sync.
-    //   - failed (last terminal state) → "重试下载模型".
-    //   - otherwise → action text.
-    const config = getInstallConfig('rapidocr_models');
-    const inProgress = installRuntime.rapidocr_models.inProgress;
-    const lastStatus = installRuntime.rapidocr_models.state
-      && installRuntime.rapidocr_models.state.status;
-    // After a download completes, there's a brief window before refreshAll
-    // repopulates rapidocr.detail away from 'missing_model_files'. Without
-    // gating, the button springs back to "立即下载模型" and a quick second
-    // click would create another concurrent download task. Hold it
-    // disabled during that window with explicit "waiting refresh" copy.
-    const waitingRefresh = lastStatus === 'completed' && rapidocr.detail === 'missing_model_files';
-    downloadBtn.disabled = inProgress || waitingRefresh;
-    if (inProgress) {
-      downloadBtn.textContent = config.runningText;
-    } else if (waitingRefresh) {
-      downloadBtn.textContent = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
-    } else if (lastStatus === 'failed') {
-      downloadBtn.textContent = config.retryText;
-    } else {
-      downloadBtn.textContent = config.actionText;
-    }
-  }
-  // Render the in-banner progress/error card (rapidocrInstallState — the
-  // orphaned install card we reuse for model downloads). Without this,
-  // applyInstallTaskState's renderStatus() path only updates the button
-  // here, so users running a download (or hitting a failure) see the
-  // button label change but no progress bar / message / detail / error
-  // text. Calling renderInstallTaskState directly handles all those nodes
-  // off the same install runtime state.
-  if (installRuntime.rapidocr_models.state) {
-    renderInstallTaskState('rapidocr_models');
-  }
+  renderInstallTaskState('rapidocr_models');
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
@@ -4893,6 +4909,7 @@ function renderRapidOcr(status) {
     title.textContent = uiT('ui.install.rapidocr.unsupported_title', '当前平台暂不支持 RapidOCR');
     body.textContent = uiT('ui.install.rapidocr.unsupported_body', 'RapidOCR 主后端目前只支持 Windows。');
     path.textContent = '';
+    applyRapidOcrModelsGate(rapidocr);
     return;
   }
 
@@ -4971,6 +4988,7 @@ function renderRapidOcr(status) {
     );
     path.textContent = '';
   }
+  applyRapidOcrModelsGate(rapidocr);
 }
 
 function renderDxcam(status) {
