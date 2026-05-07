@@ -2,6 +2,8 @@
     "common": {
         "load": "加載",
         "minimize": "最小化",
+        "maximize": "最大化",
+        "restore": "還原",
         "expand": "展開",
         "close": "關閉",
         "save": "保存",
@@ -44,6 +46,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "載入失敗"
+    },
+    "model": {
+        "resetToDefaultSuccess": "已恢復預設模型",
+        "resetToDefaultFailed": "恢復預設模型失敗"
     },
     "autostartPrompt": {
         "title": "要不要讓 N.E.K.O 開機自動啟動？",
@@ -578,7 +584,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM連接失敗（{{error_type}}），已重試{{max_retries}}次: {{error}}",
         "TEXT_GEN_ERROR": "💥 文字生成異常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未回傳任何回覆，請檢查API連接和配置",
-        "PROACTIVE_GEN_FAILED": "💥 主動回覆生成失敗: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一個終端...",
         "RELOAD_PAGE": "語音已更新，頁面即將刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自動關閉鍵鼠控制: $t(agent.precheck.{{reason_code}})",
@@ -607,7 +612,31 @@
         "TTS_VOICE_NOT_REGISTERED": "該角色未註冊聲音",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要參數",
         "TTS_GPT_SOVITS_URL_REQUIRED": "請填寫 GPT-SoVITS API URL",
-        "TTS_GPT_SOVITS_URL_INVALID": "無效的 GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "無效的 GPT-SoVITS API URL",
+        "AGENT_NO_PLUGINS_FOUND": "未找到任何使用者外掛",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw 不可用：{{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw 已開啟，正在等待貓爪連接服務就緒...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "無法開啟 OpenClaw：模組未載入",
+        "AGENT_OPENCLAW_UNAVAILABLE": "無法開啟 OpenClaw：{{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "使用者外掛伺服器啟動失敗",
+        "CURRENT_CATGIRL_IN_USE": "無法對目前使用中的角色「{{character_name}}」執行此操作，請先切換到其他角色",
+        "DIRECT_LINK_INACCESSIBLE": "直接連結無法存取",
+        "DOWNLOAD_FAILED": "下載音訊失敗",
+        "FILE_TOO_LARGE": "檔案過大",
+        "GAME_ROUTE_ENDED": "遊戲路由已結束",
+        "GAME_ROUTE_LLM_FAILED": "遊戲 LLM 未返回有效輸出（{{error}}）",
+        "GAME_ROUTE_MEDIA_SKIPPED": "遊戲期間已忽略螢幕/攝像頭畫面",
+        "GAME_VOICE_STT_GATE_ACTIVE": "遊戲語音接管已啟用",
+        "INTERNAL_IMPORT_ERROR": "內部組件載入失敗：{{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "本地角色設定結構無效",
+        "MEMORY_SERVER_RELEASE_FAILED": "釋放角色記憶句柄失敗，請稍後重試",
+        "MINIMAX_API_KEY_MISSING": "未設定 MiniMax API Key，請先在設定中填寫",
+        "PRIVATE_IP_NOT_ALLOWED": "直接連結不能指向內網位址",
+        "RESPONSE_LENGTH_TRUNCATED": "回覆過長，已自動截斷至上一個完整句子",
+        "STEAM_UNSUBSCRIBE_FAILED": "Steam 取消訂閱失敗",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "文字生成中斷（{{error_type}}），已保留已輸出部分",
+        "TTS_PROVIDER_INVALID": "無效的 TTS 服務商：{{provider}}。支持的服務商：{{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "儲存維護中，操作已暫停，請稍後重試"
     },
     "camera": {
         "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",
@@ -1103,6 +1132,7 @@
         "noMotion": "無動作",
         "noExpression": "無錶情",
         "noMotionFiles": "沒有動作文件",
+        "noExpressionFiles": "沒有表情檔案",
         "touchAnim": {
             "title": "觸摸動畫配置",
             "selectMotion": "綁定動作",
@@ -1409,6 +1439,11 @@
         "voiceIdSaved": "voice_id已自動保存到角色",
         "pageWillRefresh": "當前頁麵即將自動刷新以應用新語音",
         "voiceWillTakeEffect": "新語音將在下次對話時生效",
+        "noCurrentCharacterForApply": "未找到當前角色，無法應用音色",
+        "applyingVoice": "正在應用音色「{{name}}」...",
+        "applyVoiceSuccess": "已將音色「{{name}}」應用到當前角色",
+        "applyVoiceFailed": "應用音色失敗：{{error}}",
+        "applyVoiceAria": "將音色 {{name}} 應用到當前角色",
         "voiceIdSaveRequestError": "voice_id自動保存請求齣錯",
         "chooseFile": "選擇文件",
         "noFileSelected": "未選擇文件",
@@ -1767,6 +1802,7 @@
         "personalityModuleUnavailable": "人格選擇模組尚未載入",
         "manageModel": "點擊管理模型",
         "fillProfileNameFirst": "請先填寫貓娘檔案名，然後再設置模型",
+        "fillProfileNameFirstForCardFace": "請先填寫貓娘檔案名，然後再設置卡面",
         "registerNewVoice": "注冊新聲音",
         "systemPrompt": "系統指令（謹慎修改）",
         "systemPromptWarning": "系統指令 - 修改可能導致角色行為異常，後果自負",
@@ -1776,6 +1812,7 @@
         "saveMaster": "保存主人設定",
         "addMasterField": "新增設定",
         "manageLive2D": "點擊管理Live2D模型",
+        "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
         "currentCatgirl": "當前貓娘",
         "rename": "修改名稱",
         "cancel": "取消",
@@ -1816,6 +1853,7 @@
         "unregisterVoiceTitle": "解除聲音注冊",
         "voiceUnregistered": "聲音注冊已解除",
         "unregisterFailed": "解除注冊失敗",
+        "partialSaveVoiceFailed": "角色已保存，但音色更新失敗: {{error}}",
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
@@ -1830,7 +1868,6 @@
         "autoSaved": "已自動儲存設定",
         "autoSaveFailed": "自動儲存失敗，請手動儲存後再關閉頁面",
         "unsavedNewCatgirlDraftDetected": "偵測到未儲存的新貓娘草稿，請先儲存或取消後再同步刷新",
-        "partialSaveVoiceFailed": "角色已保存，但音色更新失敗: {{error}}",
         "exportCard": "導出角色卡",
         "exportingCard": "正在導出角色卡...",
         "exportCardSuccess": "角色卡導出成功",
@@ -1860,10 +1897,10 @@
         "newCatgirlSuccess": "新貓娘創建成功",
         "saveSuccess": "儲存成功",
         "switchSuccess": "切換成功",
-        "deleteError": "刪除貓娘時發生錯誤",
         "cannotModifyInVoiceMode": "語音狀態下無法切換或刪除角色卡，請先關閉語音控制",
         "voiceModeCheckFailed": "檢查語音模式狀態失敗，請稍後重試",
-        "switchCard": "切換角色卡",
+        "deleteError": "刪除貓娘時發生錯誤",
+        "switchCard": "切換該角色",
         "deleteCard": "刪除角色卡",
         "currentCard": "當前角色卡",
         "confirmDeleteCard": "確定要刪除角色卡「{{name}}」？",
@@ -1883,9 +1920,9 @@
         "cardAuthorReadonly": "此來源的卡面無法修改作者",
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
-        "idleMotionHint": "儲存角色時，目前選中的動作將被設為待機動作",
         "saveMasterSuccess": "儲存主人設定成功",
         "editCardFace": "編輯卡面",
+        "cardFaceModelSettings": "卡面模型設定",
         "cardMakerPopupBlocked": "卡面製作頁面未能自動開啟，請允許瀏覽器彈出視窗後重試，或點擊卡面區域手動開啟。"
     },
     "app": {
@@ -1931,6 +1968,7 @@
         "switchedCatgirl": "已切換到 {{name}}",
         "switchCatgirlFailed": "切換到 {{name}} 失敗",
         "switchCatgirlError": "切換失敗: {{error}}",
+        "switchCatgirlWatchdog": "上次切換似乎卡住了，請再點一次切換",
         "started": "{{name}} 已啓動",
         "voiceUpdated": "{{name}} 的語音已更新",
         "audioWorkletFailed": "AudioWorklet加載失敗",
@@ -1949,6 +1987,8 @@
         "glmApiBug": "智譜API觸發欠費bug。請考慮充值1元。",
         "aliApiOwed": "阿裏API已欠費。",
         "voiceSystemPreparing": "語音係統準備中...",
+    "voiceConfigSwitching": "音色切換中，語音準備中...",
+    "voiceConfigSwitchTimeout": "音色切換仍未完成，請稍後再開啟語音",
         "textSystemPreparing": "文本係統準備中，請稍候...",
         "connectingToServer": "正在連接服務器...",
         "readyToSpeak": "可以說話瞭！",
@@ -2282,6 +2322,8 @@
             "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
             "proactiveMemeChat": "表情包分享",
             "proactiveMemeChatTooltip": "使用有趣表情包進行搭話",
+            "proactiveMiniGameInviteChat": "小遊戲邀請",
+            "proactiveMiniGameInviteChatTooltip": "符合條件時邀請你一起玩小遊戲",
             "agentMaster": "貓爪總開關",
             "keyboardControl": "鍵鼠控製",
             "userPlugin": "用戶插件",
@@ -2296,6 +2338,7 @@
             "serverOffline": "貓爪服務器未啓動",
             "masterRequired": "請先開啓貓爪總開關",
             "capabilityNotReady": "{{name}}尚未就緒，點擊嘗試啟用",
+            "openclawUnavailableReason": "{{name}}不可用：{{reason}}。請確認貓爪連接服務已啟動，並監聽 127.0.0.1:8088。",
             "enabled": "{{name}}已開啓",
             "disabled": "{{name}}已關閉",
             "enableFailed": "{{name}}開啓失敗",
@@ -2539,6 +2582,10 @@
         "loadLive2DListFailed": "加載 Live2D 列錶失敗:",
         "getLanlanNameFailed": "獲取 lanlan_name 失敗:",
         "updateParameterEditorLinkFailed": "更新參數編輯器鏈接失敗:",
+        "editCardFaceAfterModelSaveTitle": "編輯卡面",
+        "editCardFaceAfterModelSaveMessage": "模型設定已儲存。是否要現在編輯卡面？",
+        "editCardFaceNow": "編輯卡面",
+        "createDefaultCardFace": "生成預設卡面",
         "invalidVRMPathDetected": "[模型管理] 檢測到無效的 VRM 模型路徑，嘗試自動修復:",
         "saveModelSettingsFailed": "保存模型設置失敗:",
         "vrmCleanupWarning": "[模型管理] VRM清理時齣現警告:",
@@ -2616,6 +2663,7 @@
         "serverNotReturnedValidJSON": "服務器未返迴有效的 JSON 數據"
     },
     "tutorial": {
+        "homeInteractionLocked": "新手引導進行中，請先依照引導完成目前步驟",
         "step1": {
             "title": "👋 歡迎來到 N.E.K.O",
             "desc": "這是妳的貓娘！接下來我會帶妳熟悉各項功能~"
@@ -3665,6 +3713,8 @@
         "popupBlocked": "彈窗被阻止，請允許彈窗後重試",
         "saveCardFace": "儲存卡面",
         "savingCardFace": "儲存中...",
+        "autoSavingDefaultCardFace": "正在生成預設卡面...",
+        "autoSaveDefaultCardFaceFailed": "預設卡面生成失敗",
         "saveCardFaceSuccess": "儲存成功！",
         "saveCardFaceFailed": "儲存失敗: {{error}}",
         "saveCardFacePartialSuccess": "PNG 已儲存，但中繼資料寫入失敗: {{error}}",
@@ -3820,12 +3870,25 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "退出遊戲",
+            "ending": "正在退出本局…",
+            "ended": "遊戲已結束，正在返回…",
+            "endingDefault": "正在結束本局…",
+            "endedDefault": "遊戲已結束，請關閉頁面。重新進入請重新打開頁面。"
+        },
         "startScreen": {
             "readyToStart": "準備完成，點擊開始",
-            "ready": "準備完成"
+            "ready": "準備完成",
+            "startButton": "開始"
+        },
+        "hint": {
+            "controls": "滑鼠 = 引導玩家 · 按住左鍵 = 蓄力，鬆開 = 射門（離球 ≤90px 觸發）· R 復位",
+            "aiMood": "1-6 = AI 心情（平靜/開心/生氣/放鬆/悲傷/驚訝）· 進球後自動切換難度檔"
         },
         "loading": {
             "beginStartDefault": "分析開局上下文…",
+            "initializingMiniGame": "初始化足球小遊戲…",
             "assetsDone": "模型載入完成",
             "assetsFailed": "模型初始化失敗，繼續進入遊戲",
             "routeDone": "開局上下文準備完成",
@@ -3850,6 +3913,10 @@
         "debugButton": {
             "holdToSubmit": "鬆開提交",
             "idle": "除錯語音"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不啟用）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
     }
 }

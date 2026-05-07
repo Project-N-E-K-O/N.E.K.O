@@ -2,6 +2,8 @@
     "common": {
         "load": "Load",
         "minimize": "Minimize",
+        "maximize": "Maximize",
+        "restore": "Restore",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",
@@ -44,6 +46,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Neutral",
         "loadFailed": "Load failed"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Restored default model",
+        "resetToDefaultFailed": "Failed to restore default model"
     },
     "autostartPrompt": {
         "title": "Want N.E.K.O to launch at startup?",
@@ -578,7 +584,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 LLM connection failed ({{error_type}}), exhausted {{max_retries}} retries: {{error}}",
         "TEXT_GEN_ERROR": "💥 Text generation error: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM returned no response. Please check your API connection and configuration.",
-        "PROACTIVE_GEN_FAILED": "💥 Proactive response generation failed: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} is heading to another terminal...",
         "RELOAD_PAGE": "Voice updated, page will refresh shortly",
         "AGENT_AUTO_DISABLED_COMPUTER": "Keyboard/mouse control auto-disabled: $t(agent.precheck.{{reason_code}})",
@@ -607,7 +612,31 @@
         "TTS_VOICE_NOT_REGISTERED": "This character has no registered voice",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Missing required parameters",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
-        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL"
+        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL",
+        "AGENT_NO_PLUGINS_FOUND": "No user plugins found",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw is unavailable: {{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw enabled, waiting for the connection service to become ready...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Cannot enable OpenClaw: module not loaded",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Cannot enable OpenClaw: {{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "User plugin server failed to start",
+        "CURRENT_CATGIRL_IN_USE": "Cannot perform this action on the active character \"{{character_name}}\". Please switch to another character first.",
+        "DIRECT_LINK_INACCESSIBLE": "Direct link is not accessible",
+        "DOWNLOAD_FAILED": "Audio download failed",
+        "FILE_TOO_LARGE": "File too large",
+        "GAME_ROUTE_ENDED": "Game route ended",
+        "GAME_ROUTE_LLM_FAILED": "Game LLM did not produce a valid output ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Screen/camera frames are skipped during the game",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Game voice takeover is active",
+        "INTERNAL_IMPORT_ERROR": "Internal component failed to load: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Local character config is invalid",
+        "MEMORY_SERVER_RELEASE_FAILED": "Failed to release character memory handle, please retry later",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API Key is not configured. Please add it in settings first.",
+        "PRIVATE_IP_NOT_ALLOWED": "Direct link cannot point to a private IP address",
+        "RESPONSE_LENGTH_TRUNCATED": "Reply too long, truncated to the last complete sentence",
+        "STEAM_UNSUBSCRIBE_FAILED": "Steam unsubscribe failed",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Text generation interrupted ({{error_type}}); partial output preserved",
+        "TTS_PROVIDER_INVALID": "Invalid TTS provider: {{provider}}. Supported: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Storage maintenance in progress, operation paused. Please retry later."
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
@@ -1103,6 +1132,7 @@
         "noMotion": "No Motion",
         "noExpression": "No Expression",
         "noMotionFiles": "No motion files",
+        "noExpressionFiles": "No expression files",
         "touchAnim": {
             "title": "Touch Anim Config",
             "selectMotion": "Bind Motion",
@@ -1409,6 +1439,11 @@
         "voiceIdSaved": "voice_id has been automatically saved to character",
         "pageWillRefresh": "Current page will automatically refresh to apply new voice",
         "voiceWillTakeEffect": "New voice will take effect in the next conversation",
+        "noCurrentCharacterForApply": "Current character was not found, so the voice cannot be applied",
+        "applyingVoice": "Applying voice \"{{name}}\"...",
+        "applyVoiceSuccess": "Applied voice \"{{name}}\" to the current character",
+        "applyVoiceFailed": "Failed to apply voice: {{error}}",
+        "applyVoiceAria": "Apply voice {{name}} to current character",
         "voiceIdSaveRequestError": "Error occurred while saving voice_id",
         "chooseFile": "Choose File",
         "noFileSelected": "No file selected",
@@ -1767,6 +1802,7 @@
         "personalityModuleUnavailable": "The personality selection module is not loaded yet",
         "manageModel": "Click to manage model",
         "fillProfileNameFirst": "Please fill in the neko profile name first, then set the model",
+        "fillProfileNameFirstForCardFace": "Please fill in the neko profile name first, then set the card face",
         "registerNewVoice": "Register New Voice",
         "systemPrompt": "System Prompt (Edit with caution)",
         "systemPromptWarning": "System Prompt - Modifications may cause unexpected behavior. Edit at your own risk.",
@@ -1864,7 +1900,7 @@
         "cannotModifyInVoiceMode": "Cannot switch or delete cards while voice control is active. Please turn off voice control first.",
         "voiceModeCheckFailed": "Failed to check voice mode status. Please try again later.",
         "deleteError": "Error occurred while deleting NEKO",
-        "switchCard": "Switch Card",
+        "switchCard": "Switch character",
         "deleteCard": "Delete Card",
         "currentCard": "Current Card",
         "confirmDeleteCard": "Delete card \"{{name}}\"?",
@@ -1886,6 +1922,7 @@
         "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
         "saveMasterSuccess": "Master profile saved successfully",
         "editCardFace": "Edit Card Face",
+        "cardFaceModelSettings": "Card Model Settings",
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
@@ -1931,6 +1968,7 @@
         "switchedCatgirl": "Switched to {{name}}",
         "switchCatgirlFailed": "Failed to switch to {{name}}",
         "switchCatgirlError": "Switch failed: {{error}}",
+        "switchCatgirlWatchdog": "Last character switch seems stuck — please try switching again",
         "started": "{{name}} started",
         "voiceUpdated": "{{name}}'s voice updated",
         "audioWorkletFailed": "AudioWorklet failed to load",
@@ -1949,6 +1987,8 @@
         "glmApiBug": "GLM API triggered billing bug. Please consider recharging 1 CNY.",
         "aliApiOwed": "Alibaba API is out of balance.",
         "voiceSystemPreparing": "Voice system preparing...",
+    "voiceConfigSwitching": "Voice preset switching, preparing voice chat...",
+    "voiceConfigSwitchTimeout": "Voice preset switching is still in progress. Please start voice chat again later.",
         "textSystemPreparing": "Text system preparing, please wait...",
         "connectingToServer": "Connecting to server...",
         "readyToSpeak": "Ready to speak!",
@@ -2282,6 +2322,8 @@
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "proactiveMemeChat": "Meme Sharing",
             "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
+            "proactiveMiniGameInviteChat": "Mini-game Invites",
+            "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
@@ -2296,6 +2338,7 @@
             "serverOffline": "NekoClaw Server Offline",
             "masterRequired": "Please enable NekoClaw Master Switch first",
             "capabilityNotReady": "{{name}} not ready, click to try enabling",
+            "openclawUnavailableReason": "{{name}} is unavailable: {{reason}}. Make sure the OpenClaw service is running and listening on 127.0.0.1:8088.",
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
@@ -2539,6 +2582,10 @@
         "loadLive2DListFailed": "Failed to load Live2D list:",
         "getLanlanNameFailed": "Failed to get lanlan_name:",
         "updateParameterEditorLinkFailed": "Failed to update parameter editor link:",
+        "editCardFaceAfterModelSaveTitle": "Edit card face",
+        "editCardFaceAfterModelSaveMessage": "Model settings have been saved. Edit the card face now?",
+        "editCardFaceNow": "Edit card face",
+        "createDefaultCardFace": "Generate default card face",
         "invalidVRMPathDetected": "[Model Manager] Detected invalid VRM model path, attempting auto-fix:",
         "saveModelSettingsFailed": "Failed to save model settings:",
         "vrmCleanupWarning": "[Model Manager] Warning during VRM cleanup:",
@@ -2616,6 +2663,7 @@
         "serverNotReturnedValidJSON": "Server did not return valid JSON data"
     },
     "tutorial": {
+        "homeInteractionLocked": "The tutorial is in progress. Please follow the guide to finish this step first.",
         "step1": {
             "title": "👋 Welcome to N.E.K.O",
             "desc": "This is your Neko! Let me guide you through the features~"
@@ -3665,6 +3713,8 @@
         "popupBlocked": "Popup was blocked. Please allow popups and try again.",
         "saveCardFace": "Save Card Face",
         "savingCardFace": "Saving...",
+        "autoSavingDefaultCardFace": "Generating default card face...",
+        "autoSaveDefaultCardFaceFailed": "Failed to generate default card face",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
         "saveCardFacePartialSuccess": "PNG saved, but metadata write failed: {{error}}",
@@ -3820,12 +3870,25 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "Exit Game",
+            "ending": "Ending the round…",
+            "ended": "Game ended, returning…",
+            "endingDefault": "Ending this match…",
+            "endedDefault": "Game over. Please close this page. To play again, reopen it."
+        },
         "startScreen": {
             "readyToStart": "Ready — click to start",
-            "ready": "Ready"
+            "ready": "Ready",
+            "startButton": "Start"
+        },
+        "hint": {
+            "controls": "Mouse = guide the player · Hold left click = charge, release = shoot (triggers within 90px of the ball) · R = reset",
+            "aiMood": "1-6 = AI mood (calm / happy / angry / relaxed / sad / surprised) · Difficulty steps up after each goal"
         },
         "loading": {
             "beginStartDefault": "Analyzing pregame context…",
+            "initializingMiniGame": "Initializing soccer mini-game…",
             "assetsDone": "Model loaded",
             "assetsFailed": "Model init failed, continuing",
             "routeDone": "Pregame context ready",
@@ -3850,6 +3913,10 @@
         "debugButton": {
             "holdToSubmit": "Release to submit",
             "idle": "Debug voice"
+        },
+        "memoryOption": {
+            "label": "Save this match to memory (off by default)",
+            "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
     }
 }

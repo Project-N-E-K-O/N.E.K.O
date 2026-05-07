@@ -2,7 +2,7 @@
   <div class="app-root">
     <div class="window-titlebar">
       <div class="titlebar-left">
-        <img src="@/assets/paw.png" alt="" class="titlebar-paw" />
+        <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
         <span class="titlebar-text">{{ t('app.titleSuffix') }}</span>
       </div>
       <button class="titlebar-close" :title="t('common.close')" @click="closeWindow">

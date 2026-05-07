@@ -591,9 +591,813 @@ function snapshotsEqual(a, b) {
     return Object.keys(a).every(k => String(a[k]) === String(b[k]));
 }
 
+function modelSelectionChanged(before, after) {
+    if (!before || !after) return true;
+    return String(before.modelType) !== String(after.modelType)
+        || String(before.live2d) !== String(after.live2d)
+        || String(before.live3d) !== String(after.live3d);
+}
+
 // 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）
 window._modelManagerHasSaved = false;
 window._modelManagerLanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || '';
+window._modelManagerModelChangedSinceSave = false;
+window._modelManagerLoadedFallbackModel = false;
+window._suppressModelManagerChange = false;
+
+function markModelChangedForCardFacePrompt() {
+    if (window._suppressModelManagerChange) return;
+    window._modelManagerModelChangedSinceSave = true;
+}
+
+function isSuppressedModelManagerChangeEvent(event) {
+    return !!(event && event._suppressModelManagerChange);
+}
+
+function dispatchModelManagerChange(target, options = {}) {
+    if (!target) return false;
+    const event = new Event('change', { bubbles: true });
+    if (options.suppress || window._suppressModelManagerChange) {
+        event._suppressModelManagerChange = true;
+    }
+    return target.dispatchEvent(event);
+}
+
+async function suppressModelManagerChange(fn) {
+    const previous = window._suppressModelManagerChange;
+    window._suppressModelManagerChange = true;
+    try {
+        return await fn();
+    } finally {
+        window._suppressModelManagerChange = previous;
+    }
+}
+
+function modelManagerText(key, fallback, params = {}) {
+    try {
+        if (window.t && typeof window.t === 'function') {
+            const translated = window.t(key, params);
+            if (translated && translated !== key) return translated;
+        }
+    } catch (e) {
+        console.error(`[i18n] Translation failed for key "${key}":`, e);
+    }
+    return fallback;
+}
+
+function setModelManagerStatusText(message) {
+    const statusSpan = document.getElementById('status-text');
+    if (statusSpan) statusSpan.textContent = message;
+}
+
+async function resolveModelManagerLanlanName() {
+    if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+        return window._modelManagerLanlanName;
+    }
+    try {
+        const data = await RequestHelper.fetchJson('/api/config/page_config');
+        if (data && data.success && data.lanlan_name) {
+            window._modelManagerLanlanName = data.lanlan_name;
+        }
+    } catch (e) {
+        console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
+    }
+    return window._modelManagerLanlanName || '';
+}
+
+async function notifyMainPageModelReload() {
+    const lanlanName = await resolveModelManagerLanlanName();
+    if (lanlanName && lanlanName.trim() !== '') {
+        sendMessageToMainPage('reload_model', { lanlan_name: lanlanName });
+    } else {
+        console.warn('[模型管理] lanlan_name 为空，跳过 reload_model 通知以避免主界面过滤失败');
+    }
+}
+
+const MODEL_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
+
+function openCardMakerFromModelManager(lanlanName, options = {}) {
+    const params = new URLSearchParams({
+        name: lanlanName,
+        mode: 'maker'
+    });
+    if (options.fallbackDefaultOnClose) {
+        params.set('fallback_default_on_close', '1');
+    }
+    if (options.fallbackToken) {
+        params.set('fallback_token', options.fallbackToken);
+    }
+    const url = `/card_maker?${params.toString()}`;
+    const features = 'width=1200,height=800';
+
+    // 从角色卡管理页打开，避免卡面制作页成为模型管理页的子窗口。
+    // 否则模型管理页关闭时，部分 Electron/浏览器环境会连带关闭卡面制作页。
+    if (window.opener && !window.opener.closed) {
+        try {
+            if (typeof window.opener.openManagedPopup === 'function') {
+                return window.opener.openManagedPopup(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            if (typeof window.opener.openOrFocusWindow === 'function') {
+                return window.opener.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            const openedByParent = window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            if (openedByParent && typeof window.opener.requestOpenedWindowRestore === 'function') {
+                window.opener.requestOpenedWindowRestore(openedByParent);
+            }
+            return openedByParent;
+        } catch (error) {
+            console.warn('[模型管理] 通过父窗口打开卡面制作页失败，回退当前窗口打开:', error);
+        }
+    }
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        return window.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+    }
+    return window.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+}
+
+function notifyCardFaceUpdatedFromModelManager(name) {
+    const message = {
+        type: 'card-face-updated',
+        name,
+        timestamp: Date.now()
+    };
+
+    if (window.opener && !window.opener.closed) {
+        try {
+            window.opener.postMessage(message, window.location.origin);
+        } catch (_) {}
+        try {
+            const loadCharacterCards = window.opener.loadCharacterCards;
+            if (typeof loadCharacterCards === 'function') {
+                const refreshResult = loadCharacterCards.call(window.opener);
+                if (refreshResult && typeof refreshResult.catch === 'function') {
+                    refreshResult.catch(() => {});
+                }
+            }
+        } catch (_) {}
+    }
+
+    try {
+        const channel = new BroadcastChannel('neko-card-face-events');
+        channel.postMessage(message);
+        channel.close();
+    } catch (_) {}
+
+    try {
+        localStorage.setItem('neko_card_face_event', JSON.stringify(message));
+        localStorage.removeItem('neko_card_face_event');
+    } catch (_) {}
+}
+
+function createCardMakerFallbackToken() {
+    try {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+    } catch (_) {}
+    return `card-maker-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getCardMakerFallbackCloseMarkKey(token, name) {
+    const normalizedToken = String(token || '').trim();
+    const normalizedName = String(name || '').trim();
+    if (!normalizedToken || !normalizedName) return '';
+    try {
+        return `neko_card_maker_fallback_closed:${encodeURIComponent(normalizedToken)}:${encodeURIComponent(normalizedName)}`;
+    } catch (_) {
+        return '';
+    }
+}
+
+function postCardMakerFallbackEvent(message) {
+    try {
+        const channel = new BroadcastChannel('neko-card-maker-fallback-events');
+        channel.postMessage(message);
+        channel.close();
+    } catch (_) {}
+
+    try {
+        const closeMarkKey = getCardMakerFallbackCloseMarkKey(message?.token, message?.name);
+        if (closeMarkKey) {
+            localStorage.setItem(closeMarkKey, JSON.stringify({
+                token: message.token,
+                name: message.name,
+                timestamp: Date.now()
+            }));
+        }
+        localStorage.setItem('neko_card_maker_fallback_event', JSON.stringify(message));
+        localStorage.removeItem('neko_card_maker_fallback_event');
+    } catch (_) {}
+}
+
+function notifyCardMakerFallbackOwnerClosing() {
+    const active = window._modelManagerActiveCardMakerFallback;
+    if (!active || active.cardFaceSaved || !active.lanlanName || !active.token) return;
+
+    const message = {
+        type: 'model-manager-card-maker-fallback-owner-closing',
+        name: active.lanlanName,
+        token: active.token,
+        timestamp: Date.now()
+    };
+
+    try {
+        active.makerWindow?.postMessage(message, window.location.origin);
+    } catch (_) {}
+    postCardMakerFallbackEvent(message);
+}
+
+function cleanupCardMakerCloseFallbackWatcher() {
+    const cleanup = window._modelManagerCardMakerFallbackCleanup;
+    if (typeof cleanup === 'function') {
+        try {
+            cleanup();
+        } catch (error) {
+            console.warn('[模型管理] 清理卡面制作兜底监听失败:', error);
+        }
+    }
+    if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+        window._modelManagerCardMakerFallbackCleanup = null;
+    }
+    window._modelManagerActiveCardMakerFallback = null;
+}
+
+function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = {}, options = {}) {
+    if (!makerWindow || !lanlanName) return;
+
+    cleanupCardMakerCloseFallbackWatcher();
+
+    const startedAt = Date.now();
+    const fallbackToken = options.fallbackToken || '';
+    let cardFaceSaved = false;
+    let fallbackRunning = false;
+    let closeTimer = 0;
+    let closeGraceTimer = 0;
+    let channel = null;
+    let cachedDefaultCardFaceImage = null;
+    let fallbackAbortController = null;
+    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800 - Math.floor(800 / 6))
+        .then(image => {
+            cachedDefaultCardFaceImage = image;
+            if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+                window._modelManagerActiveCardMakerFallback.cachedDefaultCardFaceImage = image;
+            }
+            return image;
+        })
+        .catch(error => {
+            console.warn('[模型管理] 卡面制作兜底快照预捕获失败，将在兜底时重新截图:', error);
+            return null;
+        });
+    window._modelManagerActiveCardMakerFallback = {
+        makerWindow,
+        lanlanName,
+        token: fallbackToken,
+        cardFaceSaved: false,
+        cachedDefaultCardFaceImage: null
+    };
+
+    const matchesCardFaceUpdate = (data) => {
+        if (!data || data.type !== 'card-face-updated') return false;
+        if (data.name !== lanlanName) return false;
+        if (fallbackToken) {
+            const eventToken = data.fallbackToken || data.fallback_token || data.token || '';
+            if (eventToken !== fallbackToken) return false;
+        }
+        const timestamp = Number(data.timestamp || 0);
+        return !Number.isFinite(timestamp) || timestamp === 0 || timestamp >= startedAt - 2000;
+    };
+
+    const cleanup = () => {
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
+        }
+        if (closeGraceTimer) {
+            clearTimeout(closeGraceTimer);
+            closeGraceTimer = 0;
+        }
+        window.removeEventListener('message', handleMessage);
+        window.removeEventListener('storage', handleStorage);
+        if (channel) {
+            try { channel.close(); } catch (_) {}
+            channel = null;
+        }
+        cachedDefaultCardFaceImage = null;
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
+        }
+        fallbackAbortController = null;
+        if (window._modelManagerCardMakerFallbackCleanup === cleanup) {
+            window._modelManagerCardMakerFallbackCleanup = null;
+        }
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback = null;
+        }
+    };
+
+    const markCardFaceSaved = (data) => {
+        if (!matchesCardFaceUpdate(data)) return;
+        cardFaceSaved = true;
+        if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
+            window._modelManagerActiveCardMakerFallback.cardFaceSaved = true;
+        }
+        if (fallbackAbortController) {
+            try { fallbackAbortController.abort(); } catch (_) {}
+        }
+        cleanup();
+    };
+
+    function handleMessage(event) {
+        if (event.origin !== window.location.origin) return;
+        markCardFaceSaved(event.data);
+    }
+
+    function handleStorage(event) {
+        if (event.key !== 'neko_card_face_event' || !event.newValue) return;
+        try {
+            markCardFaceSaved(JSON.parse(event.newValue));
+        } catch (_) {}
+    }
+
+    async function generateFallbackDefaultCardFace() {
+        if (fallbackRunning || cardFaceSaved) return;
+        fallbackRunning = true;
+        fallbackAbortController = new AbortController();
+        try {
+            const signal = fallbackAbortController.signal;
+            const modelImage = cachedDefaultCardFaceImage || await cachedDefaultCardFaceImagePromise;
+            if (cardFaceSaved || signal.aborted) return;
+            await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                modelImage,
+                signal,
+                shouldCancel: () => cardFaceSaved
+            });
+            if (cardFaceSaved || signal.aborted) return;
+            await notifyMainPageModelReload();
+        } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            console.error('[模型管理] 卡面制作关闭后的默认卡面兜底生成失败:', error);
+            setModelManagerStatusText(
+                error && error.message
+                    ? error.message
+                    : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+            );
+        } finally {
+            fallbackAbortController = null;
+        }
+    }
+
+    function checkClosed() {
+        let isClosed = false;
+        try {
+            isClosed = makerWindow.closed === true;
+        } catch (_) {
+            isClosed = true;
+        }
+        if (!isClosed) return;
+        if (closeTimer) {
+            clearInterval(closeTimer);
+            closeTimer = 0;
+        }
+        if (closeGraceTimer) return;
+
+        closeGraceTimer = setTimeout(() => {
+            closeGraceTimer = 0;
+            if (cardFaceSaved) {
+                cleanup();
+                return;
+            }
+            generateFallbackDefaultCardFace().finally(() => cleanup());
+        }, 350);
+    }
+
+    window.addEventListener('message', handleMessage);
+    window.addEventListener('storage', handleStorage);
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            channel = new BroadcastChannel('neko-card-face-events');
+            channel.onmessage = event => markCardFaceSaved(event.data);
+        } catch (_) {
+            channel = null;
+        }
+    }
+
+    closeTimer = setInterval(checkClosed, 800);
+    window._modelManagerCardMakerFallbackCleanup = cleanup;
+}
+
+function canvasToPngBlob(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+            if (blob) resolve(blob);
+            else reject(new Error('canvas_to_blob_failed'));
+        }, 'image/png');
+    });
+}
+
+function drawImageCover(ctx, source, dx, dy, dw, dh, options = {}) {
+    const sw = source.width;
+    const sh = source.height;
+    const sourceRatio = sw / sh;
+    const targetRatio = dw / dh;
+    let sx = 0;
+    let sy = 0;
+    let cropW = sw;
+    let cropH = sh;
+
+    if (sourceRatio > targetRatio) {
+        cropW = sh * targetRatio;
+        sx = (sw - cropW) / 2;
+    } else {
+        cropH = sw / targetRatio;
+        sy = (sh - cropH) / 2;
+    }
+
+    const focusPoint = options.focusPoint;
+    const hasFocusPoint = focusPoint &&
+        Number.isFinite(focusPoint.x) &&
+        Number.isFinite(focusPoint.y);
+    const zoom = Number(options.zoom || (hasFocusPoint ? 1.7 : 1));
+    if (zoom > 1 || hasFocusPoint) {
+        const focusX = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.x / sw, 0, 1)
+            : (Number.isFinite(options.focusX) ? options.focusX : 0.5);
+        const focusY = hasFocusPoint
+            ? clampCardFaceCrop(focusPoint.y / sh, 0, 1)
+            : (Number.isFinite(options.focusY) ? options.focusY : 0.32);
+        cropW = Math.max(1, cropW / zoom);
+        cropH = Math.max(1, cropH / zoom);
+        sx = clampCardFaceCrop(sw * focusX - cropW / 2, 0, sw - cropW);
+        sy = clampCardFaceCrop(sh * focusY - cropH / 2, 0, sh - cropH);
+    }
+
+    ctx.drawImage(source, sx, sy, cropW, cropH, dx, dy, dw, dh);
+}
+
+function clampCardFaceCrop(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+function getManagerHeadFocusInCanvas(manager, sourceCanvas) {
+    if (!manager || !sourceCanvas || typeof manager.getHeadScreenAnchor !== 'function') {
+        return null;
+    }
+
+    const anchor = manager.getHeadScreenAnchor();
+    const canvas = manager.renderer?.domElement;
+    const rect = canvas?.getBoundingClientRect?.();
+    if (!anchor || !rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+
+    const x = ((anchor.x - rect.left) / rect.width) * sourceCanvas.width;
+    const y = ((anchor.y - rect.top) / rect.height) * sourceCanvas.height;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+    }
+
+    return {
+        x: clampCardFaceCrop(x, 0, sourceCanvas.width),
+        y: clampCardFaceCrop(y, 0, sourceCanvas.height)
+    };
+}
+
+function renderThreeSceneToCanvas(renderer, scene, camera) {
+    const THREE = window.THREE;
+    if (!THREE || !renderer || !scene || !camera) {
+        throw new Error('three_context_not_ready');
+    }
+
+    const sourceCanvas = renderer.domElement;
+    const width = sourceCanvas?.width || Math.round(sourceCanvas?.clientWidth || 0);
+    const height = sourceCanvas?.height || Math.round(sourceCanvas?.clientHeight || 0);
+    if (width <= 0 || height <= 0) {
+        throw new Error('three_canvas_not_ready');
+    }
+
+    const renderTarget = new THREE.WebGLRenderTarget(width, height, {
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false
+    });
+    const previousTarget = renderer.getRenderTarget ? renderer.getRenderTarget() : null;
+    const pixels = new Uint8Array(width * height * 4);
+
+    try {
+        renderer.setRenderTarget(renderTarget);
+        renderer.clear(true, true, true);
+        renderer.render(scene, camera);
+        renderer.readRenderTargetPixels(renderTarget, 0, 0, width, height, pixels);
+    } finally {
+        renderer.setRenderTarget(previousTarget);
+        renderTarget.dispose();
+    }
+
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('three_output_context_failed');
+
+    const imageData = ctx.createImageData(width, height);
+    const rowBytes = width * 4;
+    for (let y = 0; y < height; y += 1) {
+        const srcStart = (height - 1 - y) * rowBytes;
+        const dstStart = y * rowBytes;
+        imageData.data.set(pixels.subarray(srcStart, srcStart + rowBytes), dstStart);
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return output;
+}
+
+function captureLive2DStageToCanvas() {
+    const app = window.live2dManager?.pixi_app;
+    if (!app?.renderer || !app?.stage) {
+        const fallbackCanvas = document.getElementById('live2d-canvas');
+        if (!fallbackCanvas) throw new Error('live2d_context_not_ready');
+        return fallbackCanvas;
+    }
+
+    app.renderer.render(app.stage);
+
+    const extract = app.renderer.extract || app.renderer.plugins?.extract;
+    if (extract && typeof extract.canvas === 'function') {
+        const extracted = extract.canvas(app.stage);
+        if (extracted && extracted.width > 0 && extracted.height > 0) {
+            return extracted;
+        }
+    }
+
+    return app.renderer.view || document.getElementById('live2d-canvas');
+}
+
+async function captureCurrentModelManagerCanvas(state = {}) {
+    let sourceCanvas = null;
+    let sourceManager = null;
+    const modelType = state.currentModelType || 'live2d';
+    const live3dSubType = state.currentLive3dSubType || '';
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
+
+    if (modelType === 'live3d' && live3dSubType === 'mmd') {
+        sourceManager = window.mmdManager;
+        const core = sourceManager?.core;
+        if (typeof sourceManager?.waitForRenderFrame === 'function') {
+            await sourceManager.waitForRenderFrame(1200);
+        } else if (typeof core?.waitForRenderFrame === 'function') {
+            await core.waitForRenderFrame(1200);
+        }
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
+    } else if (modelType === 'live3d') {
+        sourceManager = window.vrmManager;
+        if (sourceManager?.controls) sourceManager.controls.update();
+        sourceCanvas = renderThreeSceneToCanvas(sourceManager?.renderer, sourceManager?.scene, sourceManager?.camera);
+    } else {
+        sourceCanvas = captureLive2DStageToCanvas();
+    }
+
+    if (!sourceCanvas || sourceCanvas.width <= 0 || sourceCanvas.height <= 0) {
+        throw new Error('model_canvas_not_ready');
+    }
+
+    const copy = document.createElement('canvas');
+    copy.width = sourceCanvas.width;
+    copy.height = sourceCanvas.height;
+    const copyCtx = copy.getContext('2d');
+    if (!copyCtx) throw new Error('copy_canvas_context_failed');
+    copyCtx.drawImage(sourceCanvas, 0, 0);
+    return {
+        canvas: copy,
+        manager: sourceManager,
+        modelType,
+        live3dSubType
+    };
+}
+
+function resolveDefaultCardFacePortraitModelType(state = {}) {
+    const modelType = String(state.currentModelType || 'live2d').toLowerCase();
+    const live3dSubType = String(state.currentLive3dSubType || '').toLowerCase();
+    if (modelType === 'live3d') {
+        if (live3dSubType === 'mmd') return 'mmd';
+        if (live3dSubType === 'vrm') return 'vrm';
+        if (window.mmdManager?.currentModel?.mesh) return 'mmd';
+        return 'vrm';
+    }
+    return modelType === 'mmd' || modelType === 'vrm' ? modelType : 'live2d';
+}
+
+async function captureDefaultCardFaceModelImage(state = {}, width, height) {
+    if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
+        try {
+            const portrait = await window.avatarPortrait.capture({
+                width,
+                height,
+                padding: 0.035,
+                background: 'transparent',
+                shape: 'square',
+                radius: 0,
+                cropMode: 'headshot',
+                modelType: resolveDefaultCardFacePortraitModelType(state)
+            });
+
+            if (portrait?.canvas && portrait.canvas.width > 0 && portrait.canvas.height > 0) {
+                return {
+                    canvas: portrait.canvas,
+                    drawOptions: {}
+                };
+            }
+        } catch (error) {
+            console.warn('[模型管理] 默认卡面头像裁切失败，回退模型画布截图:', error);
+        }
+    }
+
+    const capture = await captureCurrentModelManagerCanvas(state);
+    const sourceCanvas = capture.canvas;
+    const headFocus = getManagerHeadFocusInCanvas(capture.manager, sourceCanvas);
+    return {
+        canvas: sourceCanvas,
+        drawOptions: headFocus
+            ? {
+                // 回退路径：优先对齐 3D 模型头部骨骼锚点。
+                zoom: 1.7,
+                focusPoint: headFocus
+            }
+            : {
+                // 回退路径：无头像识别能力时使用偏上构图。
+                zoom: 1.45,
+                focusY: 0.32
+            }
+    };
+}
+
+async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, options = {}) {
+    const abortSignal = options.signal || null;
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const throwIfCancelled = () => {
+        if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+            const error = new Error('默认卡面生成已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+    };
+
+    throwIfCancelled();
+    setModelManagerStatusText(modelManagerText('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...'));
+
+    const cardW = 600;
+    const cardH = 800;
+    const headerH = Math.floor(cardH / 6);
+    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    throwIfCancelled();
+    const sourceCanvas = modelImage.canvas;
+    const output = document.createElement('canvas');
+    output.width = cardW;
+    output.height = cardH;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('card_canvas_context_failed');
+
+    ctx.fillStyle = '#E8F4F8';
+    ctx.fillRect(0, 0, cardW, cardH);
+
+    ctx.fillStyle = '#40C5F1';
+    ctx.fillRect(0, 0, cardW, headerH);
+
+    ctx.font = 'bold 42px "Microsoft YaHei", "SimHei", "PingFang SC", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.fillText(lanlanName, 42, headerH / 2 + 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(lanlanName, 40, headerH / 2);
+
+    drawImageCover(
+        ctx,
+        sourceCanvas,
+        0,
+        headerH,
+        cardW,
+        cardH - headerH,
+        modelImage.drawOptions || {}
+    );
+
+    const cardBlob = await canvasToPngBlob(output);
+    throwIfCancelled();
+    const formData = new FormData();
+    formData.append('image', cardBlob, 'card_face.png');
+
+    const controller = new AbortController();
+    const abortFallbackUpload = () => controller.abort();
+    if (abortSignal) {
+        if (abortSignal.aborted) {
+            abortFallbackUpload();
+        } else {
+            abortSignal.addEventListener('abort', abortFallbackUpload, { once: true });
+        }
+    }
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+        throwIfCancelled();
+        response = await fetch(
+            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+            { method: 'PUT', body: formData, signal: controller.signal }
+        );
+    } catch (error) {
+        if (error && error.name === 'AbortError') {
+            if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {
+                const abortError = new Error('默认卡面生成已取消');
+                abortError.name = 'AbortError';
+                throw abortError;
+            }
+            throw new Error('默认卡面上传超时，请稍后重试');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+        if (abortSignal) {
+            abortSignal.removeEventListener('abort', abortFallbackUpload);
+        }
+    }
+    throwIfCancelled();
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${response.status}`);
+    }
+
+    notifyCardFaceUpdatedFromModelManager(lanlanName);
+}
+
+async function offerCardFaceAfterModelSave(state = {}) {
+    if (window._modelManagerCardFacePromptActive) return;
+    cleanupCardMakerCloseFallbackWatcher();
+    window._modelManagerCardFacePromptActive = true;
+    try {
+        const lanlanName = await resolveModelManagerLanlanName();
+        if (!lanlanName) return;
+
+        const cardFaceChoice = await showDecisionPrompt({
+            title: modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
+            message: modelManagerText('modelManager.editCardFaceAfterModelSaveMessage', '模型设置已保存。是否要现在编辑卡面？'),
+            buttons: [
+                {
+                    value: 'edit',
+                    text: modelManagerText('modelManager.editCardFaceNow', '编辑卡面'),
+                    variant: 'primary'
+                },
+                {
+                    value: 'default',
+                    text: modelManagerText('modelManager.createDefaultCardFace', '生成默认卡面'),
+                    variant: 'secondary'
+                }
+            ]
+        });
+
+        if (cardFaceChoice === 'edit') {
+            const fallbackToken = createCardMakerFallbackToken();
+            const makerWindow = openCardMakerFromModelManager(lanlanName, {
+                fallbackDefaultOnClose: true,
+                fallbackToken
+            });
+            if (!makerWindow) {
+                const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
+                setModelManagerStatusText(message);
+                try {
+                    await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                } catch (error) {
+                    console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                    setModelManagerStatusText(
+                        error && error.message
+                            ? error.message
+                            : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                    );
+                }
+            } else {
+                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
+            }
+        } else if (cardFaceChoice === 'default') {
+            try {
+                await generateDefaultCardFaceFromModelManager(lanlanName, state);
+            } catch (error) {
+                console.error('[模型管理] 生成默认卡面失败:', error);
+                setModelManagerStatusText(
+                    error && error.message
+                        ? error.message
+                        : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                );
+            }
+        }
+        // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
+        // 都要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
+
+        window.hasUnsavedChanges = false;
+        await notifyMainPageModelReload();
+        window._modelManagerModelChangedSinceSave = false;
+        window._modelManagerLoadedFallbackModel = false;
+    } finally {
+        window._modelManagerCardFacePromptActive = false;
+    }
+}
 /**
  * ===== 代码质量改进：路径处理统一化 (DRY 原则) =====
  * 
@@ -1641,7 +2445,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 如果结构被破坏了，重新创建
         if (!textSpan || !backImg || !pawImg) {
-            backToMainBtn.innerHTML = '<img src="/static/icons/back_to_main_button.png?v=1" alt="返回" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="back-text" data-text="返回主页">返回主页</span><img src="/static/icons/paw_ui.png?v=1" alt="猫爪" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">';
+            backToMainBtn.innerHTML = '<img src="/static/icons/back_to_main_button.png?v=1" alt="返回" class="back-icon" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;"><span class="round-stroke-text" id="back-text" data-text="返回主页">返回主页</span><img src="/static/icons/paw_ui.png?v=1" alt="猫爪" class="paw-icon" draggable="false" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">';
             textSpan = document.getElementById('back-text');
         }
 
@@ -1849,7 +2653,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
     } catch (pixiError) {
         console.error('[模型管理] PIXI 初始化失败:', pixiError);
-        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${pixiError.message}`));
+        const errMsg = (pixiError && typeof pixiError.message === 'string') ? pixiError.message : String(pixiError ?? 'Unknown error');
+        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${errMsg}`, { error: errMsg }));
     }
 
     // 先加载模型列表
@@ -1898,7 +2703,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         await switchModelDisplay(savedModelType, savedSubType);
     } catch (switchError) {
         console.error('[模型管理] 切换模型显示模式失败:', switchError);
-        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${switchError.message}`), 3000);
+        const errMsg = (switchError && typeof switchError.message === 'string') ? switchError.message : String(switchError ?? 'Unknown error');
+        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${errMsg}`, { error: errMsg }), 3000);
     }
 
     // 注意：loadCurrentCharacterModel() 的调用已移到所有事件监听器注册之后
@@ -1948,6 +2754,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
+        let effectiveLive3dSubType = currentLive3dSubType || '';
+
         function decodeMaybeUrlComponent(value) {
             if (typeof value !== 'string') return value;
             try {
@@ -2008,7 +2816,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         currentModelInfo.name !== 'undefined' &&
                         currentModelInfo.name !== 'null' &&
                         !currentModelInfo.name.toLowerCase().includes('undefined')) {
-                        const isMmdFallback = currentLive3dSubType === 'mmd' ||
+                        const isMmdFallback = effectiveLive3dSubType === 'mmd' ||
                             (currentModelInfo.type === 'mmd') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmx') ||
                             currentModelInfo.name.toLowerCase().endsWith('.pmd');
@@ -2044,10 +2852,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const selectedOpt = vrmModelSelect && vrmModelSelect.options[vrmModelSelect.selectedIndex];
                 const subType = selectedOpt ? selectedOpt.getAttribute('data-sub-type') : null;
                 const modelExt = modelName ? modelName.toLowerCase() : '';
-                const isMmdModel = currentLive3dSubType === 'mmd' ||
+                const isMmdModel = effectiveLive3dSubType === 'mmd' ||
                     subType === 'mmd' ||
                     modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
                     (currentModelInfo && currentModelInfo.type === 'mmd');
+                effectiveLive3dSubType = isMmdModel ? 'mmd' : 'vrm';
 
                 if (isMmdModel) {
                     // MMD 子类型：构建 MMD 路径（后端读取 data.get('mmd')）
@@ -2142,7 +2951,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const main = document.getElementById('main-light-slider');
 
             // 4. 如果是 VRM/Live3D 模式且当前子类型为 VRM，单独保存光照设置
-            const isVrmSubTypeForSave = !currentLive3dSubType || currentLive3dSubType === 'vrm';
+            const isVrmSubTypeForSave = currentModelType === 'live3d' && effectiveLive3dSubType !== 'mmd';
             if ((currentModelType === 'live3d') && isVrmSubTypeForSave && ambient && main) {
                 const fillSlider = document.getElementById('fill-light-slider');
                 const rimSlider = document.getElementById('rim-light-slider');
@@ -2191,7 +3000,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 5. 如果是 MMD 模式，保存MMD专属设置
             let mmdSettingsResult = null;
-            if (currentModelType === 'live3d' && currentLive3dSubType === 'mmd') {
+            if (currentModelType === 'live3d' && effectiveLive3dSubType === 'mmd') {
                 try {
                     if (_mmdSettingsLoadPromise) {
                         await _mmdSettingsLoadPromise;
@@ -2245,7 +3054,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     mmdSettingsFailed,
                     modelSaved: true,
                     lightingError: lightingResult && lightingResult.error,
-                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error
+                    mmdSettingsError: mmdSettingsResult && mmdSettingsResult.error,
+                    effectiveLive3dSubType
                 }
             );
 
@@ -2719,7 +3529,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.vrmManager = vrmManager;
                 } catch (error) {
                     console.error('VRM 管理器创建失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -2770,7 +3581,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } catch (error) {
                 console.error('VRM 场景初始化失败:', error);
-                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${errMsg}`, { error: errMsg }));
             }
             } else {
                 // MMD 子类型：暂停 VRM 渲染循环，避免后台仍然绘制已缓存的 VRM 模型
@@ -2933,7 +3745,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (modelName) {
                             // 触发 change 事件，让 change 事件处理程序统一处理加载逻辑
                             // 这样 currentModelInfo 也会被正确更新
-                            modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                            dispatchModelManagerChange(modelSelect);
                         }
                     }
 
@@ -2981,7 +3793,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -3001,7 +3813,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
-                                    vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                                    dispatchModelManagerChange(vrmModelSelect);
                                     return true;
                                 }
                                 return false;
@@ -3215,7 +4027,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         mmdModelSelect.value = mmdPath;
                     }
                     // 触发 MMD 模型选择的 change 事件来加载模型
-                    mmdModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    dispatchModelManagerChange(mmdModelSelect, {
+                        suppress: isSuppressedModelManagerChangeEvent(e)
+                    });
                 }
 
                 // 保存 currentModelInfo 用于保存配置
@@ -3226,8 +4040,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     type: 'mmd'
                 };
 
-                if (savePositionBtn) savePositionBtn.disabled = false;
-                window.hasUnsavedChanges = true;
+                // 选择模型后立即启用保存按钮（即使是页面初始化的 suppressed 事件，
+                // 否则进入页面后只调属性时按钮会一直保持 HTML 模板里的 disabled）
+                if (savePositionBtn) {
+                    savePositionBtn.disabled = false;
+                }
+
+                if (!isSuppressedModelManagerChangeEvent(e)) {
+                    window.hasUnsavedChanges = true;
+                    markModelChangedForCardFacePrompt();
+                }
                 return;
             }
 
@@ -3311,7 +4133,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                 } catch (error) {
                     console.error('VRM 管理器初始化失败:', error);
-                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${errMsg}`, { error: errMsg }));
                     return;
                 }
             }
@@ -3328,7 +4151,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('[模型管理] VRM 场景初始化成功');
                 } catch (initError) {
                     console.error('[模型管理] 场景初始化失败:', initError);
-                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${initError.message}`), 5000);
+                    const errMsg = (initError && typeof initError.message === 'string') ? initError.message : String(initError ?? 'Unknown error');
+                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${errMsg}`, { error: errMsg }), 5000);
                     return;
                 }
             }
@@ -3411,8 +4235,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // 标记为有未保存更改
-            window.hasUnsavedChanges = true;
-            console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            if (!isSuppressedModelManagerChangeEvent(e)) {
+                window.hasUnsavedChanges = true;
+                markModelChangedForCardFacePrompt();
+                console.log('已标记为未保存更改（VRM模型切换），请点击 保存设置 持久化到角色配置。');
+            }
 
             try {
                 showStatus(t('live2d.loadingVRMModel', `正在加载 VRM 模型...`));
@@ -3487,7 +4314,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.vrmModelLoaded', `VRM 模型 ${modelPath} 加载成功`, { model: modelPath }));
             } catch (error) {
                 console.error('加载 VRM 模型失败:', error);
-                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${error.message}。您仍可以保存模型设置。`));
+                const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                showStatus(t('live2d.vrmModelLoadFailed', `加载 VRM 模型失败: ${errMsg}。您仍可以保存模型设置。`, { error: errMsg }));
                 // 即使模型加载失败，也尝试加载动作列表（可能用户想预览其他动作）
                 try {
                     await loadVRMAnimations(false);
@@ -3732,7 +4560,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateVRMAnimationPlayButtonIcon();
                 } catch (error) {
                     console.error('播放 VRM 动作失败:', error);
-                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${error.message}`));
+                    const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
+                    showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${errMsg}`, { error: errMsg }));
                     isVrmAnimationPlaying = false;
                     updateVRMAnimationPlayButtonIcon();
                 }
@@ -4311,7 +5140,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 自动选择默认 Live3D 模型（sister1.0.vrm），当角色无已配置的 VRM/MMD 模型时使用
-    function selectDefaultLive3DModel() {
+    function selectDefaultLive3DModel(options = {}) {
         if (!vrmModelSelect || vrmModelSelect.options.length === 0) return false;
         const defaultFilename = 'sister1.0.vrm';
         const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
@@ -4321,7 +5150,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         if (matchedOption) {
             vrmModelSelect.value = matchedOption.value;
-            vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            window._modelManagerLoadedFallbackModel = true;
+            if (options.suppressChange) {
+                suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
+            } else {
+                dispatchModelManagerChange(vrmModelSelect);
+            }
             console.log('[模型管理] 自动加载默认 Live3D 模型:', defaultFilename);
             return true;
         }
@@ -6227,8 +7061,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadModel(modelName, currentModelInfo, modelSteamId);
 
         // 不自动保存模型到角色，改为标记为有未保存更改，用户需手动点击"保存设置"
-        window.hasUnsavedChanges = true;
-        console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        if (!isSuppressedModelManagerChangeEvent(e)) {
+            window.hasUnsavedChanges = true;
+            markModelChangedForCardFacePrompt();
+            console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
+        }
     });
 
     // 加载模型的函数
@@ -6787,6 +7624,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         savingInProgress = true;
         const wasSaveButtonDisabled = savePositionBtn.disabled;
         savePositionBtn.disabled = true;
+        const beforeSaveSnapshot = window._savedModelSnapshot
+            ? { ...window._savedModelSnapshot }
+            : captureSettingsSnapshot();
 
         try {
             // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
@@ -6853,6 +7693,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 保存模型设置到角色，同时传入item_id
                 modelSaveResult = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
             }
+            const savedFallbackModelAsExplicitBinding = window._modelManagerLoadedFallbackModel === true;
 
             const modelStatus = modelSaveResult && modelSaveResult.status ? modelSaveResult.status : 'fail';
             const modelMessage = modelSaveResult && modelSaveResult.message
@@ -6924,6 +7765,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showModelManagerToast(message, 3200, 'error');
                 }
             }
+
+            const modelFullySaved = currentModelType === 'live3d'
+                ? modelStatus === 'ok'
+                : (positionSuccess && modelStatus === 'ok');
+            const shouldOfferCardFace = modelFullySaved
+                && (
+                    savedFallbackModelAsExplicitBinding ||
+                    window._modelManagerModelChangedSinceSave
+                    || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
+            );
+            if (shouldOfferCardFace) {
+                const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
+                offerCardFaceAfterModelSave({
+                    currentModelType,
+                    currentLive3dSubType: savedLive3dSubType
+                }).catch(error => {
+                    console.error('[模型管理] 保存后的卡面处理失败:', error);
+                });
+            }
         } catch (error) {
             console.error('保存设置失败:', error);
             const message = t('live2d.saveFailed', `保存失败: ${error.message}`, { error: error.message });
@@ -6943,11 +7803,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const height = 800;
             const left = (screen.width - width) / 2;
             const top = (screen.height - height) / 2;
-            window.open(
-                '/live2d_emotion_manager',
-                'emotionManager',
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow('/live2d_emotion_manager', 'emotionManager', features);
+            } else {
+                window.open('/live2d_emotion_manager', 'emotionManager', features);
+            }
         });
     }
 
@@ -6973,11 +7834,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            window.open(
-                url,
-                winName,
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, winName, features);
+            } else {
+                window.open(url, winName, features);
+            }
         });
     }
 
@@ -8361,6 +9223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 加载当前角色模型的函数
     async function loadCurrentCharacterModel() {
         try {
+            window._modelManagerLoadedFallbackModel = false;
             // 获取角色名称
             const lanlanName = await getLanlanName();
             if (!lanlanName) {
@@ -8471,10 +9334,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 MMD 选项:', mmdPath);
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 } else if (live3dSubType === 'vrm' && hasValidVRMPath && vrmModelSelect) {
                     // VRM 模型：安全获取路径并在合并列表中查找 [VRM] 选项
@@ -8581,16 +9444,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
-                        vrmModelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                        await suppressModelManagerChange(() => dispatchModelManagerChange(vrmModelSelect));
                     } else {
                         console.warn('[模型管理] 未找到匹配的 VRM 选项:', vrmModelPath, '，尝试加载默认模型');
-                        selectDefaultLive3DModel();
+                        selectDefaultLive3DModel({ suppressChange: true });
                     }
                 }
             } else if (modelType !== 'live2d') {
                 // Live3D 但无有效路径 → 尝试加载内置默认模型
                 console.warn(`[模型管理] 模型类型 ${modelType} 无有效路径，尝试加载默认模型`);
-                selectDefaultLive3DModel();
+                selectDefaultLive3DModel({ suppressChange: true });
             } else {
                 // Live2D 模型
                 // 构建API URL，支持可选的item_id参数
@@ -8628,6 +9491,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     // 设置模型选择器
                     currentModelInfo = model_info;
+                    window._modelManagerLoadedFallbackModel = model_info.is_fallback === true;
                     modelSelect.value = model_name;
 
                     // 更新按钮文字
@@ -8682,6 +9546,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // 监听页面卸载事件，确保返回时主界面可见
 window.addEventListener('beforeunload', (e) => {
+    notifyCardMakerFallbackOwnerClosing();
+
     // 尝试退出全屏
     if (isFullscreen()) {
         try {

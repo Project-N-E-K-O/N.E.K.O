@@ -4,7 +4,7 @@
 
 [中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md) | [日本語](README_ja.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**Проактивный нативный мультимодальный ИИ-компаньон с круглосуточным осознанием окружения, агентными возможностями и воплощённым эмоциональным движком.**
+# Project N.E.K.O. :kissing_cat: <br>**Расслышать ваше настроение. Увидеть ваш мир.<br>Вместе открыть больше того, что вам по душе.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (Сетевой Эмоциональный Познающий Организм)
 >
@@ -14,24 +14,16 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
+![QQ](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_Документация-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
-**:older_woman: Нулевая конфигурация, готова к использованию — кибер-кошкодевочка, с которой справится даже бабушка!**
+**:older_woman: Нулевая конфигурация и сразу готова к работе — кибер-кошкодевочка, которую даже бабушка легко разбудит!**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/) версия выпущена! Полностью обновлённый интерфейс и бесплатная эксклюзивная модель из коробки (спасибо StepFun за спонсорство). Добавьте в список желаемого!**
+:newspaper: **[Версия в Steam](https://store.steampowered.com/app/4099310/__NEKO/) доступна бесплатно! Если она вам понравится, добавьте её в библиотеку и оставьте добрый отзыв~**
 
 *Project N.E.K.O., НекоВселенная!*
-
-</div>
-
-<div align="center">
-
-#### Демонстрация функций (полная версия на Bilibili) [![Bilibili](https://img.shields.io/badge/Bilibili-Туториал-blue)](https://www.bilibili.com/video/BV1mM32zXE46/)
-
-https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 </div>
 
@@ -41,15 +33,15 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 <table>
 <tr>
-<td align="center" width="25%">🎙️<br><b>Мультимодальный диалог</b><br>Голос в реальном времени (Realtime API) + текстовый чат (ChatCompletion) с визуальным пониманием</td>
-<td align="center" width="25%">🧠<br><b>Трёхуровневая память</b><br>Факты / Рефлексия / Персона — она действительно «помнит» вас</td>
-<td align="center" width="25%">🤖<br><b>Агентные возможности</b><br>Управление браузером (CUA), компьютером, вызов OpenClaw A2A — она может работать за вас</td>
+<td align="center" width="25%">💬<br><b>Проактивное сопровождение</b><br>Понимание экрана, тренды соцсетей, личные обновления, музыка и мемы — она сама начинает разговор и делится свежим, что вам нравится</td>
+<td align="center" width="25%">🎙️<br><b>Голос, текст и зрение в реальном времени</b><br>Голос в реальном времени (Realtime API) + текстовый чат (ChatCompletion) с живым визуальным пониманием</td>
+<td align="center" width="25%">🧠<br><b>Пятимерная система памяти</b><br>Рабочая / Недавняя / Фактическая / Рефлексивная / Персональная память, чтобы со временем она понимала вас лучше</td>
 <td align="center" width="25%">🎭<br><b>Мультиформатный Аватар</b><br>Live2D / VRM / MMD с захватом движений и отслеживанием в полноэкранном режиме</td>
 </tr>
 <tr>
-<td align="center">🔌<br><b>Экосистема плагинов</b><br>Полный SDK и маркетплейс плагинов для пользовательских расширений</td>
+<td align="center">🤖<br><b>Выполнение задач агентом</b><br>Управляет браузерами и компьютером, вызывая CUA / OpenClaw A2A / плагины для выполнения задач</td>
+<td align="center">🔌<br><b>Экосистема плагинов</b><br>SDK + маркетплейс плагинов для совместной игры онлайн, взаимодействия с соцсетями, стримами и умным домом</td>
 <td align="center">🌐<br><b>14+ ИИ-провайдеров</b><br>OpenAI / Gemini / Qwen / DeepSeek и другие, с бесплатными моделями из коробки</td>
-<td align="center">💬<br><b>Проактивный чат</b><br>Круглосуточное осознание: понимание экрана, тренды соцсетей, персональные ленты, музыка и мемы — она сама начинает разговор с вами</td>
 <td align="center">🏪<br><b>UGC Мастерская</b><br>Загружайте и делитесь кастомными персонажами, моделями и голосовыми пакетами через Steam Workshop</td>
 </tr>
 </table>
@@ -77,7 +69,7 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **Создатели:** Художники, Live2D/3D моделлеры, актёры озвучки, сценаристы — вы даёте «ей» душу.
 * **Мечтатели:** Ваша обратная связь и поддержка — бесценный вклад.
 
-**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: [1022939659](https://qm.qq.com/q/HxeaMdSkQW)
+**Discord**: [Присоединиться](https://discord.gg/5kgHfepNJr) | **QQ-группа**: 995414391
 
 ## Быстрый старт
 
@@ -409,7 +401,7 @@ uv run python agent_server.py
 # 5. Перейдите на http://localhost:48911 для настройки API Key и начала работы
 ```
 
-Разработчикам рекомендуется присоединиться к QQ-группе 1022939659.
+Разработчикам рекомендуется присоединиться к QQ-группе 995414391.
 
 </details>
 
@@ -421,7 +413,7 @@ uv run python agent_server.py
 
 Настройте сторонние ИИ-сервисы для дополнительных функций:
 
-- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Gemini*, *OpenAI*, *StepFun* или *Alibaba Cloud*.
+- **Core API** (голосовой разговор в реальном времени): Должен поддерживать Realtime API. Рекомендуется: *Alibaba Cloud*.
 - **Assist API** (память/эмоции/зрение): Поддерживает стандартный интерфейс ChatCompletion. Доступно 14+ провайдеров.
 
 Перейдите на `http://localhost:48911/api_key` для настройки через веб-интерфейс.
@@ -475,7 +467,7 @@ N.E.K.O/
 │   ├── omni_offline_client.py   # Текстовый API клиент (ChatCompletion)
 │   └── tts_client.py            # 🔊 Адаптер TTS-движка
 ├── 📁 main_routers/             # 🌐 API-маршруты (14 маршрутов)
-├── 📁 memory/                   # 🧠 Трёхуровневая система памяти
+├── 📁 memory/                   # 🧠 Пятимерная система памяти (частичные примеры)
 │   ├── facts/                   # Память фактов
 │   ├── reflection/              # Память рефлексий
 │   └── persona/                 # Память персоны

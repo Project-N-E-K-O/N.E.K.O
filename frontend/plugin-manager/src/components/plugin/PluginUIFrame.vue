@@ -59,6 +59,7 @@ const { t } = useI18n()
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const iframeKey = ref(0)
+const uiCacheBust = ref(Date.now())
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
@@ -71,7 +72,7 @@ const uiUrl = computed(() => {
   // This component is the original static UI iframe path. New entry points
   // should consume PluginUiSurface and render static panels through the
   // surface container, while this remains as compatibility renderer.
-  return `/plugin/${encodeURIComponent(props.pluginId)}/ui/`
+  return `/plugin/${encodeURIComponent(props.pluginId)}/ui/?_ui=${uiCacheBust.value}`
 })
 
 async function checkUIAvailability() {
@@ -120,10 +121,12 @@ async function reload() {
     // UI availability already confirmed (iframe load failed); skip network call
     error.value = null
     loading.value = true
+    uiCacheBust.value = Date.now()
     iframeKey.value++
   } else {
     await checkUIAvailability()
     if (hasUI.value && !error.value) {
+      uiCacheBust.value = Date.now()
       iframeKey.value++
     }
   }
@@ -168,6 +171,7 @@ onUnmounted(() => {
 })
 
 watch(() => props.pluginId, () => {
+  uiCacheBust.value = Date.now()
   checkUIAvailability()
 })
 </script>

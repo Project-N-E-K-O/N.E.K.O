@@ -188,3 +188,6 @@ static/jukebox/*.bvh
 static/jukebox/*.fbx
 tests/prompt_dump.json
 tests/testbench/docs/dev_note.txt
+
+# yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
+/static/yui-origin/

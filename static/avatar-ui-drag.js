@@ -547,6 +547,12 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMemeChat',
         tooltipKey: 'settings.toggles.proactiveMemeChatTooltip',
         globalVarName: 'proactiveMemeEnabled'
+    },
+    {
+        mode: 'mini_game',
+        labelKey: 'settings.toggles.proactiveMiniGameInviteChat',
+        tooltipKey: 'settings.toggles.proactiveMiniGameInviteChatTooltip',
+        globalVarName: 'proactiveMiniGameInviteEnabled'
     }
 ];
 

@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: 'Abrir UI',
+      title: 'UI',
       panel: 'Painel',
       guide: 'Tutorial',
       loading: 'Carregando UI do plugin...',

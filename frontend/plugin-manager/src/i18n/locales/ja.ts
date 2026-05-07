@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: 'UIを開く',
+      title: 'UI',
       panel: 'パネル',
       guide: 'チュートリアル',
       loading: 'プラグインUIを読み込み中...',

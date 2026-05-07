@@ -2,23 +2,39 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Soccer MVP (VRM sister 接入验证)</title>
+<title>Soccer MVP (VRM sensei 接入验证)</title>
 
 <!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
 <script>window.VRM_DEFAULT_LIGHTING = Object.freeze({{ vrm_defaults | tojson }});</script>
 
 <!-- Mock 桌宠运行环境（必要最小子集，避免各 init 脚本崩溃） -->
 <script>
-  window.lanlan_config = window.lanlan_config || {
-    lanlan_name: 'soccer_demo',
-    master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
-    model_type: 'vrm', live3d_sub_type: 'vrm'
-  };
+  // mini-game 邀请被接受后由 chat.html / Pet 主聊天 window.open 打开本页面，
+  // URL 形如 `/soccer_demo?lanlan_name=<active_character>&session_id=<invite_uuid>`。
+  // 提前从 query 解出来，覆盖默认 'soccer_demo' 值，避免后端 game route 用错角色。
+  // 直接手敲 /soccer_demo 进来时 query 缺失，沿用旧默认（route_start 内部会调
+  // /api/game/soccer/character 解出当前角色作为兜底，PR #1110 已实现）。
+  (function () {
+    var params = null;
+    try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
+    var queryLanlan = (params && params.get('lanlan_name')) || '';
+    var queryInviteSession = (params && params.get('session_id')) || '';
+    window.lanlan_config = window.lanlan_config || {
+      lanlan_name: queryLanlan || 'soccer_demo',
+      master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
+      model_type: 'vrm', live3d_sub_type: 'vrm'
+    };
+    if (queryLanlan && !window.lanlan_config.lanlan_name) {
+      window.lanlan_config.lanlan_name = queryLanlan;
+    }
+    // 留个全局让游戏内逻辑可见 invite 来源（例如赛后归档时打个 tag）
+    window.__nekoMiniGameInviteSessionId = queryInviteSession || '';
+  })();
   window.LanLan1 = window.LanLan1 || {};
   // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
   window.mouseTrackingEnabled = true;
   window.live2dFullscreenTrackingEnabled = false;
-  // 阻止 vrm-init.js 自动加载 sister 到默认 #vrm-container（id 对不上会出事），
+  // 阻止 vrm-init.js 自动加载默认模型到 #vrm-container（id 对不上会出事），
   // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
   window._cardExportPage = true;
 </script>
@@ -166,7 +182,10 @@
   }
   #loading-spinner[hidden],
   #loading-actions[hidden] { display: none; }
-  #loading-text { min-width: 180px; }
+  /* min-width 防止 spinner 隐藏前后整行宽度抖动；text-align: center 让短文案
+     （"模型加载完成"等 4-6 字状态串）在 180px 槽位内视觉居中——之前缺这条所以
+     文字落在槽位左侧、偏离 panel 中心约 50px。 */
+  #loading-text { min-width: 180px; text-align: center; }
   #soccer-start-button {
     min-width: 112px;
     padding: 8px 18px;
@@ -220,31 +239,37 @@
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
-  鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位<br>
-  1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档
+  <div data-i18n="soccer.hint.controls">鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
+  <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
+<!-- Debug 控件区：开发用，固定英文（不进入 i18n 池）。 -->
 <div id="controls">
-  <label><input type="checkbox" id="boundary-toggle"> 启用边界（出界规则）</label>
-  <label><input type="checkbox" id="voice-output-toggle" checked> 念出 LLM 台词（项目语音）</label>
+  <label><input type="checkbox" id="boundary-toggle"> Enable bounds (out-of-bounds rule)</label>
+  <label><input type="checkbox" id="voice-output-toggle" checked> Speak LLM lines (project voice)</label>
   <div id="voice-controls" aria-hidden="true">
-    <button id="voice-mic-button" type="button">调试语音</button>
-    <input id="voice-text-input" type="text" placeholder="调试：输入最终转写文本，回车发送">
-    <button id="voice-send-button" type="button">发送</button>
-    <div id="voice-status">调试 STT：隐藏</div>
+    <button id="voice-mic-button" type="button">Debug voice</button>
+    <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
+    <button id="voice-send-button" type="button">Send</button>
+    <div id="voice-status">Debug STT: hidden</div>
   </div>
 </div>
-<button id="exit-to-start-button" type="button" hidden>结束游戏（调试）</button>
+<!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
+     init / localechange 时刷新 textContent；codex P1 review 指出 IIFE 内
+     ``typeof window.t === 'function'`` 一次性 gate 在 i18n 异步 init 之前
+     会 skip，导致非 zh locale 卡在 HTML 兜底。统一走 ``data-i18n`` 后框架
+     接管两类时序。 -->
+<button id="exit-to-start-button" type="button" hidden data-i18n="soccer.exitGame.button">退出游戏</button>
 <div id="status">loading VRM dependencies…</div>
 <div id="loading-overlay" role="status" aria-live="polite">
   <div id="loading-panel">
     <div id="loading-row">
       <div id="loading-spinner" aria-hidden="true"></div>
-      <div id="loading-text">初始化足球小游戏…</div>
+      <div id="loading-text" data-i18n="soccer.loading.initializingMiniGame">初始化足球小游戏…</div>
     </div>
     <div id="loading-actions" hidden>
-      <button id="soccer-start-button" type="button">开始</button>
-      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> 本局进入记忆（测试期间默认不开启）</label>
-      <div id="game-memory-hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
+      <button id="soccer-start-button" type="button" data-i18n="soccer.startScreen.startButton">开始</button>
+      <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> <span id="game-memory-label" data-i18n="soccer.memoryOption.label">本局对话进入记忆（默认不开启）</span></label>
+      <div id="game-memory-hint" data-i18n="soccer.memoryOption.hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
     </div>
   </div>
 </div>
@@ -337,7 +362,7 @@
         setExitVisible(false);
         showOverlay();
       },
-      ending(text = '正在结束本局…') {
+      ending(text = _localized('exitGame.endingDefault', 'Ending this match…')) {
         state.route = false;
         state.routeStarting = true;
         state.started = false;
@@ -347,7 +372,7 @@
         setExitVisible(false, false);
         showOverlay();
       },
-      ended(text = '游戏已结束，请关闭页面。此提示仅用于调试，不作为重开的方式；重新进入请重新打开一次页面。') {
+      ended(text = _localized('exitGame.endedDefault', 'Game over. Please close this page. To play again, reopen it.')) {
         state.route = false;
         state.routeStarting = false;
         state.started = false;
@@ -452,7 +477,7 @@
       'player-vrm-canvas', 'player-vrm-container', null, { embed: true }
     );
     console.log('[soccer_demo] core.init done; scene children BEFORE load:', window.vrmManager.scene?.children?.length);
-    setStatus('loading sister1.0.vrm…');
+    setStatus('loading sensei.vrm…');
     // 绕开 core.loadModel（它里面有 3 帧 rAF 等待，在 headless/背景 tab 下会 hang），
     // 直接用 GLTFLoader + VRMLoaderPlugin 加载，手动 scene.add。
     const [{ GLTFLoader }, vrmModule] = await Promise.all([
@@ -461,14 +486,14 @@
     ]);
     const loader = new GLTFLoader();
     loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sister1.0.vrm', res, null, rej));
+    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sensei.vrm', res, null, rej));
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error('Loaded file is not a valid VRM');
     console.log('[soccer_demo] VRM parsed');
     // 把模型放进 manager 的 scene，交给 core.init 已经设置好的 renderer/camera 渲染
     window.vrmManager.scene.add(vrm.scene);
     // 让 three-vrm 的更新发生——挂到 clock/render loop 上
-    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sister1.0.vrm' };
+    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sensei.vrm' };
     vrm.scene.visible = true;
 
     // 相机自适应：测出 bbox，把模型脚底放到 y=0、水平居中，再把相机拉到够远能装下整个人
@@ -755,8 +780,12 @@
   const _i18n = (key, fallback, params) => {
     if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
     if (!params) return fallback;
+    // 替换模式必须避开 Jinja2 模板里的双花括号字面量——本文件顶部有 Jinja
+    // 渲染（VRM_DEFAULT_LIGHTING），整份模板会过 Jinja parser；下面 replaceAll
+    // 的源串若写成模板字面量的 dollar 引用形式会被 Jinja 当表达式 SyntaxError。
+    // 拆字符拼接绕开 parser，运行期 JS 仍得到 [open][open]KEY[close][close]。
     return Object.entries(params).reduce(
-      (s, [k, v]) => s.replaceAll(`{{${k}}}`, String(v)),
+      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
       fallback,
     );
   };
@@ -775,6 +804,29 @@
     if (tag.startsWith('pt')) return 'pt-BR';
     return raw;
   };
+  // 当前 UI locale（同 app-proactive.js 的 i18nLanguage 三级兜底）。
+  // 后端 _absorb_request_language 优先吃这个字段并回写 mgr.user_language，
+  // 不再依赖 ws greeting_check 的同步时机或全局缓存的 Steam SDK race。
+  // Steam=中文 / 系统=英文 + Steam SDK 启动期 race 失败的场景下，没有这条
+  // 路径 in-game LLM 的 prompt 会跑成英文。
+  window.SoccerCurrentI18nLang = function () {
+    try {
+      if (typeof window.i18next !== 'undefined'
+          && typeof window.i18next.language === 'string'
+          && window.i18next.language) {
+        return window.i18next.language;
+      }
+      if (typeof localStorage !== 'undefined') {
+        const cached = localStorage.getItem('i18nextLng');
+        if (cached) return cached;
+      }
+      if (typeof navigator !== 'undefined' && navigator.language) {
+        return navigator.language;
+      }
+    } catch (_) { /* swallow: fetch payload tolerates empty */ }
+    return '';
+  };
+  const _currentI18nLang = window.SoccerCurrentI18nLang;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -1133,19 +1185,19 @@
 
   function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
 
-  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认从 lv2/lv3 开局，后续由 LLM 控制。
+  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认 lv2 起手，后续由 LLM 控制。
+  // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
+  // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
+  // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
+  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
     { name: 'lv3', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: true },
     { name: 'lv4', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: false },
   ];
-  function randomDefaultDifficultyIndex() {
-    const name = Math.random() < 0.5 ? 'lv2' : 'lv3';
-    const idx = DIFFICULTY.findIndex(d => d.name === name);
-    return idx >= 0 ? idx : 1;
-  }
-  let difficultyIdx = randomDefaultDifficultyIndex();
+  const DEFAULT_DIFFICULTY_INDEX = DIFFICULTY.findIndex(d => d.name === 'lv2');
+  let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
   }
@@ -1379,8 +1431,11 @@
     if (!bubbleEl) return;
     bubbleEl.textContent = text;
     bubbleEl.setAttribute('data-mood', mood);
-    if (sourceLabel) bubbleEl.setAttribute('data-source-label', sourceLabel);
-    else bubbleEl.removeAttribute('data-source-label');
+    // 不再向用户展示 ``data-source-label``（"LLM生成 · 850ms" / "开局上下文" / "快路径
+    // 兜底" 等）。这些是开发期溯源/延迟信息，玩家看到只觉冗余、且强调"延迟"反而拉低
+    // 体验。``sourceLabel`` 仍由 caller 传进来用于 console 日志与调试，但不渲染到
+    // bubble 上方。CSS ``[data-source-label]::before`` 规则保留以备调试模式回插。
+    bubbleEl.removeAttribute('data-source-label');
     bubbleEl.classList.add('show');
     if (bubbleHideTimer) clearTimeout(bubbleHideTimer);
     bubbleHideTimer = setTimeout(() => { bubbleEl.classList.remove('show'); }, durationMs);
@@ -1642,7 +1697,15 @@
 
   async function loadGeneratedQuickLines() {
     try {
-      const resp = await fetch('/api/game/soccer/quick-lines', { method: 'POST' });
+      // quick-lines 在 _startGameRoute 之前就开炮，是整个 soccer 流程里第一个会
+      // 命中 LLM 的端点；得自带 i18n_language 让后端 _absorb_request_language
+      // 在 mgr.user_language 还是错的全局缓存值时就把它纠正过来，否则首批 quick
+      // lines 会落英文。
+      const resp = await fetch('/api/game/soccer/quick-lines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ i18n_language: _currentI18nLang() }),
+      });
       if (!resp.ok) {
         soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
         return;
@@ -2064,7 +2127,7 @@
     unstickCd = 0;
     GAME_EVENTS.length = 0;
 
-    difficultyIdx = randomDefaultDifficultyIndex();
+    difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
     __setMoodBase('calm');
     if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
@@ -2213,6 +2276,10 @@
       gameStartedElapsedMs,
       game_started_elapsed_ms: gameStartedElapsedMs,
       gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
+      // 见 _currentI18nLang 注释：把前端 i18n 真值随 route/heartbeat/start/end/
+      // voice-transcript 一起捎给后端，后端 _absorb_request_language 自愈
+      // mgr.user_language。
+      i18n_language: _currentI18nLang(),
       ...extra,
     });
   }
@@ -2685,6 +2752,7 @@
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           state: stateNow,
           pendingItems: safeItems,
+          i18n_language: _currentI18nLang(),
         }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -2715,6 +2783,7 @@
           turn_id: `game-mirror-${requestId}`,
           finalize_turn: shouldFinalizeTurn,
           line: clean,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -2782,6 +2851,7 @@
           voice_arbiter_reason: voiceArbiterReason,
           line,
           state: stateNow,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -3269,6 +3339,7 @@
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           ..._soccerGameMemoryPolicyPayload(),
+          i18n_language: _currentI18nLang(),
           event: {
             ...eventPayload,
             ..._soccerGameMemoryPolicyPayload(),
@@ -3428,6 +3499,7 @@
         body: JSON.stringify({
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          i18n_language: _currentI18nLang(),
         }),
       });
       if (!resp.ok) return;
@@ -3549,22 +3621,49 @@
     _deliverPendingOpeningLine();
   }
 
+  // 注：之前这里有两段一次性 ``data-i18n-key`` localizer（exit button + memoryOption），
+  // 在 IIFE 执行时 ``typeof window.t === 'function'`` gate。codex P1 (PR #1149) 指出：
+  // i18n-i18next.js 是 ``DOMContentLoaded`` 之后异步 init，IIFE 跑到这一步时 ``window.t``
+  // 通常还没挂上，gate skip → 非 zh locale 看到 HTML 兜底中文。修法是改 ``data-i18n``
+  // 让框架的 ``updatePageTexts()`` 在 init / localechange 自动接管，全部不再需要手动
+  // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
+
   let _manualEndInFlight = false;
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
     if (exitToStartButton) exitToStartButton.disabled = true;
+    const _t = (key, fallback) => {
+      // i18next 在 key 缺失时返回 key 字面量本身——必须等值比对回 fallback，
+      // 否则 UI 会出现 "soccer.exitGame.ending" 这种 key 字符串。
+      if (typeof window.t !== 'function') return fallback;
+      const fullKey = `soccer.${key}`;
+      const v = window.t(fullKey);
+      return (v && v !== fullKey) ? v : fallback;
+    };
     try {
-      window.__SoccerLoading?.ending?.('正在结束本局…');
+      window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
-        reason: 'manual_debug_exit',
+        reason: 'manual_user_exit',
         postgameProactive: false,
       });
     } finally {
-      // 这个按钮是测试/调试退出入口。结束后必须停在结束状态，不自动准备下一局，
-      // 避免后续接手者误以为这里是游戏内“重开”流程。
-      window.__SoccerLoading?.ended?.();
+      window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
+      // 退出后：先尝试 window.close()（适用于 main app 用 window.open 弹的子窗口
+      // 与 Electron 多窗口）；浏览器无脚本权限关闭时 fall back 到主聊天 SPA 的
+      // 根路径。短延迟让用户看到 "正在返回..." 文本，避免页面瞬间消失。
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (_) {}
+        // 如果 close 没生效（普通 tab / 用户手敲 URL），跳回 /
+        setTimeout(() => {
+          if (!window.closed) {
+            window.location.assign('/');
+          }
+        }, 150);
+      }, 600);
     }
   }
 

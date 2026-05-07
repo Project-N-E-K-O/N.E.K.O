@@ -96,6 +96,8 @@
         heartbeatInterval: null,
         autoReconnectTimeoutId: null,
         isRecording: false,
+        voiceChatActive: false,
+        voiceStartPending: false,
         isTextSessionActive: false,
         isSwitchingMode: false,
         sessionStartedResolver: null,
@@ -134,6 +136,7 @@
         proactivePersonalChatEnabled: false,
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: true,
+        proactiveMiniGameInviteEnabled: true,
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
@@ -193,7 +196,8 @@
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];

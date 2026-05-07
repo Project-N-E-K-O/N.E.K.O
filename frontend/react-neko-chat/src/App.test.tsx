@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import App from './App';
 import { parseChatMessage } from './message-schema';
 
@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('disables composer submission while the home tutorial owns interaction', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App composerDisabled onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
     const onComposerSubmit = vi.fn();
     render(<App onComposerSubmit={onComposerSubmit} />);
@@ -116,6 +129,26 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
+  });
+
+  it('keeps pending composer attachments locked while the composer is disabled', () => {
+    const onComposerRemoveAttachment = vi.fn();
+
+    render(
+      <App
+        composerDisabled
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+        onComposerRemoveAttachment={onComposerRemoveAttachment}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton).toBeDisabled();
+    fireEvent.click(removeButton);
+
+    expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
   });
 
   it('only emits avatar interactions when the pointer hits the avatar range', () => {
@@ -282,6 +315,73 @@ describe('App', () => {
         intensity: 'burst',
       }));
     } finally {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+    vi.useFakeTimers();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    let boundsAvailable = true;
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => (boundsAvailable
+          ? {
+            left: 100,
+            right: 200,
+            top: 100,
+            bottom: 200,
+            width: 100,
+            height: 100,
+          }
+          : null),
+      },
+    });
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      const avatarImage = () => container.querySelector('.avatar-cursor-overlay-image-lollipop');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+
+      boundsAvailable = false;
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
+    } finally {
+      vi.useRealTimers();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
       live2dContainer.remove();
     }

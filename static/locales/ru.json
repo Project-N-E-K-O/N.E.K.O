@@ -2,6 +2,8 @@
     "common": {
         "load": "Загрузить",
         "minimize": "Свернуть",
+        "maximize": "Развернуть",
+        "restore": "Восстановить",
         "expand": "Развернуть",
         "close": "Закрыть",
         "save": "Сохранить",
@@ -44,6 +46,10 @@
         "toneMappingAgX": "AgX",
         "toneMappingNeutral": "Нейтральная",
         "loadFailed": "Ошибка загрузки"
+    },
+    "model": {
+        "resetToDefaultSuccess": "Модель по умолчанию восстановлена",
+        "resetToDefaultFailed": "Не удалось восстановить модель по умолчанию"
     },
     "autostartPrompt": {
         "title": "Включить автозапуск N.E.K.O. при входе в систему?",
@@ -578,7 +584,6 @@
         "LLM_CONNECTION_EXHAUSTED": "💥 Ошибка подключения LLM ({{error_type}}), исчерпано {{max_retries}} попыток: {{error}}",
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
-        "PROACTIVE_GEN_FAILED": "💥 Ошибка генерации проактивного ответа: {{error_type}}: {{error}}",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} переходит на другой терминал...",
         "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
@@ -607,7 +612,31 @@
         "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
-        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
+        "AGENT_NO_PLUGINS_FOUND": "Пользовательские плагины не найдены",
+        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw недоступен: {{reason}}",
+        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw включен, ожидаем готовности службы подключения...",
+        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Не удалось включить OpenClaw: модуль не загружен",
+        "AGENT_OPENCLAW_UNAVAILABLE": "Не удалось включить OpenClaw: {{reason}}",
+        "AGENT_PLUGIN_SERVER_ERROR": "Не удалось запустить сервер пользовательских плагинов",
+        "CURRENT_CATGIRL_IN_USE": "Нельзя выполнить это действие с активным персонажем «{{character_name}}». Сначала переключитесь на другого персонажа",
+        "DIRECT_LINK_INACCESSIBLE": "Прямая ссылка недоступна",
+        "DOWNLOAD_FAILED": "Не удалось скачать аудио",
+        "FILE_TOO_LARGE": "Файл слишком большой",
+        "GAME_ROUTE_ENDED": "Игровой маршрут завершён",
+        "GAME_ROUTE_LLM_FAILED": "Игровой LLM не вернул валидный ответ ({{error}})",
+        "GAME_ROUTE_MEDIA_SKIPPED": "Кадры экрана/камеры пропущены во время игры",
+        "GAME_VOICE_STT_GATE_ACTIVE": "Голосовой перехват игры активен",
+        "INTERNAL_IMPORT_ERROR": "Не удалось загрузить внутренний компонент: {{error}}",
+        "LOCAL_CONFIG_CLEANUP_FAILED": "Структура локальной конфигурации персонажа недействительна",
+        "MEMORY_SERVER_RELEASE_FAILED": "Не удалось освободить дескриптор памяти персонажа, повторите позже",
+        "MINIMAX_API_KEY_MISSING": "MiniMax API Key не настроен. Сначала укажите его в настройках",
+        "PRIVATE_IP_NOT_ALLOWED": "Прямая ссылка не может указывать на частный IP",
+        "RESPONSE_LENGTH_TRUNCATED": "Ответ слишком длинный, автоматически обрезан до последнего полного предложения",
+        "STEAM_UNSUBSCRIBE_FAILED": "Не удалось отписаться в Steam",
+        "TEXT_GEN_ERROR_AFTER_PARTIAL": "Генерация текста прервана ({{error_type}}); частичный вывод сохранён",
+        "TTS_PROVIDER_INVALID": "Неверный TTS провайдер: {{provider}}. Поддерживаемые: {{valid_providers}}",
+        "WRITE_FENCE_ACTIVE": "Идёт обслуживание хранилища, операция приостановлена. Повторите позже"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -1103,6 +1132,7 @@
         "noMotion": "Без анимации",
         "noExpression": "Без выражения",
         "noMotionFiles": "Нет файлов анимации",
+        "noExpressionFiles": "Нет файлов выражений",
         "touchAnim": {
             "title": "Настройка касаний",
             "selectMotion": "Привязать анимацию",
@@ -1409,6 +1439,11 @@
         "voiceIdSaved": "voice_id автоматически сохранён для персонажа",
         "pageWillRefresh": "Текущая страница обновится для применения нового голоса",
         "voiceWillTakeEffect": "Новый голос вступит в силу в следующем разговоре",
+        "noCurrentCharacterForApply": "Текущий персонаж не найден, поэтому голос нельзя применить",
+        "applyingVoice": "Применение голоса «{{name}}»...",
+        "applyVoiceSuccess": "Голос «{{name}}» применён к текущему персонажу",
+        "applyVoiceFailed": "Не удалось применить голос: {{error}}",
+        "applyVoiceAria": "Применить голос {{name}} к текущему персонажу",
         "voiceIdSaveRequestError": "Ошибка при сохранении voice_id",
         "chooseFile": "Выбрать файл",
         "noFileSelected": "Файл не выбран",
@@ -1767,6 +1802,7 @@
         "personalityModuleUnavailable": "Модуль выбора характера еще не загружен",
         "manageModel": "Нажмите для управления моделью",
         "fillProfileNameFirst": "Сначала заполните имя профиля, затем задайте модель",
+        "fillProfileNameFirstForCardFace": "Сначала заполните имя профиля, затем задайте обложку карточки",
         "registerNewVoice": "Зарегистрировать новый голос",
         "systemPrompt": "Системный промпт (Редактируйте с осторожностью)",
         "systemPromptWarning": "Системный промпт — Изменения могут вызвать непредвиденное поведение.",
@@ -1776,6 +1812,7 @@
         "saveMaster": "Сохранить профиль хозяина",
         "addMasterField": "Добавить поле",
         "manageLive2D": "Нажмите для управления моделью Live2D",
+        "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
         "currentCatgirl": "Текущий NEKO",
         "rename": "Переименовать",
         "cancel": "Отмена",
@@ -1816,6 +1853,7 @@
         "unregisterVoiceTitle": "Отмена регистрации голоса",
         "voiceUnregistered": "Регистрация голоса отменена",
         "unregisterFailed": "Ошибка отмены регистрации",
+        "partialSaveVoiceFailed": "Персонаж сохранён, но не удалось обновить голос: {{error}}",
         "unregisterError": "Ошибка при отмене регистрации",
         "switchFailed": "Ошибка переключения",
         "switchError": "Ошибка при переключении NEKO",
@@ -1830,7 +1868,6 @@
         "autoSaved": "Настройки автосохранены",
         "autoSaveFailed": "Автосохранение не удалось, сохраните вручную перед закрытием",
         "unsavedNewCatgirlDraftDetected": "Обнаружен несохранённый черновик нового NEKO. Перед синхронным обновлением сохраните его или отмените",
-        "partialSaveVoiceFailed": "Персонаж сохранён, но не удалось обновить голос: {{error}}",
         "exportCard": "Экспорт карточки персонажа",
         "exportingCard": "Экспорт карточки персонажа...",
         "exportCardSuccess": "Карточка персонажа успешно экспортирована",
@@ -1860,10 +1897,10 @@
         "newCatgirlSuccess": "Новый NEKO успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
-        "deleteError": "Ошибка при удалении карточки",
         "cannotModifyInVoiceMode": "Невозможно выполнить операцию с карточкой (переключение или удаление) при активном голосовом управлении. Сначала отключите голосовое управление.",
         "voiceModeCheckFailed": "Не удалось проверить состояние голосового режима. Повторите попытку позже.",
-        "switchCard": "Сменить карточку",
+        "deleteError": "Ошибка при удалении карточки",
+        "switchCard": "Переключить персонажа",
         "deleteCard": "Удалить карточку",
         "currentCard": "Текущая карточка",
         "confirmDeleteCard": "Вы уверены, что хотите удалить карточку \"{{name}}\"?",
@@ -1883,9 +1920,9 @@
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",
         "cardAuthorUpdated": "Автор обновлён",
         "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
-        "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее",
         "saveMasterSuccess": "Профиль хозяина сохранён",
         "editCardFace": "Редактировать обложку",
+        "cardFaceModelSettings": "Настройки модели карточки",
         "cardMakerPopupBlocked": "Не удалось автоматически открыть страницу редактора обложки. Разрешите всплывающие окна в браузере и повторите попытку, либо щёлкните область обложки, чтобы открыть её вручную."
     },
     "app": {
@@ -1931,6 +1968,7 @@
         "switchedCatgirl": "Переключено на {{name}}",
         "switchCatgirlFailed": "Не удалось переключиться на {{name}}",
         "switchCatgirlError": "Ошибка переключения: {{error}}",
+        "switchCatgirlWatchdog": "Прошлое переключение персонажа, похоже, зависло. Попробуйте ещё раз",
         "started": "{{name}} запущена",
         "voiceUpdated": "Голос {{name}} обновлён",
         "audioWorkletFailed": "AudioWorklet не загрузился",
@@ -1949,6 +1987,8 @@
         "glmApiBug": "GLM API вызвал ошибку биллинга.",
         "aliApiOwed": "Alibaba API: недостаточно средств.",
         "voiceSystemPreparing": "Голосовая система готовится...",
+    "voiceConfigSwitching": "Переключение голоса, подготовка голосового чата...",
+    "voiceConfigSwitchTimeout": "Переключение голоса ещё не завершено. Запустите голосовой чат позже.",
         "textSystemPreparing": "Текстовая система готовится, подождите...",
         "connectingToServer": "Подключение к серверу...",
         "readyToSpeak": "Готово к разговору!",
@@ -2282,6 +2322,8 @@
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
             "proactiveMemeChat": "Мемы",
             "proactiveMemeChatTooltip": "Делиться смешными мемами для проактивного чата",
+            "proactiveMiniGameInviteChat": "Приглашения в мини-игры",
+            "proactiveMiniGameInviteChatTooltip": "Приглашать тебя в мини-игру, когда складываются подходящие условия",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -2296,6 +2338,7 @@
             "serverOffline": "Сервер Лапки Неко оффлайн",
             "masterRequired": "Сначала включите главный переключатель Лапки Неко",
             "capabilityNotReady": "{{name}} ещё не готов, нажмите, чтобы попробовать включить",
+            "openclawUnavailableReason": "{{name}} недоступен: {{reason}}. Убедитесь, что служба OpenClaw запущена и слушает 127.0.0.1:8088.",
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
@@ -2303,17 +2346,17 @@
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "openclawConnect": "OpenClaw",
             "openclawGuide": "Руководство по OpenClaw",
-            "animationSettings": "Настройки анимации",
             "chatSettings": "Настройки чата",
-            "frameRate": "Частота кадров",
-            "frameRateHigh": "60fps",
-            "frameRateLow": "30fps",
-            "frameRateMedium": "45fps",
-            "frameRateUnlimited": "Без ограничений(VSync)",
+            "animationSettings": "Настройки анимации",
             "renderQuality": "Качество рендеринга",
-            "renderQualityHigh": "Высокое",
             "renderQualityLow": "Низкое",
             "renderQualityMedium": "Среднее",
+            "renderQualityHigh": "Высокое",
+            "frameRate": "Частота кадров",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps",
+            "frameRateUnlimited": "Без ограничений(VSync)",
             "mouseTracking": "Отслеживание мыши",
             "fullscreenTracking": "Полноэкранное отслеживание",
             "localTracking": "Локальное отслеживание",
@@ -2386,6 +2429,8 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Ошибка подключения к серверу плагинов",
             "AGENT_CONNECTIVITY_FAILED": "Ошибка подключения LLM Лапки Неко"
         },
+        "quotaExceeded": "Бесплатная квота Лапки Неко на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
+        "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты.",
         "taskHud": {
             "title": "Задачи Лапки Неко",
             "running": "Выполняется",
@@ -2404,9 +2449,7 @@
             "typeBrowserUse": "Управление браузером",
             "typeMCP": "Инструмент MCP",
             "typeOpenFang": "Её рабочий стол"
-        },
-        "quotaExceeded": "Бесплатная квота Лапки Неко на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
-        "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты."
+        }
     },
     "vrm": {
         "error": {
@@ -2539,6 +2582,10 @@
         "loadLive2DListFailed": "Не удалось загрузить список Live2D:",
         "getLanlanNameFailed": "Не удалось получить lanlan_name:",
         "updateParameterEditorLinkFailed": "Не удалось обновить ссылку редактора параметров:",
+        "editCardFaceAfterModelSaveTitle": "Редактировать обложку",
+        "editCardFaceAfterModelSaveMessage": "Настройки модели сохранены. Редактировать обложку сейчас?",
+        "editCardFaceNow": "Редактировать обложку",
+        "createDefaultCardFace": "Создать обложку по умолчанию",
         "invalidVRMPathDetected": "[Model Manager] Обнаружен недействительный путь к VRM-модели, попытка автоматического исправления:",
         "saveModelSettingsFailed": "Не удалось сохранить настройки модели:",
         "vrmCleanupWarning": "[Model Manager] Предупреждение при очистке VRM:",
@@ -2616,6 +2663,7 @@
         "serverNotReturnedValidJSON": "Сервер не вернул допустимые данные JSON"
     },
     "tutorial": {
+        "homeInteractionLocked": "Обучение уже идет. Сначала следуйте подсказкам и завершите текущий шаг.",
         "step1": {
             "title": "👋 Добро пожаловать в N.E.K.O",
             "desc": "Это ваш Neko! Позвольте провести вас по функциям~"
@@ -3665,6 +3713,8 @@
         "popupBlocked": "Всплывающее окно заблокировано. Разрешите всплывающие окна и повторите попытку.",
         "saveCardFace": "Сохранить обложку",
         "savingCardFace": "Сохранение...",
+        "autoSavingDefaultCardFace": "Создание обложки по умолчанию...",
+        "autoSaveDefaultCardFaceFailed": "Не удалось создать обложку по умолчанию",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
         "saveCardFacePartialSuccess": "PNG сохранён, но запись метаданных не удалась: {{error}}",
@@ -3820,12 +3870,25 @@
         }
     },
     "soccer": {
+        "exitGame": {
+            "button": "Выйти из игры",
+            "ending": "Завершение раунда…",
+            "ended": "Игра завершена, возврат…",
+            "endingDefault": "Завершение этого матча…",
+            "endedDefault": "Игра окончена. Закройте страницу. Чтобы сыграть снова, откройте страницу заново."
+        },
         "startScreen": {
             "readyToStart": "Готово — нажмите, чтобы начать",
-            "ready": "Готово"
+            "ready": "Готово",
+            "startButton": "Старт"
+        },
+        "hint": {
+            "controls": "Мышь = направлять игрока · Удерживать ЛКМ = заряд, отпустить = удар (срабатывает в 90px от мяча) · R = сброс",
+            "aiMood": "1-6 = настроение ИИ (спокойствие / радость / злость / расслабленность / грусть / удивление) · После гола сложность повышается"
         },
         "loading": {
             "beginStartDefault": "Анализ предматчевого контекста…",
+            "initializingMiniGame": "Инициализация мини-игры в футбол…",
             "assetsDone": "Модель загружена",
             "assetsFailed": "Не удалось инициализировать модель, продолжаем",
             "routeDone": "Предматчевый контекст готов",
@@ -3850,6 +3913,10 @@
         "debugButton": {
             "holdToSubmit": "Отпустите для отправки",
             "idle": "Отладочный голос"
+        },
+        "memoryOption": {
+            "label": "Сохранять этот матч в память (по умолчанию выключено)",
+            "hint": "Когда выключено, ввод игрока, прямые ответы NEKO, реакции на события, итоги матча и продолжение разговора не попадают в память и не используются из неё."
         }
     }
 }

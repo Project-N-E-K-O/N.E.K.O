@@ -1344,13 +1344,32 @@ if (saveBtn) {
         if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
             const coreModel = live2dModel.internalModel.coreModel;
             const paramCount = coreModel.getParameterCount();
+            const manager = window.live2dManager;
+            const isEyeBlinkParam = (paramId, index) => {
+                if (!manager || typeof manager._isEyeBlinkParamId !== 'function') return false;
+                try {
+                    return manager._isEyeBlinkParamId(paramId)
+                        || manager._isEyeBlinkParamId(`param_${index}`);
+                } catch (_) {
+                    return false;
+                }
+            };
+
             for (let i = 0; i < paramCount; i++) {
                 try {
                     let paramId = null;
                     try {
-                        paramId = coreModel.getParameterId(i);
+                        paramId = coreModel._parameterIds?.[i]
+                            ?? coreModel._model?.parameters?.ids?.[i]
+                            ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
                     } catch (e) {
                         paramId = `param_${i}`;
+                    }
+                    if (!paramId) {
+                        paramId = `param_${i}`;
+                    }
+                    if (isEyeBlinkParam(paramId, i)) {
+                        continue;
                     }
                     const value = coreModel.getParameterValueByIndex(i);
                     paramsToSave[paramId] = value;

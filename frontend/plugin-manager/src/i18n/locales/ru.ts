@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: 'Открыть UI',
+      title: 'UI',
       panel: 'Панель',
       guide: 'Обучение',
       loading: 'Загрузка интерфейса плагина...',

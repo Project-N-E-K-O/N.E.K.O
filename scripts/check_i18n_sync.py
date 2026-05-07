@@ -84,7 +84,6 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
 )
 
-
 def _parse_hunks(diff_text: str) -> list[tuple[int, int, int, int]]:
     """Parse a unified diff. Returns list of (old_start, old_count, new_start, new_count).
 

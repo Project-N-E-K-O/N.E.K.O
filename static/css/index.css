@@ -321,6 +321,35 @@ button * {
     visibility: hidden;
 }
 
+/* 游戏路由激活期间隐藏 pet 透明窗口上一切可见的可交互 UI，让 mini-game
+   进行时整张 pet 页面既不挡屏也不挡鼠标——只有这样 Electron preload 的
+   elementFromPoint 轮询才会拿到空命中，setIgnoreMouseEvents 把窗口翻成
+   穿透态，鼠标真正落到底下的 mini-game 窗口或桌面。
+   chat.html 收缩 + pet 隐藏由后端 game_window_state_change WS 事件统一
+   驱动，game_route_end 时同步还原（class 由 templates/index.html 内联
+   监听器在 closed 时移除）。
+   覆盖范围分两类：
+     1) 静态容器：avatar 三家（live2d/vrm/mmd）+ chat 主面板 + 字幕条 +
+        React chat 浮窗 + avatar preview 弹窗 + status toast。
+        #sidebar 自带 inline display:none 不需要再列。
+     2) 动态浮动 UI：avatar-ui-buttons.js 用 `{prefix}-floating-buttons` /
+        `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
+        命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
+        匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */
+body.neko-game-active #live2d-container,
+body.neko-game-active #vrm-container,
+body.neko-game-active #mmd-container,
+body.neko-game-active #chat-container,
+body.neko-game-active #status-toast,
+body.neko-game-active #subtitle-display,
+body.neko-game-active #react-chat-window-overlay,
+body.neko-game-active #chat-avatar-preview-popup,
+body.neko-game-active [id$="-floating-buttons"],
+body.neko-game-active [id$="-return-button-container"],
+body.neko-game-active [id$="-lock-icon"] {
+    display: none !important;
+}
+
 /* 看板娘VR模型画布样式 */
 #vrm-canvas {
     right: 0;

@@ -240,6 +240,7 @@ export default {
     },
     ui: {
       open: 'UI 열기',
+      title: 'UI',
       panel: '패널',
       guide: '튜토리얼',
       loading: '플러그인 UI 로딩 중...',
