@@ -1191,21 +1191,85 @@ def test_anti_slack_uses_accumulator_not_wall_clock_after_suspend():
     assert tracker._anti_slack_pending is None
 
 
-def test_anti_slack_minutes_match_accumulator_not_wall_clock():
-    """When anti-slack DOES fire, reported minutes match real focus time."""
+def test_break_acc_resets_when_long_gap_post_state_is_leisure():
+    """Long gap that lands on a leisure tick still resets accumulator.
+
+    Codex P2 (PR #1226): the original gap-discard branch only ran the
+    state-handling block when raw_delta was in range, so when a long
+    gap landed on a casual_browsing/gaming tick the ``acc=0`` reset
+    never executed and pre-gap focus minutes carried forward into the
+    next focused_work stretch — triggering water_break_pending much
+    earlier than 30 fresh minutes would warrant.
+    """
+    tracker = _make_tracker_for_break_tests(work_break_minutes=30)
+    # Build up 25 minutes of pre-gap focus.
+    _tick_for_seconds(tracker, state='focused_work', seconds=1500)
+    pre_gap_acc = tracker._work_acc_seconds
+    assert pre_gap_acc >= 1400  # generous lower bound for tick init
+    # Long gap (1 hour suspend) lands on a casual_browsing tick.
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(
+        snap_browsing, now=tracker._break_tick_last_at + 3600.0,
+    )
+    # Accumulator must have reset — otherwise the next focused_work
+    # stretch would inherit 25 pre-gap minutes.
+    assert tracker._work_acc_seconds == 0
+
+
+def test_long_gap_does_not_fire_anti_slack_on_first_post_gap_leisure():
+    """Long gap into leisure shouldn't claim the user just finished focusing.
+
+    Codex P2: prev_known carries focused_work across the gap with
+    stale session_started_at; without the long-gap reset, the
+    anti-slack branch would fire claiming the user worked the entire
+    gap — but we have no idea whether they were focused, away, or
+    sleeping.
+    """
+    tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=2)
+    _tick_for_seconds(tracker, state='focused_work', seconds=600)
+    # Long gap then leisure tick
+    snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
+    tracker._tick_break_reminders(
+        snap_browsing, now=tracker._break_tick_last_at + 3600.0,
+    )
+    # No anti-slack pending — gap-induced reset cleared session bookkeeping.
+    assert tracker._anti_slack_pending is None
+
+
+def test_long_gap_clears_work_break_pending_too():
+    """Pre-gap water_break_pending shouldn't persist across long gaps."""
+    tracker = _make_tracker_for_break_tests(work_break_minutes=2)
+    _tick_for_seconds(tracker, state='focused_work', seconds=200)
+    assert tracker._work_break_pending is not None
+    # Long gap lands on focused_work tick → still resets
+    snap_focus = _snap_for_state('focused_work', app='VS Code')
+    tracker._tick_break_reminders(
+        snap_focus, now=tracker._break_tick_last_at + 3600.0,
+    )
+    assert tracker._work_break_pending is None
+    assert tracker._work_acc_seconds == 0
+
+
+def test_anti_slack_minutes_match_accumulator_when_no_gap():
+    """When anti-slack fires from a continuous focus → leisure transition,
+    reported minutes track the accumulator (not the wall-clock).
+
+    Originally pinned the Codex P1 fix (accumulator vs wall-clock) using a
+    suspend gap; the later Codex P2 fix made long-gap transitions skip
+    anti-slack entirely, so this case now exercises the no-gap path.
+    Minutes-match logic remains relevant for normal continuous sessions.
+    """
     tracker = _make_tracker_for_break_tests(anti_slack_min_focus_minutes=5)
-    # 6 minutes of real focused_work
+    # 6 minutes of continuous focused_work
     end_t = _tick_for_seconds(tracker, state='focused_work', seconds=360)
     real_focus_minutes = int(tracker._work_acc_seconds / 60)
     assert real_focus_minutes >= 5
-    # 30-minute suspend (no ticks)
-    suspended_until = end_t + 1800.0
-    # User comes back and immediately goes to YouTube
+    # Pivot to YouTube on the very next tick (no gap)
     snap_browsing = _snap_for_state('casual_browsing', app='YouTube')
-    tracker._tick_break_reminders(snap_browsing, now=suspended_until)
+    tracker._tick_break_reminders(snap_browsing, now=end_t + 20.0)
     assert tracker._anti_slack_pending is not None
-    # Reported minutes should reflect the genuine pre-suspend focus time,
-    # not the inflated wall-clock 36 minutes (6min + 30min suspend).
+    # Reported minutes track the accumulator value at tick start, not
+    # ``now - session_started_at``.
     reported = tracker._anti_slack_pending['minutes']
     assert reported <= real_focus_minutes + 1  # ±1 for rounding
 

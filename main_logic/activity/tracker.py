@@ -567,6 +567,28 @@ class UserActivityTracker:
                 else:
                     # Any other state immediately resets — per user spec.
                     self._work_acc_seconds = 0.0
+            elif raw_delta > _BREAK_REMINDER_TICK_MAX_DELTA_SECONDS:
+                # Long gap (process suspend / sleep / clock jump /
+                # forgot-to-tick). We don't know what state the user
+                # was in during the gap, so we can't safely credit OR
+                # carry forward accumulator minutes. Conservative reset
+                # of everything that could carry stale pre-gap context:
+                #   * accumulator → 0 (otherwise a post-gap focused_work
+                #     stretch would credit pre-gap minutes and trigger
+                #     water-break much earlier than the user's real
+                #     post-gap focus warrants — Codex P2 review).
+                #   * _last_known_state → None forces the bookkeeping
+                #     below to treat any post-gap focused_work as a
+                #     fresh session entry, AND prevents anti-slack from
+                #     firing on a focused_work → leisure transition
+                #     observed across the gap (we have no idea whether
+                #     the gap itself was the slacking).
+                #   * Pending dicts cleared since the snapshot they
+                #     reference is now ancient.
+                self._work_acc_seconds = 0.0
+                self._last_known_state = None
+                self._work_break_pending = None
+                self._anti_slack_pending = None
 
         # ── Focused_work session bookkeeping (for anti-slack transition) ─
         # Track entry/exit so we can report the just-ended session length
