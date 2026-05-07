@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">CAT2 placeholder</title>
+  <desc id="desc">CAT2 idle 30 minute return placeholder.</desc>
+  <rect width="512" height="512" rx="72" fill="none"/>
+  <rect x="28" y="28" width="456" height="456" rx="64" fill="#fafafa" stroke="#cbd5e1" stroke-width="4"/>
+  <rect x="46" y="46" width="420" height="420" rx="48" fill="none" stroke="#e2e8f0" stroke-width="2"/>
+  <circle cx="256" cy="124" r="46" fill="#f8fafc" stroke="#94a3b8" stroke-width="3"/>
+  <text x="256" y="148" text-anchor="middle" font-family="Arial, sans-serif" font-size="72" font-weight="700" fill="#1e293b">CAT2</text>
+  <text x="256" y="274" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="400" fill="#475569">Idle 30min</text>
+  <text x="256" y="320" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="400" fill="#475569">Goodbye</text>
+  <rect x="134" y="380" width="244" height="52" rx="22" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="256" y="413" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="400" fill="#64748b">Return Placeholder</text>
+</svg>

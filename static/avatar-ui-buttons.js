@@ -178,6 +178,101 @@ function _setupFloatingButtonsEntranceHooks(container) {
 window._removeNekoFloatingButtonsElement = _removeFloatingButtonsElement;
 window._cleanupNekoFloatingButtonsEntrance = _cleanupFloatingButtonsEntrance;
 
+const _NEKO_IDLE_TIER_NONE = 'none';
+const _NEKO_IDLE_TIER_CAT1 = 'cat1';
+const _NEKO_IDLE_TIER_CAT2 = 'cat2';
+const _NEKO_IDLE_TIER_CAT3 = 'cat3';
+const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return';
+const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
+    try {
+        const currentScript = document.currentScript;
+        if (currentScript && currentScript.src) {
+            const version = new URL(currentScript.src, window.location.href).searchParams.get('v');
+            if (version) {
+                return version;
+            }
+        }
+    } catch (_) {}
+
+    try {
+        if (typeof window.APP_VERSION === 'string' && window.APP_VERSION) {
+            return window.APP_VERSION;
+        }
+    } catch (_) {}
+
+    return String(Date.now());
+})();
+
+function _normalizeNekoIdleReturnTier(tier) {
+    if (tier === _NEKO_IDLE_TIER_CAT2 || tier === _NEKO_IDLE_TIER_CAT3 || tier === _NEKO_IDLE_TIER_NONE) {
+        return tier;
+    }
+    return _NEKO_IDLE_TIER_CAT1;
+}
+
+function _getNekoIdleReturnAssetUrl(tier) {
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const versionSuffix = _NEKO_IDLE_RETURN_ASSET_VERSION
+        ? `?v=${encodeURIComponent(_NEKO_IDLE_RETURN_ASSET_VERSION)}`
+        : '';
+
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
+        return `/static/assets/neko-idle/cat-idle-cat2.png${versionSuffix}`;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
+        return `/static/assets/neko-idle/cat-idle-cat3.png${versionSuffix}`;
+    }
+    return `/static/assets/neko-idle/cat-idle-cat1.png${versionSuffix}`;
+}
+
+function _applyNekoIdleReturnPresentation(button, tier) {
+    if (!button) return;
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    button.setAttribute('data-neko-idle-tier', normalizedTier);
+
+    const container = button.closest('[id$="-return-button-container"]');
+    if (container) {
+        container.setAttribute('data-neko-idle-tier', normalizedTier);
+    }
+
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        art.setAttribute('data-neko-idle-tier', normalizedTier);
+        art.src = _getNekoIdleReturnAssetUrl(normalizedTier);
+    }
+}
+
+function _readNekoAutoGoodbyeVisualTier() {
+    try {
+        if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.getState === 'function') {
+            const currentState = window.nekoAutoGoodbye.getState();
+            return _normalizeNekoIdleReturnTier(currentState && currentState.visualTier);
+        }
+    } catch (_) {}
+    return _NEKO_IDLE_TIER_NONE;
+}
+
+function _syncAllNekoIdleReturnButtons(tier) {
+    document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+        _applyNekoIdleReturnPresentation(button, tier);
+    });
+}
+
+function _ensureNekoIdleReturnPresentationBridge() {
+    if (window.__nekoIdleReturnPresentationBridgeBound) return;
+    window.__nekoIdleReturnPresentationBridgeBound = true;
+
+    window.addEventListener('neko:auto-goodbye:state-change', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || detail.type !== 'visual-tier') {
+            return;
+        }
+        _syncAllNekoIdleReturnButtons(detail.tier);
+    });
+}
+
+_ensureNekoIdleReturnPresentationBridge();
+
 const AvatarButtonMixin = {
     /**
      * 应用按钮 mixin 到指定的 Manager 类
@@ -541,10 +636,11 @@ const AvatarButtonMixin = {
         ManagerPrototype.createReturnButton = function() {
             const opts = this._avatarButtonOptions;
             const prefix = this._avatarPrefix;
-            const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : `?v=${Date.now()}`;
+            const currentTier = _readNekoAutoGoodbyeVisualTier();
 
             const returnButtonContainer = document.createElement('div');
             returnButtonContainer.id = opts.returnContainerId;
+            returnButtonContainer.className = 'neko-idle-return-button-container';
             Object.assign(returnButtonContainer.style, {
                 position: 'fixed',
                 top: '0',
@@ -557,67 +653,48 @@ const AvatarButtonMixin = {
 
             const returnBtn = document.createElement('div');
             returnBtn.id = opts.returnBtnId;
-            returnBtn.className = opts.returnBtnClass;
+            returnBtn.className = `${opts.returnBtnClass} neko-idle-return-btn`;
             returnBtn.title = window.t ? window.t('buttons.return') : '请她回来';
             returnBtn.setAttribute('data-i18n-title', 'buttons.return');
+            returnBtn.setAttribute('data-neko-idle-tier', currentTier);
 
-            const imgOff = document.createElement('img');
-            imgOff.src = `/static/icons/rest_off.png${iconVersion}`;
-            imgOff.alt = window.t ? window.t('buttons.return') : '请她回来';
-            Object.assign(imgOff.style, {
-                width: '64px',
-                height: '64px',
+            const returnArt = document.createElement('img');
+            returnArt.className = 'neko-idle-return-art';
+            returnArt.src = _getNekoIdleReturnAssetUrl(currentTier);
+            returnArt.alt = window.t ? window.t('buttons.return') : '请她回来';
+            returnArt.draggable = false;
+            Object.assign(returnArt.style, {
+                width: '100%',
+                height: '100%',
                 objectFit: 'contain',
                 pointerEvents: 'none',
-                opacity: '0.75',
-                transition: 'opacity 0.3s ease'
-            });
-
-            const imgOn = document.createElement('img');
-            imgOn.src = `/static/icons/rest_on.png${iconVersion}`;
-            imgOn.alt = window.t ? window.t('buttons.return') : '请她回来';
-            Object.assign(imgOn.style, {
-                position: 'absolute',
-                width: '64px',
-                height: '64px',
-                objectFit: 'contain',
-                pointerEvents: 'none',
-                opacity: '0',
-                transition: 'opacity 0.3s ease'
+                userSelect: 'none',
+                display: 'block',
+                transition: 'transform 0.18s ease, filter 0.18s ease, opacity 0.18s ease'
             });
 
             Object.assign(returnBtn.style, {
-                width: '64px',
-                height: '64px',
-                borderRadius: '50%',
-                overflow: 'hidden',
-                background: 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))',
-                border: 'var(--neko-btn-border, 1px solid rgba(255, 255, 255, 0.18))',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
                 userSelect: 'none',
-                boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
-                transition: 'all 0.1s ease',
                 pointerEvents: 'auto',
                 position: 'relative'
             });
 
             returnBtn.addEventListener('mouseenter', () => {
-                returnBtn.style.transform = 'scale(1.05)';
-                returnBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
-                returnBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255, 255, 255, 0.8))';
-                imgOff.style.opacity = '0';
-                imgOn.style.opacity = '1';
+                returnBtn.style.transform = 'translateY(-2px) scale(1.03)';
+                returnBtn.style.boxShadow = '0 16px 28px rgba(17, 24, 39, 0.18), 0 5px 12px rgba(17, 24, 39, 0.14)';
+                returnArt.style.transform = 'scale(1.02)';
+                returnArt.style.filter = 'brightness(1.03) saturate(1.02)';
             });
 
             returnBtn.addEventListener('mouseleave', () => {
-                returnBtn.style.transform = 'scale(1)';
-                returnBtn.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
-                returnBtn.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
-                imgOff.style.opacity = '0.75';
-                imgOn.style.opacity = '0';
+                returnBtn.style.transform = '';
+                returnBtn.style.boxShadow = '';
+                returnArt.style.transform = '';
+                returnArt.style.filter = '';
             });
 
             returnBtn.addEventListener('click', (e) => {
@@ -641,11 +718,11 @@ const AvatarButtonMixin = {
                 window.dispatchEvent(event);
             });
 
-            returnBtn.appendChild(imgOff);
-            returnBtn.appendChild(imgOn);
+            returnBtn.appendChild(returnArt);
             returnButtonContainer.appendChild(returnBtn);
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
+            _applyNekoIdleReturnPresentation(returnBtn, currentTier);
 
             return returnButtonContainer;
         };
