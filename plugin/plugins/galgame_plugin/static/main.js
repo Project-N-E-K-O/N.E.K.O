@@ -12,6 +12,7 @@ const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
+const INSTALL_COMPLETED_REFRESH_GRACE_SECONDS = 15;
 const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
@@ -3159,6 +3160,21 @@ function isInstallTaskTerminal(state) {
   return Boolean(state) && INSTALL_TERMINAL_STATUSES.has(String(state.status || ''));
 }
 
+function installTaskUpdatedAtSeconds(state) {
+  return Number((state || {}).completed_at || (state || {}).updated_at || (state || {}).finished_at || 0);
+}
+
+function isRecentLocalCompletedInstallTask(state) {
+  if (!state || String(state.status || '') !== 'completed' || state.__restored) {
+    return false;
+  }
+  const updatedAt = installTaskUpdatedAtSeconds(state);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return false;
+  }
+  return ((Date.now() / 1000) - updatedAt) <= INSTALL_COMPLETED_REFRESH_GRACE_SECONDS;
+}
+
 function shouldOfferRapidOcrModelsDownload(rapidocr = {}) {
   return Boolean(
     rapidocr.detail === 'missing_model_files'
@@ -3552,7 +3568,7 @@ function renderInstallTaskState(kind) {
 }
 
 function applyRapidOcrModelsGate(rapidocr = {}) {
-  const { card, button } = getInstallNodes('rapidocr_models');
+  const { card, statusText, percentText, messageText, detailText, progressBar, button } = getInstallNodes('rapidocr_models');
   const runtime = installRuntime.rapidocr_models;
   let state = runtime.state;
   const config = getInstallConfig('rapidocr_models');
@@ -3567,11 +3583,26 @@ function applyRapidOcrModelsGate(rapidocr = {}) {
     state = null;
   }
   const running = Boolean(state && !isInstallTaskTerminal(state));
-  const waitingRefresh = Boolean(state && state.status === 'completed' && missingModels && !installed);
+  const waitingRefresh = Boolean(isRecentLocalCompletedInstallTask(state) && missingModels && !installed);
   const retryableFailure = Boolean(state && state.status === 'failed' && downloadable);
+  const showCard = Boolean(state && (running || waitingRefresh || retryableFailure));
+  const waitingRefreshText = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
 
   if (card) {
-    card.hidden = !(state && (running || waitingRefresh || retryableFailure));
+    card.hidden = !showCard;
+  }
+  if (waitingRefresh) {
+    if (statusText) statusText.textContent = `${formatInstallPhase(state.phase)} · completed`;
+    if (percentText) percentText.textContent = '100%';
+    if (messageText) messageText.textContent = state.message || waitingRefreshText;
+    if (detailText) detailText.textContent = '';
+    if (progressBar) progressBar.style.width = '100%';
+  } else if (!showCard) {
+    if (statusText) statusText.textContent = uiT('ui.install.waiting_task', '等待安装任务');
+    if (percentText) percentText.textContent = '0%';
+    if (messageText) messageText.textContent = '';
+    if (detailText) detailText.textContent = '';
+    if (progressBar) progressBar.style.width = '0%';
   }
   if (!button) {
     return;
@@ -3582,7 +3613,7 @@ function applyRapidOcrModelsGate(rapidocr = {}) {
   if (running) {
     button.textContent = config.runningText;
   } else if (waitingRefresh) {
-    button.textContent = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
+    button.textContent = waitingRefreshText;
   } else if (retryableFailure) {
     button.textContent = config.retryText;
   } else {
