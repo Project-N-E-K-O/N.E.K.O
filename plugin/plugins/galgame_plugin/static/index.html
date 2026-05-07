@@ -561,21 +561,21 @@
           <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module agent-panel" open>
             <summary><span data-i18n="ui.dashboard.agent_panel">Agent</span><small id="agentPanelSummary"></small></summary>
             <div class="agent-panel-tabs" role="tablist">
-              <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
-              <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
-              <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
+              <button id="agentTabStatus" class="agent-tab active" type="button" role="tab" aria-selected="true" aria-controls="agentPanelStatus" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
+              <button id="agentTabSuggest" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelSuggest" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
+              <button id="agentTabPushes" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelPushes" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
             </div>
-            <div class="agent-panel-body" data-agent-tab-panel="status">
+            <div id="agentPanelStatus" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabStatus" aria-hidden="false" data-agent-tab-panel="status">
               <div id="agentStatusGrid" class="data-grid scroll-region empty-state" data-i18n="ui.agent.empty_status">Agent 正在整理小本本，等第一次状态刷新。</div>
               <div class="reply-box">
                 <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
                 <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
               </div>
             </div>
-            <div class="agent-panel-body" data-agent-tab-panel="suggest" hidden>
+            <div id="agentPanelSuggest" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabSuggest" aria-hidden="true" data-agent-tab-panel="suggest" hidden>
               <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.agent.empty_suggest">还没有建议，等画面出现选项再轻轻递上来。</div>
             </div>
-            <div class="agent-panel-body" data-agent-tab-panel="pushes" hidden>
+            <div id="agentPanelPushes" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabPushes" aria-hidden="true" data-agent-tab-panel="pushes" hidden>
               <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
             </div>
           </details>

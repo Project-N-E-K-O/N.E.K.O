@@ -7471,7 +7471,9 @@ document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) =
     item.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   document.querySelectorAll('[data-agent-tab-panel]').forEach((panel) => {
-    panel.hidden = panel.getAttribute('data-agent-tab-panel') !== name;
+    const active = panel.getAttribute('data-agent-tab-panel') === name;
+    panel.hidden = !active;
+    panel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
 });
 document.getElementById('queryContextBtn')?.addEventListener('click', () => {
