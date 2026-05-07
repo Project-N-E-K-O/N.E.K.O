@@ -2443,7 +2443,7 @@ body:not(.onboarding-active) #onboardingView {
 
   .primary-diagnosis-actions,
   .first-run-actions {
-    justify-content: stretch;
+    justify-content: flex-start;
   }
 
   .primary-diagnosis-actions button,
@@ -2484,7 +2484,7 @@ body:not(.onboarding-active) #onboardingView {
 
   .install-actions,
   .capture-profile-actions {
-    justify-content: stretch;
+    justify-content: flex-start;
   }
 
   .settings-save-row button,

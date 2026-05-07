@@ -2360,12 +2360,47 @@ function dependencySummaryItem(kind, status = {}) {
   if (taskState) {
     return {
       kind,
-      label: getInstallConfig(kind).label,
+      label: {
+        rapidocr: 'RapidOCR',
+        dxcam: 'DXcam',
+        tesseract: 'Tesseract',
+        textractor: 'Textractor',
+        rapidocr_models: 'RapidOCR Models',
+      }[kind] || getInstallConfig(kind).label,
       ...taskState,
     };
   }
 
   // All three OCR banners are now tab-controlled via install-tab buttons.
+
+  if (kind === 'rapidocr') {
+    const rapidocr = status.rapidocr || {};
+    if (rapidocr.installed) {
+      return { kind, label: 'RapidOCR', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false };
+    }
+    if (rapidocr.install_supported === false) {
+      return { kind, label: 'RapidOCR', state: 'optional', labelText: uiT('ui.install.summary.unsupported_auto_install', '不支持自动安装'), needsAttention: false };
+    }
+    return {
+      kind,
+      label: 'RapidOCR',
+      state: rapidocr.detail === 'missing_model_files' ? 'warning' : 'missing',
+      labelText: rapidocr.detail === 'missing_model_files'
+        ? uiT('ui.install.summary.missing_models', '缺少模型')
+        : uiT('ui.install.summary.missing', '未安装'),
+      needsAttention: true,
+    };
+  }
+
+  if (kind === 'dxcam') {
+    const dxcam = status.dxcam || {};
+    if (dxcam.install_supported === false) {
+      return { kind, label: 'DXcam', state: 'optional', labelText: uiT('ui.install.summary.unsupported_auto_install', '不支持自动安装'), needsAttention: false };
+    }
+    return dxcam.installed
+      ? { kind, label: 'DXcam', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
+      : { kind, label: 'DXcam', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
+  }
 
   if (kind === 'tesseract') {
     const tesseract = status.tesseract || {};

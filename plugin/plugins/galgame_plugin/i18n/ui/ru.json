@@ -840,6 +840,7 @@
   "ui.install.summary.installed": "Установлено",
   "ui.install.summary.unsupported_auto_install": "Автоустановка не поддерживается",
   "ui.install.summary.missing": "Не установлено",
+  "ui.install.summary.missing_models": "Нет моделей",
   "ui.install.summary.missing_languages": "Не хватает языковых пакетов {languages}",
   "ui.install.summary.missing_optional": "Не установлено (необязательно)",
   "ui.install.summary.memory_group": "Память",

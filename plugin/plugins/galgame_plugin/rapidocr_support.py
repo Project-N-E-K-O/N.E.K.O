@@ -849,6 +849,12 @@ async def download_rapidocr_models(
         if inspect.isawaitable(result):
             await result
 
+    async def _before_completed_safely() -> None:
+        try:
+            await _before_completed()
+        except BaseException:  # noqa: BLE001
+            logger.warning("failed to run rapidocr_models completion callback", exc_info=True)
+
     cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
     if not cache_dir:
         raise RuntimeError("missing RapidOCR model cache directory")
@@ -860,7 +866,7 @@ async def download_rapidocr_models(
         lang_type=lang_type,
     )
     if not required:
-        await _before_completed()
+        await _before_completed_safely()
         if task_id:
             update_install_task_state(
                 task_id,
@@ -893,7 +899,7 @@ async def download_rapidocr_models(
 
     if not pending:
         already_present_message = "All required RapidOCR models already on disk"
-        await _before_completed()
+        await _before_completed_safely()
         if task_id:
             update_install_task_state(
                 task_id,
@@ -1075,7 +1081,7 @@ async def download_rapidocr_models(
                     raise RuntimeError(err_message) from exc
                 raise
 
-    await _before_completed()
+    await _before_completed_safely()
 
     if task_id:
         update_install_task_state(

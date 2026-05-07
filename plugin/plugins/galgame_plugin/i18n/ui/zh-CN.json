@@ -860,6 +860,7 @@
   "ui.install.summary.installed": "已安装",
   "ui.install.summary.unsupported_auto_install": "不支持自动安装",
   "ui.install.summary.missing": "未安装",
+  "ui.install.summary.missing_models": "缺少模型",
   "ui.install.summary.missing_languages": "缺少语言包 {languages}",
   "ui.install.summary.missing_optional": "未安装（可选）",
   "ui.install.summary.memory_group": "内存",

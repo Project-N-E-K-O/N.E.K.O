@@ -860,6 +860,7 @@
   "ui.install.summary.installed": "Installed",
   "ui.install.summary.unsupported_auto_install": "Auto install unsupported",
   "ui.install.summary.missing": "Not installed",
+  "ui.install.summary.missing_models": "Missing models",
   "ui.install.summary.missing_languages": "Missing language packs {languages}",
   "ui.install.summary.missing_optional": "Not installed (optional)",
   "ui.install.summary.memory_group": "Memory",
