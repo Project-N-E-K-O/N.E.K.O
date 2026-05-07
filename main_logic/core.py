@@ -6039,6 +6039,8 @@ class LLMSessionManager:
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._confirm_pending_ai_voice_echo(speech_id)
+                    else:
+                        self._discard_pending_ai_voice_echo()
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"

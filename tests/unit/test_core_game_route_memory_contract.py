@@ -590,6 +590,37 @@ async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.tts_response_queue = queue.Queue()
+    mgr.tts_response_queue.put(("__audio__", "speech-1", b"failed-audio"))
+    send_called = asyncio.Event()
+
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "unplayed pending text")
+
+    async def send_speech(audio, speech_id=None):
+        assert audio == b"failed-audio"
+        assert speech_id == "speech-1"
+        send_called.set()
+        return False
+
+    monkeypatch.setattr(mgr, "send_speech", send_speech)
+
+    task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(send_called.wait(), timeout=1)
+    task.cancel()
+    cancelled_result = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
+
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._pending_ai_voice_echo_text == ""
+    assert list(mgr._pending_ai_voice_echo_chunks) == []
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
