@@ -697,12 +697,6 @@ export default function App({
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === true ? previousValue : true
       ));
-      avatarRangeHoldTimerRef.current = window.setTimeout(() => {
-        avatarRangeHoldTimerRef.current = null;
-        if (performance.now() < avatarRangeHoldUntilRef.current) return;
-        avatarRangeHoldUntilRef.current = 0;
-        setIsCursorOverAvatarRange(previousValue => (previousValue ? false : previousValue));
-      }, avatarToolRangeHoldMs);
       return;
     }
 
