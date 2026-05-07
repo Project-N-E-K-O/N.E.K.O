@@ -25,6 +25,17 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var HOME_IDLE_DOCK_GAP = 12;
+    var IDLE_DOCK_TIER_NONE = 'none';
+    var IDLE_DOCK_TIER_CAT2 = 'cat2';
+    var IDLE_DOCK_TIER_CAT3 = 'cat3';
+    var idleDockTier = IDLE_DOCK_TIER_NONE;
+    var idleDockActive = false;
+    var idleDockSavedPosition = null;
+    var idleDockTriggeredMinimize = false;
+    var idleDockMinimizeObserver = null;
+    var idleDockContainerObserver = null;
+    var idleDockSyncFrame = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
@@ -1809,6 +1820,170 @@
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
+    // ── Idle-dock: independent orchestration (Phase 4) ──────────
+    // Positions the minimized ball next to CAT2/CAT3 return-ball.
+    // Completely separated from setMinimized() — only reads minimized
+    // state and calls setMinimized(true/false) externally when needed.
+
+    function isIdleDockTierActive() {
+        return idleDockTier === IDLE_DOCK_TIER_CAT2 || idleDockTier === IDLE_DOCK_TIER_CAT3;
+    }
+
+    function getVisibleReturnButtonContainer() {
+        if (isElectronChatWindow()) return null;
+        return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
+    }
+
+    function getIdleDockTarget() {
+        if (!idleDockActive || !isIdleDockTierActive()) return null;
+        var container = getVisibleReturnButtonContainer();
+        if (!container || typeof container.getBoundingClientRect !== 'function') return null;
+        var rect = container.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        return {
+            left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
+            top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
+
+    function stopIdleDockMinimizeObserver() {
+        if (idleDockMinimizeObserver) {
+            try { idleDockMinimizeObserver.disconnect(); } catch (_) {}
+            idleDockMinimizeObserver = null;
+        }
+    }
+
+    function stopIdleDockContainerObserver() {
+        if (idleDockContainerObserver) {
+            try { idleDockContainerObserver.disconnect(); } catch (_) {}
+            idleDockContainerObserver = null;
+        }
+    }
+
+    function cancelIdleDockSync() {
+        if (idleDockSyncFrame) {
+            window.cancelAnimationFrame(idleDockSyncFrame);
+            idleDockSyncFrame = 0;
+        }
+    }
+
+    function clearIdleDockState() {
+        stopIdleDockMinimizeObserver();
+        stopIdleDockContainerObserver();
+        cancelIdleDockSync();
+        idleDockActive = false;
+        idleDockSavedPosition = null;
+        idleDockTriggeredMinimize = false;
+    }
+
+    function applyIdleDockPosition() {
+        if (!minimized || isElectronChatWindow()) return;
+        var shell = getShell();
+        var target = getIdleDockTarget();
+        if (!shell || !target) return;
+        shell.style.left = target.left + 'px';
+        shell.style.top = target.top + 'px';
+        shell.classList.add('is-idle-docked');
+    }
+
+    function refreshIdleDockContainerObserver() {
+        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
+            stopIdleDockContainerObserver();
+            return;
+        }
+        var container = getVisibleReturnButtonContainer();
+        if (!container || typeof MutationObserver !== 'function') {
+            stopIdleDockContainerObserver();
+            return;
+        }
+        stopIdleDockContainerObserver();
+        idleDockContainerObserver = new MutationObserver(function () {
+            scheduleIdleDockSync();
+        });
+        idleDockContainerObserver.observe(container, {
+            attributes: true,
+            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
+        });
+    }
+
+    function syncIdleDockPosition() {
+        idleDockSyncFrame = 0;
+        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
+        applyIdleDockPosition();
+    }
+
+    function scheduleIdleDockSync() {
+        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
+        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
+    }
+
+    // Enter idle-dock: minimize if needed, then position next to return-ball.
+    // Calls setMinimized(true) externally — setMinimized itself is untouched.
+    function enterIdleDock() {
+        if (isElectronChatWindow()) return;
+
+        if (minimized) {
+            // Already minimized — save current position and dock immediately.
+            var shell = getShell();
+            if (shell) {
+                var rect = shell.getBoundingClientRect();
+                idleDockSavedPosition = { left: rect.left, top: rect.top };
+            }
+            idleDockActive = true;
+            idleDockTriggeredMinimize = false;
+            applyIdleDockPosition();
+            refreshIdleDockContainerObserver();
+        } else {
+            // Not minimized — trigger normal minimize, observe for completion.
+            idleDockTriggeredMinimize = true;
+            stopIdleDockMinimizeObserver();
+            var shell = getShell();
+            if (!shell) return;
+
+            idleDockMinimizeObserver = new MutationObserver(function () {
+                if (shell.classList.contains('is-minimized') && !shell.classList.contains('is-collapsing')) {
+                    stopIdleDockMinimizeObserver();
+                    // Minimize animation completed — save position and dock.
+                    var r = shell.getBoundingClientRect();
+                    idleDockSavedPosition = { left: r.left, top: r.top };
+                    idleDockActive = true;
+                    applyIdleDockPosition();
+                    refreshIdleDockContainerObserver();
+                }
+            });
+            idleDockMinimizeObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
+
+            // Trigger normal minimize (original setMinimized, no options).
+            setMinimized(true);
+        }
+    }
+
+    // Exit idle-dock: restore position and un-minimize if idle-dock triggered it.
+    function exitIdleDock() {
+        var wasActive = idleDockActive;
+        var triggered = idleDockTriggeredMinimize;
+        var saved = idleDockSavedPosition;
+        var shell = getShell();
+
+        clearIdleDockState();
+
+        if (shell) {
+            shell.classList.remove('is-idle-docked');
+            if (wasActive && saved) {
+                shell.style.left = saved.left + 'px';
+                shell.style.top = saved.top + 'px';
+            }
+        }
+
+        if (wasActive && triggered && minimized) {
+            setMinimized(false);
+        }
+    }
+
+    // ── End idle-dock ────────────────────────────────────────────
+
     // 返回最小化后 shell 应达到的像素几何。
     // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
     // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
@@ -2102,6 +2277,16 @@
     }
 
     function toggleMinimized() {
+        if (minimized && idleDockActive && idleDockSavedPosition) {
+            var shell = getShell();
+            if (shell) {
+                shell.style.left = idleDockSavedPosition.left + 'px';
+                shell.style.top = idleDockSavedPosition.top + 'px';
+                shell.classList.remove('is-idle-docked');
+            }
+            idleDockActive = false;
+            idleDockSavedPosition = null;
+        }
         setMinimized(!minimized);
     }
 
@@ -2174,6 +2359,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        clearIdleDockState();
         deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
@@ -2697,6 +2883,15 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
+                    var dockTarget = getIdleDockTarget();
+                    if (dockTarget) {
+                        var dockShell = getShell();
+                        if (dockShell) {
+                            dockShell.style.left = dockTarget.left + 'px';
+                            dockShell.style.top = dockTarget.top + 'px';
+                        }
+                        return;
+                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -2730,6 +2925,48 @@
             state.viewProps = createBaseViewProps();
             renderWindow();
         });
+
+        window.addEventListener('neko:auto-goodbye:state-change', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail || detail.type !== 'visual-tier') return;
+
+            idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
+                ? detail.tier
+                : IDLE_DOCK_TIER_NONE;
+
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden || isElectronChatWindow()) return;
+
+            if (isIdleDockTierActive()) {
+                if (!idleDockActive) {
+                    enterIdleDock();
+                } else {
+                    scheduleIdleDockSync();
+                    refreshIdleDockContainerObserver();
+                }
+                return;
+            }
+
+            if (idleDockActive) {
+                exitIdleDock();
+                return;
+            }
+
+            clearIdleDockState();
+        });
+        window.addEventListener('live2d-return-click', function () {
+            if (idleDockActive) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+        window.addEventListener('vrm-return-click', function () {
+            if (idleDockActive) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+        window.addEventListener('mmd-return-click', function () {
+            if (idleDockActive) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+
     }
 
     function applyInitialComposerHiddenState() {
