@@ -308,6 +308,12 @@ DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
 DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
+# Hide likely assistant/proactive speech that leaks back through microphone STT.
+# Conservative by design: the runtime only suppresses non-empty voice transcripts
+# that closely match recently displayed AI text; unrelated user barge-in remains
+# visible and enters memory normally.
+HIDE_DIRTY_VOICE_TRANSCRIPTS = True
+
 
 CONFIG_FILES = [
     'characters.json',
@@ -1566,6 +1572,7 @@ __all__ = [
     'DEFAULT_AGENT_MODEL',
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
+    'HIDE_DIRTY_VOICE_TRANSCRIPTS',
     # 用户自定义模型配置的 URL/API_KEY
     'DEFAULT_CONVERSATION_MODEL_URL',
     'DEFAULT_CONVERSATION_MODEL_API_KEY',

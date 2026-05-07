@@ -10,6 +10,7 @@ import struct  # For packing audio data
 import re
 import time
 from collections import deque
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -46,6 +47,7 @@ from config import (
     SESSION_ARCHIVE_TRIGGER_TOKENS,
     SESSION_TURN_THRESHOLD,
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
+    HIDE_DIRTY_VOICE_TRANSCRIPTS,
 )
 from config.prompts_sys import (
     _loc,
@@ -72,6 +74,49 @@ _STATUS_EMOJI = {
     "failed": "❌",
     "cancelled": "🚫",
 }
+
+_VOICE_ECHO_LOOKBACK_SECONDS = 20.0
+_VOICE_ECHO_LOOKBACK_CHARS = 1200
+_VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
+_VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
+_VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _normalize_voice_echo_text(text: str) -> str:
+    return _VOICE_ECHO_NORMALIZE_RE.sub("", str(text or "").casefold())
+
+
+def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
+    """Return True when STT text is probably the assistant's own recent audio.
+
+    This intentionally requires a close text match. Voice barge-in during AI
+    playback should keep flowing unless it resembles the AI text that was just
+    rendered/spoken.
+    """
+    transcript_norm = _normalize_voice_echo_text(transcript)
+    if len(transcript_norm) < _VOICE_ECHO_MIN_NORMALIZED_CHARS:
+        return False
+    recent_norm = _normalize_voice_echo_text(recent_ai_text)
+    if len(recent_norm) < _VOICE_ECHO_MIN_NORMALIZED_CHARS:
+        return False
+    if transcript_norm in recent_norm:
+        return True
+    if len(transcript_norm) > len(recent_norm):
+        return SequenceMatcher(None, transcript_norm, recent_norm).ratio() >= _VOICE_ECHO_SIMILARITY_THRESHOLD
+
+    window_len = len(transcript_norm)
+    step = max(1, window_len // 3)
+    best = 0.0
+    last_start = len(recent_norm) - window_len
+    starts = list(range(0, last_start + 1, step))
+    if not starts or starts[-1] != last_start:
+        starts.append(last_start)
+    for start in starts:
+        candidate = recent_norm[start:start + window_len]
+        best = max(best, SequenceMatcher(None, transcript_norm, candidate).ratio())
+        if best >= _VOICE_ECHO_SIMILARITY_THRESHOLD:
+            return True
+    return False
 
 
 def _format_callback_source(cb: dict, lang: str) -> str:
@@ -542,6 +587,8 @@ class LLMSessionManager:
         # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
         # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
         self._current_ai_turn_text: str = ''
+        self._recent_ai_voice_echo_text: str = ''
+        self._recent_ai_voice_echo_at: float = 0.0
 
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
@@ -1413,6 +1460,15 @@ class LLMSessionManager:
                     self.lanlan_name, bucket, exc,
                 )
 
+    def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
+        if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
+            return False
+        recent_ai_at = float(getattr(self, "_recent_ai_voice_echo_at", 0.0) or 0.0)
+        if recent_ai_at <= 0 or (time.time() - recent_ai_at) > _VOICE_ECHO_LOOKBACK_SECONDS:
+            return False
+        recent_ai_text = getattr(self, "_recent_ai_voice_echo_text", "") or ""
+        return _looks_like_recent_ai_echo(transcript_text, recent_ai_text)
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -1426,6 +1482,18 @@ class LLMSessionManager:
             twice would double-bump _conv_seq and add the text to the
             buffer twice)
         """
+        transcript_text = transcript.strip()
+        if (
+            is_voice_source
+            and transcript_text
+            and self._should_suppress_dirty_voice_transcript(transcript_text)
+        ):
+            logger.info(
+                "[%s] suppressed likely AI echo voice transcript len=%d",
+                self.lanlan_name, len(transcript_text),
+            )
+            return
+
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
         if is_voice_source:
@@ -1433,7 +1501,6 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
-        transcript_text = transcript.strip()
         if (
             is_voice_source
             and transcript_text
@@ -1586,6 +1653,10 @@ class LLMSessionManager:
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
             self._current_ai_turn_text += text_clean
+            if text_clean:
+                recent_echo_text = (getattr(self, "_recent_ai_voice_echo_text", "") or "") + text_clean
+                self._recent_ai_voice_echo_text = recent_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
+                self._recent_ai_voice_echo_at = time.time()
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id

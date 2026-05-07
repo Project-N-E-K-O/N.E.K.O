@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import main_logic.core as core_module
 from main_logic.core import LLMSessionManager
 
 
@@ -69,6 +70,8 @@ def _make_manager():
     mgr._active_text_request_id = None
     mgr._pending_turn_meta = None
     mgr._current_ai_turn_text = ""
+    mgr._recent_ai_voice_echo_text = ""
+    mgr._recent_ai_voice_echo_at = 0.0
     mgr.tts_ready = False
     mgr.tts_thread = None
     mgr.tts_pending_chunks = []
@@ -269,6 +272,69 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
         "data": {"input_type": "transcript", "data": "普通语音"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
+    mgr._recent_ai_voice_echo_at = core_module.time.time()
+
+    await LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 0
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypatch):
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", False)
+    mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
+    mgr._recent_ai_voice_echo_at = core_module.time.time()
+
+    await LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["要不要休息一下喝点水"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "要不要休息一下喝点水",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "要不要休息一下喝点水"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(monkeypatch):
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
+    mgr._recent_ai_voice_echo_at = core_module.time.time()
+
+    await LLMSessionManager.handle_input_transcript(mgr, "先别休息帮我打开设置", is_voice_source=True)
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["先别休息帮我打开设置"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "先别休息帮我打开设置",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "先别休息帮我打开设置"},
     }]
 
 
