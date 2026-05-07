@@ -488,6 +488,21 @@
             });
             if (data && data.should_prompt) {
                 try {
+                    // Gate: 等存档迁移/位置选择 + 初始人设走完再弹自启动提示，最多 15s 兜底防 hang。
+                    // 实际心跳间隔 15min，绝大多数情况下 onboarding 早已 settled，此处 await 立即过。
+                    const AUTOSTART_GATE_FALLBACK_MS = 15000;
+                    await Promise.race([
+                        (async () => {
+                            if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+                                await window.waitForStorageLocationStartupBarrier();
+                            }
+                            if (window.CharacterPersonalityOnboarding
+                                && typeof window.CharacterPersonalityOnboarding.whenSettled === 'function') {
+                                await window.CharacterPersonalityOnboarding.whenSettled();
+                            }
+                        })(),
+                        new Promise((resolve) => setTimeout(resolve, AUTOSTART_GATE_FALLBACK_MS)),
+                    ]);
                     await maybeShowPrompt(data.prompt_token);
                 } catch (error) {
                     console.warn('[AutostartPrompt] prompt display failed:', error);

@@ -89,7 +89,28 @@
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
+            // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
+            // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
+            let settledResolveFn = null;
+            this._settledPromise = new Promise((resolve) => { settledResolveFn = resolve; });
+            this._settledResolve = () => {
+                if (settledResolveFn) {
+                    const fn = settledResolveFn;
+                    settledResolveFn = null;
+                    fn();
+                }
+            };
             this.bindTutorialLifecycleEvents();
+        }
+
+        markSettled() {
+            if (typeof this._settledResolve === 'function') {
+                this._settledResolve();
+            }
+        }
+
+        whenSettled() {
+            return this._settledPromise || Promise.resolve();
         }
 
         async bootstrap() {
@@ -97,12 +118,22 @@
                 return;
             }
             this.bootstrapStarted = true;
-            await this.waitForStartupBarrier();
-            await this.waitForTutorialFlowToSettle();
-            if (await this.openIfManualReselectPending()) {
-                return;
+            try {
+                await this.waitForStartupBarrier();
+                await this.waitForTutorialFlowToSettle();
+                if (await this.openIfManualReselectPending()) {
+                    return;
+                }
+                await this.openIfPending();
+            } catch (error) {
+                console.warn('[CharacterPersonalityOnboarding] bootstrap failed:', error);
+            } finally {
+                // 没显示 overlay（不需要 onboarding / 抛错 fallthrough）→ 立即 settle；
+                // 显示 overlay 时由 confirm/skip 各自 markSettled。
+                if (!this.overlay || this.overlay.hidden) {
+                    this.markSettled();
+                }
             }
-            await this.openIfPending();
         }
 
         async openFromSettings(characterName) {
@@ -735,6 +766,7 @@
                         body: JSON.stringify({ status: 'skipped' }),
                     });
                 }
+                this.markSettled();
                 this.hideOverlay();
             });
             actions.appendChild(skipButton);
@@ -911,6 +943,7 @@
                             presetId: selectedPresetId,
                         },
                     }));
+                    this.markSettled();
                     this.hideOverlay();
                 } catch (error) {
                     confirmButton.disabled = false;
