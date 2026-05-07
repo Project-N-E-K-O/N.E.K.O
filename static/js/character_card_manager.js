@@ -5588,9 +5588,9 @@ async function _fetchPanelKokoroVoices() {
 // Local Kokoro TTS 声音列表
 async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
     const KOKORO_PREFIX = 'kokoro:';
-    const currentKokoroVoiceId = currentVoiceId && (
-        currentVoiceId.startsWith(KOKORO_PREFIX) || !currentVoiceId.includes(':')
-    ) ? _normalizePanelKokoroVoiceId(currentVoiceId) : '';
+    const currentKokoroVoiceId = currentVoiceId && currentVoiceId.startsWith(KOKORO_PREFIX)
+        ? _normalizePanelKokoroVoiceId(currentVoiceId)
+        : '';
 
     if (!selectEl) return;
 
