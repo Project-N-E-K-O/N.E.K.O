@@ -43,6 +43,14 @@ class _FakeQueue:
     def put(self, message):
         self.messages.append(message)
 
+    def empty(self):
+        return not self.messages
+
+    def get_nowait(self):
+        if not self.messages:
+            raise IndexError("empty queue")
+        return self.messages.pop(0)
+
 
 class _FakeActivityTracker:
     def __init__(self):
@@ -81,8 +89,15 @@ def _make_manager():
     mgr._recent_ai_voice_echo_at = 0.0
     mgr.tts_ready = False
     mgr.tts_thread = None
+    mgr.tts_request_queue = _FakeQueue()
+    mgr.tts_response_queue = _FakeQueue()
     mgr.tts_pending_chunks = []
     mgr.tts_cache_lock = _AsyncNullLock()
+    mgr._tts_stream_normalizer = core_module.TtsStreamNormalizer()
+    mgr._tts_markdown_stripper = core_module.TtsMarkdownStripper()
+    mgr._tts_bracket_stripper = core_module.TtsBracketStripper()
+    mgr._tts_norm_speech_id = None
+    mgr._tts_normalize_enabled = False
     mgr.tts_handler_task = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
@@ -411,6 +426,24 @@ async def test_mirror_assistant_speech_remembers_audio_echo_when_tts_queued(monk
     assert mgr.tts_request_queue.messages[0][1] == "要不要休息一下喝点水"
     assert mgr._recent_ai_voice_echo_text == "要不要休息一下喝点水"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_drops_unplayed_echo_cache(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.tts_thread = _FakeAliveThread()
+    mgr._recent_ai_voice_echo_text = "还没来得及播放的队列文本"
+    mgr._recent_ai_voice_echo_at = FIXED_TS
+    mgr.tts_pending_chunks = [("sid-old", "pending text")]
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
+
+    assert mgr.tts_request_queue.messages == [("__interrupt__", None)]
+    assert mgr.tts_pending_chunks == []
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._recent_ai_voice_echo_at == 0.0
 
 
 @pytest.mark.unit

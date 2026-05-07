@@ -952,6 +952,9 @@ class LLMSessionManager:
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
+            # Any text cached from project TTS enqueue may not have reached the
+            # frontend if this pipeline was interrupted or discarded.
+            self._reset_voice_echo_suppression_cache()
 
     @property
     def is_tts_pipeline_ready(self) -> bool:
