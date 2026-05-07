@@ -3414,10 +3414,16 @@ function renderInstallTaskState(kind) {
   messageText.textContent = state.message || '';
   detailText.textContent = details.join(' · ');
   progressBar.style.width = `${percent}%`;
+  const rapidocr = latestStatus && latestStatus.rapidocr ? latestStatus.rapidocr : {};
+  const rapidocrModelsStillMissing = kind === 'rapidocr_models' && rapidocr.detail === 'missing_model_files';
   if (state.status === 'completed') {
     if (button) {
-      button.hidden = true;
-      button.disabled = true;
+      const terminalCompleted = !rapidocrModelsStillMissing;
+      button.hidden = terminalCompleted;
+      button.disabled = terminalCompleted;
+      if (rapidocrModelsStillMissing) {
+        button.textContent = getInstallConfig(kind).retryText;
+      }
     }
   } else if (state.status === 'failed') {
     if (button) {
