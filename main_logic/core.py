@@ -1464,6 +1464,13 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
 
+    def _remember_recent_ai_voice_echo(self, text: str) -> None:
+        if not text:
+            return
+        recent_echo_text = (getattr(self, "_recent_ai_voice_echo_text", "") or "") + text
+        self._recent_ai_voice_echo_text = recent_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
+        self._recent_ai_voice_echo_at = time.time()
+
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
             return False
@@ -1657,10 +1664,7 @@ class LLMSessionManager:
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
             self._current_ai_turn_text += text_clean
-            if text_clean:
-                recent_echo_text = (getattr(self, "_recent_ai_voice_echo_text", "") or "") + text_clean
-                self._recent_ai_voice_echo_text = recent_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
-                self._recent_ai_voice_echo_at = time.time()
+            self._remember_recent_ai_voice_echo(text_clean)
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1992,6 +1996,8 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((turn_id, clean))
                 status = self._request_tts_done_locked()
                 audio_queued = status in {"queued", "deferred", "already"}
+        if audio_queued:
+            self._remember_recent_ai_voice_echo(clean)
 
         if emit_turn_end_after:
             await self.emit_mirror_turn_end(

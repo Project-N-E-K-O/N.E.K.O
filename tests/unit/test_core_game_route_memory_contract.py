@@ -5,6 +5,9 @@ import pytest
 import main_logic.core as core_module
 
 
+FIXED_TS = 1_700_000_000.0
+
+
 class _AsyncNullLock:
     async def __aenter__(self):
         return self
@@ -51,6 +54,11 @@ class _FakeActivityTracker:
 
     def on_user_message(self, text):
         self.user_messages.append(text)
+
+
+class _FakeAliveThread:
+    def is_alive(self):
+        return True
 
 
 def _make_manager():
@@ -279,8 +287,9 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
 async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
-    mgr._recent_ai_voice_echo_at = core_module.time.time()
+    mgr._recent_ai_voice_echo_at = FIXED_TS
 
     await core_module.LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
 
@@ -296,8 +305,9 @@ async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
 async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", False)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
-    mgr._recent_ai_voice_echo_at = core_module.time.time()
+    mgr._recent_ai_voice_echo_at = FIXED_TS
 
     await core_module.LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
 
@@ -319,8 +329,9 @@ async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypat
 async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
-    mgr._recent_ai_voice_echo_at = core_module.time.time()
+    mgr._recent_ai_voice_echo_at = FIXED_TS
 
     await core_module.LLMSessionManager.handle_input_transcript(mgr, "先别休息帮我打开设置", is_voice_source=True)
 
@@ -341,12 +352,45 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
     mgr = _make_transcript_manager()
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
-    mgr._recent_ai_voice_echo_at = core_module.time.time()
+    mgr._recent_ai_voice_echo_at = FIXED_TS
 
     core_module.LLMSessionManager._reset_voice_echo_suppression_cache(mgr)
 
     assert mgr._recent_ai_voice_echo_text == ""
     assert mgr._recent_ai_voice_echo_at == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_remembers_audio_echo_when_tts_queued(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+    enqueued = []
+
+    def enqueue_tts_text_chunk(speech_id, text):
+        enqueued.append((speech_id, text))
+
+    def request_tts_done_locked():
+        return "queued"
+
+    mgr._enqueue_tts_text_chunk = enqueue_tts_text_chunk
+    mgr._request_tts_done_locked = request_tts_done_locked
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "要不要休息一下喝点水",
+        metadata=_soccer_mirror_meta({"kind": "opening-line"}),
+        request_id="req-mirror-voice",
+        mirror_text=False,
+        emit_turn_end_after=False,
+    )
+
+    assert result["audio_queued"] is True
+    assert enqueued and enqueued[0][1] == "要不要休息一下喝点水"
+    assert mgr._recent_ai_voice_echo_text == "要不要休息一下喝点水"
+    assert mgr._recent_ai_voice_echo_at == FIXED_TS
 
 
 @pytest.mark.unit
