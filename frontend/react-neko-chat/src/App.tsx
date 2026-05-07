@@ -107,6 +107,13 @@ const hammerOverlayTransformOrigin = {
   y: 118,
 };
 
+const avatarToolSoundPaths = {
+  lollipopBite: '/static/sounds/avatar-tools/lollipop-bite.mp3',
+  coinDrop: '/static/sounds/avatar-tools/coin-drop.mp3',
+  hammerSmall: '/static/sounds/avatar-tools/hammer-small.mp3',
+  hammerBig: '/static/sounds/avatar-tools/hammer-big.mp3',
+} as const;
+
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
 }
@@ -333,6 +340,21 @@ function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string 
   const hotspotX = typeof item.cursorHotspotX === 'number' ? item.cursorHotspotX : 18;
   const hotspotY = typeof item.cursorHotspotY === 'number' ? item.cursorHotspotY : 18;
   return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
+}
+
+function playAvatarToolSound(soundPath: string) {
+  if (typeof Audio === 'undefined') return;
+  try {
+    const audio = new Audio(soundPath);
+    audio.preload = 'auto';
+    audio.volume = 0.9;
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {});
+    }
+  } catch {
+    // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
+  }
 }
 
 function supportsDesktopFinePointer(): boolean {
@@ -1199,6 +1221,7 @@ export default function App({
           emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, {
             intensity,
           });
+          playAvatarToolSound(avatarToolSoundPaths.lollipopBite);
 
           if (currentVariant === 'tertiary') {
             spawnLollipopHearts(event.clientX, event.clientY);
@@ -1234,6 +1257,7 @@ export default function App({
           );
         }
         if (shouldSpawnRewardDrop) {
+          playAvatarToolSound(avatarToolSoundPaths.coinDrop);
           spawnFistDrops(event.clientX, event.clientY);
         }
         return;
@@ -1265,6 +1289,11 @@ export default function App({
           easterEgg: shouldTriggerInnerHammerEasterEgg,
           touchZone: avatarRangeHit?.touchZone,
         });
+        playAvatarToolSound(
+          shouldTriggerInnerHammerEasterEgg
+            ? avatarToolSoundPaths.hammerBig
+            : avatarToolSoundPaths.hammerSmall,
+        );
         setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
         setHammerSwingPhase('windup');
         hammerSwingTimeoutIdsRef.current = [
