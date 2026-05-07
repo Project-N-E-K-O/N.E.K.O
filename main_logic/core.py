@@ -593,6 +593,7 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_text: str = ''
         self._recent_ai_voice_echo_at: float = 0.0
         self._pending_ai_voice_echo_text: str = ''
+        self._pending_ai_voice_echo_chunks = deque()
 
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
@@ -1477,6 +1478,11 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
         self._pending_ai_voice_echo_text = ''
+        pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
+        if pending_chunks is None:
+            self._pending_ai_voice_echo_chunks = deque()
+        else:
+            pending_chunks.clear()
 
     def _remember_recent_ai_voice_echo(self, text: str) -> None:
         if not text:
@@ -1488,18 +1494,54 @@ class LLMSessionManager:
     def _remember_pending_ai_voice_echo(self, text: str) -> None:
         if not text:
             return
-        pending_echo_text = (getattr(self, "_pending_ai_voice_echo_text", "") or "") + text
-        self._pending_ai_voice_echo_text = pending_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
+        pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
+        if pending_chunks is None:
+            pending_chunks = deque()
+            self._pending_ai_voice_echo_chunks = pending_chunks
+        pending_chunks.append(text)
+        self._sync_pending_ai_voice_echo_text()
+
+    def _sync_pending_ai_voice_echo_text(self) -> None:
+        pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
+        if pending_chunks is None:
+            pending_chunks = deque()
+            pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
+            if pending_echo_text:
+                pending_chunks.append(pending_echo_text)
+            self._pending_ai_voice_echo_chunks = pending_chunks
+
+        pending_echo_text = "".join(pending_chunks)
+        excess = max(0, len(pending_echo_text) - _VOICE_ECHO_LOOKBACK_CHARS)
+        while pending_chunks and excess >= len(pending_chunks[0]):
+            excess -= len(pending_chunks.popleft())
+        if pending_chunks and excess > 0:
+            pending_chunks[0] = pending_chunks[0][excess:]
+
+        self._pending_ai_voice_echo_text = "".join(pending_chunks)
 
     def _confirm_pending_ai_voice_echo(self) -> None:
-        pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
-        if not pending_echo_text:
+        pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
+        if pending_chunks is None:
+            pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
+            if not pending_echo_text:
+                return
+            self._pending_ai_voice_echo_text = ''
+            self._remember_recent_ai_voice_echo(pending_echo_text)
             return
-        self._pending_ai_voice_echo_text = ''
+
+        if not pending_chunks:
+            self._pending_ai_voice_echo_text = ''
+            return
+
+        pending_echo_text = pending_chunks.popleft()
+        self._sync_pending_ai_voice_echo_text()
         self._remember_recent_ai_voice_echo(pending_echo_text)
 
     def _discard_pending_ai_voice_echo(self) -> None:
         self._pending_ai_voice_echo_text = ''
+        pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
+        if pending_chunks is not None:
+            pending_chunks.clear()
 
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not HIDE_DIRTY_VOICE_TRANSCRIPTS:
