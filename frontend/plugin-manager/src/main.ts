@@ -27,34 +27,46 @@ import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 initDarkMode()
 initPluginDashboardYuiGuideRuntime()
 
-function initDecorativeImageDragGuard() {
-  const markImage = (img: HTMLImageElement) => {
-    img.draggable = false
-    img.setAttribute('draggable', 'false')
+function initNativeDragGuard() {
+  const markNativeDragSource = (element: HTMLAnchorElement | HTMLImageElement) => {
+    element.draggable = false
+    element.setAttribute('draggable', 'false')
   }
 
-  const markImages = (root: ParentNode | HTMLImageElement = document) => {
-    if (root instanceof HTMLImageElement) {
-      markImage(root)
+  const markNativeDragSources = (root: ParentNode | HTMLAnchorElement | HTMLImageElement = document) => {
+    if (root instanceof HTMLAnchorElement || root instanceof HTMLImageElement) {
+      markNativeDragSource(root)
       return
     }
-    root.querySelectorAll<HTMLImageElement>('img').forEach(markImage)
+    root.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img').forEach(markNativeDragSource)
   }
 
   const handleDragStart = (event: DragEvent) => {
-    if (event.target instanceof HTMLImageElement) {
+    const rawTarget = event.target
+    let target: Element | null = null
+    if (rawTarget instanceof Element) {
+      target = rawTarget
+    } else if (rawTarget instanceof Node) {
+      target = rawTarget.parentElement
+    }
+
+    if (
+      target instanceof HTMLAnchorElement
+      || target instanceof HTMLImageElement
+      || target?.closest('a[href], img')
+    ) {
       event.preventDefault()
     }
   }
 
-  markImages(document)
+  markNativeDragSources(document)
   document.addEventListener('dragstart', handleDragStart, true)
 
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node instanceof Element) {
-          markImages(node)
+          markNativeDragSources(node)
         }
       })
     })
@@ -62,7 +74,7 @@ function initDecorativeImageDragGuard() {
   observer.observe(document.documentElement, { childList: true, subtree: true })
 }
 
-initDecorativeImageDragGuard()
+initNativeDragGuard()
 
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
 
