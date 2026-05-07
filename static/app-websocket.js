@@ -2488,8 +2488,9 @@
         var detail = event && event.detail ? event.detail : {};
         sendHomeTutorialState(detail.reason || 'lock-changed');
         if (detail.locked === false) {
-            if (detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped') {
-                _markGreetingCheckPending(false, detail.reason);
+            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
+                && S._greetingCheckPending) {
+                S._greetingCheckReason = detail.reason;
             }
             _sendGreetingCheckIfReady();
         }
