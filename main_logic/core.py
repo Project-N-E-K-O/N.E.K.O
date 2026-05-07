@@ -782,6 +782,7 @@ class LLMSessionManager:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
+        self._remember_recent_ai_voice_echo(text)
 
     def _reset_tts_stream_normalizer(self) -> None:
         """清空所有 TTS 文本 stripper 状态。中断 / 轮次结束 / session 重建时调用。"""
@@ -819,6 +820,7 @@ class LLMSessionManager:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
+            self._remember_recent_ai_voice_echo(flushed)
 
         self.tts_request_queue.put((None, None))
         self._tts_done_queued_for_turn = True
@@ -1038,7 +1040,11 @@ class LLMSessionManager:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(text, is_first_chunk)
+        await self.send_lanlan_response(
+            text,
+            is_first_chunk,
+            remember_voice_echo=not self.use_tts,
+        )
         
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
@@ -1616,7 +1622,11 @@ class LLMSessionManager:
             )
             return
         # 无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(text, is_first_chunk)
+        await self.send_lanlan_response(
+            text,
+            is_first_chunk,
+            remember_voice_echo=not self.use_tts,
+        )
         
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
@@ -1647,6 +1657,7 @@ class LLMSessionManager:
         request_id: Any = _REQUEST_ID_UNSET,
         track_ai_turn: bool = True,
         cache_for_new_session: bool = True,
+        remember_voice_echo: bool = True,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
 
@@ -1667,7 +1678,8 @@ class LLMSessionManager:
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
             self._current_ai_turn_text += text_clean
-            self._remember_recent_ai_voice_echo(text_clean)
+            if remember_voice_echo:
+                self._remember_recent_ai_voice_echo(text_clean)
         effective_turn_id = turn_id or self.current_speech_id
         effective_request_id = (
             self._active_text_request_id
@@ -1999,9 +2011,6 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((turn_id, clean))
                 status = self._request_tts_done_locked()
                 audio_queued = status in {"queued", "deferred", "already"}
-        if audio_queued:
-            self._remember_recent_ai_voice_echo(clean)
-
         if emit_turn_end_after:
             await self.emit_mirror_turn_end(
                 metadata=metadata,

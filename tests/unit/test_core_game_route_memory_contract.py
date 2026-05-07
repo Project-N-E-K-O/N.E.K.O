@@ -391,20 +391,16 @@ async def test_mirror_assistant_speech_remembers_audio_echo_when_tts_queued(monk
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr.tts_ready = True
-    enqueued = []
-
-    def enqueue_tts_text_chunk(speech_id, text):
-        enqueued.append((speech_id, text))
-
-    def request_tts_done_locked():
-        return "queued"
-
-    mgr._enqueue_tts_text_chunk = enqueue_tts_text_chunk
-    mgr._request_tts_done_locked = request_tts_done_locked
+    mgr.tts_request_queue = _FakeQueue()
+    mgr._tts_stream_normalizer = core_module.TtsStreamNormalizer()
+    mgr._tts_markdown_stripper = core_module.TtsMarkdownStripper()
+    mgr._tts_bracket_stripper = core_module.TtsBracketStripper()
+    mgr._tts_norm_speech_id = None
+    mgr._tts_normalize_enabled = False
 
     result = await core_module.LLMSessionManager.mirror_assistant_speech(
         mgr,
-        "要不要休息一下喝点水",
+        "要不要休息一下（这句不会念）喝点水",
         metadata=_soccer_mirror_meta({"kind": "opening-line"}),
         request_id="req-mirror-voice",
         mirror_text=False,
@@ -412,7 +408,7 @@ async def test_mirror_assistant_speech_remembers_audio_echo_when_tts_queued(monk
     )
 
     assert result["audio_queued"] is True
-    assert enqueued and enqueued[0][1] == "要不要休息一下喝点水"
+    assert mgr.tts_request_queue.messages[0][1] == "要不要休息一下喝点水"
     assert mgr._recent_ai_voice_echo_text == "要不要休息一下喝点水"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
 
