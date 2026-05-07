@@ -5132,7 +5132,7 @@ function renderRapidOcr(status) {
   const canDownloadModels = rapidocrModelsMissing && Boolean(rapidocr.can_download_models);
   const config = getInstallConfig('rapidocr_models');
   const lastStatus = modelState && modelState.status;
-  const waitingRefresh = lastStatus === 'completed' && rapidocrModelsMissing;
+  const waitingRefresh = Boolean(isRecentLocalCompletedInstallTask(modelState) && rapidocrModelsMissing);
   const modelBusy = getInstallState('rapidocr_models').inProgress || waitingRefresh;
   const buttons = [
     `<button id="rapidocrUseBtn" class="secondary" ${(!rapidocrUsable || selectedBackend === 'rapidocr') ? 'disabled' : ''}>${escapeHtml(selectedBackend === 'rapidocr' ? uiT('ui.install.rapidocr.using', '正在使用 RapidOCR') : uiT('ui.install.rapidocr.use', '使用 RapidOCR'))}</button>`,
@@ -5227,6 +5227,7 @@ function renderRapidOcr(status) {
   meta.textContent = metaText;
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
+  applyRapidOcrModelsGate(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
