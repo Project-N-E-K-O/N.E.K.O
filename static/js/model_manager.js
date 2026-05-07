@@ -674,6 +674,8 @@ async function notifyMainPageModelReload() {
     }
 }
 
+const MODEL_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
+
 function openCardMakerFromModelManager(lanlanName, options = {}) {
     const params = new URLSearchParams({
         name: lanlanName,
@@ -692,13 +694,26 @@ function openCardMakerFromModelManager(lanlanName, options = {}) {
     // 否则模型管理页关闭时，部分 Electron/浏览器环境会连带关闭卡面制作页。
     if (window.opener && !window.opener.closed) {
         try {
-            return window.opener.open(url, '_blank', features);
+            if (typeof window.opener.openManagedPopup === 'function') {
+                return window.opener.openManagedPopup(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            if (typeof window.opener.openOrFocusWindow === 'function') {
+                return window.opener.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            const openedByParent = window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            if (openedByParent && typeof window.opener.requestOpenedWindowRestore === 'function') {
+                window.opener.requestOpenedWindowRestore(openedByParent);
+            }
+            return openedByParent;
         } catch (error) {
             console.warn('[模型管理] 通过父窗口打开卡面制作页失败，回退当前窗口打开:', error);
         }
     }
 
-    return window.open(url, '_blank', features);
+    if (typeof window.openOrFocusWindow === 'function') {
+        return window.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+    }
+    return window.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
 }
 
 function notifyCardFaceUpdatedFromModelManager(name) {
@@ -7788,11 +7803,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const height = 800;
             const left = (screen.width - width) / 2;
             const top = (screen.height - height) / 2;
-            window.open(
-                '/live2d_emotion_manager',
-                'emotionManager',
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow('/live2d_emotion_manager', 'emotionManager', features);
+            } else {
+                window.open('/live2d_emotion_manager', 'emotionManager', features);
+            }
         });
     }
 
@@ -7818,11 +7834,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            window.open(
-                url,
-                winName,
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, winName, features);
+            } else {
+                window.open(url, winName, features);
+            }
         });
     }
 

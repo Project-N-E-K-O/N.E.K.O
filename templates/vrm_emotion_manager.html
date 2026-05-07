@@ -12,8 +12,10 @@
     <link rel="stylesheet" href="/static/css/vrm_emotion_manager.css">
     <link rel="stylesheet" href="/static/libs/driver.min.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <div class="container">
@@ -22,9 +24,17 @@
                 <h1 data-text="VRM 情感映射管理器" data-i18n="vrmEmotionManager.pageTitle">VRM 情感映射管理器</h1>
                 <p data-i18n="vrmEmotionManager.subtitle">配置不同情绪对应的表情映射</p>
             </div>
-            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="vrmEmotionManager.close">
-                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="vrmEmotionManager.close" draggable="false">
-            </button>
+            <div class="neko-window-controls">
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                    <span class="neko-window-minimize-icon"></span>
+                </button>
+                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                    <span class="neko-window-maximize-icon"></span>
+                </button>
+                <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="vrmEmotionManager.close" data-i18n-aria="vrmEmotionManager.close" aria-label="关闭">
+                    <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="vrmEmotionManager.close" draggable="false">
+                </button>
+            </div>
         </div>
 
         <div class="container-content">

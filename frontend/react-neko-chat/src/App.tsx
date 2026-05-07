@@ -114,6 +114,13 @@ const hammerOverlayTransformOrigin = {
   y: 118,
 };
 
+const avatarToolSoundPaths = {
+  lollipopBite: '/static/sounds/avatar-tools/lollipop-bite.mp3',
+  coinDrop: '/static/sounds/avatar-tools/coin-drop.mp3',
+  hammerSmall: '/static/sounds/avatar-tools/hammer-small.mp3',
+  hammerBig: '/static/sounds/avatar-tools/hammer-big.mp3',
+} as const;
+
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
 }
@@ -340,6 +347,21 @@ function resolveCursorValue(item: ToolIconItem, variant: CursorVariant): string 
   const hotspotX = typeof item.cursorHotspotX === 'number' ? item.cursorHotspotX : 18;
   const hotspotY = typeof item.cursorHotspotY === 'number' ? item.cursorHotspotY : 18;
   return `url("${imagePath}") ${hotspotX} ${hotspotY}, auto`;
+}
+
+function playAvatarToolSound(soundPath: string) {
+  if (typeof Audio === 'undefined') return;
+  try {
+    const audio = new Audio(soundPath);
+    audio.preload = 'auto';
+    audio.volume = 0.9;
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {});
+    }
+  } catch {
+    // Ignore autoplay or unsupported-audio failures; the interaction itself should continue.
+  }
 }
 
 function supportsDesktopFinePointer(): boolean {
@@ -691,12 +713,6 @@ export default function App({
       setIsCursorOverAvatarRange(previousValue => (
         previousValue === true ? previousValue : true
       ));
-      avatarRangeHoldTimerRef.current = window.setTimeout(() => {
-        avatarRangeHoldTimerRef.current = null;
-        if (performance.now() < avatarRangeHoldUntilRef.current) return;
-        avatarRangeHoldUntilRef.current = 0;
-        setIsCursorOverAvatarRange(previousValue => (previousValue ? false : previousValue));
-      }, avatarToolRangeHoldMs);
       return;
     }
 
@@ -746,6 +762,47 @@ export default function App({
       clearActiveCursorToolSelection();
     }
   }, [_toolCursorResetKey, clearActiveCursorToolSelection]);
+
+  useEffect(() => {
+    const markImage = (img: HTMLImageElement) => {
+      img.draggable = false;
+      img.setAttribute('draggable', 'false');
+    };
+
+    const markImages = (root: ParentNode | HTMLImageElement = document) => {
+      if (root instanceof HTMLImageElement) {
+        markImage(root);
+        return;
+      }
+      root.querySelectorAll?.<HTMLImageElement>('img').forEach(markImage);
+    };
+
+    const handleDragStart = (event: DragEvent) => {
+      if (event.target instanceof HTMLImageElement) {
+        event.preventDefault();
+      }
+    };
+
+    markImages(document);
+    document.addEventListener('dragstart', handleDragStart, true);
+
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof Element) {
+            markImages(node);
+          }
+        });
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('dragstart', handleDragStart, true);
+    };
+  }, []);
+
   const resolvedImportImageAriaLabel = importImageButtonAriaLabel || importImageButtonLabel;
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
@@ -1174,6 +1231,7 @@ export default function App({
           emitAvatarInteraction('lollipop', actionId, 'avatar', event.clientX, event.clientY, {
             intensity,
           });
+          playAvatarToolSound(avatarToolSoundPaths.lollipopBite);
 
           if (currentVariant === 'tertiary') {
             spawnLollipopHearts(event.clientX, event.clientY);
@@ -1209,6 +1267,7 @@ export default function App({
           );
         }
         if (shouldSpawnRewardDrop) {
+          playAvatarToolSound(avatarToolSoundPaths.coinDrop);
           spawnFistDrops(event.clientX, event.clientY);
         }
         return;
@@ -1240,6 +1299,11 @@ export default function App({
           easterEgg: shouldTriggerInnerHammerEasterEgg,
           touchZone: avatarRangeHit?.touchZone,
         });
+        playAvatarToolSound(
+          shouldTriggerInnerHammerEasterEgg
+            ? avatarToolSoundPaths.hammerBig
+            : avatarToolSoundPaths.hammerSmall,
+        );
         setIsInnerHammerEasterEggActive(shouldTriggerInnerHammerEasterEgg);
         setHammerSwingPhase('windup');
         hammerSwingTimeoutIdsRef.current = [

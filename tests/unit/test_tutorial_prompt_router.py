@@ -361,6 +361,29 @@ def test_manual_tutorial_started_route_persists_started_state(tutorial_prompt_cl
 
 
 @pytest.mark.unit
+def test_auto_tutorial_started_route_persists_started_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+
+    response = client.post("/api/tutorial-prompt/tutorial-started", json={
+        "page": "home",
+        "source": "auto",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["ignored"] is False
+    assert body["state"]["status"] == "started"
+    assert body["tutorial_run_token"]
+
+    state = load_tutorial_prompt_state(config)
+    assert state["started_at"] > 0
+    assert state["manual_home_tutorial_viewed"] is True
+    assert state["active_tutorial_run_source"] == "auto"
+    assert state["active_tutorial_run_token"] == body["tutorial_run_token"]
+
+
+@pytest.mark.unit
 def test_prompt_tutorial_started_route_requires_valid_prompt_token(tutorial_prompt_client):
     client, config = tutorial_prompt_client
     heartbeat = client.post("/api/tutorial-prompt/heartbeat", json={

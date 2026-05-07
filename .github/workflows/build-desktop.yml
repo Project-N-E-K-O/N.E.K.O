@@ -115,7 +115,10 @@ jobs:
           # Embedding runtime deps (onnxruntime, tokenizers, py-cpuinfo) are
           # in [project.dependencies] now — plain `uv sync` covers both the
           # build-time prepare step and the bundled runtime.
-          uv sync
+          # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
+          # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies
+          # blocks opencv-python (full) so only the headless cv2 ships.
+          uv sync --group galgame
           uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Generate runtime config files (not tracked in git) ---

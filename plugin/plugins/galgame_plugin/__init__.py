@@ -30,7 +30,6 @@ from .host_agent_adapter import HostAgentAdapter
 from .llm_gateway import LLMGateway
 from .memory_reader import MemoryReaderManager
 from .ocr_reader import OcrReaderManager, utc_now_iso
-from .dxcam_support import install_dxcam
 from .models import (
     ADVANCE_SPEEDS,
     ADVANCE_SPEED_MEDIUM,
@@ -94,6 +93,12 @@ from .models import (
     json_copy,
     make_error,
 )
+from .dependency_status import (
+    infer_inspection_failed_dependencies,
+    infer_missing_dependencies,
+)
+from .rapidocr_support import inspect_rapidocr_installation
+from .dxcam_support import inspect_dxcam_installation
 from .reader import tail_events_jsonl, warmup_replay_events
 from .service import (
     apply_event_to_histories,
@@ -123,7 +128,6 @@ from .service import (
     rebuild_histories_from_events,
     scan_session_candidates,
 )
-from .rapidocr_support import install_rapidocr
 from .state import GalgameSharedState, build_initial_state
 from .store import GalgameStore
 from .tesseract_support import install_tesseract
@@ -147,7 +151,19 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
 
 
 _OCR_BACKEND_SELECTIONS = {"auto", "rapidocr", "tesseract"}
-_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "imagegrab", "printwindow"}
+_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}
+
+
+def _migrate_legacy_capture_backend(value: object) -> object:
+    """Rewrite legacy "imagegrab" stored value to "mss" at every entry point.
+
+    Old configs saved before the MSS rename keep "imagegrab" verbatim; this
+    helper normalizes them at storage / API boundaries so the runtime never
+    sees the legacy name and `_OCR_CAPTURE_BACKEND_SELECTIONS` can shrink.
+    """
+    if isinstance(value, str) and value.strip().lower() == "imagegrab":
+        return "mss"
+    return value
 _BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS = 45.0
 _BRIDGE_TICK_INTERVAL_SECONDS = 1.0
 # Foreground refresh TTL: repeated calls within two seconds return early so
@@ -753,8 +769,12 @@ class GalgamePlugin(NekoPluginBase):
         self._bridge_poll_task_lock = threading.RLock()
         self._textractor_install_lock = threading.Lock()
         self._tesseract_install_lock = threading.Lock()
-        self._rapidocr_install_lock = threading.Lock()
-        self._dxcam_install_lock = threading.Lock()
+        # rapidocr/dxcam *install* locks removed: both bundled into main program.
+        # rapidocr_models download lock is separate — it's not installing the
+        # package, it's pulling the user-selected language pack into the
+        # plugin model cache so RapidOCR can serve a non-bundled (lang, version)
+        # combo (e.g. japan + PP-OCRv4).
+        self._rapidocr_models_lock = threading.Lock()
         self._cfg = None
         self._state = build_initial_state(
             mode=MODE_COMPANION,
@@ -1051,6 +1071,7 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_capture_profiles": dict(state.ocr_capture_profiles),
                 "ocr_window_target": dict(state.ocr_window_target),
                 "plugin_error": state.plugin_error,
+                "dependency_status": dict(state.dependency_status),
             }
             should_cache = not fresh
             if should_cache:
@@ -1092,6 +1113,7 @@ class GalgamePlugin(NekoPluginBase):
             "ocr_capture_profiles": json_copy(raw["ocr_capture_profiles"]),
             "ocr_window_target": json_copy(raw["ocr_window_target"]),
             "plugin_error": raw["plugin_error"],
+            "dependency_status": json_copy(raw["dependency_status"]),
         }
         if should_cache:
             with self._state_lock:
@@ -1833,6 +1855,10 @@ class GalgamePlugin(NekoPluginBase):
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
             assign("plugin_error", str(payload["plugin_error"]))
+            assign_json_if_live_unchanged(
+                "dependency_status",
+                payload.get("dependency_status", self._state.dependency_status),
+            )
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
@@ -2718,7 +2744,7 @@ class GalgamePlugin(NekoPluginBase):
         if value is not None and value in _OCR_BACKEND_SELECTIONS:
             self._cfg.ocr_reader.ocr_reader_backend_selection = value
 
-        value = overrides.get(STORE_OCR_CAPTURE_BACKEND)
+        value = _migrate_legacy_capture_backend(overrides.get(STORE_OCR_CAPTURE_BACKEND))
         if value is not None and value in _OCR_CAPTURE_BACKEND_SELECTIONS:
             self._cfg.ocr_reader.ocr_reader_capture_backend = value
 
@@ -2822,6 +2848,92 @@ class GalgamePlugin(NekoPluginBase):
         return self._add_bridge_poll_debug_payload(
             build_status_payload(state, config=self._cfg, state_is_snapshot=True)
         )
+
+    def _refresh_dependency_status(self) -> None:
+        """Recompute galgame dependency status (rapidocr/dxcam inspection).
+
+        After PR #1188 + #1191 the rapidocr/dxcam packages are bundled into
+        the main program and runtime pip-install was removed; both inspectors
+        now return ``can_install=False``, so missing-cohort dev environments
+        no longer surface a user-actionable warning here. The bundled_hint
+        banner from #1191 covers the source-install case directly. What this
+        method still buys us:
+
+        - ``inspection_failed`` detection — when rapidocr/dxcam imports raise
+          unexpectedly (e.g. corrupt wheel after a partial sync), the diag
+          surfaces a "依赖状态检查失败" warning instead of a confusing nothing.
+        - Snapshot of "checked_at / degraded" so the UI can show staleness.
+        """
+        if self._cfg is None:
+            return
+        clear_install_inspection_cache()
+        try:
+            rapidocr = inspect_rapidocr_installation(
+                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
+                engine_type=self._cfg.rapidocr_engine_type,
+                lang_type=self._cfg.rapidocr_lang_type,
+                model_type=self._cfg.rapidocr_model_type,
+                ocr_version=self._cfg.rapidocr_ocr_version,
+            )
+        except Exception as exc:
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame rapidocr dependency inspection failed: {}",
+                exc,
+            )
+            rapidocr = {
+                "installed": False,
+                "install_supported": True,
+                "can_install": False,
+                "detail": "inspection_failed",
+                "runtime_error": str(exc),
+            }
+        try:
+            dxcam = inspect_dxcam_installation()
+        except Exception as exc:
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame dxcam dependency inspection failed: {}",
+                exc,
+            )
+            dxcam = {
+                "installed": False,
+                "install_supported": True,
+                "can_install": False,
+                "detail": "inspection_failed",
+                "runtime_error": str(exc),
+            }
+
+        dependencies = (
+            ("rapidocr", rapidocr),
+            ("dxcam", dxcam),
+        )
+        missing_dependencies = infer_missing_dependencies(dependencies)
+        inspection_failed_dependencies = infer_inspection_failed_dependencies(dependencies)
+        dependency_status = {
+            "checked_at": time.time(),
+            "degraded": bool(missing_dependencies or inspection_failed_dependencies),
+            "missing": missing_dependencies,
+        }
+        if inspection_failed_dependencies:
+            dependency_status["inspection_failed"] = inspection_failed_dependencies
+
+        with self._state_lock:
+            self._state.dependency_status = dependency_status
+            self._state_dirty = True
+            self._cached_snapshot = None
+        if missing_dependencies:
+            self.logger.warning(
+                "GalgamePlugin dependency check: optional dependencies missing {}; degraded mode enabled",
+                missing_dependencies,
+            )
+        if inspection_failed_dependencies:
+            self.logger.warning(
+                "GalgamePlugin dependency check: dependency inspections failed {}; degraded mode enabled",
+                inspection_failed_dependencies,
+            )
 
     async def _build_status_payload_async(self) -> dict[str, Any]:
         if self._cfg is None:
@@ -2973,6 +3085,8 @@ class GalgamePlugin(NekoPluginBase):
         )
         self._ocr_reader_manager.update_capture_profiles(self._state.ocr_capture_profiles)
         self._ocr_reader_manager.update_window_target(self._state.ocr_window_target)
+
+        self._refresh_dependency_status()
 
         self.register_static_ui("static")
         self.set_list_actions(
@@ -3904,6 +4018,11 @@ class GalgamePlugin(NekoPluginBase):
             "active_data_source": str(local.get("active_data_source") or ""),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
+            # Track dependency_status in the snapshot base so a parallel
+            # _refresh_dependency_status() call (e.g. from install_textractor)
+            # isn't clobbered by the stale poll-snapshot when the bridge tick
+            # commits its payload.
+            "dependency_status": json_copy(local.get("dependency_status") or {}),
         }
         next_poll_at = float(local["next_poll_at_monotonic"])
         max_reasonable_interval = max(
@@ -4045,7 +4164,7 @@ class GalgamePlugin(NekoPluginBase):
                 and str(getattr(self._cfg, "ocr_reader_capture_backend", "") or "")
                 .strip()
                 .lower()
-                in {"smart", "dxcam", "imagegrab", "printwindow"}
+                in {"smart", "dxcam", "mss", "pyautogui", "printwindow"}
             )
         )
         memory_reader_default_is_unavailable = (
@@ -4378,6 +4497,7 @@ class GalgamePlugin(NekoPluginBase):
                 progress_callback=progress_callback,
             )
             clear_install_inspection_cache()
+            self._refresh_dependency_status()
             await self._poll_bridge(force=True)
             return Ok(
                 {
@@ -4437,95 +4557,64 @@ class GalgamePlugin(NekoPluginBase):
         finally:
             self._tesseract_install_lock.release()
 
-    @plugin_entry(
-        id="galgame_install_rapidocr",
-        name=tr("entries.galgame_install_rapidocr.name", default='安装 RapidOCR'),
-        description=tr("entries.galgame_install_rapidocr.description", default='检测并下载安装插件隔离的 RapidOCR 运行时，随后刷新 galgame_plugin 的 OCR 状态。'),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "force": {"type": "boolean", "default": False},
-            },
-        },
-        timeout=300.0,
-        llm_result_fields=["summary"],
-    )
-    async def galgame_install_rapidocr(self, force: bool = False, **_):
-        if self._cfg is None:
-            return Err(SdkError(self._not_configured_message()))
-        if not self._rapidocr_install_lock.acquire(blocking=False):
-            return Err(SdkError(self._install_in_progress_message("RapidOCR")))
-        current_run_id = self._resolve_current_run_id()
-        progress_callback = self._resolve_install_progress_callback(current_run_id)
-        try:
-            install_result = await install_rapidocr(
-                logger=self.logger,
-                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
-                manifest_url=self._cfg.rapidocr_install_manifest_url,
-                timeout_seconds=self._cfg.rapidocr_install_timeout_seconds,
-                engine_type=self._cfg.rapidocr_engine_type,
-                lang_type=self._cfg.rapidocr_lang_type,
-                model_type=self._cfg.rapidocr_model_type,
-                ocr_version=self._cfg.rapidocr_ocr_version,
-                force=bool(force),
-                task_id=current_run_id or None,
-                progress_callback=progress_callback,
-            )
-            clear_install_inspection_cache()
-            await self._poll_bridge(force=True)
-            return Ok(
-                {
-                    "summary": str(install_result.get("summary") or self._install_ok_message("rapidocr", "RapidOCR")),
-                    "install_result": install_result,
-                    "status": await self._build_status_payload_async(),
-                }
-            )
-        except Exception as exc:
-            return Err(SdkError(self._format_install_entry_error("rapidocr", "RapidOCR", exc)))
-        finally:
-            self._rapidocr_install_lock.release()
+    # NOTE: galgame_install_rapidocr / galgame_install_dxcam SDK actions removed —
+    # both packages are now bundled into the main program (see pyproject.toml
+    # [dependency-groups] galgame). Run `uv sync --group galgame` for source
+    # installs; packaged builds always include them.
 
     @plugin_entry(
-        id="galgame_install_dxcam",
-        name=tr("entries.galgame_install_dxcam.name", default='安装 DXcam'),
-        description=tr("entries.galgame_install_dxcam.description", default='检测并安装 DXcam 截图依赖，随后刷新 galgame_plugin 的 OCR 截图后端状态。'),
+        id="galgame_download_rapidocr_models",
+        name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
         input_schema={
             "type": "object",
             "properties": {
                 "force": {"type": "boolean", "default": False},
             },
         },
-        timeout=180.0,
+        timeout=600.0,
         llm_result_fields=["summary"],
     )
-    async def galgame_install_dxcam(self, force: bool = False, **_):
+    async def galgame_download_rapidocr_models(self, force: bool = False, **_):
         if self._cfg is None:
             return Err(SdkError(self._not_configured_message()))
-        if not self._dxcam_install_lock.acquire(blocking=False):
-            return Err(SdkError(self._install_in_progress_message("DXcam")))
+        if not self._rapidocr_models_lock.acquire(blocking=False):
+            return Err(SdkError(self._install_in_progress_message("RapidOCR Models")))
         current_run_id = self._resolve_current_run_id()
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
-            install_result = await install_dxcam(
+            from .rapidocr_support import download_rapidocr_models
+
+            download_result = await download_rapidocr_models(
                 logger=self.logger,
-                timeout_seconds=self._cfg.ocr_reader_install_timeout_seconds,
+                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
+                ocr_version=self._cfg.rapidocr_ocr_version,
+                lang_type=self._cfg.rapidocr_lang_type,
+                timeout_seconds=float(self._cfg.ocr_reader_install_timeout_seconds or 180.0),
                 force=bool(force),
                 task_id=current_run_id or None,
                 progress_callback=progress_callback,
+                before_completed_callback=clear_install_inspection_cache,
             )
             clear_install_inspection_cache()
             await self._poll_bridge(force=True)
+            downloaded = download_result.get("downloaded") or []
+            summary = (
+                f"RapidOCR models ready ({len(downloaded)} file(s) downloaded)"
+                if downloaded
+                else "RapidOCR models already present"
+            )
             return Ok(
                 {
-                    "summary": str(install_result.get("summary") or self._install_ok_message("dxcam", "DXcam")),
-                    "install_result": install_result,
+                    "summary": summary,
+                    "download_result": download_result,
                     "status": await self._build_status_payload_async(),
                 }
             )
         except Exception as exc:
-            return Err(SdkError(self._format_install_entry_error("dxcam", "DXcam", exc)))
+            return Err(SdkError(self._format_install_entry_error("rapidocr_models", "RapidOCR Models", exc)))
         finally:
-            self._dxcam_install_lock.release()
+            self._rapidocr_models_lock.release()
 
     @plugin_entry(
         id="galgame_get_snapshot",
@@ -4796,6 +4885,10 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         normalized_backend = str(backend_selection or "").strip().lower() or None
         normalized_capture = str(capture_backend or "").strip().lower() or None
+        # Accept legacy "imagegrab" from external callers but normalize to "mss"
+        # before validation so the schema set can drop the deprecated value.
+        if normalized_capture == "imagegrab":
+            normalized_capture = "mss"
         if normalized_backend is None and normalized_capture is None:
             return Err(SdkError("backend_selection or capture_backend is required"))
         if normalized_backend is not None and normalized_backend not in _OCR_BACKEND_SELECTIONS:

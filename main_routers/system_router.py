@@ -134,7 +134,7 @@ from utils.screenshot_utils import (
     COMPRESS_TARGET_HEIGHT,
     COMPRESS_JPEG_QUALITY,
 )
-from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language, is_supported_language_code
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
     fetch_window_context_content, format_window_context_content,
@@ -2321,7 +2321,11 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
     会话保持一致；仅在没有任何 session 上下文时才退到全局缓存。
     """
     request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
-    if request_lang:
+    # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
+    # corrupted localStorage 可能传 ``'undefined'`` / ``'estonian'`` 等 garbage，
+    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
+    # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
+    if request_lang and is_supported_language_code(request_lang):
         normalized = normalize_language_code(request_lang, format='short')
         if normalized:
             return normalized

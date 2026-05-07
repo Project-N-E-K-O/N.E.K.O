@@ -1596,14 +1596,35 @@
         var blob = content instanceof Blob
             ? content
             : new Blob([content], { type: contentType });
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement('a');
+        // The preview popup is the active tab when the user clicks Download.
+        // Anchoring the <a download> in the opener's document means the
+        // synthetic click fires from a backgrounded tab, which mobile browsers
+        // silently drop for image-sized blobs (markdown sometimes slips
+        // through). Place the anchor in the popup's realm so the download
+        // inherits the same user-activation context as the tap.
+        var hostWindow = window;
+        try {
+            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                hostWindow = state.previewWindow;
+            }
+        } catch (_) {
+            hostWindow = window;
+        }
+        var hostDoc = hostWindow.document;
+        var hostURL = hostWindow.URL || hostWindow.webkitURL || URL;
+        var url = hostURL.createObjectURL(blob);
+        var link = hostDoc.createElement('a');
         link.href = url;
         link.download = fileName;
-        document.body.appendChild(link);
+        link.rel = 'noopener';
+        link.style.position = 'fixed';
+        link.style.left = '-9999px';
+        (hostDoc.body || hostDoc.documentElement).appendChild(link);
         link.click();
         link.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        setTimeout(function () {
+            try { hostURL.revokeObjectURL(url); } catch (_) {}
+        }, 1000);
     }
 
     async function copyTextToClipboard(text) {

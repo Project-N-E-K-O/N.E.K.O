@@ -22,7 +22,8 @@
             -webkit-app-region: no-drag;
         }
 
-        /* 最大化/恢复按钮 - 样式与关闭按钮统一 */
+        /* 最小化、最大化/恢复按钮 - 样式与关闭按钮统一 */
+        .minimize-btn,
         .maximize-btn {
             background: transparent;
             border: none;
@@ -40,15 +41,27 @@
             -webkit-app-region: no-drag;
         }
 
+        .minimize-btn:hover,
         .maximize-btn:hover {
             background: rgba(255, 255, 255, 0.2);
             transform: translateY(-1px);
         }
 
+        .minimize-btn:active,
         .maximize-btn:active {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(1px) scale(0.95);
             opacity: 0.9;
+        }
+
+        /* 最小化图标：横线 */
+        .minimize-icon {
+            display: block;
+            width: 16px;
+            height: 2px;
+            background: #fff;
+            border-radius: 2px;
+            transform: translateY(5px);
         }
 
         /* 最大化图标：实心方框 */
@@ -405,7 +418,10 @@
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
         <div class="title-bar-buttons">
-            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" title="最大化">
+            <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="minimize-icon"></span>
+            </button>
+            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
                 <span class="maximize-icon"></span>
             </button>
             <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
@@ -869,6 +885,17 @@
 
     <!-- 初始化 -->
     <script>
+        // 最小化按钮逻辑
+        async function minimizeWindow() {
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.minimize !== 'function') return;
+            try {
+                await api.minimize();
+            } catch (e) {
+                // 忽略非 Electron 环境
+            }
+        }
+
         // 最大化/恢复按钮逻辑
         async function toggleMaximize() {
             const api = window.nekoWindowControl;
@@ -886,14 +913,21 @@
         function updateMaximizeIcon(isMaximized) {
             const icon = document.querySelector('.maximize-icon');
             if (!icon) return;
+            const btn = document.getElementById('maximizeBtn');
+            const labelKey = isMaximized ? 'common.restore' : 'common.maximize';
+            const fallbackLabel = isMaximized ? '恢复' : '最大化';
+            const translated = typeof window.t === 'function' ? window.t(labelKey) : null;
+            const label = translated && translated !== labelKey ? translated : fallbackLabel;
             if (isMaximized) {
                 icon.classList.add('restored');
-                const btn = document.getElementById('maximizeBtn');
-                if (btn) btn.setAttribute('title', '恢复');
             } else {
                 icon.classList.remove('restored');
-                const btn = document.getElementById('maximizeBtn');
-                if (btn) btn.setAttribute('title', '最大化');
+            }
+            if (btn) {
+                btn.setAttribute('data-i18n-title', labelKey);
+                btn.setAttribute('data-i18n-aria', labelKey);
+                btn.setAttribute('title', label);
+                btn.setAttribute('aria-label', label);
             }
         }
 

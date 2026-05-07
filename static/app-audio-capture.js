@@ -486,6 +486,7 @@
                 if (_stop) _stop.disabled = true;
 
                 // 显示文本输入区域
+                S.voiceChatActive = false;
                 const textInputArea = document.getElementById('text-input-area');
                 if (textInputArea) {
                     textInputArea.classList.remove('hidden');
@@ -979,6 +980,7 @@
             window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
 
             // 失败时恢复文本输入区
+            S.voiceChatActive = false;
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');
@@ -1054,6 +1056,7 @@
         if (_reset)  _reset.disabled = false;
 
         // 显示文本输入区
+        S.voiceChatActive = false;
         const textInputArea = document.getElementById('text-input-area');
         if (textInputArea) textInputArea.classList.remove('hidden');
         if (typeof window.syncVoiceChatComposerHidden === 'function') {

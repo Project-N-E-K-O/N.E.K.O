@@ -11,16 +11,26 @@
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/card_maker.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 </head>
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="cardExport.title" data-text="卡面制作">卡面制作</h2>
-        <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" title="返回">
-            <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭" draggable="false">
-        </button>
+        <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon"></span>
+            </button>
+            <button id="back-btn" class="close-btn" data-i18n-title="cardExport.back" data-i18n-aria="cardExport.back" title="返回" aria-label="返回">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭" draggable="false">
+            </button>
+        </div>
     </div>
 
     <!-- 主内容区域 -->

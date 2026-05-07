@@ -73,6 +73,15 @@
      * 用于定期备份和跨会话持久化
      */
     async function syncSettingsToServer() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
+                return;
+            }
+        } catch (_) {
+            // keep settings sync best-effort if the tutorial controller is unavailable
+        }
         const settings = getConversationSettings();
         try {
             const response = await fetch('/api/config/conversation-settings', {

@@ -21,6 +21,8 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _lanlanNameWaitAttempts = 0;
+    let _lanlanNameWaitLastLogAt = 0;
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -38,10 +40,26 @@
     function isHomeTutorialLockedForGreeting() {
         try {
             if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                return window.isNekoHomeTutorialBlockingGreeting() === true;
+                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
+                    return true;
+                }
             }
             if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                return window.isNekoHomeTutorialInteractionLocked() === true;
+                if (window.isNekoHomeTutorialInteractionLocked() === true) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            if (window.NekoHomeTutorialFeatureController
+                && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
+                && window.NekoHomeTutorialFeatureController.isActive() === true) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (document.body && document.body.classList.contains('yui-taking-over')) {
+                return true;
             }
         } catch (_) {}
         return false;
@@ -408,6 +426,16 @@
 
     // ========================  ensureWebSocketOpen  ========================
 
+    // 区分"字段未注入"和"字段注入为空串"：未注入返回 null（继续等待 page config 注入），
+    // 注入为空串返回 ''（合法的"当前没有角色"，应直接尝试 connect 而不是无谓等待 5s 超时）。
+    function getWebSocketLanlanName() {
+        var cfg = window.lanlan_config;
+        if (!cfg || typeof cfg !== 'object') return null;
+        if (!Object.prototype.hasOwnProperty.call(cfg, 'lanlan_name')) return null;
+        var v = cfg.lanlan_name;
+        return v == null ? '' : String(v);
+    }
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -424,11 +452,27 @@
 
             var settled = false;
             var timer = null;
+            var lanlanWaitTimer = null;
+            var socketPollTimer = null;
+
+            var clearAutoReconnectTimer = function () {
+                if (S.autoReconnectTimeoutId) {
+                    clearTimeout(S.autoReconnectTimeoutId);
+                    S.autoReconnectTimeoutId = null;
+                }
+            };
 
             var settle = function (fn, arg) {
                 if (settled) return;
                 settled = true;
                 if (timer) { clearTimeout(timer); timer = null; }
+                if (lanlanWaitTimer) { clearTimeout(lanlanWaitTimer); lanlanWaitTimer = null; }
+                if (socketPollTimer) { clearTimeout(socketPollTimer); socketPollTimer = null; }
+                clearAutoReconnectTimer();
+                // 这次 ensureWebSocketOpen 已结束，归零退避状态，避免下次调用继承旧 attempts
+                // 让退避一上来又是 ~2s 的 stale 节奏。
+                _lanlanNameWaitAttempts = 0;
+                _lanlanNameWaitLastLogAt = 0;
                 fn(arg);
             };
 
@@ -460,15 +504,36 @@
                 // "WebSocket not connected"。改为仅靠下面的 polling 等新 socket 就位。
             } else {
                 // socket does not exist or CLOSED/CLOSING -> rebuild
-                if (S.autoReconnectTimeoutId) {
-                    clearTimeout(S.autoReconnectTimeoutId);
-                    S.autoReconnectTimeoutId = null;
-                }
-                connectWebSocket();
+                clearAutoReconnectTimer();
+                var connectWhenLanlanNameReady = function () {
+                    if (settled) return;
+                    if (getWebSocketLanlanName() !== null) {
+                        connectWebSocket();
+                        return;
+                    }
+                    _lanlanNameWaitAttempts += 1;
+                    var waitNow = Date.now();
+                    if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                        console.warn('[WebSocket] lanlan_name not ready, waiting for page config');
+                        _lanlanNameWaitLastLogAt = waitNow;
+                    }
+                    lanlanWaitTimer = setTimeout(function () {
+                        lanlanWaitTimer = null;
+                        connectWhenLanlanNameReady();
+                    }, Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250));
+                };
+                connectWhenLanlanNameReady();
             }
 
             // Polling fallback: track socket reference; re-attach when replaced
             var lastAttachedWs = null;
+            var scheduleSocketPoll = function (delay) {
+                if (settled) return;
+                socketPollTimer = setTimeout(function () {
+                    socketPollTimer = null;
+                    waitForNewSocket();
+                }, delay);
+            };
             var waitForNewSocket = function () {
                 if (settled) return;
                 if (S.socket) {
@@ -477,13 +542,13 @@
                         attachOpenListener(S.socket);
                     }
                     if (!settled) {
-                        setTimeout(waitForNewSocket, S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
+                        scheduleSocketPoll(S.socket.readyState === WebSocket.CONNECTING ? 200 : 50);
                     }
                 } else {
-                    setTimeout(waitForNewSocket, 50);
+                    scheduleSocketPoll(50);
                 }
             };
-            setTimeout(waitForNewSocket, 10);
+            scheduleSocketPoll(10);
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
@@ -491,9 +556,7 @@
     // ========================  connectWebSocket  ========================
 
     function connectWebSocket() {
-        var currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
-            ? window.lanlan_config.lanlan_name
-            : '';
+        var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
         // 切换档案时 Chat 窗口曾出现这样的 stale 序列：handleCatgirlSwitch 刚 connect 的新代理被
         // 旧 WS 生命周期的 CLOSED IPC 误触发 close，onclose 排了一个 3s auto-reconnect；紧接着
@@ -503,11 +566,22 @@
             clearTimeout(S.autoReconnectTimeoutId);
             S.autoReconnectTimeoutId = null;
         }
-        if (!currentLanlanName) {
-            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
-            S.autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+        // 仅在字段未注入（null）时退避等待；空串是合法"当前没有角色"，按下面正常 encode 走。
+        if (currentLanlanName === null) {
+            _lanlanNameWaitAttempts += 1;
+            var waitNow = Date.now();
+            if (!_lanlanNameWaitLastLogAt || waitNow - _lanlanNameWaitLastLogAt >= 5000) {
+                console.warn('[WebSocket] lanlan_name not injected yet, waiting for page config');
+                _lanlanNameWaitLastLogAt = waitNow;
+            }
+            S.autoReconnectTimeoutId = setTimeout(
+                connectWebSocket,
+                Math.min(3000, 500 + Math.min(_lanlanNameWaitAttempts, 6) * 250)
+            );
             return;
         }
+        _lanlanNameWaitAttempts = 0;
+        _lanlanNameWaitLastLogAt = 0;
 
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
@@ -605,8 +679,7 @@
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
-            S._greetingCheckPending = true;
-            S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
+            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
 
@@ -1265,7 +1338,13 @@
                                     if (sb2) sb2.classList.remove('active');
 
                                     S.isRecording = false;
+                                    S.voiceChatActive = false;
+                                    S.voiceStartPending = false;
                                     window.isRecording = false;
+                                    // 必须在 syncVoiceChatComposerHidden(false) 之前清掉，
+                                    // 否则 shouldKeepVoiceComposerHidden() 还会按"启动中"判定要求隐藏，
+                                    // 重启失败的输入栏会被新守卫再次压回去。
+                                    window.isMicStarting = false;
 
                                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
@@ -1745,6 +1824,36 @@
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
+                    S.voiceChatActive = response.input_mode !== 'text';
+                    S.voiceStartPending = false;
+
+                    // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
+                    // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
+                    // 各自 hide 自己的 #text-input-area，不依赖
+                    // startMicCapture/syncVoiceChatComposerHidden 的 BroadcastChannel
+                    // 链路。原来 hide 只挂在主窗口 startMicCapture 上：
+                    //   - chat.html 子窗口无麦按钮永不调 startMicCapture
+                    //   - reload 后某些 audio session 启动路径不走 startMicCapture
+                    //   - BroadcastChannel 在 reload init 时序窗口里错过事件
+                    // 都会让子窗口的 #text-input-area 始终可见可输入，用户在
+                    // audio session 中打字 → 后端 start_session(text) → 撕重建
+                    // → 撞 PR #1176 修的 race（"neko 已离开"）。本路径与下方
+                    // session_ended_by_server 1844-1846 的 unhide 对偶，移动端
+                    // 维持原来"不 hide"设计（UI 上手机屏小希望保留文本框可见）。
+                    var _tiaStarted = document.getElementById('text-input-area');
+                    if (_tiaStarted) {
+                        if (response.input_mode === 'text') {
+                            _tiaStarted.classList.remove('hidden');
+                        } else if (!window.appUtils || !window.appUtils.isMobile()) {
+                            _tiaStarted.classList.add('hidden');
+                        }
+                    }
+                    if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                        var _shouldHide = response.input_mode !== 'text'
+                            && (!window.appUtils || !window.appUtils.isMobile());
+                        window.syncVoiceChatComposerHidden(_shouldHide);
+                    }
+
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (S.sessionStartedResolver) {
@@ -1776,6 +1885,8 @@
                 } else if (response.type === 'session_failed') {
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
@@ -1793,6 +1904,7 @@
                         if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                         if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
                         window.isMicStarting = false;
+                        S.voiceChatActive = false;
                         S.isSwitchingMode = false;
                         var _tia = document.getElementById('text-input-area');
                         if (_tia) _tia.classList.remove('hidden');
@@ -1805,6 +1917,8 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     S.isTextSessionActive = false;
+                    S.voiceChatActive = false;
+                    S.voiceStartPending = false;
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
                     if (S.sessionStartedRejecter) {
@@ -1843,12 +1957,12 @@
 
                     var _tia2 = document.getElementById('text-input-area');
                     if (_tia2) _tia2.classList.remove('hidden');
+                    window.isMicStarting = false;
                     if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
 
                     if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
                     if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-                    window.isMicStarting = false;
                     S.isSwitchingMode = false;
 
                 // -------- reload_page --------
@@ -2060,6 +2174,8 @@
                 S.isTextSessionActive = false;
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
+            S.voiceChatActive = false;
+            S.voiceStartPending = false;
 
             // Reset voice recording state & resources
             if (S.isRecording || window.isMicStarting) {
@@ -2257,6 +2373,11 @@
             _sendGreetingCheckIfReady();
         }, delay);
     }
+    function _markGreetingCheckPending(isSwitch, reason) {
+        S._greetingCheckPending = true;
+        S._greetingCheckIsSwitch = !!isSwitch;
+        S._greetingCheckReason = reason || '';
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) {
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
@@ -2268,14 +2389,37 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
+                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
+                // start_session seed 的全局缓存），所以这里宁可送 navigator
+                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
+                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
+                // Steam API 时，navigator.language 通常已经是 zh-CN）。
+                var greetingLang = '';
+                try {
+                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                        greetingLang = window.i18next.language;
+                    } else if (typeof localStorage !== 'undefined') {
+                        greetingLang = localStorage.getItem('i18nextLng') || '';
+                    }
+                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
+                        greetingLang = navigator.language;
+                    }
+                } catch (_) { greetingLang = ''; }
+                var greetingIsSwitch = !!S._greetingCheckIsSwitch;
+                var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
+                sendHomeTutorialState('greeting-check-ready');
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
-                    is_switch: !!S._greetingCheckIsSwitch,
-                    language: (window.i18next && window.i18next.language) || ''
+                    is_switch: greetingIsSwitch,
+                    language: greetingLang,
+                    reason: greetingReason
                 }));
                 S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
                 _resetGreetingCheckRetry(true);
-                console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
+                console.log('[greeting_check] sent, is_switch=' + greetingIsSwitch + ', reason=' + greetingReason);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
@@ -2308,10 +2452,48 @@
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
 
+    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
+    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
+    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
+    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
+    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
+    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
+    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
+    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
+    // 即可。
+    function _syncLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] send failed:', e);
+        }
+    }
+    if (window.i18next && typeof window.i18next.on === 'function') {
+        window.i18next.on('languageChanged', _syncLanguageToBackend);
+    } else {
+        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
+        window.addEventListener('localechange', function () {
+            try {
+                var lng = (window.i18next && typeof window.i18next.language === 'string')
+                    ? window.i18next.language : '';
+                _syncLanguageToBackend(lng);
+            } catch (_) { /* noop */ }
+        });
+    }
+
     window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         sendHomeTutorialState(detail.reason || 'lock-changed');
         if (detail.locked === false) {
+            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
+                && S._greetingCheckPending) {
+                S._greetingCheckReason = detail.reason;
+            }
             _sendGreetingCheckIfReady();
         }
     });

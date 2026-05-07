@@ -67,7 +67,7 @@ from utils.game_route_state import (
     is_game_route_active,
     register_voice_transcript_handler,
 )
-from utils.language_utils import get_global_language, normalize_language_code
+from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Game")
@@ -989,8 +989,69 @@ def _normalize_quick_lines(value: Any) -> Dict[str, list[str]]:
     return normalized
 
 
-def _resolve_game_prompt_language(lanlan_name: str | None = None) -> str:
-    """Resolve the user's current language for game-route LLM prompts."""
+def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
+    """从 request body 抽出前端 i18n 真值，并顺手回写到 ``mgr.user_language``。
+
+    动机：``mgr.user_language`` 在 ``start_session`` 路径会被全局缓存覆盖（见
+    ``main_logic/core.py``），全局缓存又是 Steam SDK 启动期 race 失败的产物。前端
+    i18n 已经异步从 ``/api/config/steam_language`` 拿到对的值，只要把它在请求体
+    里捎带过来，就能即时纠正 session 状态。返回归一化后的短码（``zh`` / ``en`` ...）；
+    取不到时返回 ``None``，让上层走旧的兜底链。
+    """
+    if not isinstance(data, dict):
+        return None
+    raw = data.get('i18n_language') or data.get('language') or data.get('lang')
+    if not raw:
+        return None
+    # 前端 / 第三方客户端可能传 ``'undefined'`` / corrupted localStorage / 任意 garbage，
+    # ``normalize_language_code`` 对未识别值默认回退 ``'en'``，会静默把 mgr.user_language
+    # 翻成英文。回写 session 状态前先用公共白名单 helper 挡掉。
+    if not is_supported_language_code(raw):
+        return None
+    try:
+        normalized_short = normalize_language_code(str(raw), format='short')
+    except Exception:
+        return None
+    if not normalized_short:
+        return None
+    try:
+        name = str(lanlan_name or "").strip()
+        if name:
+            session_manager = get_session_manager()
+            manager = session_manager.get(name) if hasattr(session_manager, "get") else None
+            if manager is not None:
+                normalized_full = normalize_language_code(str(raw), format='full')
+                current = getattr(manager, "user_language", None)
+                if normalized_full and current != normalized_full:
+                    setter = getattr(manager, "set_user_language", None)
+                    if callable(setter):
+                        setter(str(raw))
+    except Exception:
+        logger.debug("🎮 absorb request language 失败 lanlan=%s", lanlan_name, exc_info=True)
+    return normalized_short
+
+
+def _resolve_game_prompt_language(
+    lanlan_name: str | None = None,
+    data: Any = None,
+) -> str:
+    """Resolve the user's current language for game-route LLM prompts.
+
+    优先级（与 ``main_routers/system_router._resolve_proactive_locale`` 同形）：
+      1. ``data`` (request body) 里的 ``i18n_language`` / ``language`` / ``lang``
+         —— 前端显式传，最高优先；同时把值回写到 ``mgr.user_language``，让本次
+         请求里所有不接 data 的下游 ``_resolve_game_prompt_language`` 也命中。
+      2. ``mgr.user_language`` —— websocket greeting_check 同步的 session 真值。
+      3. ``get_global_language()`` —— 进程级缓存，最后兜底。
+
+    第 1 层是 PR #1150 之外的洞：Steam=zh / 系统=en 的环境下，``mgr.user_language``
+    在 ``start_session`` 时会被全局缓存（错的 'en'）覆盖，soccer 短路在前端 ws
+    greeting_check 还没把对的值推上来之前发起，就只能拿到错的 'en'。把请求体里
+    携带的 i18n 真值作为最优先来源，配合自愈写回，把这条 race 关掉。
+    """
+    request_lang = _absorb_request_language(data, lanlan_name)
+    if request_lang:
+        return request_lang
     try:
         name = str(lanlan_name or "").strip()
         session_manager = get_session_manager()
@@ -4206,6 +4267,10 @@ async def game_chat(game_type: str, request: Request):
     session_id = str(data.get('session_id', 'default'))
     event = data.get('event', {})
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    # 把请求体里的 i18n 真值同步进 mgr.user_language，让本次 game_chat → _run_game_chat
+    # → _get_character_info 链上 _resolve_game_prompt_language 拿到的 user_language
+    # 与前端 i18n 保持一致，而不是被早期 start_session 覆盖回去的全局缓存值。
+    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if state and state.get("session_id") == session_id:
         _update_game_memory_enabled_from_payload(state, data)
@@ -4242,6 +4307,9 @@ async def game_route_start(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    # 把请求体里的 i18n 真值同步进 mgr.user_language（详见 _absorb_request_language
+    # 文档）：route/start 是 game-route 整段生命周期的入口，越早 heal 越多下游受益。
+    _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
@@ -4422,6 +4490,7 @@ async def game_route_drain(game_type: str, request: Request):
     except Exception:
         data = {}
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if not state:
         return {"ok": True, "outputs": [], "state": {"game_route_active": False}}
@@ -4450,6 +4519,7 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
@@ -4483,6 +4553,7 @@ async def game_route_heartbeat(game_type: str, request: Request):
         data = {}
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if not state:
         return {"ok": True, "active": False, "state": {"game_route_active": False}}
@@ -4609,6 +4680,7 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    _absorb_request_language(data, lanlan_name)
 
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
@@ -4663,6 +4735,7 @@ async def game_project_speak(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
+    _absorb_request_language(data, lanlan_name)
 
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:
@@ -5193,7 +5266,9 @@ async def game_realtime_context(game_type: str, request: Request):
     if not (getattr(mgr, "is_active", False) and isinstance(session, OmniRealtimeClient)):
         return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
 
-    language = _resolve_game_prompt_language(lanlan_name)
+    # 直接把 data 传进去，让请求体里的 i18n_language 走第一层优先级（兼带回写
+    # mgr.user_language），与其他 soccer 端点的 _absorb_request_language 调用同形。
+    language = _resolve_game_prompt_language(lanlan_name, data=data)
     text = _compact_realtime_context_text(game_type, data, language)
     _log_game_debug_material(
         "realtime_context",
@@ -5243,6 +5318,9 @@ async def _complete_game_end_from_payload(
 ) -> dict:
     session_id = str(data.get('session_id', 'default'))
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    # 包括 /route/end 与 /end 两条入口；postgame 投递依赖 mgr.user_language
+    # 决定旁白语言，所以这里也要 heal 一次（详见 _absorb_request_language）。
+    _absorb_request_language(data, lanlan_name)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
@@ -5330,19 +5408,35 @@ async def game_end(game_type: str, request: Request):
 
 
 @router.post("/{game_type}/quick-lines")
-async def game_quick_lines(game_type: str):
+async def game_quick_lines(game_type: str, request: Request):
     """进入游戏时生成一组当前猫娘专属快路径台词。
 
     产品语义：这是“游戏内上下文初始化”的一部分。代码告诉 LLM：
     接下来当前猫娘要和玩家踢足球，请按当前人设生成备用短句。
     成功时前端用这些短句替换内建快路径；失败时仍使用前端内建文案。
+
+    quick-lines 是 soccer 流程里第一个命中 LLM 的端点（在 /route/start 之前），
+    所以这里要从请求体吸收 ``i18n_language`` 主动 heal mgr.user_language——
+    否则首批 quick lines 会用 ``start_session`` 时全局缓存覆盖出来的英文。
     """
     if game_type != "soccer":
         return {"ok": False, "error": f"暂不支持 {game_type} 的快路径文案生成", "lines": {}}
 
     try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        try:
+            current_name = _get_current_character_info().get("lanlan_name") or ""
+        except Exception:
+            current_name = ""
+        # quick-lines 是 soccer 流程里第一个 LLM 端点：接住 _absorb_request_language
+        # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
+        # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
+        request_language = _absorb_request_language(data, current_name)
         char_info = _get_current_character_info()
-        language = char_info.get("user_language")
+        language = request_language or char_info.get("user_language")
         prompt = get_soccer_quick_lines_prompt(language).format(
             name=char_info['lanlan_name'],
             personality=char_info['lanlan_prompt'],

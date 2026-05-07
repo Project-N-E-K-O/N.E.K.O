@@ -10,7 +10,10 @@ let isApplyingVoice = false;
 
 // 打开API设置页（带弹窗拦截回退）
 function openApiSettings() {
-    const win = window.open('/api_key', 'apiSettings', 'width=820,height=700,scrollbars=yes,resizable=yes');
+    const features = 'width=820,height=700,scrollbars=yes,resizable=yes';
+    const win = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow('/api_key', 'apiSettings', features)
+        : window.open('/api_key', 'apiSettings', features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
@@ -93,6 +96,40 @@ function notifyVoiceIdUpdated(voiceId, lanlanName, sessionRestarted) {
     }
 }
 
+function createVoiceConfigSwitchOpId(lanlanName) {
+    return 'voice-config-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '-' + (lanlanName || 'current');
+}
+
+function notifyVoiceConfigSwitching(lanlanName, active, opId) {
+    const payload = {
+        action: 'voice_config_switching',
+        type: 'voice_config_switching',
+        active: !!active,
+        op_id: opId || '',
+        lanlan_name: lanlanName || '',
+        timestamp: Date.now()
+    };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            const channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage(payload);
+            setTimeout(() => channel.close(), 1000);
+        } catch (_) { /* 跨窗口同步失败时继续走 postMessage 兜底 */ }
+    }
+
+    if (window.nekoElectronVoiceConfigSwitching && typeof window.nekoElectronVoiceConfigSwitching.send === 'function') {
+        try { window.nekoElectronVoiceConfigSwitching.send(payload); } catch (_) { }
+    }
+
+    if (window.parent !== window) {
+        try { window.parent.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+    if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(payload, window.location.origin); } catch (_) { }
+    }
+}
+
 async function saveVoiceIdToCurrentCharacter(voiceId) {
     const lanlanInput = document.getElementById('lanlan_name');
     const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
@@ -100,11 +137,18 @@ async function saveVoiceIdToCurrentCharacter(voiceId) {
         throw new Error(window.t ? window.t('voice.noCurrentCharacterForApply') : '未找到当前角色，无法应用音色');
     }
 
-    const resp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_id: voiceId })
-    });
+    const switchOpId = createVoiceConfigSwitchOpId(lanlanName);
+    notifyVoiceConfigSwitching(lanlanName, true, switchOpId);
+    let resp;
+    try {
+        resp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice_id: voiceId })
+        });
+    } finally {
+        notifyVoiceConfigSwitching(lanlanName, false, switchOpId);
+    }
     const { data, nonJson, text } = await safeReadResponse(resp);
     if (!resp.ok) {
         if (data && (data.error || data.detail)) {

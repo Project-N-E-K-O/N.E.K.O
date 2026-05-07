@@ -36,3 +36,11 @@ button img,
     -webkit-user-drag: none;
     user-select: none;
 }
+
+img,
+svg,
+[aria-hidden="true"] img {
+    -webkit-user-drag: none;
+    -khtml-user-drag: none;
+    user-select: none;
+}

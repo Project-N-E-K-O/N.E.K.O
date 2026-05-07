@@ -287,10 +287,23 @@ _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
 )
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
+_OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
+
+
+class _CaptureStillRunning(TimeoutError):
+    """Backpressure: previous capture worker has not finished yet."""
+
+
+class _CaptureTimedOut(TimeoutError):
+    """A single capture/OCR call exceeded the deadline."""
+
 _FOREGROUND_ADVANCE_STABLE_GRACE_SECONDS = 2.0
 _CAPTURE_BACKEND_AUTO = "auto"
 _CAPTURE_BACKEND_SMART = "smart"
 _CAPTURE_BACKEND_DXCAM = "dxcam"
+_CAPTURE_BACKEND_MSS = "mss"
+_CAPTURE_BACKEND_PYAUTOGUI = "pyautogui"
+# Legacy alias kept so existing user configs with "imagegrab" still load; mapped to MSS.
 _CAPTURE_BACKEND_IMAGEGRAB = "imagegrab"
 _CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
 _SCREEN_AWARENESS_LATENCY_MODE_OFF = "off"
@@ -2419,18 +2432,91 @@ def _crop_window_image(
     return cropped
 
 
-class ImageGrabCaptureBackend:
-    kind = _CAPTURE_BACKEND_IMAGEGRAB
+class MssCaptureBackend:
+    kind = _CAPTURE_BACKEND_MSS
+
+    def __init__(self, *, logger=None) -> None:
+        self._logger = logger
+        self._sct = None
+        self._sct_lock = threading.RLock()
+
+    def is_available(self) -> bool:
+        try:
+            import mss
+            return bool(mss)
+        except ImportError:
+            return False
+
+    def describe_target(self, target: DetectedGameWindow) -> str:
+        return f"{target.process_name}({target.pid}) {target.title}"
+
+    def _sct_instance(self):
+        with self._sct_lock:
+            if self._sct is not None:
+                return self._sct
+            import mss
+
+            self._sct = mss.mss()
+            return self._sct
+
+    def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
+        from PIL import Image
+
+        _require_visible_capture_target(target, backend_kind=self.kind)
+        rect = _target_window_rect(target)
+        left, top, right, bottom = rect
+        monitor = {
+            "left": int(left),
+            "top": int(top),
+            "width": int(right - left),
+            "height": int(bottom - top),
+        }
+        with self._sct_lock:
+            sct = self._sct_instance()
+            shot = sct.grab(monitor)
+        # mss returns BGRA; convert to RGB via PIL.
+        image = Image.frombytes("RGB", shot.size, shot.rgb)
+        return _crop_window_image(
+            image,
+            window_rect=rect,
+            profile=profile,
+            backend_kind=self.kind,
+            backend_detail="selected",
+        )
+
+
+class PyAutoGuiCaptureBackend:
+    """Cross-platform fallback in the spirit of pyautogui's screenshot path.
+
+    Functionally similar to MssCaptureBackend on Windows (both go through GDI),
+    kept as a defense-in-depth fallback in case mss fails (e.g. handle
+    exhaustion).
+
+    Internally we call PIL ImageGrab.grab() directly with all_screens=True
+    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
+    ImageGrab without exposing all_screens — its capture silently truncates
+    to the primary monitor on multi-display setups, which would corrupt
+    OCR for any galgame window placed on a secondary screen or at negative
+    coordinates. The is_available() probe still gates on `import pyautogui`
+    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
+    """
+
+    kind = _CAPTURE_BACKEND_PYAUTOGUI
 
     def __init__(self, *, logger=None) -> None:
         self._logger = logger
 
     def is_available(self) -> bool:
+        # `import pyautogui` can throw beyond ImportError in headless / WSL /
+        # missing-DISPLAY environments — pyautogui's mouse module touches
+        # platform display state at import time and may raise KeyError /
+        # RuntimeError. Catch broadly so backend probing degrades cleanly to
+        # "unavailable" instead of bubbling up and aborting capture preflight.
         try:
-            import win32gui
-            from PIL import ImageGrab
-            return bool(win32gui and ImageGrab)
-        except ImportError:
+            import pyautogui  # noqa: F401 — gate on user-facing label
+            from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
+            return True
+        except Exception:
             return False
 
     def describe_target(self, target: DetectedGameWindow) -> str:
@@ -2441,7 +2527,16 @@ class ImageGrabCaptureBackend:
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_window_rect(target)
-        image = ImageGrab.grab(bbox=rect, all_screens=True).convert("RGB")
+        left, top, right, bottom = rect
+        # all_screens=True is Windows-only in Pillow but harmlessly ignored
+        # on macOS/Linux — covers multi-monitor layouts including secondary
+        # displays at negative coordinates relative to the primary screen.
+        image = ImageGrab.grab(
+            bbox=(int(left), int(top), int(right), int(bottom)),
+            all_screens=True,
+        )
+        if image.mode != "RGB":
+            image = image.convert("RGB")
         return _crop_window_image(
             image,
             window_rect=rect,
@@ -2637,15 +2732,20 @@ class Win32CaptureBackend:
     def __init__(self, *, logger=None, selection: str = _CAPTURE_BACKEND_AUTO) -> None:
         self._logger = logger
         self.selection = str(selection or _CAPTURE_BACKEND_AUTO).strip().lower()
+        # Legacy "imagegrab" selection migrates to MSS (same GDI capability, faster + cross-platform).
+        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
+            self.selection = _CAPTURE_BACKEND_MSS
         if self.selection not in {
             _CAPTURE_BACKEND_AUTO,
             _CAPTURE_BACKEND_SMART,
             _CAPTURE_BACKEND_DXCAM,
-            _CAPTURE_BACKEND_IMAGEGRAB,
+            _CAPTURE_BACKEND_MSS,
+            _CAPTURE_BACKEND_PYAUTOGUI,
             _CAPTURE_BACKEND_PRINTWINDOW,
         }:
             self.selection = _CAPTURE_BACKEND_AUTO
-        self._imagegrab_backend = ImageGrabCaptureBackend(logger=self._logger)
+        self._mss_backend = MssCaptureBackend(logger=self._logger)
+        self._pyautogui_backend = PyAutoGuiCaptureBackend(logger=self._logger)
         self._printwindow_backend = PrintWindowCaptureBackend(logger=self._logger)
         self._dxcam_backend = DxcamCaptureBackend(logger=self._logger)
         self._backends = self._build_backends()
@@ -2670,23 +2770,51 @@ class Win32CaptureBackend:
             self._last_backend_detail = detail
 
     def _build_backends(self) -> list[CaptureBackend]:
+        # Default fallback chain: dxcam → mss → pyautogui (cross-platform GDI
+        # progression). PrintWindow is intentionally NOT in the default chain
+        # because it's a "render to DC" mechanism that often produces stale
+        # frames on DirectX/Unity games and is slower than BitBlt-based
+        # backends. It's still reachable as an explicit user selection
+        # (mainly for capturing occluded windows) and as the Smart-mode
+        # background-target backend.
         if self.selection == _CAPTURE_BACKEND_DXCAM:
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
-        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
-            return [self._imagegrab_backend, self._dxcam_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+        if self.selection == _CAPTURE_BACKEND_MSS:
+            return [self._mss_backend, self._dxcam_backend, self._pyautogui_backend]
+        if self.selection == _CAPTURE_BACKEND_PYAUTOGUI:
+            return [self._pyautogui_backend, self._dxcam_backend, self._mss_backend]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
+            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
         if self.selection == _CAPTURE_BACKEND_SMART:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
-        return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend, self._printwindow_backend]
+        return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            # Explicit PrintWindow selection: user is opting into the only
+            # backend that can capture occluded / background windows. If we
+            # silently fell through to dxcam/mss/pyautogui on a background
+            # target after PrintWindow failed, those backends read whatever
+            # is on screen — usually the occluding window — and OCR would
+            # produce confident garbage from the wrong source. Match Smart
+            # mode's strictness for background targets here.
+            if bool(getattr(target, "is_minimized", False)):
+                raise RuntimeError("printwindow: target_window_minimized_for_capture")
+            if bool(getattr(target, "is_foreground", False)):
+                # Foreground: other backends would also see the right window,
+                # so falling through after PrintWindow failure is safe.
+                return list(self._backends)
+            return [self._printwindow_backend]
         if self.selection != _CAPTURE_BACKEND_SMART:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+        # Background target: PrintWindow is the only backend that can plausibly
+        # capture occluded windows (others read screen pixels and would grab
+        # the overlapping window). Quality is unreliable; ocr_reader emits
+        # `backend_not_suitable_for_background` warning when it returns empty.
         return [self._printwindow_backend]
 
     def is_available(self) -> bool:
@@ -2908,7 +3036,6 @@ class RapidOcrBackend:
                         lang_type=self._lang_type,
                         model_type=self._model_type,
                         ocr_version=self._ocr_version,
-                        force_reload=False,
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
             self._runtime = runtime
@@ -4485,6 +4612,9 @@ class OcrReaderManager:
         self._capture_future: Future[OcrExtractionResult] | None = None
         self._capture_future_started_at = 0.0
         self._capture_future_timed_out = False
+        self._abandoned_capture_workers: list[
+            tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]
+        ] = []
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
         self._start_rapidocr_warmup_if_configured()
@@ -6416,38 +6546,64 @@ class OcrReaderManager:
             and not _ocr_stability_keys_match(cleaned_key, stable_key)
         )
 
+    def _drain_completed_abandoned_capture_workers_locked(self) -> list[ThreadPoolExecutor]:
+        executors: list[ThreadPoolExecutor] = []
+        active: list[tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]] = []
+        for executor, future in self._abandoned_capture_workers:
+            if future.done():
+                executors.append(executor)
+                try:
+                    future.result()
+                except Exception as exc:
+                    self._logger.debug("ocr_reader abandoned timed-out capture eventually failed: {}", exc)
+            else:
+                active.append((executor, future))
+        self._abandoned_capture_workers = active
+        return executors
+
     def _shutdown_capture_worker(self) -> None:
-        executor: ThreadPoolExecutor | None = None
+        executors: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
             future = self._capture_future
             if future is not None and not future.done():
                 future.cancel()
-            executor = self._capture_executor
+            if self._capture_executor is not None:
+                executors.append(self._capture_executor)
+            for executor, abandoned_future in self._abandoned_capture_workers:
+                if not abandoned_future.done():
+                    abandoned_future.cancel()
+                executors.append(executor)
+            self._abandoned_capture_workers = []
             self._capture_executor = None
             self._capture_future = None
             self._capture_future_started_at = 0.0
             self._capture_future_timed_out = False
-        if executor is not None:
+        for executor in executors:
             # Project requires Python 3.11; cancel_futures is available on >=3.9.
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _clear_completed_capture_worker(self) -> None:
         future: Future[OcrExtractionResult] | None = None
         timed_out = False
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is None or not current.done():
-                return
-            future = current
-            timed_out = bool(self._capture_future_timed_out)
-            self._capture_future = None
-            self._capture_future_started_at = 0.0
-            self._capture_future_timed_out = False
+                future = None
+            else:
+                future = current
+                timed_out = bool(self._capture_future_timed_out)
+                self._capture_future = None
+                self._capture_future_started_at = 0.0
+                self._capture_future_timed_out = False
         if timed_out and future is not None:
             try:
                 future.result()
             except Exception as exc:
                 self._logger.debug("ocr_reader previous timed-out capture eventually failed: {}", exc)
+        for executor in executors_to_shutdown:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _submit_capture_worker(
         self,
@@ -6457,36 +6613,89 @@ class OcrReaderManager:
         collect_background_hash: bool,
         allow_separate_background_capture: bool,
     ) -> Future[OcrExtractionResult]:
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
+        recovered_elapsed = 0.0
+        cancel_requested = False
+        timeout_error: _CaptureTimedOut | None = None
+        future: Future[OcrExtractionResult] | None = None
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
-                prefix = (
-                    "previous ocr_reader capture/OCR timed out and is still running"
-                    if self._capture_future_timed_out
-                    else "previous ocr_reader capture/OCR is still running"
+                if self._capture_future_timed_out:
+                    timeout_seconds = float(_OCR_CAPTURE_TIMEOUT_SECONDS)
+                    if timeout_seconds <= 0.0:
+                        timeout_seconds = 12.0
+                    recovery_after = timeout_seconds + max(timeout_seconds, 0.25)
+                    if elapsed >= recovery_after:
+                        cancel_requested = current.cancel()
+                        executor = self._capture_executor
+                        if (
+                            not cancel_requested
+                            and not current.done()
+                            and len(self._abandoned_capture_workers)
+                            >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
+                        ):
+                            if executor is not None:
+                                executors_to_shutdown.append(executor)
+                            self._capture_executor = None
+                            self._capture_future = None
+                            self._capture_future_started_at = 0.0
+                            self._capture_future_timed_out = False
+                            timeout_error = _CaptureTimedOut(
+                                f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                                "stuck capture worker recovery limit reached"
+                            )
+                        elif executor is not None:
+                            if not cancel_requested and not current.done():
+                                self._abandoned_capture_workers.append((executor, current))
+                            executors_to_shutdown.append(executor)
+                        if timeout_error is None:
+                            self._capture_executor = None
+                            self._capture_future = None
+                            self._capture_future_started_at = 0.0
+                            self._capture_future_timed_out = False
+                            recovered_elapsed = elapsed
+                    else:
+                        raise _CaptureStillRunning(
+                            f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                            "skipping new capture to avoid accumulating blocked OCR threads"
+                        )
+                else:
+                    raise _CaptureStillRunning(
+                        f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
+                        "skipping new capture to avoid overlapping OCR work"
+                    )
+            if timeout_error is None:
+                executor = self._capture_executor
+                if executor is None:
+                    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
+                    self._capture_executor = executor
+                future = executor.submit(
+                    self._capture_and_extract_text,
+                    target,
+                    profile,
+                    backend_plan,
+                    collect_background_hash,
+                    allow_separate_background_capture,
                 )
-                raise TimeoutError(
-                    f"{prefix} after {elapsed:.1f}s; "
-                    "skipping new capture to avoid overlapping OCR work"
-                )
-            executor = self._capture_executor
-            if executor is None:
-                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
                 self._capture_executor = executor
-            future = executor.submit(
-                self._capture_and_extract_text,
-                target,
-                profile,
-                backend_plan,
-                collect_background_hash,
-                allow_separate_background_capture,
+                self._capture_future = future
+                self._capture_future_started_at = time.monotonic()
+                self._capture_future_timed_out = False
+        if recovered_elapsed > 0.0:
+            self._logger.warning(
+                "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}",
+                recovered_elapsed,
+                cancel_requested,
             )
-            self._capture_executor = executor
-            self._capture_future = future
-            self._capture_future_started_at = time.monotonic()
-            self._capture_future_timed_out = False
-            return future
+        for executor_to_shutdown in executors_to_shutdown:
+            executor_to_shutdown.shutdown(wait=False, cancel_futures=True)
+        if timeout_error is not None:
+            raise timeout_error
+        assert future is not None
+        return future
 
     async def _capture_and_extract_text_with_timeout(
         self,
@@ -6521,7 +6730,7 @@ class OcrReaderManager:
             with self._capture_worker_lock:
                 if self._capture_future is future:
                     self._capture_future_timed_out = True
-            raise TimeoutError(
+            raise _CaptureTimedOut(
                 f"ocr_reader capture/OCR timed out after {timeout_seconds:.1f}s"
             ) from exc
         finally:
@@ -7580,6 +7789,21 @@ class OcrReaderManager:
                             )
                             if emitted:
                                 now = followup_now
+        except _CaptureStillRunning as exc:
+            self._logger.debug("ocr_reader tick skipped (backpressure): {}", exc)
+            result.warnings.append(f"ocr_reader tick skipped: {exc}")
+            self._last_capture_error = ""
+            self._runtime.last_capture_error = ""
+            self._runtime.detail = "capture_backpressure"
+            capture_attempted = False
+        except _CaptureTimedOut as exc:
+            self._logger.warning("ocr_reader capture/OCR timed out: {}", exc)
+            capture_error = True
+            self._record_capture_error(now=now, error=exc)
+            self._reset_aihong_menu_state()
+            if int(self._writer.last_seq or 0) <= 1:
+                self._writer.discard_session()
+            result.warnings.append(f"ocr_reader capture timed out: {exc}")
         except Exception as exc:
             self._logger.warning("ocr_reader capture/OCR failed: {}", exc)
             capture_error = True

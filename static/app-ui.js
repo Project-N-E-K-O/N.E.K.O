@@ -2483,6 +2483,7 @@
             stopButton.disabled = true;
 
             // 显示文本输入区
+            S.voiceChatActive = false;
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');

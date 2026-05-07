@@ -9,10 +9,12 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <link rel="stylesheet" href="/static/css/api_key_settings.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head>
 
 <body>
@@ -61,9 +63,17 @@
         <div class="container">
             <div class="container-header">
                 <h2 data-i18n="api.settings" data-text="API Key Settings">API Key 设置</h2>
-                <button class="close-btn" onclick="closeSettingsPage()" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭"><img
-                        src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false"
-                        style="width: 32px; height: 32px;"></button>
+                <div class="neko-window-controls">
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                        <span class="neko-window-minimize-icon"></span>
+                    </button>
+                    <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                        <span class="neko-window-maximize-icon"></span>
+                    </button>
+                    <button class="close-btn" onclick="closeSettingsPage()" data-i18n-title="common.close" data-i18n-aria="common.close" aria-label="关闭"><img
+                            src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false"
+                            style="width: 32px; height: 32px;"></button>
+                </div>
             </div>
             <div class="container-content">
                 <div class="api-key-info">

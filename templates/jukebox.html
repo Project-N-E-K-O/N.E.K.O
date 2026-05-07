@@ -33,23 +33,25 @@
             z-index: 1 !important;
         }
 
-        /* 整个面板走 OS 原生拖动（Chromium `-webkit-app-region: drag` → Windows HTCAPTION），
-           和 /jukebox/manager 一致。之前 container 是 no-drag + JS 模拟拖动，
-           经 IPC + setBounds 每帧大约 15–20ms，实测约为 manager 的一半帧率；
-           改为原生拖动后由 OS 直接走 SetWindowPos，零 IPC 零 JS，跟手感拉齐。
-           header 区域（包括 header-left / h3）继承 container 的 drag，
-           交互元素（按钮/输入/内容区/resize 把手）必须 no-drag !important 抢回点击。 */
+        /* 容器保持 no-drag，避免父级 drag + 子按钮 no-drag 触发 Chromium 命中测试不稳定。
+           标题左侧区域单独交给 OS 原生拖动，其他空白拖动由 jukebox-standalone.js 兜底。 */
         .jukebox-container {
             width: 100% !important;
             max-height: 100% !important;
             height: 100% !important;
             border-radius: 0 !important;
             box-sizing: border-box !important;
+            -webkit-app-region: no-drag !important;
+        }
+
+        .jukebox-header-left,
+        .jukebox-header-left * {
             -webkit-app-region: drag !important;
         }
 
         .jukebox-header-buttons,
         .jukebox-header-buttons button,
+        .jukebox-header-buttons *,
         .jukebox-settings,
         .jukebox-minimize,
         .jukebox-close,
@@ -112,14 +114,27 @@
             window.Jukebox_playSong = window.Jukebox.playSong;
             window.Jukebox_close = function() {
                 try {
-                    if (window.Jukebox && typeof window.Jukebox.close === 'function') {
-                        window.Jukebox.close();
+                    if (window.Jukebox && typeof window.Jukebox.stopPlayback === 'function') {
+                        window.Jukebox.stopPlayback();
+                    }
+                    if (window.Jukebox && window.Jukebox.SongActionManager &&
+                        typeof window.Jukebox.SongActionManager.hide === 'function') {
+                        window.Jukebox.SongActionManager.hide();
                     }
                 } catch (error) {
                     console.warn('[Jukebox] 关闭前清理失败:', error);
-                } finally {
-                    if (typeof window.close === 'function') window.close();
                 }
+
+                try {
+                    // 主进程会复用隐藏的点歌台窗口，不能销毁页面 DOM。
+                    if (window.nekoJukeboxWindow && typeof window.nekoJukeboxWindow.hide === 'function') {
+                        window.nekoJukeboxWindow.hide();
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('[Jukebox] 关闭窗口失败:', error);
+                }
+                if (typeof window.close === 'function') window.close();
             };
             window.Jukebox_hide = function() {
                 try {
