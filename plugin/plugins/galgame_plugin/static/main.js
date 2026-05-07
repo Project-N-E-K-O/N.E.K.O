@@ -4798,6 +4798,16 @@ function renderRapidOcr(status) {
       downloadBtn.textContent = config.actionText;
     }
   }
+  // Render the in-banner progress/error card (rapidocrInstallState — the
+  // orphaned install card we reuse for model downloads). Without this,
+  // applyInstallTaskState's renderStatus() path only updates the button
+  // here, so users running a download (or hitting a failure) see the
+  // button label change but no progress bar / message / detail / error
+  // text. Calling renderInstallTaskState directly handles all those nodes
+  // off the same install runtime state.
+  if (installRuntime.rapidocr_models.state) {
+    renderInstallTaskState('rapidocr_models');
+  }
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const usingFallback = runtime.backend_kind === 'tesseract';
