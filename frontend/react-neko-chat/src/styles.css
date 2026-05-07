@@ -1081,11 +1081,26 @@ svg {
 
 .composer-panel {
   display: grid;
+  /* 显式 1 列、min 边为 0：阻断 grid item 默认 min-width: auto 把内部
+     nowrap 文本的 min-content 一路向上撑宽（galgame 选项过长时会让整个
+     panel 抗拒收缩，进而被 chat-window overflow: hidden 截断）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding: 6px;
   position: relative;
   z-index: 15;
   background: rgba(255, 255, 255, 0.91);
+  min-width: 0;
+}
+
+.composer {
+  /* 同上：作为 .composer-panel 的 grid item，显式 min-width: 0
+     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
+  min-width: 0;
+}
+
+.composer-input-shell {
+  min-width: 0;
 }
 
 /* Hide empty music-player-mount so it doesn't occupy a grid row */
