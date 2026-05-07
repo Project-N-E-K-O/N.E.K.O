@@ -1762,7 +1762,7 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         len(raw_ocr_text) > 400
         and has_ocr_runtime_signal
         and (effective_text or stable_text)
-        and active_data_source != DATA_SOURCE_MEMORY_READER
+        and active_data_source == DATA_SOURCE_OCR_READER
     ):
         return diagnosis(
             "warning",

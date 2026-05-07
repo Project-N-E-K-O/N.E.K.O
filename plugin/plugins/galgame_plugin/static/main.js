@@ -1510,7 +1510,7 @@ function buildPrimaryDiagnosis(status = {}) {
     rawText.length > 400
     && hasOcrRuntimeSignal
     && (effectiveText || stableText)
-    && textValue(status.active_data_source) !== 'memory_reader'
+    && textValue(status.active_data_source) === 'ocr_reader'
   ) {
     return diagnose({
       severity: 'warning',
