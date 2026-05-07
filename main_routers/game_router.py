@@ -349,7 +349,9 @@ def _strip_json_fence(text: str) -> str:
 
 
 def _soccer_random_default_difficulty() -> str:
-    return str(random.choice(_SOCCER_DEFAULT_DIFFICULTIES))
+    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_game initialDifficulty 对齐；
+    # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
+    return "lv2"
 
 
 def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
