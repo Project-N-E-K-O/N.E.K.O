@@ -6506,12 +6506,18 @@ class OcrReaderManager:
                     recovery_after = timeout_seconds + max(timeout_seconds, 0.25)
                     if elapsed >= recovery_after:
                         cancel_requested = current.cancel()
-                        executor_to_shutdown = self._capture_executor
-                        self._capture_executor = None
-                        self._capture_future = None
-                        self._capture_future_started_at = 0.0
-                        self._capture_future_timed_out = False
-                        recovered_elapsed = elapsed
+                        if cancel_requested or current.done():
+                            executor_to_shutdown = self._capture_executor
+                            self._capture_executor = None
+                            self._capture_future = None
+                            self._capture_future_started_at = 0.0
+                            self._capture_future_timed_out = False
+                            recovered_elapsed = elapsed
+                        else:
+                            raise _CaptureStillRunning(
+                                f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                                "cancel failed, keeping backpressure to avoid accumulating blocked OCR threads"
+                            )
                     else:
                         raise _CaptureStillRunning(
                             f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "

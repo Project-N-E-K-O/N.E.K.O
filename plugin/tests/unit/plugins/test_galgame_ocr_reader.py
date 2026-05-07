@@ -1599,15 +1599,72 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
             manager._capture_future_started_at = time.monotonic() - 1.0
         third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
-        assert backend.calls == 2
-        assert third.runtime["detail"] == "receiving_text"
-        assert any(
+        assert backend.calls == 1
+        assert third.runtime["detail"] == "capture_backpressure"
+        assert third.runtime["last_capture_error"] == ""
+        assert not any(
             warning[0]
             == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
             for warning in logger.warnings
         )
     finally:
         release.set()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    backend = _FakeOcrBackend(["雪乃：恢复后的台词。"])
+    logger = _CapturingLogger()
+    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=backend,
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    pending: Future[OcrExtractionResult] = Future()
+    with manager._capture_worker_lock:
+        manager._capture_future = pending
+        manager._capture_future_started_at = time.monotonic() - 1.0
+        manager._capture_future_timed_out = True
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert pending.cancelled()
+        assert backend.calls == 1
+        assert result.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
+            for warning in logger.warnings
+        )
+    finally:
         await manager.shutdown()
 
 
