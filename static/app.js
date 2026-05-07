@@ -286,18 +286,25 @@ window.addEventListener('load', async () => {
 
         const NOTICE_GATE_FALLBACK_MS = 15000;
         try {
-            await Promise.race([
-                (async () => {
-                    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
-                        await window.waitForStorageLocationStartupBarrier();
+            if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+                await window.waitForStorageLocationStartupBarrier();
+            }
+            const onboarding = window.CharacterPersonalityOnboarding;
+            if (onboarding && typeof onboarding.whenSettled === 'function') {
+                // 超时只兜底"bootstrap 内部卡死"：whenSettled 没 resolve 且 overlay 也没显示。
+                // 一旦 overlay 显示出来（用户在主动选择），就继续无限等 whenSettled——用户慢慢看 preset 是正常 UX，不该被超时强行放行。
+                const settled = await Promise.race([
+                    onboarding.whenSettled().then(() => true),
+                    new Promise((resolve) => setTimeout(() => resolve(false), NOTICE_GATE_FALLBACK_MS)),
+                ]);
+                if (!settled) {
+                    const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+                        || onboarding.pendingResumeAfterTutorial;
+                    if (overlayActive) {
+                        await onboarding.whenSettled();
                     }
-                    if (window.CharacterPersonalityOnboarding
-                        && typeof window.CharacterPersonalityOnboarding.whenSettled === 'function') {
-                        await window.CharacterPersonalityOnboarding.whenSettled();
-                    }
-                })(),
-                new Promise((resolve) => setTimeout(resolve, NOTICE_GATE_FALLBACK_MS)),
-            ]);
+                }
+            }
         } catch (_) { }
 
         // 1) 版本更新日志（先讲背景）

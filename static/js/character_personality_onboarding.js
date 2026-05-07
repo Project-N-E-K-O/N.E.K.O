@@ -118,9 +118,20 @@
                 return;
             }
             this.bootstrapStarted = true;
+            // tutorial flow settle 有超时兜底：fetchTutorialPromptState() 持续 fail 时
+            // waitForTutorialFlowToSettle 会无限轮询，需要超时让 finally 能跑到。
+            const TUTORIAL_FLOW_TIMEOUT_MS = 15000;
             try {
                 await this.waitForStartupBarrier();
-                await this.waitForTutorialFlowToSettle();
+                const tutorialSettled = await Promise.race([
+                    this.waitForTutorialFlowToSettle().then(() => true),
+                    new Promise((resolve) => {
+                        window.setTimeout(() => resolve(false), TUTORIAL_FLOW_TIMEOUT_MS);
+                    }),
+                ]);
+                if (!tutorialSettled) {
+                    console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
+                }
                 if (await this.openIfManualReselectPending()) {
                     return;
                 }
