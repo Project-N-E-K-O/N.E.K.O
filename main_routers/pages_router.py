@@ -26,11 +26,17 @@ router = APIRouter(tags=["pages"])
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
     _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
     _PROJECT_ROOT / "static/yui-guide-wakeup.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
+    _PROJECT_ROOT / "static/app-auto-goodbye.js",
+    _PROJECT_ROOT / "static/avatar-ui-buttons.js",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.png",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
