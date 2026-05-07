@@ -41,7 +41,7 @@ def handle(args: argparse.Namespace) -> int:
         print(
             "[FAIL] metadata.toml is missing from the package, so the payload hash "
             "could not be verified. The package may still be valid, but its integrity "
-            "cannot be confirmed. Re-pack the plugin to include metadata.toml.",
+            "cannot be confirmed. Rebuild the plugin to include metadata.toml.",
             file=sys.stderr,
         )
     else:

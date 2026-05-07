@@ -72,10 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
               neko-plugin init-repo <plugin>       Create a standalone plugin repo
               neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
               neko-plugin check <plugin>           Diagnose local repo readiness
+              neko-plugin build <plugin>           Build a plugin package artifact
               neko-plugin check -r <plugin>        Run the pre-release check used by CI
 
             Package/debug commands:
-              pack, inspect, verify, unpack, analyze
+              build, inspect, verify, unpack, analyze
             """
         ),
     )

@@ -26,7 +26,7 @@ def resolve_plugin_dirs(*, plugin_names: list[str], pack_all: bool, defaults: Cl
     if not plugin_names:
         raise ValueError(
             "no plugin names provided. Specify one or more plugin directory names "
-            "(e.g. 'neko-plugin pack my_plugin'), or use --all to pack every plugin "
+            "(e.g. 'neko-plugin build my_plugin'), or use --all to build every plugin "
             f"found under '{plugin_root}'."
         )
 

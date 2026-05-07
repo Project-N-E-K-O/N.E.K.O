@@ -65,14 +65,14 @@ def _tamper_package(package_path: Path, target_name: str) -> None:
             dst.writestr(info, data)
 
 
-def test_cli_pack_inspect_verify_and_unpack(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_inspect_verify_and_unpack(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
 
     exit_code = neko_plugin_cli.main(
-        ["pack", str(plugin_dir), "--target-dir", str(target_dir)]
+        ["build", str(plugin_dir), "-t", str(target_dir)]
     )
     assert exit_code == 0
     package_path = target_dir / "cli_demo.neko-plugin"
@@ -111,7 +111,7 @@ def test_cli_verify_fails_when_package_hash_is_tampered(
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "cli_demo.neko-plugin"
-    neko_plugin_cli.main(["pack", str(plugin_dir), "--out", str(package_path)])
+    neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)])
     _tamper_package(package_path, "payload/profiles/default.toml")
 
     exit_code = neko_plugin_cli.main(["verify", str(package_path)])
@@ -121,17 +121,17 @@ def test_cli_verify_fails_when_package_hash_is_tampered(
     assert "payload_hash_verified=False" in captured.out
 
 
-def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     first_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_one")
     second_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_two")
     target_dir = tmp_path / "target"
 
     exit_code = neko_plugin_cli.main(
         [
-            "pack",
+            "build",
             str(first_plugin),
             str(second_plugin),
-            "--bundle",
+            "-b",
             "--bundle-id",
             "bundle_cli_demo",
             "--target-dir",
@@ -178,8 +178,8 @@ def test_cli_check_release_uses_release_check_flow(
     assert "check --release blocked by validation errors" in captured.err
 
 
-@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate"])
-def test_cli_legacy_check_commands_are_removed(
+@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate", "pack"])
+def test_cli_legacy_commands_are_removed(
     legacy_command: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:

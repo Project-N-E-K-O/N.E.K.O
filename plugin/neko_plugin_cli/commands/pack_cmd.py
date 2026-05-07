@@ -1,4 +1,4 @@
-"""neko-plugin pack — package one or more plugins."""
+"""neko-plugin build — build one or more plugin package artifacts."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ _MAX_AUTO_BUNDLE_ID_LEN = 120
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("pack", help="Pack one plugin, multiple plugins, or all plugins")
+    parser = subparsers.add_parser("build", help="Build one plugin, multiple plugins, or all plugins")
     plugins_arg = parser.add_argument("plugins", nargs="*", help="Plugin directory names under plugin/plugins")
     plugins_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
-    parser.add_argument("--all", action="store_true", help="Pack all plugins under plugin/plugins")
-    parser.add_argument("--out", help="Output file path for a single packed plugin")
-    parser.add_argument("--target-dir", default=str(defaults.target_dir), help="Output directory for packed plugin archives")
+    parser.add_argument("-a", "--all", action="store_true", help="Build all plugins under plugin/plugins")
+    parser.add_argument("-o", "--out", help="Output file path for a single built plugin")
+    parser.add_argument("-t", "--target-dir", default=str(defaults.target_dir), help="Output directory for built plugin archives")
     parser.add_argument("--keep-staging", action="store_true", help="Keep staging directories and expose staged file paths in results")
-    parser.add_argument("--bundle", action="store_true", help="Pack selected plugins into a single .neko-bundle archive")
+    parser.add_argument("-b", "--bundle", action="store_true", help="Build selected plugins into a single .neko-bundle archive")
     parser.add_argument("--bundle-id", help="Bundle package id")
     parser.add_argument("--package-name", help="Bundle package name")
     parser.add_argument("--package-description", help="Bundle package description")
@@ -76,7 +76,7 @@ def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
         print(f"  staging_dir={result.staging_dir}")
         print(f"  packaged_file_count={result.packaged_file_count}")
         print(f"  profile_file_count={result.profile_file_count}")
-    print("Completed: packed=1, failed=0")
+    print("Completed: built=1, failed=0")
     return 0
 
 
@@ -114,8 +114,8 @@ def _handle_single(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
             print(f"  profile_file_count={result.profile_file_count}")
 
     if failed_count:
-        print(f"Completed with failures: packed={packed_count}, failed={failed_count}", file=sys.stderr)
+        print(f"Completed with failures: built={packed_count}, failed={failed_count}", file=sys.stderr)
         return 1
 
-    print(f"Completed: packed={packed_count}, failed=0")
+    print(f"Completed: built={packed_count}, failed=0")
     return 0

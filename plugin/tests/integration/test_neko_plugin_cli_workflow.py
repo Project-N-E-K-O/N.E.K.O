@@ -202,13 +202,13 @@ def test_public_bundle_workflow_covers_analysis_pack_and_unpack(tmp_path: Path) 
 
 
 @pytest.mark.plugin_integration
-def test_cli_workflow_can_pack_verify_and_repeatedly_unpack_without_manual_steps(tmp_path: Path) -> None:
+def test_cli_workflow_can_build_verify_and_repeatedly_unpack_without_manual_steps(tmp_path: Path) -> None:
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
 
-    assert neko_plugin_cli.main(["pack", str(plugin_dir), "--target-dir", str(target_dir)]) == 0
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "--target-dir", str(target_dir)]) == 0
 
     package_path = target_dir / "simple_plugin.neko-plugin"
     assert package_path.is_file()

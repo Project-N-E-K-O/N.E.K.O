@@ -581,9 +581,9 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
       "problemMatcher": []
     }},
     {{
-      "label": "N.E.K.O: pack {spec.plugin_id}",
+      "label": "N.E.K.O: build {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli pack {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli build {spec.plugin_id}",
       "options": {{
         "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},

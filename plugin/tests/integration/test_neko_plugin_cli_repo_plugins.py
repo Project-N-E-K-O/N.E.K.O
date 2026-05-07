@@ -66,7 +66,7 @@ def test_repo_plugin_packaging_matches_current_package_type_contract(tmp_path: P
 
 
 @pytest.mark.plugin_integration
-def test_cli_batch_smoke_can_pack_current_repo_plugin_packages(tmp_path: Path) -> None:
+def test_cli_batch_smoke_can_build_current_repo_plugin_packages(tmp_path: Path) -> None:
     target_dir = tmp_path / "target"
     packable_plugin_dirs = _repo_packable_plugin_dirs()
 
@@ -74,7 +74,7 @@ def test_cli_batch_smoke_can_pack_current_repo_plugin_packages(tmp_path: Path) -
 
     for plugin_dir in packable_plugin_dirs:
         exit_code = neko_plugin_cli.main(
-            ["pack", str(plugin_dir), "--target-dir", str(target_dir)]
+            ["build", str(plugin_dir), "--target-dir", str(target_dir)]
         )
         assert exit_code == 0
 
