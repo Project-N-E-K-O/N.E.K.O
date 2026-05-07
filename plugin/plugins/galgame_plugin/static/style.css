@@ -1813,13 +1813,13 @@ details.panel-scroll-wide[open] {
   gap: 10px;
 }
 
-.agent-suggest-empty::before {
-  content: "(=^..^=)";
+.agent-suggest-empty-face {
   flex: 0 0 auto;
   color: var(--brand-strong);
   font-size: 24px;
   line-height: 1;
   opacity: 0.65;
+  user-select: none;
 }
 
 .list-card {

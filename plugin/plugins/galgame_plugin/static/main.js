@@ -5631,9 +5631,10 @@ function renderAgentStatus(payload) {
   const panelSummary = document.getElementById('agentPanelSummary');
   if (panelSummary) {
     const mode = latestStatus?.mode || 'companion';
+    const modeText = uiT(`ui.mode.${mode}`, mode);
     const inbound = payload.inbound_queue_size || 0;
     const outbound = payload.outbound_queue_size || 0;
-    panelSummary.textContent = `${mode} | in=${inbound} out=${outbound}`;
+    panelSummary.textContent = `${modeText} | in=${inbound} out=${outbound}`;
   }
 }
 
@@ -5641,16 +5642,23 @@ function renderAgentStatusGrid(rows, summaryRows) {
   const container = document.getElementById('agentStatusGrid');
   const debugWasOpen = Boolean(container?.querySelector('.status-debug-panel')?.open);
   renderPreservingScroll(container, () => {
+    const visibleRows = Array.isArray(rows) ? rows : [];
+    const visibleSummaryRows = Array.isArray(summaryRows) ? summaryRows : [];
+    if (!visibleRows.length) {
+      container.className = 'data-grid scroll-region empty-state';
+      container.textContent = uiT('ui.agent.empty_status', 'Agent 正在整理小本本，等第一次状态刷新。');
+      return;
+    }
     container.className = 'data-grid scroll-region';
     container.innerHTML = `
-      ${renderDataRows(rows)}
+      ${renderDataRows(visibleRows)}
       <details class="status-debug-panel"${debugWasOpen ? ' open' : ''}>
         <summary>
           <span>${escapeHtml(uiT('ui.agent.summary_debug', 'Summary 调试'))}</span>
-          <small>${escapeHtml(uiTf('ui.agent.summary_debug_count', '{count} 项内部状态', { count: summaryRows.length }))}</small>
+          <small>${escapeHtml(uiTf('ui.agent.summary_debug_count', '{count} 项内部状态', { count: visibleSummaryRows.length }))}</small>
         </summary>
         <dl class="data-grid">
-          ${renderDataRows(summaryRows)}
+          ${renderDataRows(visibleSummaryRows)}
         </dl>
       </details>
     `;
@@ -5700,7 +5708,7 @@ function renderSuggest(payload) {
             <h3>${escapeHtml(item.text || '')}</h3>
             <p>${escapeHtml(item.reason || '')}</p>
           </article>
-        `).join('') : `<div class="empty-inline agent-suggest-empty">${escapeHtml(payload.diagnostic || uiT('ui.agent.empty_suggest', '还没有建议，等画面出现选项再轻轻递上来。'))}</div>`}
+        `).join('') : `<div class="empty-inline agent-suggest-empty"><span class="agent-suggest-empty-face" aria-hidden="true">(=^..^=)</span><span>${escapeHtml(payload.diagnostic || uiT('ui.agent.empty_suggest', '还没有建议，等画面出现选项再轻轻递上来。'))}</span></div>`}
       </div>
     `;
   });
