@@ -2451,6 +2451,9 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    # 默认 free preset voice：仅在 free + lanlan.tech 通道下生效，
+    # 其他通道由 LLMSessionManager.__init__/start_session/热切换 三处 gate 清空 self.voice_id 后透给 worker。
+    set_reserved(catgirl_data, 'voice_id', 'voice-tone-PGLiyZt65w')
     await _config_manager.asave_characters(characters)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 

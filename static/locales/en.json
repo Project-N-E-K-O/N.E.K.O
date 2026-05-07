@@ -1491,7 +1491,8 @@
             "gentleMaiden": "Gentle Maiden",
             "sweetLady": "Sweet Lady",
             "frailMaiden": "Frail Maiden",
-            "childishMaiden": "Childish Maiden"
+            "childishMaiden": "Childish Maiden",
+            "yui_cn": "YUI (Chinese)"
         },
         "cloneMethod": "Clone Method",
         "cloneMethodFile": "Local File",

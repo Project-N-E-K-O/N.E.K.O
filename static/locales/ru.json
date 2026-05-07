@@ -1491,7 +1491,8 @@
             "gentleMaiden": "Нежная девушка",
             "sweetLady": "Сладкая леди",
             "frailMaiden": "Хрупкая девушка",
-            "childishMaiden": "Детская девушка"
+            "childishMaiden": "Детская девушка",
+            "yui_cn": "YUI (китайский)"
         },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
