@@ -32,6 +32,7 @@ uv run python -m plugin.neko_plugin_cli.cli <command> ...
 
 Current commands:
 
+- `check`
 - `pack`
 - `inspect`
 - `verify`
@@ -40,13 +41,12 @@ Current commands:
 - `init`
 - `init-repo`
 - `setup-repo`
-- `doctor`
-- `release-check`
-- `validate`
 
 Examples:
 
 ```bash
+uv run python -m plugin.neko_plugin_cli.cli check qq_auto_reply
+uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli pack qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin

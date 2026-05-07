@@ -25,6 +25,11 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "cli_demo") -> Path:
                 'name = "CLI Demo"',
                 'version = "0.0.1"',
                 'type = "plugin"',
+                f'entry = "plugin.plugins.{plugin_id}:DemoPlugin"',
+                "",
+                "[plugin.sdk]",
+                'recommended = ">=0.1.0,<0.2.0"',
+                'supported = ">=0.1.0,<0.3.0"',
                 "",
                 "[plugin_runtime]",
                 "auto_start = false",
@@ -37,7 +42,12 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "cli_demo") -> Path:
         + "\n",
         encoding="utf-8",
     )
-    (plugin_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "from plugin.sdk.plugin import neko_plugin\n\n"
+        "@neko_plugin\n"
+        "class DemoPlugin: pass\n",
+        encoding="utf-8",
+    )
     return plugin_dir
 
 
@@ -140,6 +150,45 @@ def test_cli_pack_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert "package_type=bundle" in captured.out
     assert "plugin_count=2" in captured.out
     assert "type=bundle" in captured.out
+
+
+def test_cli_check_is_doctor_alias_with_new_label(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+
+    exit_code = neko_plugin_cli.main(["check", str(plugin_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "[OK] cli_demo: check found" in captured.out
+
+
+def test_cli_check_release_uses_release_check_flow(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+
+    exit_code = neko_plugin_cli.main(["check", str(plugin_dir), "--release", "--skip-tests"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "check --release blocked by validation errors" in captured.err
+
+
+@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate"])
+def test_cli_legacy_check_commands_are_removed(
+    legacy_command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        neko_plugin_cli.main([legacy_command, "cli_demo"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert f"invalid choice: '{legacy_command}'" in captured.err
 
 
 def test_setup_repo_git_skips_when_inside_existing_repo(

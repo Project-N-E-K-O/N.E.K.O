@@ -12,7 +12,6 @@ from pathlib import Path
 from ..core import inspect_package, pack_plugin
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
-from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
 from .validate_cmd import validate_plugin_dir
 
@@ -20,24 +19,8 @@ from .validate_cmd import validate_plugin_dir
 Issue = tuple[str, str]
 
 
-def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    doctor_parser = subparsers.add_parser("doctor", help="Diagnose plugin repository readiness")
-    plugin_arg = doctor_parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
-    plugin_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
-    doctor_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
-    doctor_parser.add_argument("--strict", action="store_true", help="Treat missing repository support files as errors")
-    doctor_parser.set_defaults(handler=handle_doctor, _defaults=defaults)
-
-    release_parser = subparsers.add_parser("release-check", help="Run strict pre-release checks for one plugin")
-    release_arg = release_parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
-    release_arg.complete = PLUGIN_NAME_COMPLETER  # type: ignore[attr-defined]
-    release_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
-    release_parser.add_argument("--target-dir", default=str(defaults.target_dir), help="Output directory for the checked package")
-    release_parser.add_argument("--skip-tests", action="store_true", help="Do not run plugin tests")
-    release_parser.set_defaults(handler=handle_release_check, _defaults=defaults)
-
-
 def handle_doctor(args: argparse.Namespace) -> int:
+    command_label = getattr(args, "_command_label", "check")
     try:
         defaults = _defaults_from_args(args, defaults=args._defaults)
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
@@ -45,7 +28,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
         issues = validate_plugin_dir(plugin_dir, strict=args.strict)
         issues.extend(_diagnose_repository(plugin_dir))
     except Exception as exc:
-        print(f"[FAIL] doctor: {exc}", file=sys.stderr)
+        print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
 
     errors = [issue for issue in issues if issue[0] == "error"]
@@ -53,7 +36,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
 
     status = "[FAIL]" if errors else "[OK]"
     stream = sys.stderr if errors else sys.stdout
-    print(f"{status} {source.plugin_id}: doctor found {len(errors)} error(s), {len(warnings)} warning(s)", file=stream)
+    print(f"{status} {source.plugin_id}: {command_label} found {len(errors)} error(s), {len(warnings)} warning(s)", file=stream)
     print(f"  path={plugin_dir}")
     print(f"  version={source.version}")
     print(f"  entry={source.entry_point}")
@@ -62,6 +45,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
 
 
 def handle_release_check(args: argparse.Namespace) -> int:
+    command_label = getattr(args, "_command_label", "check --release")
     try:
         defaults = _defaults_from_args(args, defaults=args._defaults)
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
@@ -69,7 +53,7 @@ def handle_release_check(args: argparse.Namespace) -> int:
         issues = validate_plugin_dir(plugin_dir, strict=True)
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
-            print(f"[FAIL] {source.plugin_id}: release-check blocked by validation errors", file=sys.stderr)
+            print(f"[FAIL] {source.plugin_id}: {command_label} blocked by validation errors", file=sys.stderr)
             _print_issues(issues, plugin_id=source.plugin_id, plugin_dir=plugin_dir, show_fixes=True)
             return 1
 
@@ -83,10 +67,10 @@ def handle_release_check(args: argparse.Namespace) -> int:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1
     except Exception as exc:
-        print(f"[FAIL] release-check: {exc}", file=sys.stderr)
+        print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"[OK] {source.plugin_id}: release-check passed")
+    print(f"[OK] {source.plugin_id}: {command_label} passed")
     print(f"  version={source.version}")
     print(f"  package={pack_result.package_path}")
     print(f"  package_sha256={_sha256_file(pack_result.package_path)}")
@@ -221,5 +205,5 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message == "git working tree has uncommitted changes":
         return "commit or stash changes before publishing"
     if message == "git executable not found":
-        return "install git, then rerun neko-plugin doctor"
+        return "install git, then rerun neko-plugin check"
     return ""

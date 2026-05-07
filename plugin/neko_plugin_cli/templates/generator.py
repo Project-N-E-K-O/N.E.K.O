@@ -506,8 +506,8 @@ N.E.K.O/plugin/plugins/{spec.plugin_id}
 From the N.E.K.O repository root:
 
 ```bash
-uv run python -m plugin.neko_plugin_cli.cli doctor {spec.plugin_id}
-uv run python -m plugin.neko_plugin_cli.cli release-check {spec.plugin_id}
+uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}
+uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}
 ```
 
 ## Entry
@@ -563,18 +563,18 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
   "version": "2.0.0",
   "tasks": [
     {{
-      "label": "N.E.K.O: doctor {spec.plugin_id}",
+      "label": "N.E.K.O: check {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli doctor {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}",
       "options": {{
         "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
       "problemMatcher": []
     }},
     {{
-      "label": "N.E.K.O: release-check {spec.plugin_id}",
+      "label": "N.E.K.O: check -r {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli release-check {spec.plugin_id}",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}",
       "options": {{
         "cwd": "${{config:nekoPlugin.repoRoot}}"
       }},
@@ -636,7 +636,7 @@ jobs:
         working-directory: neko
         run: |
           mkdir -p plugin/neko_plugin_cli/target
-          uv run python -m plugin.neko_plugin_cli.cli release-check "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
+          uv run python -m plugin.neko_plugin_cli.cli check -r "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.check-release.txt"
 
       - name: Write verification summary
         working-directory: neko
@@ -660,7 +660,7 @@ jobs:
             echo ""
             echo "### Release Check"
             echo '```text'
-            cat "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.release-check.txt"
+            cat "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.check-release.txt"
             echo '```'
           }} >> "$GITHUB_STEP_SUMMARY"
 
@@ -670,7 +670,7 @@ jobs:
           name: ${{{{ env.PLUGIN_ID }}}}-verification
           path: |
             neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
-            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.release-check.txt
+            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.check-release.txt
 '''
 
 
