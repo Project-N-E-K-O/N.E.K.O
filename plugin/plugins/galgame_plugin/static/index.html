@@ -558,39 +558,26 @@
             <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
           </details>
 
-          <details class="panel panel-scroll dashboard-module">
-            <summary><span data-i18n="ui.dashboard.agent">游戏 Agent 状态</span><small data-i18n="ui.dashboard.agent_desc">用户级状态和调试输入</small></summary>
-            <div id="agentStatusGrid" class="data-grid scroll-region"></div>
-            <div class="reply-box">
-              <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
-              <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
+          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module agent-panel" open>
+            <summary><span data-i18n="ui.dashboard.agent_panel">Agent</span><small id="agentPanelSummary"></small></summary>
+            <div class="agent-panel-tabs" role="tablist">
+              <button class="agent-tab active" type="button" role="tab" aria-selected="true" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
+              <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
+              <button class="agent-tab" type="button" role="tab" aria-selected="false" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
             </div>
-            <details class="agent-debug-tools">
-              <summary data-i18n="ui.agent.debug_input">Agent 调试输入</summary>
-              <div class="control-grid agent-grid">
-                <label class="field grow">
-                  <span data-i18n="ui.agent.prompt_label">给游戏 Agent 的文本</span>
-                  <input id="agentPromptInput" type="text" placeholder="例如：现在在讲什么？" data-i18n-placeholder="ui.agent.prompt_placeholder">
-                </label>
-                <button id="queryContextBtn" class="secondary" data-i18n="ui.agent.query_context">查询上下文</button>
-                <button id="sendMessageBtn" class="secondary" data-i18n="ui.agent.send_message">发送消息</button>
+            <div class="agent-panel-body" data-agent-tab-panel="status">
+              <div id="agentStatusGrid" class="data-grid scroll-region"></div>
+              <div class="reply-box">
+                <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
+                <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
               </div>
-            </details>
-          </details>
-
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.ai_assistant">AI 助手</span><small data-i18n="ui.dashboard.suggest">选项建议</small></summary>
-            <div class="dashboard-section-grid">
-              <section class="dashboard-subsection">
-              <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.suggest">选项建议</h3>
-                <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-              </section>
             </div>
-          </details>
-
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.pushes">游戏 Agent 推送记录</span><small data-i18n="ui.dashboard.pushes_desc">排队给猫娘侧的消息</small></summary>
-            <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+            <div class="agent-panel-body" data-agent-tab-panel="suggest" hidden>
+              <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+            </div>
+            <div class="agent-panel-body" data-agent-tab-panel="pushes" hidden>
+              <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+            </div>
           </details>
 
           <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">

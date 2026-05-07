@@ -5627,6 +5627,14 @@ function renderAgentStatus(payload) {
       ${item.error ? `<p>${escapeHtml(item.error)}</p>` : ''}
     </article>
   `);
+
+  const panelSummary = document.getElementById('agentPanelSummary');
+  if (panelSummary) {
+    const mode = latestStatus?.mode || 'companion';
+    const inbound = payload.inbound_queue_size || 0;
+    const outbound = payload.outbound_queue_size || 0;
+    panelSummary.textContent = `${mode} | in=${inbound} out=${outbound}`;
+  }
 }
 
 function renderAgentStatusGrid(rows, summaryRows) {
@@ -6674,7 +6682,7 @@ async function resumeAgentFromButton() {
 }
 
 async function askAgent(action) {
-  const prompt = document.getElementById('agentPromptInput').value.trim();
+  const prompt = document.getElementById('agentPromptInput')?.value.trim() || '';
   if (!prompt) {
     setFlash(uiT('ui.flash.agent_prompt_required', '请输入要发送给 Agent 的文本'), 'error');
     return;
@@ -7441,10 +7449,26 @@ document.getElementById('standbyOnBtn').addEventListener('click', () => {
 document.getElementById('standbyOffBtn').addEventListener('click', () => {
   withButtonPending('standbyOffBtn', uiT('ui.pending.processing', '处理中...'), resumeAgentFromButton).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('queryContextBtn').addEventListener('click', () => {
+document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) => {
+  const target = eventElement(event.target);
+  const tab = target ? target.closest('[data-agent-tab]') : null;
+  if (!tab) {
+    return;
+  }
+  const name = tab.getAttribute('data-agent-tab') || '';
+  document.querySelectorAll('.agent-tab').forEach((item) => {
+    const active = item === tab;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-agent-tab-panel]').forEach((panel) => {
+    panel.hidden = panel.getAttribute('data-agent-tab-panel') !== name;
+  });
+});
+document.getElementById('queryContextBtn')?.addEventListener('click', () => {
   withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('sendMessageBtn').addEventListener('click', () => {
+document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 // rapidocrInstallBtn / dxcamInstallBtn event listeners removed — runtime
