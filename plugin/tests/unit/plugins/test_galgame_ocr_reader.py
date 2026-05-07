@@ -1718,9 +1718,12 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
         result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
         assert backend.calls == 0
-        assert result.runtime["detail"] == "capture_backpressure"
-        assert result.runtime["last_capture_error"] == ""
-        assert any("recovery limit reached" in warning for warning in result.warnings)
+        assert result.runtime["detail"] == "capture_failed"
+        assert "recovery limit reached" in result.runtime["last_capture_error"]
+        assert any(
+            "capture timed out" in warning and "recovery limit reached" in warning
+            for warning in result.warnings
+        )
     finally:
         await manager.shutdown()
 

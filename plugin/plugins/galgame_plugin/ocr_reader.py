@@ -6544,7 +6544,7 @@ class OcrReaderManager:
                             and len(self._abandoned_capture_workers)
                             >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
                         ):
-                            raise _CaptureStillRunning(
+                            raise _CaptureTimedOut(
                                 f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
                                 "stuck capture worker recovery limit reached"
                             )
