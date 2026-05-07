@@ -420,22 +420,43 @@ def missing_rapidocr_model_files(
         return []
 
     cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-    package_models_dir: Path | None = None
+    # Two possible `<package>/models/` dirs to scan:
+    # 1. The bundled-import path's models dir (find_spec → wheel models).
+    # 2. The legacy plugin-isolated install's package dir, which sits at
+    #    `<install_target>/runtime/site-packages/rapidocr_onnxruntime/models`
+    #    and is loaded via `_rapidocr_import_context` rather than the normal
+    #    Python import machinery — so `find_spec` returns None for it even
+    #    when load_rapidocr_runtime can use it. Without this fallback,
+    #    legacy-install users see a perpetual "missing models" banner even
+    #    though their files are reachable.
+    candidate_package_dirs: list[Path | None] = []
     try:
         spec = importlib.util.find_spec(RAPIDOCR_PACKAGE_NAME)
         if spec is not None and spec.origin:
-            package_models_dir = Path(spec.origin).resolve().parent / "models"
+            candidate_package_dirs.append(Path(spec.origin).resolve().parent / "models")
     except (ImportError, ValueError):
-        package_models_dir = None
+        pass
+    legacy_pkg = _rapidocr_package_dir(install_target_dir_raw)
+    if legacy_pkg and legacy_pkg.exists():
+        candidate_package_dirs.append(legacy_pkg / "models")
+    if not candidate_package_dirs:
+        candidate_package_dirs.append(None)
 
-    det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
-        model_cache_dir=cache_dir,
-        package_models_dir=package_models_dir,
-        lang_type=lang_type,
-        ocr_version=ocr_version,
-        model_type=DEFAULT_RAPIDOCR_MODEL_TYPE,
-    )
-    found_by_kind = {"det": det_path, "cls": cls_path, "rec": rec_path}
+    # "Any candidate dir resolves a stage" → that stage isn't missing.
+    found_by_kind: dict[str, str | None] = {"det": None, "cls": None, "rec": None}
+    for pkg_dir in candidate_package_dirs:
+        det_path, cls_path, rec_path = _resolve_rapidocr_model_paths(
+            model_cache_dir=cache_dir,
+            package_models_dir=pkg_dir,
+            lang_type=lang_type,
+            ocr_version=ocr_version,
+            model_type=DEFAULT_RAPIDOCR_MODEL_TYPE,
+        )
+        found_by_kind["det"] = found_by_kind["det"] or det_path
+        found_by_kind["cls"] = found_by_kind["cls"] or cls_path
+        found_by_kind["rec"] = found_by_kind["rec"] or rec_path
+        if all(found_by_kind.values()):
+            break
     return [
         item for item in required
         if not found_by_kind.get(item["kind"])
