@@ -1679,6 +1679,8 @@ svg {
   flex-direction: column;
   gap: 4px;
   margin: 4px 0 2px;
+  /* 让选项列在窄窗口下能跟随 input-shell 收缩，而不被内部 nowrap 文本顶宽。 */
+  min-width: 0;
 }
 
 .composer-galgame-option {
@@ -1686,6 +1688,10 @@ svg {
   align-items: center;
   gap: 8px;
   width: 100%;
+  /* 关键：默认 min-width: auto 会让长文本沿 flex 链向上传染，把整个输入壳撑宽；
+     置 0 后按钮严格遵循 width:100%，长文本走下面的 ellipsis 路径。 */
+  min-width: 0;
+  max-width: 100%;
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid rgba(127, 144, 170, 0.22);
@@ -1722,6 +1728,9 @@ svg {
 
 .composer-galgame-option-text {
   flex: 1 1 auto;
+  /* min-width: 0 是 ellipsis 在 flex row 里真正生效的前置条件，
+     否则 flex item 默认 min-width:auto = 内容固有宽度，永远不会被裁。 */
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
