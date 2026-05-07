@@ -1179,59 +1179,87 @@
 
             // 检查是否正在录音且有 analyser
             if (S.isRecording && S.inputAnalyser) {
-                // 获取音频数据
-                const dataArray = new Uint8Array(S.inputAnalyser.frequencyBinCount);
-                S.inputAnalyser.getByteFrequencyData(dataArray);
+                // 用时域数据反映 worklet/AI 实际收到的线性振幅。
+                // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
+                // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
+                const fftSize = S.inputAnalyser.fftSize;
+                const dataArray = new Uint8Array(fftSize);
+                S.inputAnalyser.getByteTimeDomainData(dataArray);
 
-                // 计算平均音量 (0-255)
-                let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    sum += dataArray[i];
+                let peak = 0;
+                let sumSq = 0;
+                let clippedCount = 0;
+                for (let i = 0; i < fftSize; i++) {
+                    const val = (dataArray[i] - 128) / 128.0;
+                    const abs = val < 0 ? -val : val;
+                    if (abs > peak) peak = abs;
+                    sumSq += val * val;
+                    // |val|>=0.99：byte 触到 0/255 量化边界，下游 worklet
+                    // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 会把波形削顶
+                    if (abs >= 0.99) clippedCount++;
                 }
-                const average = sum / dataArray.length;
+                const rms = Math.sqrt(sumSq / fftSize);
 
-                // 转换为百分比 (0-100)，使用对数缩放使显示更自然
-                const volumePercent = Math.min(100, (average / 128) * 100);
+                // 显示用 peak（更直观地反映"接近削顶"的距离），
+                // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
+                const volumePercent = Math.min(100, peak * 100);
+                // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
+                // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
+                // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
+                const isClipping = clippedCount >= fftSize * 0.005;
+                // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
+                // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
+                // 没说话时不能用警告色把用户吓到。
+                const hasSignal = rms >= 0.008;
+                const lowVolume = hasSignal && peak < 0.15;
+                const high = !isClipping && peak > 0.85;
 
-                // 更新音量条
+                // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
                 cachedBarFill.style.width = `${volumePercent}%`;
 
-                // 根据音量设置颜色
-                if (volumePercent < 5) {
-                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红色 - 无声音
-                } else if (volumePercent < 20) {
-                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄色 - 音量偏低
-                } else if (volumePercent > 90) {
-                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙色 - 音量过高
+                // 根据状态设置颜色
+                if (isClipping) {
+                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红 - 过载（唯一警告）
+                } else if (high) {
+                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙 - 接近过载
+                } else if (lowVolume) {
+                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄 - 在说话但偏低
+                } else if (hasSignal) {
+                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿 - 正常
                 } else {
-                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿色 - 正常
+                    cachedBarFill.style.backgroundColor = '#4f8cff'; // 蓝 - 静默/等待
                 }
 
                 // 更新状态文字
                 if (cachedStatus) {
-                    if (volumePercent < 5) {
-                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNoSound') : '无声音';
+                    if (isClipping) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeClipping') : '过载';
                         cachedStatus.style.color = '#dc3545';
-                    } else if (volumePercent < 20) {
-                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
-                        cachedStatus.style.color = '#ffc107';
-                    } else if (volumePercent > 90) {
+                    } else if (high) {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
                         cachedStatus.style.color = '#fd7e14';
-                    } else {
+                    } else if (lowVolume) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
+                        cachedStatus.style.color = '#ffc107';
+                    } else if (hasSignal) {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
                         cachedStatus.style.color = '#28a745';
+                    } else {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeWaiting') : '等待声音';
+                        cachedStatus.style.color = 'var(--neko-popup-text-sub)';
                     }
                 }
 
                 // 更新提示文字
                 if (cachedHint) {
-                    if (volumePercent < 5) {
-                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintNoSound') : '检测不到声音，请检查麦克风';
-                    } else if (volumePercent < 20) {
+                    if (isClipping) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintClipping') : '麦克风增益过高，音频被削顶，AI 可能识别异常，请调低增益';
+                    } else if (lowVolume) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
-                    } else {
+                    } else if (hasSignal) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
+                    } else {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintWaiting') : '麦克风正在监听，请说话';
                     }
                 }
             } else {
