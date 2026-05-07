@@ -288,6 +288,38 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(monkeypatch):
+    mgr = _make_transcript_manager()
+    monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr._recent_ai_voice_echo_text = "开始比赛吧朋友"
+    mgr._recent_ai_voice_echo_at = FIXED_TS
+    routed = []
+
+    async def fake_dispatcher(lanlan_name, text, *, request_id):
+        routed.append((lanlan_name, text, request_id))
+        return True
+
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = fake_dispatcher
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "开始比赛吧朋友",
+        is_voice_source=True,
+    )
+
+    assert routed and routed[0][1] == "开始比赛吧朋友"
+    assert routed[0][2].startswith("realtime-stt-")
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr = _make_transcript_manager()
 
@@ -614,7 +646,7 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
+async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
@@ -639,8 +671,9 @@ async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
     assert isinstance(cancelled_result[0], asyncio.CancelledError)
 
     assert mgr._recent_ai_voice_echo_text == ""
-    assert mgr._pending_ai_voice_echo_text == "new turn pending text"
-    assert list(mgr._pending_ai_voice_echo_chunks) == [("new-turn", "new turn pending text")]
+    assert mgr._pending_ai_voice_echo_text == ""
+    assert list(mgr._pending_ai_voice_echo_chunks) == []
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
 
 
 @pytest.mark.unit

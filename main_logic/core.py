@@ -1621,29 +1621,19 @@ class LLMSessionManager:
             buffer twice)
         """
         transcript_text = transcript.strip()
-        if (
-            is_voice_source
-            and transcript_text
-            and self._should_suppress_dirty_voice_transcript(transcript_text)
-        ):
-            logger.info(
-                "[%s] suppressed likely AI echo voice transcript len=%d",
-                self.lanlan_name, len(transcript_text),
-            )
-            return
+        voice_rms_recorded = False
 
         # 更新用户活动时间戳（用于主动搭话检测）
         self.last_user_activity_time = time.time()
-        if is_voice_source:
-            # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
-            # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
-            # 维持 voice_engaged 状态。
-            self._activity_tracker.on_voice_rms()
         if (
             is_voice_source
             and transcript_text
             and self._takeover_input_dispatcher is not None
         ):
+            # takeover 路由优先于 echo suppression；否则接管流程里用户说出
+            # 与 AI 近期播报相同的口令时，会被当成脏回声提前吞掉。
+            self._activity_tracker.on_voice_rms()
+            voice_rms_recorded = True
             try:
                 handled = await self._takeover_input_dispatcher(
                     self.lanlan_name,
@@ -1664,6 +1654,23 @@ class LLMSessionManager:
                     return
             except Exception as exc:
                 logger.warning("[%s] session takeover dispatcher failed: %s", self.lanlan_name, exc)
+
+        if (
+            is_voice_source
+            and transcript_text
+            and self._should_suppress_dirty_voice_transcript(transcript_text)
+        ):
+            logger.info(
+                "[%s] suppressed likely AI echo voice transcript len=%d",
+                self.lanlan_name, len(transcript_text),
+            )
+            return
+
+        if is_voice_source and not voice_rms_recorded:
+            # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
+            # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
+            # 维持 voice_engaged 状态。
+            self._activity_tracker.on_voice_rms()
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
@@ -6079,6 +6086,7 @@ class LLMSessionManager:
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
+                self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
                 # asyncio.to_thread 取消后，线程池里那个 thread 仍阻塞在 q.get()。
