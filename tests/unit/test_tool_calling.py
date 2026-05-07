@@ -854,6 +854,81 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_text_length_guard_finishes_visible_long_reply_without_discard(monkeypatch):
+    """正常长回复已经流式吐到前端时，长度 guard 不应走 discard/recovery。
+
+    response_discarded 会清掉旧气泡/字幕，然后 recovery 再整段重发；这会
+    让字幕翻译处理两份同一轮文本，TTS 也可能收到过长的整段恢复文本。
+    """
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    stream_calls = 0
+
+    async def _astream_long_reply(self, messages, **overrides):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield LLMStreamChunk(content="one two three four. five")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_long_reply)
+
+    discarded_calls: list = []
+    text_emitted: list = []
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded_calls.append({
+            "reason": reason,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def fake_text_delta(text, is_first):
+        text_emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 4
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("write a long reply")
+
+    assert stream_calls == 1
+    assert "".join(text_emitted) == "one two three four. five"
+    assert discarded_calls == []
+    assert client._conversation_history[-1].content == "one two three four."
+
+
+@pytest.mark.asyncio
 async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
     `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——

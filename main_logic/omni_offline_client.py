@@ -1305,6 +1305,29 @@ class OmniOfflineClient:
                             # / max_attempts 进度条要 1/2 → 2/2 才合理。
                             total_attempts = self.max_response_rerolls + 1
 
+                            recovery_text = ""
+                            if discard_reason and "length>" in discard_reason:
+                                # 长回复已经流式吐给前端了；若它仍是正常可读文本，
+                                # 直接截到完整句子收尾，不 reroll，避免用户看到
+                                # “输出完又报错并重输一遍”。
+                                if not _is_gibberish_response(assistant_message_total):
+                                    capped = truncate_to_tokens(
+                                        assistant_message_total, self.max_response_length,
+                                    )
+                                    recovery_text = _truncate_to_last_sentence_end(capped)
+
+                            if recovery_text:
+                                logger.info(
+                                    "OmniOfflineClient: 长回复已流式输出，停止生成并按最后句末入历史 "
+                                    "(原 %d tokens → 截断后 %d tokens)",
+                                    count_tokens(assistant_message_total), count_tokens(recovery_text),
+                                )
+                                self._conversation_history.append(AIMessage(content=recovery_text))
+                                await self._check_repetition(recovery_text)
+                                assistant_message = recovery_text
+                                guard_exhausted = True
+                                break
+
                             if will_retry:
                                 # 还能 retry：发 will_retry 通知，循环继续。前端
                                 # 收到 response_discarded(will_retry=True, message=None)
@@ -1339,7 +1362,6 @@ class OmniOfflineClient:
                             # max_response_length 再找句末，否则截出来的句末仍
                             # 可能在 token 上限之外（比如最后一个句号在 950 token
                             # 处但 cap 是 300）。
-                            recovery_text = ""
                             if discard_reason and "length>" in discard_reason:
                                 # 整轮判定：gibberish / 截断必须看 _total，否则
                                 # tool 轮 sentinel 把 final-segment 清空之后整段
