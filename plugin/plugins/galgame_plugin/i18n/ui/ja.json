@@ -470,7 +470,7 @@
   "ui.install.rapidocr.not_ready_body": "RapidOCR は OCR Reader の内部メインバックエンドになりました。インストール後は Tesseract より優先され、Tesseract は互換フォールバックとして残ります。",
   "ui.install.expected_path": "想定インストール位置",
   "ui.install.task_failed_retry": "バックグラウンドインストールが失敗しました。もう一度ボタンを押して再試行できます。",
-  "ui.install.task_done_refreshing": "インストールタスクは終了しました。プラグイン状態の更新を待っています。",
+  "ui.install.task_done_refreshing": "タスク完了 — プラグインステータスの更新を待っています。",
   "ui.action.refresh_all": "すべて更新",
   "ui.action.debug_details": "デバッグ詳細を表示",
   "ui.action.refresh_ocr_windows": "ウィンドウを更新",

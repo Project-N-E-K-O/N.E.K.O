@@ -1003,8 +1003,14 @@ async def download_rapidocr_models(
                                     },
                                 )
                 _verify_model_sha256(tmp_path, str(spec.get("sha256") or ""))
-                if destination.exists():
-                    destination.unlink()
+                # Path.replace = os.replace, unconditionally overwrites the
+                # destination atomically on both POSIX and Windows (Python
+                # 3.3+). The previous explicit unlink-then-replace created a
+                # race window where the destination briefly didn't exist
+                # — load_rapidocr_runtime / inspect_rapidocr_installation
+                # could observe the file as missing during force=True
+                # re-downloads. The atomic replace covers both new-file and
+                # overwrite cases.
                 tmp_path.replace(destination)
                 downloaded_bytes += int(spec.get("size") or asset_downloaded)
                 downloaded.append(asset_name)

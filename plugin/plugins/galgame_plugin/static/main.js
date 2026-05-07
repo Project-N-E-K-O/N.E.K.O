@@ -1629,7 +1629,17 @@ function buildFirstRunSteps(status = {}) {
   } else {
     ocrInstallAction = 'install_tesseract';
   }
-  const ocrReady = Boolean(rapidocr.installed || tesseract.installed || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing));
+  // Don't let an installed Tesseract short-circuit ocrReady when rapidocr
+  // models are missing — the install_ocr step would never appear, and the
+  // PR's whole point is to surface the model-download / manual-recovery
+  // CTA when the user-selected language pack isn't on disk. Tesseract is
+  // a fallback for `rapidocr COMPLETELY unavailable`, not for `rapidocr is
+  // there but the configured model isn't`.
+  const ocrReady = Boolean(
+    rapidocr.installed
+    || (!rapidocrModelsMissing && tesseract.installed)
+    || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing)
+  );
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
     textValue(status.active_session_id)
@@ -4789,9 +4799,17 @@ function renderRapidOcr(status) {
     const inProgress = installRuntime.rapidocr_models.inProgress;
     const lastStatus = installRuntime.rapidocr_models.state
       && installRuntime.rapidocr_models.state.status;
-    downloadBtn.disabled = inProgress;
+    // After a download completes, there's a brief window before refreshAll
+    // repopulates rapidocr.detail away from 'missing_model_files'. Without
+    // gating, the button springs back to "立即下载模型" and a quick second
+    // click would create another concurrent download task. Hold it
+    // disabled during that window with explicit "waiting refresh" copy.
+    const waitingRefresh = lastStatus === 'completed' && rapidocr.detail === 'missing_model_files';
+    downloadBtn.disabled = inProgress || waitingRefresh;
     if (inProgress) {
       downloadBtn.textContent = config.runningText;
+    } else if (waitingRefresh) {
+      downloadBtn.textContent = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
     } else if (lastStatus === 'failed') {
       downloadBtn.textContent = config.retryText;
     } else {

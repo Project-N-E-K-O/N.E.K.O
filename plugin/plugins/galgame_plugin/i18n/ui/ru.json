@@ -470,7 +470,7 @@
   "ui.install.rapidocr.not_ready_body": "RapidOCR теперь является внутренним основным бэкендом OCR Reader. После установки он будет приоритетнее Tesseract, а Tesseract останется только как резерв совместимости.",
   "ui.install.expected_path": "Ожидаемый путь установки",
   "ui.install.task_failed_retry": "Фоновая установка не удалась. Можно нажать кнопку еще раз и повторить.",
-  "ui.install.task_done_refreshing": "Задача установки завершена, ожидается обновление состояния плагина.",
+  "ui.install.task_done_refreshing": "Задача выполнена — ожидание обновления статуса плагина.",
   "ui.action.refresh_all": "Обновить все",
   "ui.action.debug_details": "Показать отладку",
   "ui.action.refresh_ocr_windows": "Обновить окна",

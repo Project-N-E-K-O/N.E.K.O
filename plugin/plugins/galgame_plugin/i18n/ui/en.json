@@ -470,7 +470,7 @@
   "ui.install.rapidocr.not_ready_body": "RapidOCR is now the internal primary backend for OCR Reader. After install, it will take priority over Tesseract, which remains only as a compatibility fallback.",
   "ui.install.expected_path": "Expected install path",
   "ui.install.task_failed_retry": "The background install task failed. You can click the button again to retry.",
-  "ui.install.task_done_refreshing": "The install task has ended and the plugin status is waiting to refresh.",
+  "ui.install.task_done_refreshing": "Task complete — waiting for plugin status refresh.",
   "ui.action.refresh_all": "Refresh All",
   "ui.action.debug_details": "View Debug Details",
   "ui.action.refresh_ocr_windows": "Refresh Windows",
