@@ -3,6 +3,7 @@
         "load": "読み込み",
         "minimize": "最小化",
         "maximize": "最大化",
+        "restore": "元に戻す",
         "expand": "展開",
         "close": "閉じる",
         "save": "保存",

@@ -3,6 +3,7 @@
         "load": "Carregar",
         "minimize": "Minimizar",
         "maximize": "Maximizar",
+        "restore": "Restaurar",
         "expand": "Expandir",
         "close": "Fechar",
         "save": "Salvar",
