@@ -3,7 +3,6 @@ from unittest.mock import Mock
 import pytest
 
 import main_logic.core as core_module
-from main_logic.core import LLMSessionManager
 
 
 class _AsyncNullLock:
@@ -55,7 +54,7 @@ class _FakeActivityTracker:
 
 
 def _make_manager():
-    mgr = object.__new__(LLMSessionManager)
+    mgr = object.__new__(core_module.LLMSessionManager)
     mgr.websocket = None
     mgr.session = None
     mgr.sync_message_queue = _FakeQueue()
@@ -136,7 +135,7 @@ async def test_mirror_assistant_speech_text_mirror_carries_metadata():
     }
     metadata = _soccer_mirror_meta(event)
 
-    result = await LLMSessionManager.mirror_assistant_speech(
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
         mgr,
         "看我这一脚",
         metadata=metadata,
@@ -163,7 +162,7 @@ async def test_mirror_assistant_speech_text_mirror_carries_metadata():
 async def test_mirror_assistant_speech_can_leave_turn_end_to_text_mirror():
     mgr = _make_manager()
 
-    result = await LLMSessionManager.mirror_assistant_speech(
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
         mgr,
         "只播放语音",
         metadata=_soccer_mirror_meta({"kind": "user-text", "hasUserText": True}),
@@ -186,7 +185,7 @@ async def test_mirror_assistant_speech_can_leave_turn_end_to_text_mirror():
 async def test_mirror_assistant_speech_interrupt_audio_triggers_existing_interrupt_path():
     mgr = _make_manager()
 
-    result = await LLMSessionManager.mirror_assistant_speech(
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
         mgr,
         "先听我说完",
         metadata=_soccer_mirror_meta({"kind": "user-text", "hasUserText": True}),
@@ -209,7 +208,7 @@ async def test_mirror_assistant_output_can_finalize_user_reply_turn():
     event = {"kind": "user-text", "hasUserText": True}
     metadata = _soccer_mirror_meta(event)
 
-    result = await LLMSessionManager.mirror_assistant_output(
+    result = await core_module.LLMSessionManager.mirror_assistant_output(
         mgr,
         "听见啦，我会放慢一点。",
         metadata=metadata,
@@ -243,7 +242,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
     mgr._takeover_active = True
     mgr._takeover_input_dispatcher = fake_dispatcher
 
-    await LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "  我要射门了  ", is_voice_source=True)
 
     assert routed and routed[0][0] == "Lan"
     assert routed[0][1] == "我要射门了"
@@ -260,7 +259,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
 async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr = _make_transcript_manager()
 
-    await LLMSessionManager.handle_input_transcript(mgr, "  普通语音  ", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "  普通语音  ", is_voice_source=True)
 
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["  普通语音  "]
@@ -283,7 +282,7 @@ async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = core_module.time.time()
 
-    await LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
 
     assert mgr._activity_tracker.voice_rms_count == 0
     assert mgr._activity_tracker.user_messages == []
@@ -300,7 +299,7 @@ async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypat
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = core_module.time.time()
 
-    await LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "要不要休息一下喝点水", is_voice_source=True)
 
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["要不要休息一下喝点水"]
@@ -323,7 +322,7 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = core_module.time.time()
 
-    await LLMSessionManager.handle_input_transcript(mgr, "先别休息帮我打开设置", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "先别休息帮我打开设置", is_voice_source=True)
 
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["先别休息帮我打开设置"]
@@ -343,7 +342,7 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 async def test_no_takeover_non_voice_transcript_reuse_keeps_existing_ordinary_flow():
     mgr = _make_transcript_manager()
 
-    await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 
     assert mgr._activity_tracker.voice_rms_count == 0
     assert mgr._activity_tracker.user_messages == []
@@ -366,7 +365,7 @@ async def test_takeover_dispatcher_does_not_intercept_non_voice_transcript_reuse
     mgr._takeover_active = True
     mgr._takeover_input_dispatcher = fail_dispatcher
 
-    await LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "文本复用", is_voice_source=False)
 
     assert mgr._activity_tracker.voice_rms_count == 0
     assert mgr._activity_tracker.user_messages == []
@@ -393,7 +392,7 @@ async def test_takeover_dispatcher_falls_back_when_unhandled(dispatcher_outcome)
     mgr._takeover_active = True
     mgr._takeover_input_dispatcher = fake_dispatcher
 
-    await LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)
+    await core_module.LLMSessionManager.handle_input_transcript(mgr, "继续普通流程", is_voice_source=True)
 
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == ["继续普通流程"]
@@ -418,7 +417,7 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     mgr.tts_pending_chunks = [("sid-old", "queued text")]
     mgr._takeover_active = True
 
-    await LLMSessionManager.handle_response_complete(mgr)
+    await core_module.LLMSessionManager.handle_response_complete(mgr)
 
     assert mgr._active_text_request_id is None
     assert mgr._pending_turn_meta is None
