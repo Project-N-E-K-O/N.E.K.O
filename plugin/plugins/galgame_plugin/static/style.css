@@ -22,6 +22,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -1007,127 +1011,6 @@ button[disabled] {
   transform: none;
 }
 
-.install-stack {
-  display: grid;
-  gap: 16px;
-}
-
-.install-module {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid rgba(31, 42, 51, 0.1);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.install-module-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.install-module-head h3 {
-  margin: 2px 0 0;
-  color: var(--ink);
-  font-size: 16px;
-}
-
-.install-module-summary {
-  max-width: 520px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: right;
-}
-
-.install-tabs {
-  display: flex;
-  gap: 8px;
-  padding: 4px;
-  border-radius: 999px;
-  background: rgba(31, 42, 51, 0.06);
-}
-
-.install-tab {
-  flex: 1 1 auto;
-  padding: 10px 16px;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 14px;
-  cursor: pointer;
-  border: none;
-  transition: background 150ms ease, color 150ms ease;
-}
-
-.install-tab:hover {
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.install-tab.active {
-  background: #fff;
-  color: var(--brand-strong);
-  box-shadow: 0 2px 8px rgba(31, 42, 51, 0.1);
-}
-
-button.active {
-  color: #fff;
-  background: var(--brand);
-  border-color: var(--brand);
-}
-
-/* Banners stack in normal flow; the tab system hides non-active ones via [hidden]. */
-.install-panels > .install-banner[hidden] {
-  display: none;
-}
-
-.install-task-card[hidden],
-[hidden] {
-  display: none !important;
-}
-
-.install-banner {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 18px 20px;
-  border: 1px solid rgba(240, 140, 153, 0.28);
-  border-radius: 18px;
-  background: linear-gradient(135deg, rgba(240, 140, 153, 0.14), rgba(240, 140, 153, 0.05));
-}
-
-.install-banner.success {
-  border-color: rgba(64, 197, 241, 0.28);
-  background: linear-gradient(135deg, rgba(64, 197, 241, 0.14), rgba(64, 197, 241, 0.05));
-}
-
-.install-banner.warning {
-  border-color: rgba(200, 133, 30, 0.28);
-  background: linear-gradient(135deg, rgba(200, 133, 30, 0.12), rgba(200, 133, 30, 0.04));
-}
-
-.install-banner.neutral {
-  border-color: var(--line);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.install-copy {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.install-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .install-task-card {
   display: grid;
   gap: 8px;
@@ -1733,10 +1616,6 @@ details.panel-scroll-wide[open] {
   font-size: 13px;
   line-height: 1.5;
   max-width: 100%;
-}
-
-.install-copy .result-note {
-  white-space: pre-wrap;
 }
 
 .reply-box {
@@ -2464,20 +2343,6 @@ body:not(.onboarding-active) #onboardingView {
     gap: 6px;
   }
 
-  .install-banner {
-    flex-direction: column;
-  }
-
-  .install-module-head {
-    flex-direction: column;
-  }
-
-  .install-module-summary {
-    max-width: none;
-    text-align: left;
-  }
-
-  .install-actions,
   .capture-profile-actions {
     justify-content: flex-start;
   }
@@ -2485,5 +2350,147 @@ body:not(.onboarding-active) #onboardingView {
   .settings-save-row button,
   .capture-profile-primary-actions button {
     width: 100%;
+  }
+}
+
+/* ===== 依赖安装卡片网格 ===== */
+
+.install-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.install-card {
+  display: flex;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.6);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.install-card:hover {
+  border-color: rgba(14, 138, 124, 0.25);
+  box-shadow: 0 4px 16px rgba(14, 138, 124, 0.06);
+}
+
+.install-card.ok {
+  border-color: rgba(14, 138, 124, 0.3);
+  background: rgba(14, 138, 124, 0.06);
+}
+
+.install-card.warning {
+  border-color: rgba(178, 106, 28, 0.28);
+  background: var(--warning-bg);
+}
+
+.install-card.error {
+  border-color: rgba(210, 95, 69, 0.34);
+  background: rgba(210, 95, 69, 0.08);
+}
+
+.install-card.neutral {
+  border-color: var(--line);
+}
+
+.install-card-icon {
+  width: 40px;
+  flex-shrink: 0;
+  font-size: 28px;
+  line-height: 1;
+  text-align: center;
+  user-select: none;
+}
+
+.install-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.install-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.install-card-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.install-card-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+  background: rgba(31, 35, 41, 0.07);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.install-card.ok .install-card-chip {
+  background: rgba(14, 138, 124, 0.14);
+  color: var(--brand-strong);
+}
+
+.install-card.warning .install-card-chip {
+  background: rgba(178, 106, 28, 0.14);
+  color: var(--warning);
+}
+
+.install-card.error .install-card-chip {
+  background: rgba(210, 95, 69, 0.14);
+  color: var(--accent);
+}
+
+.install-card-desc {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.install-card-meta {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.install-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.install-card .install-task-card {
+  margin-top: 10px;
+}
+
+@media (max-width: 720px) {
+  .install-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .install-card {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .install-card-icon {
+    width: auto;
+    text-align: left;
   }
 }
