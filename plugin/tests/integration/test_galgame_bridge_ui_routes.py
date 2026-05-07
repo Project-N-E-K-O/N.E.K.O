@@ -207,9 +207,12 @@ async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
     assert "generation: 0" in script
     assert "const restoreGeneration = Number((runtime && runtime.generation) || 0);" in script
     assert "state.generation = Number(state.generation || 0) + 1;" in script
+    assert "state.currentTaskId = null;" in script
+    assert "clearPersistedInstallTaskId(kind);" in script
     assert "function shouldRestoreRapidOcrModelsFailure" in script
     assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
     assert "ui.install.rapidocr.missing_models_manual_body" in script
+    assert "{ allowRefresh: true }" in script
     assert "showTerminalFlash: false" in script
     assert "clearPersistedInstallTaskId('rapidocr_models');" in script
     assert script.index("function canApplyRestoredInstallTaskState") < script.index("applyInstallTaskState(kind, restoredState")

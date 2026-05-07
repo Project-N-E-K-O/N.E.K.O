@@ -6098,6 +6098,8 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
   const state = getInstallState(kind);
   const { button } = getInstallNodes(kind);
   state.generation = Number(state.generation || 0) + 1;
+  state.currentTaskId = null;
+  clearPersistedInstallTaskId(kind);
   state.inProgress = true;
   state.state = {
     kind,
@@ -6141,13 +6143,13 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
     state.currentTaskId = taskId;
     persistInstallTaskId(kind, taskId);
     if (payload.state) {
-      applyInstallTaskState(kind, payload.state, { allowRefresh: false });
+      applyInstallTaskState(kind, payload.state, { allowRefresh: true });
     }
     connectInstallStream(kind, taskId);
 
     const initialState = await fetchInstallTaskState(kind, taskId);
     if (initialState) {
-      applyInstallTaskState(kind, initialState, { allowRefresh: false });
+      applyInstallTaskState(kind, initialState, { allowRefresh: true });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
