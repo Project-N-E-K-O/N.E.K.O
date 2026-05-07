@@ -287,6 +287,7 @@ _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
 )
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
+_OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
 
 
 class _CaptureStillRunning(TimeoutError):
@@ -4520,6 +4521,9 @@ class OcrReaderManager:
         self._capture_future: Future[OcrExtractionResult] | None = None
         self._capture_future_started_at = 0.0
         self._capture_future_timed_out = False
+        self._abandoned_capture_workers: list[
+            tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]
+        ] = []
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
         self._start_rapidocr_warmup_if_configured()
@@ -6451,38 +6455,64 @@ class OcrReaderManager:
             and not _ocr_stability_keys_match(cleaned_key, stable_key)
         )
 
+    def _drain_completed_abandoned_capture_workers_locked(self) -> list[ThreadPoolExecutor]:
+        executors: list[ThreadPoolExecutor] = []
+        active: list[tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]] = []
+        for executor, future in self._abandoned_capture_workers:
+            if future.done():
+                executors.append(executor)
+                try:
+                    future.result()
+                except Exception as exc:
+                    self._logger.debug("ocr_reader abandoned timed-out capture eventually failed: {}", exc)
+            else:
+                active.append((executor, future))
+        self._abandoned_capture_workers = active
+        return executors
+
     def _shutdown_capture_worker(self) -> None:
-        executor: ThreadPoolExecutor | None = None
+        executors: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
             future = self._capture_future
             if future is not None and not future.done():
                 future.cancel()
-            executor = self._capture_executor
+            if self._capture_executor is not None:
+                executors.append(self._capture_executor)
+            for executor, abandoned_future in self._abandoned_capture_workers:
+                if not abandoned_future.done():
+                    abandoned_future.cancel()
+                executors.append(executor)
+            self._abandoned_capture_workers = []
             self._capture_executor = None
             self._capture_future = None
             self._capture_future_started_at = 0.0
             self._capture_future_timed_out = False
-        if executor is not None:
+        for executor in executors:
             # Project requires Python 3.11; cancel_futures is available on >=3.9.
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _clear_completed_capture_worker(self) -> None:
         future: Future[OcrExtractionResult] | None = None
         timed_out = False
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is None or not current.done():
-                return
-            future = current
-            timed_out = bool(self._capture_future_timed_out)
-            self._capture_future = None
-            self._capture_future_started_at = 0.0
-            self._capture_future_timed_out = False
+                future = None
+            else:
+                future = current
+                timed_out = bool(self._capture_future_timed_out)
+                self._capture_future = None
+                self._capture_future_started_at = 0.0
+                self._capture_future_timed_out = False
         if timed_out and future is not None:
             try:
                 future.result()
             except Exception as exc:
                 self._logger.debug("ocr_reader previous timed-out capture eventually failed: {}", exc)
+        for executor in executors_to_shutdown:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _submit_capture_worker(
         self,
@@ -6492,10 +6522,11 @@ class OcrReaderManager:
         collect_background_hash: bool,
         allow_separate_background_capture: bool,
     ) -> Future[OcrExtractionResult]:
-        executor_to_shutdown: ThreadPoolExecutor | None = None
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
         recovered_elapsed = 0.0
         cancel_requested = False
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
@@ -6506,18 +6537,26 @@ class OcrReaderManager:
                     recovery_after = timeout_seconds + max(timeout_seconds, 0.25)
                     if elapsed >= recovery_after:
                         cancel_requested = current.cancel()
-                        if cancel_requested or current.done():
-                            executor_to_shutdown = self._capture_executor
-                            self._capture_executor = None
-                            self._capture_future = None
-                            self._capture_future_started_at = 0.0
-                            self._capture_future_timed_out = False
-                            recovered_elapsed = elapsed
-                        else:
+                        executor = self._capture_executor
+                        if (
+                            not cancel_requested
+                            and not current.done()
+                            and len(self._abandoned_capture_workers)
+                            >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
+                        ):
                             raise _CaptureStillRunning(
                                 f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
-                                "cancel failed, keeping backpressure to avoid accumulating blocked OCR threads"
+                                "stuck capture worker recovery limit reached"
                             )
+                        if executor is not None:
+                            if not cancel_requested and not current.done():
+                                self._abandoned_capture_workers.append((executor, current))
+                            executors_to_shutdown.append(executor)
+                        self._capture_executor = None
+                        self._capture_future = None
+                        self._capture_future_started_at = 0.0
+                        self._capture_future_timed_out = False
+                        recovered_elapsed = elapsed
                     else:
                         raise _CaptureStillRunning(
                             f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
@@ -6544,12 +6583,13 @@ class OcrReaderManager:
             self._capture_future = future
             self._capture_future_started_at = time.monotonic()
             self._capture_future_timed_out = False
-        if executor_to_shutdown is not None:
+        if recovered_elapsed > 0.0:
             self._logger.warning(
                 "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}",
                 recovered_elapsed,
                 cancel_requested,
             )
+        for executor_to_shutdown in executors_to_shutdown:
             executor_to_shutdown.shutdown(wait=False, cancel_futures=True)
         return future
 
