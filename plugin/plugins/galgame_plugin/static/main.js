@@ -1294,7 +1294,7 @@ function buildPrimaryDiagnosis(status = {}) {
     && textValue(backgroundStatus.trigger_mode || status.ocr_reader_trigger_mode) === 'interval'
     && runtime.target_is_foreground === false
   );
-  const { observedText, stableText, effectiveText } = getCurrentLineTexts(status);
+  const { rawText, observedText, stableText, effectiveText } = getCurrentLineTexts(status);
   const observedKey = compactLineText(observedText);
   const stableKey = compactLineText(stableText);
   const hasEffectiveWindow = Boolean(textValue(runtime.effective_window_key));
@@ -1505,6 +1505,61 @@ function buildPrimaryDiagnosis(status = {}) {
       body: uiT('ui.diag.read_only.body', '会显示台词和建议，但不会自动点击。需要自动推进时请切换模式。'),
       actions: [
         diagnosisAction('choice_advisor'),
+      ],
+    });
+  }
+
+  if (
+    rawText.length > 400
+    && hasOcrRuntimeSignal
+    && (effectiveText || stableText)
+    && textValue(status.active_data_source) !== 'memory_reader'
+  ) {
+    return diagnose({
+      severity: 'warning',
+      title: uiT('ui.diag.ocr_text_too_long.title', 'OCR 识别文本过长'),
+      body: uiTf(
+        'ui.diag.ocr_text_too_long.body',
+        '当前识别到 {length} 字，远超正常对白长度。截图区域可能包含了非对白内容，建议锁定正确窗口并校准对白区域。',
+        { length: String(rawText.length) },
+      ),
+      actions: [
+        diagnosisAction('select_ocr_window'),
+        diagnosisAction('recalibrate_ocr'),
+      ],
+    });
+  }
+
+  const lastPollDuration = Number(runtime.last_poll_duration_seconds || 0);
+  if (lastPollDuration > 5.0 && hasOcrRuntimeSignal && (effectiveText || stableText)) {
+    const saLatency = Number(runtime.screen_awareness_model_last_latency_seconds || 0);
+    if (saLatency > 3.0) {
+      const body = uiTf('ui.diag.ocr_poll_too_slow.body_with_sa',
+        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。Screen Awareness 模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低 awareness 频率或关闭全帧 OCR。',
+        { seconds: lastPollDuration.toFixed(1), saLatency: saLatency.toFixed(1) });
+      return diagnose({
+        severity: 'warning',
+        title: uiT('ui.diag.ocr_poll_too_slow.title', 'OCR 识别耗时过长'),
+        body,
+        actions: [
+          diagnosisAction('select_ocr_window'),
+          diagnosisAction('recalibrate_ocr'),
+          diagnosisAction('capture_backend'),
+        ],
+      });
+    }
+    return diagnose({
+      severity: 'warning',
+      title: uiT('ui.diag.ocr_poll_too_slow.title', 'OCR 识别耗时过长'),
+      body: uiTf(
+        'ui.diag.ocr_poll_too_slow.body',
+        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。通常是因为截图区域过大或截图方式不匹配，建议锁定窗口并校准对白区域，也可尝试切换截图方式。',
+        { seconds: lastPollDuration.toFixed(1) },
+      ),
+      actions: [
+        diagnosisAction('select_ocr_window'),
+        diagnosisAction('recalibrate_ocr'),
+        diagnosisAction('capture_backend'),
       ],
     });
   }

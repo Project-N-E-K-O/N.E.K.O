@@ -1757,6 +1757,60 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         )
 
     effective_text = _line_text_from_status(effective_line_obj)
+    raw_ocr_text = _status_text(runtime_obj.get("last_raw_ocr_text"))
+    if (
+        len(raw_ocr_text) > 400
+        and has_ocr_runtime_signal
+        and (effective_text or stable_text)
+        and active_data_source != DATA_SOURCE_MEMORY_READER
+    ):
+        return diagnosis(
+            "warning",
+            "OCR 识别文本过长",
+            (
+                f"当前识别到 {len(raw_ocr_text)} 字，远超正常对白长度。"
+                "截图区域可能包含了非对白内容，建议锁定正确窗口并校准对白区域。"
+            ),
+            [
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("recalibrate_ocr", "重新截图校准"),
+            ],
+        )
+
+    last_poll_duration = _coerce_float(
+        runtime_obj.get("last_poll_duration_seconds"), 0.0, minimum=0.0
+    )
+    if (
+        last_poll_duration > 5.0
+        and has_ocr_runtime_signal
+        and (effective_text or stable_text)
+    ):
+        sa_latency = _coerce_float(
+            runtime_obj.get("screen_awareness_model_last_latency_seconds"), 0.0, minimum=0.0
+        )
+        if sa_latency > 3.0:
+            message = (
+                f"最近一次 OCR 轮询耗时 {last_poll_duration:.1f}s，远超正常水平。"
+                f"Screen Awareness 模型延迟也较高（{sa_latency:.1f}s），"
+                "建议锁定窗口并校准对白区域，也可尝试降低 awareness 频率或关闭全帧 OCR。"
+            )
+        else:
+            message = (
+                f"最近一次 OCR 轮询耗时 {last_poll_duration:.1f}s，远超正常水平。"
+                "通常是因为截图区域过大或截图方式不匹配，"
+                "建议锁定窗口并校准对白区域，也可尝试切换截图方式。"
+            )
+        return diagnosis(
+            "warning",
+            "OCR 识别耗时过长",
+            message,
+            [
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("recalibrate_ocr", "重新截图校准"),
+                _diagnosis_action("capture_backend", "切换截图方式"),
+            ],
+        )
+
     if effective_text or stable_text:
         target = " / ".join(
             item
