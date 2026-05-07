@@ -2892,12 +2892,16 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 不能被 has_custom_voice=False 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 ——
     # _has_custom_tts 已经判断 voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，
     # 是用户显式选择的 Gemini 原生路径，应当尊重该选择喵。
+    # 同时显式返回 CORE_API_KEY：当 ENABLE_CUSTOM_API + TTS_MODEL_URL 配了的时候，
+    # 调用方 fallback 的 get_model_api_config('tts_default') 会返回自定义 TTS 的 key
+    # (config_manager.py 自定义分支)，会拿 GSV/local TTS key 去打 Gemini，必失败。
     if (
         not has_custom_voice
         and core_api_type == 'gemini'
         and is_gemini_tts_voice(voice_id)
     ):
-        return gemini_tts_worker, None, 'gemini'
+        core_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        return gemini_tts_worker, core_api_key, 'gemini'
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
