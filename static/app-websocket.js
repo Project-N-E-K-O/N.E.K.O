@@ -679,10 +679,7 @@
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(
-                !!S._pendingGreetingSwitch || !!S._greetingCheckIsSwitch,
-                S._greetingCheckReason || 'ws-open'
-            );
+            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
 
@@ -2409,18 +2406,20 @@
                         greetingLang = navigator.language;
                     }
                 } catch (_) { greetingLang = ''; }
-                var greetingReason = S._greetingCheckReason || (S._greetingCheckIsSwitch ? 'character-switch' : 'ws-open');
+                var greetingIsSwitch = !!S._greetingCheckIsSwitch;
+                var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
                 sendHomeTutorialState('greeting-check-ready');
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
-                    is_switch: !!S._greetingCheckIsSwitch,
+                    is_switch: greetingIsSwitch,
                     language: greetingLang,
                     reason: greetingReason
                 }));
                 S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
                 _resetGreetingCheckRetry(true);
-                console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch + ', reason=' + greetingReason);
+                console.log('[greeting_check] sent, is_switch=' + greetingIsSwitch + ', reason=' + greetingReason);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
