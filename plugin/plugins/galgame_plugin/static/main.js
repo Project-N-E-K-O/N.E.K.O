@@ -750,10 +750,6 @@ let modeSaveRequestId = 0;
 let settingsAutosaveTimer = null;
 let flashTimer = null;
 let flashToken = 0;
-let ocrScreenTemplatesUndoValue = '';
-let ocrRegionSnapshot = null;
-let ocrRegionSelection = null;
-let ocrRegionDragStart = null;
 
 function fetchWithTutorialTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -3473,26 +3469,6 @@ function setInputValueIfIdle(node, value) {
   node.value = value;
 }
 
-function formatScreenTemplatesForInput(templates) {
-  const value = Array.isArray(templates) ? templates : [];
-  return JSON.stringify(value, null, 2);
-}
-
-function renderOcrScreenTemplates(status) {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input || document.activeElement === input) {
-    return;
-  }
-  input.value = formatScreenTemplatesForInput(status.ocr_screen_templates || []);
-}
-
-function setOcrScreenTemplatesUndoAvailable(available) {
-  const button = document.getElementById('ocrScreenTemplatesUndoBtn');
-  if (button) {
-    button.disabled = !available;
-  }
-}
-
 function profileValueForInputs(runtimeProfile) {
   const merged = {
     ...DEFAULT_CAPTURE_PROFILE,
@@ -4242,7 +4218,6 @@ function renderStatus(status) {
     { label: 'screen_classify_keywords', value: JSON.stringify(status.screen_debug?.keyword_hits || {}) },
     { label: 'llm_vision_enabled', value: String(Boolean(status.llm_vision_enabled)) },
     { label: 'llm_vision_max_image_px', value: String(status.llm_vision_max_image_px || 0) },
-    { label: 'ocr_screen_template_count', value: String(status.ocr_screen_template_count || 0) },
     { label: 'vision_snapshot_available', value: String(Boolean(ocrRuntime.vision_snapshot_available)) },
     { label: 'vision_snapshot_captured_at', value: ocrRuntime.vision_snapshot_captured_at || '' },
     { label: 'vision_snapshot_byte_size', value: String(ocrRuntime.vision_snapshot_byte_size || 0) },
@@ -4281,7 +4256,6 @@ function renderStatus(status) {
   renderTextractor(status);
   renderMemoryReaderTargetStatus(status);
   renderOcrWindowTargetStatus(status);
-  renderOcrScreenTemplates(status);
   renderOcrProfile(status);
   renderGameBinding(status);
 }
@@ -6394,297 +6368,6 @@ async function saveMode({ auto = false } = {}) {
   }
 }
 
-async function saveOcrScreenTemplates() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    setFlash(uiT('ui.flash.screen_templates_saving', '正在保存屏幕模板...'), 'info');
-    const payload = await callPlugin('galgame_set_ocr_screen_templates', {
-      screen_templates: templates,
-    });
-    input.value = formatScreenTemplatesForInput(payload.screen_templates || []);
-    setFlash(payload.summary || uiT('ui.flash.screen_templates_saved', '屏幕模板已保存'), 'success');
-    await refreshAll({ preserveFlash: true, forceRefresh: true });
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function readOcrScreenTemplatesInput() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  let templates;
-  try {
-    templates = JSON.parse(input?.value || '[]');
-  } catch (error) {
-    throw new Error(error instanceof Error
-      ? `${uiT('ui.error.template_json_parse_failed', '模板 JSON 解析失败')}：${error.message}`
-      : uiT('ui.error.template_json_parse_failed_sentence', '模板 JSON 解析失败。'));
-  }
-  if (!Array.isArray(templates)) {
-    throw new Error(uiT('ui.error.template_json_must_be_array', '模板 JSON 必须是数组。'));
-  }
-  return templates;
-}
-
-async function buildOcrScreenTemplateDraft() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const payload = await callPlugin('galgame_build_ocr_screen_template_draft', {});
-    if (!payload.template || typeof payload.template !== 'object') {
-      throw new Error(uiT('ui.error.no_template_draft_returned', '插件未返回可用模板草稿。'));
-    }
-    ocrScreenTemplatesUndoValue = input.value;
-    setOcrScreenTemplatesUndoAvailable(true);
-    templates.push(payload.template);
-    input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || uiT('ui.flash.screen_template_draft_created', '已生成屏幕模板草稿，可编辑后保存。'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-async function validateOcrScreenTemplates() {
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const payload = await callPlugin('galgame_validate_ocr_screen_templates', {
-      screen_templates: templates,
-    });
-    const classification = payload.classification || {};
-    const screenType = classification.screen_type || 'default';
-    const confidence = Number(classification.screen_confidence || 0).toFixed(2);
-    setFlash(payload.summary || `${uiT('ui.flash.template_validation_result', '模板验证结果')}: ${screenType} (${confidence})`, 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function undoOcrScreenTemplateDraft() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input || !ocrScreenTemplatesUndoValue) {
-    return;
-  }
-  input.value = ocrScreenTemplatesUndoValue;
-  ocrScreenTemplatesUndoValue = '';
-  setOcrScreenTemplatesUndoAvailable(false);
-  setFlash(uiT('ui.flash.screen_template_draft_undone', '已撤销上一次模板草稿。'), 'info');
-}
-
-function getOcrRegionNodes() {
-  return {
-    editor: document.getElementById('ocrRegionEditor'),
-    image: document.getElementById('ocrRegionImage'),
-    box: document.getElementById('ocrRegionSelectionBox'),
-    empty: document.getElementById('ocrRegionEmpty'),
-    hint: document.getElementById('ocrRegionHint'),
-    stage: document.getElementById('ocrRegionStageSelect'),
-  };
-}
-
-function clampRegionValue(value) {
-  return Math.max(0, Math.min(1, Number(value) || 0));
-}
-
-function normalizeOcrRegion(region) {
-  const left = clampRegionValue(Math.min(region.left, region.right));
-  const right = clampRegionValue(Math.max(region.left, region.right));
-  const top = clampRegionValue(Math.min(region.top, region.bottom));
-  const bottom = clampRegionValue(Math.max(region.top, region.bottom));
-  return { left, top, right, bottom };
-}
-
-function ocrRegionFromPointer(event) {
-  const { image } = getOcrRegionNodes();
-  if (!image || image.hidden) {
-    return null;
-  }
-  const imageRect = image.getBoundingClientRect();
-  if (!imageRect.width || !imageRect.height) {
-    return null;
-  }
-  return {
-    left: clampRegionValue((event.clientX - imageRect.left) / imageRect.width),
-    top: clampRegionValue((event.clientY - imageRect.top) / imageRect.height),
-  };
-}
-
-function renderOcrRegionSelection() {
-  const { editor, image, box, hint } = getOcrRegionNodes();
-  if (!editor || !image || !box) {
-    return;
-  }
-  if (!ocrRegionSelection) {
-    box.hidden = true;
-    if (hint) {
-      hint.textContent = ocrRegionSnapshot
-        ? uiT('ui.screen_templates.drag_region_hint', '在截图上拖拽框选区域。')
-        : uiT('ui.screen_templates.region_hint', '加载最近 OCR 屏幕感知截图后，拖拽框选区域。');
-    }
-    return;
-  }
-  const region = normalizeOcrRegion(ocrRegionSelection);
-  const editorRect = editor.getBoundingClientRect();
-  const imageRect = image.getBoundingClientRect();
-  const leftPx = imageRect.left - editorRect.left + region.left * imageRect.width;
-  const topPx = imageRect.top - editorRect.top + region.top * imageRect.height;
-  const widthPx = Math.max(1, (region.right - region.left) * imageRect.width);
-  const heightPx = Math.max(1, (region.bottom - region.top) * imageRect.height);
-  box.hidden = false;
-  box.style.left = `${leftPx}px`;
-  box.style.top = `${topPx}px`;
-  box.style.width = `${widthPx}px`;
-  box.style.height = `${heightPx}px`;
-  if (hint) {
-    hint.textContent = `${uiT('ui.screen_templates.region_label', '区域')}: left=${region.left.toFixed(3)}, top=${region.top.toFixed(3)}, right=${region.right.toFixed(3)}, bottom=${region.bottom.toFixed(3)}`;
-  }
-}
-
-async function loadOcrRegionSnapshot() {
-  const { image, empty, hint } = getOcrRegionNodes();
-  try {
-    const payload = await callPlugin('galgame_get_ocr_screen_awareness_snapshot', {});
-    const snapshot = payload.snapshot || {};
-    const imageBase64 = snapshot.vision_image_base64 || '';
-    if (!imageBase64) {
-      throw new Error(uiT('ui.error.no_ocr_snapshot', '当前没有可用截图。请先开启 Vision，并等待 OCR 完成一次全画面感知。'));
-    }
-    ocrRegionSnapshot = snapshot;
-    ocrRegionSelection = null;
-    if (image) {
-      image.hidden = false;
-      image.src = imageBase64;
-      image.onload = () => renderOcrRegionSelection();
-    }
-    if (empty) {
-      empty.hidden = true;
-    }
-    if (hint) {
-      hint.textContent = payload.summary || uiT('ui.screen_templates.snapshot_loaded_hint', '截图已加载，可拖拽框选区域。');
-    }
-    renderOcrRegionSelection();
-    setFlash(payload.summary || uiT('ui.flash.ocr_snapshot_loaded', 'OCR 屏幕感知截图已加载'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-async function buildOcrRegionTemplateDraft() {
-  if (!ocrRegionSelection) {
-    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
-    return;
-  }
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  const { stage } = getOcrRegionNodes();
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const selectedStage = stage?.value || 'dialogue_stage';
-    const payload = await callPlugin('galgame_build_ocr_screen_template_draft', {
-      stage: selectedStage,
-      region: {
-        role: selectedStage,
-        ...normalizeOcrRegion(ocrRegionSelection),
-      },
-    });
-    ocrScreenTemplatesUndoValue = input.value;
-    setOcrScreenTemplatesUndoAvailable(true);
-    templates.push(payload.template);
-    input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || uiT('ui.flash.region_template_draft_created', '已根据框选区域生成模板草稿。'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function applyOcrRegionToCaptureProfileForm() {
-  if (!ocrRegionSelection) {
-    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
-    return;
-  }
-  const region = normalizeOcrRegion(ocrRegionSelection);
-  const { stage } = getOcrRegionNodes();
-  const profileStage = document.getElementById('ocrProfileStageSelect');
-  const leftInput = document.getElementById('ocrProfileLeftInput');
-  const rightInput = document.getElementById('ocrProfileRightInput');
-  const topInput = document.getElementById('ocrProfileTopInput');
-  const bottomInput = document.getElementById('ocrProfileBottomInput');
-  if (profileStage && stage?.value) {
-    profileStage.value = stage.value;
-  }
-  if (leftInput) {
-    leftInput.value = region.left.toFixed(2);
-  }
-  if (rightInput) {
-    rightInput.value = Math.max(0, 1 - region.right).toFixed(2);
-  }
-  if (topInput) {
-    topInput.value = region.top.toFixed(2);
-  }
-  if (bottomInput) {
-    bottomInput.value = Math.max(0, 1 - region.bottom).toFixed(2);
-  }
-  setFlash(uiT('ui.flash.region_applied_to_profile', '已将框选区域套用到 OCR 截图校准表单，确认后可保存。'), 'success');
-}
-
-function startOcrRegionDrag(event) {
-  if (event.button !== undefined && event.button !== 0) {
-    return;
-  }
-  const point = ocrRegionFromPointer(event);
-  if (!point) {
-    return;
-  }
-  ocrRegionDragStart = point;
-  ocrRegionSelection = {
-    left: point.left,
-    top: point.top,
-    right: point.left,
-    bottom: point.top,
-  };
-  event.currentTarget.setPointerCapture?.(event.pointerId);
-  renderOcrRegionSelection();
-}
-
-function moveOcrRegionDrag(event) {
-  if (!ocrRegionDragStart) {
-    return;
-  }
-  const point = ocrRegionFromPointer(event);
-  if (!point) {
-    return;
-  }
-  ocrRegionSelection = normalizeOcrRegion({
-    left: ocrRegionDragStart.left,
-    top: ocrRegionDragStart.top,
-    right: point.left,
-    bottom: point.top,
-  });
-  renderOcrRegionSelection();
-}
-
-function finishOcrRegionDrag(event) {
-  if (!ocrRegionDragStart) {
-    return;
-  }
-  event.currentTarget.releasePointerCapture?.(event.pointerId);
-  ocrRegionDragStart = null;
-  const region = ocrRegionSelection ? normalizeOcrRegion(ocrRegionSelection) : null;
-  if (!region || (region.right - region.left) * (region.bottom - region.top) < 0.0025) {
-    ocrRegionSelection = null;
-  } else {
-    ocrRegionSelection = region;
-  }
-  renderOcrRegionSelection();
-}
-
 async function bindGame(gameId = '') {
   const normalized = String(gameId || '').trim();
   try {
@@ -7396,27 +7079,6 @@ document.getElementById('resetTutorialBtn')?.addEventListener('click', (event) =
 document.getElementById('saveModeBtn').addEventListener('click', () => {
   withButtonPending('saveModeBtn', uiT('ui.pending.saving', '保存中...'), saveMode).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('ocrScreenTemplatesSaveBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesSaveBtn', uiT('ui.pending.saving', '保存中...'), saveOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesDraftBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesDraftBtn', uiT('ui.pending.generating', '生成中...'), buildOcrScreenTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesValidateBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesValidateBtn', uiT('ui.pending.validating', '验证中...'), validateOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesUndoBtn').addEventListener('click', undoOcrScreenTemplateDraft);
-document.getElementById('ocrRegionSnapshotBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionSnapshotBtn', uiT('ui.pending.loading', '加载中...'), loadOcrRegionSnapshot).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrRegionTemplateBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionTemplateBtn', uiT('ui.pending.generating', '生成中...'), buildOcrRegionTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrRegionCaptureBtn').addEventListener('click', applyOcrRegionToCaptureProfileForm);
-document.getElementById('ocrRegionEditor').addEventListener('pointerdown', startOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointermove', moveOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointerup', finishOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointercancel', finishOcrRegionDrag);
 SETTINGS_CONTROL_IDS.forEach((id) => {
   const node = document.getElementById(id);
   if (!node) {

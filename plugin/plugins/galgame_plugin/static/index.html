@@ -285,48 +285,6 @@
                 </div>
               </div>
 
-              <div class="settings-subpanel screen-template-panel">
-                <div class="panel-title-row compact">
-                  <div>
-                    <h3 data-i18n="ui.screen_templates.title">屏幕模板</h3>
-                    <p class="section-copy" data-i18n="ui.screen_templates.desc">按进程、窗口标题或关键词覆盖通用屏幕分类；AiHong 专用逻辑仍优先。</p>
-                  </div>
-                  <div class="inline-actions">
-                    <button id="ocrScreenTemplatesDraftBtn" class="secondary" data-i18n="ui.screen_templates.draft">生成草稿</button>
-                    <button id="ocrScreenTemplatesValidateBtn" class="ghost" data-i18n="ui.screen_templates.validate">验证模板</button>
-                    <button id="ocrScreenTemplatesUndoBtn" class="ghost" disabled data-i18n="ui.screen_templates.undo">撤销草稿</button>
-                    <button id="ocrScreenTemplatesSaveBtn" class="secondary" data-i18n="ui.screen_templates.save">保存模板</button>
-                  </div>
-                </div>
-                <label class="field">
-                  <span data-i18n="ui.screen_templates.json_label">模板 JSON</span>
-                  <textarea id="ocrScreenTemplatesInput" rows="5" spellcheck="false" placeholder='[{"id":"demo-gallery","stage":"gallery_stage","process_names":["game.exe"],"keywords":["Gallery","CG"],"min_keyword_hits":1}]'></textarea>
-                </label>
-                <div class="screen-region-editor">
-                  <div class="screen-region-toolbar">
-                    <select id="ocrRegionStageSelect" aria-label="区域阶段" data-i18n-aria-label="ui.screen_templates.stage_label">
-                      <option value="dialogue_stage" data-i18n="ui.stage.dialogue">对白区</option>
-                      <option value="menu_stage" data-i18n="ui.stage.menu">菜单区</option>
-                      <option value="title_stage" data-i18n="ui.stage.title">标题/主菜单</option>
-                      <option value="save_load_stage" data-i18n="ui.stage.save_load">存读档</option>
-                      <option value="config_stage" data-i18n="ui.stage.config">设置</option>
-                      <option value="gallery_stage" data-i18n="ui.stage.gallery">回想/鉴赏</option>
-                      <option value="minigame_stage" data-i18n="ui.stage.minigame">小游戏</option>
-                      <option value="game_over_stage" data-i18n="ui.stage.game_over">Game Over</option>
-                    </select>
-                    <button id="ocrRegionSnapshotBtn" class="secondary" data-i18n="ui.screen_templates.load_snapshot">加载截图</button>
-                    <button id="ocrRegionTemplateBtn" class="ghost" data-i18n="ui.screen_templates.region_template">区域生成模板</button>
-                    <button id="ocrRegionCaptureBtn" class="ghost" data-i18n="ui.screen_templates.apply_to_crop">套用到裁剪</button>
-                  </div>
-                  <div id="ocrRegionEditor" class="screen-region-canvas" aria-label="OCR 区域编辑器" data-i18n-aria-label="ui.screen_templates.region_editor_label">
-                    <img id="ocrRegionImage" alt="" hidden>
-                    <div id="ocrRegionSelectionBox" class="screen-region-selection" hidden></div>
-                    <div id="ocrRegionEmpty" class="screen-region-empty" data-i18n="ui.screen_templates.no_snapshot">暂无截图</div>
-                  </div>
-                  <p id="ocrRegionHint" class="result-note" data-i18n="ui.screen_templates.region_hint">加载最近 OCR 屏幕感知截图后，拖拽框选区域。</p>
-                </div>
-              </div>
-
               <div class="settings-subpanel capture-profile-panel">
                 <div class="panel-title-row compact">
                   <div>
@@ -606,6 +564,6 @@
   </div>
 
   <script src="./i18n.js?v=20260505-ui-i18n"></script>
-  <script src="./main.js?v=20260507-rapidocr-model-refresh"></script>
+  <script src="./main.js?v=20260507-hide-screen-templates"></script>
 </body>
 </html>
