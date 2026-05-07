@@ -4587,13 +4587,14 @@ class GalgamePlugin(NekoPluginBase):
 
             download_result = await download_rapidocr_models(
                 logger=self.logger,
-                install_target_dir_raw=self._cfg.ocr_reader_install_target_dir,
+                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
                 ocr_version=self._cfg.rapidocr_ocr_version,
                 lang_type=self._cfg.rapidocr_lang_type,
                 timeout_seconds=float(self._cfg.ocr_reader_install_timeout_seconds or 180.0),
                 force=bool(force),
                 task_id=current_run_id or None,
                 progress_callback=progress_callback,
+                before_completed_callback=clear_install_inspection_cache,
             )
             clear_install_inspection_cache()
             await self._poll_bridge(force=True)

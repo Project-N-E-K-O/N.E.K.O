@@ -1494,7 +1494,8 @@
             "gentleMaiden": "Gentil donzela",
             "sweetLady": "Doce senhora",
             "frailMaiden": "Donzela Frágil",
-            "childishMaiden": "Donzela Infantil"
+            "childishMaiden": "Donzela Infantil",
+            "yui_cn": "YUI (chinês)"
         },
         "cloneMethod": "Método Clonar",
         "cloneMethodFile": "Arquivo local",

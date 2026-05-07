@@ -1494,7 +1494,8 @@
             "gentleMaiden": "温柔少女",
             "sweetLady": "甜美御姐",
             "frailMaiden": "病弱少女",
-            "childishMaiden": "稚气少女"
+            "childishMaiden": "稚气少女",
+            "yui_cn": "YUI（中文）"
         },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地文件",
