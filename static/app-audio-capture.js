@@ -1221,7 +1221,10 @@
                 // 没说话时不能用警告色把用户吓到。
                 const hasSignal = rms >= 0.008;
                 const lowVolume = hasSignal && peak < 0.15;
-                const high = !isClipping && peak > 0.85;
+                // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
+                // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
+                // 守住会让"等待中"被误判为"音量较高"。
+                const high = hasSignal && !isClipping && peak > 0.85;
 
                 // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
                 cachedBarFill.style.width = `${volumePercent}%`;
