@@ -215,6 +215,26 @@ global.window = global;
 global.document = document;
 global.navigator = {{}};
 global.console = silentConsole;
+global.location = {{ origin: 'http://localhost' }};
+global._listeners = new Map();
+global.addEventListener = function (type, handler) {{
+  const handlers = this._listeners.get(type) || [];
+  handlers.push(handler);
+  this._listeners.set(type, handlers);
+}};
+global.removeEventListener = function (type, handler) {{
+  const handlers = this._listeners.get(type) || [];
+  const index = handlers.indexOf(handler);
+  if (index >= 0) {{
+    handlers.splice(index, 1);
+  }}
+}};
+global.dispatchEvent = function (event) {{
+  const handlers = this._listeners.get(event.type) || [];
+  for (const handler of [...handlers]) {{
+    handler.call(this, event);
+  }}
+}};
 global.Blob = class FakeBlob {{
   constructor(parts, options) {{
     this.parts = parts;
