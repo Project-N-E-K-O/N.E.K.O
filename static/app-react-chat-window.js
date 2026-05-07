@@ -2286,6 +2286,10 @@
             }
             idleDockActive = false;
             idleDockSavedPosition = null;
+            idleDockTier = IDLE_DOCK_TIER_NONE;
+            stopIdleDockMinimizeObserver();
+            stopIdleDockContainerObserver();
+            cancelIdleDockSync();
         }
         setMinimized(!minimized);
     }

@@ -447,6 +447,9 @@
         if (!state.started) {
             return false;
         }
+        if (state.autoGoodbyeTriggered) {
+            return false;
+        }
         if (!isEligiblePage()) {
             return false;
         }

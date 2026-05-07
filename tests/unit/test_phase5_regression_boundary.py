@@ -94,6 +94,16 @@ def test_has_blocking_active_work_treats_queued_and_running_as_blockers():
     assert "cancelled" not in source or "'cancelled'" not in source
 
 
+def test_try_auto_goodbye_has_autoGoodbyeTriggered_guard():
+    """防止 goodbye manager 没设上 _goodbyeClicked 时重复派发事件。"""
+    source = _read(APP_AUTO_GOODBYE_PATH)
+
+    assert "state.autoGoodbyeTriggered" in source
+    assert source.index("state.autoGoodbyeTriggered") < source.index(
+        "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'"
+    )
+
+
 # ── 5.6 deferred reminder (保持 running) 被正确阻断 ──────
 
 
