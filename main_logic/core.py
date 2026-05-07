@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable, Optional
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_REMEMBER_VOICE_ECHO_UNSET: Any = object()
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -1660,7 +1661,7 @@ class LLMSessionManager:
         request_id: Any = _REQUEST_ID_UNSET,
         track_ai_turn: bool = True,
         cache_for_new_session: bool = True,
-        remember_voice_echo: bool = True,
+        remember_voice_echo: Any = _REMEMBER_VOICE_ECHO_UNSET,
     ):
         """Qwen输出转录回调: 可用于前端显示/缓存/同步。
 
@@ -1675,6 +1676,8 @@ class LLMSessionManager:
         默认 sentinel 用 module-level ``_REQUEST_ID_UNSET = object()`` 区分
         "未传"和"显式 None"，与单纯 ``request_id is None`` 检测不同。
         """
+        if remember_voice_echo is _REMEMBER_VOICE_ECHO_UNSET:
+            remember_voice_echo = not self.use_tts
         text_clean = self.emotion_pattern.sub('', text)
         # 累加到当前轮 AI 文本 buffer，turn end 时一并交给 activity tracker 做
         # unfinished_thread 检测。emotion_pattern 已剥掉表情标签，但保留 <expr>

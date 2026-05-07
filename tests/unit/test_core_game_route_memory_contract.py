@@ -72,9 +72,12 @@ class _FakeAliveThread:
 def _make_manager():
     mgr = object.__new__(core_module.LLMSessionManager)
     mgr.websocket = None
+    mgr.websocket_lock = None
     mgr.session = None
     mgr.sync_message_queue = _FakeQueue()
     mgr.lanlan_name = "Lan"
+    mgr.master_name = "Master"
+    mgr.emotion_pattern = core_module.re.compile("<(.*?)>")
     mgr.lock = _AsyncNullLock()
     mgr.audio_resampler = _FakeResampler()
     mgr.use_tts = False
@@ -397,6 +400,50 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
 
     assert mgr._recent_ai_voice_echo_text == ""
     assert mgr._recent_ai_voice_echo_at == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_defaults_to_skip_display_echo_when_tts_enabled(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.use_tts = True
+
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "显示文本（括号也显示）")
+
+    assert mgr._current_ai_turn_text == "显示文本（括号也显示）"
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._recent_ai_voice_echo_at == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.use_tts = True
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "确认已经播报的文本",
+        remember_voice_echo=True,
+    )
+
+    assert mgr._recent_ai_voice_echo_text == "确认已经播报的文本"
+    assert mgr._recent_ai_voice_echo_at == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_defaults_to_remember_echo_without_tts(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.use_tts = False
+
+    await core_module.LLMSessionManager.send_lanlan_response(mgr, "原生语音输出文本")
+
+    assert mgr._recent_ai_voice_echo_text == "原生语音输出文本"
+    assert mgr._recent_ai_voice_echo_at == FIXED_TS
 
 
 @pytest.mark.unit
