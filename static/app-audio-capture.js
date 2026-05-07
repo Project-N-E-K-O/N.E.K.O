@@ -1259,10 +1259,13 @@
                     }
                 }
 
-                // 更新提示文字
+                // 更新提示文字（分支顺序与上面的 status 保持一致：
+                // clipping → high → lowVolume → hasSignal → idle）
                 if (cachedHint) {
                     if (isClipping) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintClipping') : '麦克风增益过高，音频被削顶，AI 可能识别异常，请调低增益';
+                    } else if (high) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintHigh') : '音量偏高，建议调低增益';
                     } else if (lowVolume) {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
                     } else if (hasSignal) {

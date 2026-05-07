@@ -810,6 +810,7 @@
         "volumeHintDetecting": "正在檢測麥剋風輸入...",
         "volumeHintNoSound": "檢測不到聲音，請檢查麥剋風",
         "volumeHintLow": "音量較低，建議調高增益",
+        "volumeHintHigh": "音量偏高，建議調低增益",
         "volumeHintOk": "麥剋風工作正常",
         "volumeClipping": "過載",
         "volumeHintClipping": "麥剋風增益過高，音頻已削頂，AI 可能識別異常，請調低增益",

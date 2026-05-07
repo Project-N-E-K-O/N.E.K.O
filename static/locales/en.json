@@ -810,6 +810,7 @@
         "volumeHintDetecting": "Detecting microphone input...",
         "volumeHintNoSound": "No sound detected, check microphone",
         "volumeHintLow": "Volume is low, try increasing gain",
+        "volumeHintHigh": "Volume is high, consider lowering gain",
         "volumeHintOk": "Microphone working properly",
         "volumeClipping": "Clipping",
         "volumeHintClipping": "Mic gain too high, audio is clipping — AI may misrecognize, please lower gain",

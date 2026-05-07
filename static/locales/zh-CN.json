@@ -810,6 +810,7 @@
         "volumeHintDetecting": "正在检测麦克风输入...",
         "volumeHintNoSound": "检测不到声音，请检查麦克风",
         "volumeHintLow": "音量较低，建议调高增益",
+        "volumeHintHigh": "音量偏高，建议调低增益",
         "volumeHintOk": "麦克风工作正常",
         "volumeClipping": "过载",
         "volumeHintClipping": "麦克风增益过高，音频已削顶，AI 可能识别异常，请调低增益",
