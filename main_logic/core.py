@@ -594,7 +594,7 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_at: float = 0.0
         self._pending_ai_voice_echo_text: str = ''
         self._pending_ai_voice_echo_chunks = deque()
-        self._confirmed_ai_voice_echo_audio_speech_ids: set[str | None] = set()
+        self._confirmed_ai_voice_echo_audio_speech_ids: set[str] = set()
 
         # 事件驱动状态机：收口 "谁占用当前 turn" 的所有信号，供 proactive 流水线
         # 零成本（O(1) 读）频繁询问 is_proactive_preempted。事件发射点分布在
@@ -785,7 +785,7 @@ class LLMSessionManager:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
-        self._remember_pending_ai_voice_echo(text)
+        self._remember_pending_ai_voice_echo(speech_id, text)
 
     def _reset_tts_stream_normalizer(self) -> None:
         """清空所有 TTS 文本 stripper 状态。中断 / 轮次结束 / session 重建时调用。"""
@@ -823,7 +823,7 @@ class LLMSessionManager:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
-            self._remember_pending_ai_voice_echo(flushed)
+            self._remember_pending_ai_voice_echo(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
         self._tts_done_queued_for_turn = True
@@ -1498,14 +1498,26 @@ class LLMSessionManager:
         self._recent_ai_voice_echo_text = recent_echo_text[-_VOICE_ECHO_LOOKBACK_CHARS:]
         self._recent_ai_voice_echo_at = time.time()
 
-    def _remember_pending_ai_voice_echo(self, text: str) -> None:
+    @staticmethod
+    def _pending_ai_voice_echo_item_speech_id(item) -> str | None:
+        if isinstance(item, tuple) and len(item) == 2:
+            return item[0]
+        return None
+
+    @staticmethod
+    def _pending_ai_voice_echo_item_text(item) -> str:
+        if isinstance(item, tuple) and len(item) == 2:
+            return item[1]
+        return item
+
+    def _remember_pending_ai_voice_echo(self, speech_id: str | None, text: str) -> None:
         if not text:
             return
         pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
         if pending_chunks is None:
             pending_chunks = deque()
             self._pending_ai_voice_echo_chunks = pending_chunks
-        pending_chunks.append(text)
+        pending_chunks.append((speech_id, text))
         self._sync_pending_ai_voice_echo_text()
 
     def _sync_pending_ai_voice_echo_text(self) -> None:
@@ -1514,17 +1526,33 @@ class LLMSessionManager:
             pending_chunks = deque()
             pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
             if pending_echo_text:
-                pending_chunks.append(pending_echo_text)
+                pending_chunks.append((None, pending_echo_text))
             self._pending_ai_voice_echo_chunks = pending_chunks
 
-        pending_echo_text = "".join(pending_chunks)
+        pending_echo_text = "".join(
+            self._pending_ai_voice_echo_item_text(chunk)
+            for chunk in pending_chunks
+        )
         excess = max(0, len(pending_echo_text) - _VOICE_ECHO_LOOKBACK_CHARS)
-        while pending_chunks and excess >= len(pending_chunks[0]):
-            excess -= len(pending_chunks.popleft())
+        while pending_chunks:
+            first_text = self._pending_ai_voice_echo_item_text(pending_chunks[0])
+            if not first_text:
+                pending_chunks.popleft()
+                continue
+            if excess < len(first_text):
+                break
+            excess -= len(first_text)
+            pending_chunks.popleft()
         if pending_chunks and excess > 0:
-            pending_chunks[0] = pending_chunks[0][excess:]
+            first_chunk = pending_chunks[0]
+            first_speech_id = self._pending_ai_voice_echo_item_speech_id(first_chunk)
+            first_text = self._pending_ai_voice_echo_item_text(first_chunk)
+            pending_chunks[0] = (first_speech_id, first_text[excess:])
 
-        self._pending_ai_voice_echo_text = "".join(pending_chunks)
+        self._pending_ai_voice_echo_text = "".join(
+            self._pending_ai_voice_echo_item_text(chunk)
+            for chunk in pending_chunks
+        )
 
     def _confirm_pending_ai_voice_echo(self, speech_id: str | None = None) -> None:
         if speech_id is None:
@@ -1541,18 +1569,22 @@ class LLMSessionManager:
         pending_chunks = getattr(self, "_pending_ai_voice_echo_chunks", None)
         if pending_chunks is None:
             pending_echo_text = getattr(self, "_pending_ai_voice_echo_text", "") or ""
-            if not pending_echo_text:
-                return
-            self._pending_ai_voice_echo_text = ''
-            confirmed_speech_ids.add(speech_id)
-            self._remember_recent_ai_voice_echo(pending_echo_text)
+            pending_chunks = deque()
+            if pending_echo_text:
+                pending_chunks.append((None, pending_echo_text))
+            self._pending_ai_voice_echo_chunks = pending_chunks
+            self._sync_pending_ai_voice_echo_text()
             return
 
         if not pending_chunks:
             self._pending_ai_voice_echo_text = ''
             return
 
-        pending_echo_text = pending_chunks.popleft()
+        pending_speech_id = self._pending_ai_voice_echo_item_speech_id(pending_chunks[0])
+        if pending_speech_id != speech_id:
+            return
+
+        pending_echo_text = self._pending_ai_voice_echo_item_text(pending_chunks.popleft())
         self._sync_pending_ai_voice_echo_text()
         confirmed_speech_ids.add(speech_id)
         self._remember_recent_ai_voice_echo(pending_echo_text)
