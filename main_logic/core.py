@@ -1526,6 +1526,9 @@ class LLMSessionManager:
         self._pending_ai_voice_echo_text = "".join(pending_chunks)
 
     def _confirm_pending_ai_voice_echo(self, speech_id: str | None = None) -> None:
+        if speech_id is None:
+            return
+
         confirmed_speech_ids = getattr(self, "_confirmed_ai_voice_echo_audio_speech_ids", None)
         if confirmed_speech_ids is None:
             confirmed_speech_ids = set()

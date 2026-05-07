@@ -442,6 +442,7 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
 @pytest.mark.asyncio
 async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypatch):
     mgr = _make_manager()
+    mgr.use_tts = True
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.send_lanlan_response(mgr, "显示文本（括号也显示）")
@@ -516,12 +517,28 @@ def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypat
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "已经发出音频的第一句")
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "还在队列里的第二句")
 
-    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr)
+    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr, "speech-1")
 
     assert mgr._recent_ai_voice_echo_text == "已经发出音频的第一句"
     assert mgr._recent_ai_voice_echo_at == FIXED_TS
     assert mgr._pending_ai_voice_echo_text == "还在队列里的第二句"
     assert list(mgr._pending_ai_voice_echo_chunks) == ["还在队列里的第二句"]
+
+
+@pytest.mark.unit
+def test_confirm_pending_ai_voice_echo_skips_sidless_confirmation(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "无法确认归属的文本")
+
+    core_module.LLMSessionManager._confirm_pending_ai_voice_echo(mgr)
+
+    assert mgr._recent_ai_voice_echo_text == ""
+    assert mgr._recent_ai_voice_echo_at == 0.0
+    assert mgr._pending_ai_voice_echo_text == "无法确认归属的文本"
+    assert list(mgr._pending_ai_voice_echo_chunks) == ["无法确认归属的文本"]
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
 
 
 @pytest.mark.unit
