@@ -559,6 +559,36 @@ def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypatch):
+    mgr = _make_manager()
+    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    mgr.use_tts = True
+    mgr.tts_ready = True
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "new-speech"
+    mgr.tts_pending_chunks = [("old-speech", "old cached text")]
+    mgr.tts_response_queue.put(("__audio__", "old-speech", b"old-audio"))
+
+    core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "old unplayed text")
+    mgr._confirmed_ai_voice_echo_audio_speech_ids.add("old-speech")
+
+    await core_module.LLMSessionManager.handle_text_data(
+        mgr,
+        "new tts text",
+        is_first_chunk=True,
+    )
+
+    assert mgr.tts_response_queue.empty()
+    assert mgr.tts_pending_chunks == []
+    assert mgr.tts_request_queue.messages == [("new-speech", "new tts text")]
+    assert mgr._pending_ai_voice_echo_text == "new tts text"
+    assert list(mgr._pending_ai_voice_echo_chunks) == ["new tts text"]
+    assert mgr._confirmed_ai_voice_echo_audio_speech_ids == set()
+    assert mgr._recent_ai_voice_echo_text == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sidless_tts_audio_does_not_confirm_pending_echo(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)

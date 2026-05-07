@@ -1036,6 +1036,7 @@ class LLMSessionManager:
         if is_first_chunk and self.use_tts:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
+                self._discard_pending_ai_voice_echo()
 
             if self.tts_thread and self.tts_thread.is_alive():
                 # 清空响应队列中待发送的音频数据
