@@ -40,10 +40,14 @@
     function isHomeTutorialLockedForGreeting() {
         try {
             if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                return window.isNekoHomeTutorialBlockingGreeting() === true;
+                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
+                    return true;
+                }
             }
             if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                return window.isNekoHomeTutorialInteractionLocked() === true;
+                if (window.isNekoHomeTutorialInteractionLocked() === true) {
+                    return true;
+                }
             }
         } catch (_) {}
         try {
