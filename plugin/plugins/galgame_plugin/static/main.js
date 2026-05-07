@@ -3040,6 +3040,15 @@ function shouldRestoreInstallTaskState(kind, state, status = latestStatus) {
   return !isInstallTaskTerminal(state);
 }
 
+function canApplyRestoredInstallTaskState(kind, restoredTaskId) {
+  const runtime = installRuntime[kind];
+  if (!runtime || !runtime.inProgress) {
+    return true;
+  }
+  const currentTaskId = String(runtime.currentTaskId || '');
+  return Boolean(restoredTaskId && currentTaskId && restoredTaskId === currentTaskId);
+}
+
 function installStatusPriority(status) {
   const normalized = String(status || '').trim();
   if (normalized === 'completed') {
@@ -3714,8 +3723,12 @@ async function restoreInstallState(kind) {
     return;
   }
 
-  applyInstallTaskState(kind, restoredState, { allowRefresh: false, showTerminalFlash: false });
   const restoredTaskId = restoredState.task_id || restoredState.run_id || '';
+  if (!canApplyRestoredInstallTaskState(kind, restoredTaskId)) {
+    return;
+  }
+
+  applyInstallTaskState(kind, restoredState, { allowRefresh: false, showTerminalFlash: false });
   if (restoredTaskId && !isInstallTaskTerminal(restoredState)) {
     connectInstallStream(kind, restoredTaskId);
   }

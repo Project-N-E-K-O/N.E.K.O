@@ -202,11 +202,13 @@ async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
 
     assert response.status_code == 200
     script = response.text
+    assert "function canApplyRestoredInstallTaskState" in script
     assert "function shouldOfferRapidOcrModelsDownload" in script
     assert "function shouldRestoreRapidOcrModelsFailure" in script
     assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
     assert "showTerminalFlash: false" in script
     assert "clearPersistedInstallTaskId('rapidocr_models');" in script
+    assert script.index("function canApplyRestoredInstallTaskState") < script.index("applyInstallTaskState(kind, restoredState")
     assert script.index("applyRapidOcrModelsGate(rapidocr);") < script.index(
         "const lastTask = installRuntime.rapidocr_models.state;"
     )
