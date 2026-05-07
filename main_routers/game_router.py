@@ -725,7 +725,7 @@ def _default_soccer_pregame_context(*, initial_difficulty: str | None = None) ->
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "普通陪玩默认随机中等难度；后续由局内互动和游戏 AI 自然调整。",
+        "difficultyPolicy": "普通陪玩默认中等难度；后续由局内互动和游戏 AI 自然调整。",
         "moodPolicy": "沿用普通陪玩表现；不引入强情绪惯性。",
         "softeningSignals": [],
         "hardeningSignals": [],
