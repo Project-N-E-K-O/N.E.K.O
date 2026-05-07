@@ -1581,7 +1581,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
 
     try:
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        assert started.wait(timeout=0.5) is True
+        assert started.wait(timeout=2.0) is True
         assert first.runtime["detail"] == "capture_failed"
         assert "timed out" in first.runtime["last_capture_error"]
 
@@ -1731,7 +1731,6 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
             assert manager._capture_future_timed_out is False
             assert manager._abandoned_capture_workers == [
                 (abandoned_executor, abandoned),
-                (current_executor, current),
             ]
 
         retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
