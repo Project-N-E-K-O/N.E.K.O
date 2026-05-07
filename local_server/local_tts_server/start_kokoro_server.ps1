@@ -275,12 +275,16 @@ function Stop-ExistingLocalTtsIfNeeded {
     $isLocalTts = $health -and $health.status -eq "ok" -and $health.engines
 
     if ($KeepExisting) {
-        Write-Host "Port $Port is already in use; keeping existing process because -KeepExisting was passed." -ForegroundColor Yellow
-        Write-Host "PID       : $($owner.Pid)"
-        Write-Host "Process   : $($owner.Name)"
-        Write-Host "Path      : $($owner.Path)"
-        $script:existingLocalTtsKept = $true
-        return
+        if ($isLocalTts) {
+            Write-Host "Port $Port already has a NEKO local TTS server; keeping existing process because -KeepExisting was passed." -ForegroundColor Yellow
+            Write-Host "PID       : $($owner.Pid)"
+            Write-Host "Process   : $($owner.Name)"
+            Write-Host "Path      : $($owner.Path)"
+            $script:existingLocalTtsKept = $true
+            return
+        }
+
+        throw "Port $Port is already used by PID $($owner.Pid) ($($owner.Name)), but it is not a healthy NEKO local TTS server. Stop it first, or set LOCAL_TTS_PORT to another port."
     }
 
     if ($isLocalTts) {
@@ -391,13 +395,10 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Milliseconds 500
-        try {
-            $health = Invoke-WebRequest $healthUrl -UseBasicParsing -TimeoutSec 2
-            if ($health.StatusCode -eq 200) {
-                $ready = $true
-                break
-            }
-        } catch {
+        $health = Test-LocalTtsHealth -Url $healthUrl
+        if ($health -and $health.status -eq "ok" -and $health.engines) {
+            $ready = $true
+            break
         }
     }
 

@@ -182,6 +182,9 @@ class CommandWavEngine:
         self.name = name
         self._env_var = env_var
 
+    def is_configured(self) -> bool:
+        return bool(os.getenv(self._env_var, "").strip())
+
     def synthesize(self, text: str, *, voice: str, speed: float) -> SynthesisResult:
         template = os.getenv(self._env_var, "").strip()
         if not template:
@@ -471,6 +474,44 @@ class KokoroEngine:
             return self._synthesize_loaded(text, voice=voice, speed=speed)
 
 
+class FallbackTTSEngine:
+    """Try the resident engine first, then use a configured command wrapper."""
+
+    def __init__(self, name: str, primary: TTSEngine, fallback: CommandWavEngine):
+        self.name = name
+        self._primary = primary
+        self._fallback = fallback
+
+    def preload(self, *, voice: str) -> tuple[str, str]:
+        preload = getattr(self._primary, "preload", None)
+        if not callable(preload):
+            return "command", voice
+        try:
+            return preload(voice=voice)
+        except Exception as exc:
+            if not self._fallback.is_configured():
+                raise
+            logger.warning(
+                "%s in-process preload failed; command fallback will be used if synthesis is requested: %s",
+                self.name,
+                exc,
+            )
+            return "command", voice
+
+    def synthesize(self, text: str, *, voice: str, speed: float) -> SynthesisResult:
+        try:
+            return self._primary.synthesize(text, voice=voice, speed=speed)
+        except Exception as exc:
+            if not self._fallback.is_configured():
+                raise
+            logger.warning(
+                "%s in-process synthesis failed; retrying with command fallback: %s",
+                self.name,
+                exc,
+            )
+            return self._fallback.synthesize(text, voice=voice, speed=speed)
+
+
 class ToneEngine:
     """Smoke-test engine used only when LOCAL_TTS_ENABLE_TONE=1."""
 
@@ -491,7 +532,11 @@ class ToneEngine:
 
 def build_engines() -> dict[str, TTSEngine]:
     engines: dict[str, TTSEngine] = {
-        "kokoro": KokoroEngine(),
+        "kokoro": FallbackTTSEngine(
+            "kokoro",
+            KokoroEngine(),
+            CommandWavEngine("kokoro", "LOCAL_TTS_KOKORO_CMD"),
+        ),
         "melotts": CommandWavEngine("melotts", "LOCAL_TTS_MELOTTS_CMD"),
         "melo": CommandWavEngine("melotts", "LOCAL_TTS_MELOTTS_CMD"),
         "chattts": CommandWavEngine("chattts", "LOCAL_TTS_CHATTTS_CMD"),
@@ -528,8 +573,9 @@ async def warmup_default_kokoro_if_explicitly_requested() -> None:
         return
 
     engine = ENGINES.get("kokoro")
-    if not isinstance(engine, KokoroEngine):
-        logger.info("Kokoro warmup skipped: kokoro engine is not in-process.")
+    preload = getattr(engine, "preload", None)
+    if not callable(preload):
+        logger.info("Kokoro warmup skipped: kokoro engine has no preload hook.")
         return
 
     voice = os.getenv("LOCAL_TTS_DEFAULT_VOICE", "kokoro:zf_001").strip() or "kokoro:zf_001"
@@ -542,7 +588,7 @@ async def warmup_default_kokoro_if_explicitly_requested() -> None:
     logger.info("Startup Kokoro preload starting: voice=%s", spec.voice)
     try:
         loop = asyncio.get_running_loop()
-        preload_result = await loop.run_in_executor(None, lambda: engine.preload(voice=spec.voice))
+        preload_result = await loop.run_in_executor(None, lambda: preload(voice=spec.voice))
         device, resolved_voice = normalize_preload_result(preload_result, spec.voice)
         elapsed = time.perf_counter() - started
         WARMUP_STATUS.update(

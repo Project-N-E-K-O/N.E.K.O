@@ -25,6 +25,7 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
+let _localKokoroVoiceRefreshTimer = null;
 
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
@@ -134,6 +135,16 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
             showStatus(`Local Kokoro voice list unavailable: ${e.message || e}`, 'error');
         }
     }
+}
+
+function scheduleLocalKokoroVoiceRefresh() {
+    if (_localKokoroVoiceRefreshTimer) {
+        clearTimeout(_localKokoroVoiceRefreshTimer);
+    }
+    _localKokoroVoiceRefreshTimer = setTimeout(() => {
+        _localKokoroVoiceRefreshTimer = null;
+        refreshLocalKokoroVoiceOptions(true);
+    }, 300);
 }
 
 function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId) {
@@ -1761,14 +1772,22 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    ['localKokoroWsUrl', 'localKokoroVoiceSelect'].forEach(id => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('change', applyLocalKokoroTtsConfig);
-        if (el.tagName !== 'SELECT') {
-            el.addEventListener('input', applyLocalKokoroTtsConfig);
-        }
-    });
+    const localKokoroUrlInput = document.getElementById('localKokoroWsUrl');
+    if (localKokoroUrlInput) {
+        localKokoroUrlInput.addEventListener('change', () => {
+            applyLocalKokoroTtsConfig();
+            refreshLocalKokoroVoiceOptions(true);
+        });
+        localKokoroUrlInput.addEventListener('input', () => {
+            applyLocalKokoroTtsConfig();
+            scheduleLocalKokoroVoiceRefresh();
+        });
+    }
+
+    const localKokoroVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (localKokoroVoiceSelect) {
+        localKokoroVoiceSelect.addEventListener('change', applyLocalKokoroTtsConfig);
+    }
 
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {

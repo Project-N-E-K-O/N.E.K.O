@@ -5532,6 +5532,20 @@ function _panelLocalKokoroVoicesUrlFromWs(wsUrl) {
     }
 }
 
+function _normalizePanelKokoroVoiceId(value) {
+    const raw = (value || '').trim();
+    if (!raw) return '';
+    return raw.startsWith('kokoro:') ? raw : `kokoro:${raw}`;
+}
+
+function _panelShouldProbeKokoroVoices(config) {
+    const ttsUrl = (config?.ttsModelUrl || '').trim();
+    const ttsVoiceId = (config?.ttsVoiceId || '').trim();
+    if (!ttsUrl) return true;
+    if (/^wss?:\/\//i.test(ttsUrl)) return true;
+    return ttsVoiceId.startsWith('kokoro:');
+}
+
 async function _fetchPanelKokoroVoices() {
     const fetchJson = async (url, timeoutMs = 3000) => {
         const controller = new AbortController();
@@ -5550,16 +5564,20 @@ async function _fetchPanelKokoroVoices() {
 
     try {
         const config = await fetchJson('/api/config/core_api');
+        if (!_panelShouldProbeKokoroVoices(config)) return [];
         const ttsUrl = config?.ttsModelUrl || 'ws://127.0.0.1:50000';
         const voicesUrl = _panelLocalKokoroVoicesUrlFromWs(ttsUrl);
         if (!voicesUrl) return [];
         const result = await fetchJson(voicesUrl);
         const voices = result?.data?.kokoro || [];
         if (Array.isArray(voices) && voices.length > 0) {
-            return voices.map(v => ({
-                voice_id: v.voice_id || `kokoro:${v.id || v.name}`,
-                name: v.name || v.id || v.voice_id,
-            })).filter(v => v.voice_id && v.voice_id !== 'kokoro:');
+            return voices.map(v => {
+                const voiceId = _normalizePanelKokoroVoiceId(v.voice_id || v.id || v.name);
+                return {
+                    voice_id: voiceId,
+                    name: v.name || v.id || voiceId.replace(/^kokoro:/, ''),
+                };
+            }).filter(v => v.voice_id && v.voice_id !== 'kokoro:');
         }
     } catch (e) {
         console.debug('Local Kokoro voices not available:', e.message || e);
@@ -5570,6 +5588,9 @@ async function _fetchPanelKokoroVoices() {
 // Local Kokoro TTS 声音列表
 async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
     const KOKORO_PREFIX = 'kokoro:';
+    const currentKokoroVoiceId = currentVoiceId && (
+        currentVoiceId.startsWith(KOKORO_PREFIX) || !currentVoiceId.includes(':')
+    ) ? _normalizePanelKokoroVoiceId(currentVoiceId) : '';
 
     if (!selectEl) return;
 
@@ -5588,20 +5609,20 @@ async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
         option.value = v.voice_id;
         option.textContent = v.name;
         option.title = v.voice_id;
-        if (v.voice_id === currentVoiceId) option.selected = true;
+        if (v.voice_id === currentKokoroVoiceId) option.selected = true;
         kokoroGroup.appendChild(option);
     });
 
-    if (currentVoiceId && currentVoiceId.startsWith(KOKORO_PREFIX) && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+    if (currentKokoroVoiceId && !selectEl.querySelector('option[value="' + CSS.escape(currentKokoroVoiceId) + '"]')) {
         const fallbackOpt = document.createElement('option');
-        fallbackOpt.value = currentVoiceId;
-        fallbackOpt.textContent = currentVoiceId.substring(KOKORO_PREFIX.length) + ' (?)';
-        fallbackOpt.title = currentVoiceId;
+        fallbackOpt.value = currentKokoroVoiceId;
+        fallbackOpt.textContent = currentKokoroVoiceId.substring(KOKORO_PREFIX.length) + ' (?)';
+        fallbackOpt.title = currentKokoroVoiceId;
         kokoroGroup.appendChild(fallbackOpt);
     }
 
-    if (currentVoiceId && currentVoiceId.startsWith(KOKORO_PREFIX)) {
-        selectEl.value = currentVoiceId;
+    if (currentKokoroVoiceId) {
+        selectEl.value = currentKokoroVoiceId;
     }
 }
 
