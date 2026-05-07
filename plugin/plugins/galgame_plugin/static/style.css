@@ -395,10 +395,6 @@ h1 {
   display: none;
 }
 
-.ocr-pipeline-steps[hidden] {
-  display: none;
-}
-
 .ocr-pipeline-panel h2 {
   font-size: 22px;
   line-height: 1.2;
@@ -1710,10 +1706,6 @@ details.panel-scroll-wide[open] {
   padding-top: 48px;
 }
 
-.modal[hidden] {
-  display: none;
-}
-
 .modal-overlay {
   position: absolute;
   inset: 0;
@@ -2377,6 +2369,21 @@ body:not(.onboarding-active) #onboardingView {
   box-shadow: 0 4px 16px rgba(14, 138, 124, 0.06);
 }
 
+.install-card.ok:hover {
+  border-color: rgba(14, 138, 124, 0.36);
+  box-shadow: 0 4px 16px rgba(14, 138, 124, 0.08);
+}
+
+.install-card.warning:hover {
+  border-color: rgba(178, 106, 28, 0.38);
+  box-shadow: 0 4px 16px rgba(178, 106, 28, 0.1);
+}
+
+.install-card.error:hover {
+  border-color: rgba(210, 95, 69, 0.42);
+  box-shadow: 0 4px 16px rgba(210, 95, 69, 0.1);
+}
+
 .install-card.ok {
   border-color: rgba(14, 138, 124, 0.3);
   background: rgba(14, 138, 124, 0.06);
@@ -2475,9 +2482,8 @@ body:not(.onboarding-active) #onboardingView {
   display: block;
   inline-size: 100%;
   max-inline-size: 100%;
-  min-width: 0;
+  min-inline-size: 0;
   margin: 6px 0 0;
-  overflow: hidden;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
