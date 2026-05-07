@@ -3960,7 +3960,7 @@ window.Jukebox = {
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
