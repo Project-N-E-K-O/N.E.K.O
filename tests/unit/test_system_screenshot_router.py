@@ -250,15 +250,17 @@ def test_interactive_screenshot_passes_with_valid_csrf_and_origin(monkeypatch):
 
 
 @pytest.mark.unit
-def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch):
+@pytest.mark.parametrize("platform_name", ["linux", "win32"])
+def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch, platform_name):
+    """Win32 / Linux 不再有 backend interactive 路径，统一 501 让前端走 Electron 兜底。"""
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
-    monkeypatch.setattr(system_router_module.sys, "platform", "linux")
+    monkeypatch.setattr(system_router_module.sys, "platform", platform_name)
 
     with _build_client() as client:
         response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 501
-    assert "only supported on macOS and Windows" in response.json()["error"]
+    assert "only supported on macOS" in response.json()["error"]
 
 
 @pytest.mark.unit
@@ -302,10 +304,10 @@ def test_interactive_screenshot_treats_macos_cancel_with_stderr_as_canceled(monk
 @pytest.mark.unit
 def test_interactive_screenshot_returns_failure_for_runtime_errors(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
-    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
     monkeypatch.setattr(
         system_router_module,
-        "_run_windows_interactive_screenshot",
+        "_run_macos_interactive_screenshot",
         lambda _path: (2, "boom"),
     )
 
@@ -317,6 +319,31 @@ def test_interactive_screenshot_returns_failure_for_runtime_errors(monkeypatch):
     assert payload["success"] is False
     assert payload["canceled"] is False
     assert payload["error"] == "boom"
+
+
+@pytest.mark.unit
+def test_interactive_screenshot_swallows_systemexit_from_runner(monkeypatch):
+    """Nuitka 等场景下 runner 抛 SystemExit（如缺 tk-inter 插件）必须被截住转 500，
+    否则会逃出 asyncio worker thread 拖死后端进程。"""
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+
+    def _runner_raises_systemexit(_path):
+        raise SystemExit("Nuitka: Need to use '--enable-plugin=tk-inter'")
+
+    monkeypatch.setattr(
+        system_router_module,
+        "_run_macos_interactive_screenshot",
+        _runner_raises_systemexit,
+    )
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["success"] is False
+    assert "aborted" in payload["error"].lower()
 
 
 @pytest.mark.unit
@@ -346,46 +373,3 @@ def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
 
 
-@pytest.mark.unit
-def test_interactive_screenshot_returns_canceled_when_windows_user_aborts(monkeypatch):
-    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
-    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
-    monkeypatch.setattr(
-        system_router_module,
-        "_run_windows_interactive_screenshot",
-        lambda _path: (1, ""),
-    )
-
-    with _build_client() as client:
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["success"] is False
-    assert payload["canceled"] is True
-
-
-@pytest.mark.unit
-def test_interactive_screenshot_returns_windows_cropped_image_data(monkeypatch):
-    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
-    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
-
-    def _fake_run(output_path: str):
-        Image.new("RGB", (90, 60), (220, 120, 40)).save(output_path, format="PNG")
-        return 0, ""
-
-    monkeypatch.setattr(
-        system_router_module,
-        "_run_windows_interactive_screenshot",
-        _fake_run,
-    )
-
-    with _build_client() as client:
-        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["success"] is True
-    assert payload["interactive"] is True
-    assert payload["size"] > 0
-    assert payload["data"].startswith("data:image/jpeg;base64,")

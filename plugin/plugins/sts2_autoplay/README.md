@@ -1,6 +1,54 @@
-# 尖塔自动游玩（sts2_autoplay）
+# 快速开始
 
 `sts2_autoplay` 用于把 `STS2 AI Agent` 暴露出来的本地《Slay the Spire 2》状态接入到 N.E.K.O。插件可以读取局面、执行合法动作、按策略自动游玩、让猫娘选择单张牌、向前端推送观察信息，并允许猫娘在后台任务中发送软指导来影响下一轮决策。
+
+## 使用教程
+
+### 获取MOD
+
+使用Git Clone：
+```text
+git clone https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+```
+
+### 安装游戏 Mod
+
+可以在steam里右键Slay the Spire 2， 选择管理->浏览本地文件
+
+Steam 默认游戏目录通常类似：
+
+```text
+...\Steam\steamapps\common\Slay the Spire 2
+```
+
+将`STS2 AI Agent` mod 复制到尖塔游戏目录的 `mods/` 下
+
+如果Slay the Spire 2目录下没有mods文件夹，请自行创建。
+
+```text
+使用mod可能导致存档丢失，请备份或利用控制台创哥理赔(在尖塔主菜单按 "~" 键，输入"unlock all"，即可解锁全角色和难度)
+```
+
+安装完成后目录应类似：
+
+```text
+Slay the Spire 2/
+  mods/
+    STS2AIAgent.dll
+    STS2AIAgent.pck
+    mod_id.json
+```
+
+### 启动游戏并确认接口
+
+先正常启动游戏，让 Mod 随游戏加载。
+
+在加载mod后，在NEKO中，启用猫爪，开启插件，进入插件面板，手动启动杀戮尖塔插件
+
+### 可使用的指令
+
+【打牌】【自动代打】【通一关】【牌打的如何】【停止】
+【打出一张牌】【打出某张牌】【推荐一张牌】……诸如此类…
 
 ## 功能概览
 
@@ -26,126 +74,6 @@
 1. 已经把 `STS2 AI Agent` 的 Mod 安装进《Slay the Spire 2》。
 2. 游戏启动后，`http://127.0.0.1:8080/health` 可以访问。
 3. N.E.K.O 中启用了 `sts2_autoplay` 插件。
-
-## 安装 STS2 AI Agent
-
-### 获取上游项目
-
-```text
-git clone https://gitclone.com/github.com/CharTyr/STS2-Agent.git
-```
-
-`STS2 AI Agent` 是给《Slay the Spire 2》使用的游戏 Mod + MCP Server 组合：
-
-- `STS2AIAgent`：把游戏状态和操作暴露为本地 HTTP API。
-- `mcp_server`：把本地 API 包装成 MCP Server，方便接入支持 MCP 的 AI 客户端。
-
-本插件当前直接连接本地 HTTP API，不要求启动 MCP Server。
-
-### 安装游戏 Mod
-
-将上游项目中 `mods` 目录里的文件复制到尖塔游戏目录的 `mods/` 下：
-
-```text
-STS2AIAgent.dll
-STS2AIAgent.pck
-mod_id.json
-```
-
-Steam 默认游戏目录通常类似：
-
-```text
-C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2
-```
-
-安装完成后目录应类似：
-
-```text
-Slay the Spire 2/
-  mods/
-    STS2AIAgent.dll
-    STS2AIAgent.pck
-    mod_id.json
-```
-
-### 启动游戏并确认接口
-
-先正常启动游戏，让 Mod 随游戏加载。然后访问：
-
-```text
-http://127.0.0.1:8080/health
-```
-
-只要能拿到返回结果，就说明 `STS2 AI Agent` 的本地 HTTP 服务已经启动成功。
-
-## MCP Server 说明
-
-`sts2_autoplay` 不需要 MCP Server。它直接访问：
-
-```text
-http://127.0.0.1:8080
-```
-
-只有当你还想把尖塔接入其他支持 MCP 的 AI 客户端时，才需要单独启动上游的 `mcp_server`。
-
-### 可选：启动 stdio MCP
-
-运行环境：
-
-1. `Python 3.11+`
-2. `uv`
-
-Windows 安装 `uv`：
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-macOS：
-
-```bash
-brew install uv
-```
-
-在上游 `mcp_server/` 工作目录下运行：
-
-```text
-uv run sts2-mcp-server
-```
-
-也可以使用上游脚本：
-
-Windows：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\start-mcp-stdio.ps1"
-```
-
-macOS / Linux：
-
-```bash
-./scripts/start-mcp-stdio.sh
-```
-
-### 可选：启动网络版 MCP
-
-Windows：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\start-mcp-network.ps1"
-```
-
-macOS / Linux：
-
-```bash
-./scripts/start-mcp-network.sh
-```
-
-默认 MCP 地址：
-
-```text
-http://127.0.0.1:8765/mcp
-```
 
 ## 本插件配置
 
@@ -454,7 +382,7 @@ sts2_start_autoplay
 先防一下吧，别吃太多伤害
 ```
 
-宿主应调用：
+应调用：
 
 ```text
 sts2_send_neko_guidance

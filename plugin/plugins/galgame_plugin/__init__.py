@@ -4475,7 +4475,7 @@ class GalgamePlugin(NekoPluginBase):
                 "force": {"type": "boolean", "default": False},
             },
         },
-        timeout=180.0,
+        timeout=600.0,
         llm_result_fields=["summary"],
     )
     async def galgame_install_textractor(self, force: bool = False, **_):

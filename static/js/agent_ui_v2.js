@@ -340,7 +340,7 @@
                 : !!flags['openclaw_enabled'];
             openclaw.forEach(cb => {
                 cb.checked = optimisticVal && (canUse || disabledByPending);
-                cb.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled;
+                cb.disabled = !!state.globalBusy || disabledByPending || activating || !effectiveAnalyzerEnabled || !ready;
                 if (disabledByPending || activating) {
                     cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
                 } else if (canUse) {
@@ -413,6 +413,11 @@
                     const ts = performance.now();
                     await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_master', ms: Number((performance.now() - ts).toFixed(2)) });
+                    if (enabled) {
+                        const openclawTs = performance.now();
+                        await refreshOpenClawAvailability();
+                        console.log('[AgentUIv2Timing]', { phase: 'refresh_openclaw_after_master', ms: Number((performance.now() - openclawTs).toFixed(2)) });
+                    }
                 }
             } catch (e) {
                 if (opSeq === state.masterOpSeq) {
