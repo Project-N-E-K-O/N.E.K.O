@@ -650,6 +650,13 @@ async def save_tutorial_progress(
             if key in _TUTORIAL_DEFAULTS
         }
     )
+    # Server-side consistency: completed_at only makes sense when completed=True.
+    # The "Reopen Setup Guide" reset path only sends {completed:False, skipped:False,
+    # last_step_index:0, started_at} and would otherwise leave a stale
+    # completed_at>0 stuck on the persisted state, contradicting completed=False
+    # for any reader that only inspects the timestamp.
+    if not current["completed"] and not current["skipped"]:
+        current["completed_at"] = _TUTORIAL_DEFAULTS["completed_at"]
     try:
         _write_tutorial_progress(current)
     except Exception:

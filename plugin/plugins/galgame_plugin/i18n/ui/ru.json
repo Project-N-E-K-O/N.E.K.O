@@ -1024,7 +1024,7 @@
   "ui.first_run.install_capture.pending": "Перейдите в панель «Установка зависимостей» и установите DXcam.",
   "ui.first_run.install_capture.title": "Установка инструмента захвата",
   "ui.first_run.install_ocr.done": "Движок OCR и выбранные модели готовы.",
-  "ui.first_run.install_ocr.pending": "Модели по умолчанию (ch + PP-OCRv4) поставляются в комплекте. Чтобы переключиться на japan/korean/v5, откройте Расширенные настройки и нажмите «Скачать модели сейчас» на баннере RapidOCR.",
+  "ui.first_run.install_ocr.pending": "RapidOCR недоступен. Используйте упакованную сборку или из исходников выполните `uv sync --group galgame` и перезапустите.",
   "ui.first_run.install_ocr.title": "Модели OCR",
   "ui.first_run.install_progress": "Установка: {status} {percent}%",
   "ui.first_run.skip_confirm": "Пропустить гид по настройке? Его можно будет открыть снова в расширенных настройках.",
@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "Последнее скачивание не удалось: {error}\nВозможно, требуется прокси. Также можно вручную скачать недостающие файлы с {source} в {dir} и нажать \"Обновить статус\".",
   "ui.install.rapidocr.download_source": "Источник скачивания",
   "ui.first_run.action.download_rapidocr_models": "Скачать модели сейчас",
-  "ui.first_run.install_ocr.pending_models": "Языковые модели по умолчанию (japan + PP-OCRv4) не скачаны. Нажмите «Скачать модели сейчас», чтобы получить ~10 МБ с ModelScope."
+  "ui.first_run.install_ocr.pending_models": "Выбранные языковые модели не скачаны. Нажмите «Скачать модели сейчас», чтобы получить их с ModelScope (по умолчанию для japan + PP-OCRv4 ~10 МБ)."
 }

@@ -204,22 +204,41 @@ def _resolve_rapidocr_model_paths(
     server_infix = "_server" if mt == "server" else ""
     type_suffix = "_server" if mt == "server" else "_mobile"
 
-    det_names = [
+    # Consult the registry FIRST so cross-version fallbacks resolve correctly.
+    # Example: ("PP-OCRv5", "japan") rec actually downloads as
+    # `japan_PP-OCRv4_rec_mobile.onnx` (no v5 japan rec exists upstream); the
+    # synthesized `f"{lang}_{version}_rec_*"` names below would never match.
+    # The registry's `name` is the on-disk filename our downloader writes.
+    registry = _registry_lookup(version, lang) or {}
+
+    def _names(*items: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            if item and item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    det_names = _names(
+        str((registry.get("det") or {}).get("name") or ""),
         f"{lang}_{version}_det{server_infix}_infer.onnx",  # paddle / wheel
         f"{lang}_{version}_det{type_suffix}.onnx",          # modelscope v3.x
-    ]
-    rec_names = [
+    )
+    rec_names = _names(
+        str((registry.get("rec") or {}).get("name") or ""),
         f"{lang}_{version}_rec{server_infix}_infer.onnx",
         f"{lang}_{version}_rec{type_suffix}.onnx",
-    ]
+    )
     # Cls is shared across mobile/server variants. PaddleOCR ships the
     # legacy v2.0 mobile cls; PP-OCRv5 introduces a new textline-orientation
-    # cls. List both — first match wins.
-    cls_names = [
+    # cls. Consult the registry first, then list the known generics.
+    cls_names = _names(
+        str((registry.get("cls") or {}).get("name") or ""),
         "ch_ppocr_mobile_v2.0_cls_infer.onnx",
         "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
         "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
-    ]
+    )
 
     def _find_first(search_dir: Path, names: list[str]) -> str | None:
         for name in names:
@@ -779,16 +798,33 @@ async def download_rapidocr_models(
     total_bytes = sum(int(spec.get("size") or 0) for spec in pending)
 
     if not pending:
+        already_present_message = "All required RapidOCR models already on disk"
         if task_id:
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
                 status="completed",
                 phase="completed",
-                message="All required RapidOCR models already on disk",
+                message=already_present_message,
                 progress=1.0,
                 target_dir=str(cache_dir),
             )
+        # Emit a streaming completion event too — the bundled-no-op branch
+        # above does this; the cache-hit branch was missing it, so SSE
+        # subscribers stayed in `running` until timeout when a re-trigger
+        # found everything already on disk.
+        await _emit_model_progress(
+            progress_callback,
+            {
+                "status": "completed",
+                "phase": "completed",
+                "message": already_present_message,
+                "progress": 1.0,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "target_dir": str(cache_dir),
+            },
+        )
         return {"downloaded": [], "already_present": True, "target_dir": str(cache_dir)}
 
     downloaded_bytes = 0
@@ -887,13 +923,55 @@ async def download_rapidocr_models(
                 tmp_path.replace(destination)
                 downloaded_bytes += int(spec.get("size") or asset_downloaded)
                 downloaded.append(asset_name)
-            except httpx.HTTPError as exc:
+            except BaseException as exc:  # noqa: BLE001 — emit failure terminal state then re-raise
                 tmp_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"failed to download {asset_name}: {type(exc).__name__}: {exc}"
-                ) from exc
-            except Exception:
-                tmp_path.unlink(missing_ok=True)
+                if isinstance(exc, httpx.HTTPError):
+                    err_message = (
+                        f"failed to download {asset_name}: {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    err_message = (
+                        f"failed during {asset_name}: {type(exc).__name__}: {exc}"
+                    )
+                # Without these, the SSE stream and persisted task state stay in
+                # `running` until the client times out; the user sees a download
+                # that "never finishes" instead of an explicit failure.
+                if task_id:
+                    try:
+                        update_install_task_state(
+                            task_id,
+                            kind="rapidocr_models",
+                            status="failed",
+                            phase="failed",
+                            message=err_message,
+                            progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                            downloaded_bytes=downloaded_bytes,
+                            total_bytes=total_bytes,
+                            target_dir=str(cache_dir),
+                            asset_name=asset_name,
+                            error=err_message,
+                        )
+                    except Exception:
+                        logger.warning("failed to persist rapidocr_models failure state", exc_info=True)
+                try:
+                    await _emit_model_progress(
+                        progress_callback,
+                        {
+                            "status": "failed",
+                            "phase": "failed",
+                            "message": err_message,
+                            "error": err_message,
+                            "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                            "downloaded_bytes": downloaded_bytes,
+                            "total_bytes": total_bytes,
+                            "target_dir": str(cache_dir),
+                            "asset_name": asset_name,
+                        },
+                    )
+                except Exception:
+                    logger.warning("failed to emit rapidocr_models failure progress", exc_info=True)
+                if isinstance(exc, httpx.HTTPError):
+                    raise RuntimeError(err_message) from exc
                 raise
 
     if task_id:

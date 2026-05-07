@@ -738,7 +738,7 @@
   "ui.first_run.done_marker": "完成",
   "ui.first_run.install_ocr.title": "OCR 模型",
   "ui.first_run.install_ocr.done": "OCR 引擎和所选模型已就绪。",
-  "ui.first_run.install_ocr.pending": "默认模型（ch + PP-OCRv4）已随程序打包。如需切换到 japan/korean/v5，请到高级设置中的 RapidOCR 横幅点击\"立即下载模型\"。",
+  "ui.first_run.install_ocr.pending": "RapidOCR 不可用。请使用打包版本，或在源码下运行 `uv sync --group galgame` 后重启。",
   "ui.first_run.install_capture.title": "安装截图依赖",
   "ui.first_run.install_capture.done": "截图依赖已就绪。",
   "ui.first_run.install_capture.pending": "前往“依赖安装”面板一键安装 DXcam。",
@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "上次下载失败：{error}\n国内网络可能需要代理；或手动从 {source} 下载缺失文件到 {dir}，然后点击\"刷新状态\"。",
   "ui.install.rapidocr.download_source": "下载来源",
   "ui.first_run.action.download_rapidocr_models": "立即下载模型",
-  "ui.first_run.install_ocr.pending_models": "默认语言模型 (japan + PP-OCRv4) 未下载。点击\"立即下载模型\"按钮，从 ModelScope 拉取约 10MB 的模型文件。"
+  "ui.first_run.install_ocr.pending_models": "所选语言模型未下载。点击\"立即下载模型\"按钮，从 ModelScope 拉取（默认 japan + PP-OCRv4 组合约 10MB）。"
 }

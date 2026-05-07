@@ -1728,7 +1728,11 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
     actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
-    actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', '一键安装 DXcam'))}</button>`);
+    // install_dxcam no longer runs an installer (PR #1191 bundled DXcam); the
+    // action just navigates to the DXcam status banner. Use primaryActionLabel
+    // so the fallback text matches actual behavior ("查看 DXcam 状态") when
+    // the i18n key isn't loaded yet.
+    actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', primaryActionLabel('install_dxcam')))}</button>`);
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'start_game' || firstIncomplete.key === 'refresh_window') {
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
@@ -3545,6 +3549,15 @@ async function restoreTesseractInstallState() {
   await restoreInstallState('tesseract');
 }
 
+async function restoreRapidOcrModelsState() {
+  // Same lifecycle as the install task kinds: re-fetch persisted task,
+  // reconnect SSE if still running, surface the failure card on terminal
+  // failure. Without this, refreshing the page mid-download loses the
+  // progress card / retry button — the SSE stream and persisted state
+  // both still exist server-side but the UI forgets about them.
+  await restoreInstallState('rapidocr_models');
+}
+
 function updateModeSwitchControl(currentMode, { ready = true } = {}) {
   const modeSwitchEl = document.getElementById('modeSwitch');
   if (!modeSwitchEl) {
@@ -4708,14 +4721,25 @@ function renderRapidOcr(status) {
   const downloadBtn = document.getElementById('rapidocrModelsDownloadBtn');
   if (downloadBtn) {
     downloadBtn.hidden = !canDownloadModels;
-    // Don't disable while a download is in flight — startInstall() handles
-    // its own pending state. Reset button label here in case a previous
-    // download finished and downloadBtn was left in retry text.
-    if (canDownloadModels && !installRuntime.rapidocr_models.inProgress) {
-      const config = getInstallConfig('rapidocr_models');
-      const isRetry = installRuntime.rapidocr_models.state
-        && installRuntime.rapidocr_models.state.status === 'failed';
-      downloadBtn.textContent = isRetry ? config.retryText : config.actionText;
+    // Reflect the install runtime state on the visible banner button:
+    //   - inProgress → disable + show "后台下载模型中..." so re-clicks can't
+    //     spawn duplicate concurrent download tasks. The install card's own
+    //     button (rapidocrInstallBtn, same domPrefix) gets identical
+    //     treatment from renderInstallTaskState; this keeps the two button
+    //     instances in sync.
+    //   - failed (last terminal state) → "重试下载模型".
+    //   - otherwise → action text.
+    const config = getInstallConfig('rapidocr_models');
+    const inProgress = installRuntime.rapidocr_models.inProgress;
+    const lastStatus = installRuntime.rapidocr_models.state
+      && installRuntime.rapidocr_models.state.status;
+    downloadBtn.disabled = inProgress;
+    if (inProgress) {
+      downloadBtn.textContent = config.runningText;
+    } else if (lastStatus === 'failed') {
+      downloadBtn.textContent = config.retryText;
+    } else {
+      downloadBtn.textContent = config.actionText;
     }
   }
   const selectedBackend = status.ocr_backend_selection || 'auto';
@@ -7087,6 +7111,7 @@ async function initialize() {
     // restoreRapidOcrInstallState / restoreDxcamInstallState removed (bundled).
     restoreTesseractInstallState(),
     restoreTextractorInstallState(),
+    restoreRapidOcrModelsState(),
   ]));
   startAutoRefresh();
 }

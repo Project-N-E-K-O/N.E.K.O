@@ -738,7 +738,7 @@
   "ui.first_run.done_marker": "Done",
   "ui.first_run.install_ocr.title": "OCR Models",
   "ui.first_run.install_ocr.done": "OCR engine and selected models are ready.",
-  "ui.first_run.install_ocr.pending": "Default models (ch + PP-OCRv4) are bundled. To switch to japan/korean/v5, open Advanced Settings and click \"Download Models Now\" on the RapidOCR banner.",
+  "ui.first_run.install_ocr.pending": "RapidOCR is unavailable. Use the packaged build, or from source run `uv sync --group galgame` and restart.",
   "ui.first_run.install_capture.title": "Install Capture Tool",
   "ui.first_run.install_capture.done": "Capture tool is ready.",
   "ui.first_run.install_capture.pending": "Go to \"Dependencies\" panel and install DXcam.",
@@ -1050,5 +1050,5 @@
   "ui.install.rapidocr.download_failure_proxy_hint": "Last download failed: {error}\nMainland China networks may need a proxy. You can also manually download the missing files from {source} into {dir}, then click \"Refresh Status\".",
   "ui.install.rapidocr.download_source": "Download source",
   "ui.first_run.action.download_rapidocr_models": "Download Models Now",
-  "ui.first_run.install_ocr.pending_models": "The default language models (japan + PP-OCRv4) are not downloaded. Click \"Download Models Now\" to fetch ~10MB from ModelScope."
+  "ui.first_run.install_ocr.pending_models": "The selected language models are not downloaded. Click \"Download Models Now\" to fetch them from ModelScope (~10 MB for the default japan + PP-OCRv4 combo)."
 }
