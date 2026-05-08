@@ -193,11 +193,28 @@ def _get_persona_request_language(request: Request) -> str | None:
     """从查询参数或 Accept-Language 里提取人格预设语言。"""
     language = request.query_params.get("language") or request.query_params.get("i18n_language")
     if language:
-        return _normalize_persona_request_language(language)
+        normalized = _normalize_persona_request_language(language)
+        if normalized is not None:
+            return normalized
     accept_lang = request.headers.get("Accept-Language", "")
     if accept_lang:
-        return _normalize_persona_request_language(accept_lang.split(",")[0].split(";")[0].strip())
+        for language_part in accept_lang.split(","):
+            normalized = _normalize_persona_request_language(language_part.split(";")[0].strip())
+            if normalized is not None:
+                return normalized
     return None
+
+
+def _get_persona_payload_request_language(payload: object, request: Request) -> str | None:
+    """优先使用请求体语言；无效或缺失时回退到查询参数和请求头。"""
+    body_language = None
+    if isinstance(payload, dict):
+        body_language = payload.get("i18n_language") or payload.get("language")
+    if body_language:
+        normalized = _normalize_persona_request_language(body_language)
+        if normalized is not None:
+            return normalized
+    return _get_persona_request_language(request)
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -2151,9 +2168,7 @@ async def update_character_persona_selection(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
 
     selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    request_language = _normalize_persona_request_language(
-        (payload or {}).get("i18n_language") or (payload or {}).get("language")
-    )
+    request_language = _get_persona_payload_request_language(payload, request)
     override_payload = build_persona_override_payload(
         preset_id,
         source=source,
