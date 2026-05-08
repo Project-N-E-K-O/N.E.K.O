@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
+from pathlib import Path
 from typing import Any
 
 from .models import (
@@ -39,19 +43,68 @@ from .models import (
 
 
 class GalgameStore:
-    def __init__(self, plugin_store, logger) -> None:
-        self._store = plugin_store
+    _file_lock = threading.RLock()
+
+    def __init__(self, store_path: Path, logger) -> None:
+        self._store_path = Path(store_path)
         self._logger = logger
+        self._loaded = False
+        self._values: dict[str, Any] = {}
+
+    @staticmethod
+    def _is_json_value(value: Any) -> bool:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return True
+        if isinstance(value, list):
+            return all(GalgameStore._is_json_value(item) for item in value)
+        if isinstance(value, dict):
+            return all(
+                isinstance(key, str) and GalgameStore._is_json_value(item)
+                for key, item in value.items()
+            )
+        return False
+
+    def _load_values(self, *, force: bool = False) -> None:
+        if self._loaded and not force:
+            return
+        values: dict[str, Any] = {}
+        if self._store_path.exists():
+            try:
+                raw = json.loads(self._store_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    values = {
+                        str(key): value
+                        for key, value in raw.items()
+                        if isinstance(key, str) and self._is_json_value(value)
+                    }
+                else:
+                    self._logger.warning("galgame store json ignored: root is not an object")
+            except Exception as exc:
+                self._logger.warning("failed to read galgame store json {}: {}", self._store_path, exc)
+        self._values = values
+        self._loaded = True
+
+    def _save_values(self) -> None:
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._store_path.with_name(f"{self._store_path.name}.tmp")
+        tmp_path.write_text(
+            json.dumps(self._values, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, self._store_path)
 
     def _read(self, key: str, default: Any) -> Any:
-        if not getattr(self._store, "enabled", False):
-            return default
-        return self._store._read_value(key, default)  # type: ignore[attr-defined]
+        with self._file_lock:
+            self._load_values(force=True)
+            return self._values.get(key, default)
 
     def _write(self, key: str, value: Any) -> None:
-        if not getattr(self._store, "enabled", False):
-            return
-        self._store._write_value(key, value)  # type: ignore[attr-defined]
+        if not self._is_json_value(value):
+            raise TypeError("value must be JSON-compatible")
+        with self._file_lock:
+            self._load_values(force=True)
+            self._values[key] = value
+            self._save_values()
 
     def load_config_overrides(self) -> dict[str, Any]:
         raw_backend = self._read(STORE_OCR_BACKEND_SELECTION, None)

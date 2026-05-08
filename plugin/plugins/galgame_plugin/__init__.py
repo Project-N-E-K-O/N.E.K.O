@@ -781,7 +781,10 @@ class GalgamePlugin(NekoPluginBase):
             push_notifications=True,
             advance_speed=ADVANCE_SPEED_MEDIUM,
         )
-        self._persist = GalgameStore(self.store, self.logger)
+        self._persist = GalgameStore(
+            self.data_path("galgame_store.json"),
+            self.logger,
+        )
         self._config_service = GalgamePluginConfigService(self)
         self._host_agent_adapter: HostAgentAdapter | None = None
         self._llm_gateway: LLMGateway | None = None
