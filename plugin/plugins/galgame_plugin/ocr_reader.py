@@ -539,7 +539,7 @@ def _looks_like_window_title_ocr_line(line: str, window_title: str) -> bool:
         return False
     if line_key == title_key:
         return True
-    return line_key.startswith(title_key) and len(line_key) <= len(title_key) + 3
+    return title_key.startswith(line_key) and len(title_key) <= len(line_key) + 3
 
 
 def _drop_ocr_chrome_noise_lines(text: str, *, window_title: str = "") -> str:
@@ -2695,15 +2695,11 @@ class PrintWindowCaptureBackend:
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
         _require_visible_capture_target(target, backend_kind=self.kind)
-        window_rect = _target_window_rect(target)
-        rect = _target_content_rect(target)
-        image = self._capture_full_window(target.hwnd, window_rect)
-        if rect != window_rect:
-            image = _crop_image_to_screen_rect(
-                image,
-                image_rect=window_rect,
-                crop_rect=rect,
-            )
+        try:
+            rect = _target_screen_capture_rect(target)
+        except Exception:
+            rect = _target_content_rect(target)
+        image = self._capture_full_window(target.hwnd, rect)
         return _crop_window_image(
             image,
             window_rect=rect,
@@ -6571,6 +6567,23 @@ class OcrReaderManager:
         state.last_block_reason = ""
         return True
 
+    def _ocr_window_title_for_noise_filter(self) -> str:
+        return str(
+            (self._attached_window.title if self._attached_window is not None else "")
+            or self._runtime.effective_window_title
+            or self._runtime.window_title
+            or ""
+        )
+
+    def _clean_ocr_dialogue_for_emit(self, raw_text: str) -> tuple[str, str]:
+        content_text = _drop_ocr_chrome_noise_lines(
+            raw_text,
+            window_title=self._ocr_window_title_for_noise_filter(),
+        )
+        cleaned_text = _clean_ocr_dialogue_text(content_text)
+        cleaned_text = _fix_ocr_punctuation_confusion(cleaned_text)
+        return content_text, cleaned_text
+
     def _emit_line_from_ocr_text(
         self,
         raw_text: str,
@@ -6582,17 +6595,7 @@ class OcrReaderManager:
         ocr_confidence: float | None = None,
         text_source: str = "bottom_region",
     ) -> bool:
-        content_text = _drop_ocr_chrome_noise_lines(
-            raw_text,
-            window_title=str(
-                (self._attached_window.title if self._attached_window is not None else "")
-                or self._runtime.effective_window_title
-                or self._runtime.window_title
-                or ""
-            ),
-        )
-        cleaned_text = _clean_ocr_dialogue_text(content_text)
-        cleaned_text = _fix_ocr_punctuation_confusion(cleaned_text)
+        content_text, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
         if (
             _looks_like_noise_normalized_text(cleaned_text)
             or _looks_like_game_overlay_normalized_text(cleaned_text)
@@ -6688,13 +6691,14 @@ class OcrReaderManager:
             choice_bounds_metadata=choice_bounds_metadata,
         )
 
-    @staticmethod
     def _should_attempt_followup_confirm(
+        self,
         raw_text: str,
         *,
         state: _StableOcrTextState,
     ) -> bool:
-        cleaned = normalize_text(_clean_ocr_dialogue_text(raw_text)).strip()
+        _, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
+        cleaned = normalize_text(cleaned_text).strip()
         if not cleaned:
             return False
         cleaned_key = _ocr_stability_key(cleaned)

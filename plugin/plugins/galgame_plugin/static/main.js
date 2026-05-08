@@ -2517,10 +2517,23 @@ function dependencySummaryItem(kind, status = {}) {
       && taskState?.state === 'installed'
       && hasMissingRapidOcrModelFiles(rapidocr);
     if (taskState && rapidocrModelsStillMissing && !taskCompletedButModelsMissing) {
+      const displayTaskState = kind === 'rapidocr' && taskState.state === 'running'
+        ? {
+            ...taskState,
+            labelText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
+            needsAttention: false,
+          }
+        : kind === 'rapidocr' && taskState.state === 'failed' && shouldOfferRapidOcrModelsDownload(rapidocr)
+          ? {
+              ...taskState,
+              labelText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
+              needsAttention: true,
+            }
+          : taskState;
       return {
         kind,
         label: kind === 'rapidocr' ? 'RapidOCR' : getInstallConfig(taskKind).label,
-        ...taskState,
+        ...displayTaskState,
       };
     }
   }
@@ -5728,7 +5741,7 @@ function renderAgentStatus(payload) {
   const panelSummary = document.getElementById('agentPanelSummary');
   if (panelSummary) {
     const mode = latestStatus?.mode || 'companion';
-    const modeText = uiT(`ui.mode.${mode}`, mode);
+    const modeText = modeLabel(mode, mode);
     const inbound = payload.inbound_queue_size || 0;
     const outbound = payload.outbound_queue_size || 0;
     panelSummary.textContent = `${modeText} | in=${inbound} out=${outbound}`;
