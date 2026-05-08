@@ -2945,7 +2945,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
 
-    ws_base = tts_config.get('base_url', '')
+    ws_base = (tts_config.get('base_url', '') or '').strip().rstrip('/')
+    for endpoint_suffix in ('/v1/audio/speech/stream', '/v1/voices'):
+        if ws_base.lower().endswith(endpoint_suffix):
+            ws_base = ws_base[:-len(endpoint_suffix)].rstrip('/')
+            break
     if (ws_base and not ws_base.startswith('ws://') and not ws_base.startswith('wss://')) or not ws_base:
         if ws_base:
             logger.error(f'本地cosyvoice URL协议无效: {ws_base}，需要 ws/wss 协议')
@@ -2965,22 +2969,22 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # OpenAI 兼容端点
     WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
-    # 从 voice_id 解析 voice 和 speed
-    # 支持格式：
-    #   "中文女"           → voice="中文女",  speed=1.0
-    #   "中文女:1.2"       → voice="中文女",  speed=1.2
-    #   "piper:zh_CN-huayan-medium"  → voice="piper:zh_CN-huayan-medium", speed=1.0
-    # 规则：仅当 ':' 后面是合法浮点数时才拆分为 speed，否则整串透传为 voice
-    voice_name = voice_id or "中文女"
+    # Keep colon-delimited voice IDs intact (for example chattts:2).
+    # Speed overrides must be explicit: voice_id|speed=1.2
+    voice_name = (voice_id or "").strip() or "中文女"
     speech_speed = 1.0
-    if voice_id and ':' in voice_id:
-        parts = voice_id.rsplit(':', 1)
+    if voice_name and '|' in voice_name:
+        voice_part, suffix = voice_name.rsplit('|', 1)
+        suffix = suffix.strip()
+        speed_prefix = 'speed='
         try:
-            parsed_speed = float(parts[1])
-            voice_name = parts[0]
-            speech_speed = parsed_speed
-        except ValueError:
-            voice_name = voice_id
+            if suffix.lower().startswith(speed_prefix):
+                parsed_speed = float(suffix[len(speed_prefix):])
+                if parsed_speed > 0:
+                    voice_name = voice_part.strip() or "中文女"
+                    speech_speed = parsed_speed
+        except (TypeError, ValueError):
+            pass
     
     # 服务器返回的采样率（22050Hz）
     SRC_RATE = 22050

@@ -49,7 +49,25 @@ function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelAp
 function normalizeLocalKokoroWsUrl(value) {
     const raw = (value || '').trim();
     if (!raw) return 'ws://127.0.0.1:50000';
-    return raw;
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'http:') {
+            url.protocol = 'ws:';
+        } else if (url.protocol === 'https:') {
+            url.protocol = 'wss:';
+        } else if (!['ws:', 'wss:'].includes(url.protocol)) {
+            return raw;
+        }
+        url.search = '';
+        url.hash = '';
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        url.pathname = pathname || '/';
+        return url.toString().replace(/\/$/, '');
+    } catch (e) {
+        return raw;
+    }
 }
 
 function normalizeLocalKokoroProfile(value) {
