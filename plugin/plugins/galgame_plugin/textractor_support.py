@@ -513,23 +513,24 @@ async def install_textractor(
 
     owned_client = False
     client: httpx.AsyncClient | None = None
+    client_kwargs: dict[str, Any] = {
+        "timeout": timeout_seconds,
+        "trust_env": True,
+        "follow_redirects": True,
+    }
     if client_factory is None:
-        client_kwargs: dict[str, Any] = {
-            "timeout": timeout_seconds,
-            "trust_env": True,
-            "follow_redirects": True,
-        }
         proxy = str(textractor_proxy or "").strip()
         if proxy:
             client_kwargs["proxy"] = proxy
-        client = httpx.AsyncClient(**client_kwargs)
-        owned_client = True
-    else:
-        maybe_client = client_factory()
-        client = await maybe_client if hasattr(maybe_client, "__await__") else maybe_client
 
     try:
         try:
+            if client_factory is None:
+                client = httpx.AsyncClient(**client_kwargs)
+                owned_client = True
+            else:
+                maybe_client = client_factory()
+                client = await maybe_client if hasattr(maybe_client, "__await__") else maybe_client
             release_response = await client.get(
                 release_endpoint,
                 headers={
@@ -772,7 +773,17 @@ async def install_textractor(
                 if logger is not None:
                     logger.warning("Textractor temp cleanup failed: {}", exc)
         error_message = "; ".join(message for _, message in errors) or "Textractor install failed"
-        failed_phase = errors[0][0] if errors else "unknown"
+        phase_priority = {
+            "fetch_release": 0,
+            "downloading": 1,
+            "extracting": 2,
+            "verifying": 3,
+        }
+        failed_phase = (
+            max((phase for phase, _ in errors), key=lambda phase: phase_priority.get(phase, -1))
+            if errors
+            else "unknown"
+        )
         await _mark_textractor_install_failed(
             task_id=task_id,
             progress_callback=progress_callback,

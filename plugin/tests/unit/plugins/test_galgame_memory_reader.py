@@ -1285,6 +1285,7 @@ async def test_install_textractor_release_connect_timeout_sets_failed_phase(
             install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
             release_api_url="https://example.test/latest",
             timeout_seconds=5.0,
+            force=True,
             platform_fn=lambda: True,
             client_factory=lambda: _FailingReleaseClient(),
             task_id="task-fetch-release",
@@ -1342,6 +1343,7 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
                 install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
                 release_api_url="https://example.test/latest",
                 timeout_seconds=5.0,
+                force=True,
                 platform_fn=lambda: True,
                 client_factory=lambda: client,
                 task_id="task-download",
@@ -1354,6 +1356,111 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
     assert excinfo.value.failed_phase == "downloading"
     assert failed_updates[-1]["failed_phase"] == "downloading"
     assert progress_payloads[-1]["failed_phase"] == "downloading"
+
+
+@pytest.mark.asyncio
+async def test_install_textractor_invalid_proxy_reports_install_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates: list[dict[str, object]] = []
+    progress_payloads: list[dict[str, object]] = []
+
+    def _capture_update(task_id: str, **changes):
+        del task_id
+        updates.append(dict(changes))
+        return dict(changes)
+
+    monkeypatch.setattr(
+        galgame_textractor_support,
+        "update_install_task_state",
+        _capture_update,
+    )
+
+    with pytest.raises(TextractorInstallError) as excinfo:
+        await install_textractor(
+            logger=_Logger(),
+            configured_path="",
+            install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
+            release_api_url="https://example.test/latest",
+            timeout_seconds=5.0,
+            textractor_proxy="not-a-url",
+            force=True,
+            platform_fn=lambda: True,
+            task_id="task-invalid-proxy",
+            progress_callback=progress_payloads.append,
+        )
+
+    failed_updates = [item for item in updates if item.get("status") == "failed"]
+    assert excinfo.value.failed_phase == "fetch_release"
+    assert failed_updates[-1]["failed_phase"] == "fetch_release"
+    assert progress_payloads[-1]["failed_phase"] == "fetch_release"
+
+
+@pytest.mark.asyncio
+async def test_install_textractor_uses_deepest_failed_candidate_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_payload = {
+        "name": "Textractor v1.0.0",
+        "assets": [
+            {
+                "name": "Textractor-a.zip",
+                "browser_download_url": "https://example.test/Textractor-a.zip",
+            },
+            {
+                "name": "Textractor-b.zip",
+                "browser_download_url": "https://example.test/Textractor-b.zip",
+            },
+        ],
+    }
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://example.test/latest":
+            return httpx.Response(200, json=release_payload)
+        if str(request.url) == "https://example.test/Textractor-a.zip":
+            raise httpx.ConnectError("download connection failed", request=request)
+        if str(request.url) == "https://example.test/Textractor-b.zip":
+            return httpx.Response(200, content=b"not a zip")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    updates: list[dict[str, object]] = []
+    progress_payloads: list[dict[str, object]] = []
+
+    def _capture_update(task_id: str, **changes):
+        del task_id
+        updates.append(dict(changes))
+        return dict(changes)
+
+    monkeypatch.setattr(
+        galgame_textractor_support,
+        "update_install_task_state",
+        _capture_update,
+    )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    try:
+        with pytest.raises(TextractorInstallError) as excinfo:
+            await install_textractor(
+                logger=_Logger(),
+                configured_path="",
+                install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
+                release_api_url="https://example.test/latest",
+                timeout_seconds=5.0,
+                force=True,
+                platform_fn=lambda: True,
+                client_factory=lambda: client,
+                task_id="task-deepest-phase",
+                progress_callback=progress_payloads.append,
+            )
+    finally:
+        await client.aclose()
+
+    failed_updates = [item for item in updates if item.get("status") == "failed"]
+    assert excinfo.value.failed_phase == "extracting"
+    assert failed_updates[-1]["failed_phase"] == "extracting"
+    assert progress_payloads[-1]["failed_phase"] == "extracting"
 
 
 @pytest.mark.asyncio

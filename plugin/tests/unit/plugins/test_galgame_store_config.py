@@ -22,8 +22,16 @@ from plugin.plugins.galgame_plugin.service import build_config
 from plugin.plugins.galgame_plugin.store import GalgameStore
 
 
+def _logger() -> SimpleNamespace:
+    return SimpleNamespace(warning=lambda *_: None)
+
+
+def _store_path(tmp_path: Path) -> Path:
+    return tmp_path / "galgame-store.json"
+
+
 def _make_store(tmp_path: Path) -> GalgameStore:
-    return GalgameStore(tmp_path / "galgame-store.json", SimpleNamespace(warning=lambda *_: None))
+    return GalgameStore(_store_path(tmp_path), _logger())
 
 
 def test_galgame_store_config_overrides_keep_missing_distinct_from_false(tmp_path: Path) -> None:
@@ -126,3 +134,16 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path
 
     assert plugin._cfg.reader.reader_mode == "ocr_reader"
     assert plugin._cfg.ocr_reader.ocr_reader_backend_selection == "rapidocr"
+
+
+def test_galgame_store_reads_refresh_from_disk_after_first_load(tmp_path: Path) -> None:
+    backing = _store_path(tmp_path)
+    first = GalgameStore(backing, _logger())
+    second = GalgameStore(backing, _logger())
+
+    second.persist_config_override(STORE_READER_MODE, "auto")
+    assert first.load_config_overrides()[STORE_READER_MODE] == "auto"
+
+    second.persist_config_override(STORE_READER_MODE, "ocr_reader")
+
+    assert first.load_config_overrides()[STORE_READER_MODE] == "ocr_reader"
