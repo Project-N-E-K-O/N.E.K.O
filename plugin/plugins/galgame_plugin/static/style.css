@@ -2544,6 +2544,45 @@ body:not(.onboarding-active) #onboardingView {
   overflow-wrap: anywhere;
 }
 
+.rapidocr-lang-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rapidocr-lang-label,
+.rapidocr-auto-detect-toggle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rapidocr-lang-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rapidocr-lang-btn {
+  min-width: 34px;
+  padding: 5px 8px;
+}
+
+.rapidocr-lang-btn.active {
+  border-color: var(--brand);
+  background: rgba(14, 138, 124, 0.12);
+  color: var(--brand-strong);
+}
+
+.rapidocr-auto-detect-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .install-card .install-task-card {
   min-width: 0;
   max-width: 100%;

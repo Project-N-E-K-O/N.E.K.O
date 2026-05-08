@@ -127,6 +127,9 @@ STORE_LLM_VISION_ENABLED = "llm_vision_enabled"
 STORE_LLM_VISION_MAX_IMAGE_PX = "llm_vision_max_image_px"
 STORE_OCR_SCREEN_TEMPLATES = "ocr_screen_templates"
 STORE_OCR_FAST_LOOP_ENABLED = "ocr_fast_loop_enabled"
+STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
+STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
+STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
@@ -151,6 +154,9 @@ STORE_KEYS = (
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_FAST_LOOP_ENABLED,
+    STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_TUTORIAL_PROGRESS,
 )
 
@@ -592,6 +598,8 @@ class GalgameRapidOcrConfig:
     rapidocr_lang_type: str = "ch"
     rapidocr_model_type: str = "mobile"
     rapidocr_ocr_version: str = "PP-OCRv4"
+    rapidocr_auto_detect_lang: bool = True
+    rapidocr_auto_detect_last_lang: str = ""
 
 
 @dataclass(slots=True, init=False)
@@ -754,6 +762,8 @@ class GalgameConfig:
         "rapidocr_lang_type": ("rapidocr", "rapidocr_lang_type"),
         "rapidocr_model_type": ("rapidocr", "rapidocr_model_type"),
         "rapidocr_ocr_version": ("rapidocr", "rapidocr_ocr_version"),
+        "rapidocr_auto_detect_lang": ("rapidocr", "rapidocr_auto_detect_lang"),
+        "rapidocr_auto_detect_last_lang": ("rapidocr", "rapidocr_auto_detect_last_lang"),
     }
 
     def __init__(
