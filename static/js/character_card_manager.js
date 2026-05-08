@@ -5545,14 +5545,12 @@ function _panelLooksLikeKokoroVoiceId(value) {
         || /^(zf|zm|zh|af|am|bf|bm)_/.test(raw);
 }
 
-function _panelLooksLikeLocalKokoroUrl(value) {
+function _panelHasProbeableTtsUrl(value) {
     const raw = (value || '').trim();
     if (!raw) return false;
     try {
         const url = new URL(raw);
-        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) return false;
-        const host = (url.hostname || '').toLowerCase();
-        return (host === '127.0.0.1' || host === 'localhost' || host === '::1') && url.port === '50000';
+        return ['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol);
     } catch (e) {
         return false;
     }
@@ -5564,7 +5562,7 @@ function _panelShouldProbeKokoroVoices(config) {
     const ttsVoiceId = (config?.ttsVoiceId || '').trim();
     if (ttsModelId.includes('kokoro')) return true;
     if (ttsVoiceId.startsWith('kokoro:')) return true;
-    return _panelLooksLikeLocalKokoroUrl(ttsUrl) && _panelLooksLikeKokoroVoiceId(ttsVoiceId);
+    return _panelHasProbeableTtsUrl(ttsUrl) && _panelLooksLikeKokoroVoiceId(ttsVoiceId);
 }
 
 async function _fetchPanelKokoroVoices() {

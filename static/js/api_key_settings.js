@@ -230,8 +230,8 @@ function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '') {
         localKokoroProfileFromModelId(ttsModelId) || localKokoroProfileFromVoiceId(ttsVoiceId)
     );
     const savedVoice = normalizeLocalKokoroVoiceId(ttsVoiceId, savedProfile);
-    if (/^wss?:\/\//i.test(savedUrl)) {
-        localUrlInput.value = savedUrl;
+    if (/^(wss?|https?):\/\//i.test(savedUrl)) {
+        localUrlInput.value = normalizeLocalKokoroWsUrl(savedUrl);
     } else if (!localUrlInput.value) {
         localUrlInput.value = 'ws://127.0.0.1:50000';
     }
