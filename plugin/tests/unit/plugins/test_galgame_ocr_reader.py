@@ -2056,6 +2056,31 @@ def test_screen_capture_rect_spanning_monitors_keeps_other_display(
     assert rect == (1800, 100, 2600, 1060)
 
 
+def test_screen_capture_rect_ignores_invalid_monitor_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _window()[0]
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda _target: (10, 20, 800, 600),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(EnumDisplayMonitors=lambda *_args: [object()]),
+    )
+
+    rect = galgame_ocr_reader._target_screen_capture_rect(target)
+
+    assert rect == (10, 20, 800, 600)
+
+
 def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> None:
     from PIL import Image, ImageDraw
 

@@ -764,6 +764,18 @@ class UserActivityTracker:
         self._anti_slack_last_fired_at = ts
         self._anti_slack_pending = None
 
+    def get_work_break_game_invite_probability(self) -> float:
+        """Return the current rest+mini-game branch probability.
+
+        Keeps router code out of the tracker's state-machine internals while
+        preserving the same live preference refresh semantics as snapshots.
+        """
+        self._refresh_prefs()
+        probability = self._sm._prefs.work_break_game_invite_probability
+        if probability is None:
+            return _WORK_BREAK_GAME_INVITE_PROBABILITY
+        return probability
+
     # ── enrichment kickoff ──────────────────────────────────────
 
     def kickoff_open_threads_compute(self, lang: str = 'zh') -> None:
