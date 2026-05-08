@@ -12,6 +12,13 @@ from config import GSV_VOICE_PREFIX
 LOCAL_LIGHTWEIGHT_TTS_PREFIXES = ("kokoro:", "melotts:", "melo:", "chattts:")
 
 
+def _is_custom_ws_tts(get_model_api_config: Callable[[str], dict]) -> bool:
+    tts_config = get_model_api_config('tts_custom')
+    base_url = (tts_config.get('base_url') or '').strip().lower()
+    is_custom = tts_config.get('is_custom', False)
+    return bool(is_custom and base_url.startswith(('ws://', 'wss://')))
+
+
 def check_custom_tts_voice_allowed(
     voice_id: str,
     get_model_api_config: Callable[[str], dict],
@@ -22,20 +29,20 @@ def check_custom_tts_voice_allowed(
         - True / False when the voice_id is recognized by this adapter.
         - None when this adapter does not handle the given voice_id.
     """
-    lowered_voice_id = voice_id.lower()
+    normalized_voice_id = (voice_id or '').strip()
+    lowered_voice_id = normalized_voice_id.lower()
     if lowered_voice_id.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES):
-        suffix = voice_id.split(":", 1)[1].strip()
+        suffix = normalized_voice_id.split(":", 1)[1].strip()
         if not suffix:
             return False
-        tts_config = get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url') or ''
-        is_custom = tts_config.get('is_custom', False)
-        return bool(is_custom and base_url.startswith(('ws://', 'wss://')))
+        return _is_custom_ws_tts(get_model_api_config)
 
-    if not voice_id.startswith(GSV_VOICE_PREFIX):
+    if not lowered_voice_id.startswith(GSV_VOICE_PREFIX.lower()):
+        if normalized_voice_id and _is_custom_ws_tts(get_model_api_config):
+            return True
         return None
 
-    suffix = voice_id[len(GSV_VOICE_PREFIX):].strip()
+    suffix = normalized_voice_id[len(GSV_VOICE_PREFIX):].strip()
     if not suffix:
         return False
 
@@ -47,6 +54,6 @@ def check_custom_tts_voice_allowed(
     if not gptsovits_enabled:
         return False
     tts_config = get_model_api_config('tts_custom')
-    base_url = tts_config.get('base_url') or ''
+    base_url = (tts_config.get('base_url') or '').strip().lower()
     is_custom = tts_config.get('is_custom', False)
     return bool(is_custom and base_url.startswith(('http://', 'https://')))
