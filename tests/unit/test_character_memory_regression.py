@@ -761,7 +761,7 @@ async def test_sync_workshop_character_cards_preserves_persona_override_written_
 
             current_name = cm.load_characters()["当前猫娘"]
 
-            def _write_persona_override_during_scan(_installed_folder):
+            def _write_persona_override_during_scan(_installed_folder, _chara_name=None, _chara_file_stem=None):
                 latest = cm.load_characters()
                 latest["猫娘"][current_name].setdefault("_reserved", {})["persona_override"] = {
                     "preset_id": "classic_genki",
@@ -849,7 +849,7 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
             preview_path = installed_folder / "preview.png"
             Image.new("RGBA", (1024, 1024), (80, 160, 220, 255)).save(preview_path)
 
-            def _create_same_character_during_scan(_installed_folder):
+            def _create_same_character_during_scan(_installed_folder, _chara_name=None, _chara_file_stem=None):
                 latest = cm.load_characters()
                 latest.setdefault("猫娘", {})["并发工坊角色"] = {"昵称": "并发创建"}
                 cm.save_characters(latest, bypass_write_fence=True)
