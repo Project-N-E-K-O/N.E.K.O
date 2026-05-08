@@ -8,7 +8,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title data-i18n="ui.app.title">Galgame 游玩助手</title>
-  <link rel="stylesheet" href="./style.css?v=20260507-install-card-merge">
+  <link rel="stylesheet" href="./style.css?v=20260508-settings-neko-console">
 </head>
 <body>
   <div class="page-shell">
@@ -64,55 +64,67 @@
         </div>
       </header>
 
-      <section id="firstRunGuide" class="first-run-guide" hidden>
-        <div class="first-run-guide-head">
-          <h2 class="first-run-guide-title" data-i18n="ui.first_run.section_title">首次配置引导</h2>
-          <p class="first-run-guide-subtitle" data-i18n="ui.first_run.section_subtitle">按下面几步把识别流程接起来。</p>
-        </div>
-        <div id="firstRunSteps" class="first-run-steps"></div>
-      </section>
-
-      <section id="primaryDiagnosisPanel" class="primary-diagnosis info" aria-live="polite">
-        <div class="primary-diagnosis-copy">
-          <p id="primaryDiagnosisKicker" class="list-kicker" data-i18n="ui.diag.kicker">运行诊断</p>
-          <h2 id="primaryDiagnosisTitle" data-i18n="ui.diag.waiting_status">等待插件状态</h2>
-          <p id="primaryDiagnosisBody" data-i18n="ui.diag.waiting_body">状态加载后，这里会显示当前能不能识别台词以及下一步操作。</p>
-        </div>
-        <div id="primaryDiagnosisActions" class="primary-diagnosis-actions"></div>
-      </section>
-
-      <section id="currentLineOverview" class="current-line-overview">
-        <div class="current-line-head">
+      <section class="play-assist-hub" aria-labelledby="playAssistHubTitle">
+        <div class="play-assist-hub-head">
           <div>
-            <p class="list-kicker" data-i18n="ui.current_line.kicker">当前台词</p>
-            <h2 id="currentLineOverviewTitle" data-i18n="ui.current_line.waiting_result">等待识别结果</h2>
+            <p class="play-assist-hub-kicker" data-i18n="ui.play_hub.kicker">N.E.K.O STATUS</p>
+            <h2 id="playAssistHubTitle" data-i18n="ui.play_hub.title">游玩状态中心</h2>
           </div>
-          <div class="current-line-head-right">
-            <span id="currentLineOverviewStatus" class="status-chip" data-i18n="ui.current_line.waiting_refresh">等待刷新</span>
-            <div class="current-line-tools" role="group" aria-label="台词显示控制" data-i18n-aria-label="ui.current_line.tools_label">
-              <button id="currentLineCollapseToggle" class="ghost" type="button" aria-controls="currentLineOverviewHint currentLineEffectiveText observedLinesCollapse currentLineOverviewGrid" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
-              <div class="current-line-zoom" role="group" aria-label="台词字号" data-i18n-aria-label="ui.current_line.zoom_label">
-                <button id="currentLineZoomOut" class="ghost" aria-label="缩小" data-i18n-aria-label="ui.zoom.out">A-</button>
-                <button id="currentLineZoomReset" class="ghost" aria-label="重置" data-i18n-aria-label="ui.zoom.reset">A</button>
-                <button id="currentLineZoomIn" class="ghost" aria-label="放大" data-i18n-aria-label="ui.zoom.in">A+</button>
+          <p class="play-assist-hub-subtitle" data-i18n="ui.play_hub.subtitle">把引导、诊断、台词和选项建议集中在同一个游玩视图里。</p>
+        </div>
+
+        <div class="play-assist-hub-grid">
+          <section id="firstRunGuide" class="first-run-guide" hidden>
+            <div class="first-run-guide-head">
+              <h2 class="first-run-guide-title" data-i18n="ui.first_run.section_title">首次配置引导</h2>
+              <p class="first-run-guide-subtitle" data-i18n="ui.first_run.section_subtitle">按下面几步把识别流程接起来。</p>
+            </div>
+            <div id="firstRunSteps" class="first-run-steps"></div>
+          </section>
+
+          <section id="primaryDiagnosisPanel" class="primary-diagnosis info" aria-live="polite">
+            <div class="primary-diagnosis-copy">
+              <p id="primaryDiagnosisKicker" class="list-kicker" data-i18n="ui.diag.kicker">运行诊断</p>
+              <h2 id="primaryDiagnosisTitle" data-i18n="ui.diag.waiting_status">等待插件状态</h2>
+              <p id="primaryDiagnosisBody" data-i18n="ui.diag.waiting_body">状态加载后，这里会显示当前能不能识别台词以及下一步操作。</p>
+            </div>
+            <div id="primaryDiagnosisActions" class="primary-diagnosis-actions"></div>
+          </section>
+
+          <section id="currentLineOverview" class="current-line-overview">
+            <div class="current-line-head">
+              <div>
+                <p class="list-kicker" data-i18n="ui.current_line.kicker">当前台词</p>
+                <h2 id="currentLineOverviewTitle" data-i18n="ui.current_line.waiting_result">等待识别结果</h2>
+              </div>
+              <div class="current-line-head-right">
+                <span id="currentLineOverviewStatus" class="status-chip" data-i18n="ui.current_line.waiting_refresh">等待刷新</span>
+                <div class="current-line-tools" role="group" aria-label="台词显示控制" data-i18n-aria-label="ui.current_line.tools_label">
+                  <button id="currentLineCollapseToggle" class="ghost" type="button" aria-controls="currentLineOverviewHint currentLineEffectiveText observedLinesCollapse currentLineOverviewGrid" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
+                  <div class="current-line-zoom" role="group" aria-label="台词字号" data-i18n-aria-label="ui.current_line.zoom_label">
+                    <button id="currentLineZoomOut" class="ghost" aria-label="缩小" data-i18n-aria-label="ui.zoom.out">A-</button>
+                    <button id="currentLineZoomReset" class="ghost" aria-label="重置" data-i18n-aria-label="ui.zoom.reset">A</button>
+                    <button id="currentLineZoomIn" class="ghost" aria-label="放大" data-i18n-aria-label="ui.zoom.in">A+</button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-        <p id="currentLineOverviewHint" class="result-note" data-i18n="ui.current_line.hint">识别到文字后，这里会区分刚读到的候选台词和已确认台词。</p>
-        <div id="currentLineEffectiveText" class="current-line-effective" hidden></div>
-        <details id="observedLinesCollapse" class="observed-lines-collapse" hidden>
-          <summary class="observed-lines-summary" data-i18n="ui.current_line.observed">观察行</summary>
-          <div id="observedLinesContent" class="observed-lines-content"></div>
-        </details>
-        <div id="currentLineOverviewGrid" class="current-line-grid"></div>
-      </section>
+            <p id="currentLineOverviewHint" class="result-note" data-i18n="ui.current_line.hint">识别到文字后，这里会区分刚读到的候选台词和已确认台词。</p>
+            <div id="currentLineEffectiveText" class="current-line-effective" hidden></div>
+            <details id="observedLinesCollapse" class="observed-lines-collapse" hidden>
+              <summary class="observed-lines-summary" data-i18n="ui.current_line.observed">观察行</summary>
+              <div id="observedLinesContent" class="observed-lines-content"></div>
+            </details>
+            <div id="currentLineOverviewGrid" class="current-line-grid"></div>
+          </section>
 
-      <section id="suggestPanelSection" class="suggest-panel-section" hidden>
-        <div class="suggest-panel-head">
-          <p class="list-kicker" data-i18n="ui.suggest.kicker">选项建议</p>
+          <section id="suggestPanelSection" class="suggest-panel-section" hidden>
+            <div class="suggest-panel-head">
+              <p class="list-kicker" data-i18n="ui.suggest.kicker">选项建议</p>
+            </div>
+            <div id="suggestPanel" class="result-panel" data-i18n="ui.empty.no_data">暂无数据</div>
+          </section>
         </div>
-        <div id="suggestPanel" class="result-panel" data-i18n="ui.empty.no_data">暂无数据</div>
       </section>
 
       <div class="advanced-toggle-row">
@@ -126,129 +138,180 @@
           <button id="resetTutorialBtn" class="secondary" data-first-run-action="reset_tutorial" data-i18n="ui.first_run.action.reset_tutorial">重新打开设置引导</button>
         </div>
 
-        <section id="ocrPipelinePanel" class="ocr-pipeline-panel">
-          <div class="ocr-pipeline-head">
+        <section id="pluginWindowHub" class="advanced-hub plugin-window-hub" aria-labelledby="pluginWindowHubTitle">
+          <div class="plugin-window-hub-head">
             <div>
-              <p class="list-kicker" data-i18n="ui.ocr.pipeline.kicker">OCR 链路</p>
-              <h2 data-i18n="ui.ocr.pipeline.title">窗口、截图、识别、台词确认</h2>
+              <p class="plugin-window-hub-kicker" data-i18n="ui.plugin_window.kicker">N.E.K.O WINDOW</p>
+              <h2 id="pluginWindowHubTitle" data-i18n="ui.plugin_window.title">插件窗口</h2>
             </div>
-            <div class="ocr-pipeline-head-right">
-              <button id="ocrPipelineCollapseToggle" class="ghost" type="button" aria-controls="ocrPipelineSteps" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
-              <div class="ocr-pipeline-zoom" role="group" aria-label="链路字号" data-i18n-aria-label="ui.ocr.pipeline.zoom_label">
-                <button id="ocrPipelineZoomOut" class="ghost" aria-label="缩小" data-i18n-aria-label="ui.zoom.out">A-</button>
-                <button id="ocrPipelineZoomReset" class="ghost" aria-label="重置" data-i18n-aria-label="ui.zoom.reset">A</button>
-                <button id="ocrPipelineZoomIn" class="ghost" aria-label="放大" data-i18n-aria-label="ui.zoom.in">A+</button>
-              </div>
-              <span id="ocrPipelineSummary" class="status-chip" data-i18n="ui.summary.waiting_refresh">等待刷新</span>
+            <div class="plugin-window-hub-actions">
+              <p class="plugin-window-hub-subtitle" data-i18n="ui.plugin_window.subtitle">集中监控 OCR 链路并锁定识别目标窗口。</p>
+              <button id="pluginWindowCollapseToggle" class="plugin-window-collapse-btn" type="button" aria-controls="pluginWindowHubBody" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
             </div>
           </div>
-          <div id="ocrPipelineSteps" class="ocr-pipeline-steps"></div>
-        </section>
 
-        <section id="ocrWindowPanel" class="panel panel-controls">
-          <div class="panel-title-row">
-            <div>
-              <p class="list-kicker" data-i18n="ui.ocr.window.kicker">窗口选择</p>
-              <h2 data-i18n="ui.ocr.window.title">OCR 目标窗口</h2>
-            </div>
-            <div class="capture-profile-actions">
-              <button id="ocrWindowCollapseToggle" class="ghost" type="button" aria-controls="ocrWindowTargetModeText ocrWindowRuntimeHint ocrLockedWindowCard ocrWindowActions ocrExcludedWindowPanel" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
-              <button id="ocrWindowRefreshBtn" class="secondary" data-i18n="ui.button.refresh_window">刷新窗口</button>
-              <button id="ocrWindowAutoBtn" class="ghost" data-i18n="ui.button.clear_lock">清除锁定</button>
-            </div>
-          </div>
-          <p id="ocrWindowTargetModeText" class="result-note ocr-window-collapsible"></p>
-          <p id="ocrWindowRuntimeHint" class="panel-subcopy ocr-window-collapsible" data-i18n="ui.ocr.window.waiting_candidates">等待 OCR 窗口候选列表。</p>
-
-          <div id="ocrLockedWindowCard" class="locked-window-card ocr-window-collapsible">
-            <div class="locked-window-empty" data-i18n="ui.ocr.window.no_locked">暂无锁定的窗口，请点击下方按钮选择。</div>
-          </div>
-
-          <div id="ocrWindowActions" class="window-target-actions ocr-window-collapsible">
-            <button id="ocrWindowSelectBtn" class="primary" data-i18n="ui.button.select_window">选择识别窗口</button>
-          </div>
-
-          <details id="ocrExcludedWindowPanel" class="excluded-window-panel ocr-window-collapsible">
-            <summary data-i18n="ui.ocr.window.excluded_summary">查看排除窗口与原因</summary>
-            <div id="ocrExcludedWindowList" class="stack-list scroll-region empty-state" data-i18n="ui.ocr.window.no_excluded">暂无排除窗口</div>
-          </details>
-        </section>
-
-        <section class="panel panel-controls">
-          <div class="panel-title-row">
-            <h2 data-i18n="ui.settings.title">插件设置</h2>
-          </div>
-          <details class="settings-module">
-            <summary>
-              <span data-i18n="ui.settings.control.title">运行控制</span>
-              <small data-i18n="ui.settings.control.desc">Agent 暂停/恢复、读取模式、触发方式</small>
-            </summary>
-            <div class="module-body">
-              <div class="control-grid">
-                <label class="field checkbox-field">
-                  <input id="pushToggle" type="checkbox">
-                  <span data-i18n="ui.settings.push_notifications">推送通知</span>
-                </label>
-                <label class="field">
-                  <span data-i18n="ui.settings.reader_mode">文本读取模式</span>
-                  <select id="readerModeSelect">
-                    <option value="auto" selected data-i18n="ui.settings.reader_auto">自动（内存有新文本优先，停更后 OCR 接管）</option>
-                    <option value="memory_reader" data-i18n="ui.settings.reader_memory">内存读取</option>
-                    <option value="ocr_reader" data-i18n="ui.settings.reader_ocr">OCR</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span data-i18n="ui.settings.ocr_interval">OCR/DXcam 识别间隔（秒）</span>
-                  <input id="ocrPollIntervalInput" type="number" min="0.5" max="10" step="0.1" placeholder="0.5">
-                </label>
-                <label class="field">
-                  <span data-i18n="ui.settings.ocr_trigger">OCR 触发方式</span>
-                  <select id="ocrTriggerModeSelect">
-                    <option value="after_advance" data-i18n="ui.settings.trigger_after_advance">点击对白后识别</option>
-                    <option value="interval" selected data-i18n="ui.settings.trigger_interval">按间隔识别</option>
-                  </select>
-                </label>
-                <label class="field checkbox-field">
-                  <input id="llmVisionToggle" type="checkbox">
-                  <span data-i18n="ui.settings.llm_vision">LLM 视觉辅助</span>
-                  <small class="field-note" data-i18n="ui.settings.llm_vision_note">低置信度 OCR 时发送游戏截图给 LLM，增加 token 消耗</small>
-                </label>
-                <label class="field checkbox-field">
-                  <input id="fastLoopToggle" type="checkbox">
-                  <span data-i18n="ui.settings.fast_loop">OCR Fast Loop</span>
-                  <small class="field-note" data-i18n="ui.settings.fast_loop_note">识别间隔内持续轮询，降低延迟</small>
-                </label>
-                <label class="field">
-                  <span data-i18n="ui.settings.vision_max">Vision 最大边长</span>
-                  <input id="llmVisionMaxImagePxInput" type="number" min="64" max="2048" step="32" placeholder="768">
-                  <small class="field-note" data-i18n="ui.settings.vision_max_note">低置信度时传图，会增加 token 成本并包含游戏画面。</small>
-                </label>
-                <div class="settings-save-row">
-                  <button id="saveModeBtn" class="secondary" data-i18n="ui.button.save">保存设置</button>
-                  <span id="settingsDirtyHint" class="settings-dirty-hint" hidden data-i18n="ui.settings.dirty">有未保存设置</span>
-                </div>
-                <div class="inline-actions">
-                  <button id="standbyOnBtn" class="ghost" data-i18n="ui.button.standby_on">进入待机</button>
-                  <button id="standbyOffBtn" class="ghost" data-i18n="ui.button.standby_off">恢复活跃</button>
-                </div>
-              </div>
-
-              <div id="agentUserNotice" class="agent-user-notice neutral" hidden>
+          <div id="pluginWindowHubBody" class="plugin-window-hub-body">
+            <section id="ocrPipelinePanel" class="plugin-window-section plugin-window-section-pipeline ocr-pipeline-panel">
+              <p class="plugin-window-section-label" data-i18n="ui.plugin_window.pipeline_group">链路监控</p>
+              <div class="ocr-pipeline-head">
                 <div>
-                    <p class="list-kicker" data-i18n="ui.agent.status">Agent 状态</p>
-                  <h3 id="agentUserNoticeTitle" data-i18n="ui.agent.waiting">等待状态刷新</h3>
-                  <p id="agentUserNoticeBody" class="agent-user-notice-body"></p>
-                  <p id="agentUserNoticeTarget" class="result-note"></p>
+                  <p class="list-kicker" data-i18n="ui.ocr.pipeline.kicker">OCR 链路</p>
+                  <h2 data-i18n="ui.ocr.pipeline.title">窗口、截图、识别、台词确认</h2>
+                </div>
+                <div class="ocr-pipeline-head-right">
+                  <button id="ocrPipelineCollapseToggle" class="ghost" type="button" aria-controls="ocrPipelineSteps" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
+                  <div class="ocr-pipeline-zoom" role="group" aria-label="链路字号" data-i18n-aria-label="ui.ocr.pipeline.zoom_label">
+                    <button id="ocrPipelineZoomOut" class="ghost" aria-label="缩小" data-i18n-aria-label="ui.zoom.out">A-</button>
+                    <button id="ocrPipelineZoomReset" class="ghost" aria-label="重置" data-i18n-aria-label="ui.zoom.reset">A</button>
+                    <button id="ocrPipelineZoomIn" class="ghost" aria-label="放大" data-i18n-aria-label="ui.zoom.in">A+</button>
+                  </div>
+                  <span id="ocrPipelineSummary" class="status-chip" data-i18n="ui.summary.waiting_refresh">等待刷新</span>
                 </div>
               </div>
-            </div>
-          </details>
+              <div id="ocrPipelineSteps" class="ocr-pipeline-steps"></div>
+            </section>
 
-          <details class="settings-module">
-            <summary>
-              <span data-i18n="ui.game.recognition">游戏识别</span>
-              <small data-i18n="ui.game.recognition_desc">游戏目标、OCR 目标窗口、截图校准</small>
-            </summary>
+            <section id="ocrWindowPanel" class="plugin-window-section plugin-window-section-target panel-controls">
+              <p class="plugin-window-section-label" data-i18n="ui.plugin_window.target_group">目标控制台</p>
+              <div class="panel-title-row">
+                <div>
+                  <p class="list-kicker" data-i18n="ui.ocr.window.kicker">窗口选择</p>
+                  <h2 data-i18n="ui.ocr.window.title">OCR 目标窗口</h2>
+                </div>
+                <div class="capture-profile-actions">
+                  <button id="ocrWindowCollapseToggle" class="ghost" type="button" aria-controls="ocrWindowTargetModeText ocrWindowRuntimeHint ocrLockedWindowCard ocrWindowActions ocrExcludedWindowPanel" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
+                  <button id="ocrWindowRefreshBtn" class="secondary" data-i18n="ui.button.refresh_window">刷新窗口</button>
+                  <button id="ocrWindowAutoBtn" class="ghost" data-i18n="ui.button.clear_lock">清除锁定</button>
+                </div>
+              </div>
+              <p id="ocrWindowTargetModeText" class="result-note ocr-window-collapsible"></p>
+              <p id="ocrWindowRuntimeHint" class="panel-subcopy ocr-window-collapsible" data-i18n="ui.ocr.window.waiting_candidates">等待 OCR 窗口候选列表。</p>
+
+              <div id="ocrLockedWindowCard" class="locked-window-card ocr-window-collapsible">
+                <div class="locked-window-empty" data-i18n="ui.ocr.window.no_locked">暂无锁定的窗口，请点击下方按钮选择。</div>
+              </div>
+
+              <div id="ocrWindowActions" class="window-target-actions ocr-window-collapsible">
+                <button id="ocrWindowSelectBtn" class="primary" data-i18n="ui.button.select_window">选择识别窗口</button>
+              </div>
+
+              <details id="ocrExcludedWindowPanel" class="excluded-window-panel ocr-window-collapsible">
+                <summary data-i18n="ui.ocr.window.excluded_summary">查看排除窗口与原因</summary>
+                <div id="ocrExcludedWindowList" class="stack-list scroll-region empty-state" data-i18n="ui.ocr.window.no_excluded">暂无排除窗口</div>
+              </details>
+            </section>
+          </div>
+        </section>
+
+        <section id="pluginSettingsPanel" class="advanced-hub plugin-settings-hub panel panel-controls" aria-labelledby="pluginSettingsTitle">
+          <header class="plugin-settings-hub-head panel-title-row">
+            <h2 id="pluginSettingsTitle" data-i18n="ui.settings.title">插件设置</h2>
+            <button id="pluginSettingsCollapseToggle" class="ghost" type="button" aria-controls="pluginSettingsBody" aria-expanded="true" data-i18n="ui.button.collapse">隐藏</button>
+          </header>
+          <div id="pluginSettingsBody" class="plugin-settings-hub-body">
+            <div id="pluginSettingsTabs" class="module-tabs plugin-settings-tabs" role="tablist" aria-label="插件设置" data-i18n-aria-label="ui.settings.title">
+              <button id="settingsTabControlBtn" class="module-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsTabControl" data-settings-tab="control" data-i18n="ui.settings.control.title">插件控制</button>
+              <button id="settingsTabRecognitionBtn" class="module-tab active" type="button" role="tab" aria-selected="true" aria-controls="settingsTabRecognition" data-settings-tab="recognition" data-i18n="ui.game.recognition">插件识别</button>
+              <button id="settingsTabDependencyBtn" class="module-tab" type="button" role="tab" aria-selected="false" aria-controls="dependencyModule" data-settings-tab="dependency" data-i18n="ui.install.title">依赖安装</button>
+            </div>
+            <div id="settingsTabControl" class="settings-module settings-tab-panel" role="tabpanel" aria-labelledby="settingsTabControlBtn" aria-hidden="true" data-settings-tab-panel="control" hidden>
+            <div class="module-body">
+              <div class="plugin-control-layout">
+                <section class="plugin-control-card plugin-control-card-wide" aria-labelledby="pluginControlStatusTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">N.E.K.O</p>
+                    <h3 id="pluginControlStatusTitle" data-i18n="ui.settings.control.status">运行状态</h3>
+                  </div>
+                  <div class="plugin-control-card-body">
+                    <label class="field checkbox-field plugin-control-toggle">
+                      <input id="pushToggle" type="checkbox">
+                      <span data-i18n="ui.settings.push_notifications">推送通知</span>
+                    </label>
+                    <div class="plugin-control-actions inline-actions">
+                      <button id="standbyOnBtn" class="ghost" data-i18n="ui.button.standby_on">进入待机</button>
+                      <button id="standbyOffBtn" class="ghost" data-i18n="ui.button.standby_off">恢复活跃</button>
+                    </div>
+                    <div id="agentUserNotice" class="agent-user-notice neutral" hidden>
+                      <div>
+                        <p class="list-kicker" data-i18n="ui.agent.status">Agent 状态</p>
+                        <h3 id="agentUserNoticeTitle" data-i18n="ui.agent.waiting">等待状态刷新</h3>
+                        <p id="agentUserNoticeBody" class="agent-user-notice-body"></p>
+                        <p id="agentUserNoticeTarget" class="result-note"></p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="plugin-control-card" aria-labelledby="pluginControlReaderTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">Reader</p>
+                    <h3 id="pluginControlReaderTitle" data-i18n="ui.settings.control.reader">读取方式</h3>
+                  </div>
+                  <div class="plugin-control-card-body">
+                    <label class="field">
+                      <span data-i18n="ui.settings.reader_mode">文本读取模式</span>
+                      <select id="readerModeSelect">
+                        <option value="auto" selected data-i18n="ui.settings.reader_auto">自动（内存有新文本优先，停更后 OCR 接管）</option>
+                        <option value="memory_reader" data-i18n="ui.settings.reader_memory">内存读取</option>
+                        <option value="ocr_reader" data-i18n="ui.settings.reader_ocr">OCR</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="plugin-control-card" aria-labelledby="pluginControlOcrTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">OCR</p>
+                    <h3 id="pluginControlOcrTitle" data-i18n="ui.settings.control.ocr">OCR 节奏</h3>
+                  </div>
+                  <div class="plugin-control-card-body">
+                    <label class="field">
+                      <span data-i18n="ui.settings.ocr_interval">OCR/DXcam 识别间隔（秒）</span>
+                      <input id="ocrPollIntervalInput" type="number" min="0.5" max="10" step="0.1" placeholder="0.5">
+                    </label>
+                    <label class="field">
+                      <span data-i18n="ui.settings.ocr_trigger">OCR 触发方式</span>
+                      <select id="ocrTriggerModeSelect">
+                        <option value="after_advance" data-i18n="ui.settings.trigger_after_advance">点击对白后识别</option>
+                        <option value="interval" selected data-i18n="ui.settings.trigger_interval">按间隔识别</option>
+                      </select>
+                    </label>
+                    <label class="field checkbox-field plugin-control-toggle">
+                      <input id="fastLoopToggle" type="checkbox">
+                      <span data-i18n="ui.settings.fast_loop">OCR Fast Loop</span>
+                      <small class="field-note" data-i18n="ui.settings.fast_loop_note">识别间隔内持续轮询，降低延迟</small>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="plugin-control-card" aria-labelledby="pluginControlVisionTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">Vision</p>
+                    <h3 id="pluginControlVisionTitle" data-i18n="ui.settings.control.vision">视觉辅助</h3>
+                  </div>
+                  <div class="plugin-control-card-body">
+                    <label class="field checkbox-field plugin-control-toggle">
+                      <input id="llmVisionToggle" type="checkbox">
+                      <span data-i18n="ui.settings.llm_vision">LLM 视觉辅助</span>
+                      <small class="field-note" data-i18n="ui.settings.llm_vision_note">低置信度 OCR 时发送游戏截图给 LLM，增加 token 消耗</small>
+                    </label>
+                    <label class="field">
+                      <span data-i18n="ui.settings.vision_max">Vision 最大边长</span>
+                      <input id="llmVisionMaxImagePxInput" type="number" min="64" max="2048" step="32" placeholder="768">
+                      <small class="field-note" data-i18n="ui.settings.vision_max_note">低置信度时传图，会增加 token 成本并包含游戏画面。</small>
+                    </label>
+                  </div>
+                </section>
+
+              </div>
+              <div class="plugin-control-footer settings-save-row">
+                <button id="saveModeBtn" class="secondary" data-i18n="ui.button.save">保存设置</button>
+                <span id="settingsDirtyHint" class="settings-dirty-hint" hidden data-i18n="ui.settings.dirty">有未保存设置</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="settingsTabRecognition" class="settings-module settings-tab-panel" role="tabpanel" aria-labelledby="settingsTabRecognitionBtn" aria-hidden="false" data-settings-tab-panel="recognition">
             <div class="module-body">
               <div class="game-binding-panel">
                 <div class="binding-summary">
@@ -352,19 +415,11 @@
                 </div>
               </div>
             </div>
-          </details>
-        </section>
-
-        <section id="installSection" class="panel">
-          <div class="panel-title-row">
-            <h2 data-i18n="ui.install.title">依赖安装</h2>
           </div>
-          <details id="dependencyModule" class="settings-module">
-            <summary>
-              <span data-i18n="ui.install.title">依赖安装</span>
-              <small id="installCompactSummary" data-i18n="ui.install.summary">OCR 识别依赖与内存读取依赖分开管理</small>
-            </summary>
+
+          <div id="dependencyModule" class="settings-module settings-tab-panel" role="tabpanel" aria-labelledby="settingsTabDependencyBtn" aria-hidden="true" data-settings-tab-panel="dependency" hidden>
             <div class="module-body">
+              <div id="installCompactSummary" class="install-compact-summary" data-i18n="ui.install.summary">OCR 识别依赖与内存读取依赖分开管理</div>
               <div class="install-card-grid">
                 <div id="rapidocrCard" class="install-card" data-dep="rapidocr">
                   <div class="install-card-icon">🔍</div>
@@ -465,65 +520,96 @@
                 </div>
               </div>
             </div>
-          </details>
+          </div>
+          </div>
         </section>
 
-        <section class="dashboard-grid">
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.status">运行状态与快照</span><small data-i18n="ui.dashboard.status_desc">连接、数据源、OCR 运行时、当前台词与快照</small></summary>
-            <div class="dashboard-section-grid dashboard-section-grid-three">
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.status_short">状态</h3>
-                <div id="statusGrid" class="status-grid-panel scroll-region"></div>
-              </section>
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.ocr_runtime">OCR 运行时</h3>
-                <dl id="ocrRuntimeGrid" class="data-grid scroll-region"></dl>
-              </section>
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.snapshot_subsection">快照</h3>
-                <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
-              </section>
-            </div>
-          </details>
-
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module agent-panel" open>
-            <summary><span data-i18n="ui.dashboard.agent_panel">Agent</span><small id="agentPanelSummary"></small></summary>
-            <div class="agent-panel-tabs" role="tablist">
-              <button id="agentTabStatus" class="agent-tab active" type="button" role="tab" aria-selected="true" aria-controls="agentPanelStatus" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
-              <button id="agentTabSuggest" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelSuggest" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
-              <button id="agentTabPushes" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelPushes" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
-            </div>
-            <div id="agentPanelStatus" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabStatus" aria-hidden="false" data-agent-tab-panel="status">
-              <div id="agentStatusGrid" class="data-grid scroll-region empty-state" data-i18n="ui.agent.empty_status">Agent 正在整理小本本，等第一次状态刷新。</div>
-              <div class="reply-box">
-                <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
-                <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
+        <section class="advanced-hub-stack">
+          <details class="advanced-hub panel panel-full panel-scroll panel-scroll-wide dashboard-module plugin-status-hub" open>
+            <summary class="plugin-status-hub-summary">
+              <div class="plugin-status-hub-head">
+                <div>
+                  <p class="plugin-status-hub-kicker" data-i18n="ui.plugin_status.kicker">N.E.K.O STATUS</p>
+                  <h2 data-i18n="ui.plugin_status.title">插件状态</h2>
+                </div>
+                <p class="plugin-status-hub-subtitle" data-i18n="ui.plugin_status.subtitle">集中查看运行状态、Agent 和最近历史记录。</p>
               </div>
-            </div>
-            <div id="agentPanelSuggest" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabSuggest" aria-hidden="true" data-agent-tab-panel="suggest" hidden>
-              <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.agent.empty_suggest">还没有建议，等画面出现选项再轻轻递上来。</div>
-            </div>
-            <div id="agentPanelPushes" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabPushes" aria-hidden="true" data-agent-tab-panel="pushes" hidden>
-              <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-            </div>
-          </details>
+            </summary>
 
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.history">历史记录</span><small data-i18n="ui.dashboard.history_desc">最近台词、选项、底层事件</small></summary>
-            <div class="dashboard-section-grid dashboard-section-grid-three">
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.lines">最近台词与 OCR 诊断</h3>
-                <div id="linesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-              </section>
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.choices">最近选项</h3>
-                <div id="choicesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-              </section>
-              <section class="dashboard-subsection">
-                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.events">最近事件</h3>
-                <div id="eventsList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-              </section>
+            <div class="plugin-status-hub-body">
+              <details class="plugin-status-section plugin-status-section-runtime" open aria-labelledby="pluginStatusRuntimeTitle">
+                <summary class="plugin-status-section-head">
+                  <div>
+                    <p class="list-kicker" data-i18n="ui.plugin_status.runtime_group">运行状态</p>
+                    <h3 id="pluginStatusRuntimeTitle" data-i18n="ui.dashboard.status">运行状态与快照</h3>
+                  </div>
+                </summary>
+                <div class="plugin-status-hub-grid plugin-status-runtime-grid">
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.status_short">状态</h3>
+                    <div id="statusGrid" class="status-grid-panel scroll-region"></div>
+                  </section>
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.ocr_runtime">OCR 运行时</h3>
+                    <dl id="ocrRuntimeGrid" class="data-grid scroll-region"></dl>
+                  </section>
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.snapshot_subsection">快照</h3>
+                    <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
+                  </section>
+                </div>
+              </details>
+
+              <details class="plugin-status-section plugin-status-section-agent agent-panel" open aria-labelledby="pluginStatusAgentTitle">
+                <summary class="plugin-status-section-head">
+                  <div>
+                    <p class="list-kicker" data-i18n="ui.plugin_status.agent_group">Agent</p>
+                    <h3 id="pluginStatusAgentTitle" data-i18n="ui.dashboard.agent_panel">Agent</h3>
+                  </div>
+                  <small id="agentPanelSummary"></small>
+                </summary>
+                <div class="agent-panel-tabs" role="tablist">
+                  <button id="agentTabStatus" class="agent-tab active" type="button" role="tab" aria-selected="true" aria-controls="agentPanelStatus" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
+                  <button id="agentTabSuggest" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelSuggest" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
+                  <button id="agentTabPushes" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelPushes" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
+                </div>
+                <div id="agentPanelStatus" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabStatus" aria-hidden="false" data-agent-tab-panel="status">
+                  <div id="agentStatusGrid" class="data-grid scroll-region empty-state" data-i18n="ui.agent.empty_status">Agent 正在整理小本本，等第一次状态刷新。</div>
+                  <div class="reply-box">
+                    <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
+                    <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
+                  </div>
+                </div>
+                <div id="agentPanelSuggest" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabSuggest" aria-hidden="true" data-agent-tab-panel="suggest" hidden>
+                  <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.agent.empty_suggest">还没有建议，等画面出现选项再轻轻递上来。</div>
+                </div>
+                <div id="agentPanelPushes" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabPushes" aria-hidden="true" data-agent-tab-panel="pushes" hidden>
+                  <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+                </div>
+              </details>
+
+              <details class="plugin-status-section plugin-status-section-history" open aria-labelledby="pluginStatusHistoryTitle">
+                <summary class="plugin-status-section-head">
+                  <div>
+                    <p class="list-kicker" data-i18n="ui.plugin_status.history_group">历史记录</p>
+                    <h3 id="pluginStatusHistoryTitle" data-i18n="ui.dashboard.history">历史记录</h3>
+                  </div>
+                </summary>
+                <div class="plugin-status-hub-grid plugin-status-history-grid">
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.lines">最近台词与 OCR 诊断</h3>
+                    <div id="linesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+                  </section>
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.choices">最近选项</h3>
+                    <div id="choicesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+                  </section>
+                  <section class="dashboard-subsection">
+                    <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.events">最近事件</h3>
+                    <div id="eventsList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+                  </section>
+                </div>
+              </details>
             </div>
           </details>
         </section>
@@ -563,6 +649,6 @@
   </div>
 
   <script src="./i18n.js?v=20260505-ui-i18n"></script>
-  <script src="./main.js?v=20260507-hide-screen-templates"></script>
+  <script src="./main.js?v=20260508-play-assist-hub"></script>
 </body>
 </html>
