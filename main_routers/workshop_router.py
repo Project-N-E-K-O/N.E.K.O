@@ -4112,6 +4112,7 @@ async def sync_workshop_character_cards() -> dict:
             deleted_character_names = _load_deleted_character_names(config_mgr)
             
             need_save = False
+            pending_added_catgirls = {}
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
@@ -4272,6 +4273,7 @@ async def sync_workshop_character_cards() -> dict:
                                     set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', subscriber_model_ref)
                             
                             characters['猫娘'][chara_name] = catgirl_data
+                            pending_added_catgirls[chara_name] = catgirl_data
                             need_save = True
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
@@ -4333,13 +4335,46 @@ async def sync_workshop_character_cards() -> dict:
                 if blocked_result is not None:
                     return blocked_result
 
-                try:
-                    await config_mgr.asave_characters(characters)
-                except MaintenanceModeError:
-                    logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
-                    return _write_fence_blocked_result()
+                characters_to_save = characters
+                if pending_added_catgirls:
+                    # 启动期工坊同步是后台任务：扫描可能很慢，期间用户可能已经修改了角色卡
+                    # 或完成初始人格选择。保存前必须重新读取最新配置，只把本轮新增角色合入，
+                    # 避免用扫描前的旧快照整包覆盖用户刚写入的字段。
+                    latest_characters = await config_mgr.aload_characters()
+                    if not isinstance(latest_characters, dict):
+                        latest_characters = {}
+                    latest_catgirls = latest_characters.get('猫娘')
+                    if not isinstance(latest_catgirls, dict):
+                        latest_catgirls = {}
+                        latest_characters['猫娘'] = latest_catgirls
 
-                logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+                    latest_deleted_character_names = _load_deleted_character_names(config_mgr)
+                    actually_added_count = 0
+                    skipped_due_to_race_count = 0
+                    for pending_name, pending_payload in pending_added_catgirls.items():
+                        if pending_name in latest_deleted_character_names or pending_name in latest_catgirls:
+                            skipped_due_to_race_count += 1
+                            continue
+                        latest_catgirls[pending_name] = pending_payload
+                        actually_added_count += 1
+
+                    added_count = actually_added_count
+                    skipped_count += skipped_due_to_race_count
+                    if actually_added_count <= 0:
+                        need_save = False
+                    else:
+                        if not latest_characters.get('当前猫娘') and latest_catgirls:
+                            latest_characters['当前猫娘'] = next(iter(latest_catgirls), '')
+                        characters_to_save = latest_characters
+
+                if need_save:
+                    try:
+                        await config_mgr.asave_characters(characters_to_save)
+                    except MaintenanceModeError:
+                        logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
+                        return _write_fence_blocked_result()
+
+                    logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
                 
                 try:
                     initialize_character_data = get_initialize_character_data()
