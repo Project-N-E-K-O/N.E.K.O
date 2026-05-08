@@ -126,14 +126,6 @@ from config.prompts_proactive import (
     MINI_GAME_INVITE_KEYWORDS,
     build_proactive_action_note,
 )
-from config.prompts_activity import (
-    ANTI_SLACK_REMINDER_PROMPT,
-    WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME,
-    WORK_BREAK_GENERIC_LEISURE_LABEL,
-    WORK_BREAK_GENERIC_WORK_LABEL,
-    WORK_BREAK_REMINDER_PROMPT,
-    WORK_BREAK_SEED_HINTS,
-)
 from utils.file_utils import atomic_write_json_async, read_json
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import (
@@ -2088,7 +2080,8 @@ def _pick_mini_game_type() -> str | None:
     ]
     if not candidates:
         return None
-    return random.choice(candidates)
+    import random as _random
+    return _random.choice(candidates)
 
 
 def _resolve_proactive_locale(data: dict, mgr) -> str:
@@ -2231,7 +2224,8 @@ async def _maybe_deliver_mini_game_invite(
         )
 
         if not force_first:
-            if random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
                 return None
 
         game_type = _pick_mini_game_type()
@@ -2371,13 +2365,18 @@ def _render_work_break_prompt(
     pinned to the snapshot) so consecutive failed-then-retried
     deliveries naturally rotate the suggested action.
     """
+    from config.prompts_activity import (
+        WORK_BREAK_REMINDER_PROMPT, WORK_BREAK_SEED_HINTS,
+        WORK_BREAK_GENERIC_WORK_LABEL,
+    )
+    import random as _random
     template = WORK_BREAK_REMINDER_PROMPT.get(
         lang, WORK_BREAK_REMINDER_PROMPT.get('en', WORK_BREAK_REMINDER_PROMPT['zh']),
     )
     seeds = WORK_BREAK_SEED_HINTS.get(
         lang, WORK_BREAK_SEED_HINTS.get('en', WORK_BREAK_SEED_HINTS['zh']),
     ) or ['']
-    seed = random.choice(seeds)
+    seed = _random.choice(seeds)
     app_label = _resolve_break_reminder_label(pending.app, lang, WORK_BREAK_GENERIC_WORK_LABEL)
     rendered = template.format(
         master=master_name or '',
@@ -2399,6 +2398,10 @@ def _render_anti_slack_prompt(
     No seed slot — single behaviour, variation comes from prev/new app
     names + minute count + AI persona. Returns the system prompt text.
     """
+    from config.prompts_activity import (
+        ANTI_SLACK_REMINDER_PROMPT,
+        WORK_BREAK_GENERIC_WORK_LABEL, WORK_BREAK_GENERIC_LEISURE_LABEL,
+    )
     template = ANTI_SLACK_REMINDER_PROMPT.get(
         lang, ANTI_SLACK_REMINDER_PROMPT.get('en', ANTI_SLACK_REMINDER_PROMPT['zh']),
     )
@@ -2425,6 +2428,9 @@ def _render_work_break_game_invite_prompt(
     the given game_type (caller falls back to the regular water-break
     branch).
     """
+    from config.prompts_activity import (
+        WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME, WORK_BREAK_GENERIC_WORK_LABEL,
+    )
     per_lang = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME.get(game_type)
     if not per_lang:
         return None
@@ -2511,15 +2517,9 @@ async def _deliver_break_reminder_via_llm(
         HumanMessage(content=begin_text),
     ]
 
-    logger.debug(
-        "\n%s\n[BREAK-REMINDER] channel=%s lang=%s model=%s\n%s\n%s\n%s\n",
-        '=' * 60,
-        channel,
-        lang,
-        correction_model,
-        '=' * 60,
-        system_prompt,
-        '=' * 60,
+    print(
+        f"\n{'='*60}\n[BREAK-REMINDER] channel={channel} lang={lang} model={correction_model}\n"
+        f"{'='*60}\n{system_prompt}\n{'='*60}\n"
     )
 
     from utils.token_tracker import set_call_type
@@ -4447,7 +4447,12 @@ async def proactive_chat(request: Request):
             # those gates failing falls through to the regular
             # drink/stretch nudge instead of breaking the must-fire.
             water_pending = activity_snapshot.work_break_pending
-            _gi_prob = mgr._activity_tracker.get_work_break_game_invite_probability()
+            prefs_for_break = mgr._activity_tracker._sm._prefs
+            _gi_prob = prefs_for_break.work_break_game_invite_probability
+            if _gi_prob is None:
+                # Resolved at import time — see tracker.py defaults.
+                from main_logic.activity.tracker import _WORK_BREAK_GAME_INVITE_PROBABILITY as _gi_prob_default
+                _gi_prob = _gi_prob_default
             branch_game_invite = False
             chosen_game_type: str | None = None
             gi_prompt: str | None = None
@@ -4457,7 +4462,8 @@ async def proactive_chat(request: Request):
                 and not _mini_game_invite_in_cooldown(lanlan_name)
                 and _gi_prob > 0
             ):
-                if random.random() < _gi_prob:
+                import random as _random
+                if _random.random() < _gi_prob:
                     chosen_game_type = _pick_mini_game_type()
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
@@ -4595,7 +4601,8 @@ async def proactive_chat(request: Request):
             and activity_snapshot.skip_probability > 0
             and activity_snapshot.unfinished_thread is None
         ):
-            if random.random() < activity_snapshot.skip_probability:
+            import random as _random
+            if _random.random() < activity_snapshot.skip_probability:
                 print(
                     f"[{lanlan_name}] skip_probability={activity_snapshot.skip_probability:.2f} "
                     f"rolled (state={activity_snapshot.state} intensity={activity_snapshot.game_intensity} "
