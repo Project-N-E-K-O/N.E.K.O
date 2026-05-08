@@ -1568,6 +1568,11 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
+def _phase1_text_is_pass(text: str) -> bool:
+    """Return True when a Phase 1 section explicitly says PASS."""
+    return bool(re.search(r'(?i)(?:^|[\s\[])\s*PASS\s*(?:[\]\s]|$)', text or ''))
+
+
 def _parse_unified_phase1_result(text: str) -> dict:
     """
     解析合并 Phase 1 LLM 输出。
@@ -1580,11 +1585,21 @@ def _parse_unified_phase1_result(text: str) -> dict:
     Returns:
         {
             'web': {'title': ..., 'source': ..., 'number': ...} | None,
-            'music_keyword': str | None,    # None 表示 PASS 或不存在
-            'meme_keyword': str | None,     # None 表示 PASS 或不存在
+            'music_keyword': str | None,    # None 表示无关键词
+            'meme_keyword': str | None,     # None 表示无关键词
+            'web_pass': bool,               # True 表示该通道明确 PASS
+            'music_pass': bool,
+            'meme_pass': bool,
         }
     """
-    result: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+    result: dict = {
+        'web': None,
+        'music_keyword': None,
+        'meme_keyword': None,
+        'web_pass': False,
+        'music_pass': False,
+        'meme_pass': False,
+    }
 
     # 按 [WEB] / [MUSIC] / [MEME] 分段
     # 使用正则切分，保留标签
@@ -1637,14 +1652,16 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif '[PASS]' in web_text.upper():
-            pass  # 确实是 PASS，web 保持 None
+        elif _phase1_text_is_pass(web_text):
+            result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if '[PASS]' not in music_text.upper() and music_text:
+        if _phase1_text_is_pass(music_text):
+            result['music_pass'] = True
+        elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
             keyword = re.sub(
                 r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+',
@@ -1660,7 +1677,9 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if '[PASS]' not in meme_text.upper() and meme_text:
+        if _phase1_text_is_pass(meme_text):
+            result['meme_pass'] = True
+        elif meme_text:
             keyword = re.sub(
                 r'(?i).*?(?:关键词|keyword|キーワード|키워드|ключевое\s*слово)[：:\s]+',
                 '', meme_text, count=1
@@ -5392,14 +5411,18 @@ async def proactive_chat(request: Request):
         fetch_tasks_p1: list = []
         fetch_labels: list[str] = []
 
-        if has_music_task:
+        if has_music_task and not unified_parsed.get('music_pass'):
             kw = music_keyword or ""
             fetch_tasks_p1.append(_fetch_music_with_fallback(kw))
             fetch_labels.append('music')
-        if has_meme_task:
+        elif has_music_task:
+            print(f"[{lanlan_name}] Phase 1 音乐通道明确 PASS，跳过后置 fetch")
+        if has_meme_task and not unified_parsed.get('meme_pass'):
             kw = meme_keyword or ""
             fetch_tasks_p1.append(_fetch_meme_with_fallback(kw))
             fetch_labels.append('meme')
+        elif has_meme_task:
+            print(f"[{lanlan_name}] Phase 1 表情包通道明确 PASS，跳过后置 fetch")
 
         if fetch_tasks_p1:
             # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
