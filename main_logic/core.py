@@ -2306,10 +2306,14 @@ class LLMSessionManager:
         # Gemini 原生声线短路前必须排除"用户已克隆的同名自定义音色"——
         # 例如用户保存了名为 Puck 的克隆音色，应优先走 custom 路径，
         # 否则会被静默换成 Gemini 内置 Puck，丢失用户上传的音色喵。
+        # 碰撞检测看完整 voice_storage 而不是 get_voices_for_current_api 视图：
+        # 后者按当前 tts_custom 配置过滤 bucket（AUDIO_API_KEY / __LOCAL_TTS__ /
+        # ASSIST_API_KEY_QWEN 等），用户切了 key 之后旧 bucket 里历史保存的同名
+        # clone 不会出现在视图里，会被漏判，绕回 Gemini 内置静默替换。
         if (
             self.core_api_type == 'gemini'
             and is_gemini_tts_voice(self.voice_id)
-            and self.voice_id not in self._config_manager.get_voices_for_current_api()
+            and not self._config_manager.voice_id_exists_in_any_storage(self.voice_id)
         ):
             return False
         # 克隆音色始终走 custom 路径；

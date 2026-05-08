@@ -2241,6 +2241,25 @@ class ConfigManager:
         voice_storage[api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
+        """voice_id 是否出现在 voice_storage.json 的任意 bucket 下。
+
+        比 get_voices_for_current_api() 的视图更宽：后者按当前 tts_custom 配置
+        筛选 bucket（AUDIO_API_KEY / __LOCAL_TTS__ / 当前 ASSIST_API_KEY_QWEN
+        等），配置切换后曾在旧 bucket 保存过的克隆音色不会出现在视图里。
+        碰撞检测场景（"用户曾经显式克隆过这个 voice_id 吗"）必须看完整存储，
+        不能只看当前视图，否则同名 voice 会被静默切到内置 provider 上。
+        """
+        if not voice_id:
+            return False
+        voice_storage = self.load_voice_storage()
+        if not isinstance(voice_storage, dict):
+            return False
+        for bucket in voice_storage.values():
+            if isinstance(bucket, dict) and voice_id in bucket:
+                return True
+        return False
+
     def find_voice_by_audio_md5(self, api_key: str, audio_md5: str, ref_language: str | None = None):
         """在指定 API Key 下按参考音频 MD5（及可选 ref_language）查找已有音色。
 
