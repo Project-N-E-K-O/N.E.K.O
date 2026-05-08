@@ -2600,7 +2600,7 @@ class ConfigManager:
 
         try:
             if self._check_non_mainland():
-                return url.replace('lanlan.tech', 'lanlan.app')
+                return url.replace('lanlan.tech', 'lanlan.app').replace("www.lanlan.app/tts", "lanlan.app/tts")
         except Exception:
             pass
 

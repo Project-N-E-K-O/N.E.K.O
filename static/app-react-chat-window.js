@@ -2331,7 +2331,14 @@
 
     var MIN_WIDTH = 320;
     var MIN_HEIGHT = 280;
+    var GALGAME_MIN_HEIGHT = 420;
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+    function getDesktopMinHeight() {
+        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
+        return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
+    }
 
     function createResizeEdges() {
         var shell = getShell();
@@ -2404,11 +2411,13 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
+        var desktopMinHeight = getDesktopMinHeight();
+
         if (!mobile && dir.indexOf('s') !== -1) {
-            newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
+            newHeight = Math.max(desktopMinHeight, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
-            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
+            var minH = mobile ? MOBILE_MIN_HEIGHT : desktopMinHeight;
             var proposedHeight = resizeState.origHeight - dy;
             if (proposedHeight >= minH) {
                 newHeight = proposedHeight;

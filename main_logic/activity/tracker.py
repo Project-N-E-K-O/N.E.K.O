@@ -40,7 +40,9 @@ import time
 from collections import deque
 from dataclasses import replace as dc_replace
 
-from main_logic.activity.snapshot import ActivitySnapshot
+from main_logic.activity.snapshot import (
+    ActivitySnapshot, ActivityState, AntiSlackPending, WorkBreakPending,
+)
 from main_logic.activity.state_machine import (
     ActivityStateMachine, observation_from_system,
 )
@@ -71,6 +73,57 @@ _ACTIVITY_GUESS_MIN_REFRESH_SECONDS = 30.0
 # (which on remote deployments will be in degraded mode) — better to
 # advertise "no signal" than to keep using stale window data.
 _EXTERNAL_SIGNAL_TTL_SECONDS = 30.0
+
+
+# ── Break-reminder defaults ─────────────────────────────────────────
+# Override per-character via ``user_preferences.json::__global_conversation__::activity::thresholds``.
+# All values are minutes / seconds; the probability has its own dedicated
+# field on ``ActivityPreferences`` because 0 is meaningful (disabled) and
+# the threshold parser rejects ≤0.
+
+# Cumulative focused_work minutes that arms the water-break reminder.
+# Once armed, the next proactive_chat round in focused_work fires the
+# minimal-Phase-2 nudge and resets the accumulator.
+_WORK_BREAK_MINUTES = 30
+
+# How long a queued ``WorkBreakPending`` stays valid if proactive_chat
+# never fires. After this window the pending is dropped (the user has
+# clearly stopped focusing or the moment passed); the accumulator stays
+# at its current value so the next focused_work stretch can re-arm.
+_WORK_BREAK_PENDING_WINDOW_SECONDS = 5 * 60
+
+# Minimum focused_work session length before exiting it can fire an
+# anti-slack reminder. Below this, the user probably opened the wrong
+# window by accident — don't lecture them.
+_ANTI_SLACK_MIN_FOCUS_MINUTES = 5
+
+# Per-character cooldown after a successful anti-slack delivery. Decoupled
+# from the water-break / mini-game cooldowns so the two reminder types
+# don't accidentally throttle each other.
+_ANTI_SLACK_COOLDOWN_MINUTES = 15
+
+# How long a queued ``AntiSlackPending`` stays valid. The transition is
+# the trigger; if proactive doesn't fire within this window the moment
+# is gone (user has already settled into the new activity for a while).
+_ANTI_SLACK_PENDING_WINDOW_SECONDS = 5 * 60
+
+# Probability that a fired water-break reminder pivots into a "rest +
+# mini-game invite" branch instead of the regular drink/stretch nudge.
+# Falls through to ActivityPreferences override (0 disables).
+_WORK_BREAK_GAME_INVITE_PROBABILITY = 0.5
+
+# Cap on per-tick accumulator advance. Filters clock jumps / process
+# suspends / first-call jitter so a long gap between ticks doesn't
+# silently credit minutes the user didn't actually spend focused.
+_BREAK_REMINDER_TICK_MAX_DELTA_SECONDS = 30.0
+
+# States that count as "leisure" for anti-slack transition detection.
+# Idle is intentionally excluded — sitting at the desk staring is often
+# thinking, not slacking — as are voice_engaged / chatting (they are
+# producing). transitioning is excluded because it's not an end state.
+_ANTI_SLACK_LEISURE_STATES: frozenset[str] = frozenset({
+    'casual_browsing', 'gaming',
+})
 
 
 def _privacy_mode_active() -> bool:
@@ -160,6 +213,53 @@ class UserActivityTracker:
         # (which on a remote backend reports os_signals_available=False
         # and the state machine's snapshot makes that explicit).
         self._external_system_snap: SystemSnapshot | None = None
+
+        # ── Break-reminder accumulator + transition tracking ────────
+        # Single timestamp drives both: each tick computes
+        # ``now - _break_tick_last_at`` and credits the delta (capped) to
+        # the appropriate timer based on the current state. 0.0 = "first
+        # tick, no delta to credit yet".
+        self._break_tick_last_at: float = 0.0
+
+        # Cumulative focused_work seconds. Accumulates while state ==
+        # focused_work, OR state == transitioning AND accumulator > 0
+        # (transitioning extends an in-progress focus session — quick
+        # window flicks don't break the timer). Any other state resets
+        # to 0 immediately. See ``_tick_break_reminders``.
+        self._work_acc_seconds: float = 0.0
+
+        # State + session bookkeeping. ``_last_known_state`` lets us
+        # detect transitions across ticks; ``_focused_work_session_*``
+        # let us report how long the just-ended focused_work session
+        # was when an anti-slack transition fires.
+        self._last_known_state: ActivityState | None = None
+        self._focused_work_session_started_at: float | None = None
+        self._focused_work_session_app: str | None = None
+
+        # Anti-slack cooldown: epoch time of the last successful
+        # delivery. Until ``now - this >= cooldown_seconds`` no new
+        # AntiSlackPending is emitted (the cooldown gate runs at
+        # transition-detection time, not at delivery — symmetrical with
+        # the mini-game invite cooldown shape).
+        self._anti_slack_last_fired_at: float = 0.0
+
+        # Pending payloads. Lifecycle:
+        #   * Set when conditions trigger (water: focused_work +
+        #     accumulator past threshold; anti-slack: focused_work →
+        #     leisure transition past min focus + cooldown OK).
+        #   * Cleared by ``mark_work_break_used`` /
+        #     ``mark_anti_slack_used`` after successful delivery.
+        #   * Auto-cleared at tick time when the validity window
+        #     (``_WORK_BREAK_PENDING_WINDOW_SECONDS`` / ``_ANTI_SLACK_*``)
+        #     expires or the state changes to one that invalidates the
+        #     pending (e.g. anti-slack pending dies if user returns
+        #     to focused_work).
+        # Stored as dicts (not frozen dataclasses) so we can stamp a
+        # ``set_at`` timestamp for window-expiry checks; the snapshot
+        # builds the frozen WorkBreakPending / AntiSlackPending from
+        # these.
+        self._work_break_pending: dict | None = None
+        self._anti_slack_pending: dict | None = None
 
     # ── hooks (called from core.py and friends) ─────────────────
 
@@ -316,6 +416,11 @@ class UserActivityTracker:
         )
 
         snap = self._sm.get_snapshot(now=ts)
+        # Tick break-reminder accumulator + transition detection BEFORE
+        # building pending fields. Done after sm.get_snapshot so we have
+        # the resolved state (focused_work / leisure / etc) to drive
+        # accumulator and transition logic.
+        self._tick_break_reminders(snap, now=ts)
         if snap.state == 'private':
             # Privacy lockdown — explicitly empty enrichment fields rather
             # than splicing in caches built from earlier (non-private)
@@ -323,11 +428,15 @@ class UserActivityTracker:
             # at update_window, the cached enrichment narrative might
             # still reference what the user was doing 30s ago, which
             # could leak intent ("master is logging into bank...").
+            # Pending break-reminder fields also dropped — no proactive
+            # interrupt while a sensitive app is foreground.
             return dc_replace(
                 snap,
                 activity_scores={},
                 activity_guess='',
                 open_threads=[],
+                work_break_pending=None,
+                anti_slack_pending=None,
             )
         # Patch in emotion-tier enrichment caches. ``snap`` is a frozen
         # dataclass; ``replace`` returns a new instance without mutating
@@ -337,6 +446,8 @@ class UserActivityTracker:
             activity_scores=dict(self._activity_scores_cache),
             activity_guess=self._activity_guess_cache,
             open_threads=list(self._open_threads_cache),
+            work_break_pending=self._build_work_break_pending(),
+            anti_slack_pending=self._build_anti_slack_pending(),
         )
 
     def get_snapshot_sync(self, *, now: float | None = None) -> ActivitySnapshot:
@@ -361,19 +472,297 @@ class UserActivityTracker:
             now=ts,
         )
         snap = self._sm.get_snapshot(now=ts)
+        self._tick_break_reminders(snap, now=ts)
         if snap.state == 'private':
             return dc_replace(
                 snap,
                 activity_scores={},
                 activity_guess='',
                 open_threads=[],
+                work_break_pending=None,
+                anti_slack_pending=None,
             )
         return dc_replace(
             snap,
             activity_scores=dict(self._activity_scores_cache),
             activity_guess=self._activity_guess_cache,
             open_threads=list(self._open_threads_cache),
+            work_break_pending=self._build_work_break_pending(),
+            anti_slack_pending=self._build_anti_slack_pending(),
         )
+
+    # ── break-reminder accumulator + transition detection ──────────
+
+    def _tick_break_reminders(self, snap: ActivitySnapshot, *, now: float) -> None:
+        """Advance the focused_work accumulator and detect leisure transitions.
+
+        Idempotent and tolerant of arbitrary call frequency: per-call
+        delta is bounded by ``_BREAK_REMINDER_TICK_MAX_DELTA_SECONDS``,
+        so a long gap between calls (process suspend, idle deployment,
+        first-call bootstrap) doesn't silently credit minutes the user
+        didn't actually spend focused.
+
+        Called from ``get_snapshot``, ``get_snapshot_sync``, and the 20s
+        ``_activity_guess_loop`` — the latter ensures state transitions
+        are caught even when no proactive_chat round queries the tracker.
+
+        Reads thresholds via ``self._sm._prefs.thresholds`` so user
+        edits to ``user_preferences.json`` take effect on the next
+        cache reload tick (mirrors how the state machine handles
+        live-edit user overrides).
+        """
+        thresholds = self._sm._prefs.thresholds
+
+        # Resolve thresholds with code-default fallbacks. Live-edit safe:
+        # _refresh_prefs runs on every get_snapshot path; threshold
+        # constants reload via the activity_config 30s cache.
+        work_break_seconds = float(
+            thresholds.get('work_break_minutes', _WORK_BREAK_MINUTES)
+        ) * 60.0
+        work_break_window = float(
+            thresholds.get('work_break_pending_window_seconds', _WORK_BREAK_PENDING_WINDOW_SECONDS)
+        )
+        anti_slack_min_focus_seconds = float(
+            thresholds.get('anti_slack_min_focus_minutes', _ANTI_SLACK_MIN_FOCUS_MINUTES)
+        ) * 60.0
+        anti_slack_cooldown_seconds = float(
+            thresholds.get('anti_slack_cooldown_minutes', _ANTI_SLACK_COOLDOWN_MINUTES)
+        ) * 60.0
+        anti_slack_window = float(
+            thresholds.get('anti_slack_pending_window_seconds', _ANTI_SLACK_PENDING_WINDOW_SECONDS)
+        )
+
+        state = snap.state
+
+        # Capture accumulator BEFORE advance/reset. Used as the
+        # authoritative session length when the anti-slack branch fires
+        # below — wall-clock ``now - session_started_at`` would inflate
+        # after a long process suspend / sleep / stall (the gap discard
+        # in the advance block prevents the accumulator from ticking
+        # through the dead window, but ``session_started_at`` still
+        # points at pre-suspend time). Codex P1 review: PR #1226.
+        session_acc_at_start = self._work_acc_seconds
+
+        # ── Accumulator advance ─────────────────────────────────
+        # First tick has no delta to credit — record now and exit. The
+        # next call computes a real delta against this point.
+        if self._break_tick_last_at == 0.0:
+            self._break_tick_last_at = now
+        else:
+            raw_delta = now - self._break_tick_last_at
+            self._break_tick_last_at = now
+            # Ignore zero / negative (clock jump) and overlong (suspended
+            # process / forgot-to-tick) gaps. Either bucket means the
+            # accumulator can't safely advance: we don't actually know
+            # what state the user was in during that gap.
+            if 0 < raw_delta <= _BREAK_REMINDER_TICK_MAX_DELTA_SECONDS:
+                if state == 'focused_work':
+                    self._work_acc_seconds += raw_delta
+                elif state == 'transitioning' and self._work_acc_seconds > 0:
+                    # Transitioning during a real focus session = quick
+                    # IDE↔terminal↔browser-docs flick. Don't break the
+                    # streak. (When acc=0 we never started a session, so
+                    # transitioning by itself can't kick one off.)
+                    self._work_acc_seconds += raw_delta
+                else:
+                    # Any other state immediately resets — per user spec.
+                    self._work_acc_seconds = 0.0
+            else:
+                # Unsafe delta — two buckets, same conservative cleanup:
+                #   * ``raw_delta > cap`` — long gap (process suspend /
+                #     sleep / forgot-to-tick). Don't know what state
+                #     the user was in during the gap.
+                #   * ``raw_delta <= 0`` — non-monotonic clock (NTP
+                #     rollback, manual time change, duplicate ts). Can't
+                #     credit; pre-rollback focus also can't be trusted
+                #     to extend through the inverted segment.
+                # In both cases, allowing the in-range branch above to
+                # not run means the "any other state immediately resets"
+                # rule never fires for non-focus ticks — pre-transition
+                # focus minutes leak forward into post-gap focused_work
+                # and trip water_break_pending earlier than 30 min of
+                # genuine post-gap focus warrants. Codex P2 reviews:
+                # PR #1226 (long-gap and non-positive-delta findings).
+                #
+                # Conservative reset of everything that could carry
+                # stale pre-event context:
+                #   * accumulator → 0
+                #   * _last_known_state → None forces the bookkeeping
+                #     below to treat any post-event focused_work as a
+                #     fresh session entry, AND prevents anti-slack from
+                #     firing on a focused_work → leisure transition
+                #     observed across the unsafe-delta tick.
+                #   * Pending dicts cleared since the snapshot they
+                #     reference is now ancient.
+                self._work_acc_seconds = 0.0
+                self._last_known_state = None
+                self._work_break_pending = None
+                self._anti_slack_pending = None
+
+        # ── Focused_work session bookkeeping (for anti-slack transition) ─
+        # Track entry/exit so we can report the just-ended session length
+        # and app name when the user pivots to leisure.
+        prev_known = self._last_known_state
+        active_window = snap.active_window
+        active_canonical = (
+            active_window.canonical if active_window and active_window.canonical
+            else (active_window.title if active_window and active_window.title else None)
+        )
+        if state == 'focused_work':
+            if prev_known != 'focused_work':
+                # Entering focused_work. Clear any anti-slack pending —
+                # user is back at it, no need to nag.
+                self._focused_work_session_started_at = now
+                self._focused_work_session_app = active_canonical
+                self._anti_slack_pending = None
+            elif self._focused_work_session_app is None and active_canonical:
+                # Late-arriving canonical (the state already became
+                # focused_work but the active_window was None at entry).
+                self._focused_work_session_app = active_canonical
+        elif state == 'transitioning' and prev_known == 'focused_work':
+            # Mid-flick to a sibling work window — keep session timer
+            # running, don't reset (mirrors the accumulator rule).
+            pass
+        elif prev_known == 'focused_work' or (
+            prev_known == 'transitioning' and self._focused_work_session_started_at is not None
+        ):
+            # Just left focused_work (possibly via transitioning). Capture
+            # the session length and app, then evaluate anti-slack.
+            session_started = self._focused_work_session_started_at
+            session_app = self._focused_work_session_app
+            self._focused_work_session_started_at = None
+            self._focused_work_session_app = None
+            if (
+                session_started is not None
+                and state in _ANTI_SLACK_LEISURE_STATES
+            ):
+                # Use the accumulator value captured at tick start
+                # (before reset) — it honors the long-gap discard rule,
+                # while ``now - session_started`` would credit the user
+                # with sleep/suspend time as if they'd been working.
+                session_seconds = session_acc_at_start
+                cooldown_ok = (
+                    self._anti_slack_last_fired_at == 0.0
+                    or (now - self._anti_slack_last_fired_at) >= anti_slack_cooldown_seconds
+                )
+                if (
+                    session_seconds >= anti_slack_min_focus_seconds
+                    and cooldown_ok
+                ):
+                    new_canonical = active_canonical or ''
+                    self._anti_slack_pending = {
+                        'set_at': now,
+                        'minutes': max(1, int(session_seconds / 60)),
+                        'prev_app': session_app or '',
+                        'new_app': new_canonical,
+                    }
+
+        # Anti-slack pending invalidation: state moved out of leisure
+        # before we got to deliver — the moment is gone.
+        if (
+            self._anti_slack_pending is not None
+            and state not in _ANTI_SLACK_LEISURE_STATES
+        ):
+            self._anti_slack_pending = None
+        # Anti-slack pending window expiry.
+        if (
+            self._anti_slack_pending is not None
+            and (now - self._anti_slack_pending['set_at']) > anti_slack_window
+        ):
+            self._anti_slack_pending = None
+
+        self._last_known_state = state
+
+        # ── Water-break pending ─────────────────────────────────
+        # Armed when accumulator crosses threshold AND state is currently
+        # focused_work. Stays armed across ticks (no time pin) — the next
+        # proactive_chat round in focused_work fires it. If the user
+        # leaves focused_work, accumulator resets to 0 (above) which
+        # naturally clears the arming condition; we also drop the pending
+        # explicitly here for cleanliness.
+        if (
+            state == 'focused_work'
+            and self._work_acc_seconds >= work_break_seconds
+        ):
+            if self._work_break_pending is None:
+                self._work_break_pending = {
+                    'set_at': now,
+                    'minutes': max(1, int(self._work_acc_seconds / 60)),
+                    'app': active_canonical or '',
+                }
+            else:
+                # Refresh minutes (accumulator keeps growing) and app
+                # (window may have shifted to a different work app).
+                self._work_break_pending['minutes'] = max(
+                    1, int(self._work_acc_seconds / 60),
+                )
+                if active_canonical:
+                    self._work_break_pending['app'] = active_canonical
+        elif state != 'focused_work' and state != 'transitioning':
+            # User left focused work entirely (and isn't mid-flick).
+            # Drop pending — accumulator was already reset above.
+            self._work_break_pending = None
+        # Window expiry as a defense-in-depth: if proactive doesn't fire
+        # and the user keeps grinding, the pending stays valid (intent
+        # of must-fire) — but if the snapshot pipeline is wedged for
+        # >window_seconds and the moment is conceptually gone, reset.
+        # ``set_at`` is captured once on first arming and NOT refreshed
+        # by the minutes-update branch above, so this expiry check
+        # actually bites for any state that holds the pending — most
+        # commonly ``transitioning`` lingering past the window. The
+        # ``state != 'focused_work'`` gate keeps focused_work itself
+        # exempt: as long as the user is actively focused, the pending
+        # is canonical and shouldn't time out. CodeRabbit nitpick: PR #1226.
+        if (
+            self._work_break_pending is not None
+            and state != 'focused_work'
+            and (now - self._work_break_pending['set_at']) > work_break_window
+        ):
+            self._work_break_pending = None
+
+    def _build_work_break_pending(self) -> WorkBreakPending | None:
+        """Project the internal pending dict into the frozen snapshot type."""
+        if self._work_break_pending is None:
+            return None
+        return WorkBreakPending(
+            minutes=self._work_break_pending['minutes'],
+            app=self._work_break_pending['app'],
+        )
+
+    def _build_anti_slack_pending(self) -> AntiSlackPending | None:
+        if self._anti_slack_pending is None:
+            return None
+        return AntiSlackPending(
+            minutes=self._anti_slack_pending['minutes'],
+            prev_app=self._anti_slack_pending['prev_app'],
+            new_app=self._anti_slack_pending['new_app'],
+        )
+
+    def mark_work_break_used(self, *, now: float | None = None) -> None:
+        """Reset the water-break accumulator + clear pending after delivery.
+
+        Called from ``main_routers/system_router.py`` once the minimal
+        Phase 2 delivery (regular drink/stretch nudge OR the 50% rest+
+        game-invite branch) commits successfully. Resets the accumulator
+        so the next break is at least ``work_break_minutes`` of
+        focused_work away, mirroring the unfinished-thread "used"
+        contract.
+        """
+        # ``now`` accepted for symmetry with other tracker hooks; not
+        # actually needed (we just zero out — no timestamp recorded).
+        del now
+        self._work_acc_seconds = 0.0
+        self._work_break_pending = None
+
+    def mark_anti_slack_used(self, *, now: float | None = None) -> None:
+        """Stamp anti-slack delivery and start its cooldown.
+
+        Independent of the water-break + mini-game cooldowns so the
+        three reminder paths don't accidentally throttle each other.
+        """
+        ts = now if now is not None else time.time()
+        self._anti_slack_last_fired_at = ts
+        self._anti_slack_pending = None
 
     # ── enrichment kickoff ──────────────────────────────────────
 
@@ -491,6 +880,17 @@ class UserActivityTracker:
                     now=ts,
                 )
                 rule_snap = self._sm.get_snapshot(now=ts)
+
+                # Tick break-reminder accumulator + transition detection
+                # every loop iteration regardless of the activity_guess
+                # short-circuits below. Without this the accumulator
+                # would only advance when proactive_chat queries the
+                # snapshot — and a state transition (focused_work →
+                # casual_browsing) between two proactive rounds 30 min
+                # apart would credit the user with 30 min of focus they
+                # weren't actually doing. This is the canonical heartbeat
+                # for the break-reminder timers.
+                self._tick_break_reminders(rule_snap, now=ts)
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':

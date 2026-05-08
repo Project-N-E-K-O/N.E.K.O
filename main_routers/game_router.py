@@ -349,7 +349,9 @@ def _strip_json_fence(text: str) -> str:
 
 
 def _soccer_random_default_difficulty() -> str:
-    return str(random.choice(_SOCCER_DEFAULT_DIFFICULTIES))
+    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_game initialDifficulty 对齐；
+    # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
+    return "lv2"
 
 
 def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
@@ -723,7 +725,7 @@ def _default_soccer_pregame_context(*, initial_difficulty: str | None = None) ->
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "普通陪玩默认随机中等难度；后续由局内互动和游戏 AI 自然调整。",
+        "difficultyPolicy": "普通陪玩默认中等难度；后续由局内互动和游戏 AI 自然调整。",
         "moodPolicy": "沿用普通陪玩表现；不引入强情绪惯性。",
         "softeningSignals": [],
         "hardeningSignals": [],

@@ -572,6 +572,12 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     ocr_reader_obj = ocr_reader if isinstance(ocr_reader, dict) else {}
     rapidocr = raw_config.get("rapidocr")
     rapidocr_obj = rapidocr if isinstance(rapidocr, dict) else {}
+    rapidocr_lang_type_raw = str(rapidocr_obj.get("lang_type") or "").strip()
+    if rapidocr_lang_type_raw == "ch":
+        _logger.warning(
+            'galgame_plugin RapidOCR is using lang_type = "ch"; if this came from the '
+            'packaged default, set rapidocr.lang_type = "japan" explicitly for Japanese games.'
+        )
 
     default_mode_obj = galgame_obj.get("default_mode")
     default_mode = (
@@ -667,7 +673,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             memory_reader_obj.get("install_target_dir") or ""
         ).strip(),
         memory_reader_install_timeout_seconds=_coerce_float(
-            memory_reader_obj.get("install_timeout_seconds"), 60.0, minimum=1.0
+            memory_reader_obj.get("install_timeout_seconds"), 180.0, minimum=1.0
         ),
         memory_reader_auto_detect=bool(memory_reader_obj.get("auto_detect", True)),
         memory_reader_hook_codes=_coerce_string_list(
@@ -826,10 +832,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             rapidocr_obj.get("engine_type") or DEFAULT_RAPIDOCR_ENGINE_TYPE
         ).strip()
         or DEFAULT_RAPIDOCR_ENGINE_TYPE,
-        rapidocr_lang_type=str(
-            rapidocr_obj.get("lang_type") or DEFAULT_RAPIDOCR_LANG_TYPE
-        ).strip()
-        or DEFAULT_RAPIDOCR_LANG_TYPE,
+        rapidocr_lang_type=rapidocr_lang_type_raw or DEFAULT_RAPIDOCR_LANG_TYPE,
         rapidocr_model_type=str(
             rapidocr_obj.get("model_type") or DEFAULT_RAPIDOCR_MODEL_TYPE
         ).strip()
@@ -838,6 +841,10 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             rapidocr_obj.get("ocr_version") or DEFAULT_RAPIDOCR_OCR_VERSION
         ).strip()
         or DEFAULT_RAPIDOCR_OCR_VERSION,
+        rapidocr_auto_detect_lang=_coerce_bool(
+            rapidocr_obj.get("auto_detect_lang"),
+            True,
+        ),
     )
 
 
@@ -1757,6 +1764,61 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         )
 
     effective_text = _line_text_from_status(effective_line_obj)
+    raw_ocr_text = _status_text(runtime_obj.get("last_raw_ocr_text"))
+    if (
+        len(raw_ocr_text) > 400
+        and has_ocr_runtime_signal
+        and (effective_text or stable_text)
+        and active_data_source == DATA_SOURCE_OCR_READER
+    ):
+        return diagnosis(
+            "warning",
+            "OCR 识别文本过长",
+            (
+                f"当前识别到 {len(raw_ocr_text)} 字，远超正常对白长度。"
+                "截图区域可能包含了非对白内容，建议锁定正确窗口并校准对白区域。"
+            ),
+            [
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("recalibrate_ocr", "重新截图校准"),
+            ],
+        )
+
+    last_poll_duration = _coerce_float(
+        runtime_obj.get("last_poll_duration_seconds"), 0.0, minimum=0.0
+    )
+    if (
+        last_poll_duration > 5.0
+        and has_ocr_runtime_signal
+        and (effective_text or stable_text)
+        and active_data_source == DATA_SOURCE_OCR_READER
+    ):
+        sa_latency = _coerce_float(
+            runtime_obj.get("screen_awareness_model_last_latency_seconds"), 0.0, minimum=0.0
+        )
+        if sa_latency > 3.0:
+            message = (
+                f"最近一次 OCR 轮询耗时 {last_poll_duration:.1f}s，远超正常水平。"
+                f"画面感知模型延迟也较高（{sa_latency:.1f}s），"
+                "建议锁定窗口并校准对白区域，也可尝试降低画面感知频率或关闭全帧 OCR。"
+            )
+        else:
+            message = (
+                f"最近一次 OCR 轮询耗时 {last_poll_duration:.1f}s，远超正常水平。"
+                "通常是因为截图区域过大或截图方式不匹配，"
+                "建议锁定窗口并校准对白区域，也可尝试切换截图方式。"
+            )
+        return diagnosis(
+            "warning",
+            "OCR 识别耗时过长",
+            message,
+            [
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("recalibrate_ocr", "重新截图校准"),
+                _diagnosis_action("capture_backend", "切换截图方式"),
+            ],
+        )
+
     if effective_text or stable_text:
         target = " / ".join(
             item
@@ -2187,6 +2249,10 @@ def _build_status_payload_unchecked(
             model_type=config.rapidocr_model_type,
             ocr_version=config.rapidocr_ocr_version,
         ),
+    )
+    rapidocr["auto_detect_lang"] = bool(config.rapidocr_auto_detect_lang)
+    rapidocr["auto_detect_last_lang"] = str(
+        getattr(config, "rapidocr_auto_detect_last_lang", "") or ""
     )
     tesseract = _cached_install_inspection(
         (

@@ -89,7 +89,31 @@
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
+            // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
+            // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
+            this._tutorialFlowAborted = false;
+            // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
+            // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
+            let settledResolveFn = null;
+            this._settledPromise = new Promise((resolve) => { settledResolveFn = resolve; });
+            this._settledResolve = () => {
+                if (settledResolveFn) {
+                    const fn = settledResolveFn;
+                    settledResolveFn = null;
+                    fn();
+                }
+            };
             this.bindTutorialLifecycleEvents();
+        }
+
+        markSettled() {
+            if (typeof this._settledResolve === 'function') {
+                this._settledResolve();
+            }
+        }
+
+        whenSettled() {
+            return this._settledPromise || Promise.resolve();
         }
 
         async bootstrap() {
@@ -97,12 +121,34 @@
                 return;
             }
             this.bootstrapStarted = true;
-            await this.waitForStartupBarrier();
-            await this.waitForTutorialFlowToSettle();
-            if (await this.openIfManualReselectPending()) {
-                return;
+            // tutorial flow settle 有超时兜底：fetchTutorialPromptState() 持续 fail 时
+            // waitForTutorialFlowToSettle 会无限轮询，需要超时让 finally 能跑到。
+            const TUTORIAL_FLOW_TIMEOUT_MS = 15000;
+            try {
+                await this.waitForStartupBarrier();
+                const tutorialSettled = await Promise.race([
+                    this.waitForTutorialFlowToSettle().then(() => true),
+                    new Promise((resolve) => {
+                        window.setTimeout(() => resolve(false), TUTORIAL_FLOW_TIMEOUT_MS);
+                    }),
+                ]);
+                if (!tutorialSettled) {
+                    this._tutorialFlowAborted = true;
+                    console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
+                }
+                if (await this.openIfManualReselectPending()) {
+                    return;
+                }
+                await this.openIfPending();
+            } catch (error) {
+                console.warn('[CharacterPersonalityOnboarding] bootstrap failed:', error);
+            } finally {
+                // 没显示 overlay（不需要 onboarding / 抛错 fallthrough）→ 立即 settle；
+                // 显示 overlay 时由 confirm/skip 各自 markSettled。
+                if (!this.overlay || this.overlay.hidden) {
+                    this.markSettled();
+                }
             }
-            await this.openIfPending();
         }
 
         async openFromSettings(characterName) {
@@ -238,6 +284,9 @@
             await this.waitForTutorialCompletion();
 
             while (true) {
+                if (this._tutorialFlowAborted) {
+                    return;
+                }
                 if (window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning) {
                     await this.waitForTutorialCompletion();
                     continue;
@@ -735,6 +784,7 @@
                         body: JSON.stringify({ status: 'skipped' }),
                     });
                 }
+                this.markSettled();
                 this.hideOverlay();
             });
             actions.appendChild(skipButton);
@@ -911,6 +961,7 @@
                             presetId: selectedPresetId,
                         },
                     }));
+                    this.markSettled();
                     this.hideOverlay();
                 } catch (error) {
                     confirmButton.disabled = false;

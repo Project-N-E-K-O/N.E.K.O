@@ -384,7 +384,7 @@
             min-height: 320px !important;
         }
         body.galgame-mode-enabled {
-            min-height: 320px !important;
+            min-height: 385px !important;
         }
 
         /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
@@ -775,7 +775,9 @@
         var MIN_H_BASE = 200;
         // GalGame 模式开启时输入框需要额外 ~110px 容纳 A/B/C 选项 + 间距，
         // 否则用户首次进入会看到选项被裁切到 send 按钮下方。
-        var MIN_H_GALGAME = 320;
+        // GAL 模式的 320px 是内容壳最低高度；独立窗口还有 top/bottom inset，
+        // 需要把外层窗口最小高度抬高，否则压扁后输入区底部会被窗口裁掉。
+        var MIN_H_GALGAME = 385;
         function isGalgameModeOn() {
             return !!(document.body && document.body.classList.contains('galgame-mode-enabled'));
         }
