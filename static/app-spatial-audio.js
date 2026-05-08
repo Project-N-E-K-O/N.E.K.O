@@ -67,9 +67,10 @@
     }
 
     function hasUsableBounds(bounds) {
+        var hasPosition = (Number.isFinite(Number(bounds.x)) && Number.isFinite(Number(bounds.y))) ||
+            (Number.isFinite(Number(bounds.left)) && Number.isFinite(Number(bounds.top)));
         return !!bounds &&
-            Number.isFinite(Number(bounds.x)) &&
-            Number.isFinite(Number(bounds.y)) &&
+            hasPosition &&
             Number.isFinite(Number(bounds.width)) &&
             Number.isFinite(Number(bounds.height)) &&
             Number(bounds.width) > 0 &&
@@ -125,12 +126,14 @@
         var pb = primary.bounds;
         var primaryCenterX = pb.x + pb.width / 2;
         var primaryCenterY = pb.y + pb.height / 2;
+        var sourceX = Number.isFinite(Number(sourceBounds.x)) ? Number(sourceBounds.x) : Number(sourceBounds.left);
+        var sourceY = Number.isFinite(Number(sourceBounds.y)) ? Number(sourceBounds.y) : Number(sourceBounds.top);
         var sourceCenterX = Number.isFinite(Number(sourceBounds.centerX))
             ? Number(sourceBounds.centerX)
-            : Number(sourceBounds.x) + Number(sourceBounds.width) / 2;
+            : sourceX + Number(sourceBounds.width) / 2;
         var sourceCenterY = Number.isFinite(Number(sourceBounds.centerY))
             ? Number(sourceBounds.centerY)
-            : Number(sourceBounds.y) + Number(sourceBounds.height) / 2;
+            : sourceY + Number(sourceBounds.height) / 2;
         var refDist = Math.max(1, pb.width / 2);
 
         var dx = sourceCenterX - primaryCenterX;
