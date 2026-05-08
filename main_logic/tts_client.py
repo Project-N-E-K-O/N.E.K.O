@@ -195,11 +195,29 @@ _TTS_LANGUAGE_CODE_MAP = {
 def _get_tts_language_code() -> str:
     """获取 lanlan.app TTS 服务器所需的 language_code。"""
     try:
-        from utils.language_utils import get_global_language
-        lang = get_global_language()
+        from utils.language_utils import get_global_language_full, normalize_language_code
+        lang = normalize_language_code(get_global_language_full(), format='full')
     except Exception:
-        lang = 'zh'
+        lang = 'zh-CN'
     return _TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+
+
+def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_app: bool) -> dict:
+    """根据 URL 和语言提示组装 Step/free TTS 的 tts.create data 字段。"""
+    data = {
+        "session_id": sid_,
+        "voice_id": voice_id,
+        "response_format": "wav",
+        "sample_rate": 24000,
+    }
+    if is_lanlan_app:
+        data["voice_id"] = "Leda"
+        data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
+    else:
+        # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label。
+        if lang_hint == "ja":
+            data["voice_label"] = {"language": "日语"}
+    return data
 
 
 # ─── TTS Provider 元数据注册表 ─────────────────────────────────────────────
@@ -819,20 +837,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             - lanlan.app: language_code（Gemini streaming-TTS 风格；命中 ja 时覆盖全局语言）
             - lanlan.tech / 自建 StepFun: 协议对称，voice_label.language="日语"（命中 ja 时）
             """
-            data = {
-                "session_id": sid_,
-                "voice_id": voice_id,
-                "response_format": "wav",
-                "sample_rate": 24000,
-            }
-            if is_lanlan_app:
-                data["voice_id"] = "Leda"
-                data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
-            else:
-                # lanlan.tech (free) 和自建 StepFun (wss://api.stepfun.com/...) 共用同一协议
-                if lang_hint == "ja":
-                    data["voice_label"] = {"language": "日语"}
-            return data
+            return _build_step_tts_create_data(sid_, voice_id, lang_hint, is_lanlan_app)
 
         async def _flush_deferred_create(force: bool = False) -> bool:
             """尚未发 tts.create 时，检测语言并发送，然后把 pending 文本刷出去。
