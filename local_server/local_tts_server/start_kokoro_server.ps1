@@ -24,12 +24,110 @@ if (-not (Test-Path $env:UV_CACHE_DIR)) {
     New-Item -ItemType Directory -Force -Path $env:UV_CACHE_DIR | Out-Null
 }
 
+$launcherPython = if ($env:NEKO_LAUNCHER_PYTHON) {
+    $env:NEKO_LAUNCHER_PYTHON
+} else {
+    $repoVenvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    if (Test-Path $repoVenvPython) { $repoVenvPython } else { "python" }
+}
+
 if (-not $env:LOCAL_TTS_DEFAULT_MODEL) {
     $env:LOCAL_TTS_DEFAULT_MODEL = "kokoro"
 }
 
+function Normalize-KokoroProfile {
+    param([string]$Value)
+
+    $raw = if ($null -eq $Value) { "" } else { "$Value" }
+    $raw = $raw.Trim().ToLowerInvariant()
+    if ($raw -match "kokoro[-_]?en|(^|[-_])en$|^en$|english|^kokoro:(af|am|bf|bm)_|^(af|am|bf|bm)_") {
+        return "kokoro-en"
+    }
+    if (($raw -match "kokoro-82m") -and ($raw -notmatch "zh")) {
+        return "kokoro-en"
+    }
+    return "kokoro-zh"
+}
+
+function Get-KokoroProfileDefaults {
+    param([string]$Profile)
+
+    if ((Normalize-KokoroProfile $Profile) -eq "kokoro-en") {
+        return [pscustomobject]@{
+            Profile = "kokoro-en"
+            RepoId = "hexgrad/Kokoro-82M"
+            DefaultVoice = "af_heart"
+            ModelDirCandidates = @(
+                "Kokoro-82M",
+                "Kokoro-82M-v1.0",
+                "Kokoro-82M-en"
+            )
+        }
+    }
+
+    return [pscustomobject]@{
+        Profile = "kokoro-zh"
+        RepoId = "hexgrad/Kokoro-82M-v1.1-zh"
+        DefaultVoice = "zf_001"
+        ModelDirCandidates = @(
+            "Kokoro-82M-v1.1-zh"
+        )
+    }
+}
+
+function Get-NekoSavedKokoroProfileHint {
+    $code = @'
+import json
+from pathlib import Path
+
+try:
+    from utils.config_manager import get_config_manager
+    path = get_config_manager().get_config_path("core_config.json")
+except Exception:
+    path = Path("config") / "core_config.json"
+
+try:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+
+print(data.get("localKokoroProfile") or data.get("ttsModelId") or data.get("ttsVoiceId") or "")
+'@
+
+    try {
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $output = & $launcherPython -c $code 2>$null
+        if ($LASTEXITCODE -eq 0 -and $output) {
+            return (($output | Select-Object -Last 1) | Out-String).Trim()
+        }
+    } catch {
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    return ""
+}
+
+$savedKokoroProfileHint = if ($env:LOCAL_TTS_KOKORO_PROFILE) {
+    $env:LOCAL_TTS_KOKORO_PROFILE
+} elseif ($env:LOCAL_TTS_KOKORO_REPO_ID) {
+    $env:LOCAL_TTS_KOKORO_REPO_ID
+} else {
+    Get-NekoSavedKokoroProfileHint
+}
+$kokoroProfile = Normalize-KokoroProfile $savedKokoroProfileHint
+$kokoroProfileDefaults = Get-KokoroProfileDefaults $kokoroProfile
+$env:LOCAL_TTS_KOKORO_PROFILE = $kokoroProfileDefaults.Profile
+
+# Hugging Face auto-download is intentionally disabled for now.
+# The local TTS launcher supports user-managed Kokoro models under kokoro_models,
+# but it should not silently download large model files or decide model provenance
+# until the expected download/update policy is agreed.
+$env:LOCAL_TTS_KOKORO_DISABLE_HF_DOWNLOAD = "1"
+
 if (-not $env:LOCAL_TTS_KOKORO_DEFAULT_VOICE) {
-    $env:LOCAL_TTS_KOKORO_DEFAULT_VOICE = "zf_001"
+    $env:LOCAL_TTS_KOKORO_DEFAULT_VOICE = $kokoroProfileDefaults.DefaultVoice
 }
 
 if (-not $env:LOCAL_TTS_DEFAULT_VOICE) {
@@ -37,14 +135,22 @@ if (-not $env:LOCAL_TTS_DEFAULT_VOICE) {
 }
 
 if (-not $env:LOCAL_TTS_KOKORO_REPO_ID) {
-    $env:LOCAL_TTS_KOKORO_REPO_ID = "hexgrad/Kokoro-82M-v1.1-zh"
+    $env:LOCAL_TTS_KOKORO_REPO_ID = $kokoroProfileDefaults.RepoId
 }
 
 if (-not $env:LOCAL_TTS_KOKORO_MODEL_DIR) {
-    $localKokoroModelDir = Join-Path $scriptDir "kokoro_models\Kokoro-82M-v1.1-zh"
-    if (Test-Path $localKokoroModelDir) {
-        $env:LOCAL_TTS_KOKORO_MODEL_DIR = $localKokoroModelDir
+    foreach ($candidateName in $kokoroProfileDefaults.ModelDirCandidates) {
+        $candidateDir = Join-Path $scriptDir ("kokoro_models\" + $candidateName)
+        if (Test-Path $candidateDir) {
+            $env:LOCAL_TTS_KOKORO_MODEL_DIR = $candidateDir
+            break
+        }
     }
+}
+
+if (-not $env:LOCAL_TTS_KOKORO_MODEL_DIR) {
+    $candidateList = ($kokoroProfileDefaults.ModelDirCandidates -join ", ")
+    throw "No local Kokoro model directory found for profile $($kokoroProfileDefaults.Profile). Expected one of: $candidateList under local_server\local_tts_server\kokoro_models. Hugging Face auto-download is disabled intentionally: this launcher currently expects users to download and manage Kokoro model files themselves."
 }
 
 if (-not $env:LOCAL_TTS_KOKORO_CMD) {
@@ -205,12 +311,6 @@ if ($useGpu) {
 
 $serverScript = Join-Path $scriptDir "server.py"
 $launcherScript = Join-Path $repoRoot "launcher.py"
-$launcherPython = if ($env:NEKO_LAUNCHER_PYTHON) {
-    $env:NEKO_LAUNCHER_PYTHON
-} else {
-    $repoVenvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    if (Test-Path $repoVenvPython) { $repoVenvPython } else { "python" }
-}
 $wsUrl = "ws://{0}:{1}" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $healthUrl = "http://{0}:{1}/health" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $existingLocalTtsKept = $false
@@ -305,6 +405,7 @@ Write-Host ""
 Write-Host "=== NEKO Kokoro Local TTS ===" -ForegroundColor Cyan
 Write-Host "Repo Root : $repoRoot"
 Write-Host "UV Cache  : $env:UV_CACHE_DIR"
+Write-Host "Profile   : $env:LOCAL_TTS_KOKORO_PROFILE"
 Write-Host "Repo ID   : $env:LOCAL_TTS_KOKORO_REPO_ID"
 Write-Host "Model Dir : $env:LOCAL_TTS_KOKORO_MODEL_DIR"
 Write-Host "Voice     : $env:LOCAL_TTS_DEFAULT_VOICE"

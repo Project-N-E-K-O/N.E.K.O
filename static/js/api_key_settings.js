@@ -52,6 +52,58 @@ function normalizeLocalKokoroWsUrl(value) {
     return raw;
 }
 
+function normalizeLocalKokoroProfile(value) {
+    const raw = (value || '').trim().toLowerCase();
+    if (!raw) return 'kokoro-zh';
+    if (['kokoro-en', 'en', 'english', 'english-us', 'en-us'].includes(raw)) {
+        return 'kokoro-en';
+    }
+    return 'kokoro-zh';
+}
+
+function localKokoroProfileFromModelId(modelId) {
+    const raw = (modelId || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.includes('kokoro-en') || raw.includes('kokoro_en') || raw.includes('-en') || raw.endsWith('en')) {
+        return 'kokoro-en';
+    }
+    if (raw.includes('kokoro-82m') && !raw.includes('zh')) {
+        return 'kokoro-en';
+    }
+    if (raw.includes('kokoro-zh') || raw.includes('kokoro_zh') || raw.includes('-zh') || raw.endsWith('zh')) {
+        return 'kokoro-zh';
+    }
+    return '';
+}
+
+function localKokoroProfileFromVoiceId(voiceId) {
+    const raw = (voiceId || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.startsWith('kokoro:af_') || raw.startsWith('kokoro:am_') || raw.startsWith('kokoro:bf_') || raw.startsWith('kokoro:bm_')
+        || raw.startsWith('af_') || raw.startsWith('am_') || raw.startsWith('bf_') || raw.startsWith('bm_')) {
+        return 'kokoro-en';
+    }
+    if (raw.startsWith('kokoro:zf_') || raw.startsWith('kokoro:zm_') || raw.startsWith('kokoro:zh_')
+        || raw.startsWith('zf_') || raw.startsWith('zm_') || raw.startsWith('zh_')) {
+        return 'kokoro-zh';
+    }
+    return '';
+}
+
+function localKokoroDefaultVoice(profile) {
+    return normalizeLocalKokoroProfile(profile) === 'kokoro-en'
+        ? 'kokoro:af_heart'
+        : 'kokoro:zf_001';
+}
+
+function normalizeLocalKokoroVoiceId(value, profile = '') {
+    const raw = (value || '').trim();
+    if (!raw) return localKokoroDefaultVoice(profile);
+    if (raw.startsWith('kokoro:')) return raw;
+    if (/^(zf|zm|zh|af|am|bf|bm)_/i.test(raw)) return `kokoro:${raw}`;
+    return localKokoroDefaultVoice(profile);
+}
+
 function localKokoroVoicesUrlFromWs(wsUrl) {
     const raw = (wsUrl || '').trim();
     if (!raw) return 'http://127.0.0.1:50000/v1/voices';
@@ -105,10 +157,12 @@ function ensureLocalKokoroVoiceOption(voiceId) {
 
 async function refreshLocalKokoroVoiceOptions(silent = true) {
     const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
     const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     if (!localUrlInput || !localVoiceSelect) return;
 
-    const currentVoice = localVoiceSelect.value || 'kokoro:zf_001';
+    const currentProfile = normalizeLocalKokoroProfile(localProfileSelect?.value || '');
+    const currentVoice = localVoiceSelect.value || localKokoroDefaultVoice(currentProfile);
     const voicesUrl = localKokoroVoicesUrlFromWs(localUrlInput.value);
     if (!voicesUrl) return;
     try {
@@ -129,7 +183,7 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
         ensureLocalKokoroVoiceOption(currentVoice);
         localVoiceSelect.value = Array.from(localVoiceSelect.options).some(opt => opt.value === currentVoice)
             ? currentVoice
-            : 'kokoro:zf_001';
+            : localKokoroDefaultVoice(currentProfile);
     } catch (e) {
         if (!silent) {
             showStatus(`Local Kokoro voice list unavailable: ${e.message || e}`, 'error');
@@ -147,20 +201,28 @@ function scheduleLocalKokoroVoiceRefresh() {
     }, 300);
 }
 
-function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId) {
+function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '') {
     const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
     const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     if (!localUrlInput || !localVoiceSelect) return;
 
     const savedUrl = (ttsModelUrl || '').trim();
-    const savedVoice = (ttsVoiceId || '').trim();
+    const savedProfile = normalizeLocalKokoroProfile(
+        localKokoroProfileFromModelId(ttsModelId) || localKokoroProfileFromVoiceId(ttsVoiceId)
+    );
+    const savedVoice = normalizeLocalKokoroVoiceId(ttsVoiceId, savedProfile);
     if (/^wss?:\/\//i.test(savedUrl)) {
         localUrlInput.value = savedUrl;
     } else if (!localUrlInput.value) {
         localUrlInput.value = 'ws://127.0.0.1:50000';
     }
 
-    const voice = savedVoice.startsWith('kokoro:') ? savedVoice : 'kokoro:zf_001';
+    if (localProfileSelect) {
+        localProfileSelect.value = savedProfile;
+    }
+
+    const voice = savedVoice || localKokoroDefaultVoice(savedProfile);
     ensureLocalKokoroVoiceOption(voice);
     localVoiceSelect.value = voice;
     refreshLocalKokoroVoiceOptions(true);
@@ -168,6 +230,7 @@ function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId) {
 
 function applyLocalKokoroTtsConfig() {
     const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
     const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     const providerSelect = document.getElementById('ttsModelProvider');
     const urlInput = document.getElementById('ttsModelUrl');
@@ -176,7 +239,8 @@ function applyLocalKokoroTtsConfig() {
     const apiKeyInput = document.getElementById('ttsModelApiKey');
 
     const wsUrl = normalizeLocalKokoroWsUrl(localUrlInput ? localUrlInput.value : '');
-    const voiceId = localVoiceSelect ? (localVoiceSelect.value || 'kokoro:zf_001') : 'kokoro:zf_001';
+    const profile = normalizeLocalKokoroProfile(localProfileSelect ? localProfileSelect.value : '');
+    const voiceId = localVoiceSelect ? normalizeLocalKokoroVoiceId(localVoiceSelect.value, profile) : localKokoroDefaultVoice(profile);
 
     if (providerSelect) {
         providerSelect.value = 'custom';
@@ -189,8 +253,8 @@ function applyLocalKokoroTtsConfig() {
     if (voiceInput) {
         voiceInput.value = voiceId;
     }
-    if (modelIdInput && !modelIdInput.value.trim()) {
-        modelIdInput.value = 'kokoro-v1.1-zh';
+    if (modelIdInput) {
+        modelIdInput.value = profile;
     }
     if (apiKeyInput) {
         apiKeyInput.removeAttribute('readonly');
@@ -1296,14 +1360,14 @@ async function loadCurrentApiKey() {
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
             // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
-            loadGptSovitsConfig(
+        loadGptSovitsConfig(
                 data.ttsModelUrl,
                 data.ttsVoiceId,
                 data.ttsModelId,
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
             );
-            loadLocalKokoroTtsConfig(data.ttsModelUrl, data.ttsVoiceId);
+            loadLocalKokoroTtsConfig(data.ttsModelUrl, data.ttsVoiceId, data.ttsModelId);
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -1787,6 +1851,21 @@ document.addEventListener('DOMContentLoaded', function () {
     const localKokoroVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     if (localKokoroVoiceSelect) {
         localKokoroVoiceSelect.addEventListener('change', applyLocalKokoroTtsConfig);
+    }
+
+    const localKokoroProfileSelect = document.getElementById('localKokoroProfileSelect');
+    if (localKokoroProfileSelect) {
+        localKokoroProfileSelect.addEventListener('change', () => {
+            const profile = normalizeLocalKokoroProfile(localKokoroProfileSelect.value);
+            const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+            if (localVoiceSelect) {
+                const nextVoice = localKokoroDefaultVoice(profile);
+                ensureLocalKokoroVoiceOption(nextVoice);
+                localVoiceSelect.value = nextVoice;
+            }
+            applyLocalKokoroTtsConfig();
+            refreshLocalKokoroVoiceOptions(true);
+        });
     }
 
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开

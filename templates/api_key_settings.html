@@ -615,6 +615,15 @@
                                                         style="width: 100%;">
                                                 </div>
                                                 <div>
+                                                    <label for="localKokoroProfileSelect" style="display: block; margin-bottom: 6px;"
+                                                        data-i18n="api.localKokoroProfile">Model profile</label>
+                                                    <select id="localKokoroProfileSelect" style="width: 100%;"
+                                                        data-i18n-aria="api.localKokoroProfile">
+                                                        <option value="kokoro-zh" data-i18n="api.localKokoroProfileZh">中文模型 / zh</option>
+                                                        <option value="kokoro-en" data-i18n="api.localKokoroProfileEn">英文模型 / en</option>
+                                                    </select>
+                                                </div>
+                                                <div>
                                                     <label for="localKokoroVoiceSelect" style="display: block; margin-bottom: 6px;"
                                                         data-i18n="api.localKokoroVoice">Voice</label>
                                                     <select id="localKokoroVoiceSelect" style="width: 100%;"
@@ -624,7 +633,9 @@
                                                 </div>
                                                 <button type="button" class="gsv-refresh-btn" onclick="applyLocalKokoroTtsConfig()"
                                                     data-i18n="api.localKokoroApply"
-                                                    data-i18n-aria="api.localKokoroApply">Apply</button>
+                                                    data-i18n-title="api.localKokoroApply"
+                                                    data-i18n-aria="api.localKokoroApply"
+                                                    aria-label="Apply">Apply</button>
                                             </div>
                                         </div>
                                     </div>

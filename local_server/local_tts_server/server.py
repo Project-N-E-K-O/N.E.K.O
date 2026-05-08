@@ -270,6 +270,12 @@ class KokoroEngine:
         if not self._repo_id:
             self._repo_id = "hexgrad/Kokoro-82M-v1.1-zh"
         self._model_dir = self._resolve_local_model_dir()
+        self._disable_hf_download = os.getenv("LOCAL_TTS_KOKORO_DISABLE_HF_DOWNLOAD", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._model = None
         self._device = "unknown"
         self._pipelines: dict[str, object] = {}
@@ -374,6 +380,13 @@ class KokoroEngine:
                 model=str(model_path),
             ).to(self._device).eval()
         else:
+            if self._disable_hf_download:
+                raise RuntimeError(
+                    "Local Kokoro model directory is missing and Hugging Face downloads are disabled. "
+                    "This launcher intentionally expects users to place Kokoro model files in "
+                    "local_server/local_tts_server/kokoro_models and choose the profile there. "
+                    "Set LOCAL_TTS_KOKORO_MODEL_DIR to a local model directory before starting the server."
+                )
             self._model = KModel(repo_id=self._repo_id).to(self._device).eval()
 
         self._loaded = True

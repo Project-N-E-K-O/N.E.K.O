@@ -5538,12 +5538,33 @@ function _normalizePanelKokoroVoiceId(value) {
     return raw.startsWith('kokoro:') ? raw : `kokoro:${raw}`;
 }
 
+function _panelLooksLikeKokoroVoiceId(value) {
+    const raw = (value || '').trim().toLowerCase();
+    if (!raw) return false;
+    return raw.startsWith('kokoro:')
+        || /^(zf|zm|zh|af|am|bf|bm)_/.test(raw);
+}
+
+function _panelLooksLikeLocalKokoroUrl(value) {
+    const raw = (value || '').trim();
+    if (!raw) return false;
+    try {
+        const url = new URL(raw);
+        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) return false;
+        const host = (url.hostname || '').toLowerCase();
+        return (host === '127.0.0.1' || host === 'localhost' || host === '::1') && url.port === '50000';
+    } catch (e) {
+        return false;
+    }
+}
+
 function _panelShouldProbeKokoroVoices(config) {
     const ttsUrl = (config?.ttsModelUrl || '').trim();
+    const ttsModelId = (config?.ttsModelId || '').trim().toLowerCase();
     const ttsVoiceId = (config?.ttsVoiceId || '').trim();
-    if (!ttsUrl) return true;
-    if (/^wss?:\/\//i.test(ttsUrl)) return true;
-    return ttsVoiceId.startsWith('kokoro:');
+    if (ttsModelId.includes('kokoro')) return true;
+    if (ttsVoiceId.startsWith('kokoro:')) return true;
+    return _panelLooksLikeLocalKokoroUrl(ttsUrl) && _panelLooksLikeKokoroVoiceId(ttsVoiceId);
 }
 
 async function _fetchPanelKokoroVoices() {
@@ -5594,6 +5615,9 @@ async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
 
     if (!selectEl) return;
 
+    const knownVoices = await _fetchPanelKokoroVoices();
+    if (knownVoices.length === 0 && !currentKokoroVoiceId) return;
+
     let kokoroGroup = selectEl.querySelector('optgroup[data-kokoro-group="true"]');
     if (!kokoroGroup) {
         kokoroGroup = document.createElement('optgroup');
@@ -5602,7 +5626,6 @@ async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
         selectEl.appendChild(kokoroGroup);
     }
 
-    const knownVoices = await _fetchPanelKokoroVoices();
     knownVoices.forEach(function (v) {
         if (selectEl.querySelector('option[value="' + CSS.escape(v.voice_id) + '"]')) return;
         const option = document.createElement('option');
