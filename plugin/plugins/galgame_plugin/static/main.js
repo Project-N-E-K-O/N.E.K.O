@@ -5534,7 +5534,18 @@ function renderTextractor(status) {
   } else if (installState && installState.status === 'failed') {
     cardStatus = 'error';
     chipText = uiT('ui.install.status.failed', '安装失败');
-    descText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const errorText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const failedPhase = installState.failed_phase || '';
+    let phaseHint = '';
+    if (failedPhase === 'fetch_release') {
+      phaseHint = '无法连接 GitHub 服务。请检查网络/GitHub 可达性，或在 plugin.toml 的 [memory_reader] 中配置 textractor_proxy 代理地址。这通常不是插件安装逻辑损坏。';
+    } else if (failedPhase === 'downloading') {
+      phaseHint = 'Textractor 下载中断、HTTP 请求失败或文件校验失败。请确认网络稳定后重试。';
+    } else if (failedPhase === 'extracting') {
+      phaseHint = 'Textractor 安装包解压或安装后验证失败。建议按下面的路径手动安装。';
+    }
+    const manualGuide = '手动安装：从 https://github.com/Artikash/Textractor/releases 下载最新 zip，解压到 %LOCALAPPDATA%\\Programs\\Textractor\\，确保 TextractorCLI.exe 位于该目录根部，然后刷新状态。';
+    descText = [errorText, phaseHint, manualGuide].filter(Boolean).join('\n');
   } else if (installState && installState.status === 'completed' && !installed) {
     cardStatus = 'neutral';
     chipText = uiT('ui.install.status.completed', '已完成');

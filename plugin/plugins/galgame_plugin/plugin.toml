@@ -62,9 +62,10 @@ max_tokens_default = 1200
 
 [memory_reader]
 textractor_path = ""
+textractor_proxy = ""
 install_release_api_url = ""
 install_target_dir = ""
-install_timeout_seconds = 180
+install_timeout_seconds = 300
 auto_detect = true
 hook_codes = []
 poll_interval_seconds = 1

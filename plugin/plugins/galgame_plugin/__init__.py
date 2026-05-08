@@ -4576,6 +4576,7 @@ class GalgamePlugin(NekoPluginBase):
                 install_target_dir_raw=self._cfg.memory_reader_install_target_dir,
                 release_api_url=self._cfg.memory_reader_install_release_api_url,
                 timeout_seconds=self._cfg.memory_reader_install_timeout_seconds,
+                textractor_proxy=self._cfg.memory_reader_textractor_proxy,
                 force=bool(force),
                 task_id=current_run_id or None,
                 progress_callback=progress_callback,

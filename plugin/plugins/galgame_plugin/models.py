@@ -531,9 +531,10 @@ class GalgameReaderConfig:
 class GalgameMemoryReaderConfig:
     memory_reader_enabled: bool = False
     memory_reader_textractor_path: str = ""
+    memory_reader_textractor_proxy: str = ""
     memory_reader_install_release_api_url: str = ""
     memory_reader_install_target_dir: str = ""
-    memory_reader_install_timeout_seconds: float = 180.0
+    memory_reader_install_timeout_seconds: float = 300.0
     memory_reader_auto_detect: bool = True
     memory_reader_hook_codes: list[str] = field(default_factory=list)
     memory_reader_engine_hook_codes: dict[str, list[str]] = field(default_factory=dict)
@@ -644,6 +645,10 @@ class GalgameConfig:
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),
+        "memory_reader_textractor_proxy": (
+            "memory_reader",
+            "memory_reader_textractor_proxy",
+        ),
         "memory_reader_install_release_api_url": (
             "memory_reader",
             "memory_reader_install_release_api_url",
