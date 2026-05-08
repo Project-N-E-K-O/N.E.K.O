@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import fields
 import hashlib
 import json
@@ -38,6 +39,7 @@ from plugin.plugins.galgame_plugin.models import (
 )
 from plugin.plugins.galgame_plugin.ocr_reader import (
     DetectedGameWindow,
+    OcrBackendDescriptor,
     OcrCaptureProfile,
     OcrExtractionResult,
     OcrReaderBridgeWriter,
@@ -45,6 +47,8 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     OcrReaderRuntime,
     OcrTextBox,
     SelectedOcrBackendPlan,
+    _OcrLangDetector,
+    _classify_cjk_text,
     _rapidocr_text_from_output,
     _score_ocr_text,
 )
@@ -72,6 +76,8 @@ from plugin.plugins.galgame_plugin.tesseract_support import (
 
 
 pytestmark = pytest.mark.plugin_unit
+
+TEST_WAIT_TIMEOUT = 1.0
 
 
 class _Logger:
@@ -595,6 +601,38 @@ def test_screen_classifier_merges_full_frame_ocr_regions() -> None:
     assert classified.ui_elements[0]["text_source"] == "full_frame"
     assert classified.ui_elements[0]["normalized_bounds"]["left"] == pytest.approx(120.0 / 1280.0)
     assert classified.debug["sources"] == ["bottom_region", "full_frame"]
+
+
+def test_screen_classifier_filters_window_chrome_noise_from_regions() -> None:
+    boxes = [
+        OcrTextBox("TheLamentingGeese口×", 12.0, 4.0, 1260.0, 28.0, 0.9),
+        OcrTextBox("有人是猪马牛羊，有人是虎豹豺狼。", 140.0, 734.0, 780.0, 760.0, 0.96),
+        OcrTextBox("16°℃", 40.0, 980.0, 74.0, 996.0, 0.88),
+    ]
+
+    classified = classify_screen_from_ocr(
+        "",
+        ocr_regions=[
+            {
+                "source": "full_frame",
+                "text": "\n".join(box.text for box in boxes),
+                "boxes": boxes,
+                "bounds_metadata": {
+                    "bounds_coordinate_space": "capture",
+                    "source_size": {"width": 1296.0, "height": 999.0},
+                    "capture_rect": {"left": 5.0, "top": 61.0, "right": 1301.0, "bottom": 1060.0},
+                    "window_rect": {"left": 5.0, "top": 61.0, "right": 1301.0, "bottom": 1060.0},
+                },
+            }
+        ],
+        template_context={"window_title": "TheLamentingGeese"},
+    )
+
+    assert classified.raw_ocr_text == ["有人是猪马牛羊，有人是虎豹豺狼。"]
+    assert [element["text"] for element in classified.ui_elements] == [
+        "有人是猪马牛羊，有人是虎豹豺狼。"
+    ]
+    assert classified.debug["chrome_filtered_count"] == 2
 
 
 def test_screen_classifier_detects_blank_visual_transition_without_ocr() -> None:
@@ -1480,7 +1518,58 @@ async def test_ocr_reader_capture_timeout_returns_capture_failed_runtime(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture(
+async def test_ocr_reader_backpressure_skip_is_not_capture_error(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    pending: Future[OcrExtractionResult] = Future()
+    with manager._capture_worker_lock:
+        manager._capture_future = pending
+        manager._capture_future_started_at = time.monotonic()
+        manager._capture_future_timed_out = False
+    manager._last_capture_error = "previous capture failed"
+    manager._runtime.detail = "capture_failed"
+    manager._runtime.last_capture_error = "previous capture failed"
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert result.runtime["detail"] == "capture_backpressure"
+        assert result.runtime["last_capture_error"] == ""
+        assert any("tick skipped" in warning and "still running" in warning for warning in result.warnings)
+    finally:
+        pending.cancel()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1495,14 +1584,16 @@ async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture
         def extract_text(self, image: str) -> str:
             del image
             self.calls += 1
-            started.set()
-            release.wait(timeout=2.0)
+            if self.calls == 1:
+                started.set()
+                release.wait(timeout=TEST_WAIT_TIMEOUT)
             return "雪乃：恢复后的台词。"
 
     backend = _BlockingOcrBackend()
+    logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
     manager = OcrReaderManager(
-        logger=_Logger(),
+        logger=logger,
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
@@ -1527,18 +1618,163 @@ async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture
 
     try:
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        assert started.wait(timeout=0.5) is True
+        assert started.wait(timeout=TEST_WAIT_TIMEOUT) is True
         assert first.runtime["detail"] == "capture_failed"
         assert "timed out" in first.runtime["last_capture_error"]
 
         second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
         assert backend.calls == 1
-        assert second.runtime["detail"] == "capture_failed"
-        assert "still running" in second.runtime["last_capture_error"]
-        assert any("still running" in warning for warning in second.warnings)
+        assert second.runtime["detail"] == "capture_backpressure"
+        assert second.runtime["last_capture_error"] == ""
+        assert not any(
+            warning[0] == "ocr_reader replacing stuck capture worker after %.1fs timeout"
+            for warning in logger.warnings
+        )
+
+        with manager._capture_worker_lock:
+            manager._capture_future_started_at = time.monotonic() - 1.0
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 2
+        assert third.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
+            for warning in logger.warnings
+        )
     finally:
         release.set()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    backend = _FakeOcrBackend(["雪乃：恢复后的台词。"])
+    logger = _CapturingLogger()
+    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=backend,
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    pending: Future[OcrExtractionResult] = Future()
+    with manager._capture_worker_lock:
+        manager._capture_future = pending
+        manager._capture_future_started_at = time.monotonic() - 1.0
+        manager._capture_future_timed_out = True
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert pending.cancelled()
+        assert backend.calls == 1
+        assert result.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
+            for warning in logger.warnings
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_recovery_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    backend = _FakeOcrBackend(["雪乃：不应执行。"])
+    logger = _CapturingLogger()
+    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=backend,
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    abandoned: Future[OcrExtractionResult] = Future()
+    assert abandoned.set_running_or_notify_cancel()
+    current: Future[OcrExtractionResult] = Future()
+    assert current.set_running_or_notify_cancel()
+    abandoned_executor = ThreadPoolExecutor(max_workers=1)
+    current_executor = manager._capture_executor
+    assert current_executor is not None
+    with manager._capture_worker_lock:
+        manager._abandoned_capture_workers = [(abandoned_executor, abandoned)]
+        manager._capture_future = current
+        manager._capture_future_started_at = time.monotonic() - 1.0
+        manager._capture_future_timed_out = True
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 0
+        assert result.runtime["detail"] == "capture_failed"
+        assert "recovery limit reached" in result.runtime["last_capture_error"]
+        assert any(
+            "capture timed out" in warning and "recovery limit reached" in warning
+            for warning in result.warnings
+        )
+        with manager._capture_worker_lock:
+            assert manager._capture_future is None
+            assert manager._capture_executor is None
+            assert manager._capture_future_timed_out is False
+            assert manager._abandoned_capture_workers == [
+                (abandoned_executor, abandoned),
+            ]
+
+        retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 1
+        assert retry.runtime["detail"] == "receiving_text"
+    finally:
         await manager.shutdown()
 
 
@@ -1712,85 +1948,10 @@ def test_default_tesseract_install_manifest_includes_sha256() -> None:
     assert all("@main" not in item["url"] for item in manifest["languages"])
 
 
-def test_rapidocr_package_install_plan_includes_hash_args() -> None:
-    rapidocr_digest = "a" * 64
-    onnx_digest = "b" * 64
-
-    package_args, display_specs, require_hashes = (
-        galgame_rapidocr_support._rapidocr_package_install_plan(
-            [
-                {
-                    "name": "rapidocr",
-                    "spec": "rapidocr_onnxruntime==1.4.4",
-                    "sha256": rapidocr_digest,
-                },
-                {
-                    "name": "onnxruntime",
-                    "spec": "onnxruntime==1.17.3",
-                    "hashes": [f"sha256:{onnx_digest}"],
-                },
-            ]
-        )
-    )
-
-    assert display_specs == ["rapidocr_onnxruntime==1.4.4", "onnxruntime==1.17.3"]
-    assert package_args == [
-        "rapidocr_onnxruntime==1.4.4",
-        f"--hash=sha256:{rapidocr_digest}",
-        "onnxruntime==1.17.3",
-        f"--hash=sha256:{onnx_digest}",
-    ]
-    assert require_hashes is True
-
-
-def test_rapidocr_package_install_plan_rejects_partial_hash_manifest() -> None:
-    with pytest.raises(RuntimeError, match="sha256 hashes for every package"):
-        galgame_rapidocr_support._rapidocr_package_install_plan(
-            [
-                {
-                    "name": "rapidocr",
-                    "spec": "rapidocr_onnxruntime==1.4.4",
-                    "sha256": "a" * 64,
-                },
-                {
-                    "name": "onnxruntime",
-                    "spec": "onnxruntime==1.17.3",
-                },
-            ]
-        )
-
-
-def test_rapidocr_pip_install_uses_require_hashes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands: list[list[str]] = []
-    digest = "1" * 64
-
-    monkeypatch.setattr(
-        galgame_rapidocr_support,
-        "_ensure_pip_available",
-        lambda **kwargs: None,
-    )
-
-    def _capture_subprocess(command, *, timeout_seconds, env=None):
-        del timeout_seconds, env
-        commands.append(command)
-        return None
-
-    monkeypatch.setattr(galgame_rapidocr_support, "_run_subprocess", _capture_subprocess)
-
-    galgame_rapidocr_support._run_pip_install(
-        site_packages_dir=tmp_path / "runtime" / "site-packages",
-        packages=["rapidocr_onnxruntime==1.4.4", f"--hash=sha256:{digest}"],
-        timeout_seconds=5.0,
-        require_hashes=True,
-    )
-
-    assert len(commands) == 1
-    command = commands[0]
-    assert command.index("--require-hashes") < command.index("rapidocr_onnxruntime==1.4.4")
-    assert command[-2:] == ["rapidocr_onnxruntime==1.4.4", f"--hash=sha256:{digest}"]
+# NOTE: tests for `_rapidocr_package_install_plan` / `_run_pip_install` /
+# `_ensure_pip_available` removed — those helpers were the runtime-pip-install
+# machinery that's been replaced by bundling rapidocr-onnxruntime as a main
+# program dep (see pyproject.toml [dependency-groups] galgame).
 
 
 def test_background_hash_excludes_bottom_dialogue_region() -> None:
@@ -1833,6 +1994,102 @@ def test_background_hash_excludes_bottom_dialogue_region() -> None:
         cropped_first.info["galgame_source_background_hash"]
         == cropped_second.info["galgame_source_background_hash"]
     )
+
+
+def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _window()[0]
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda _target: (5, 92, 1301, 1060),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rects",
+        lambda _rect: [],
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+
+    rect = galgame_ocr_reader._target_screen_capture_rect(target)
+
+    assert rect == (5, 92, 1301, 1040)
+
+
+def test_screen_capture_rect_spanning_monitors_keeps_other_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _window()[0]
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda _target: (1800, 100, 2600, 1060),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rects",
+        lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+
+    rect = galgame_ocr_reader._target_screen_capture_rect(target)
+
+    assert rect == (1800, 100, 2600, 1060)
+
+
+def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (120, 100), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 119, 19), fill=(255, 0, 0))
+    draw.rectangle((0, 20, 119, 99), fill=(0, 255, 0))
+
+    client_image = galgame_ocr_reader._crop_image_to_screen_rect(
+        image,
+        image_rect=(10, 10, 130, 110),
+        crop_rect=(10, 30, 130, 110),
+    )
+    cropped = galgame_ocr_reader._crop_window_image(
+        client_image,
+        window_rect=(10, 30, 130, 110),
+        profile=galgame_ocr_reader.OcrCaptureProfile(
+            left_inset_ratio=0.0,
+            right_inset_ratio=0.0,
+            top_ratio=0.0,
+            bottom_inset_ratio=0.0,
+        ),
+        backend_kind="test",
+        backend_detail="test",
+    )
+
+    assert cropped.size == (120, 80)
+    assert cropped.getpixel((0, 0)) == (0, 255, 0)
+    assert cropped.info["galgame_window_rect"] == {
+        "left": 10.0,
+        "top": 30.0,
+        "right": 130.0,
+        "bottom": 110.0,
+    }
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -1930,8 +2187,11 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
 
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
     backend._backends = [_SelectedBackend(), _FallbackBackend()]
+    backend._printwindow_backend = backend._backends[0]
 
-    frame = backend.capture_frame(_window()[0], galgame_ocr_reader.OcrCaptureProfile())
+    target = _window()[0]
+    target.is_foreground = True
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
     assert frame == "fallback-frame"
     assert backend.last_backend_kind == "dxcam"
@@ -3015,8 +3275,11 @@ def test_followup_confirm_uses_cleaned_dialogue_text() -> None:
         stable_text="王生：旧台词。",
     )
 
+    manager = object.__new__(OcrReaderManager)
+    manager._attached_window = None
+    manager._runtime = OcrReaderRuntime()
     assert (
-        OcrReaderManager._should_attempt_followup_confirm(
+        manager._should_attempt_followup_confirm(
             "王生：新\n台词。",
             state=state,
         )
@@ -3207,6 +3470,28 @@ def test_ocr_reader_update_config_stops_foreground_monitor_outside_after_advance
     assert running["value"] is False
     assert manager._runtime.foreground_advance_monitor_running is False
     assert manager._runtime.foreground_advance_last_seq == 0
+
+
+def test_ocr_reader_update_config_resets_auto_lang_detector_on_toggle(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=False),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+    )
+    detector = _OcrLangDetector(window_size=2, confirm_streak=1)
+    manager._ocr_lang_detector = detector
+
+    assert detector.feed("\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694") is None
+
+    config = _make_config(bridge_root, rapidocr_enabled=False)
+    config.rapidocr_auto_detect_lang = False
+    manager.update_config(config)
+
+    new_detector = manager._ocr_lang_detector
+    assert new_detector.feed("\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694") is None
 
 
 def test_ocr_reader_interval_consume_does_not_lazy_start_foreground_monitor(
@@ -3721,6 +4006,278 @@ def test_score_ocr_text_prefers_cjk_dialogue_over_ascii_gibberish() -> None:
     assert _score_ocr_text(chinese_dialogue) > _score_ocr_text(gibberish)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("こんにちは世界", "japan"),
+        ("コンビニで買い物", "japan"),
+        ("안녕하세요 세계", "korean"),
+        ("你好世界今天天气真好", "ch"),
+        ("这是我的东西你别动", "ch"),
+        ("東西南北方向指示", "ch"),
+        ("ERROR: file not found", "unknown"),
+        ("... --- ...", "unknown"),
+        ("", "unknown"),
+        ("   ", "unknown"),
+    ],
+)
+def test_classify_cjk_text(text: str, expected: str) -> None:
+    assert _classify_cjk_text(text) == expected
+
+
+def test_ocr_lang_detector_confirms_after_two_windows() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+
+    assert detector.feed("こんにちは") is None
+    assert detector.feed("元気です") is None
+    assert detector.feed("私は学生です") is None
+    assert detector.feed("おはよう") is None
+    assert detector.feed("ありがとう") is None
+    assert detector.feed("さようなら") == "japan"
+
+
+def test_ocr_lang_detector_ignores_noise_lines() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=1)
+
+    assert detector.feed("...") is None
+    assert detector.feed("12345") is None
+    assert detector.feed("ERROR") is None
+    assert detector.feed("こんにちは世界") is None
+
+
+def test_ocr_lang_detector_streak_resets_on_language_change() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+
+    assert detector.feed("こんにちは") is None
+    assert detector.feed("元気です") is None
+    assert detector.feed("私は学生です") is None
+    assert detector.feed("안녕하세요") is None
+    assert detector.feed("반갑습니다") is None
+    assert detector.feed("학생입니다") is None
+    assert detector.feed("고마워요") is None
+    assert detector.feed("괜찮습니다") is None
+    assert detector.feed("다음에 봐요") == "korean"
+
+
+def test_ocr_lang_detector_reset_clears_state() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=1)
+    detector.feed("안녕하세요")
+    detector.feed("반갑습니다")
+    detector.feed("학생입니다")
+
+    detector.reset()
+
+    assert detector._streak == 0
+    assert detector._buffer == []
+    assert detector._last_detected is None
+
+
+def test_rapidocr_auto_lang_skips_when_rapidocr_not_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected RapidOCR inspection")),
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=False)
+
+    assert manager._config.rapidocr_lang_type == "ch"
+    assert manager._config.rapidocr_auto_detect_last_lang == ""
+    assert persisted == []
+
+
+def test_rapidocr_auto_lang_skips_when_rapidocr_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=False),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected RapidOCR inspection")),
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+        "\uc720\ud0a4: \uc9c0\uae08 \uc900\ube44\uac00 \ub05d\ub0ac\uc5b4\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=True)
+
+    assert manager._config.rapidocr_lang_type == "ch"
+    assert manager._config.rapidocr_auto_detect_last_lang == ""
+    assert persisted == []
+
+
+def test_rapidocr_auto_lang_switches_when_rapidocr_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+        "\uc720\ud0a4: \uc9c0\uae08 \uc900\ube44\uac00 \ub05d\ub0ac\uc5b4\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=True)
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
+    assert persisted == ["korean"]
+
+
+def test_rapidocr_auto_lang_first_switch_not_blocked_by_startup_cooldown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 1.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
+    assert persisted == ["korean"]
+
+
+async def test_rapidocr_auto_lang_session_end_clears_switch_cooldown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 1000.0}
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._writer.start_session(_window()[0])
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/mobile",
+        },
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        rapidocr_active=True,
+    )
+    assert manager._config.rapidocr_lang_type == "korean"
+
+    await manager._end_session_if_needed(clock["now"])
+    manager._config.rapidocr_lang_type = "ch"
+    clock["now"] = 1001.0
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\u96ea\u4e43: \u3053\u3093\u306b\u3061\u306f",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "japan"
+    assert persisted == ["korean", "japan"]
+
+
 def test_inspect_tesseract_installation_reports_custom_install_target(tmp_path: Path) -> None:
     install_root = tmp_path / "CustomTesseract"
     executable = _install_fake_tesseract(install_root)
@@ -3845,9 +4402,21 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         "load_rapidocr_runtime",
         lambda **_kwargs: (object(), {"detected_path": str(package_dir)}),
     )
+    # Force the bundled-spec branch off so the legacy plugin-isolated path
+    # is exercised. In a uv-synced dev env rapidocr_onnxruntime is bundled
+    # and would shadow the legacy fixture; we want to test the fallback
+    # specifically. Pin lang to "ch" so this test stays about legacy path
+    # detection rather than any future model-default change.
+    monkeypatch.setattr(
+        galgame_rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: None,
+    )
 
     status = galgame_rapidocr_support.inspect_rapidocr_installation(
         install_target_dir_raw="",
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
         platform_fn=lambda: True,
     )
 
@@ -4954,6 +5523,29 @@ def test_rapidocr_text_adapter_groups_lines_and_filters_low_confidence() -> None
     assert _rapidocr_text_from_output(output) == "雪乃Hello\n今天回家"
 
 
+def test_fix_ocr_punctuation_confusion_for_cjk_dialogue() -> None:
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.") == "这是对白。"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("但是, 另一个") == "但是、另一个"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("真的吗?") == "真的吗？"
+    assert galgame_ocr_reader._fix_ocr_punctuation_confusion("对白。") == "对白。"
+
+
+def test_ocr_dialogue_detection_accepts_fixed_cjk_punctuation() -> None:
+    fixed = galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.")
+    assert galgame_ocr_reader._looks_like_ocr_dialogue_normalized_text(fixed)
+
+
+def test_drop_ocr_chrome_noise_lines_keeps_dialogue() -> None:
+    raw_text = "TheLamentingGeese\n有人是猪马牛羊，有人是虎豹豺狼。\n16°℃"
+
+    filtered = galgame_ocr_reader._drop_ocr_chrome_noise_lines(
+        raw_text,
+        window_title="TheLamentingGeese",
+    )
+
+    assert filtered == "有人是猪马牛羊，有人是虎豹豺狼。"
+
+
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     tmp_path: Path,
@@ -5090,6 +5682,53 @@ async def test_ocr_reader_manager_falls_back_to_tesseract_after_rapidocr_runtime
     assert second.runtime["backend_kind"] == "tesseract"
     assert second.runtime["backend_detail"] == "fallback_after_runtime_error"
     assert any("rapidocr failed" in warning for warning in second.warnings)
+
+
+def test_extract_text_from_image_falls_back_when_rapidocr_boxes_are_empty(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+
+    class _EmptyRapidOcrBackend(galgame_ocr_reader.RapidOcrBackend):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def extract_text_with_boxes(self, image):
+            del image
+            self.calls += 1
+            return "", []
+
+    rapidocr = _EmptyRapidOcrBackend()
+    tesseract = _FakeOcrBackend(["雪乃：你好。"])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+    plan = SelectedOcrBackendPlan(
+        primary=OcrBackendDescriptor(
+            kind="rapidocr",
+            backend=rapidocr,
+            available=True,
+            detail="selected_primary",
+        ),
+        fallback=OcrBackendDescriptor(
+            kind="tesseract",
+            backend=tesseract,
+            available=True,
+            detail="auto_fallback_from_rapidocr",
+        ),
+    )
+
+    result = manager._extract_text_from_image("image", plan=plan)
+
+    assert result.text == "雪乃：你好。"
+    assert result.backend.kind == "tesseract"
+    assert result.backend_detail == "fallback_after_runtime_error"
+    assert rapidocr.calls == 1
+    assert tesseract.calls == 1
+    assert any("rapidocr returned empty text" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio

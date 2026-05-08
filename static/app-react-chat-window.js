@@ -52,6 +52,7 @@
         galgameOptions: [],
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
+        homeTutorialInteractionLocked: false,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
         // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -421,7 +422,8 @@
             translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
-            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…')
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
+            composerDisabled: !!state.homeTutorialInteractionLocked
         };
     }
 
@@ -787,6 +789,9 @@
     }
 
     function handleComposerSubmit(payload) {
+        if (state.homeTutorialInteractionLocked) {
+            return;
+        }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
             ? payload.requestId
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1108,6 +1113,18 @@
         );
     }
 
+    function isHomeTutorialInteractionLocked() {
+        if (state.homeTutorialInteractionLocked || isHomeTutorialRunning()) {
+            return true;
+        }
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function setGalgameModeTemporarilyDisabled(disabled) {
         var next = !!disabled;
         var changed = state.galgameTemporarilyDisabled !== next;
@@ -1126,7 +1143,7 @@
     function setGalgameModeEnabled(enabled, options) {
         var requestOptions = options || {};
         var next = !!enabled;
-        if (next && isGalgameModeTemporarilyDisabled()) {
+        if (next && !requestOptions.force && (isGalgameModeTemporarilyDisabled() || isHomeTutorialInteractionLocked())) {
             next = false;
         }
         var changed = state.galgameModeEnabled !== next;
@@ -1333,6 +1350,10 @@
     }
 
     function handleGalgameModeToggle() {
+        if (isHomeTutorialInteractionLocked()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
         if (isGalgameModeTemporarilyDisabled()) {
             setGalgameModeEnabled(false, { persist: false });
             return;
@@ -1342,6 +1363,7 @@
     }
 
     function handleGalgameOptionSelect(option) {
+        if (isHomeTutorialInteractionLocked()) return;
         if (!option || typeof option.text !== 'string') return;
         var text = option.text.trim();
         if (!text) return;
@@ -1368,6 +1390,7 @@
     // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
 
     function handleChoiceSelect(option, source) {
+        if (isHomeTutorialInteractionLocked()) return;
         if (!option || typeof option.choice !== 'string') return;
         if (source === 'galgame') {
             // Forward to legacy galgame handler if it shows up here
@@ -1383,6 +1406,7 @@
     }
 
     function handleMiniGameInviteChoice(option) {
+        if (isHomeTutorialInteractionLocked()) return;
         var prompt = state.choicePrompt;
         if (!prompt || prompt.source !== 'mini_game_invite') return;
         var sessionId = prompt.sessionId || '';
@@ -1542,6 +1566,17 @@
             gameType: String(payload.gameType || ''),
             options: cleanedOptions
         };
+        // mini-game invite 占用 composer 底部 slot 视觉位 → galgame options
+        // 让位（App.tsx 已把 galgame slot 在 choicePromptHasOptions 下不挂树）。
+        // 这里同步 abort 任何 in-flight / pending wait 的 galgame fetch + 清掉
+        // 残留 loading/options state：
+        //   1) 不再浪费 summary tier 推理（proactive invite 文本基本是
+        //      sudden-context，galgame option 生成大概率 timeout / unparseable
+        //      → 全是 fallback，纯浪费）
+        //   2) 防止 fetch 在 invite 解决前才返回，写回 state.galgameOptions
+        //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
+        //      文本生成的，与后续对话无关）
+        invalidatePendingGalgameRequest();
         renderWindow();
     }
 
@@ -1663,6 +1698,18 @@
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function setHomeTutorialInteractionLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInteractionLocked === next) {
+            return;
+        }
+        state.homeTutorialInteractionLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            composerDisabled: next
+        });
         renderWindow();
     }
 
@@ -2127,6 +2174,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -2283,7 +2331,14 @@
 
     var MIN_WIDTH = 320;
     var MIN_HEIGHT = 280;
+    var GALGAME_MIN_HEIGHT = 420;
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+    function getDesktopMinHeight() {
+        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
+        return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
+    }
 
     function createResizeEdges() {
         var shell = getShell();
@@ -2356,11 +2411,13 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
+        var desktopMinHeight = getDesktopMinHeight();
+
         if (!mobile && dir.indexOf('s') !== -1) {
-            newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
+            newHeight = Math.max(desktopMinHeight, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
-            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
+            var minH = mobile ? MOBILE_MIN_HEIGHT : desktopMinHeight;
             var proposedHeight = resizeState.origHeight - dy;
             if (proposedHeight >= minH) {
                 newHeight = proposedHeight;
@@ -2565,7 +2622,7 @@
         // from a storage namespace the barrier is about to remap.
         // setGalgameModeEnabled idempotently syncs state + body class + fires
         // the change event when the resolved pref differs from the safe default.
-        if (isHomeTutorialRunning()) {
+        if (isHomeTutorialInteractionLocked()) {
             setGalgameModeTemporarilyDisabled(true);
         } else {
             setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
@@ -2684,6 +2741,29 @@
         });
     }
 
+    function applyInitialComposerHiddenState() {
+        // 独立 Chat 刷新时，语音态广播可能早于 React host 初始化到达。
+        // 初始化完成后补读一次共享状态，避免 composer 以默认显示态首绘。
+        try {
+            var initialComposerShouldHide = false;
+            if (typeof window.shouldKeepVoiceComposerHidden === 'function') {
+                initialComposerShouldHide = window.shouldKeepVoiceComposerHidden();
+            } else if (window.appState) {
+                initialComposerShouldHide = !!(
+                    window.appState.isRecording ||
+                    window.appState.voiceChatActive ||
+                    window.appState.voiceStartPending ||
+                    window.isMicStarting
+                );
+            }
+            if (initialComposerShouldHide) {
+                setComposerHidden(true);
+            }
+        } catch (_) {
+            // 首绘兜底失败不影响后续 session_started 同步
+        }
+    }
+
     async function initAfterStorageBarrier() {
         if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
             try {
@@ -2696,6 +2776,7 @@
             } catch (_) {}
         }
         init();
+        applyInitialComposerHiddenState();
     }
 
     if (document.readyState === 'loading') {
@@ -2712,6 +2793,7 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
@@ -2755,4 +2837,5 @@
         handleMiniGameInviteResolved: handleMiniGameInviteResolved,
         isMounted: function () { return mounted; }
     };
+
 })();

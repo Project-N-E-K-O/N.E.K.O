@@ -27,6 +27,55 @@ import { initPluginDashboardYuiGuideRuntime } from './yui-guide-runtime'
 initDarkMode()
 initPluginDashboardYuiGuideRuntime()
 
+function initNativeDragGuard() {
+  const markNativeDragSource = (element: HTMLAnchorElement | HTMLImageElement) => {
+    element.draggable = false
+    element.setAttribute('draggable', 'false')
+  }
+
+  const markNativeDragSources = (root: ParentNode | HTMLAnchorElement | HTMLImageElement = document) => {
+    if (root instanceof HTMLAnchorElement || root instanceof HTMLImageElement) {
+      markNativeDragSource(root)
+      return
+    }
+    root.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img').forEach(markNativeDragSource)
+  }
+
+  const handleDragStart = (event: DragEvent) => {
+    const rawTarget = event.target
+    let target: Element | null = null
+    if (rawTarget instanceof Element) {
+      target = rawTarget
+    } else if (rawTarget instanceof Node) {
+      target = rawTarget.parentElement
+    }
+
+    if (
+      target instanceof HTMLAnchorElement
+      || target instanceof HTMLImageElement
+      || target?.closest('a[href], img')
+    ) {
+      event.preventDefault()
+    }
+  }
+
+  markNativeDragSources(document)
+  document.addEventListener('dragstart', handleDragStart, true)
+
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node instanceof Element) {
+          markNativeDragSources(node)
+        }
+      })
+    })
+  })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+}
+
+initNativeDragGuard()
+
 console.log('🚀 Starting N.E.K.O Plugin Management System...')
 
 const app = createApp(App)

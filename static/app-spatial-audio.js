@@ -2,7 +2,7 @@
  * app-spatial-audio.js — 多屏立体声 + 距离衰减
  *
  * 听者锚点：主屏中心（屏幕坐标系）。
- * 声源锚点：当前 Pet 窗口中心（屏幕坐标系）。
+ * 声源锚点：当前模型中心（屏幕坐标系）。取不到模型 bounds 时回退到 Pet 窗口中心。
  *
  * Pan：dx / (主屏宽度 / 2)，clamp 到 [-1, 1]
  * Gain：以主屏为参考圆，主屏内全音量；越过主屏后线性衰减，floor = SPATIAL_AUDIO_MIN_GAIN
@@ -66,7 +66,18 @@
         return Promise.resolve(S.spatialPrimaryDisplay);
     }
 
-    function getCurrentWindowBounds() {
+    function hasUsableBounds(bounds) {
+        var hasPosition = (Number.isFinite(Number(bounds.x)) && Number.isFinite(Number(bounds.y))) ||
+            (Number.isFinite(Number(bounds.left)) && Number.isFinite(Number(bounds.top)));
+        return !!bounds &&
+            hasPosition &&
+            Number.isFinite(Number(bounds.width)) &&
+            Number.isFinite(Number(bounds.height)) &&
+            Number(bounds.width) > 0 &&
+            Number(bounds.height) > 0;
+    }
+
+    function getFallbackWindowBounds() {
         if (window.nekoPetDrag && typeof window.nekoPetDrag.getBounds === 'function') {
             return window.nekoPetDrag.getBounds().catch(function () { return null; });
         }
@@ -79,6 +90,22 @@
         });
     }
 
+    function getCurrentSourceBounds() {
+        if (window.nekoSpatialAudio && typeof window.nekoSpatialAudio.getSourceBounds === 'function') {
+            try {
+                return Promise.resolve(window.nekoSpatialAudio.getSourceBounds()).then(function (bounds) {
+                    if (hasUsableBounds(bounds)) return bounds;
+                    return getFallbackWindowBounds();
+                }).catch(function () {
+                    return getFallbackWindowBounds();
+                });
+            } catch (_) {
+                return getFallbackWindowBounds();
+            }
+        }
+        return getFallbackWindowBounds();
+    }
+
     function clamp(v, lo, hi) {
         if (v < lo) return lo;
         if (v > hi) return hi;
@@ -86,25 +113,31 @@
     }
 
     /**
-     * 根据窗口与主屏几何，计算 pan ∈ [-1,1] 和 gain ∈ [floor, 1]
+     * 根据模型/窗口与主屏几何，计算 pan ∈ [-1,1] 和 gain ∈ [floor, 1]
      * - pan 仅看水平方向，dx / (primary.width / 2)
      * - gain 看二维欧氏距离：以主屏中心为圆心、主屏 half-width 为参考半径
      *   - 距离 ≤ 1.0 ref：gain = 1（主屏内不衰减）
      *   - 距离 > 1.0 ref：每 1 ref 衰减 SPATIAL_AUDIO_FALLOFF_RATE，floor = SPATIAL_AUDIO_MIN_GAIN
      */
-    function computePanAndGain(winBounds, primary) {
-        if (!winBounds || !primary || !primary.bounds) {
+    function computePanAndGain(sourceBounds, primary) {
+        if (!sourceBounds || !primary || !primary.bounds) {
             return { pan: 0, gain: 1 };
         }
         var pb = primary.bounds;
         var primaryCenterX = pb.x + pb.width / 2;
         var primaryCenterY = pb.y + pb.height / 2;
-        var winCenterX = winBounds.x + winBounds.width / 2;
-        var winCenterY = winBounds.y + winBounds.height / 2;
+        var sourceX = Number.isFinite(Number(sourceBounds.x)) ? Number(sourceBounds.x) : Number(sourceBounds.left);
+        var sourceY = Number.isFinite(Number(sourceBounds.y)) ? Number(sourceBounds.y) : Number(sourceBounds.top);
+        var sourceCenterX = Number.isFinite(Number(sourceBounds.centerX))
+            ? Number(sourceBounds.centerX)
+            : sourceX + Number(sourceBounds.width) / 2;
+        var sourceCenterY = Number.isFinite(Number(sourceBounds.centerY))
+            ? Number(sourceBounds.centerY)
+            : sourceY + Number(sourceBounds.height) / 2;
         var refDist = Math.max(1, pb.width / 2);
 
-        var dx = winCenterX - primaryCenterX;
-        var dy = winCenterY - primaryCenterY;
+        var dx = sourceCenterX - primaryCenterX;
+        var dy = sourceCenterY - primaryCenterY;
         var pan = clamp(dx / refDist, -1, 1);
 
         var dist = Math.sqrt(dx * dx + dy * dy);
@@ -146,7 +179,7 @@
             applyPanAndGain(0, 1);
             return;
         }
-        Promise.all([refreshPrimaryDisplay(), getCurrentWindowBounds()]).then(function (results) {
+        Promise.all([refreshPrimaryDisplay(), getCurrentSourceBounds()]).then(function (results) {
             var primary = results[0];
             var bounds = results[1];
             var r = computePanAndGain(bounds, primary);

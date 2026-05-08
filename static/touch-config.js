@@ -456,7 +456,7 @@ function createTouchConfigFloatingWindow(options = {}){
     if (showCloseButton) {
         const closeButton = document.createElement("button")
         closeButton.className = "touch-config-close"
-        closeButton.innerHTML = '<img src="/static/icons/close_button.png" alt="关闭">'
+        closeButton.innerHTML = '<img src="/static/icons/close_button.png" alt="关闭" draggable="false">'
         closeButton.onclick = function(){
             windowObj.close()
         }

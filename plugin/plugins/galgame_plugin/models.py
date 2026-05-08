@@ -127,6 +127,10 @@ STORE_LLM_VISION_ENABLED = "llm_vision_enabled"
 STORE_LLM_VISION_MAX_IMAGE_PX = "llm_vision_max_image_px"
 STORE_OCR_SCREEN_TEMPLATES = "ocr_screen_templates"
 STORE_OCR_FAST_LOOP_ENABLED = "ocr_fast_loop_enabled"
+STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
+STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
+STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
+STORE_TUTORIAL_PROGRESS = "tutorial_progress"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
     STORE_MODE,
@@ -150,6 +154,10 @@ STORE_KEYS = (
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_FAST_LOOP_ENABLED,
+    STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+    STORE_TUTORIAL_PROGRESS,
 )
 
 DEFAULT_SAVE_CONTEXT = {
@@ -525,7 +533,7 @@ class GalgameMemoryReaderConfig:
     memory_reader_textractor_path: str = ""
     memory_reader_install_release_api_url: str = ""
     memory_reader_install_target_dir: str = ""
-    memory_reader_install_timeout_seconds: float = 60.0
+    memory_reader_install_timeout_seconds: float = 180.0
     memory_reader_auto_detect: bool = True
     memory_reader_hook_codes: list[str] = field(default_factory=list)
     memory_reader_engine_hook_codes: dict[str, list[str]] = field(default_factory=dict)
@@ -575,13 +583,23 @@ class GalgameOcrReaderConfig:
 class GalgameRapidOcrConfig:
     rapidocr_enabled: bool = False
     rapidocr_enabled_explicit: bool = False
-    rapidocr_install_manifest_url: str = ""
+    # `rapidocr_install_target_dir` survived the install-removal because
+    # ocr_reader still treats it as the runtime model cache root path
+    # (where rapidocr writes downloaded model files). Name is misleading
+    # post-refactor — TODO rename to `rapidocr_model_cache_root` in a
+    # follow-up. `rapidocr_install_manifest_url` and
+    # `rapidocr_install_timeout_seconds` are gone — they only fed the
+    # deleted runtime install machinery.
     rapidocr_install_target_dir: str = ""
-    rapidocr_install_timeout_seconds: float = 180.0
     rapidocr_engine_type: str = "onnxruntime"
+    # Default to the bundled Chinese PP-OCRv4 model. Japanese games can opt
+    # back into `japan`; existing configs that explicitly set other values are
+    # preserved by the loader.
     rapidocr_lang_type: str = "ch"
     rapidocr_model_type: str = "mobile"
-    rapidocr_ocr_version: str = "PP-OCRv5"
+    rapidocr_ocr_version: str = "PP-OCRv4"
+    rapidocr_auto_detect_lang: bool = True
+    rapidocr_auto_detect_last_lang: str = ""
 
 
 @dataclass(slots=True, init=False)
@@ -739,13 +757,13 @@ class GalgameConfig:
         ),
         "rapidocr_enabled": ("rapidocr", "rapidocr_enabled"),
         "rapidocr_enabled_explicit": ("rapidocr", "rapidocr_enabled_explicit"),
-        "rapidocr_install_manifest_url": ("rapidocr", "rapidocr_install_manifest_url"),
         "rapidocr_install_target_dir": ("rapidocr", "rapidocr_install_target_dir"),
-        "rapidocr_install_timeout_seconds": ("rapidocr", "rapidocr_install_timeout_seconds"),
         "rapidocr_engine_type": ("rapidocr", "rapidocr_engine_type"),
         "rapidocr_lang_type": ("rapidocr", "rapidocr_lang_type"),
         "rapidocr_model_type": ("rapidocr", "rapidocr_model_type"),
         "rapidocr_ocr_version": ("rapidocr", "rapidocr_ocr_version"),
+        "rapidocr_auto_detect_lang": ("rapidocr", "rapidocr_auto_detect_lang"),
+        "rapidocr_auto_detect_last_lang": ("rapidocr", "rapidocr_auto_detect_last_lang"),
     }
 
     def __init__(

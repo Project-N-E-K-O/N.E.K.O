@@ -1,7 +1,7 @@
 <template>
   <nav class="sidebar">
     <div class="sidebar-brand">
-      <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" />
+      <img src="@/assets/neko-logo.png" alt="N.E.K.O" class="sidebar-brand__logo" draggable="false" />
       <span class="sidebar-brand__text">N.E.K.O</span>
     </div>
     <div class="sidebar-nav">

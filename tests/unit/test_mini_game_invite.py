@@ -438,10 +438,11 @@ async def test_maybe_deliver_user_toggle_default_true_keeps_bc(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_force_game_type_overrides_all_gates(monkeypatch):
-    """``MINI_GAME_INVITE_FORCE_GAME_TYPE='soccer'`` 时，即使 user_toggle 关、
-    snapshot 是 None、cooldown 在期内、骰子必失，也强制走邀请投递。
-    仅 ``MINI_GAME_INVITE_ENABLED=False`` 才能拦住。"""
+async def test_force_game_type_overrides_snapshot_and_cooldown_gates(monkeypatch):
+    """``MINI_GAME_INVITE_FORCE_GAME_TYPE='soccer'`` 时跳过 snapshot/cooldown/骰
+    子 gate 强制投递；但用户级 toggle 仍要尊重（见
+    test_force_game_type_respects_user_toggle）。仅 ``MINI_GAME_INVITE_ENABLED=False``
+    或 user_toggle_enabled=False 才能拦住。"""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'soccer')
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 0.0)
     sr._mini_game_invite_record_delivered(LANLAN, "stale-session")
@@ -450,11 +451,26 @@ async def test_force_game_type_overrides_all_gates(monkeypatch):
         lanlan_name=LANLAN, mgr=mgr,
         activity_snapshot=None,
         invite_lang='zh', master_name=MASTER,
-        user_toggle_enabled=False,
+        user_toggle_enabled=True,
     )
     assert out is not None
     assert out["action"] == "chat"
     assert out.get("game_type") == 'soccer'
+
+
+@pytest.mark.asyncio
+async def test_force_game_type_respects_user_toggle(monkeypatch):
+    """开发者旗标不应该绕过用户在前端关掉 mini-game source 的明确意图。
+    user_toggle_enabled=False 时 force-flag 仍 return None，与全局 kill switch
+    地位等同。"""
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'soccer')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(),
+        activity_snapshot=None,
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=False,
+    )
+    assert out is None
 
 
 @pytest.mark.asyncio

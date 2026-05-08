@@ -1,0 +1,119 @@
+/* 自绘窗口控制按钮：最小化、最大化/恢复 */
+.neko-window-actions,
+.neko-window-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+.neko-window-actions .neko-window-controls {
+    margin-left: 0;
+}
+
+.neko-window-actions .goto-api-settings-btn {
+    position: static;
+    transform: none;
+    margin: 0;
+}
+
+.neko-window-controls .close-btn,
+.neko-window-controls .close-page-btn {
+    position: static;
+    right: auto;
+    top: auto;
+    transform: none;
+    margin: 0;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+.neko-window-controls .close-btn:hover,
+.neko-window-controls .close-page-btn:hover {
+    transform: translateY(-1px);
+}
+
+.neko-window-controls .close-btn:active,
+.neko-window-controls .close-page-btn:active {
+    transform: translateY(1px) scale(0.95);
+}
+
+.neko-window-control-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.1s ease, opacity 0.2s ease;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+.neko-window-control-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+}
+
+.neko-window-control-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
+}
+
+.neko-window-minimize-icon {
+    display: block;
+    width: 16px;
+    height: 2px;
+    background: currentColor;
+    border-radius: 2px;
+    transform: translateY(5px);
+}
+
+.neko-window-maximize-icon {
+    display: block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-radius: 2px;
+    box-sizing: border-box;
+    transition: all 0.2s ease;
+}
+
+.neko-window-maximize-icon.restored {
+    position: relative;
+    background: #40c5f1;
+}
+
+.neko-window-maximize-icon.restored::after {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: 3px;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-radius: 2px;
+    background: #40c5f1;
+    box-sizing: border-box;
+}
+
+@media (max-width: 520px) {
+    .neko-window-actions {
+        width: 100%;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+
+    .neko-window-controls {
+        margin-left: 0;
+    }
+}

@@ -854,6 +854,89 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_text_length_guard_finishes_visible_long_reply_without_discard(monkeypatch):
+    """正常长回复已经流式吐到前端时，长度 guard 不应走 discard/recovery。
+
+    response_discarded 会清掉旧气泡/字幕，然后 recovery 再整段重发；这会
+    让字幕翻译处理两份同一轮文本，TTS 也可能收到过长的整段恢复文本。
+    """
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+    length_log_args = []
+
+    def fake_logger_info(message, *args, **_kwargs):
+        if "长回复已流式输出" in message:
+            length_log_args.append(args)
+
+    monkeypatch.setattr(_ofc.logger, "info", fake_logger_info)
+
+    stream_calls = 0
+
+    async def _astream_long_reply(self, messages, **overrides):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield LLMStreamChunk(content="one two three four. five")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_long_reply)
+
+    discarded_calls: list = []
+    text_emitted: list = []
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded_calls.append({
+            "reason": reason,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def fake_text_delta(text, is_first):
+        text_emitted.append(text)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 4
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("write a long reply")
+
+    assert stream_calls == 1
+    assert "".join(text_emitted) == "one two three four."
+    assert discarded_calls == []
+    assert client._conversation_history[-1].content == "one two three four."
+    assert length_log_args[-1] == (5, 4)
+
+
+@pytest.mark.asyncio
 async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
     `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——
@@ -1206,6 +1289,176 @@ async def test_stream_text_does_not_double_write_pretool_text(monkeypatch):
         f"pre-tool 文本被双写进 history 了！final AIMessage.content={final_ai.content!r}"
     )
     assert final_ai.content == "22 度。"
+
+
+@pytest.mark.asyncio
+async def test_stream_text_length_guard_after_tool_call_does_not_double_write_pretool_text(monkeypatch):
+    """长度 guard 在 tool 轮之后触发时，history 只能追加未持久化的 post-tool 文本。
+
+    pre-tool 文本已经由 _astream_*_with_tools inline 写进 assistant.tool_calls.content。
+    recovery 分支如果把整轮文本再 append 一次，会让下一轮上下文重复看到 pre-tool 文本。
+    """
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, AIMessage, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    async def _astream_tool_then_long_reply(self, messages, **overrides):
+        yield LLMStreamChunk(content="checking now.")
+        messages.append({
+            "role": "assistant",
+            "content": "checking now.",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}}],
+        })
+        messages.append({
+            "role": "tool", "tool_call_id": "c1", "name": "lookup",
+            "content": '{"ok":true}',
+        })
+        yield LLMStreamChunk(content="", tool_round_persisted=True)
+        yield LLMStreamChunk(content="answer one. answer two overflow")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_tool_then_long_reply)
+
+    text_emitted: list = []
+    discarded_calls: list = []
+
+    async def fake_text_delta(text, is_first):
+        text_emitted.append(text)
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded_calls.append({
+            "reason": reason,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 5
+    client.max_response_rerolls = 0
+    client.enable_response_guard = True
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = None
+    client.on_repetition_detected = None
+
+    await client.stream_text("lookup")
+
+    assert "".join(text_emitted) == "checking now.answer one."
+    assert discarded_calls == []
+
+    history = client._conversation_history
+    assistant_with_tool = next(
+        m for m in history if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool["content"] == "checking now."
+    final_ai = history[-1]
+    assert isinstance(final_ai, AIMessage)
+    assert final_ai.content == "answer one."
+
+
+@pytest.mark.asyncio
+async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_recovery(monkeypatch):
+    """tool 后续写还没有完整句子时，不能只用 pre-tool 文本当作成功恢复。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, AIMessage, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    async def _astream_tool_then_unfinished_overflow(self, messages, **overrides):
+        yield LLMStreamChunk(content="checking now.")
+        messages.append({
+            "role": "assistant",
+            "content": "checking now.",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}}],
+        })
+        messages.append({
+            "role": "tool", "tool_call_id": "c1", "name": "lookup",
+            "content": '{"ok":true}',
+        })
+        yield LLMStreamChunk(content="", tool_round_persisted=True)
+        yield LLMStreamChunk(content=" unfinished overflow")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_tool_then_unfinished_overflow)
+
+    text_emitted: list = []
+    discarded_calls: list = []
+
+    async def fake_text_delta(text, is_first):
+        text_emitted.append(text)
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded_calls.append({
+            "reason": reason,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 2
+    client.max_response_rerolls = 0
+    client.enable_response_guard = True
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = None
+    client.on_repetition_detected = None
+
+    await client.stream_text("lookup")
+
+    assert "".join(text_emitted) == "checking now."
+    assert len(discarded_calls) == 1
+    assert discarded_calls[0]["will_retry"] is False
+    assert json.loads(discarded_calls[0]["message"]) == {"code": "RESPONSE_TOO_LONG"}
+    assert not any(isinstance(m, AIMessage) for m in client._conversation_history[1:])
 
 
 @pytest.mark.asyncio

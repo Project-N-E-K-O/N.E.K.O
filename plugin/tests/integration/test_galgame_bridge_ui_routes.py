@@ -124,19 +124,24 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "<title>Galgame 游玩助手</title>" in response.text
+    assert '<title data-i18n="ui.app.title">Galgame 游玩助手</title>' in response.text
     assert "让猫娘陪你一起玩 Galgame" in response.text
     assert "RapidOCR" in response.text
     assert "依赖安装" in response.text
     assert "DXcam" in response.text
-    assert "一键安装 Tesseract" in response.text
     assert "Textractor" in response.text
+    assert 'id="rapidocrCard"' in response.text
+    assert 'id="dxcamCard"' in response.text
+    assert 'id="tesseractCard"' in response.text
+    assert 'id="textractorCard"' in response.text
     assert "OCR 截图校准" in response.text
     assert 'id="primaryDiagnosisPanel"' in response.text
     assert 'id="firstRunGuide"' in response.text
     assert 'id="currentLineOverview"' in response.text
     assert 'id="ocrPipelinePanel"' in response.text
     assert 'id="installCompactSummary"' in response.text
+    assert "./i18n.js?v=" in response.text
+    assert 'data-i18n="ui.app.title"' in response.text
 
 
 @pytest.mark.asyncio
@@ -149,13 +154,13 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert response.status_code == 200
     assert "javascript" in response.headers["content-type"]
     assert "const RUNS_URL = '/runs';" in response.text
-    assert "const RAPIDOCR_INSTALL_URL = `${UI_API_BASE}/rapidocr/install`;" in response.text
-    assert "const DXCAM_INSTALL_URL = `${UI_API_BASE}/dxcam/install`;" in response.text
+    # rapidocr / dxcam install URLs and restore state helpers removed —
+    # both packages are now bundled main-program deps (see pyproject.toml
+    # [dependency-groups] galgame). Only textractor + tesseract retain
+    # runtime install machinery (they're native binaries, not Python wheels).
     assert "const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;" in response.text
     assert "const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;" in response.text
     assert "new EventSource(" in response.text
-    assert "restoreRapidOcrInstallState" in response.text
-    assert "restoreDxcamInstallState" in response.text
     assert "restoreTextractorInstallState" in response.text
     assert "restoreTesseractInstallState" in response.text
     assert "session.json" not in response.text
@@ -183,6 +188,82 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "dxcam" in response.text
     assert "tesseract" in response.text
     assert "textractor" in response.text
+    assert "function uiT(" in response.text
+    assert "getInstallUIConfig" in response.text
+    assert "i18n-ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+) -> None:
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/main.js")
+
+    assert response.status_code == 200
+    script = response.text
+    assert "function canApplyRestoredInstallTaskState" in script
+    assert "function shouldOfferRapidOcrModelsDownload" in script
+    assert "generation: 0" in script
+    assert "const restoreGeneration = Number((runtime && runtime.generation) || 0);" in script
+    assert "state.generation = Number(state.generation || 0) + 1;" in script
+    assert "state.currentTaskId = null;" in script
+    assert "clearPersistedInstallTaskId(kind);" in script
+    assert "function shouldRestoreRapidOcrModelsFailure" in script
+    assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
+    assert "ui.install.rapidocr.missing_models_manual_body" in script
+    assert "{ allowRefresh: true }" in script
+    assert "showTerminalFlash: false" in script
+    assert "clearPersistedInstallTaskId('rapidocr_models');" in script
+    assert script.index("function canApplyRestoredInstallTaskState") < script.index("applyInstallTaskState(kind, restoredState")
+    assert script.index("applyRapidOcrModelsGate(rapidocr);") < script.index(
+        "const lastTask = installRuntime.rapidocr_models.state;"
+    )
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_i18n_script_is_served(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+) -> None:
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/i18n.js")
+
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+    assert "const I18n" in response.text
+    assert "/ui-api/locale" in response.text
+    assert "/ui-api/i18n/ui/" in response.text
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
+    plugin_ui_async_client: AsyncClient,
+) -> None:
+    locale_response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui-api/locale")
+    assert locale_response.status_code == 200
+    locale = locale_response.json()["locale"]
+    assert isinstance(locale, str)
+
+    bundle_response = await plugin_ui_async_client.get(
+        f"/plugin/galgame_plugin/ui-api/i18n/ui/{locale}.json"
+    )
+    assert bundle_response.status_code == 200
+    assert "application/json" in bundle_response.headers["content-type"]
+    bundle = bundle_response.json()
+    assert bundle["ui.button.collapse"]
+    # `ui.install.rapidocr.action` removed (no in-app install action). Use a
+    # remaining install-namespace key that exists in all 5 locales.
+    assert bundle["ui.install.tesseract.action"]
+
+    missing_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
+    )
+    assert missing_response.status_code == 404
+
+    unsupported_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/i18n/ui/es.json"
+    )
+    assert unsupported_response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -244,66 +325,6 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
     saved = install_task_module.load_install_task_state("run-textractor-1")
     assert saved is not None
     assert saved["message"] == "Textractor install queued"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_start_route_creates_run_and_seeds_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_create_run(payload, *, client_host):
-        del client_host
-        assert payload.plugin_id == "galgame_plugin"
-        assert payload.entry_id == "galgame_install_rapidocr"
-        assert payload.args == {"force": True}
-        return RunCreateResponse(run_id="run-rapidocr-1", status="queued")
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
-
-    response = await plugin_ui_async_client.post(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install",
-        json={"force": True},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-rapidocr-1"
-    assert payload["state"]["kind"] == "rapidocr"
-    saved = install_task_module.load_install_task_state("run-rapidocr-1", kind="rapidocr")
-    assert saved is not None
-    assert saved["message"] == "RapidOCR install queued"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_dxcam_install_start_route_creates_run_and_seeds_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_create_run(payload, *, client_host):
-        del client_host
-        assert payload.plugin_id == "galgame_plugin"
-        assert payload.entry_id == "galgame_install_dxcam"
-        assert payload.args == {"force": True}
-        return RunCreateResponse(run_id="run-dxcam-1", status="queued")
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
-
-    response = await plugin_ui_async_client.post(
-        "/plugin/galgame_plugin/ui-api/dxcam/install",
-        json={"force": True},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-dxcam-1"
-    assert payload["state"]["kind"] == "dxcam"
-    saved = install_task_module.load_install_task_state("run-dxcam-1", kind="dxcam")
-    assert saved is not None
-    assert saved["message"] == "DXcam install queued"
 
 
 @pytest.mark.asyncio
@@ -379,46 +400,6 @@ async def test_galgame_plugin_textractor_install_status_route_reads_persisted_st
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_status_route_reads_persisted_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-rapidocr-2",
-        kind="rapidocr",
-        run_id="run-rapidocr-2",
-        status="running",
-        phase="installing",
-        message="Installing rapidocr_onnxruntime",
-        progress=0.55,
-        asset_name="rapidocr_onnxruntime, onnxruntime",
-    )
-
-    def _fake_get_run(run_id: str) -> RunRecord:
-        assert run_id == "run-rapidocr-2"
-        return _running_install_run(
-            run_id,
-            entry_id="galgame_install_rapidocr",
-            stage="installing",
-            message="Installing rapidocr_onnxruntime",
-        )
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/run-rapidocr-2"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["kind"] == "rapidocr"
-    assert payload["status"] == "running"
-    assert payload["phase"] == "installing"
-
-
-@pytest.mark.asyncio
 async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_before_run_lookup(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
@@ -430,12 +411,14 @@ async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_befor
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _unexpected_get_run)
 
+    # Path traversal guard test re-targeted at tesseract since rapidocr/dxcam
+    # install routes were removed (those packages are now bundled main deps).
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/..."
+        "/plugin/galgame_plugin/ui-api/tesseract/install/..."
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid RapidOCR install task_id"
+    assert response.json()["detail"] == "Invalid Tesseract install task_id"
 
 
 @pytest.mark.asyncio
@@ -507,130 +490,6 @@ async def test_galgame_plugin_textractor_install_latest_route_returns_latest_sta
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_latest_route_returns_latest_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-rapidocr-latest",
-        kind="rapidocr",
-        run_id="run-rapidocr-latest",
-        status="completed",
-        phase="completed",
-        message="RapidOCR installation completed",
-        progress=1.0,
-    )
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/latest"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-rapidocr-latest"
-    assert payload["kind"] == "rapidocr"
-    assert payload["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_status_route_persists_terminal_run_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-rapidocr-terminal",
-        kind="rapidocr",
-        run_id="run-rapidocr-terminal",
-        status="queued",
-        phase="queued",
-        message="RapidOCR install queued",
-        progress=0.0,
-    )
-
-    now = time.time()
-
-    def _fake_get_run(run_id: str) -> RunRecord:
-        assert run_id == "run-rapidocr-terminal"
-        return RunRecord(
-            run_id=run_id,
-            plugin_id="galgame_plugin",
-            entry_id="galgame_install_rapidocr",
-            status="failed",
-            created_at=now - 5,
-            updated_at=now,
-            started_at=now - 4,
-            finished_at=now,
-            stage="failed",
-            message="RapidOCR install failed during startup",
-            error=RunError(code="INSTALL_FAILED", message="RapidOCR install failed during startup"),
-            metrics={"asset_name": "rapidocr_onnxruntime"},
-        )
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/run-rapidocr-terminal"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "failed"
-    assert payload["phase"] == "failed"
-    assert payload["error"] == "RapidOCR install failed during startup"
-    saved = install_task_module.load_install_task_state("run-rapidocr-terminal", kind="rapidocr")
-    assert saved is not None
-    assert saved["status"] == "failed"
-    assert saved["error"] == "RapidOCR install failed during startup"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_latest_route_marks_missing_run_as_failed(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-rapidocr-stale",
-        kind="rapidocr",
-        run_id="run-rapidocr-stale",
-        status="running",
-        phase="installing",
-        message="Installing rapidocr_onnxruntime",
-        progress=0.4,
-        target_dir="C:/Temp/RapidOCR",
-    )
-
-    def _missing_run(_run_id: str) -> RunRecord:
-        raise ServerDomainError(
-            code="RUN_NOT_FOUND",
-            message="run not found",
-            status_code=404,
-            details={"run_id": "run-rapidocr-stale"},
-        )
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_run)
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/latest"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-rapidocr-stale"
-    assert payload["status"] == "failed"
-    assert "后台运行记录已经不存在" in payload["error"]
-    saved = install_task_module.load_install_task_state("run-rapidocr-stale", kind="rapidocr")
-    assert saved is not None
-    assert saved["status"] == "failed"
-    assert saved["target_dir"] == "C:/Temp/RapidOCR"
-    assert "后台运行记录已经不存在" in saved["error"]
-
-
-@pytest.mark.asyncio
 async def test_galgame_plugin_tesseract_install_latest_route_returns_latest_state(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
@@ -689,39 +548,6 @@ async def test_galgame_plugin_textractor_install_stream_route_emits_sse_payload(
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_rapidocr_install_stream_route_emits_sse_payload(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-rapidocr-stream",
-        kind="rapidocr",
-        run_id="run-rapidocr-stream",
-        status="completed",
-        phase="completed",
-        message="RapidOCR installation completed",
-        progress=1.0,
-    )
-
-    async with plugin_ui_async_client.stream(
-        "GET",
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/run-rapidocr-stream/stream",
-    ) as response:
-        assert response.status_code == 200
-        body = ""
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                body = line[len("data: "):]
-                break
-
-    payload = json.loads(body)
-    assert payload["task_id"] == "run-rapidocr-stream"
-    assert payload["kind"] == "rapidocr"
-    assert payload["status"] == "completed"
-
-
-@pytest.mark.asyncio
 async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for_missing_task(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
@@ -738,12 +564,13 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_get_run)
 
+    # Re-targeted at tesseract since rapidocr install route was removed.
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/rapidocr/install/missing-stream-task/stream"
+        "/plugin/galgame_plugin/ui-api/tesseract/install/missing-stream-task/stream"
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "RapidOCR install task 'missing-stream-task' not found"
+    assert response.json()["detail"] == "Tesseract install task 'missing-stream-task' not found"
 
 
 @pytest.mark.asyncio

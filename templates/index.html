@@ -388,6 +388,62 @@
             }
         });
     </script>
+    <!-- 游戏窗口联动：mini-game 路由激活时隐藏 live2d/vrm/mmd 容器（CSS class
+         开关，避免 pet 透明窗口在 mini-game 进行时挡屏）。事件源是
+         app-websocket.js dispatch 的 ``neko-game-window-state-change``，与
+         chat.html 的折叠联动同源；多窗口模式下 RAW_MESSAGE forwarding 让
+         pet 主窗 + chat.html follower 各自独立响应。 -->
+    <script>
+    (function() {
+        'use strict';
+        function applyGameWindowState(action) {
+            if (!document.body || !document.body.classList) return;
+            if (action === 'opened') {
+                document.body.classList.add('neko-game-active');
+            } else if (action === 'closed') {
+                document.body.classList.remove('neko-game-active');
+            }
+        }
+        window.addEventListener('neko-game-window-state-change', function(ev) {
+            var detail = ev && ev.detail ? ev.detail : {};
+            applyGameWindowState(detail.action || '');
+        });
+        // Bootstrap reconciliation：edge-triggered WS 事件只在 activate /
+        // finalize 推送，pet 主窗加载时若 game 已经先跑起来了会听不到历史
+        // opened，body class 不会加 neko-game-active → live2d/vrm/mmd 仍可见
+        // 挡屏。init 路径主动查 /api/game/route/active 对齐。codex P1。
+        // chat.html 用同一逻辑（在该模板 IIFE 内独立实现一份）。
+        function syncGameWindowStateOnInit() {
+            var lan = '';
+            try {
+                if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                    lan = window.appState.lanlan_name;
+                }
+                if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                    lan = window.lanlan_config.lanlan_name;
+                }
+            } catch (_) {}
+            if (!lan) { setTimeout(syncGameWindowStateOnInit, 100); return; }
+            fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
+                .then(function(data) {
+                    if (!data || !data.active) return;
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                            detail: {
+                                action: 'opened',
+                                lanlanName: data.lanlan_name || lan,
+                                gameType: data.game_type || '',
+                                sessionId: data.session_id || ''
+                            }
+                        }));
+                    } catch (_) {}
+                })
+                .catch(function() {});
+        }
+        syncGameWindowStateOnInit();
+    })();
+    </script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 </body>
 

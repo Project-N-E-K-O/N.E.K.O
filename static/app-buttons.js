@@ -13,6 +13,24 @@
     const C = window.appConst;
     const U = window.appUtils;
 
+    function isHomeTutorialInteractionLocked() {
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showHomeTutorialLockedToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('tutorial.homeInteractionLocked', '新手引导进行中，请先按引导完成当前步骤') : '新手引导进行中，请先按引导完成当前步骤',
+                2500
+            );
+        }
+    }
+
     // ======================== Screenshot helpers ========================
 
     /**
@@ -156,6 +174,11 @@
         input.addEventListener('change', function (event) {
             var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
             if (!files.length) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                input.value = '';
+                return;
+            }
 
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
@@ -217,8 +240,13 @@
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
+        if (isHomeTutorialInteractionLocked()) {
+            showHomeTutorialLockedToast();
+            return false;
+        }
         var input = mod.ensureImportImageInput();
         input.click();
+        return true;
     };
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
@@ -897,8 +925,13 @@
             return mod.openImageImportPicker();
         });
         host.setOnComposerScreenshot(function () {
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
                 window.nekoScreenshotProxy.request();
+                return true;
             } else {
                 return mod.captureScreenshotToPendingList();
             }
@@ -912,6 +945,9 @@
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();
+        if (typeof host.setHomeTutorialInteractionLocked === 'function') {
+            host.setHomeTutorialInteractionLocked(isHomeTutorialInteractionLocked(), 'host-bound');
+        }
         return true;
     }
 
@@ -955,6 +991,59 @@
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
         var textInputComposing = false;
         var lastTextCompositionEndAt = 0;
+        var homeTutorialLockedSnapshot = null;
+
+        function setElementTutorialLocked(element, locked, baseDisabledOverride) {
+            if (!element) return;
+            if (locked) {
+                if (element.dataset.nekoHomeTutorialLocked !== 'true') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = typeof baseDisabledOverride === 'boolean'
+                        ? (baseDisabledOverride ? 'true' : 'false')
+                        : (element.disabled ? 'true' : 'false');
+                } else if (typeof baseDisabledOverride === 'boolean') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = baseDisabledOverride ? 'true' : 'false';
+                } else if (element.disabled === false) {
+                    element.dataset.nekoHomeTutorialPrevDisabled = 'false';
+                }
+                element.dataset.nekoHomeTutorialLocked = 'true';
+                element.disabled = true;
+                return;
+            }
+            if (element.dataset.nekoHomeTutorialLocked !== 'true') return;
+            element.disabled = element.dataset.nekoHomeTutorialPrevDisabled === 'true';
+            delete element.dataset.nekoHomeTutorialLocked;
+            delete element.dataset.nekoHomeTutorialPrevDisabled;
+        }
+
+        function refreshHomeTutorialLockedControls(baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(textSendButton, true, baseDisabled);
+            setElementTutorialLocked(textInputBox, true, baseDisabled);
+            setElementTutorialLocked(screenshotButton, true, baseDisabled);
+        }
+
+        function refreshHomeTutorialLockedElement(element, baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(element, true, baseDisabled);
+        }
+
+        function applyHomeTutorialInteractionLock(reason) {
+            var locked = isHomeTutorialInteractionLocked();
+            if (homeTutorialLockedSnapshot === locked) {
+                return;
+            }
+            homeTutorialLockedSnapshot = locked;
+            setElementTutorialLocked(textSendButton, locked);
+            setElementTutorialLocked(textInputBox, locked);
+            setElementTutorialLocked(screenshotButton, locked);
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setHomeTutorialInteractionLocked === 'function') {
+                window.reactChatWindowHost.setHomeTutorialInteractionLocked(locked, reason || 'app-buttons');
+            }
+        }
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -967,6 +1056,7 @@
             micButton.classList.add('active');
             window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
+            S.voiceStartPending = true;
             micButton.disabled = true;
 
             // Show preparing toast
@@ -1020,6 +1110,24 @@
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
             try {
+                if (typeof window.waitForVoiceConfigSwitchReady === 'function') {
+                    var voiceConfigWaitResult = await window.waitForVoiceConfigSwitchReady({
+                        timeoutMs: 30000,
+                        stableMs: 300,
+                        onWaiting: function () {
+                            window.showVoicePreparingToast(window.t ? window.t('app.voiceConfigSwitching') : '\u97F3\u8272\u5207\u6362\u4E2D\uFF0C\u8BED\u97F3\u51C6\u5907\u4E2D...');
+                        }
+                    });
+                    if (voiceConfigWaitResult && voiceConfigWaitResult.timedOut) {
+                        var voiceConfigTimeoutMsg = window.t ? window.t('app.voiceConfigSwitchTimeout') : '\u97F3\u8272\u5207\u6362\u4ECD\u672A\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u518D\u5F00\u542F\u8BED\u97F3';
+                        window.showVoicePreparingToast(voiceConfigTimeoutMsg);
+                        var voiceConfigTimeoutError = new Error(voiceConfigTimeoutMsg);
+                        voiceConfigTimeoutError.voiceConfigSwitchTimedOut = true;
+                        throw voiceConfigTimeoutError;
+                    }
+                    window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
+                }
+
                 // Create a promise for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
@@ -1104,6 +1212,7 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -1118,19 +1227,27 @@
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
-                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (!(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
                     console.log(window.t('console.sessionStartFailedEndSession'));
                 }
 
-                window.hideVoicePreparingToast();
+                if (error && error.voiceConfigSwitchTimedOut) {
+                    window.showVoicePreparingToast(error.message);
+                } else {
+                    window.hideVoicePreparingToast();
+                }
                 window.stopRecording();
 
                 micButton.classList.remove('active');
                 micButton.classList.remove('recording');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
+                S.voiceStartPending = false;
                 window.isRecording = false;
+                window.isMicStarting = false;
+                S.isSwitchingMode = false;
 
                 window.syncFloatingMicButtonState(false);
                 window.syncFloatingScreenButtonState(false);
@@ -1144,10 +1261,11 @@
                 if (typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
                 }
-                window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
-
-                window.isMicStarting = false;
-                S.isSwitchingMode = false;
+                if (error && error.voiceConfigSwitchTimedOut) {
+                    window.showStatusToast(error.message, 5000);
+                } else {
+                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
+                }
 
                 screenButton.classList.remove('active');
             }
@@ -1227,6 +1345,7 @@
                 }
 
                 var textInputArea = document.getElementById('text-input-area');
+                S.voiceChatActive = false;
                 textInputArea.classList.remove('hidden');
                 if (typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
@@ -1236,6 +1355,7 @@
                 textSendButton.disabled = false;
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 muteButton.disabled = true;
                 screenButton.disabled = true;
@@ -1299,6 +1419,7 @@
                 screenButton.classList.remove('active');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
                 window.isRecording = false;
 
                 var textInputArea = document.getElementById('text-input-area');
@@ -1390,6 +1511,7 @@
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
                 resetSessionButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 // Disable voice control buttons
                 muteButton.disabled = true;
@@ -1445,6 +1567,11 @@
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            if (!text && !hasScreenshots) return false;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             var requestId = (typeof options.requestId === 'string' && options.requestId)
                 ? options.requestId
                 : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1457,8 +1584,6 @@
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
-
-            if (!text && !hasScreenshots) return false;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
@@ -1548,6 +1673,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
                 } catch (error) {
@@ -1570,6 +1696,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
                     return; // Don't send if session start failed
@@ -1714,6 +1841,10 @@
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
 
             if (options.skipAvatarInteractionDeferral !== true
                     && text
@@ -2263,6 +2394,10 @@
         window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl;
 
         mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             try {
                 screenshotButton.disabled = true;
                 window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
@@ -2296,7 +2431,11 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                screenshotButton.disabled = false;
+                if (isHomeTutorialInteractionLocked()) {
+                    refreshHomeTutorialLockedElement(screenshotButton, false);
+                } else {
+                    screenshotButton.disabled = false;
+                }
             }
         };
 
@@ -2330,6 +2469,7 @@
         // ----------------------------------------------------------------
         document.addEventListener('paste', function (e) {
             if (!e.clipboardData || !e.clipboardData.items) return;
+            if (isHomeTutorialInteractionLocked()) return;
             // Don't handle paste when crop overlay is open
             var cropOverlay = document.getElementById('crop-overlay');
             if (cropOverlay && cropOverlay.style.display !== 'none') return;
@@ -2360,6 +2500,11 @@
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();
+        applyHomeTutorialInteractionLock('init');
+        window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            applyHomeTutorialInteractionLock(detail.reason || 'lock-changed');
+        });
     };
 
     window.appButtons = mod;

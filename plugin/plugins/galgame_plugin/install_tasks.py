@@ -9,7 +9,7 @@ from utils.config_manager import get_config_manager
 
 
 INSTALL_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
-INSTALL_KINDS = frozenset({"textractor", "tesseract", "rapidocr", "dxcam"})
+INSTALL_KINDS = frozenset({"textractor", "tesseract", "rapidocr", "dxcam", "rapidocr_models"})
 
 
 def _runtime_root() -> Path:

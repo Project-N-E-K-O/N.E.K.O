@@ -61,6 +61,10 @@ from .models import (
     sanitize_screen_ui_elements,
     parse_ocr_capture_profile_bucket_key,
 )
+from .ocr_chrome_noise import (
+    looks_like_temperature_status_line as _looks_like_temperature_status_line,
+    looks_like_window_title_line as _looks_like_window_title_line,
+)
 from .aihong_state import (
     AIHONG_CHOICES_REGION_PRESET as _AIHONG_CHOICES_REGION_PRESET,
     AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET as _AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET,
@@ -136,6 +140,63 @@ _NARRATION_QUOTE_RE = re.compile(r"^\s*[\u300c\u300e\u201c\"](.+\S)[\u300d\u300f
 _NARRATION_PAREN_RE = re.compile(r"^\s*[\uff08(]([^\uff09)]{1,40})[\uff09)]\s*$")
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _KANA_CHAR_RE = re.compile(r"[\u3040-\u30ff]")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
+_HIRAGANA_RE = re.compile(r"[\u3040-\u309f]")
+_KATAKANA_RE = re.compile(r"[\u30a0-\u30ff\u31f0-\u31ff]")
+_KANA_BUD_RE = re.compile(
+    r"[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087"
+    r"\u30a1\u30a3\u30a5\u30a7\u30a9\u30c3\u30e3\u30e5\u30e7]"
+)
+# Keep Japanese markers kana-only. Adding common kanji words would bias
+# OCR-fragmented pure-kanji Japanese text and Chinese text in opposite ways;
+# without kana/hangul, pure CJK remains a best-effort fallback to Chinese.
+_JA_MARKER_WORDS = frozenset({
+    "です",
+    "ます",
+    "した",
+    "して",
+    "いる",
+    "ある",
+    "ない",
+    "こと",
+    "もの",
+    "よう",
+    "そう",
+    "これ",
+    "それ",
+    "どれ",
+})
+_ZH_MARKER_WORDS = frozenset({
+    "的",
+    "了",
+    "是",
+    "在",
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "们",
+    "这",
+    "那",
+    "有",
+    "没",
+    "很",
+    "都",
+    "要",
+    "可以",
+    "因为",
+    "所以",
+    "但是",
+    "虽然",
+    "而且",
+    "什么",
+    "怎么",
+    "为什么",
+    "这个",
+    "那个",
+    "哪个",
+})
 _ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _WINDOW_SPACE_RE = re.compile(r"\s+")
 _SELF_WINDOW_TITLE_SUBSTRINGS = (
@@ -287,10 +348,23 @@ _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
 )
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
+_OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
+
+
+class _CaptureStillRunning(TimeoutError):
+    """Backpressure: previous capture worker has not finished yet."""
+
+
+class _CaptureTimedOut(TimeoutError):
+    """A single capture/OCR call exceeded the deadline."""
+
 _FOREGROUND_ADVANCE_STABLE_GRACE_SECONDS = 2.0
 _CAPTURE_BACKEND_AUTO = "auto"
 _CAPTURE_BACKEND_SMART = "smart"
 _CAPTURE_BACKEND_DXCAM = "dxcam"
+_CAPTURE_BACKEND_MSS = "mss"
+_CAPTURE_BACKEND_PYAUTOGUI = "pyautogui"
+# Legacy alias kept so existing user configs with "imagegrab" still load; mapped to MSS.
 _CAPTURE_BACKEND_IMAGEGRAB = "imagegrab"
 _CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
 _SCREEN_AWARENESS_LATENCY_MODE_OFF = "off"
@@ -507,6 +581,22 @@ def _clean_ocr_dialogue_text(text: str) -> str:
     cleaned = _OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE.sub(r"\1", cleaned).strip()
     cleaned = _OCR_TRAILING_GARBAGE_AFTER_DASH_RE.sub(r"\1", cleaned).strip()
     return cleaned
+
+
+def _drop_ocr_chrome_noise_lines(text: str, *, window_title: str = "") -> str:
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    meaningful = [line for line in lines if line]
+    if len(meaningful) < 2:
+        return str(text or "")
+    filtered = [
+        line
+        for line in meaningful
+        if not _looks_like_temperature_status_line(line)
+        and not _looks_like_window_title_line(line, window_title)
+    ]
+    if filtered and len(filtered) < len(meaningful):
+        return "\n".join(filtered)
+    return str(text or "")
 
 
 def _ocr_stability_key(text: str) -> str:
@@ -814,6 +904,21 @@ def _score_ocr_text(text: str) -> tuple[float, int, int]:
     return (score, cjk_count + kana_count, significant_chars)
 
 
+_PUNCTUATION_CONFUSION_FIXES = [
+    (re.compile(r"(?<=[^\x00-\x7F])\.(?![\x00-\x7F])"), "。"),
+    (re.compile(r"(?<=[^\x00-\x7F])\s*,\s*(?=[^\x00-\x7F])"), "、"),
+    (re.compile(r"(?<=[^\x00-\x7F])!(?![\x00-\x7F])"), "！"),
+    (re.compile(r"(?<=[^\x00-\x7F])\?(?![\x00-\x7F])"), "？"),
+]
+
+
+def _fix_ocr_punctuation_confusion(text: str) -> str:
+    value = str(text or "")
+    for pattern, replacement in _PUNCTUATION_CONFUSION_FIXES:
+        value = pattern.sub(replacement, value)
+    return value
+
+
 def _significant_char_count(text: str) -> int:
     return sum(1 for ch in str(text or "") if not ch.isspace())
 
@@ -832,6 +937,81 @@ def _looks_like_noise_normalized_text(normalized: str) -> bool:
     if cjk_or_kana_count <= 0 and significant_chars <= 2:
         return True
     return False
+
+
+def _classify_cjk_text(text: str) -> str:
+    """Return RapidOCR lang_type: japan, korean, ch, or unknown."""
+    if not text or not text.strip():
+        return "unknown"
+    if _HANGUL_RE.search(text):
+        return "korean"
+    if _HIRAGANA_RE.search(text) or _KATAKANA_RE.search(text):
+        return "japan"
+    if not _CJK_CHAR_RE.search(text):
+        return "unknown"
+
+    ja_votes = sum(1 for word in _JA_MARKER_WORDS if word in text)
+    zh_votes = sum(1 for word in _ZH_MARKER_WORDS if word in text)
+    if ja_votes > zh_votes:
+        return "japan"
+    if zh_votes > ja_votes:
+        return "ch"
+    if _KANA_BUD_RE.search(text):
+        return "japan"
+    return "ch"
+
+
+class _OcrLangDetector:
+    def __init__(self, window_size: int = 8, confirm_streak: int = 2) -> None:
+        self._window_size = max(1, int(window_size or 1))
+        self._confirm_streak = max(1, int(confirm_streak or 1))
+        self._buffer: list[str] = []
+        self._last_detected: str | None = None
+        self._streak = 0
+        self._switched_at: float | None = None
+
+    def feed(self, text: str) -> str | None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return None
+        if not (
+            _CJK_CHAR_RE.search(cleaned)
+            or _HIRAGANA_RE.search(cleaned)
+            or _KATAKANA_RE.search(cleaned)
+            or _HANGUL_RE.search(cleaned)
+        ):
+            return None
+
+        self._buffer.append(cleaned)
+        if len(self._buffer) < self._window_size:
+            return None
+
+        merged = " ".join(self._buffer)
+        self._buffer.clear()
+        detected = _classify_cjk_text(merged)
+        if detected == "unknown":
+            return None
+
+        if detected == self._last_detected:
+            self._streak += 1
+        else:
+            self._last_detected = detected
+            self._streak = 1
+
+        if self._streak >= self._confirm_streak:
+            return detected
+        return None
+
+    def reset(self, *, clear_switch_time: bool = False) -> None:
+        self._buffer.clear()
+        self._last_detected = None
+        self._streak = 0
+        if clear_switch_time:
+            self._switched_at = None
+
+    @property
+    def last_switched_at(self) -> float | None:
+        return self._switched_at
 
 
 def _prepare_ocr_image(image: Any, *, apply_filters: bool = True) -> Any:
@@ -2271,6 +2451,127 @@ def _target_window_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]
     return rect
 
 
+def _valid_screen_rect(rect: tuple[int, int, int, int]) -> bool:
+    return int(rect[2] - rect[0]) > 0 and int(rect[3] - rect[1]) > 0
+
+
+def _intersect_screen_rect(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    left = max(int(first[0]), int(second[0]))
+    top = max(int(first[1]), int(second[1]))
+    right = min(int(first[2]), int(second[2]))
+    bottom = min(int(first[3]), int(second[3]))
+    rect = (left, top, right, bottom)
+    return rect if _valid_screen_rect(rect) else None
+
+
+def _bounding_screen_rect(
+    rects: Iterable[tuple[int, int, int, int]],
+) -> tuple[int, int, int, int] | None:
+    valid_rects = [rect for rect in rects if _valid_screen_rect(rect)]
+    if not valid_rects:
+        return None
+    return (
+        min(int(rect[0]) for rect in valid_rects),
+        min(int(rect[1]) for rect in valid_rects),
+        max(int(rect[2]) for rect in valid_rects),
+        max(int(rect[3]) for rect in valid_rects),
+    )
+
+
+def _target_monitor_work_rects(
+    rect: tuple[int, int, int, int],
+) -> list[tuple[int, int, int, int]]:
+    try:
+        import win32api
+
+        enum_display_monitors = getattr(win32api, "EnumDisplayMonitors", None)
+        if not callable(enum_display_monitors):
+            return []
+        try:
+            monitors = enum_display_monitors(None, tuple(int(value) for value in rect))
+        except TypeError:
+            monitors = enum_display_monitors()
+
+        work_rects: list[tuple[int, int, int, int]] = []
+        for monitor_info in monitors:
+            monitor = monitor_info[0]
+            try:
+                info = win32api.GetMonitorInfo(monitor)
+            except Exception:
+                continue
+            work = info.get("Work") if isinstance(info, dict) else None
+            if isinstance(work, tuple) and len(work) == 4:
+                work_rect = tuple(int(value) for value in work)
+                if _valid_screen_rect(work_rect):
+                    work_rects.append(work_rect)
+        return work_rects
+    except Exception:
+        return []
+
+
+def _target_monitor_work_rect(target: DetectedGameWindow) -> tuple[int, int, int, int] | None:
+    try:
+        import win32api
+
+        monitor = win32api.MonitorFromWindow(int(target.hwnd), 2)
+        info = win32api.GetMonitorInfo(monitor)
+        work = info.get("Work") if isinstance(info, dict) else None
+        if isinstance(work, tuple) and len(work) == 4:
+            rect = tuple(int(value) for value in work)
+            return rect if _valid_screen_rect(rect) else None
+    except Exception:
+        return None
+    return None
+
+
+def _target_work_area_capture_rect(
+    target: DetectedGameWindow,
+    rect: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    work_rects = _target_monitor_work_rects(rect)
+    if not work_rects:
+        work_rect = _target_monitor_work_rect(target)
+        work_rects = [work_rect] if work_rect is not None else []
+    intersections = (
+        intersection
+        for work_rect in work_rects
+        if (intersection := _intersect_screen_rect(rect, work_rect)) is not None
+    )
+    return _bounding_screen_rect(intersections)
+
+
+def _target_window_uses_overlapped_chrome(target: DetectedGameWindow) -> bool:
+    try:
+        import win32con
+        import win32gui
+
+        style = int(win32gui.GetWindowLong(int(target.hwnd), win32con.GWL_STYLE))
+        return bool(style & (win32con.WS_CAPTION | win32con.WS_THICKFRAME))
+    except Exception:
+        return False
+
+
+def _target_content_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    try:
+        rect = _target_client_rect(target)
+        if _valid_screen_rect(rect):
+            return rect
+    except Exception:
+        pass
+    return _target_window_rect(target)
+
+
+def _target_screen_capture_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    rect = _target_content_rect(target)
+    if not _target_window_uses_overlapped_chrome(target):
+        return rect
+    clipped = _target_work_area_capture_rect(target, rect)
+    return clipped or rect
+
+
 def _target_window_capture_state(target: DetectedGameWindow | None) -> tuple[bool, bool, bool, str]:
     if target is None:
         return False, False, False, "target_missing"
@@ -2419,18 +2720,106 @@ def _crop_window_image(
     return cropped
 
 
-class ImageGrabCaptureBackend:
-    kind = _CAPTURE_BACKEND_IMAGEGRAB
+def _crop_image_to_screen_rect(
+    image: Any,
+    *,
+    image_rect: tuple[int, int, int, int],
+    crop_rect: tuple[int, int, int, int],
+) -> Any:
+    crop_left = max(0, int(crop_rect[0] - image_rect[0]))
+    crop_top = max(0, int(crop_rect[1] - image_rect[1]))
+    crop_right = min(int(image.size[0]), int(crop_rect[2] - image_rect[0]))
+    crop_bottom = min(int(image.size[1]), int(crop_rect[3] - image_rect[1]))
+    if crop_right <= crop_left or crop_bottom <= crop_top:
+        raise RuntimeError("Crop region outside source image")
+    return image.crop((crop_left, crop_top, crop_right, crop_bottom))
+
+
+class MssCaptureBackend:
+    kind = _CAPTURE_BACKEND_MSS
+
+    def __init__(self, *, logger=None) -> None:
+        self._logger = logger
+        self._sct = None
+        self._sct_lock = threading.RLock()
+
+    def is_available(self) -> bool:
+        try:
+            import mss
+            return bool(mss)
+        except ImportError:
+            return False
+
+    def describe_target(self, target: DetectedGameWindow) -> str:
+        return f"{target.process_name}({target.pid}) {target.title}"
+
+    def _sct_instance(self):
+        with self._sct_lock:
+            if self._sct is not None:
+                return self._sct
+            import mss
+
+            self._sct = mss.mss()
+            return self._sct
+
+    def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
+        from PIL import Image
+
+        _require_visible_capture_target(target, backend_kind=self.kind)
+        rect = _target_screen_capture_rect(target)
+        left, top, right, bottom = rect
+        monitor = {
+            "left": int(left),
+            "top": int(top),
+            "width": int(right - left),
+            "height": int(bottom - top),
+        }
+        with self._sct_lock:
+            sct = self._sct_instance()
+            shot = sct.grab(monitor)
+        # mss returns BGRA; convert to RGB via PIL.
+        image = Image.frombytes("RGB", shot.size, shot.rgb)
+        return _crop_window_image(
+            image,
+            window_rect=rect,
+            profile=profile,
+            backend_kind=self.kind,
+            backend_detail="selected",
+        )
+
+
+class PyAutoGuiCaptureBackend:
+    """Cross-platform fallback in the spirit of pyautogui's screenshot path.
+
+    Functionally similar to MssCaptureBackend on Windows (both go through GDI),
+    kept as a defense-in-depth fallback in case mss fails (e.g. handle
+    exhaustion).
+
+    Internally we call PIL ImageGrab.grab() directly with all_screens=True
+    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
+    ImageGrab without exposing all_screens — its capture silently truncates
+    to the primary monitor on multi-display setups, which would corrupt
+    OCR for any galgame window placed on a secondary screen or at negative
+    coordinates. The is_available() probe still gates on `import pyautogui`
+    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
+    """
+
+    kind = _CAPTURE_BACKEND_PYAUTOGUI
 
     def __init__(self, *, logger=None) -> None:
         self._logger = logger
 
     def is_available(self) -> bool:
+        # `import pyautogui` can throw beyond ImportError in headless / WSL /
+        # missing-DISPLAY environments — pyautogui's mouse module touches
+        # platform display state at import time and may raise KeyError /
+        # RuntimeError. Catch broadly so backend probing degrades cleanly to
+        # "unavailable" instead of bubbling up and aborting capture preflight.
         try:
-            import win32gui
-            from PIL import ImageGrab
-            return bool(win32gui and ImageGrab)
-        except ImportError:
+            import pyautogui  # noqa: F401 — gate on user-facing label
+            from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
+            return True
+        except Exception:
             return False
 
     def describe_target(self, target: DetectedGameWindow) -> str:
@@ -2440,8 +2829,17 @@ class ImageGrabCaptureBackend:
         from PIL import ImageGrab
 
         _require_visible_capture_target(target, backend_kind=self.kind)
-        rect = _target_window_rect(target)
-        image = ImageGrab.grab(bbox=rect, all_screens=True).convert("RGB")
+        rect = _target_screen_capture_rect(target)
+        left, top, right, bottom = rect
+        # all_screens=True is Windows-only in Pillow but harmlessly ignored
+        # on macOS/Linux — covers multi-monitor layouts including secondary
+        # displays at negative coordinates relative to the primary screen.
+        image = ImageGrab.grab(
+            bbox=(int(left), int(top), int(right), int(bottom)),
+            all_screens=True,
+        )
+        if image.mode != "RGB":
+            image = image.convert("RGB")
         return _crop_window_image(
             image,
             window_rect=rect,
@@ -2471,7 +2869,10 @@ class PrintWindowCaptureBackend:
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
         _require_visible_capture_target(target, backend_kind=self.kind)
-        rect = _target_window_rect(target)
+        try:
+            rect = _target_screen_capture_rect(target)
+        except Exception:
+            rect = _target_content_rect(target)
         image = self._capture_full_window(target.hwnd, rect)
         return _crop_window_image(
             image,
@@ -2597,7 +2998,7 @@ class DxcamCaptureBackend:
         from PIL import Image
 
         _require_visible_capture_target(target, backend_kind=self.kind)
-        rect = _target_window_rect(target)
+        rect = _target_screen_capture_rect(target)
         frame = None
         with self._camera_lock:
             now = time.monotonic()
@@ -2637,15 +3038,20 @@ class Win32CaptureBackend:
     def __init__(self, *, logger=None, selection: str = _CAPTURE_BACKEND_AUTO) -> None:
         self._logger = logger
         self.selection = str(selection or _CAPTURE_BACKEND_AUTO).strip().lower()
+        # Legacy "imagegrab" selection migrates to MSS (same GDI capability, faster + cross-platform).
+        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
+            self.selection = _CAPTURE_BACKEND_MSS
         if self.selection not in {
             _CAPTURE_BACKEND_AUTO,
             _CAPTURE_BACKEND_SMART,
             _CAPTURE_BACKEND_DXCAM,
-            _CAPTURE_BACKEND_IMAGEGRAB,
+            _CAPTURE_BACKEND_MSS,
+            _CAPTURE_BACKEND_PYAUTOGUI,
             _CAPTURE_BACKEND_PRINTWINDOW,
         }:
             self.selection = _CAPTURE_BACKEND_AUTO
-        self._imagegrab_backend = ImageGrabCaptureBackend(logger=self._logger)
+        self._mss_backend = MssCaptureBackend(logger=self._logger)
+        self._pyautogui_backend = PyAutoGuiCaptureBackend(logger=self._logger)
         self._printwindow_backend = PrintWindowCaptureBackend(logger=self._logger)
         self._dxcam_backend = DxcamCaptureBackend(logger=self._logger)
         self._backends = self._build_backends()
@@ -2670,23 +3076,51 @@ class Win32CaptureBackend:
             self._last_backend_detail = detail
 
     def _build_backends(self) -> list[CaptureBackend]:
+        # Default fallback chain: dxcam → mss → pyautogui (cross-platform GDI
+        # progression). PrintWindow is intentionally NOT in the default chain
+        # because it's a "render to DC" mechanism that often produces stale
+        # frames on DirectX/Unity games and is slower than BitBlt-based
+        # backends. It's still reachable as an explicit user selection
+        # (mainly for capturing occluded windows) and as the Smart-mode
+        # background-target backend.
         if self.selection == _CAPTURE_BACKEND_DXCAM:
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
-        if self.selection == _CAPTURE_BACKEND_IMAGEGRAB:
-            return [self._imagegrab_backend, self._dxcam_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+        if self.selection == _CAPTURE_BACKEND_MSS:
+            return [self._mss_backend, self._dxcam_backend, self._pyautogui_backend]
+        if self.selection == _CAPTURE_BACKEND_PYAUTOGUI:
+            return [self._pyautogui_backend, self._dxcam_backend, self._mss_backend]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
+            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
         if self.selection == _CAPTURE_BACKEND_SMART:
-            return [self._printwindow_backend, self._dxcam_backend, self._imagegrab_backend]
-        return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend, self._printwindow_backend]
+        return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            # Explicit PrintWindow selection: user is opting into the only
+            # backend that can capture occluded / background windows. If we
+            # silently fell through to dxcam/mss/pyautogui on a background
+            # target after PrintWindow failed, those backends read whatever
+            # is on screen — usually the occluding window — and OCR would
+            # produce confident garbage from the wrong source. Match Smart
+            # mode's strictness for background targets here.
+            if bool(getattr(target, "is_minimized", False)):
+                raise RuntimeError("printwindow: target_window_minimized_for_capture")
+            if bool(getattr(target, "is_foreground", False)):
+                # Foreground: other backends would also see the right window,
+                # so falling through after PrintWindow failure is safe.
+                return list(self._backends)
+            return [self._printwindow_backend]
         if self.selection != _CAPTURE_BACKEND_SMART:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._imagegrab_backend, self._printwindow_backend]
+            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+        # Background target: PrintWindow is the only backend that can plausibly
+        # capture occluded windows (others read screen pixels and would grab
+        # the overlapping window). Quality is unreliable; ocr_reader emits
+        # `backend_not_suitable_for_background` warning when it returns empty.
         return [self._printwindow_backend]
 
     def is_available(self) -> bool:
@@ -2908,7 +3342,6 @@ class RapidOcrBackend:
                         lang_type=self._lang_type,
                         model_type=self._model_type,
                         ocr_version=self._ocr_version,
-                        force_reload=False,
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
             self._runtime = runtime
@@ -4365,6 +4798,7 @@ class OcrReaderManager:
         capture_backend: CaptureBackend | None = None,
         ocr_backend: OcrBackend | None = None,
         writer: OcrReaderBridgeWriter | None = None,
+        rapidocr_lang_changed_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._logger = logger
         self._config = config
@@ -4383,6 +4817,7 @@ class OcrReaderManager:
             time_fn=self._time_fn,
             logger=logger,
         )
+        self._rapidocr_lang_changed_callback = rapidocr_lang_changed_callback
         self._runtime = OcrReaderRuntime(enabled=config.ocr_reader_enabled)
         self._capture_profiles: dict[str, ParsedOcrCaptureProcessConfig] = {}
         self._last_memory_reader_text_at = 0.0
@@ -4474,6 +4909,8 @@ class OcrReaderManager:
         self._capture_backend_detail = ""
         self._rapidocr_backend_cache_key: tuple[str, str, str, str, str] | None = None
         self._rapidocr_backend_cache: RapidOcrBackend | None = None
+        self._ocr_lang_detector = _OcrLangDetector()
+        self._ocr_lang_cooldown_seconds = 60.0
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -4485,6 +4922,9 @@ class OcrReaderManager:
         self._capture_future: Future[OcrExtractionResult] | None = None
         self._capture_future_started_at = 0.0
         self._capture_future_timed_out = False
+        self._abandoned_capture_workers: list[
+            tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]
+        ] = []
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
         self._start_rapidocr_warmup_if_configured()
@@ -4615,6 +5055,8 @@ class OcrReaderManager:
             self._runtime.ocr_context_state = ""
 
     def update_config(self, config: GalgameConfig) -> None:
+        old_backend_plan_key = self._backend_plan_config_key(self._config)
+        old_auto_detect_lang = bool(getattr(self._config, "rapidocr_auto_detect_lang", False))
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if not bool(config.llm_vision_enabled):
@@ -4622,10 +5064,15 @@ class OcrReaderManager:
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:
             self._reset_known_screen_stuck_tracking()
         backend_plan_key = self._backend_plan_config_key(config)
-        if self._backend_plan_cache_key != backend_plan_key:
+        if old_backend_plan_key != backend_plan_key or self._backend_plan_cache_key != backend_plan_key:
             self._backend_plan_cache_key = None
             self._backend_plan_cache_at = 0.0
             self._backend_plan_cache = None
+            self._rapidocr_backend_cache_key = None
+            self._rapidocr_backend_cache = None
+            self._ocr_lang_detector.reset(clear_switch_time=True)
+        elif old_auto_detect_lang != bool(getattr(config, "rapidocr_auto_detect_lang", False)):
+            self._ocr_lang_detector.reset(clear_switch_time=True)
         if not self._custom_capture_backend:
             current_selection = str(getattr(self._capture_backend, "selection", "") or "")
             if current_selection != config.ocr_reader_capture_backend:
@@ -4776,6 +5223,104 @@ class OcrReaderManager:
         self._last_raw_ocr_text = str(raw_text or "")
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
+
+    def _maybe_auto_switch_rapidocr_lang(
+        self,
+        text: str,
+        *,
+        rapidocr_active: bool = False,
+    ) -> None:
+        if not bool(getattr(self._config, "rapidocr_auto_detect_lang", False)):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: auto_detect_disabled")
+            except Exception:
+                pass
+            return
+        if (
+            not rapidocr_active
+            or not bool(getattr(self._config, "rapidocr_enabled", False))
+            or self._configured_backend_selection() not in {"auto", "rapidocr"}
+        ):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: rapidocr_not_active")
+            except Exception:
+                pass
+            return
+        if self._custom_ocr_backend:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: custom_ocr_backend")
+            except Exception:
+                pass
+            return
+        now = time.monotonic()
+        last_switched_at = self._ocr_lang_detector.last_switched_at
+        if (
+            last_switched_at is not None
+            and now - last_switched_at < self._ocr_lang_cooldown_seconds
+        ):
+            try:
+                remaining = self._ocr_lang_cooldown_seconds - (now - last_switched_at)
+                self._logger.debug("rapidocr auto-lang skipped: cooldown {:.1f}s remaining", remaining)
+            except Exception:
+                pass
+            return
+        detected_lang = self._ocr_lang_detector.feed(text)
+        current_lang = str(getattr(self._config, "rapidocr_lang_type", "") or "").strip()
+        if not detected_lang:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: detection_unconfirmed")
+            except Exception:
+                pass
+            return
+        if detected_lang == current_lang:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: already_using {}", detected_lang)
+            except Exception:
+                pass
+            return
+        try:
+            inspection = inspect_rapidocr_installation(
+                install_target_dir_raw=self._config.rapidocr_install_target_dir,
+                engine_type=self._config.rapidocr_engine_type,
+                lang_type=detected_lang,
+                model_type=self._config.rapidocr_model_type,
+                ocr_version=self._config.rapidocr_ocr_version,
+            )
+        except Exception as exc:
+            try:
+                self._logger.warning("rapidocr auto-lang inspection failed: {}", exc)
+            except Exception:
+                pass
+            return
+        if not bool(inspection.get("installed")):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: model_missing {}", detected_lang)
+            except Exception:
+                pass
+            return
+
+        self._config.rapidocr_lang_type = detected_lang
+        self._config.rapidocr_auto_detect_last_lang = detected_lang
+        self._ocr_lang_detector._switched_at = time.monotonic()
+        self._backend_plan_cache_key = None
+        self._backend_plan_cache_at = 0.0
+        self._backend_plan_cache = None
+        self._rapidocr_backend_cache_key = None
+        self._rapidocr_backend_cache = None
+        self._ocr_lang_detector.reset()
+        callback = self._rapidocr_lang_changed_callback
+        if callable(callback):
+            try:
+                callback(detected_lang)
+            except Exception as exc:
+                try:
+                    self._logger.warning("rapidocr auto-lang persist callback failed: {}", exc)
+                except Exception:
+                    pass
+        try:
+            self._logger.info("RapidOCR auto-detected language switched to {}", detected_lang)
+        except Exception:
+            pass
 
     def _record_rejected_ocr_text(
         self,
@@ -6029,6 +6574,22 @@ class OcrReaderManager:
         if backend_plan is not None and not backend_plan.primary.available:
             raise ValueError("当前 OCR backend 不可用，无法自动重校准对白区")
 
+        min_top_ratio = 0.04
+        try:
+            client_rect = _target_client_rect(target)
+            client_height = int(client_rect[3] - client_rect[1])
+            if client_height > 0 and image_height > client_height:
+                title_bar_height = image_height - client_height
+                min_top_ratio = max(
+                    min_top_ratio,
+                    round(title_bar_height / image_height + 0.02, 2),
+                )
+        except Exception:
+            pass
+        top_values = [value for value in top_values if value >= min_top_ratio]
+        if not top_values:
+            top_values = [min_top_ratio]
+
         best_candidate: dict[str, Any] | None = None
         current_distance_basis = (
             round(base_profile.top_ratio, 2),
@@ -6289,6 +6850,23 @@ class OcrReaderManager:
         state.last_block_reason = ""
         return True
 
+    def _ocr_window_title_for_noise_filter(self) -> str:
+        return str(
+            (self._attached_window.title if self._attached_window is not None else "")
+            or self._runtime.effective_window_title
+            or self._runtime.window_title
+            or ""
+        )
+
+    def _clean_ocr_dialogue_for_emit(self, raw_text: str) -> tuple[str, str]:
+        content_text = _drop_ocr_chrome_noise_lines(
+            raw_text,
+            window_title=self._ocr_window_title_for_noise_filter(),
+        )
+        cleaned_text = _clean_ocr_dialogue_text(content_text)
+        cleaned_text = _fix_ocr_punctuation_confusion(cleaned_text)
+        return content_text, cleaned_text
+
     def _emit_line_from_ocr_text(
         self,
         raw_text: str,
@@ -6299,15 +6877,20 @@ class OcrReaderManager:
         repeat_threshold: int | None = None,
         ocr_confidence: float | None = None,
         text_source: str = "bottom_region",
+        rapidocr_active: bool = False,
     ) -> bool:
-        cleaned_text = _clean_ocr_dialogue_text(raw_text)
+        content_text, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
         if (
             _looks_like_noise_normalized_text(cleaned_text)
             or _looks_like_game_overlay_normalized_text(cleaned_text)
             or not _looks_like_ocr_dialogue_normalized_text(cleaned_text)
         ):
             return False
-        self._record_accepted_ocr_text(raw_text)
+        self._record_accepted_ocr_text(content_text)
+        self._maybe_auto_switch_rapidocr_lang(
+            cleaned_text,
+            rapidocr_active=rapidocr_active,
+        )
         speaker, text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
         had_pending_visual_scene = bool(self._pending_visual_scene_hash)
         if self._pending_visual_scene_hash:
@@ -6396,13 +6979,14 @@ class OcrReaderManager:
             choice_bounds_metadata=choice_bounds_metadata,
         )
 
-    @staticmethod
     def _should_attempt_followup_confirm(
+        self,
         raw_text: str,
         *,
         state: _StableOcrTextState,
     ) -> bool:
-        cleaned = normalize_text(_clean_ocr_dialogue_text(raw_text)).strip()
+        _, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
+        cleaned = normalize_text(cleaned_text).strip()
         if not cleaned:
             return False
         cleaned_key = _ocr_stability_key(cleaned)
@@ -6416,38 +7000,64 @@ class OcrReaderManager:
             and not _ocr_stability_keys_match(cleaned_key, stable_key)
         )
 
+    def _drain_completed_abandoned_capture_workers_locked(self) -> list[ThreadPoolExecutor]:
+        executors: list[ThreadPoolExecutor] = []
+        active: list[tuple[ThreadPoolExecutor, Future[OcrExtractionResult]]] = []
+        for executor, future in self._abandoned_capture_workers:
+            if future.done():
+                executors.append(executor)
+                try:
+                    future.result()
+                except Exception as exc:
+                    self._logger.debug("ocr_reader abandoned timed-out capture eventually failed: {}", exc)
+            else:
+                active.append((executor, future))
+        self._abandoned_capture_workers = active
+        return executors
+
     def _shutdown_capture_worker(self) -> None:
-        executor: ThreadPoolExecutor | None = None
+        executors: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
             future = self._capture_future
             if future is not None and not future.done():
                 future.cancel()
-            executor = self._capture_executor
+            if self._capture_executor is not None:
+                executors.append(self._capture_executor)
+            for executor, abandoned_future in self._abandoned_capture_workers:
+                if not abandoned_future.done():
+                    abandoned_future.cancel()
+                executors.append(executor)
+            self._abandoned_capture_workers = []
             self._capture_executor = None
             self._capture_future = None
             self._capture_future_started_at = 0.0
             self._capture_future_timed_out = False
-        if executor is not None:
+        for executor in executors:
             # Project requires Python 3.11; cancel_futures is available on >=3.9.
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _clear_completed_capture_worker(self) -> None:
         future: Future[OcrExtractionResult] | None = None
         timed_out = False
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is None or not current.done():
-                return
-            future = current
-            timed_out = bool(self._capture_future_timed_out)
-            self._capture_future = None
-            self._capture_future_started_at = 0.0
-            self._capture_future_timed_out = False
+                future = None
+            else:
+                future = current
+                timed_out = bool(self._capture_future_timed_out)
+                self._capture_future = None
+                self._capture_future_started_at = 0.0
+                self._capture_future_timed_out = False
         if timed_out and future is not None:
             try:
                 future.result()
             except Exception as exc:
                 self._logger.debug("ocr_reader previous timed-out capture eventually failed: {}", exc)
+        for executor in executors_to_shutdown:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _submit_capture_worker(
         self,
@@ -6457,36 +7067,89 @@ class OcrReaderManager:
         collect_background_hash: bool,
         allow_separate_background_capture: bool,
     ) -> Future[OcrExtractionResult]:
+        executors_to_shutdown: list[ThreadPoolExecutor] = []
+        recovered_elapsed = 0.0
+        cancel_requested = False
+        timeout_error: _CaptureTimedOut | None = None
+        future: Future[OcrExtractionResult] | None = None
         with self._capture_worker_lock:
+            executors_to_shutdown.extend(self._drain_completed_abandoned_capture_workers_locked())
             current = self._capture_future
             if current is not None and not current.done():
                 elapsed = max(0.0, time.monotonic() - float(self._capture_future_started_at or 0.0))
-                prefix = (
-                    "previous ocr_reader capture/OCR timed out and is still running"
-                    if self._capture_future_timed_out
-                    else "previous ocr_reader capture/OCR is still running"
+                if self._capture_future_timed_out:
+                    timeout_seconds = float(_OCR_CAPTURE_TIMEOUT_SECONDS)
+                    if timeout_seconds <= 0.0:
+                        timeout_seconds = 12.0
+                    recovery_after = timeout_seconds + max(timeout_seconds, 0.25)
+                    if elapsed >= recovery_after:
+                        cancel_requested = current.cancel()
+                        executor = self._capture_executor
+                        if (
+                            not cancel_requested
+                            and not current.done()
+                            and len(self._abandoned_capture_workers)
+                            >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
+                        ):
+                            if executor is not None:
+                                executors_to_shutdown.append(executor)
+                            self._capture_executor = None
+                            self._capture_future = None
+                            self._capture_future_started_at = 0.0
+                            self._capture_future_timed_out = False
+                            timeout_error = _CaptureTimedOut(
+                                f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                                "stuck capture worker recovery limit reached"
+                            )
+                        elif executor is not None:
+                            if not cancel_requested and not current.done():
+                                self._abandoned_capture_workers.append((executor, current))
+                            executors_to_shutdown.append(executor)
+                        if timeout_error is None:
+                            self._capture_executor = None
+                            self._capture_future = None
+                            self._capture_future_started_at = 0.0
+                            self._capture_future_timed_out = False
+                            recovered_elapsed = elapsed
+                    else:
+                        raise _CaptureStillRunning(
+                            f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
+                            "skipping new capture to avoid accumulating blocked OCR threads"
+                        )
+                else:
+                    raise _CaptureStillRunning(
+                        f"previous ocr_reader capture/OCR is still running after {elapsed:.1f}s; "
+                        "skipping new capture to avoid overlapping OCR work"
+                    )
+            if timeout_error is None:
+                executor = self._capture_executor
+                if executor is None:
+                    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
+                    self._capture_executor = executor
+                future = executor.submit(
+                    self._capture_and_extract_text,
+                    target,
+                    profile,
+                    backend_plan,
+                    collect_background_hash,
+                    allow_separate_background_capture,
                 )
-                raise TimeoutError(
-                    f"{prefix} after {elapsed:.1f}s; "
-                    "skipping new capture to avoid overlapping OCR work"
-                )
-            executor = self._capture_executor
-            if executor is None:
-                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="galgame-ocr-capture")
                 self._capture_executor = executor
-            future = executor.submit(
-                self._capture_and_extract_text,
-                target,
-                profile,
-                backend_plan,
-                collect_background_hash,
-                allow_separate_background_capture,
+                self._capture_future = future
+                self._capture_future_started_at = time.monotonic()
+                self._capture_future_timed_out = False
+        if recovered_elapsed > 0.0:
+            self._logger.warning(
+                "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}",
+                recovered_elapsed,
+                cancel_requested,
             )
-            self._capture_executor = executor
-            self._capture_future = future
-            self._capture_future_started_at = time.monotonic()
-            self._capture_future_timed_out = False
-            return future
+        for executor_to_shutdown in executors_to_shutdown:
+            executor_to_shutdown.shutdown(wait=False, cancel_futures=True)
+        if timeout_error is not None:
+            raise timeout_error
+        assert future is not None
+        return future
 
     async def _capture_and_extract_text_with_timeout(
         self,
@@ -6521,7 +7184,7 @@ class OcrReaderManager:
             with self._capture_worker_lock:
                 if self._capture_future is future:
                     self._capture_future_timed_out = True
-            raise TimeoutError(
+            raise _CaptureTimedOut(
                 f"ocr_reader capture/OCR timed out after {timeout_seconds:.1f}s"
             ) from exc
         finally:
@@ -6667,6 +7330,7 @@ class OcrReaderManager:
         self._shutdown_capture_worker()
         if self._writer.session_id:
             self._writer.end_session(ts=utc_now_iso(self._time_fn()))
+            self._ocr_lang_detector.reset(clear_switch_time=True)
         self._attached_window = None
 
     async def _tick_preflight(
@@ -6871,6 +7535,7 @@ class OcrReaderManager:
                 result.should_rescan = True
             self._attached_window = target
             self._last_heartbeat_at = now
+            self._ocr_lang_detector.reset(clear_switch_time=True)
             self._reset_default_ocr_state()
             self._reset_aihong_menu_state()
             startup_profile_stage = (
@@ -7235,12 +7900,14 @@ class OcrReaderManager:
                 )
                 result.warnings.append("ocr_reader ignored text that looks like the N.E.K.O plugin UI")
                 self._default_ocr_state.reset()
+                self._ocr_lang_detector.reset()
                 self._reset_aihong_menu_state()
                 if (
                     not legacy_geometryless_auto_target
                     and int(event_seq_before_capture or 0) <= 1
                 ):
                     self._writer.discard_session()
+                    self._ocr_lang_detector.reset(clear_switch_time=True)
             else:
                 self._record_accepted_ocr_text(extraction.text)
                 screen_classification, screen_event_emitted = self._emit_screen_classification_from_extraction(
@@ -7314,6 +7981,7 @@ class OcrReaderManager:
                                     line_repeat_threshold=line_repeat_threshold,
                                     ocr_confidence=extraction.ocr_confidence,
                                     text_source=extraction.text_source,
+                                    rapidocr_active=extraction.backend.kind == "rapidocr",
                                 )
                             )
                         if (
@@ -7360,6 +8028,7 @@ class OcrReaderManager:
                                     capture_backend_kind=followup_extraction.capture_backend_kind,
                                 )
                                 self._default_ocr_state.reset()
+                                self._ocr_lang_detector.reset()
                                 self._reset_aihong_menu_state()
                                 result.warnings.append(
                                     "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -7384,6 +8053,7 @@ class OcrReaderManager:
                                         line_repeat_threshold=line_repeat_threshold,
                                         ocr_confidence=followup_extraction.ocr_confidence,
                                         text_source=followup_extraction.text_source,
+                                        rapidocr_active=followup_extraction.backend.kind == "rapidocr",
                                     )
                                 )
                                 if dialogue_emitted:
@@ -7468,6 +8138,7 @@ class OcrReaderManager:
                                         capture_backend_kind=menu_extraction.capture_backend_kind,
                                     )
                                     self._default_ocr_state.reset()
+                                    self._ocr_lang_detector.reset()
                                     self._reset_aihong_menu_state()
                                     result.warnings.append(
                                         "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -7510,6 +8181,7 @@ class OcrReaderManager:
                             line_repeat_threshold=line_repeat_threshold,
                             ocr_confidence=extraction.ocr_confidence,
                             text_source=extraction.text_source,
+                            rapidocr_active=extraction.backend.kind == "rapidocr",
                         )
                     )
                     if (
@@ -7554,6 +8226,7 @@ class OcrReaderManager:
                                 capture_backend_kind=followup_extraction.capture_backend_kind,
                             )
                             self._default_ocr_state.reset()
+                            self._ocr_lang_detector.reset()
                             self._reset_aihong_menu_state()
                             result.warnings.append(
                                 "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -7576,17 +8249,37 @@ class OcrReaderManager:
                                     line_repeat_threshold=line_repeat_threshold,
                                     ocr_confidence=followup_extraction.ocr_confidence,
                                     text_source=followup_extraction.text_source,
+                                    rapidocr_active=followup_extraction.backend.kind == "rapidocr",
                                 )
                             )
                             if emitted:
                                 now = followup_now
+        except _CaptureStillRunning as exc:
+            self._logger.debug("ocr_reader tick skipped (backpressure): {}", exc)
+            result.warnings.append(f"ocr_reader tick skipped: {exc}")
+            self._last_capture_error = ""
+            self._runtime.last_capture_error = ""
+            self._runtime.detail = "capture_backpressure"
+            capture_attempted = False
+        except _CaptureTimedOut as exc:
+            self._logger.warning("ocr_reader capture/OCR timed out: {}", exc)
+            capture_error = True
+            self._record_capture_error(now=now, error=exc)
+            self._ocr_lang_detector.reset()
+            self._reset_aihong_menu_state()
+            if int(self._writer.last_seq or 0) <= 1:
+                self._writer.discard_session()
+                self._ocr_lang_detector.reset(clear_switch_time=True)
+            result.warnings.append(f"ocr_reader capture timed out: {exc}")
         except Exception as exc:
             self._logger.warning("ocr_reader capture/OCR failed: {}", exc)
             capture_error = True
             self._record_capture_error(now=now, error=exc)
+            self._ocr_lang_detector.reset()
             self._reset_aihong_menu_state()
             if int(self._writer.last_seq or 0) <= 1:
                 self._writer.discard_session()
+                self._ocr_lang_detector.reset(clear_switch_time=True)
             result.warnings.append(f"ocr_reader capture failed: {exc}")
 
         return self._finalize_tick_result(
@@ -7703,6 +8396,7 @@ class OcrReaderManager:
             str(config.ocr_reader_install_target_dir or "").strip(),
             str(config.ocr_reader_languages or "").strip().lower(),
             str(bool(config.rapidocr_enabled)),
+            str(bool(getattr(config, "rapidocr_auto_detect_lang", False))),
             *_rapidocr_runtime_cache_key(
                 install_target_dir_raw=config.rapidocr_install_target_dir,
                 engine_type=config.rapidocr_engine_type,
@@ -8251,16 +8945,20 @@ class OcrReaderManager:
                 if callable(extract_with_boxes):
                     try:
                         text, boxes = extract_with_boxes(image)
-                        if not str(text or "").strip() and not isinstance(
-                            descriptor.backend,
-                            RapidOcrBackend,
-                        ):
-                            extract_text = getattr(descriptor.backend, "extract_text", None)
-                            if callable(extract_text):
-                                fallback_text = extract_text(image)
-                                if str(fallback_text or "").strip():
-                                    text = fallback_text
-                                    boxes = []
+                        if not str(text or "").strip():
+                            if not isinstance(descriptor.backend, RapidOcrBackend):
+                                extract_text = getattr(descriptor.backend, "extract_text", None)
+                                if callable(extract_text):
+                                    fallback_text = extract_text(image)
+                                    if str(fallback_text or "").strip():
+                                        text = fallback_text
+                                        boxes = []
+                            elif index == 0:
+                                warnings.append(
+                                    f"ocr_reader {descriptor.kind} returned empty text "
+                                    "(confidence filtering may have discarded all tokens)"
+                                )
+                                continue
                     except Exception as boxes_exc:
                         extract_text = getattr(descriptor.backend, "extract_text", None)
                         if not callable(extract_text):
@@ -9434,6 +10132,7 @@ class OcrReaderManager:
         line_repeat_threshold: int | None = None,
         ocr_confidence: float | None = None,
         text_source: str = "bottom_region",
+        rapidocr_active: bool = False,
     ) -> bool:
         tracker = state or self._default_ocr_state
         lines = _stripped_ocr_lines(raw_text)
@@ -9458,11 +10157,13 @@ class OcrReaderManager:
             repeat_threshold=line_repeat_threshold,
             ocr_confidence=ocr_confidence,
             text_source=text_source,
+            rapidocr_active=rapidocr_active,
         )
 
     async def _end_session_if_needed(self, now: float) -> None:
         if self._writer.session_id:
             self._writer.end_session(ts=utc_now_iso(now))
             self._attached_window = None
+            self._ocr_lang_detector.reset(clear_switch_time=True)
             self._reset_default_ocr_state()
             self._reset_aihong_menu_state()

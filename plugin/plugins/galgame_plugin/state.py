@@ -43,6 +43,11 @@ class GalgameSharedState:
     ocr_capture_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     ocr_window_target: dict[str, Any] = field(default_factory=dict)
     plugin_error: str = ""
+    dependency_status: dict[str, Any] = field(default_factory=lambda: {
+        "checked_at": 0.0,
+        "degraded": False,
+        "missing": [],
+    })
 
 
 def build_initial_state(

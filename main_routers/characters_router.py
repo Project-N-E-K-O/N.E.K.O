@@ -112,6 +112,32 @@ logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+
+
+def _voice_session_starting_response():
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "VOICE_SESSION_STARTING",
+            "error": VOICE_SESSION_STARTING_ERROR,
+            "retryable": True,
+        },
+        status_code=409,
+    )
+
+
+def _is_current_catgirl_voice_session_starting(name: str, characters, session_manager) -> bool:
+    if name != characters.get("当前猫娘", ""):
+        return False
+    mgr = session_manager.get(name) if session_manager else None
+    if not mgr:
+        return False
+    return bool(
+        getattr(mgr, "is_starting", False)
+        and not getattr(mgr, "is_active", False)
+        and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
+    )
 
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
@@ -1651,6 +1677,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
         logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
+    if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+        return _voice_session_starting_response()
+
     # 验证voice_id是否在voice_storage中
     if not _config_manager.validate_voice_id(voice_id):
         voices = _config_manager.get_voices_for_current_api()
@@ -1683,7 +1712,11 @@ async def update_catgirl_voice_id(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-    
+            # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
+            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
+            session_manager[name].reset_session_start_circuit()
+
     # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
     if is_current_catgirl:
         # 3. 重新加载配置，让新的voice_id生效
@@ -1705,21 +1738,34 @@ async def get_catgirl_voice_mode_status(name: str):
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
-        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
-    
+        return _json_no_store_response({
+            'is_voice_mode': False,
+            'is_current': is_current,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+        })
+
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
-    
-    is_voice_mode = False
+    is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
+    is_audio_starting = _is_current_catgirl_voice_session_starting(name, characters, session_manager)
+
+    is_voice_mode = is_audio_starting
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
         from main_logic.omni_realtime_client import OmniRealtimeClient
-        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-    
-    return JSONResponse({
+        is_voice_mode = is_voice_mode or bool(
+            getattr(mgr, 'input_mode', '') == 'audio'
+            or (mgr.session and isinstance(mgr.session, OmniRealtimeClient))
+        )
+
+    return _json_no_store_response({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
-        'is_active': is_active
+        'is_active': is_active,
+        'is_starting': is_starting,
+        'is_voice_starting': is_audio_starting,
     })
 
 
@@ -1940,6 +1986,9 @@ async def unregister_voice(name: str):
         old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
+
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
@@ -1959,6 +2008,9 @@ async def unregister_voice(name: str):
                     logger.info(f"{name} 的session已结束")
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
+                # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                session_manager[name].reset_session_start_circuit()
 
         # 自动重新加载配置
         if is_current_catgirl:
@@ -2399,6 +2451,11 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时退回 PR 前 yui-origin 历史值。
+    from utils.api_config_loader import get_free_voices
+    default_free_voice_id = (get_free_voices() or {}).get('cuteGirl') or 'voice-tone-PGLiyZt65w'
+    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
@@ -2458,6 +2515,11 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
     old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    if voice_id_will_change:
+        session_manager = get_session_manager()
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
 
     if voice_id_in_payload and requested_voice_id:
         # 验证 voice_id 是否在 voice_storage 中
@@ -2522,6 +2584,9 @@ async def update_catgirl(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
+            # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
             # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
@@ -3008,6 +3073,9 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+                    # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
                     await asyncio.gather(
@@ -3647,7 +3715,8 @@ async def voice_clone_direct(request: Request):
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
             'code': 'TTS_PROVIDER_INVALID',
-            'message': f'支持的服务商: {", ".join(valid_providers)}'
+            'message': f'支持的服务商: {", ".join(valid_providers)}',
+            'details': {'provider': provider, 'valid_providers': ', '.join(valid_providers)},
         }, status_code=400)
 
     # 获取 API Key

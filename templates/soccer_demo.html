@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>Soccer MVP (VRM sister 接入验证)</title>
+<title>Soccer MVP (VRM sensei 接入验证)</title>
 
 <!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
 <script>window.VRM_DEFAULT_LIGHTING = Object.freeze({{ vrm_defaults | tojson }});</script>
@@ -34,7 +34,7 @@
   // 注意：mouseTrackingEnabled 要 true，不然 VRM 的眼/头 cursor-follow 不会跟鼠标
   window.mouseTrackingEnabled = true;
   window.live2dFullscreenTrackingEnabled = false;
-  // 阻止 vrm-init.js 自动加载 sister 到默认 #vrm-container（id 对不上会出事），
+  // 阻止 vrm-init.js 自动加载默认模型到 #vrm-container（id 对不上会出事），
   // 同时让 manager.loadModel 跳过 setupFloatingButtons（缺 common-ui-hud.js 依赖会崩）
   window._cardExportPage = true;
 </script>
@@ -477,7 +477,7 @@
       'player-vrm-canvas', 'player-vrm-container', null, { embed: true }
     );
     console.log('[soccer_demo] core.init done; scene children BEFORE load:', window.vrmManager.scene?.children?.length);
-    setStatus('loading sister1.0.vrm…');
+    setStatus('loading sensei.vrm…');
     // 绕开 core.loadModel（它里面有 3 帧 rAF 等待，在 headless/背景 tab 下会 hang），
     // 直接用 GLTFLoader + VRMLoaderPlugin 加载，手动 scene.add。
     const [{ GLTFLoader }, vrmModule] = await Promise.all([
@@ -486,14 +486,14 @@
     ]);
     const loader = new GLTFLoader();
     loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sister1.0.vrm', res, null, rej));
+    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sensei.vrm', res, null, rej));
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error('Loaded file is not a valid VRM');
     console.log('[soccer_demo] VRM parsed');
     // 把模型放进 manager 的 scene，交给 core.init 已经设置好的 renderer/camera 渲染
     window.vrmManager.scene.add(vrm.scene);
     // 让 three-vrm 的更新发生——挂到 clock/render loop 上
-    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sister1.0.vrm' };
+    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sensei.vrm' };
     vrm.scene.visible = true;
 
     // 相机自适应：测出 bbox，把模型脚底放到 y=0、水平居中，再把相机拉到够远能装下整个人
@@ -804,6 +804,29 @@
     if (tag.startsWith('pt')) return 'pt-BR';
     return raw;
   };
+  // 当前 UI locale（同 app-proactive.js 的 i18nLanguage 三级兜底）。
+  // 后端 _absorb_request_language 优先吃这个字段并回写 mgr.user_language，
+  // 不再依赖 ws greeting_check 的同步时机或全局缓存的 Steam SDK race。
+  // Steam=中文 / 系统=英文 + Steam SDK 启动期 race 失败的场景下，没有这条
+  // 路径 in-game LLM 的 prompt 会跑成英文。
+  window.SoccerCurrentI18nLang = function () {
+    try {
+      if (typeof window.i18next !== 'undefined'
+          && typeof window.i18next.language === 'string'
+          && window.i18next.language) {
+        return window.i18next.language;
+      }
+      if (typeof localStorage !== 'undefined') {
+        const cached = localStorage.getItem('i18nextLng');
+        if (cached) return cached;
+      }
+      if (typeof navigator !== 'undefined' && navigator.language) {
+        return navigator.language;
+      }
+    } catch (_) { /* swallow: fetch payload tolerates empty */ }
+    return '';
+  };
+  const _currentI18nLang = window.SoccerCurrentI18nLang;
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const debugCanvas = document.getElementById('debug');
@@ -1162,19 +1185,19 @@
 
   function flash(side) { state.flashTimer = 0.6; state.flashSide = side; }
 
-  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认从 lv2/lv3 开局，后续由 LLM 控制。
+  // 难度档：从 max（最难）到 lv4（最弱）。普通陪玩默认 lv2 起手，后续由 LLM 控制。
+  // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
+  // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
+  // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
+  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
     { name: 'lv3', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: true },
     { name: 'lv4', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 0.78, allowAttack: false },
   ];
-  function randomDefaultDifficultyIndex() {
-    const name = Math.random() < 0.5 ? 'lv2' : 'lv3';
-    const idx = DIFFICULTY.findIndex(d => d.name === name);
-    return idx >= 0 ? idx : 1;
-  }
-  let difficultyIdx = randomDefaultDifficultyIndex();
+  const DEFAULT_DIFFICULTY_INDEX = DIFFICULTY.findIndex(d => d.name === 'lv2');
+  let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
   }
@@ -1674,7 +1697,15 @@
 
   async function loadGeneratedQuickLines() {
     try {
-      const resp = await fetch('/api/game/soccer/quick-lines', { method: 'POST' });
+      // quick-lines 在 _startGameRoute 之前就开炮，是整个 soccer 流程里第一个会
+      // 命中 LLM 的端点；得自带 i18n_language 让后端 _absorb_request_language
+      // 在 mgr.user_language 还是错的全局缓存值时就把它纠正过来，否则首批 quick
+      // lines 会落英文。
+      const resp = await fetch('/api/game/soccer/quick-lines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ i18n_language: _currentI18nLang() }),
+      });
       if (!resp.ok) {
         soccerRecoverableLog(`[SoccerQuickLines] 生成失败 | HTTP ${resp.status}，继续使用内建快路径`, LINES);
         return;
@@ -2096,7 +2127,7 @@
     unstickCd = 0;
     GAME_EVENTS.length = 0;
 
-    difficultyIdx = randomDefaultDifficultyIndex();
+    difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
     __setMoodBase('calm');
     if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
@@ -2245,6 +2276,10 @@
       gameStartedElapsedMs,
       game_started_elapsed_ms: gameStartedElapsedMs,
       gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
+      // 见 _currentI18nLang 注释：把前端 i18n 真值随 route/heartbeat/start/end/
+      // voice-transcript 一起捎给后端，后端 _absorb_request_language 自愈
+      // mgr.user_language。
+      i18n_language: _currentI18nLang(),
       ...extra,
     });
   }
@@ -2717,6 +2752,7 @@
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           state: stateNow,
           pendingItems: safeItems,
+          i18n_language: _currentI18nLang(),
         }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -2747,6 +2783,7 @@
           turn_id: `game-mirror-${requestId}`,
           finalize_turn: shouldFinalizeTurn,
           line: clean,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -2814,6 +2851,7 @@
           voice_arbiter_reason: voiceArbiterReason,
           line,
           state: stateNow,
+          i18n_language: _currentI18nLang(),
           event: {
             kind: meta.kind || 'mailbox',
             round: meta.round,
@@ -3301,6 +3339,7 @@
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
           ..._soccerGameMemoryPolicyPayload(),
+          i18n_language: _currentI18nLang(),
           event: {
             ...eventPayload,
             ..._soccerGameMemoryPolicyPayload(),
@@ -3460,6 +3499,7 @@
         body: JSON.stringify({
           session_id: _llm.sessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          i18n_language: _currentI18nLang(),
         }),
       });
       if (!resp.ok) return;

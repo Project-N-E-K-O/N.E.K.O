@@ -140,14 +140,16 @@
   function neutralizeLegacyRegions(container) {
     disconnectLegacyStandaloneDrag();
 
-    // 注意：这里不再把 .jukebox-container 及 header 强制设为 no-drag。
-    // preload-jukebox.js 的 setupNativeDrag 已经铺好了正确的 CSS region：
-    //   .jukebox-container → drag
-    //   .jukebox-content / .jukebox-controls-row / .jukebox-header-buttons 等 → no-drag
-    // 让 OS 原生拖拽接管 header 区域（和 /jukebox/manager 一致的零 IPC 路径），
-    // 同时保留下面的 JS fallback：用户从 content 空白处起拖时仍走 bridge.dragStart。
-    // 历史上这里把全部 region 改 no-drag 是为了让 JS 完全接管，现在我们有 native IPC drag
-    // + 完整的 setupNativeDrag CSS 双保险，不需要再粗暴覆盖。
+    // 独立窗口不能把整个 container 设为 drag，否则标题按钮的命中区域会被
+    // Chromium app-region 缓存裁掉。只保留标题左侧原生拖拽，其余区域走 JS fallback。
+    container.style.webkitAppRegion = 'no-drag';
+    var headerLeft = container.querySelector('.jukebox-header-left');
+    if (headerLeft) {
+      headerLeft.style.webkitAppRegion = 'drag';
+    }
+    container.querySelectorAll('.jukebox-header-buttons, .jukebox-header-buttons *').forEach(function(el) {
+      el.style.webkitAppRegion = 'no-drag';
+    });
 
     // 仅清理旧 DOM 元素 .jukebox-drag-overlay（若存在）—— 这是历史遗留的透明覆盖层，
     // 可能挡住指针事件或造成 z-index 错位。
