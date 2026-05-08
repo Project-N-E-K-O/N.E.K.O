@@ -82,13 +82,14 @@ function normalizeLocalKokoroProfile(value) {
 function localKokoroProfileFromModelId(modelId) {
     const raw = (modelId || '').trim().toLowerCase();
     if (!raw) return '';
-    if (raw.includes('kokoro-en') || raw.includes('kokoro_en') || raw.includes('-en') || raw.endsWith('en')) {
+    if (!raw.includes('kokoro') && !raw.includes('82m')) return '';
+    if (raw.includes('kokoro-en') || raw.includes('kokoro_en') || /(^|[-_])en($|[-_])/.test(raw)) {
         return 'kokoro-en';
     }
     if (raw.includes('kokoro-82m') && !raw.includes('zh')) {
         return 'kokoro-en';
     }
-    if (raw.includes('kokoro-zh') || raw.includes('kokoro_zh') || raw.includes('-zh') || raw.endsWith('zh')) {
+    if (raw.includes('kokoro-zh') || raw.includes('kokoro_zh') || /(^|[-_])zh($|[-_])/.test(raw)) {
         return 'kokoro-zh';
     }
     return '';
