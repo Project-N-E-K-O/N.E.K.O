@@ -171,6 +171,8 @@ const installRuntime = {
   textractor: createInstallRuntimeState(),
   rapidocr_models: createInstallRuntimeState(),
 };
+let rapidOcrLangRequestPending = false;
+let rapidOcrLangQueuedPayload = null;
 
 function readCurrentLineZoom() {
   const raw = parseInt(storageGet(CL_ZOOM_KEY), 10);
@@ -5241,9 +5243,71 @@ function renderRapidOcr(status) {
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
   applyRapidOcrModelsGate(rapidocr);
+  renderRapidOcrLangBar(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
+  bindRapidOcrLangButtons();
+}
+
+function renderRapidOcrLangBar(rapidocr) {
+  const bar = document.getElementById('rapidocrLangBar');
+  if (!bar) {
+    return;
+  }
+  const usable = isRapidOcrUsable(rapidocr) || hasMissingRapidOcrModelFiles(rapidocr);
+  bar.hidden = !usable;
+  if (!usable) {
+    setRapidOcrLangControlsDisabled(true);
+    return;
+  }
+
+  const langType = rapidocr.lang_type || 'japan';
+  const autoDetect = rapidocr.auto_detect_lang !== false;
+  const idMap = { ch: 'Ch', japan: 'Japan', korean: 'Korean', en: 'En' };
+  Object.entries(idMap).forEach(([lang, suffix]) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (!btn) {
+      return;
+    }
+    btn.classList.toggle('active', langType === lang);
+    btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
+    btn.disabled = autoDetect || rapidOcrLangRequestPending;
+  });
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.checked = autoDetect;
+    checkbox.disabled = rapidOcrLangRequestPending;
+  }
+}
+
+function setRapidOcrLangControlsDisabled(disabled) {
+  ['Ch', 'Japan', 'Korean', 'En'].forEach((suffix) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (btn) {
+      btn.disabled = Boolean(disabled);
+    }
+  });
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.disabled = Boolean(disabled);
+  }
+}
+
+function bindRapidOcrLangButtons() {
+  const idMap = { Ch: 'ch', Japan: 'japan', Korean: 'korean', En: 'en' };
+  Object.entries(idMap).forEach(([suffix, lang]) => {
+    rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
+  });
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox && !checkbox.__galgameRapidOcrAutoBound) {
+    checkbox.__galgameRapidOcrAutoBound = true;
+    checkbox.addEventListener('change', () => {
+      setRapidOcrLang({ auto_detect_lang: checkbox.checked });
+    });
+  }
 }
 
 function renderDxcam(status) {
@@ -6320,6 +6384,41 @@ async function setOcrBackendSelection({ backendSelection = null, captureBackend 
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+async function setRapidOcrLang(payload = {}) {
+  if (rapidOcrLangRequestPending) {
+    rapidOcrLangQueuedPayload = { ...payload };
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    return;
+  }
+  rapidOcrLangRequestPending = true;
+  setRapidOcrLangControlsDisabled(true);
+  let saved = false;
+  try {
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    const result = await callPlugin('galgame_set_rapidocr_lang', payload);
+    saved = true;
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(result.summary || uiT('ui.flash.rapidocr_lang_saved', 'RapidOCR 识别语言已保存'), 'success');
+    }
+  } catch (error) {
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(error instanceof Error ? error.message : String(error), 'error');
+    }
+  } finally {
+    rapidOcrLangRequestPending = false;
+    const nextPayload = rapidOcrLangQueuedPayload;
+    rapidOcrLangQueuedPayload = null;
+    if (nextPayload) {
+      setRapidOcrLang(nextPayload);
+    } else {
+      setRapidOcrLangControlsDisabled(false);
+    }
+    if (saved && !nextPayload) {
+      await refreshAll({ preserveFlash: true, forceInsights: true });
+    }
   }
 }
 

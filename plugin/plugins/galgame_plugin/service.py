@@ -841,6 +841,10 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             rapidocr_obj.get("ocr_version") or DEFAULT_RAPIDOCR_OCR_VERSION
         ).strip()
         or DEFAULT_RAPIDOCR_OCR_VERSION,
+        rapidocr_auto_detect_lang=_coerce_bool(
+            rapidocr_obj.get("auto_detect_lang"),
+            True,
+        ),
     )
 
 
@@ -2245,6 +2249,10 @@ def _build_status_payload_unchecked(
             model_type=config.rapidocr_model_type,
             ocr_version=config.rapidocr_ocr_version,
         ),
+    )
+    rapidocr["auto_detect_lang"] = bool(config.rapidocr_auto_detect_lang)
+    rapidocr["auto_detect_last_lang"] = str(
+        getattr(config, "rapidocr_auto_detect_last_lang", "") or ""
     )
     tesseract = _cached_install_inspection(
         (

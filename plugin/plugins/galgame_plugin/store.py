@@ -37,6 +37,9 @@ from .models import (
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
     STORE_OCR_WINDOW_TARGET,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+    STORE_RAPIDOCR_LANG_TYPE,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
@@ -170,6 +173,22 @@ class GalgameStore:
             self._values[key] = value
             self._save_values(locked=True)
 
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if value in {0, 1}:
+                return bool(value)
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        return None
+
     def load_config_overrides(self) -> dict[str, Any]:
         raw_backend = self._read(STORE_OCR_BACKEND_SELECTION, None)
         raw_capture = self._read(STORE_OCR_CAPTURE_BACKEND, None)
@@ -180,6 +199,9 @@ class GalgameStore:
         raw_vision = self._read(STORE_LLM_VISION_ENABLED, None)
         raw_px = self._read(STORE_LLM_VISION_MAX_IMAGE_PX, None)
         raw_templates = self._read(STORE_OCR_SCREEN_TEMPLATES, None)
+        raw_rapidocr_lang = self._read(STORE_RAPIDOCR_LANG_TYPE, None)
+        raw_rapidocr_auto = self._read(STORE_RAPIDOCR_AUTO_DETECT_LANG, None)
+        raw_rapidocr_last_lang = self._read(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG, None)
 
         return {
             STORE_OCR_BACKEND_SELECTION: (
@@ -213,6 +235,21 @@ class GalgameStore:
                 else None
             ),
             STORE_OCR_SCREEN_TEMPLATES: raw_templates if isinstance(raw_templates, list) else None,
+            STORE_RAPIDOCR_LANG_TYPE: (
+                str(raw_rapidocr_lang)
+                if isinstance(raw_rapidocr_lang, str)
+                and raw_rapidocr_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
+            STORE_RAPIDOCR_AUTO_DETECT_LANG: (
+                self._coerce_bool(raw_rapidocr_auto)
+            ),
+            STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG: (
+                str(raw_rapidocr_last_lang)
+                if isinstance(raw_rapidocr_last_lang, str)
+                and raw_rapidocr_last_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
         }
 
     def persist_config_override(self, key: str, value: Any) -> None:

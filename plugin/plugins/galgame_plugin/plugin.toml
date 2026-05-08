@@ -122,6 +122,9 @@ engine_type = "onnxruntime"
 lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv4"
+# Auto-detect game text language and switch RapidOCR recognition models when
+# the target model is already available. Set false to always use lang_type.
+auto_detect_lang = true
 
 [plugin.ui]
 enabled = true

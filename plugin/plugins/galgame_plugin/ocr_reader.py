@@ -140,6 +140,63 @@ _NARRATION_QUOTE_RE = re.compile(r"^\s*[\u300c\u300e\u201c\"](.+\S)[\u300d\u300f
 _NARRATION_PAREN_RE = re.compile(r"^\s*[\uff08(]([^\uff09)]{1,40})[\uff09)]\s*$")
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _KANA_CHAR_RE = re.compile(r"[\u3040-\u30ff]")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
+_HIRAGANA_RE = re.compile(r"[\u3040-\u309f]")
+_KATAKANA_RE = re.compile(r"[\u30a0-\u30ff\u31f0-\u31ff]")
+_KANA_BUD_RE = re.compile(
+    r"[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087"
+    r"\u30a1\u30a3\u30a5\u30a7\u30a9\u30c3\u30e3\u30e5\u30e7]"
+)
+# Keep Japanese markers kana-only. Adding common kanji words would bias
+# OCR-fragmented pure-kanji Japanese text and Chinese text in opposite ways;
+# without kana/hangul, pure CJK remains a best-effort fallback to Chinese.
+_JA_MARKER_WORDS = frozenset({
+    "です",
+    "ます",
+    "した",
+    "して",
+    "いる",
+    "ある",
+    "ない",
+    "こと",
+    "もの",
+    "よう",
+    "そう",
+    "これ",
+    "それ",
+    "どれ",
+})
+_ZH_MARKER_WORDS = frozenset({
+    "的",
+    "了",
+    "是",
+    "在",
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "们",
+    "这",
+    "那",
+    "有",
+    "没",
+    "很",
+    "都",
+    "要",
+    "可以",
+    "因为",
+    "所以",
+    "但是",
+    "虽然",
+    "而且",
+    "什么",
+    "怎么",
+    "为什么",
+    "这个",
+    "那个",
+    "哪个",
+})
 _ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _WINDOW_SPACE_RE = re.compile(r"\s+")
 _SELF_WINDOW_TITLE_SUBSTRINGS = (
@@ -880,6 +937,79 @@ def _looks_like_noise_normalized_text(normalized: str) -> bool:
     if cjk_or_kana_count <= 0 and significant_chars <= 2:
         return True
     return False
+
+
+def _classify_cjk_text(text: str) -> str:
+    """Return RapidOCR lang_type: japan, korean, ch, or unknown."""
+    if not text or not text.strip():
+        return "unknown"
+    if _HANGUL_RE.search(text):
+        return "korean"
+    if _HIRAGANA_RE.search(text) or _KATAKANA_RE.search(text):
+        return "japan"
+    if not _CJK_CHAR_RE.search(text):
+        return "unknown"
+
+    ja_votes = sum(1 for word in _JA_MARKER_WORDS if word in text)
+    zh_votes = sum(1 for word in _ZH_MARKER_WORDS if word in text)
+    if ja_votes > zh_votes:
+        return "japan"
+    if zh_votes > ja_votes:
+        return "ch"
+    if _KANA_BUD_RE.search(text):
+        return "japan"
+    return "ch"
+
+
+class _OcrLangDetector:
+    def __init__(self, window_size: int = 8, confirm_streak: int = 2) -> None:
+        self._window_size = max(1, int(window_size or 1))
+        self._confirm_streak = max(1, int(confirm_streak or 1))
+        self._buffer: list[str] = []
+        self._last_detected: str | None = None
+        self._streak = 0
+        self._switched_at: float | None = None
+
+    def feed(self, text: str) -> str | None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return None
+        if not (
+            _CJK_CHAR_RE.search(cleaned)
+            or _HIRAGANA_RE.search(cleaned)
+            or _KATAKANA_RE.search(cleaned)
+            or _HANGUL_RE.search(cleaned)
+        ):
+            return None
+
+        self._buffer.append(cleaned)
+        if len(self._buffer) < self._window_size:
+            return None
+
+        merged = " ".join(self._buffer)
+        self._buffer.clear()
+        detected = _classify_cjk_text(merged)
+        if detected == "unknown":
+            return None
+
+        if detected == self._last_detected:
+            self._streak += 1
+        else:
+            self._last_detected = detected
+            self._streak = 1
+
+        if self._streak >= self._confirm_streak:
+            return detected
+        return None
+
+    def reset(self) -> None:
+        self._buffer.clear()
+        self._last_detected = None
+        self._streak = 0
+
+    @property
+    def last_switched_at(self) -> float | None:
+        return self._switched_at
 
 
 def _prepare_ocr_image(image: Any, *, apply_filters: bool = True) -> Any:
@@ -4666,6 +4796,7 @@ class OcrReaderManager:
         capture_backend: CaptureBackend | None = None,
         ocr_backend: OcrBackend | None = None,
         writer: OcrReaderBridgeWriter | None = None,
+        rapidocr_lang_changed_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._logger = logger
         self._config = config
@@ -4684,6 +4815,7 @@ class OcrReaderManager:
             time_fn=self._time_fn,
             logger=logger,
         )
+        self._rapidocr_lang_changed_callback = rapidocr_lang_changed_callback
         self._runtime = OcrReaderRuntime(enabled=config.ocr_reader_enabled)
         self._capture_profiles: dict[str, ParsedOcrCaptureProcessConfig] = {}
         self._last_memory_reader_text_at = 0.0
@@ -4775,6 +4907,8 @@ class OcrReaderManager:
         self._capture_backend_detail = ""
         self._rapidocr_backend_cache_key: tuple[str, str, str, str, str] | None = None
         self._rapidocr_backend_cache: RapidOcrBackend | None = None
+        self._ocr_lang_detector = _OcrLangDetector()
+        self._ocr_lang_cooldown_seconds = 60.0
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -4919,6 +5053,8 @@ class OcrReaderManager:
             self._runtime.ocr_context_state = ""
 
     def update_config(self, config: GalgameConfig) -> None:
+        old_backend_plan_key = self._backend_plan_config_key(self._config)
+        old_auto_detect_lang = bool(getattr(self._config, "rapidocr_auto_detect_lang", False))
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if not bool(config.llm_vision_enabled):
@@ -4926,10 +5062,15 @@ class OcrReaderManager:
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:
             self._reset_known_screen_stuck_tracking()
         backend_plan_key = self._backend_plan_config_key(config)
-        if self._backend_plan_cache_key != backend_plan_key:
+        if old_backend_plan_key != backend_plan_key or self._backend_plan_cache_key != backend_plan_key:
             self._backend_plan_cache_key = None
             self._backend_plan_cache_at = 0.0
             self._backend_plan_cache = None
+            self._rapidocr_backend_cache_key = None
+            self._rapidocr_backend_cache = None
+            self._ocr_lang_detector.reset()
+        elif old_auto_detect_lang != bool(getattr(config, "rapidocr_auto_detect_lang", False)):
+            self._ocr_lang_detector.reset()
         if not self._custom_capture_backend:
             current_selection = str(getattr(self._capture_backend, "selection", "") or "")
             if current_selection != config.ocr_reader_capture_backend:
@@ -5080,6 +5221,104 @@ class OcrReaderManager:
         self._last_raw_ocr_text = str(raw_text or "")
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
+
+    def _maybe_auto_switch_rapidocr_lang(
+        self,
+        text: str,
+        *,
+        rapidocr_active: bool = False,
+    ) -> None:
+        if not bool(getattr(self._config, "rapidocr_auto_detect_lang", False)):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: auto_detect_disabled")
+            except Exception:
+                pass
+            return
+        if (
+            not rapidocr_active
+            or not bool(getattr(self._config, "rapidocr_enabled", False))
+            or self._configured_backend_selection() not in {"auto", "rapidocr"}
+        ):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: rapidocr_not_active")
+            except Exception:
+                pass
+            return
+        if self._custom_ocr_backend:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: custom_ocr_backend")
+            except Exception:
+                pass
+            return
+        now = time.monotonic()
+        last_switched_at = self._ocr_lang_detector.last_switched_at
+        if (
+            last_switched_at is not None
+            and now - last_switched_at < self._ocr_lang_cooldown_seconds
+        ):
+            try:
+                remaining = self._ocr_lang_cooldown_seconds - (now - last_switched_at)
+                self._logger.debug("rapidocr auto-lang skipped: cooldown {:.1f}s remaining", remaining)
+            except Exception:
+                pass
+            return
+        detected_lang = self._ocr_lang_detector.feed(text)
+        current_lang = str(getattr(self._config, "rapidocr_lang_type", "") or "").strip()
+        if not detected_lang:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: detection_unconfirmed")
+            except Exception:
+                pass
+            return
+        if detected_lang == current_lang:
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: already_using {}", detected_lang)
+            except Exception:
+                pass
+            return
+        try:
+            inspection = inspect_rapidocr_installation(
+                install_target_dir_raw=self._config.rapidocr_install_target_dir,
+                engine_type=self._config.rapidocr_engine_type,
+                lang_type=detected_lang,
+                model_type=self._config.rapidocr_model_type,
+                ocr_version=self._config.rapidocr_ocr_version,
+            )
+        except Exception as exc:
+            try:
+                self._logger.warning("rapidocr auto-lang inspection failed: {}", exc)
+            except Exception:
+                pass
+            return
+        if not bool(inspection.get("installed")):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: model_missing {}", detected_lang)
+            except Exception:
+                pass
+            return
+
+        self._config.rapidocr_lang_type = detected_lang
+        self._config.rapidocr_auto_detect_last_lang = detected_lang
+        self._ocr_lang_detector._switched_at = time.monotonic()
+        self._backend_plan_cache_key = None
+        self._backend_plan_cache_at = 0.0
+        self._backend_plan_cache = None
+        self._rapidocr_backend_cache_key = None
+        self._rapidocr_backend_cache = None
+        self._ocr_lang_detector.reset()
+        callback = self._rapidocr_lang_changed_callback
+        if callable(callback):
+            try:
+                callback(detected_lang)
+            except Exception as exc:
+                try:
+                    self._logger.warning("rapidocr auto-lang persist callback failed: {}", exc)
+                except Exception:
+                    pass
+        try:
+            self._logger.info("RapidOCR auto-detected language switched to {}", detected_lang)
+        except Exception:
+            pass
 
     def _record_rejected_ocr_text(
         self,
@@ -6636,6 +6875,7 @@ class OcrReaderManager:
         repeat_threshold: int | None = None,
         ocr_confidence: float | None = None,
         text_source: str = "bottom_region",
+        rapidocr_active: bool = False,
     ) -> bool:
         content_text, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
         if (
@@ -6645,6 +6885,10 @@ class OcrReaderManager:
         ):
             return False
         self._record_accepted_ocr_text(content_text)
+        self._maybe_auto_switch_rapidocr_lang(
+            cleaned_text,
+            rapidocr_active=rapidocr_active,
+        )
         speaker, text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
         had_pending_visual_scene = bool(self._pending_visual_scene_hash)
         if self._pending_visual_scene_hash:
@@ -7084,6 +7328,7 @@ class OcrReaderManager:
         self._shutdown_capture_worker()
         if self._writer.session_id:
             self._writer.end_session(ts=utc_now_iso(self._time_fn()))
+            self._ocr_lang_detector.reset()
         self._attached_window = None
 
     async def _tick_preflight(
@@ -7288,6 +7533,7 @@ class OcrReaderManager:
                 result.should_rescan = True
             self._attached_window = target
             self._last_heartbeat_at = now
+            self._ocr_lang_detector.reset()
             self._reset_default_ocr_state()
             self._reset_aihong_menu_state()
             startup_profile_stage = (
@@ -7658,6 +7904,7 @@ class OcrReaderManager:
                     and int(event_seq_before_capture or 0) <= 1
                 ):
                     self._writer.discard_session()
+                    self._ocr_lang_detector.reset()
             else:
                 self._record_accepted_ocr_text(extraction.text)
                 screen_classification, screen_event_emitted = self._emit_screen_classification_from_extraction(
@@ -7731,6 +7978,7 @@ class OcrReaderManager:
                                     line_repeat_threshold=line_repeat_threshold,
                                     ocr_confidence=extraction.ocr_confidence,
                                     text_source=extraction.text_source,
+                                    rapidocr_active=extraction.backend.kind == "rapidocr",
                                 )
                             )
                         if (
@@ -7801,6 +8049,7 @@ class OcrReaderManager:
                                         line_repeat_threshold=line_repeat_threshold,
                                         ocr_confidence=followup_extraction.ocr_confidence,
                                         text_source=followup_extraction.text_source,
+                                        rapidocr_active=followup_extraction.backend.kind == "rapidocr",
                                     )
                                 )
                                 if dialogue_emitted:
@@ -7927,6 +8176,7 @@ class OcrReaderManager:
                             line_repeat_threshold=line_repeat_threshold,
                             ocr_confidence=extraction.ocr_confidence,
                             text_source=extraction.text_source,
+                            rapidocr_active=extraction.backend.kind == "rapidocr",
                         )
                     )
                     if (
@@ -7993,6 +8243,7 @@ class OcrReaderManager:
                                     line_repeat_threshold=line_repeat_threshold,
                                     ocr_confidence=followup_extraction.ocr_confidence,
                                     text_source=followup_extraction.text_source,
+                                    rapidocr_active=followup_extraction.backend.kind == "rapidocr",
                                 )
                             )
                             if emitted:
@@ -8011,6 +8262,7 @@ class OcrReaderManager:
             self._reset_aihong_menu_state()
             if int(self._writer.last_seq or 0) <= 1:
                 self._writer.discard_session()
+                self._ocr_lang_detector.reset()
             result.warnings.append(f"ocr_reader capture timed out: {exc}")
         except Exception as exc:
             self._logger.warning("ocr_reader capture/OCR failed: {}", exc)
@@ -8019,6 +8271,7 @@ class OcrReaderManager:
             self._reset_aihong_menu_state()
             if int(self._writer.last_seq or 0) <= 1:
                 self._writer.discard_session()
+                self._ocr_lang_detector.reset()
             result.warnings.append(f"ocr_reader capture failed: {exc}")
 
         return self._finalize_tick_result(
@@ -8135,6 +8388,7 @@ class OcrReaderManager:
             str(config.ocr_reader_install_target_dir or "").strip(),
             str(config.ocr_reader_languages or "").strip().lower(),
             str(bool(config.rapidocr_enabled)),
+            str(bool(getattr(config, "rapidocr_auto_detect_lang", False))),
             *_rapidocr_runtime_cache_key(
                 install_target_dir_raw=config.rapidocr_install_target_dir,
                 engine_type=config.rapidocr_engine_type,
@@ -9870,6 +10124,7 @@ class OcrReaderManager:
         line_repeat_threshold: int | None = None,
         ocr_confidence: float | None = None,
         text_source: str = "bottom_region",
+        rapidocr_active: bool = False,
     ) -> bool:
         tracker = state or self._default_ocr_state
         lines = _stripped_ocr_lines(raw_text)
@@ -9894,11 +10149,13 @@ class OcrReaderManager:
             repeat_threshold=line_repeat_threshold,
             ocr_confidence=ocr_confidence,
             text_source=text_source,
+            rapidocr_active=rapidocr_active,
         )
 
     async def _end_session_if_needed(self, now: float) -> None:
         if self._writer.session_id:
             self._writer.end_session(ts=utc_now_iso(now))
             self._attached_window = None
+            self._ocr_lang_detector.reset()
             self._reset_default_ocr_state()
             self._reset_aihong_menu_state()

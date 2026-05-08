@@ -87,6 +87,9 @@ from .models import (
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
     STORE_OCR_WINDOW_TARGET,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+    STORE_RAPIDOCR_LANG_TYPE,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
@@ -691,6 +694,29 @@ class GalgamePluginConfigService:
             self._plugin._persist.persist_config_override(
                 STORE_OCR_CAPTURE_BACKEND,
                 capture_backend,
+            )
+
+    def persist_rapidocr_lang(
+        self,
+        *,
+        lang_type: str | None,
+        auto_detect_lang: bool | None = None,
+        auto_detect_last_lang: str | None = None,
+    ) -> None:
+        if lang_type is not None:
+            self._plugin._persist.persist_config_override(
+                STORE_RAPIDOCR_LANG_TYPE,
+                lang_type,
+            )
+        if auto_detect_lang is not None:
+            self._plugin._persist.persist_config_override(
+                STORE_RAPIDOCR_AUTO_DETECT_LANG,
+                bool(auto_detect_lang),
+            )
+        if auto_detect_last_lang is not None:
+            self._plugin._persist.persist_config_override(
+                STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+                auto_detect_last_lang,
             )
 
     def persist_reader_mode(self, *, reader_mode: str) -> None:
@@ -2775,6 +2801,51 @@ class GalgamePlugin(NekoPluginBase):
         if value is not None:
             self._cfg.ocr_reader.ocr_reader_screen_templates = json_copy(value)
 
+        value = overrides.get(STORE_RAPIDOCR_AUTO_DETECT_LANG)
+        if value is not None:
+            self._cfg.rapidocr.rapidocr_auto_detect_lang = bool(value)
+
+        value = overrides.get(STORE_RAPIDOCR_LANG_TYPE)
+        if value is not None and value in {"ch", "japan", "korean", "en"}:
+            self._cfg.rapidocr.rapidocr_lang_type = value
+            self._cfg.rapidocr.rapidocr_auto_detect_last_lang = value
+
+        value = overrides.get(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG)
+        if value is not None and value in {"ch", "japan", "korean", "en"}:
+            self._cfg.rapidocr.rapidocr_auto_detect_last_lang = value
+
+    def _on_rapidocr_auto_lang_changed(self, lang_type: str) -> None:
+        if self._cfg is None:
+            return
+        normalized = str(lang_type or "").strip().lower()
+        if normalized not in {"ch", "japan", "korean", "en"}:
+            _log_plugin_noncritical(
+                self.logger,
+                "debug",
+                "galgame rapidocr auto-lang ignored invalid lang_type: {}",
+                lang_type,
+            )
+            return
+        self._cfg.rapidocr.rapidocr_auto_detect_last_lang = normalized
+        try:
+            self._config_service.persist_rapidocr_lang(
+                lang_type=normalized,
+                auto_detect_lang=True,
+                auto_detect_last_lang=normalized,
+            )
+        except Exception as exc:
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame rapidocr auto-lang persist failed for {}: {}",
+                normalized,
+                exc,
+            )
+        with self._state_lock:
+            self._state.next_poll_at_monotonic = 0.0
+            self._state_dirty = True
+            self._cached_snapshot = None
+
     def _current_status_payload(self) -> dict[str, Any]:
         if self._cfg is None:
             return self._add_bridge_poll_debug_payload({
@@ -2877,6 +2948,12 @@ class GalgamePlugin(NekoPluginBase):
                 lang_type=self._cfg.rapidocr_lang_type,
                 model_type=self._cfg.rapidocr_model_type,
                 ocr_version=self._cfg.rapidocr_ocr_version,
+            )
+            rapidocr["auto_detect_lang"] = bool(
+                getattr(self._cfg, "rapidocr_auto_detect_lang", True)
+            )
+            rapidocr["auto_detect_last_lang"] = str(
+                getattr(self._cfg, "rapidocr_auto_detect_last_lang", "") or ""
             )
         except Exception as exc:
             _log_plugin_noncritical(
@@ -3085,6 +3162,7 @@ class GalgamePlugin(NekoPluginBase):
         self._ocr_reader_manager = OcrReaderManager(
             logger=self.logger,
             config=self._cfg,
+            rapidocr_lang_changed_callback=self._on_rapidocr_auto_lang_changed,
         )
         self._ocr_reader_manager.update_capture_profiles(self._state.ocr_capture_profiles)
         self._ocr_reader_manager.update_window_target(self._state.ocr_window_target)
@@ -4981,6 +5059,103 @@ class GalgamePlugin(NekoPluginBase):
             ),
         }
         return Ok(payload)
+
+    @plugin_entry(
+        id="galgame_set_rapidocr_lang",
+        name=tr("entries.galgame_set_rapidocr_lang.name", default='切换 OCR 识别语言'),
+        description=tr(
+            "entries.galgame_set_rapidocr_lang.description",
+            default='切换 RapidOCR 文字识别语言模型；手动切换语言后关闭自动检测。',
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "lang_type": {
+                    "type": "string",
+                    "enum": ["ch", "japan", "korean", "en"],
+                },
+                "auto_detect_lang": {
+                    "type": "boolean",
+                },
+            },
+        },
+        llm_result_fields=["summary"],
+    )
+    async def galgame_set_rapidocr_lang(
+        self,
+        lang_type: str | None = None,
+        auto_detect_lang: bool | None = None,
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+
+        normalized_lang = str(lang_type or "").strip().lower() or None
+        if normalized_lang is not None and normalized_lang not in {"ch", "japan", "korean", "en"}:
+            return Err(SdkError(f"invalid lang_type: {lang_type!r}"))
+        if normalized_lang is None and auto_detect_lang is None:
+            return Err(SdkError("lang_type or auto_detect_lang is required"))
+
+        old_lang = self._cfg.rapidocr_lang_type
+        old_auto = self._cfg.rapidocr_auto_detect_lang
+        old_last = self._cfg.rapidocr_auto_detect_last_lang
+        if normalized_lang is not None:
+            self._cfg.rapidocr_lang_type = normalized_lang
+            self._cfg.rapidocr_auto_detect_last_lang = normalized_lang
+            self._cfg.rapidocr_auto_detect_lang = False
+        if normalized_lang is None and auto_detect_lang is not None:
+            self._cfg.rapidocr_auto_detect_lang = bool(auto_detect_lang)
+
+        if self._ocr_reader_manager is not None:
+            try:
+                self._ocr_reader_manager.update_config(self._cfg)
+            except Exception as exc:
+                self._cfg.rapidocr_lang_type = old_lang
+                self._cfg.rapidocr_auto_detect_lang = old_auto
+                self._cfg.rapidocr_auto_detect_last_lang = old_last
+                return Err(SdkError(f"apply rapidocr lang failed: {exc}"))
+
+        with self._state_lock:
+            self._state.next_poll_at_monotonic = 0.0
+            self._state_dirty = True
+            self._cached_snapshot = None
+
+        try:
+            self._config_service.persist_rapidocr_lang(
+                lang_type=normalized_lang,
+                auto_detect_lang=(
+                    bool(auto_detect_lang)
+                    if normalized_lang is None and auto_detect_lang is not None
+                    else (False if normalized_lang is not None else None)
+                ),
+                auto_detect_last_lang=normalized_lang,
+            )
+        except Exception as exc:
+            self._cfg.rapidocr_lang_type = old_lang
+            self._cfg.rapidocr_auto_detect_lang = old_auto
+            self._cfg.rapidocr_auto_detect_last_lang = old_last
+            if self._ocr_reader_manager is not None:
+                try:
+                    self._ocr_reader_manager.update_config(self._cfg)
+                except Exception as rollback_exc:
+                    _log_plugin_noncritical(
+                        self.logger,
+                        "warning",
+                        "galgame rapidocr lang rollback update_config failed: {}",
+                        rollback_exc,
+                    )
+            return Err(SdkError(f"persist rapidocr lang failed: {exc}"))
+
+        self._refresh_dependency_status()
+        self._start_background_bridge_poll()
+        return Ok({
+            "lang_type": self._cfg.rapidocr_lang_type,
+            "auto_detect_lang": self._cfg.rapidocr_auto_detect_lang,
+            "summary": (
+                f"RapidOCR lang={self._cfg.rapidocr_lang_type} "
+                f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
+            ),
+        })
 
     @plugin_entry(
         id="galgame_set_ocr_timing",

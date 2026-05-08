@@ -47,6 +47,8 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     OcrReaderRuntime,
     OcrTextBox,
     SelectedOcrBackendPlan,
+    _OcrLangDetector,
+    _classify_cjk_text,
     _rapidocr_text_from_output,
     _score_ocr_text,
 )
@@ -3470,6 +3472,27 @@ def test_ocr_reader_update_config_stops_foreground_monitor_outside_after_advance
     assert manager._runtime.foreground_advance_last_seq == 0
 
 
+def test_ocr_reader_update_config_resets_auto_lang_detector_on_toggle(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=False),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+    )
+    detector = _OcrLangDetector(window_size=2, confirm_streak=1)
+    manager._ocr_lang_detector = detector
+
+    assert detector.feed("\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694") is None
+
+    config = _make_config(bridge_root, rapidocr_enabled=False)
+    config.rapidocr_auto_detect_lang = False
+    manager.update_config(config)
+
+    assert detector.feed("\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694") is None
+
+
 def test_ocr_reader_interval_consume_does_not_lazy_start_foreground_monitor(
     tmp_path: Path,
 ) -> None:
@@ -3980,6 +4003,229 @@ def test_score_ocr_text_prefers_cjk_dialogue_over_ascii_gibberish() -> None:
     chinese_dialogue = "她轻声说：今天先回去吧。"
 
     assert _score_ocr_text(chinese_dialogue) > _score_ocr_text(gibberish)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("こんにちは世界", "japan"),
+        ("コンビニで買い物", "japan"),
+        ("안녕하세요 세계", "korean"),
+        ("你好世界今天天气真好", "ch"),
+        ("这是我的东西你别动", "ch"),
+        ("東西南北方向指示", "ch"),
+        ("ERROR: file not found", "unknown"),
+        ("... --- ...", "unknown"),
+        ("", "unknown"),
+        ("   ", "unknown"),
+    ],
+)
+def test_classify_cjk_text(text: str, expected: str) -> None:
+    assert _classify_cjk_text(text) == expected
+
+
+def test_ocr_lang_detector_confirms_after_two_windows() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+
+    assert detector.feed("こんにちは") is None
+    assert detector.feed("元気です") is None
+    assert detector.feed("私は学生です") is None
+    assert detector.feed("おはよう") is None
+    assert detector.feed("ありがとう") is None
+    assert detector.feed("さようなら") == "japan"
+
+
+def test_ocr_lang_detector_ignores_noise_lines() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=1)
+
+    assert detector.feed("...") is None
+    assert detector.feed("12345") is None
+    assert detector.feed("ERROR") is None
+    assert detector.feed("こんにちは世界") is None
+
+
+def test_ocr_lang_detector_streak_resets_on_language_change() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+
+    assert detector.feed("こんにちは") is None
+    assert detector.feed("元気です") is None
+    assert detector.feed("私は学生です") is None
+    assert detector.feed("안녕하세요") is None
+    assert detector.feed("반갑습니다") is None
+    assert detector.feed("학생입니다") is None
+    assert detector.feed("고마워요") is None
+    assert detector.feed("괜찮습니다") is None
+    assert detector.feed("다음에 봐요") == "korean"
+
+
+def test_ocr_lang_detector_reset_clears_state() -> None:
+    detector = _OcrLangDetector(window_size=3, confirm_streak=1)
+    detector.feed("안녕하세요")
+    detector.feed("반갑습니다")
+    detector.feed("학생입니다")
+
+    detector.reset()
+
+    assert detector._streak == 0
+    assert detector._buffer == []
+    assert detector._last_detected is None
+
+
+def test_rapidocr_auto_lang_skips_when_rapidocr_not_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected RapidOCR inspection")),
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=False)
+
+    assert manager._config.rapidocr_lang_type == "ch"
+    assert manager._config.rapidocr_auto_detect_last_lang == ""
+    assert persisted == []
+
+
+def test_rapidocr_auto_lang_skips_when_rapidocr_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=False),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected RapidOCR inspection")),
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+        "\uc720\ud0a4: \uc9c0\uae08 \uc900\ube44\uac00 \ub05d\ub0ac\uc5b4\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=True)
+
+    assert manager._config.rapidocr_lang_type == "ch"
+    assert manager._config.rapidocr_auto_detect_last_lang == ""
+    assert persisted == []
+
+
+def test_rapidocr_auto_lang_switches_when_rapidocr_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    for text in [
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        "\uc720\ud0a4: \uc624\ub298\uc740 \uc88b\uc740 \ub0a0\uc774\uc5d0\uc694",
+        "\uc720\ud0a4: \uc6b0\ub9ac\ub294 \ud568\uaed8 \uac08 \uc218 \uc788\uc5b4\uc694",
+        "\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694",
+        "\uc720\ud0a4: \uc774\uc57c\uae30\ub97c \uacc4\uc18d\ud574\uc694",
+        "\uc720\ud0a4: \uc9c0\uae08 \uc900\ube44\uac00 \ub05d\ub0ac\uc5b4\uc694",
+    ]:
+        manager._maybe_auto_switch_rapidocr_lang(text, rapidocr_active=True)
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
+    assert persisted == ["korean"]
+
+
+def test_rapidocr_auto_lang_first_switch_not_blocked_by_startup_cooldown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 1.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
+    assert persisted == ["korean"]
 
 
 def test_inspect_tesseract_installation_reports_custom_install_target(tmp_path: Path) -> None:
