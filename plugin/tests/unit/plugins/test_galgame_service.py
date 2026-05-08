@@ -146,6 +146,13 @@ def test_build_config_defaults_ocr_poll_interval_to_fast_capture() -> None:
     assert cfg.ocr_reader_poll_interval_seconds == 0.5
 
 
+def test_build_config_defaults_rapidocr_lang_type_to_bundled_ch() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert cfg.rapidocr_lang_type == "ch"
+    assert cfg.rapidocr_lang_type == galgame_service.DEFAULT_RAPIDOCR_LANG_TYPE
+
+
 def _candidate(
     tmp_path,
     *,

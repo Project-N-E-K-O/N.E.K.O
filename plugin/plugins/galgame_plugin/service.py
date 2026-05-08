@@ -573,12 +573,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     rapidocr = raw_config.get("rapidocr")
     rapidocr_obj = rapidocr if isinstance(rapidocr, dict) else {}
     rapidocr_lang_type_raw = str(rapidocr_obj.get("lang_type") or "").strip()
-    if not rapidocr_lang_type_raw:
-        _logger.warning(
-            'galgame_plugin rapidocr.lang_type is not set; set rapidocr.lang_type = "japan" '
-            "explicitly for Japanese games if you rely on Japanese OCR models."
-        )
-    elif rapidocr_lang_type_raw == "ch":
+    if rapidocr_lang_type_raw == "ch":
         _logger.warning(
             'galgame_plugin RapidOCR is using lang_type = "ch"; if this came from the '
             'packaged default, set rapidocr.lang_type = "japan" explicitly for Japanese games.'

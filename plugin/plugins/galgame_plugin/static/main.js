@@ -1824,7 +1824,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models',
         '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
           size: sizeMb,
         },
@@ -1837,7 +1837,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models_manual',
         '所选语言模型 ({lang} + {version}) 未下载。当前环境不能自动下载，请按下方 RapidOCR 横幅说明手动放置模型后再刷新状态。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
         },
       );

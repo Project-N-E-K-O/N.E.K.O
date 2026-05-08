@@ -75,6 +75,8 @@ from plugin.plugins.galgame_plugin.tesseract_support import (
 
 pytestmark = pytest.mark.plugin_unit
 
+TEST_WAIT_TIMEOUT = 1.0
+
 
 class _Logger:
     def info(self, *args, **kwargs):
@@ -1582,7 +1584,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
             self.calls += 1
             if self.calls == 1:
                 started.set()
-                release.wait(timeout=0.5)
+                release.wait(timeout=TEST_WAIT_TIMEOUT)
             return "雪乃：恢复后的台词。"
 
     backend = _BlockingOcrBackend()
@@ -1614,7 +1616,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
 
     try:
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        assert started.wait(timeout=0.5) is True
+        assert started.wait(timeout=TEST_WAIT_TIMEOUT) is True
         assert first.runtime["detail"] == "capture_failed"
         assert "timed out" in first.runtime["last_capture_error"]
 
@@ -2008,6 +2010,11 @@ def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
     )
     monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_monitor_work_rects",
+        lambda _rect: [],
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
         "_target_monitor_work_rect",
         lambda _target: (0, 0, 1920, 1040),
     )
@@ -2015,6 +2022,36 @@ def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
     rect = galgame_ocr_reader._target_screen_capture_rect(target)
 
     assert rect == (5, 92, 1301, 1040)
+
+
+def test_screen_capture_rect_spanning_monitors_keeps_other_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _window()[0]
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda _target: (1800, 100, 2600, 1060),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rects",
+        lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
+    )
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+
+    rect = galgame_ocr_reader._target_screen_capture_rect(target)
+
+    assert rect == (1800, 100, 2600, 1060)
 
 
 def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> None:
@@ -4072,9 +4109,8 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
     # Force the bundled-spec branch off so the legacy plugin-isolated path
     # is exercised. In a uv-synced dev env rapidocr_onnxruntime is bundled
     # and would shadow the legacy fixture; we want to test the fallback
-    # specifically. Also pin lang to "ch" so the (now-japan) default
-    # doesn't flip the result to `missing_model_files` for an unrelated
-    # reason — this test is about legacy path detection, not models.
+    # specifically. Pin lang to "ch" so this test stays about legacy path
+    # detection rather than any future model-default change.
     monkeypatch.setattr(
         galgame_rapidocr_support.importlib.util,
         "find_spec",

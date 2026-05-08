@@ -2335,6 +2335,51 @@ def _intersect_screen_rect(
     return rect if _valid_screen_rect(rect) else None
 
 
+def _bounding_screen_rect(
+    rects: Iterable[tuple[int, int, int, int]],
+) -> tuple[int, int, int, int] | None:
+    valid_rects = [rect for rect in rects if _valid_screen_rect(rect)]
+    if not valid_rects:
+        return None
+    return (
+        min(int(rect[0]) for rect in valid_rects),
+        min(int(rect[1]) for rect in valid_rects),
+        max(int(rect[2]) for rect in valid_rects),
+        max(int(rect[3]) for rect in valid_rects),
+    )
+
+
+def _target_monitor_work_rects(
+    rect: tuple[int, int, int, int],
+) -> list[tuple[int, int, int, int]]:
+    try:
+        import win32api
+
+        enum_display_monitors = getattr(win32api, "EnumDisplayMonitors", None)
+        if not callable(enum_display_monitors):
+            return []
+        try:
+            monitors = enum_display_monitors(None, tuple(int(value) for value in rect))
+        except TypeError:
+            monitors = enum_display_monitors()
+
+        work_rects: list[tuple[int, int, int, int]] = []
+        for monitor_info in monitors:
+            monitor = monitor_info[0]
+            try:
+                info = win32api.GetMonitorInfo(monitor)
+            except Exception:
+                continue
+            work = info.get("Work") if isinstance(info, dict) else None
+            if isinstance(work, tuple) and len(work) == 4:
+                work_rect = tuple(int(value) for value in work)
+                if _valid_screen_rect(work_rect):
+                    work_rects.append(work_rect)
+        return work_rects
+    except Exception:
+        return []
+
+
 def _target_monitor_work_rect(target: DetectedGameWindow) -> tuple[int, int, int, int] | None:
     try:
         import win32api
@@ -2348,6 +2393,22 @@ def _target_monitor_work_rect(target: DetectedGameWindow) -> tuple[int, int, int
     except Exception:
         return None
     return None
+
+
+def _target_work_area_capture_rect(
+    target: DetectedGameWindow,
+    rect: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    work_rects = _target_monitor_work_rects(rect)
+    if not work_rects:
+        work_rect = _target_monitor_work_rect(target)
+        work_rects = [work_rect] if work_rect is not None else []
+    intersections = (
+        intersection
+        for work_rect in work_rects
+        if (intersection := _intersect_screen_rect(rect, work_rect)) is not None
+    )
+    return _bounding_screen_rect(intersections)
 
 
 def _target_window_uses_overlapped_chrome(target: DetectedGameWindow) -> bool:
@@ -2375,10 +2436,7 @@ def _target_screen_capture_rect(target: DetectedGameWindow) -> tuple[int, int, i
     rect = _target_content_rect(target)
     if not _target_window_uses_overlapped_chrome(target):
         return rect
-    work_rect = _target_monitor_work_rect(target)
-    if work_rect is None:
-        return rect
-    clipped = _intersect_screen_rect(rect, work_rect)
+    clipped = _target_work_area_capture_rect(target, rect)
     return clipped or rect
 
 
