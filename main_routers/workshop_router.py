@@ -81,6 +81,15 @@ WORKSHOP_CARD_FACE_PADDING = 48
 WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02
 WORKSHOP_CARD_FACE_MARKER_KEY = 'neko_workshop_card_face'
 WORKSHOP_CARD_FACE_MARKER_VALUE = 'steam_preview_v1'
+WORKSHOP_STANDARD_PREVIEW_STEMS = ('preview', 'thumbnail', 'icon', 'header')
+WORKSHOP_STANDARD_PREVIEW_EXTENSIONS = ('.jpg', '.png', '.jpeg', '.webp')
+WORKSHOP_PREVIEW_IMAGE_NAMES = tuple(
+    f'{stem}{ext}'
+    for stem in WORKSHOP_STANDARD_PREVIEW_STEMS
+    for ext in WORKSHOP_STANDARD_PREVIEW_EXTENSIONS
+)
+WORKSHOP_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+WORKSHOP_MODEL_TEXTURE_DIR_NAMES = {'texture', 'textures'}
 
 
 async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
@@ -642,17 +651,187 @@ def get_folder_size(folder_path):
     return total_size
 
 
-def find_preview_image_in_folder(folder_path):
-    """在文件夹中查找预览图片，只查找指定的8个图片名称"""
-    preview_image_names = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 
-                         'icon.jpg', 'icon.png', 'header.jpg', 'header.png']
-    
-    for image_name in preview_image_names:
+def _collect_workshop_character_name_hints(folder_path: str) -> set[str]:
+    hints: set[str] = set()
+    try:
+        for root, _dirs, filenames in os.walk(folder_path):
+            for filename in filenames:
+                if not filename.endswith('.chara.json'):
+                    continue
+                stem = filename[:-11].strip()
+                if stem:
+                    hints.add(stem)
+                chara_path = os.path.join(root, filename)
+                try:
+                    with open(chara_path, 'r', encoding='utf-8') as f:
+                        chara_data = json.load(f)
+                    if isinstance(chara_data, dict):
+                        chara_name = str(chara_data.get('档案名') or chara_data.get('name') or '').strip()
+                        if chara_name:
+                            hints.add(chara_name)
+                except Exception:
+                    continue
+    except Exception:
+        return hints
+    return hints
+
+
+def _collect_workshop_model_image_references(folder_path: str) -> set[str]:
+    references: set[str] = set()
+
+    def _walk_json_values(value, base_dir: str) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                _walk_json_values(item, base_dir)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk_json_values(item, base_dir)
+            return
+        if not isinstance(value, str):
+            return
+
+        normalized = value.replace('\\', '/').strip()
+        if not normalized:
+            return
+        ext = os.path.splitext(normalized)[1].lower()
+        if ext not in WORKSHOP_IMAGE_EXTENSIONS:
+            return
+        references.add(os.path.realpath(os.path.join(base_dir, normalized)))
+
+    try:
+        for root, _dirs, filenames in os.walk(folder_path):
+            for filename in filenames:
+                lower_name = filename.lower()
+                if not (
+                    lower_name.endswith('.model3.json')
+                    or lower_name == 'model.json'
+                    or lower_name.endswith('.model.json')
+                ):
+                    continue
+                model_path = os.path.join(root, filename)
+                try:
+                    with open(model_path, 'r', encoding='utf-8') as f:
+                        model_data = json.load(f)
+                    _walk_json_values(model_data, root)
+                except Exception:
+                    continue
+    except Exception:
+        return references
+    return references
+
+
+def _score_workshop_preview_candidate(
+    image_path: str,
+    folder_path: str,
+    character_name_hints: set[str],
+    model_image_references: set[str],
+) -> int:
+    rel_path = os.path.relpath(image_path, folder_path)
+    path_parts = Path(rel_path).parts
+    lower_name = os.path.basename(image_path).lower()
+    stem = os.path.splitext(os.path.basename(image_path))[0].strip()
+    depth = max(0, len(path_parts) - 1)
+    score = 0
+
+    if lower_name in WORKSHOP_PREVIEW_IMAGE_NAMES:
+        score += 120
+    if depth == 0:
+        score += 80
+    else:
+        score -= min(depth * 12, 48)
+
+    if any(part.startswith('.') for part in path_parts):
+        score -= 80
+    if any(part.lower() in WORKSHOP_MODEL_TEXTURE_DIR_NAMES for part in path_parts[:-1]):
+        score -= 120
+    if os.path.realpath(image_path) in model_image_references:
+        score -= 120
+
+    if stem:
+        for hint in character_name_hints:
+            if stem == hint:
+                score += 100
+                break
+            if stem in hint or hint in stem:
+                score += 40
+                break
+
+    try:
+        file_size = os.path.getsize(image_path)
+        if file_size <= 0:
+            score -= 200
+        elif file_size >= 8 * 1024:
+            score += 8
+    except OSError:
+        score -= 200
+
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(image_path) as img:
+            width, height = img.size
+        if width < 128 or height < 128:
+            score -= 80
+        else:
+            score += 12
+    except Exception:
+        score -= 160
+
+    return score
+
+
+def find_preview_image_in_folder(
+    folder_path,
+    character_name: str | None = None,
+    character_file_stem: str | None = None,
+):
+    """在 Workshop 内容目录中查找最适合作为预览/卡面的图片。"""
+    for image_name in WORKSHOP_PREVIEW_IMAGE_NAMES:
         image_path = os.path.join(folder_path, image_name)
         if os.path.exists(image_path) and os.path.isfile(image_path):
             return image_path
-    
-    return None
+
+    if character_name or character_file_stem:
+        character_name_hints = {
+            hint
+            for hint in (str(character_name or '').strip(), str(character_file_stem or '').strip())
+            if hint
+        }
+    else:
+        character_name_hints = _collect_workshop_character_name_hints(folder_path)
+    model_image_references = _collect_workshop_model_image_references(folder_path)
+    candidates: list[tuple[int, int, str]] = []
+
+    try:
+        for root, dirs, filenames in os.walk(folder_path):
+            dirs[:] = [dirname for dirname in dirs if not dirname.startswith('.')]
+            for filename in filenames:
+                if filename.startswith('.'):
+                    continue
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in WORKSHOP_IMAGE_EXTENSIONS:
+                    continue
+                image_path = os.path.join(root, filename)
+                if not os.path.isfile(image_path):
+                    continue
+                score = _score_workshop_preview_candidate(
+                    image_path,
+                    folder_path,
+                    character_name_hints,
+                    model_image_references,
+                )
+                depth = max(0, len(Path(os.path.relpath(image_path, folder_path)).parts) - 1)
+                candidates.append((score, -depth, image_path))
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+
+    best_score, _depth_score, best_path = max(candidates, key=lambda item: (item[0], item[1], item[2]))
+    if best_score <= 0:
+        return None
+    return best_path
 
 
 def _build_workshop_card_face_meta(item: dict) -> dict:
@@ -4120,7 +4299,6 @@ async def sync_workshop_character_cards() -> dict:
                     continue
                 
                 item_id = item.get('publishedFileId', '')
-                preview_image_path = find_preview_image_in_folder(installed_folder)
                 
                 # 3. 扫描 .chara.json 文件（递归遍历子目录）
                 try:
@@ -4150,6 +4328,12 @@ async def sync_workshop_character_cards() -> dict:
                                     item_id,
                                 )
                                 continue
+                            chara_file_stem = Path(chara_file_path).name[:-11]
+                            preview_image_path = find_preview_image_in_folder(
+                                installed_folder,
+                                chara_name,
+                                chara_file_stem,
+                            )
                             
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
                             # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）

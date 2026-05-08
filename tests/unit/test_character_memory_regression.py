@@ -930,6 +930,81 @@ async def test_sync_workshop_character_cards_counts_errors_when_existing_face_ba
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_sync_workshop_character_cards_uses_character_specific_preview_in_multi_card_item():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_multi_card_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "Alice.chara.json").write_text(
+                json.dumps({"档案名": "Alice", "昵称": "from workshop"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (installed_folder / "Bob.chara.json").write_text(
+                json.dumps({"档案名": "Bob", "昵称": "from workshop"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            Image.new("RGBA", (1024, 1024), (80, 160, 220, 255)).save(installed_folder / "Alice.png")
+            Image.new("RGBA", (1024, 1024), (120, 80, 180, 255)).save(installed_folder / "Bob.png")
+
+            preview_by_character = {}
+
+            def _capture_preview(_config_mgr, chara_name, preview_image_path, _item):
+                preview_by_character[chara_name] = Path(preview_image_path).name if preview_image_path else None
+                return True
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ), patch.object(
+                workshop_router_module,
+                "_ensure_workshop_card_face_from_preview",
+                side_effect=_capture_preview,
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 2
+            assert preview_by_character == {
+                "Alice": "Alice.png",
+                "Bob": "Bob.png",
+            }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sync_workshop_character_cards_persists_character_origin_metadata():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
