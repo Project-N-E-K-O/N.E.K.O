@@ -2376,7 +2376,8 @@ def _target_monitor_work_rects(
                 if _valid_screen_rect(work_rect):
                     work_rects.append(work_rect)
         return work_rects
-    except Exception:
+    except (ImportError, OSError):
+        _LOGGER.debug("failed to read target monitor work rects", exc_info=True)
         return []
 
 
@@ -2428,7 +2429,7 @@ def _target_content_rect(target: DetectedGameWindow) -> tuple[int, int, int, int
         if _valid_screen_rect(rect):
             return rect
     except Exception:
-        pass
+        _LOGGER.debug("_target_content_rect client rect lookup failed", exc_info=True)
     return _target_window_rect(target)
 
 

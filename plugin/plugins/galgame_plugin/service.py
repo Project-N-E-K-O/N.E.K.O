@@ -92,7 +92,7 @@ def _cached_install_inspection(
     with _INSTALL_INSPECT_CACHE_LOCK:
         cached = _INSTALL_INSPECT_CACHE.get(key)
         if cached is not None and now - cached[0] < _INSTALL_INSPECT_CACHE_TTL_SECONDS:
-            return copy.deepcopy(cached[1])
+            return dict(cached[1])
     value = factory()
     payload = copy.deepcopy(value if isinstance(value, dict) else {})
     with _INSTALL_INSPECT_CACHE_LOCK:
@@ -100,7 +100,7 @@ def _cached_install_inspection(
         if len(_INSTALL_INSPECT_CACHE) > 32:
             for stale_key in list(_INSTALL_INSPECT_CACHE)[:-32]:
                 _INSTALL_INSPECT_CACHE.pop(stale_key, None)
-    return copy.deepcopy(payload)
+    return dict(payload)
 
 
 def clear_install_inspection_cache() -> None:

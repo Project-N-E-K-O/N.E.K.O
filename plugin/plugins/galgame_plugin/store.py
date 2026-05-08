@@ -159,7 +159,7 @@ class GalgameStore:
 
     def _read(self, key: str, default: Any) -> Any:
         with self._locked_store():
-            self._load_values(force=True, locked=True)
+            self._load_values(locked=True)
             return self._values.get(key, default)
 
     def _write(self, key: str, value: Any) -> None:
