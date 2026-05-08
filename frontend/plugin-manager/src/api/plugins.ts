@@ -2,6 +2,7 @@
  * 插件相关 API
  */
 import { del, get, post } from './index'
+import { getLocale } from '@/i18n'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -17,7 +18,7 @@ import type {
  * 获取插件列表
  */
 export function getPlugins(): Promise<{ plugins: PluginMeta[]; message: string }> {
-  return get('/plugins')
+  return get('/plugins', { params: { locale: getLocale() } })
 }
 
 /**

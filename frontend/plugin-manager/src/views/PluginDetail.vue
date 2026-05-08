@@ -11,7 +11,7 @@
         <div class="card-header" data-yui-guide-id="plugin-detail-header">
           <div class="header-left" data-yui-guide-id="plugin-detail-title">
             <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
-            <h2>{{ plugin.name }}</h2>
+            <h2>{{ pluginName }}</h2>
           </div>
           <div data-yui-guide-id="plugin-detail-actions">
             <PluginActions :plugin-id="pluginId" />
@@ -91,7 +91,7 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ plugin.description || $t('common.noData') }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ pluginDescription }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
                 <el-tag size="small" :type="pluginTypeTagType">
                   {{ $t(pluginTypeText) }}
@@ -174,6 +174,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
@@ -187,11 +188,13 @@ import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { get } from '@/api'
+import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
+const { t, locale } = useI18n()
 
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
@@ -210,6 +213,28 @@ const hasStaticUI = ref(false)
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
+})
+
+const pluginName = computed(() => {
+  const current = plugin.value
+  if (!current) return ''
+  return resolvePluginI18nMessage(
+    current.i18n,
+    'plugin.name',
+    locale.value,
+    current.name || current.id,
+  )
+})
+
+const pluginDescription = computed(() => {
+  const current = plugin.value
+  if (!current) return t('common.noData')
+  return resolvePluginI18nMessage(
+    current.i18n,
+    'plugin.description',
+    locale.value,
+    current.description || t('common.noData'),
+  )
 })
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))

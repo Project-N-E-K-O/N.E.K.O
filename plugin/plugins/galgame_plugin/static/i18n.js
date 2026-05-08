@@ -31,16 +31,29 @@ const I18n = {
     return candidates;
   },
 
+  _queryLocale() {
+    try {
+      return new URLSearchParams(location.search).get('locale') || '';
+    } catch {
+      return '';
+    }
+  },
+
   async init(pluginId) {
     const encodedPluginId = encodeURIComponent(pluginId || 'galgame_plugin');
-    try {
-      const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
-      if (resp.ok) {
-        const data = await resp.json();
-        this._lang = data.locale || 'zh-CN';
+    const queryLocale = this._queryLocale();
+    if (queryLocale) {
+      this._lang = queryLocale;
+    } else {
+      try {
+        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
+        if (resp.ok) {
+          const data = await resp.json();
+          this._lang = data.locale || 'zh-CN';
+        }
+      } catch {
+        this._lang = 'zh-CN';
       }
-    } catch {
-      this._lang = 'zh-CN';
     }
 
     for (const locale of this._localeCandidates(this._lang)) {

@@ -59,6 +59,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
+import { withGalgameStaticUiLocale } from '@/components/plugin/staticUiUrl'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -96,12 +97,16 @@ const surfaceTitle = computed(() => {
 
 const surfaceUrl = computed(() => {
   const explicitUrl = props.surface.url || props.surface.ui_path
-  if (explicitUrl) return explicitUrl
+  if (explicitUrl) {
+    return props.surface.mode === 'static'
+      ? withGalgameStaticUiLocale(explicitUrl, props.pluginId, String(locale.value))
+      : explicitUrl
+  }
   if (props.surface.mode === 'static') {
     // LEGACY_STATIC_UI_COMPAT:
     // Static surfaces currently use the old /plugin/{id}/ui/ route.
     // Later this URL should come from the unified surface metadata.
-    return `/plugin/${encodeURIComponent(props.pluginId)}/ui/`
+    return withGalgameStaticUiLocale(`/plugin/${encodeURIComponent(props.pluginId)}/ui/`, props.pluginId, String(locale.value))
   }
   return ''
 })

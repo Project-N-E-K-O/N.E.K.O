@@ -106,6 +106,7 @@ export function usePackageManager() {
           type: normalizePluginType(plugin.type),
           status: plugin.status,
           host_plugin_id: plugin.host_plugin_id,
+          i18n: plugin.i18n,
           entries: plugin.entries || [],
           runtime_enabled: plugin.runtime_enabled,
           runtime_auto_start: plugin.runtime_auto_start,
