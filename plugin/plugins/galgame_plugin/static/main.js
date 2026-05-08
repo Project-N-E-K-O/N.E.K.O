@@ -4297,6 +4297,7 @@ function renderStatus(status) {
   renderStatusGrid(userStatusRows, debugStatusRows);
 
   renderOcrRuntime(status);
+  renderSnapshotGridFromLatestData();
   renderAgentUserNotice(status);
   syncAgentResumeButton(status);
   syncAutoRefreshIntervalForStatus(status);
@@ -4763,6 +4764,24 @@ function renderOcrRuntime(status) {
     { label: 'candidate_count', value: String(fromWindow('candidate_count') || 0) },
     { label: 'excluded_candidate_count', value: String(fromWindow('excluded_candidate_count') || 0) },
     { label: 'last_exclude_reason', value: fromWindow('last_exclude_reason') || '' },
+  ]);
+}
+
+function renderSnapshotGridFromLatestData() {
+  const snapshot = latestSnapshotData || {};
+  const state = snapshot.snapshot || {};
+  renderGrid('snapshotGrid', [
+    { label: 'game_id', value: snapshot.game_id || '' },
+    { label: 'session_id', value: snapshot.session_id || '' },
+    { label: 'speaker', value: state.speaker || '' },
+    { label: 'text', value: state.text || '' },
+    { label: 'stability', value: state.stability || '' },
+    { label: 'scene_id', value: state.scene_id || '' },
+    { label: 'line_id', value: state.line_id || '' },
+    { label: 'route_id', value: state.route_id || '' },
+    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
+    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
+    { label: 'stale', value: String(Boolean(snapshot.stale)) },
   ]);
 }
 
@@ -5713,23 +5732,6 @@ function renderOcrProfile(status) {
   }
 }
 
-function renderSnapshot(snapshot) {
-  const state = snapshot.snapshot || {};
-  renderGrid('snapshotGrid', [
-    { label: 'game_id', value: snapshot.game_id || '' },
-    { label: 'session_id', value: snapshot.session_id || '' },
-    { label: 'speaker', value: state.speaker || '' },
-    { label: 'text', value: state.text || '' },
-    { label: 'stability', value: state.stability || '' },
-    { label: 'scene_id', value: state.scene_id || '' },
-    { label: 'line_id', value: state.line_id || '' },
-    { label: 'route_id', value: state.route_id || '' },
-    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
-    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
-    { label: 'stale', value: String(Boolean(snapshot.stale)) },
-  ]);
-}
-
 function renderHistory(history) {
   const mergedLines = mergedHistoryLines(history);
   const runtime = latestStatus?.ocr_reader_runtime || {};
@@ -6222,7 +6224,6 @@ async function refreshAll(options = {}) {
       const agentStatus = status.agent || buildAgentStatusFromStatus(status);
       latestSnapshotData = snapshot;
       renderStatus(status);
-      renderSnapshot(snapshot);
       renderHistory(history);
       renderAgentStatus(agentStatus);
       restoreRefreshScrollState(scrollState);

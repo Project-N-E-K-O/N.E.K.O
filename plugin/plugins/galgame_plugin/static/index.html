@@ -470,8 +470,8 @@
 
         <section class="dashboard-grid">
           <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.status">运行状态</span><small data-i18n="ui.dashboard.status_desc">连接、数据源、OCR 运行时</small></summary>
-            <div class="dashboard-section-grid">
+            <summary><span data-i18n="ui.dashboard.status">运行状态与快照</span><small data-i18n="ui.dashboard.status_desc">连接、数据源、OCR 运行时、当前台词与快照</small></summary>
+            <div class="dashboard-section-grid dashboard-section-grid-three">
               <section class="dashboard-subsection">
                 <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.status_short">状态</h3>
                 <div id="statusGrid" class="status-grid-panel scroll-region"></div>
@@ -480,12 +480,11 @@
                 <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.ocr_runtime">OCR 运行时</h3>
                 <dl id="ocrRuntimeGrid" class="data-grid scroll-region"></dl>
               </section>
+              <section class="dashboard-subsection">
+                <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.snapshot_subsection">快照</h3>
+                <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
+              </section>
             </div>
-          </details>
-
-          <details class="panel panel-scroll dashboard-module">
-            <summary><span data-i18n="ui.dashboard.snapshot">当前快照</span><small data-i18n="ui.dashboard.snapshot_desc">当前台词、选项、菜单状态</small></summary>
-            <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
           </details>
 
           <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module agent-panel" open>
