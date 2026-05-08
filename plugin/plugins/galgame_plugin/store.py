@@ -31,6 +31,7 @@ from .models import (
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
+    STORE_TUTORIAL_PROGRESS,
     build_ocr_capture_profile_bucket_key,
     compute_ocr_window_aspect_ratio,
     parse_ocr_capture_profile_bucket_key,
@@ -496,6 +497,15 @@ class GalgameStore:
         for warning in warnings:
             self._logger.warning(warning)
         self._write(STORE_MEMORY_READER_TARGET, payload)
+
+    def load_tutorial_progress(self) -> dict[str, Any] | None:
+        raw = self._read(STORE_TUTORIAL_PROGRESS, None)
+        if isinstance(raw, dict):
+            return raw
+        return None
+
+    def save_tutorial_progress(self, progress: dict[str, Any]) -> None:
+        self._write(STORE_TUTORIAL_PROGRESS, dict(progress))
 
     def clear_runtime(self) -> None:
         self.persist_runtime(

@@ -3,6 +3,7 @@
         "load": "加载",
         "minimize": "最小化",
         "maximize": "最大化",
+        "restore": "恢复",
         "expand": "展开",
         "close": "关闭",
         "save": "保存",
@@ -809,7 +810,12 @@
         "volumeHintDetecting": "正在检测麦克风输入...",
         "volumeHintNoSound": "检测不到声音，请检查麦克风",
         "volumeHintLow": "音量较低，建议调高增益",
+        "volumeHintHigh": "音量偏高，建议调低增益",
         "volumeHintOk": "麦克风工作正常",
+        "volumeClipping": "过载",
+        "volumeHintClipping": "麦克风增益过高，音频已削顶，AI 可能识别异常，请调低增益",
+        "volumeWaiting": "等待声音",
+        "volumeHintWaiting": "麦克风正在监听，请说话",
         "noiseReduction": "降噪",
         "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
     },
@@ -1491,7 +1497,8 @@
             "gentleMaiden": "温柔少女",
             "sweetLady": "甜美御姐",
             "frailMaiden": "病弱少女",
-            "childishMaiden": "稚气少女"
+            "childishMaiden": "稚气少女",
+            "yui_cn": "YUI（中文）"
         },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地文件",
@@ -2309,6 +2316,7 @@
             "avatarReactionBubble": "表情气泡",
             "proactiveChat": "主动搭话",
             "proactiveVision": "隐私模式",
+            "proactiveVisionTooltip": "关闭时：猫娘会根据活跃窗口的标题改变活跃度与搭话模式，可能会在搭话时结合屏幕内容。\n开启时：猫娘无法主动观看屏幕，也无法了解你正在做什么。你仍然可以主动发送截图。",
             "proactiveVisionChat": "屏幕分享",
             "proactiveVisionChatTooltip": "需开启主动搭话且关闭隐私模式",
             "proactiveNewsChat": "新闻网站",

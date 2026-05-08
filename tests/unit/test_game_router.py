@@ -51,9 +51,7 @@ def test_soccer_prompt_marks_game_event_text_as_not_user_speech():
 
 
 @pytest.mark.unit
-def test_neutral_pregame_context_uses_lv2_lv3_default(monkeypatch):
-    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv3")
-
+def test_neutral_pregame_context_falls_back_to_lv2_default():
     context, invalid = game_router._normalize_soccer_pregame_context({
         "gameStance": "neutral_play",
         "initialDifficulty": "max",
@@ -62,13 +60,11 @@ def test_neutral_pregame_context_uses_lv2_lv3_default(monkeypatch):
 
     assert invalid is True
     assert context["gameStance"] == "neutral_play"
-    assert context["initialDifficulty"] == "lv3"
+    assert context["initialDifficulty"] == "lv2"
 
 
 @pytest.mark.unit
-def test_special_pregame_context_can_keep_max_difficulty(monkeypatch):
-    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
-
+def test_special_pregame_context_can_keep_max_difficulty():
     context, invalid = game_router._normalize_soccer_pregame_context({
         "gameStance": "punishing",
         "initialDifficulty": "max",
@@ -329,7 +325,6 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
-    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv3")
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
         "master_name": "玩家",
@@ -360,13 +355,12 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     assert source == "fallback"
     assert error == "invalid_json"
     assert context["gameStance"] == "neutral_play"
-    assert context["initialDifficulty"] == "lv3"
+    assert context["initialDifficulty"] == "lv2"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
-    monkeypatch.setattr(game_router.random, "choice", lambda seq: "lv2")
     monkeypatch.setattr(game_router, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
         "master_name": "玩家",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import fields
 import hashlib
 import json
@@ -1480,7 +1481,58 @@ async def test_ocr_reader_capture_timeout_returns_capture_failed_runtime(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture(
+async def test_ocr_reader_backpressure_skip_is_not_capture_error(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    pending: Future[OcrExtractionResult] = Future()
+    with manager._capture_worker_lock:
+        manager._capture_future = pending
+        manager._capture_future_started_at = time.monotonic()
+        manager._capture_future_timed_out = False
+    manager._last_capture_error = "previous capture failed"
+    manager._runtime.detail = "capture_failed"
+    manager._runtime.last_capture_error = "previous capture failed"
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert result.runtime["detail"] == "capture_backpressure"
+        assert result.runtime["last_capture_error"] == ""
+        assert any("tick skipped" in warning and "still running" in warning for warning in result.warnings)
+    finally:
+        pending.cancel()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1495,14 +1547,16 @@ async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture
         def extract_text(self, image: str) -> str:
             del image
             self.calls += 1
-            started.set()
-            release.wait(timeout=2.0)
+            if self.calls == 1:
+                started.set()
+                release.wait(timeout=2.0)
             return "雪乃：恢复后的台词。"
 
     backend = _BlockingOcrBackend()
+    logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
     manager = OcrReaderManager(
-        logger=_Logger(),
+        logger=logger,
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
@@ -1527,18 +1581,163 @@ async def test_ocr_reader_capture_timeout_does_not_overlap_still_running_capture
 
     try:
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        assert started.wait(timeout=0.5) is True
+        assert started.wait(timeout=2.0) is True
         assert first.runtime["detail"] == "capture_failed"
         assert "timed out" in first.runtime["last_capture_error"]
 
         second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
         assert backend.calls == 1
-        assert second.runtime["detail"] == "capture_failed"
-        assert "still running" in second.runtime["last_capture_error"]
-        assert any("still running" in warning for warning in second.warnings)
+        assert second.runtime["detail"] == "capture_backpressure"
+        assert second.runtime["last_capture_error"] == ""
+        assert not any(
+            warning[0] == "ocr_reader replacing stuck capture worker after %.1fs timeout"
+            for warning in logger.warnings
+        )
+
+        with manager._capture_worker_lock:
+            manager._capture_future_started_at = time.monotonic() - 1.0
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 2
+        assert third.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
+            for warning in logger.warnings
+        )
     finally:
         release.set()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    backend = _FakeOcrBackend(["雪乃：恢复后的台词。"])
+    logger = _CapturingLogger()
+    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=backend,
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    pending: Future[OcrExtractionResult] = Future()
+    with manager._capture_worker_lock:
+        manager._capture_future = pending
+        manager._capture_future_started_at = time.monotonic() - 1.0
+        manager._capture_future_timed_out = True
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert pending.cancelled()
+        assert backend.calls == 1
+        assert result.runtime["detail"] == "receiving_text"
+        assert any(
+            warning[0]
+            == "ocr_reader rotating timed-out capture executor after {:.1f}s; cancel_requested={}"
+            for warning in logger.warnings
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_capture_timeout_recovery_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    install_root = tmp_path / "Tesseract"
+    _install_fake_tesseract(install_root)
+    backend = _FakeOcrBackend(["雪乃：不应执行。"])
+    logger = _CapturingLogger()
+    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(
+            bridge_root,
+            install_target_dir=str(install_root),
+            rapidocr_enabled=False,
+        ),
+        time_fn=lambda: 3001.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=102,
+                title="Demo Window",
+                process_name="DemoGame.exe",
+                pid=4243,
+                width=1280,
+                height=720,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=backend,
+        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
+    )
+    abandoned: Future[OcrExtractionResult] = Future()
+    assert abandoned.set_running_or_notify_cancel()
+    current: Future[OcrExtractionResult] = Future()
+    assert current.set_running_or_notify_cancel()
+    abandoned_executor = ThreadPoolExecutor(max_workers=1)
+    current_executor = manager._capture_executor
+    assert current_executor is not None
+    with manager._capture_worker_lock:
+        manager._abandoned_capture_workers = [(abandoned_executor, abandoned)]
+        manager._capture_future = current
+        manager._capture_future_started_at = time.monotonic() - 1.0
+        manager._capture_future_timed_out = True
+
+    try:
+        result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 0
+        assert result.runtime["detail"] == "capture_failed"
+        assert "recovery limit reached" in result.runtime["last_capture_error"]
+        assert any(
+            "capture timed out" in warning and "recovery limit reached" in warning
+            for warning in result.warnings
+        )
+        with manager._capture_worker_lock:
+            assert manager._capture_future is None
+            assert manager._capture_executor is None
+            assert manager._capture_future_timed_out is False
+            assert manager._abandoned_capture_workers == [
+                (abandoned_executor, abandoned),
+            ]
+
+        retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        assert backend.calls == 1
+        assert retry.runtime["detail"] == "receiving_text"
+    finally:
         await manager.shutdown()
 
 
@@ -3770,9 +3969,22 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         "load_rapidocr_runtime",
         lambda **_kwargs: (object(), {"detected_path": str(package_dir)}),
     )
+    # Force the bundled-spec branch off so the legacy plugin-isolated path
+    # is exercised. In a uv-synced dev env rapidocr_onnxruntime is bundled
+    # and would shadow the legacy fixture; we want to test the fallback
+    # specifically. Also pin lang to "ch" so the (now-japan) default
+    # doesn't flip the result to `missing_model_files` for an unrelated
+    # reason — this test is about legacy path detection, not models.
+    monkeypatch.setattr(
+        galgame_rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: None,
+    )
 
     status = galgame_rapidocr_support.inspect_rapidocr_installation(
         install_target_dir_raw="",
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
         platform_fn=lambda: True,
     )
 

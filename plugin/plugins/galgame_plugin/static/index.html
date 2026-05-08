@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title data-i18n="ui.app.title">Galgame 游玩助手</title>
-  <link rel="stylesheet" href="./style.css?v=20260502-ocr-window-collapse">
+  <link rel="stylesheet" href="./style.css?v=20260507-install-card-merge">
 </head>
 <body>
   <div class="page-shell">
@@ -32,7 +32,7 @@
 
       <header class="hero">
         <div>
-          <h1 class="hero-title" data-i18n="ui.app.title">Galgame 游玩助手</h1>
+          <h1 class="hero-title"><span class="neko-ears" aria-hidden="true">🐱</span> <span data-i18n="ui.app.title">Galgame 游玩助手</span></h1>
           <span id="summaryText" class="summary-pill" data-i18n="ui.summary.waiting_refresh">等待首次刷新</span>
         </div>
         <div class="hero-right">
@@ -63,6 +63,14 @@
           </div>
         </div>
       </header>
+
+      <section id="firstRunGuide" class="first-run-guide" hidden>
+        <div class="first-run-guide-head">
+          <h2 class="first-run-guide-title" data-i18n="ui.first_run.section_title">首次配置引导</h2>
+          <p class="first-run-guide-subtitle" data-i18n="ui.first_run.section_subtitle">按下面几步把识别流程接起来。</p>
+        </div>
+        <div id="firstRunSteps" class="first-run-steps"></div>
+      </section>
 
       <section id="primaryDiagnosisPanel" class="primary-diagnosis info" aria-live="polite">
         <div class="primary-diagnosis-copy">
@@ -113,6 +121,10 @@
 
       <!-- ========== 阶段 C: 高级设置 ========== -->
       <div id="advancedSettings">
+
+        <div class="advanced-guide-row">
+          <button id="resetTutorialBtn" class="secondary" data-first-run-action="reset_tutorial" data-i18n="ui.first_run.action.reset_tutorial">重新打开设置引导</button>
+        </div>
 
         <section id="ocrPipelinePanel" class="ocr-pipeline-panel">
           <div class="ocr-pipeline-head">
@@ -273,48 +285,6 @@
                 </div>
               </div>
 
-              <div class="settings-subpanel screen-template-panel">
-                <div class="panel-title-row compact">
-                  <div>
-                    <h3 data-i18n="ui.screen_templates.title">屏幕模板</h3>
-                    <p class="section-copy" data-i18n="ui.screen_templates.desc">按进程、窗口标题或关键词覆盖通用屏幕分类；AiHong 专用逻辑仍优先。</p>
-                  </div>
-                  <div class="inline-actions">
-                    <button id="ocrScreenTemplatesDraftBtn" class="secondary" data-i18n="ui.screen_templates.draft">生成草稿</button>
-                    <button id="ocrScreenTemplatesValidateBtn" class="ghost" data-i18n="ui.screen_templates.validate">验证模板</button>
-                    <button id="ocrScreenTemplatesUndoBtn" class="ghost" disabled data-i18n="ui.screen_templates.undo">撤销草稿</button>
-                    <button id="ocrScreenTemplatesSaveBtn" class="secondary" data-i18n="ui.screen_templates.save">保存模板</button>
-                  </div>
-                </div>
-                <label class="field">
-                  <span data-i18n="ui.screen_templates.json_label">模板 JSON</span>
-                  <textarea id="ocrScreenTemplatesInput" rows="5" spellcheck="false" placeholder='[{"id":"demo-gallery","stage":"gallery_stage","process_names":["game.exe"],"keywords":["Gallery","CG"],"min_keyword_hits":1}]'></textarea>
-                </label>
-                <div class="screen-region-editor">
-                  <div class="screen-region-toolbar">
-                    <select id="ocrRegionStageSelect" aria-label="区域阶段" data-i18n-aria-label="ui.screen_templates.stage_label">
-                      <option value="dialogue_stage" data-i18n="ui.stage.dialogue">对白区</option>
-                      <option value="menu_stage" data-i18n="ui.stage.menu">菜单区</option>
-                      <option value="title_stage" data-i18n="ui.stage.title">标题/主菜单</option>
-                      <option value="save_load_stage" data-i18n="ui.stage.save_load">存读档</option>
-                      <option value="config_stage" data-i18n="ui.stage.config">设置</option>
-                      <option value="gallery_stage" data-i18n="ui.stage.gallery">回想/鉴赏</option>
-                      <option value="minigame_stage" data-i18n="ui.stage.minigame">小游戏</option>
-                      <option value="game_over_stage" data-i18n="ui.stage.game_over">Game Over</option>
-                    </select>
-                    <button id="ocrRegionSnapshotBtn" class="secondary" data-i18n="ui.screen_templates.load_snapshot">加载截图</button>
-                    <button id="ocrRegionTemplateBtn" class="ghost" data-i18n="ui.screen_templates.region_template">区域生成模板</button>
-                    <button id="ocrRegionCaptureBtn" class="ghost" data-i18n="ui.screen_templates.apply_to_crop">套用到裁剪</button>
-                  </div>
-                  <div id="ocrRegionEditor" class="screen-region-canvas" aria-label="OCR 区域编辑器" data-i18n-aria-label="ui.screen_templates.region_editor_label">
-                    <img id="ocrRegionImage" alt="" hidden>
-                    <div id="ocrRegionSelectionBox" class="screen-region-selection" hidden></div>
-                    <div id="ocrRegionEmpty" class="screen-region-empty" data-i18n="ui.screen_templates.no_snapshot">暂无截图</div>
-                  </div>
-                  <p id="ocrRegionHint" class="result-note" data-i18n="ui.screen_templates.region_hint">加载最近 OCR 屏幕感知截图后，拖拽框选区域。</p>
-                </div>
-              </div>
-
               <div class="settings-subpanel capture-profile-panel">
                 <div class="panel-title-row compact">
                   <div>
@@ -394,134 +364,93 @@
               <span data-i18n="ui.install.title">依赖安装</span>
               <small id="installCompactSummary" data-i18n="ui.install.summary">OCR 识别依赖与内存读取依赖分开管理</small>
             </summary>
-            <div class="module-body install-stack">
-              <section class="install-module install-module-ocr">
-                <div class="install-module-head">
-                  <div>
-                    <p class="list-kicker" data-i18n="ui.install.ocr_module">OCR 识别模块</p>
-                    <h3 data-i18n="ui.install.ocr_deps">OCR Reader 依赖</h3>
-                  </div>
-                  <p class="install-module-summary" data-i18n="ui.install.ocr_desc">RapidOCR 是主识别后端，DXcam 负责稳定截图，Tesseract 仅作为兼容兜底。</p>
-                </div>
-                <div class="install-tabs">
-                  <!-- rapidocr / dxcam tab buttons removed: their banners are
-                       always visible (no install-task tab logic anymore since
-                       both are bundled main-program deps). Only tesseract
-                       still has runtime install machinery. -->
-                  <button class="install-tab active" data-install-tab="tesseract">Tesseract</button>
-                </div>
-                <div class="install-panels install-panels-ocr">
-              <div id="rapidocrPrompt" class="install-banner install-banner-rapidocr" hidden>
-                <div class="install-copy">
-                  <p id="rapidocrPromptKicker" class="list-kicker" data-i18n="ui.install.rapidocr.kicker">OCR 主后端</p>
-                  <h3 id="rapidocrPromptTitle" data-i18n="ui.install.rapidocr.checking">正在检测 RapidOCR</h3>
-                  <p id="rapidocrPromptBody" data-i18n="ui.install.rapidocr.body">插件隔离的 RapidOCR 运行时检测结果会显示在这里。</p>
-                  <p id="rapidocrPathText" class="result-note"></p>
-                  <div id="rapidocrInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="rapidocrInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="rapidocrInstallPercent" class="install-task-percent">0%</p>
+            <div class="module-body">
+              <div class="install-card-grid">
+                <div id="rapidocrCard" class="install-card" data-dep="rapidocr">
+                  <div class="install-card-icon">🔍</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.rapidocr.card_title">RapidOCR</h3>
+                      <span id="rapidocrCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="rapidocrInstallBar" class="install-task-bar-fill"></div>
+                    <p id="rapidocrCardDesc" class="install-card-desc" data-i18n="ui.install.rapidocr.body">OCR 文字识别主后端</p>
+                    <p id="rapidocrCardMeta" class="install-card-meta"></p>
+                    <div id="rapidocrInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="rapidocrInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="rapidocrInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="rapidocrInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="rapidocrInstallMessage" class="result-note"></p>
+                      <p id="rapidocrInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="rapidocrInstallMessage" class="result-note"></p>
-                    <p id="rapidocrInstallDetail" class="result-note"></p>
+                    <div id="rapidocrCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="rapidocrUseBtn" class="secondary" data-i18n="ui.install.rapidocr.use">使用 RapidOCR</button>
-                  <button id="ocrBackendAutoBtn" class="ghost" data-i18n="ui.install.ocr_auto">OCR 自动</button>
-                </div>
-              </div>
 
-              <div id="dxcamPrompt" class="install-banner install-banner-dxcam" hidden>
-                <div class="install-copy">
-                  <p id="dxcamPromptKicker" class="list-kicker" data-i18n="ui.install.dxcam.kicker">截图依赖</p>
-                  <h3 id="dxcamPromptTitle" data-i18n="ui.install.dxcam.checking">正在检测 DXcam</h3>
-                  <p id="dxcamPromptBody" data-i18n="ui.install.dxcam.body">DXcam 用于更可靠地截取前台游戏画面，降低被插件页面遮挡或旧帧影响的概率。</p>
-                  <p id="dxcamPathText" class="result-note"></p>
-                  <div id="dxcamInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="dxcamInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="dxcamInstallPercent" class="install-task-percent">0%</p>
+                <div id="dxcamCard" class="install-card" data-dep="dxcam">
+                  <div class="install-card-icon">📷</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.dxcam.card_title">DXcam</h3>
+                      <span id="dxcamCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="dxcamInstallBar" class="install-task-bar-fill"></div>
-                    </div>
-                    <p id="dxcamInstallMessage" class="result-note"></p>
-                    <p id="dxcamInstallDetail" class="result-note"></p>
+                    <p id="dxcamCardDesc" class="install-card-desc" data-i18n="ui.install.dxcam.body">屏幕截图依赖</p>
+                    <p id="dxcamCardMeta" class="install-card-meta"></p>
+                    <div id="dxcamCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="smartCaptureUseBtn" class="secondary" data-i18n="ui.install.smart.use">使用 Smart</button>
-                  <button id="dxcamUseBtn" class="secondary" data-i18n="ui.install.dxcam.use">使用 DXcam</button>
-                  <button id="captureBackendAutoBtn" class="ghost" data-i18n="ui.install.capture_auto">截图自动</button>
-                  <button id="mssUseBtn" class="ghost" data-i18n="ui.install.mss.use">使用 MSS</button>
-                  <button id="pyautoguiUseBtn" class="ghost" data-i18n="ui.install.pyautogui.use">使用 PyAutoGUI</button>
-                  <button id="printwindowUseBtn" class="ghost" data-i18n="ui.install.printwindow.use">使用 PrintWindow</button>
-                </div>
-              </div>
 
-              <div id="tesseractPrompt" class="install-banner install-banner-tesseract" hidden>
-                <div class="install-copy">
-                  <p id="tesseractPromptKicker" class="list-kicker" data-i18n="ui.install.tesseract.kicker">OCR 兼容兜底</p>
-                  <h3 id="tesseractPromptTitle" data-i18n="ui.install.tesseract.checking">正在检测 Tesseract</h3>
-                  <p id="tesseractPromptBody" data-i18n="ui.install.tesseract.body">本地 Tesseract 与 `chi_sim+jpn+eng` 语言包的兼容兜底检测结果会显示在这里。</p>
-                  <p id="tesseractPathText" class="result-note"></p>
-                  <div id="tesseractInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="tesseractInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="tesseractInstallPercent" class="install-task-percent">0%</p>
+                <div id="tesseractCard" class="install-card" data-dep="tesseract">
+                  <div class="install-card-icon">📝</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.tesseract.card_title">Tesseract</h3>
+                      <span id="tesseractCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="tesseractInstallBar" class="install-task-bar-fill"></div>
+                    <p id="tesseractCardDesc" class="install-card-desc" data-i18n="ui.install.tesseract.body">OCR 兼容兜底</p>
+                    <p id="tesseractCardMeta" class="install-card-meta"></p>
+                    <div id="tesseractInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="tesseractInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="tesseractInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="tesseractInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="tesseractInstallMessage" class="result-note"></p>
+                      <p id="tesseractInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="tesseractInstallMessage" class="result-note"></p>
-                    <p id="tesseractInstallDetail" class="result-note"></p>
+                    <div id="tesseractCardActions" class="install-card-actions"></div>
                   </div>
                 </div>
-                <div class="install-actions">
-                  <button id="tesseractUseBtn" class="secondary" data-i18n="ui.install.tesseract.use">使用 Tesseract</button>
-                  <button id="tesseractInstallBtn" class="primary" data-i18n="ui.install.tesseract.action">一键安装 Tesseract</button>
-                </div>
-              </div>
-                </div>
-              </section>
 
-              <section class="install-module install-module-memory">
-                <div class="install-module-head">
-                  <div>
-                    <p class="list-kicker" data-i18n="ui.install.memory_module">内存读取模块</p>
-                    <h3 data-i18n="ui.install.memory_deps">Memory Reader 依赖</h3>
-                  </div>
-                  <p class="install-module-summary" data-i18n="ui.install.memory_desc">Textractor 只服务于内存读取兜底路径，不影响 OCR 截图识别链路。</p>
-                </div>
-                <div class="install-panels install-panels-memory">
-              <div id="textractorPrompt" class="install-banner install-banner-textractor">
-                <div class="install-copy">
-                  <p id="textractorPromptKicker" class="list-kicker" data-i18n="ui.install.textractor.kicker">实验性兜底</p>
-                  <h3 id="textractorPromptTitle" data-i18n="ui.install.textractor.checking">正在检测 Textractor</h3>
-                  <p id="textractorPromptBody" data-i18n="ui.install.textractor.body">Textractor 仍保留为 Memory Reader 的实验性兜底，不再是当前首发主线。</p>
-                  <p id="textractorPathText" class="result-note"></p>
-                  <div id="textractorInstallState" class="install-task-card" hidden>
-                    <div class="install-task-head">
-                      <p id="textractorInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
-                      <p id="textractorInstallPercent" class="install-task-percent">0%</p>
+                <div id="textractorCard" class="install-card" data-dep="textractor">
+                  <div class="install-card-icon">🧵</div>
+                  <div class="install-card-body">
+                    <div class="install-card-head">
+                      <h3 data-i18n="ui.install.textractor.card_title">Textractor</h3>
+                      <span id="textractorCardChip" class="install-card-chip" data-i18n="ui.install.status.checking">检测中</span>
                     </div>
-                    <div class="install-task-bar">
-                      <div id="textractorInstallBar" class="install-task-bar-fill"></div>
+                    <p id="textractorCardDesc" class="install-card-desc" data-i18n="ui.install.textractor.body">内存读取兜底</p>
+                    <p id="textractorCardMeta" class="install-card-meta"></p>
+                    <div id="textractorInstallCard" class="install-task-card" hidden>
+                      <div class="install-task-head">
+                        <p id="textractorInstallStatusText" class="install-task-status" data-i18n="ui.install.waiting_task">等待安装任务</p>
+                        <p id="textractorInstallPercent" class="install-task-percent">0%</p>
+                      </div>
+                      <div class="install-task-bar">
+                        <div id="textractorInstallBar" class="install-task-bar-fill"></div>
+                      </div>
+                      <p id="textractorInstallMessage" class="result-note"></p>
+                      <p id="textractorInstallDetail" class="result-note"></p>
                     </div>
-                    <p id="textractorInstallMessage" class="result-note"></p>
-                    <p id="textractorInstallDetail" class="result-note"></p>
+                    <div id="textractorCardActions" class="install-card-actions"></div>
                   </div>
-                </div>
-                <div class="install-actions">
-                  <button id="textractorInstallBtn" class="secondary" data-i18n="ui.install.textractor.action">一键安装 Textractor</button>
                 </div>
               </div>
-                </div>
-              </section>
             </div>
           </details>
         </section>
@@ -546,39 +475,26 @@
             <dl id="snapshotGrid" class="data-grid scroll-region"></dl>
           </details>
 
-          <details class="panel panel-scroll dashboard-module">
-            <summary><span data-i18n="ui.dashboard.agent">游戏 Agent 状态</span><small data-i18n="ui.dashboard.agent_desc">用户级状态和调试输入</small></summary>
-            <div id="agentStatusGrid" class="data-grid scroll-region"></div>
-            <div class="reply-box">
-              <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
-              <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
+          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module agent-panel" open>
+            <summary><span data-i18n="ui.dashboard.agent_panel">Agent</span><small id="agentPanelSummary"></small></summary>
+            <div class="agent-panel-tabs" role="tablist">
+              <button id="agentTabStatus" class="agent-tab active" type="button" role="tab" aria-selected="true" aria-controls="agentPanelStatus" data-agent-tab="status" data-i18n="ui.agent.tab_status">状态</button>
+              <button id="agentTabSuggest" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelSuggest" data-agent-tab="suggest" data-i18n="ui.agent.tab_suggest">建议</button>
+              <button id="agentTabPushes" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="agentPanelPushes" data-agent-tab="pushes" data-i18n="ui.agent.tab_pushes">推送记录</button>
             </div>
-            <details class="agent-debug-tools">
-              <summary data-i18n="ui.agent.debug_input">Agent 调试输入</summary>
-              <div class="control-grid agent-grid">
-                <label class="field grow">
-                  <span data-i18n="ui.agent.prompt_label">给游戏 Agent 的文本</span>
-                  <input id="agentPromptInput" type="text" placeholder="例如：现在在讲什么？" data-i18n-placeholder="ui.agent.prompt_placeholder">
-                </label>
-                <button id="queryContextBtn" class="secondary" data-i18n="ui.agent.query_context">查询上下文</button>
-                <button id="sendMessageBtn" class="secondary" data-i18n="ui.agent.send_message">发送消息</button>
+            <div id="agentPanelStatus" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabStatus" aria-hidden="false" data-agent-tab-panel="status">
+              <div id="agentStatusGrid" class="data-grid scroll-region empty-state" data-i18n="ui.agent.empty_status">Agent 正在整理小本本，等第一次状态刷新。</div>
+              <div class="reply-box">
+                <h3 data-i18n="ui.agent.latest_reply">游戏 Agent 最近响应</h3>
+                <p id="agentReplyText" class="reply-text-scroll" data-i18n="ui.agent.no_interaction">暂无交互</p>
               </div>
-            </details>
-          </details>
-
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.ai_assistant">AI 助手</span><small data-i18n="ui.dashboard.suggest">选项建议</small></summary>
-            <div class="dashboard-section-grid">
-              <section class="dashboard-subsection">
-              <h3 class="dashboard-subtitle" data-i18n="ui.dashboard.suggest">选项建议</h3>
-                <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
-              </section>
             </div>
-          </details>
-
-          <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
-            <summary><span data-i18n="ui.dashboard.pushes">游戏 Agent 推送记录</span><small data-i18n="ui.dashboard.pushes_desc">排队给猫娘侧的消息</small></summary>
-            <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+            <div id="agentPanelSuggest" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabSuggest" aria-hidden="true" data-agent-tab-panel="suggest" hidden>
+              <div id="suggestPanelMirror" class="result-panel scroll-region empty-state" data-i18n="ui.agent.empty_suggest">还没有建议，等画面出现选项再轻轻递上来。</div>
+            </div>
+            <div id="agentPanelPushes" class="agent-panel-body" role="tabpanel" aria-labelledby="agentTabPushes" aria-hidden="true" data-agent-tab-panel="pushes" hidden>
+              <div id="pushesList" class="stack-list scroll-region empty-state" data-i18n="ui.empty.no_data">暂无数据</div>
+            </div>
           </details>
 
           <details class="panel panel-full panel-scroll panel-scroll-wide dashboard-module">
@@ -632,14 +548,9 @@
 
     </div><!-- /mainView -->
 
-    <!-- 隐藏的 firstRunGuide 供现有 JS 引用 -->
-    <section id="firstRunGuide" hidden>
-      <div id="firstRunSteps" class="first-run-steps"></div>
-    </section>
-
   </div>
 
   <script src="./i18n.js?v=20260505-ui-i18n"></script>
-  <script src="./main.js?v=20260505-ui-i18n"></script>
+  <script src="./main.js?v=20260507-hide-screen-templates"></script>
 </body>
 </html>

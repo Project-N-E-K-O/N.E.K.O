@@ -961,3 +961,152 @@ def test_status_payload_primary_diagnosis_reports_window_not_foreground_by_trigg
         assert message_part in diagnosis["message"]
     for message_part in unexpected_message_parts:
         assert message_part not in diagnosis["message"]
+
+
+def test_primary_diagnosis_warns_when_ocr_raw_text_is_too_long() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "短对白。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "字" * 401,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["title"] == "OCR 识别文本过长"
+    assert "401 字" in diagnosis["message"]
+    assert [action["id"] for action in diagnosis["actions"]] == [
+        "select_ocr_window",
+        "recalibrate_ocr",
+    ]
+
+
+def test_primary_diagnosis_does_not_warn_for_long_stale_ocr_text_in_memory_mode() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_MEMORY_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "内存读取文本。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "字" * 401,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "ok"
+    assert diagnosis["title"] == "正在识别台词"
+
+
+def test_primary_diagnosis_does_not_warn_for_long_stale_ocr_text_in_bridge_sdk_mode() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_BRIDGE_SDK,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "Bridge SDK 文本。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "字" * 401,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "ok"
+    assert diagnosis["title"] == "正在识别台词"
+
+
+def test_primary_diagnosis_warns_when_ocr_poll_is_too_slow() -> None:
+    total_time = 5.1
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "短对白。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "短对白。",
+                "last_poll_duration_seconds": total_time,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["title"] == "OCR 识别耗时过长"
+    assert f"{total_time:.1f}s" in diagnosis["message"]
+    assert "画面感知模型延迟也较高" not in diagnosis["message"]
+    assert [action["id"] for action in diagnosis["actions"]] == [
+        "select_ocr_window",
+        "recalibrate_ocr",
+        "capture_backend",
+    ]
+
+
+def test_primary_diagnosis_ignores_stale_slow_ocr_poll_in_memory_mode() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_MEMORY_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "内存读取文本。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "旧 OCR 文本。",
+                "last_poll_duration_seconds": 8.0,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "ok"
+    assert diagnosis["title"] == "正在识别台词"
+
+
+def test_primary_diagnosis_mentions_screen_awareness_when_slow_poll_has_sa_latency() -> None:
+    total_time = 5.8
+    sa_latency = 3.2
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "短对白。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "短对白。",
+                "last_poll_duration_seconds": total_time,
+                "screen_awareness_model_last_latency_seconds": sa_latency,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["title"] == "OCR 识别耗时过长"
+    assert f"{total_time:.1f}s" in diagnosis["message"]
+    assert f"画面感知模型延迟也较高（{sa_latency:.1f}s）" in diagnosis["message"]
+
+
+def test_primary_diagnosis_prefers_long_ocr_text_over_slow_poll() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "ocr_reader_enabled": True,
+            "effective_current_line": {"text": "短对白。"},
+            "ocr_reader_runtime": {
+                "status": "active",
+                "effective_window_key": "pid:100:hwnd:200",
+                "last_raw_ocr_text": "字" * 401,
+                "last_poll_duration_seconds": 8.0,
+                "screen_awareness_model_last_latency_seconds": 4.0,
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["title"] == "OCR 识别文本过长"

@@ -59,6 +59,20 @@ jobs:
         # plugin/main parity. This check fails the build on any such import.
         run: python scripts/check_no_loguru.py
 
+      - name: Forbid `tkinter` imports
+        # Architecture rule: frontend/backend are split, ALL GUI operations
+        # belong on the Electron frontend (Node.js renderer/main), not the
+        # Python backend. The backend is a headless HTTP/async service —
+        # it must stay relocatable (remote deployment, headless CI) and
+        # not own a Tcl/Tk event loop. Past incident: PR #1014's Windows
+        # tk screenshot overlay crashed the whole app under Nuitka builds
+        # without `--enable-plugin=tk-inter` (SystemExit from tk.Tk()
+        # escaped the asyncio worker, killed uvicorn). For dialogs use
+        # Electron's `dialog` (or platform-native shell bridges in
+        # storage_location_router.py); for screenshot framing use
+        # Electron's desktopCapturer region path.
+        run: python scripts/check_no_tkinter.py
+
       - name: Forbid `temperature=` kwargs on LLM client calls (memory + utils)
         # Project policy: do NOT pass `temperature=` to create_chat_llm /
         # ChatOpenAI / wrappers in memory_server.py + memory/ + utils/. The

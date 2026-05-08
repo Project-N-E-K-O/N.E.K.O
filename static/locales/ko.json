@@ -3,6 +3,7 @@
         "load": "로드",
         "minimize": "최소화",
         "maximize": "최대화",
+        "restore": "복원",
         "expand": "확장",
         "close": "닫기",
         "save": "저장",
@@ -809,7 +810,12 @@
         "volumeHintDetecting": "마이크 입력 감지 중...",
         "volumeHintNoSound": "소리가 감지되지 않습니다. 마이크를 확인하세요.",
         "volumeHintLow": "볼륨이 낮습니다. 게인을 높여보세요.",
+        "volumeHintHigh": "볼륨이 높습니다. 게인을 낮추는 것을 권장합니다.",
         "volumeHintOk": "마이크가 제대로 작동함",
+        "volumeClipping": "클리핑",
+        "volumeHintClipping": "마이크 게인이 너무 높아 오디오가 클리핑되고 있습니다. AI가 잘못 인식할 수 있으니 게인을 낮춰주세요.",
+        "volumeWaiting": "대기 중",
+        "volumeHintWaiting": "마이크가 입력을 대기 중입니다. 말씀해 주세요.",
         "noiseReduction": "노이즈 리덕션",
         "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
     },
@@ -1491,7 +1497,8 @@
             "gentleMaiden": "부드러운 아가씨",
             "sweetLady": "달콤한 누나",
             "frailMaiden": "병약한 아가씨",
-            "childishMaiden": "철없는 아가씨"
+            "childishMaiden": "철없는 아가씨",
+            "yui_cn": "YUI (중국어)"
         },
         "cloneMethod": "클론 방식",
         "cloneMethodFile": "로컬 파일",
@@ -2309,6 +2316,7 @@
             "avatarReactionBubble": "표정 말풍선",
             "proactiveChat": "사전 예방적 채팅",
             "proactiveVision": "프라이버시 모드",
+            "proactiveVisionTooltip": "꺼짐: 네코는 활성 창 제목에 따라 활발함과 대화 모드를 조정하며, 말을 걸 때 화면 내용을 참고할 수 있습니다.\n켜짐: 네코는 스스로 화면을 볼 수 없고 당신이 무엇을 하고 있는지 알 수 없습니다. 스크린샷은 직접 보낼 수 있습니다.",
             "proactiveVisionChat": "화면 공유",
             "proactiveVisionChatTooltip": "사전 예방적 채팅을 활성화하고 프라이버시 모드를 비활성화해야 합니다",
             "proactiveNewsChat": "뉴스 웹사이트",

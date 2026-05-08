@@ -40,10 +40,26 @@
     function isHomeTutorialLockedForGreeting() {
         try {
             if (typeof window.isNekoHomeTutorialBlockingGreeting === 'function') {
-                return window.isNekoHomeTutorialBlockingGreeting() === true;
+                if (window.isNekoHomeTutorialBlockingGreeting() === true) {
+                    return true;
+                }
             }
             if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
-                return window.isNekoHomeTutorialInteractionLocked() === true;
+                if (window.isNekoHomeTutorialInteractionLocked() === true) {
+                    return true;
+                }
+            }
+        } catch (_) {}
+        try {
+            if (window.NekoHomeTutorialFeatureController
+                && typeof window.NekoHomeTutorialFeatureController.isActive === 'function'
+                && window.NekoHomeTutorialFeatureController.isActive() === true) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (document.body && document.body.classList.contains('yui-taking-over')) {
+                return true;
             }
         } catch (_) {}
         return false;
@@ -663,8 +679,7 @@
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
             _resetGreetingCheckRetry(true);
-            S._greetingCheckPending = true;
-            S._greetingCheckIsSwitch = !!S._pendingGreetingSwitch;
+            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
             S._pendingGreetingSwitch = false;
             _sendGreetingCheckIfReady();
 
@@ -2358,6 +2373,11 @@
             _sendGreetingCheckIfReady();
         }, delay);
     }
+    function _markGreetingCheckPending(isSwitch, reason) {
+        S._greetingCheckPending = true;
+        S._greetingCheckIsSwitch = !!isSwitch;
+        S._greetingCheckReason = reason || '';
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) {
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
@@ -2386,14 +2406,20 @@
                         greetingLang = navigator.language;
                     }
                 } catch (_) { greetingLang = ''; }
+                var greetingIsSwitch = !!S._greetingCheckIsSwitch;
+                var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
+                sendHomeTutorialState('greeting-check-ready');
                 S.socket.send(JSON.stringify({
                     action: 'greeting_check',
-                    is_switch: !!S._greetingCheckIsSwitch,
-                    language: greetingLang
+                    is_switch: greetingIsSwitch,
+                    language: greetingLang,
+                    reason: greetingReason
                 }));
                 S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
                 _resetGreetingCheckRetry(true);
-                console.log('[greeting_check] sent, is_switch=' + !!S._greetingCheckIsSwitch);
+                console.log('[greeting_check] sent, is_switch=' + greetingIsSwitch + ', reason=' + greetingReason);
             }
         } catch (e) {
             console.warn('[greeting_check] send failed:', e);
@@ -2464,6 +2490,10 @@
         var detail = event && event.detail ? event.detail : {};
         sendHomeTutorialState(detail.reason || 'lock-changed');
         if (detail.locked === false) {
+            if ((detail.reason === 'tutorial-completed' || detail.reason === 'tutorial-skipped')
+                && S._greetingCheckPending) {
+                S._greetingCheckReason = detail.reason;
+            }
             _sendGreetingCheckIfReady();
         }
     });

@@ -3,6 +3,7 @@
         "load": "Cargar",
         "minimize": "Minimizar",
         "maximize": "Maximizar",
+        "restore": "Restaurar",
         "expand": "Expandir",
         "close": "Cerca",
         "save": "Guardar",
@@ -809,7 +810,12 @@
         "volumeHintDetecting": "Detectando entrada de micrófono...",
         "volumeHintNoSound": "No se detecta sonido, revisa el micrófono",
         "volumeHintLow": "El volumen es bajo, intente aumentar la ganancia.",
+        "volumeHintHigh": "El volumen es alto, considere reducir la ganancia",
         "volumeHintOk": "Micrófono funcionando correctamente",
+        "volumeClipping": "Saturación",
+        "volumeHintClipping": "La ganancia del micrófono es muy alta, el audio se está saturando — la IA puede tener errores de reconocimiento, baje la ganancia",
+        "volumeWaiting": "En espera",
+        "volumeHintWaiting": "El micrófono está escuchando, puede hablar",
         "noiseReduction": "Reducción de ruido",
         "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara"
     },
@@ -1491,7 +1497,8 @@
             "gentleMaiden": "Doncella gentil",
             "sweetLady": "dulce dama",
             "frailMaiden": "doncella frágil",
-            "childishMaiden": "doncella infantil"
+            "childishMaiden": "doncella infantil",
+            "yui_cn": "YUI (chino)"
         },
         "cloneMethod": "Método de clonación",
         "cloneMethodFile": "Archivo Local",
@@ -2309,6 +2316,7 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
+            "proactiveVisionTooltip": "Desactivado: Neko ajusta su nivel de actividad y modo de chat según el título de la ventana activa, y puede incorporar el contenido de la pantalla al iniciar una conversación.\nActivado: Neko no puede mirar tu pantalla por sí misma ni saber qué estás haciendo. Aún puedes enviar capturas de pantalla manualmente.",
             "proactiveVisionChat": "Compartir pantalla",
             "proactiveVisionChatTooltip": "Requiere chat proactivo habilitado y Modo Privacidad deshabilitado",
             "proactiveNewsChat": "Sitio web de noticias",

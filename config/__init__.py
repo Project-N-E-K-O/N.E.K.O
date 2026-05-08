@@ -1308,7 +1308,7 @@ MINI_GAME_INVITE_ENABLED = True
   退化回纯 source-driven。
 - 上游：main_routers/system_router._maybe_deliver_mini_game_invite。"""
 
-MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.1
+MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.12
 """每次 eligible 主动搭话进入 mini-game 邀请短路的概率。
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
