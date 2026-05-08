@@ -342,7 +342,7 @@ NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
 _last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
 IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
 IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 30             # review 最短间隔（秒）。配合 active 时 ×2 + 消息门 双重限流
+REVIEW_MIN_INTERVAL = 60             # review 最短间隔（秒）。配合消息门双重限流
 REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review
 MIN_NEW_MSGS_FOR_REVIEW = 5          # 自上次 review cutoff 起累积 ≥ N 条 user msg 才允许触发新一轮
 
@@ -1109,8 +1109,8 @@ async def _periodic_idle_maintenance_loop():
 
                     # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
                     # 门槛对齐 update_history 内部的真实触发条件 `len > compress_threshold`
-                    # （默认 15）。用 max_history_length（默认 10，压缩后保留条数）会让
-                    # 11~15 区间持续触发 IdleMaint 但 update_history 实际不压缩，形成
+                    # （默认 20）。用 max_history_length（默认 10，压缩后保留条数）会让
+                    # 11~20 区间持续触发 IdleMaint 但 update_history 实际不压缩，形成
                     # 每 IDLE_CHECK_INTERVAL 一次的空转日志。
                     if history_len > recent_history_manager.compress_threshold:
                         logger.info(
@@ -2220,7 +2220,7 @@ async def maybe_spawn_review(name: str) -> None:
     1. 已有 review 在跑（in-flight）
     2. ``review_enabled``（``recent_memory_auto_review`` flag）
     3. 历史长度 < ``REVIEW_SKIP_HISTORY_LEN``
-    4. 距上次 review 完成 < ``REVIEW_MIN_INTERVAL``（活跃时 ×2）
+    4. 距上次 review 完成 < ``REVIEW_MIN_INTERVAL``
     5. 自上次 review cutoff 起累积 user msg < ``MIN_NEW_MSGS_FOR_REVIEW``
     """
     async with _get_review_spawn_lock(name):
@@ -2240,12 +2240,12 @@ async def maybe_spawn_review(name: str) -> None:
         # Gate 3: history 长度
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
-        # Gate 4: min interval (active doubled)
+        # Gate 4: min interval
         last_review = _maint_state.get(name, {}).get('last_review_ts')
         if last_review:
             try:
                 elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
-                effective_min = REVIEW_MIN_INTERVAL * (2 if not _is_idle() else 1)
+                effective_min = REVIEW_MIN_INTERVAL
                 if elapsed < effective_min:
                     return
             except (ValueError, TypeError):
