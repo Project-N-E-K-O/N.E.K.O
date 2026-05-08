@@ -39,11 +39,41 @@ const I18n = {
     }
   },
 
+  _browserLocale() {
+    const languages = (navigator.languages && navigator.languages.length)
+      ? navigator.languages
+      : [navigator.language];
+    for (const lang of languages) {
+      const raw = String(lang || '').trim();
+      const lower = raw.toLowerCase().replace('_', '-');
+      if (!lower) continue;
+      if (lower === 'zh' || lower.startsWith('zh-')) return 'zh-CN';
+      if (lower.startsWith('en')) return 'en';
+      if (lower.startsWith('ja')) return 'ja';
+      if (lower.startsWith('ko')) return 'ko';
+      if (lower.startsWith('ru')) return 'ru';
+    }
+    return 'zh-CN';
+  },
+
+  _storageLocale() {
+    try {
+      const value = String(localStorage.getItem('locale') || '').trim();
+      if (!value) return '';
+      return value === 'auto' ? this._browserLocale() : value;
+    } catch {
+      return '';
+    }
+  },
+
   async init(pluginId) {
     const encodedPluginId = encodeURIComponent(pluginId || 'galgame_plugin');
     const queryLocale = this._queryLocale();
+    const storageLocale = this._storageLocale();
     if (queryLocale) {
       this._lang = queryLocale;
+    } else if (storageLocale) {
+      this._lang = storageLocale;
     } else {
       try {
         const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
