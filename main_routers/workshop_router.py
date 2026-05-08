@@ -4317,11 +4317,32 @@ async def sync_workshop_character_cards() -> dict:
                     # 避免用扫描前的旧快照整包覆盖用户刚写入的字段。
                     latest_characters = await config_mgr.aload_characters()
                     if not isinstance(latest_characters, dict):
-                        latest_characters = {}
+                        logger.warning(
+                            "sync_workshop_character_cards: 保存前检测到 characters.json 根对象结构无效（%s），取消本轮同步保存",
+                            type(latest_characters).__name__,
+                        )
+                        added_count = 0
+                        error_count += 1
+                        return {
+                            "added": added_count,
+                            "backfilled_faces": backfilled_face_count,
+                            "skipped": skipped_count,
+                            "errors": error_count,
+                        }
                     latest_catgirls = latest_characters.get('猫娘')
                     if not isinstance(latest_catgirls, dict):
-                        latest_catgirls = {}
-                        latest_characters['猫娘'] = latest_catgirls
+                        logger.warning(
+                            "sync_workshop_character_cards: 保存前检测到 characters.json 猫娘字段结构无效（%s），取消本轮同步保存",
+                            type(latest_catgirls).__name__,
+                        )
+                        added_count = 0
+                        error_count += 1
+                        return {
+                            "added": added_count,
+                            "backfilled_faces": backfilled_face_count,
+                            "skipped": skipped_count,
+                            "errors": error_count,
+                        }
 
                     latest_deleted_character_names = _load_deleted_character_names(config_mgr)
                     actually_added_count = 0
