@@ -358,17 +358,9 @@ body.neko-game-active [id$="-lock-icon"] {
 }
 
 .neko-idle-return-btn {
-    --neko-idle-return-size: clamp(104px, 16vw, 136px);
+    --neko-idle-return-size: clamp(96px, 14vw, 122px);
     width: var(--neko-idle-return-size);
     height: var(--neko-idle-return-size);
-}
-
-.neko-idle-return-btn[data-neko-idle-tier="cat2"] {
-    --neko-idle-return-size: clamp(96px, 14vw, 122px);
-}
-
-.neko-idle-return-btn[data-neko-idle-tier="cat3"] {
-    --neko-idle-return-size: clamp(88px, 13vw, 112px);
 }
 
 .neko-idle-return-art {
@@ -381,15 +373,7 @@ body.neko-game-active [id$="-lock-icon"] {
 
 @media (max-width: 768px) {
     .neko-idle-return-btn {
-        --neko-idle-return-size: clamp(96px, 26vw, 120px);
-    }
-
-    .neko-idle-return-btn[data-neko-idle-tier="cat2"] {
         --neko-idle-return-size: clamp(88px, 24vw, 108px);
-    }
-
-    .neko-idle-return-btn[data-neko-idle-tier="cat3"] {
-        --neko-idle-return-size: clamp(82px, 22vw, 100px);
     }
 }
 
