@@ -39,14 +39,62 @@ body {
   color: var(--ink);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(64, 197, 241, 0.10), transparent 30%),
-    radial-gradient(circle at top right, rgba(240, 140, 153, 0.08), transparent 30%),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.06) 100%);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(236, 249, 255, 0.46)),
+    radial-gradient(circle at 16% 10%, rgba(64, 197, 241, 0.24), transparent 36%),
+    radial-gradient(circle at 92% 12%, rgba(240, 140, 153, 0.06), transparent 28%),
+    radial-gradient(circle at 72% 94%, rgba(64, 197, 241, 0.12), transparent 32%),
+    linear-gradient(180deg, #f4fbff 0%, #eaf7fd 56%, #f8fdff 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -10vh -10vw;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(ellipse 6px 8px at 34px 34px, rgba(27, 109, 138, 0.17) 0 68%, transparent 72%),
+    radial-gradient(ellipse 6px 8px at 47px 25px, rgba(27, 109, 138, 0.17) 0 68%, transparent 72%),
+    radial-gradient(ellipse 6px 8px at 61px 25px, rgba(27, 109, 138, 0.17) 0 68%, transparent 72%),
+    radial-gradient(ellipse 6px 8px at 74px 34px, rgba(27, 109, 138, 0.17) 0 68%, transparent 72%),
+    radial-gradient(ellipse 17px 14px at 54px 53px, rgba(27, 109, 138, 0.15) 0 68%, transparent 72%),
+    radial-gradient(ellipse 5px 7px at 166px 126px, rgba(64, 197, 241, 0.15) 0 68%, transparent 72%),
+    radial-gradient(ellipse 5px 7px at 177px 119px, rgba(64, 197, 241, 0.15) 0 68%, transparent 72%),
+    radial-gradient(ellipse 5px 7px at 189px 119px, rgba(64, 197, 241, 0.15) 0 68%, transparent 72%),
+    radial-gradient(ellipse 5px 7px at 200px 126px, rgba(64, 197, 241, 0.15) 0 68%, transparent 72%),
+    radial-gradient(ellipse 15px 12px at 183px 143px, rgba(64, 197, 241, 0.13) 0 68%, transparent 72%);
+  background-size: 320px 268px;
+  background-repeat: repeat;
+  opacity: 0.96;
+  transform: rotate(-7deg);
+  transform-origin: center;
 }
 
 .page-shell {
+  position: relative;
+  z-index: 1;
   width: min(1240px, calc(100vw - 32px));
   margin: 24px auto 40px;
+}
+
+#mainView {
+  position: relative;
+}
+
+#mainView::before {
+  content: "";
+  position: absolute;
+  inset: -16px -16px -24px;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(236, 249, 255, 0.34)),
+    linear-gradient(180deg, #f4fbff 0%, #eaf7fd 56%, #f8fdff 100%);
+}
+
+#mainView > * {
+  position: relative;
+  z-index: 1;
 }
 
 .hero,
