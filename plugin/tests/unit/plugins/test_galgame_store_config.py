@@ -23,7 +23,7 @@ from plugin.plugins.galgame_plugin.store import GalgameStore
 
 
 def _logger() -> SimpleNamespace:
-    return SimpleNamespace(warning=lambda *_: None)
+    return SimpleNamespace(warning=lambda *_, **__: None)
 
 
 def _store_path(tmp_path: Path) -> Path:
