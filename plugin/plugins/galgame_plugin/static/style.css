@@ -92,7 +92,7 @@ body::before {
     linear-gradient(180deg, #f4fbff 0%, #eaf7fd 56%, #f8fdff 100%);
 }
 
-#mainView > * {
+#mainView > :not(.modal):not(.flash-message) {
   position: relative;
   z-index: 1;
 }
