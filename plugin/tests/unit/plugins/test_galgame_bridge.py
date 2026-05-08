@@ -3433,14 +3433,16 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
             memory_reader={
                 "enabled": True,
                 "install_target_dir": str(install_root),
+                "textractor_proxy": "http://127.0.0.1:7890",
             },
         ),
     )
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    captured_install_kwargs: dict[str, object] = {}
 
     async def _fake_install_textractor(**kwargs):
-        del kwargs
+        captured_install_kwargs.update(kwargs)
         install_root.mkdir(parents=True, exist_ok=True)
         (install_root / "TextractorCLI.exe").write_text("", encoding="utf-8")
         return {
@@ -3471,6 +3473,7 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
     assert result.value["status"]["textractor"]["detected_path"] == str(
         install_root / "TextractorCLI.exe"
     )
+    assert captured_install_kwargs["textractor_proxy"] == "http://127.0.0.1:7890"
 
 
 @pytest.mark.asyncio
