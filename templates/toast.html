@@ -163,6 +163,24 @@
             }
         }
 
+        function translateText(key, fallback) {
+            try {
+                if (typeof window.safeT === 'function') {
+                    var safeTranslated = window.safeT(key, fallback);
+                    if (typeof safeTranslated === 'string' && safeTranslated && safeTranslated !== key) {
+                        return safeTranslated;
+                    }
+                }
+                if (typeof window.t === 'function') {
+                    var translated = window.t(key, { defaultValue: fallback });
+                    if (typeof translated === 'string' && translated && translated !== key) {
+                        return translated;
+                    }
+                }
+            } catch (_) { }
+            return fallback;
+        }
+
         // ===== Voice Ready Toast =====
         function showReadyToSpeak(message) {
             injectVoiceAnimations();
@@ -194,7 +212,7 @@
             img.alt = 'ready';
             var span = document.createElement('span');
             span.style.cssText = 'display:flex;align-items:center;';
-            span.textContent = message || window.t('app.readyToSpeak');
+            span.textContent = message || translateText('app.readyToSpeak', '可以开始说话了！');
             toast.appendChild(img);
             toast.appendChild(span);
 
@@ -303,7 +321,9 @@
 
             var hasMore = pnQueue.length > 0;
             var btn = document.createElement('button');
-            btn.textContent = hasMore ? window.t('common.next') : window.t('common.confirm');
+            btn.textContent = hasMore
+                ? translateText('common.next', '下一个')
+                : translateText('common.confirm', '确认');
             btn.style.cssText = [
                 'background:#3b82f6', 'color:#fff', 'border:none',
                 'border-radius:10px', 'padding:10px 48px',

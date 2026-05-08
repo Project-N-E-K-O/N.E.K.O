@@ -223,6 +223,24 @@
     const _prominentNoticeQueue = [];
     let _prominentNoticeActive = false;
 
+    function _prominentNoticeText(key, fallback) {
+        try {
+            if (typeof window.safeT === 'function') {
+                const translated = window.safeT(key, fallback);
+                if (typeof translated === 'string' && translated && translated !== key) {
+                    return translated;
+                }
+            }
+            if (typeof window.t === 'function') {
+                const translated = window.t(key, { defaultValue: fallback });
+                if (typeof translated === 'string' && translated && translated !== key) {
+                    return translated;
+                }
+            }
+        } catch (_) { }
+        return fallback;
+    }
+
     function _drainProminentNoticeQueue() {
         if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
         const { notice, resolve } = _prominentNoticeQueue.shift();
@@ -292,8 +310,8 @@
         const btn = document.createElement('button');
         const _hasMore = _prominentNoticeQueue.length > 0;
         btn.textContent = _hasMore
-            ? ((window.t && window.t('common.next')) || '下一个')
-            : ((window.t && window.t('common.confirm')) || '确认');
+            ? _prominentNoticeText('common.next', '下一个')
+            : _prominentNoticeText('common.confirm', '确认');
         btn.style.cssText = `
             background: #3b82f6; color: #fff; border: none;
             border-radius: 10px; padding: 10px 48px;
