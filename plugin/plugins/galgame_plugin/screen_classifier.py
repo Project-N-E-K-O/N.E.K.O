@@ -6,6 +6,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .ocr_chrome_noise import (
+    TEMPERATURE_STATUS_BOTTOM_MIN_RATIO,
+    TEMPERATURE_STATUS_LEFT_MAX_RATIO,
+    WINDOW_TITLE_TOP_MAX_RATIO,
+    looks_like_temperature_status_line,
+    looks_like_window_title_line,
+)
 from .models import (
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
@@ -39,8 +46,6 @@ _DIALOGUE_COLON_RE = re.compile(r"^[^:：]{1,40}[:：]\s*.+\S$")
 _SPEAKER_QUOTE_RE = re.compile(r"^[^「」『』:：]{1,40}[「『].+[」』]$")
 _BRACKET_SPEAKER_RE = re.compile(r"^[【\[][^\]】]{1,40}[\]】]\s*.+\S$")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_TEMPERATURE_STATUS_RE = re.compile(r"^\s*[+-]?\d{1,2}\s*(?:°\s*[cC℃]?|℃)\s*$")
-_ASCII_ID_RE = re.compile(r"[a-z0-9]+")
 _LOGGER = logging.getLogger(__name__)
 _DEFAULT_MODEL_FEATURE_SCALES = {
     "mean_luminance": 255.0,
@@ -694,22 +699,6 @@ def _ocr_lines(ocr_text: str, *, boxes: Iterable[Any] | None) -> list[str]:
     return _dedupe_preserve_order(line for line in box_lines if line)
 
 
-def _compact_ascii_id(value: str) -> str:
-    return "".join(_ASCII_ID_RE.findall(str(value or "").casefold()))
-
-
-def _looks_like_window_title_line(line: str, window_title: str) -> bool:
-    title_key = _compact_ascii_id(window_title)
-    if len(title_key) < 4:
-        return False
-    line_key = _compact_ascii_id(line)
-    if not line_key:
-        return False
-    if line_key == title_key:
-        return True
-    return line_key.startswith(title_key) and len(line_key) <= len(title_key) + 3
-
-
 def _filter_chrome_noise_ui_elements(
     elements: list[dict[str, Any]],
     *,
@@ -730,10 +719,14 @@ def _filter_chrome_noise_ui_elements(
         except (TypeError, ValueError):
             filtered.append(element)
             continue
-        if top <= 0.06 and _looks_like_window_title_line(text, window_title):
+        if top <= WINDOW_TITLE_TOP_MAX_RATIO and looks_like_window_title_line(text, window_title):
             removed += 1
             continue
-        if bottom >= 0.95 and left <= 0.20 and _TEMPERATURE_STATUS_RE.match(text):
+        if (
+            bottom >= TEMPERATURE_STATUS_BOTTOM_MIN_RATIO
+            and left <= TEMPERATURE_STATUS_LEFT_MAX_RATIO
+            and looks_like_temperature_status_line(text)
+        ):
             removed += 1
             continue
         filtered.append(element)

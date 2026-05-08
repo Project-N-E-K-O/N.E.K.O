@@ -61,6 +61,10 @@ from .models import (
     sanitize_screen_ui_elements,
     parse_ocr_capture_profile_bucket_key,
 )
+from .ocr_chrome_noise import (
+    looks_like_temperature_status_line as _looks_like_temperature_status_line,
+    looks_like_window_title_line as _looks_like_window_title_line,
+)
 from .aihong_state import (
     AIHONG_CHOICES_REGION_PRESET as _AIHONG_CHOICES_REGION_PRESET,
     AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET as _AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET,
@@ -285,10 +289,6 @@ _OCR_TRAILING_GARBAGE_AFTER_DASH_RE = re.compile(
 _OCR_STABILITY_IGNORED_CHARS_RE = re.compile(
     r"[\s　\-_.,，。:：;；!！?？…~～'\"“”‘’「」『』()\[\]［］【】]+"
 )
-_OCR_TEMPERATURE_STATUS_RE = re.compile(
-    r"^\s*[+-]?\d{1,2}\s*(?:°\s*[cC℃]?|℃)\s*$"
-)
-_OCR_ASCII_ID_RE = re.compile(r"[a-z0-9]+")
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
 _OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
@@ -526,22 +526,6 @@ def _clean_ocr_dialogue_text(text: str) -> str:
     return cleaned
 
 
-def _compact_ocr_ascii_id(value: str) -> str:
-    return "".join(_OCR_ASCII_ID_RE.findall(str(value or "").casefold()))
-
-
-def _looks_like_window_title_ocr_line(line: str, window_title: str) -> bool:
-    title_key = _compact_ocr_ascii_id(window_title)
-    if len(title_key) < 4:
-        return False
-    line_key = _compact_ocr_ascii_id(line)
-    if not line_key:
-        return False
-    if line_key == title_key:
-        return True
-    return title_key.startswith(line_key) and len(title_key) <= len(line_key) + 3
-
-
 def _drop_ocr_chrome_noise_lines(text: str, *, window_title: str = "") -> str:
     lines = [line.strip() for line in str(text or "").splitlines()]
     meaningful = [line for line in lines if line]
@@ -550,8 +534,8 @@ def _drop_ocr_chrome_noise_lines(text: str, *, window_title: str = "") -> str:
     filtered = [
         line
         for line in meaningful
-        if not _OCR_TEMPERATURE_STATUS_RE.match(line)
-        and not _looks_like_window_title_ocr_line(line, window_title)
+        if not _looks_like_temperature_status_line(line)
+        and not _looks_like_window_title_line(line, window_title)
     ]
     if filtered and len(filtered) < len(meaningful):
         return "\n".join(filtered)

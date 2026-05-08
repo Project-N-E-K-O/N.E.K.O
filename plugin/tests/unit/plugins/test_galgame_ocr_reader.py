@@ -1582,7 +1582,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
             self.calls += 1
             if self.calls == 1:
                 started.set()
-                release.wait(timeout=2.0)
+                release.wait(timeout=0.5)
             return "雪乃：恢复后的台词。"
 
     backend = _BlockingOcrBackend()
@@ -1614,7 +1614,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
 
     try:
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        assert started.wait(timeout=2.0) is True
+        assert started.wait(timeout=0.5) is True
         assert first.runtime["detail"] == "capture_failed"
         assert "timed out" in first.runtime["last_capture_error"]
 
@@ -2148,8 +2148,11 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
 
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="printwindow")
     backend._backends = [_SelectedBackend(), _FallbackBackend()]
+    backend._printwindow_backend = backend._backends[0]
 
-    frame = backend.capture_frame(_window()[0], galgame_ocr_reader.OcrCaptureProfile())
+    target = _window()[0]
+    target.is_foreground = True
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
     assert frame == "fallback-frame"
     assert backend.last_backend_kind == "dxcam"
@@ -3233,8 +3236,11 @@ def test_followup_confirm_uses_cleaned_dialogue_text() -> None:
         stable_text="王生：旧台词。",
     )
 
+    manager = object.__new__(OcrReaderManager)
+    manager._attached_window = None
+    manager._runtime = OcrReaderRuntime()
     assert (
-        OcrReaderManager._should_attempt_followup_confirm(
+        manager._should_attempt_followup_confirm(
             "王生：新\n台词。",
             state=state,
         )
