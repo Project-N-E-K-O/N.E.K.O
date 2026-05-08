@@ -840,6 +840,12 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
                 json.dumps({"档案名": "并发工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            duplicate_dir = installed_folder / "duplicate"
+            duplicate_dir.mkdir()
+            (duplicate_dir / "重复角色卡.chara.json").write_text(
+                json.dumps({"档案名": "并发工坊角色", "昵称": "重复工坊卡"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             preview_path = installed_folder / "preview.png"
             Image.new("RGBA", (1024, 1024), (80, 160, 220, 255)).save(preview_path)
 

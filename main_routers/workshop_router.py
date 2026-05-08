@@ -4156,6 +4156,16 @@ async def sync_workshop_character_cards() -> dict:
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
                             # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
                             if chara_name in characters['猫娘']:
+                                if chara_name in pending_added_catgirls:
+                                    # 同一次扫描内的重复同名卡仍处于待合并状态，不能按已存在角色补写封面；
+                                    # 最终是否导入要等保存前用最新版 characters.json 再判定。
+                                    skipped_count += 1
+                                    logger.info(
+                                        "sync_workshop_character_cards: 跳过重复待添加角色 '%s'（物品 %s）",
+                                        chara_name,
+                                        item_id,
+                                    )
+                                    continue
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 if _is_matching_workshop_character(existing_data, item_id):
                                     try:
