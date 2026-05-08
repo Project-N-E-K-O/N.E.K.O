@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 
 @dataclass

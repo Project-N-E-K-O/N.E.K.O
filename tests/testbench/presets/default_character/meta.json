@@ -1,0 +1,7 @@
+{
+  "id": "default_character",
+  "display_name": "默认示例角色 · 小天",
+  "description": "最小完整示例角色: 含主人档 + character card + system prompt + 三层记忆 (persona / facts / recent) 示例条目. 可作为新会话快速起点, 也可用于一键清零当前沙盒状态 (重复导入会覆盖).",
+  "language": "zh-CN",
+  "character_name": "小天"
+}

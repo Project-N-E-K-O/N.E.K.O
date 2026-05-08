@@ -26,11 +26,58 @@
     window.i18nInitialized = true;
 
     // 支持的语言列表
-    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru'];
+    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-04-20-1';
+    const LOCALE_VERSION = '2026-05-03-1';
+
+    function initDecorativeImageDragGuard() {
+        const markImage = (img) => {
+            if (!(img instanceof HTMLImageElement)) return;
+            img.draggable = false;
+            img.setAttribute('draggable', 'false');
+        };
+
+        const markImages = (root = document) => {
+            if (root instanceof HTMLImageElement) {
+                markImage(root);
+                return;
+            }
+            if (!root.querySelectorAll) return;
+            root.querySelectorAll('img').forEach(markImage);
+        };
+
+        const start = () => {
+            markImages(document);
+
+            document.addEventListener('dragstart', (event) => {
+                const target = event.target;
+                if (target instanceof HTMLImageElement) {
+                    event.preventDefault();
+                }
+            }, true);
+
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node instanceof Element) {
+                            markImages(node);
+                        }
+                    });
+                });
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start, { once: true });
+        } else {
+            start();
+        }
+    }
+
+    initDecorativeImageDragGuard();
 
     function getLanguageFromQuery() {
         try {
@@ -71,6 +118,8 @@
             if (langCode === 'ja') return 'ja';
             if (langCode === 'ko') return 'ko';
             if (langCode === 'ru') return 'ru';
+            if (langCode === 'es') return 'es';
+            if (langCode === 'pt') return 'pt';
             if (langCode === 'zh') {
                 // 根据地区/脚本区分简繁（如 zh-TW / zh-HK / zh-Hant）
                 const upper = browserLanguage.toUpperCase();

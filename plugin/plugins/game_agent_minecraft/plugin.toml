@@ -1,0 +1,59 @@
+[plugin]
+id = "game_agent_minecraft"
+name = "Minecraft 游戏代理"
+description = "桥接本地 Minecraft Agent (WebSocket)，让 AI 通过 minecraft_task 工具下达指令并实时观看游戏画面进行解说。"
+short_description = "Minecraft autonomous gameplay with voice commentary."
+keywords = ["minecraft", "game-agent", "autonomous"]
+version = "0.1.0"
+entry = "plugin.plugins.game_agent_minecraft:GameAgentMinecraftPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = true
+
+[game_agent]
+# WebSocket URI of the local Minecraft agent server. Must speak the JSON
+# protocol documented in this plugin's README (task / log / screenshot /
+# task_finished frames).
+ws_url = "ws://localhost:48909"
+
+# Reconnect interval if the WebSocket drops.
+reconnect_interval_seconds = 5.0
+
+# Per-call upper bound on minecraft_task. The handler awaits the agent's
+# task_finished frame; if it doesn't arrive within this window, the LLM
+# sees a {status: "timeout"} result and is free to issue a new task.
+# Capped at 300 server-side; 25s leaves ~5s of buffer below the 30-second
+# default LLM tool ceiling.
+task_timeout_seconds = 25.0
+
+# How often the autonomous loop nudges the LLM with the latest game state
+# when there's no pending task. The LLM sees a "GAME_SYSTEM" prompt with
+# accumulated logs and is asked to either issue the next minecraft_task or
+# provide voice commentary.
+system_prompt_interval_seconds = 5.0
+
+# Skip a system-prompt nudge if a tool call is already pending — the LLM is
+# busy and an extra prompt would just queue up.
+skip_system_prompt_if_busy = true
+
+# Forward screenshots received from the agent server into the realtime LLM
+# session via push_message v2 (visibility=[], ai_behavior="read"). When
+# false, screenshots are still cached locally for the periodic system-prompt
+# burst but not streamed in real time.
+stream_screenshots_to_llm = true
+
+# Cap on the in-memory screenshot ring buffer (most recent N frames are
+# kept; older ones drop). Used by the system-prompt burst to send a brief
+# visual summary alongside the textual nudge.
+screenshot_cache_size = 3

@@ -87,6 +87,38 @@ class PluginDependency(BaseModel):
 
 
 PluginType = Literal["plugin", "extension", "script", "adapter"]
+PluginUiSurfaceKind = Literal["panel", "guide", "docs"]
+PluginUiSurfaceMode = Literal["static", "hosted-tsx", "markdown", "auto"]
+PluginUiOpenIn = Literal["iframe", "new_tab", "same_tab"]
+
+
+class PluginUiSurface(BaseModel):
+    """A normalized plugin UI surface declaration."""
+    id: str
+    kind: PluginUiSurfaceKind
+    mode: PluginUiSurfaceMode
+    title: Optional[str] = None
+    entry: Optional[str] = None
+    url: Optional[str] = None
+    ui_path: Optional[str] = None
+    open_in: Optional[PluginUiOpenIn] = None
+    context: Optional[str] = None
+    permissions: List[str] = Field(default_factory=list)
+    available: bool = True
+
+
+class PluginUiWarning(BaseModel):
+    """Structured UI manifest warning for developer-facing diagnostics."""
+    path: str
+    code: str
+    message: str
+
+
+class PluginUiSurfacesResponse(BaseModel):
+    """Normalized plugin UI surfaces response."""
+    plugin_id: str
+    surfaces: List[PluginUiSurface] = Field(default_factory=list)
+    warnings: List[PluginUiWarning] = Field(default_factory=list)
 
 
 class PluginMeta(BaseModel):
@@ -108,6 +140,8 @@ class PluginMeta(BaseModel):
     author: Optional[PluginAuthor] = None
     dependencies: List[PluginDependency] = Field(default_factory=list)
     host_plugin_id: Optional[str] = None  # extension 类型的宿主插件 ID
+    plugin_ui: Optional[Dict[str, Any]] = None
+    i18n: Optional[Dict[str, Any]] = None
 
 
 class HealthCheckResponse(BaseModel):
@@ -119,58 +153,70 @@ class HealthCheckResponse(BaseModel):
     communication: Dict[str, Any]
 
 
-# 插件推送消息相关模型
-class PluginPushMessageRequest(BaseModel):
-    """插件推送消息请求（从插件进程发送到主进程）"""
-    plugin_id: str
-    source: str = Field(..., description="插件自己标明的来源")
-    description: str = Field(default="", description="插件自己标明的描述")
-    priority: int = Field(default=0, description="插件自己设定的优先级，数字越大优先级越高")
-    message_type: Literal["text", "url", "binary", "binary_url"] = Field(..., description="消息类型")
-    content: Optional[str] = Field(default=None, description="文本内容或URL（当message_type为text或url时）")
-    binary_data: Optional[bytes] = Field(default=None, description="二进制数据（当message_type为binary时，仅用于小文件）")
-    binary_url: Optional[str] = Field(default=None, description="二进制文件的URL（当message_type为binary_url时）")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="额外的元数据")
-    unsafe: bool = Field(default=False, description="为 True 时允许主进程跳过严格 schema 校验（用于高性能场景）")
+# 插件推送消息相关模型 — v2 schema 见 plugin/sdk/shared/core/push_message_schema.py
+# 已废弃字段（message_type / content / binary_data / binary_url / unsafe / description）
+# 在 v0.9 移除（见 docs/changelog）。模型本身不再做严格校验，host 端的
+# translate_push_message + proactive_bridge 是单一权威翻译/分发处。
 
-    @model_validator(mode="after")
-    def validate_message_type_payload(self) -> "PluginPushMessageRequest":
-        mt = self.message_type
-        if mt in ("text", "url"):
-            if not isinstance(self.content, str) or not self.content:
-                raise ValueError("content is required when message_type is 'text' or 'url'")
-            return self
-        if mt == "binary":
-            if not isinstance(self.binary_data, (bytes, bytearray)):
-                raise ValueError("binary_data is required when message_type is 'binary'")
-            return self
-        if mt == "binary_url":
-            if not isinstance(self.binary_url, str) or not self.binary_url:
-                raise ValueError("binary_url is required when message_type is 'binary_url'")
-            return self
-        return self
+
+class PluginPushMessageRequest(BaseModel):
+    """插件推送消息请求（v2 + v1 兼容）。
+
+    v2 字段：visibility / ai_behavior / parts。
+    v1 字段（deprecated, removed in v0.9）：message_type / content /
+    binary_data / binary_url / description / unsafe。两套字段同时存在以兼容
+    旧调用方；权威翻译在 ``plugin.sdk.shared.core.push_message_schema``。
+    """
+
+    plugin_id: str
+    source: str = Field(default="", description="插件自己标明的来源")
+    priority: int = Field(default=0, description="优先级，数字越大优先级越高")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="额外的元数据")
+    target_lanlan: Optional[str] = Field(default=None, description="路由到指定 session 的角色名")
+
+    # v2 schema
+    visibility: Optional[List[str]] = Field(default=None, description="parts 渲染目标，'chat' 和/或 'hud'")
+    ai_behavior: Optional[str] = Field(default=None, description="LLM 行为：respond | read | blind")
+    parts: Optional[List[Dict[str, Any]]] = Field(default=None, description="OpenAI 风格内容 parts 列表")
+
+    # v1 legacy (deprecated, removed in v0.9)
+    message_type: Optional[str] = Field(default=None, description="DEPRECATED: 旧的消息类型 discriminator")
+    description: Optional[str] = Field(default=None, description="DEPRECATED")
+    content: Optional[str] = Field(default=None, description="DEPRECATED: 用 parts=[{'type':'text',...}]")
+    binary_data: Optional[bytes] = Field(default=None, description="DEPRECATED: 用 parts=[{'type':'image',...}]")
+    binary_url: Optional[str] = Field(default=None, description="DEPRECATED: 用 parts=[{...,'url':...}]")
+    mime: Optional[str] = Field(default=None, description="DEPRECATED")
+    unsafe: bool = Field(default=False, description="DEPRECATED")
 
 
 class PluginPushMessage(BaseModel):
-    """插件推送消息（主进程中的完整消息）"""
+    """插件推送消息（主进程中的完整消息记录，v2 + v1 兼容字段并存）。"""
+
     plugin_id: str
-    source: str
-    description: str
-    priority: int
-    message_type: Literal["text", "url", "binary", "binary_url"]
+    source: str = ""
+    priority: int = 0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    target_lanlan: Optional[str] = None
+    timestamp: str = Field(..., description="消息推送时间（ISO格式）")
+    message_id: str = Field(..., description="消息唯一ID")
+
+    # v2 schema
+    visibility: Optional[List[str]] = None
+    ai_behavior: Optional[str] = None
+    parts: Optional[List[Dict[str, Any]]] = None
+
+    # v1 legacy compat
+    message_type: Optional[str] = None
+    description: Optional[str] = None
     content: Optional[str] = None
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: str = Field(..., description="消息推送时间（ISO格式）")
-    message_id: str = Field(..., description="消息唯一ID")
-    
-    @field_serializer('binary_data')
+
+    @field_serializer("binary_data")
     def serialize_binary_data(self, value: Optional[bytes]) -> Optional[str]:
-        """将二进制数据序列化为 base64 字符串（用于 JSON 响应）"""
         if value is None:
             return None
-        return base64.b64encode(value).decode('utf-8')
+        return base64.b64encode(value).decode("utf-8")
 
 
 class PluginPushMessageResponse(BaseModel):

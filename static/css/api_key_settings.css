@@ -1573,3 +1573,223 @@ font-size: 0.8em;
     pointer-events: auto;
     padding: 0 24px;
 }
+
+/* ============ Connectivity Indicator Light ============ */
+.connectivity-light {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background-color: #CCCCCC;
+    vertical-align: middle;
+    flex-shrink: 0;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    cursor: default;
+}
+
+/* Wrapper to place light and input on the same horizontal line */
+.connectivity-input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    max-width: 600px;
+}
+
+.connectivity-input-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Connected - Green */
+.connectivity-light[data-status="connected"] {
+    background-color: #28A745;
+    box-shadow: 0 0 6px rgba(40, 167, 69, 0.5);
+}
+
+/* Failed - Red */
+.connectivity-light[data-status="failed"] {
+    background-color: #DC3545;
+    box-shadow: 0 0 6px rgba(220, 53, 69, 0.5);
+}
+
+/* Untested - Yellow */
+.connectivity-light[data-status="untested"] {
+    background-color: #FFD700;
+    box-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
+}
+
+/* Not Configured - Gray */
+.connectivity-light[data-status="not_configured"] {
+    background-color: #CCCCCC;
+    box-shadow: none;
+}
+
+/* Testing - Pulse Animation */
+.connectivity-light[data-status="testing"] {
+    background-color: #40C5F1;
+    animation: connectivityPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes connectivityPulse {
+    0% {
+        box-shadow: 0 0 4px rgba(64, 197, 241, 0.4);
+        opacity: 1;
+    }
+    50% {
+        box-shadow: 0 0 12px rgba(64, 197, 241, 0.8);
+        opacity: 0.7;
+    }
+    100% {
+        box-shadow: 0 0 4px rgba(64, 197, 241, 0.4);
+        opacity: 1;
+    }
+}
+
+/* Wrapper to vertically center indicator light with input field */
+.connectivity-light-wrapper {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+}
+
+/* ============ Connectivity Error Message ============ */
+.connectivity-error-msg {
+    color: #DC3545;
+    font-size: 0.85em;
+    margin-left: 8px;
+    white-space: nowrap;
+    vertical-align: middle;
+    display: inline-block;
+    line-height: 1.4;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ============ Custom API Test Button ============ */
+.connectivity-test-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    border: 2px solid #40C5F1;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(64, 197, 241, 0.1) 0%, rgba(64, 197, 241, 0.05) 100%);
+    color: var(--text-blue, #40C5F1);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+    margin-bottom: 12px;
+}
+
+.connectivity-test-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(64, 197, 241, 0.2) 0%, rgba(64, 197, 241, 0.1) 100%);
+    border-color: #22b3ff;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.25);
+}
+
+.connectivity-test-btn:active:not(:disabled) {
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.15);
+    opacity: 0.95;
+}
+
+.connectivity-test-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.connectivity-test-btn .connectivity-light {
+    margin-right: 0;
+}
+
+/* ============ Core/Assist Mini Test Button ============ */
+.connectivity-mini-test-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 14px;
+    margin-left: 8px;
+    border: 1.5px solid #40C5F1;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(64, 197, 241, 0.1) 0%, rgba(64, 197, 241, 0.05) 100%);
+    color: var(--text-blue, #40C5F1);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+    white-space: nowrap;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.connectivity-mini-test-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(64, 197, 241, 0.2) 0%, rgba(64, 197, 241, 0.1) 100%);
+    border-color: #22b3ff;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.25);
+}
+
+.connectivity-mini-test-btn:active:not(:disabled) {
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.15);
+}
+
+.connectivity-mini-test-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ============ Connectivity Summary Lights Row ============ */
+.connectivity-summary-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 12px;
+    vertical-align: middle;
+}
+
+.connectivity-summary-light {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #CCCCCC;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    cursor: default;
+}
+
+/* Reuse the same color states for summary lights */
+.connectivity-summary-light[data-status="connected"] {
+    background-color: #28A745;
+    box-shadow: 0 0 4px rgba(40, 167, 69, 0.5);
+}
+.connectivity-summary-light[data-status="failed"] {
+    background-color: #DC3545;
+    box-shadow: 0 0 4px rgba(220, 53, 69, 0.5);
+}
+.connectivity-summary-light[data-status="untested"] {
+    background-color: #FFD700;
+    box-shadow: 0 0 4px rgba(255, 215, 0, 0.5);
+}
+.connectivity-summary-light[data-status="not_configured"] {
+    background-color: #CCCCCC;
+    box-shadow: none;
+}
+.connectivity-summary-light[data-status="testing"] {
+    background-color: #40C5F1;
+    animation: connectivityPulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .connectivity-light[data-status="testing"],
+    .connectivity-summary-light[data-status="testing"] {
+        animation: none;
+        box-shadow: 0 0 6px rgba(64, 197, 241, 0.5);
+    }
+}

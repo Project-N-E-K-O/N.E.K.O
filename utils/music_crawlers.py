@@ -746,7 +746,7 @@ class MusopenCrawler(BaseMusicCrawler):
             response = await self.client.get(url)
             response.raise_for_status()
             # === Musopen 封面抓取 ===
-            soup = BeautifulSoup(response.text, 'html.parser')
+            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
             cover_url = ""
             
             # 1. 提取网页头部的 Open Graph 图片 (最清晰的原版封面或肖像)
@@ -819,8 +819,8 @@ class FMACrawler(BaseMusicCrawler):
             # 交给 httpx 自动进行 URL 安全编码
             response = await self.client.get(search_url, params=params)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
+            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
+
             # FMA 将音轨信息存在 `data-track-info` 属性中
             play_items = soup.find_all(attrs={"data-track-info": True})
             
@@ -897,8 +897,8 @@ class BandcampCrawler(BaseMusicCrawler):
             response = await self.client.get(url, params=params) # httpx 会自动编码
             if response.status_code != 200:
                 return []
-                
-            soup = BeautifulSoup(response.text, 'html.parser')
+
+            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
             
             # 搜索页的链接藏在 .heading a 里面
             items = soup.select('.heading a')
@@ -919,7 +919,7 @@ class BandcampCrawler(BaseMusicCrawler):
                 
                 try:
                     track_res = await self.client.get(target_url)
-                    track_soup = BeautifulSoup(track_res.text, 'html.parser')
+                    track_soup = await asyncio.to_thread(BeautifulSoup, track_res.text, 'lxml')
                     
                     script_data = track_soup.find('script', attrs={'data-tralbum': True})
                     if not script_data:

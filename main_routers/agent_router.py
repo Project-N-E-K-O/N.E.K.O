@@ -7,25 +7,32 @@ Handles agent-related endpoints including:
 - Health checks
 - Task status
 - Admin control
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import time
 from pathlib import Path
+from urllib.parse import urlencode, urlparse
 
 from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import httpx
 from .shared_state import get_session_manager, get_config_manager, get_templates
-from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
+from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
-USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_USER_PLUGIN_DEFAULT_BASE = "http://127.0.0.1:48916"
+_USER_PLUGIN_BASE_CACHE: tuple[str, float] = ("", 0.0)
 _OPENCLAW_GUIDE_PATH = _PROJECT_ROOT / "docs" / "zh-CN" / "guide" / "openclaw_guide.md"
 _OPENCLAW_GUIDE_DIR = _OPENCLAW_GUIDE_PATH.parent
 _OPENCLAW_GUIDE_ASSETS_DIR = _OPENCLAW_GUIDE_DIR / "assets"
@@ -37,6 +44,46 @@ _OPENCLAW_GUIDE_LANG_FILES = {
     "ko": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ko.md",
     "ru": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ru.md",
 }
+
+
+def _is_loopback_origin(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        return False
+    return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+async def _resolve_user_plugin_base() -> str:
+    global _USER_PLUGIN_BASE_CACHE
+    cached_base, cached_at = _USER_PLUGIN_BASE_CACHE
+    now = time.monotonic()
+    if cached_base and now - cached_at < 5.0:
+        return cached_base
+
+    candidates: list[str] = []
+    for value in (USER_PLUGIN_BASE, _USER_PLUGIN_DEFAULT_BASE):
+        normalized = str(value or "").rstrip("/")
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    client = _get_http_client()
+    for base in candidates:
+        try:
+            response = await client.get(f"{base}/available", timeout=0.45)
+            if response.is_success:
+                _USER_PLUGIN_BASE_CACHE = (base, now)
+                return base
+        except Exception:
+            continue
+
+    fallback = str(USER_PLUGIN_BASE or _USER_PLUGIN_DEFAULT_BASE).rstrip("/")
+    _USER_PLUGIN_BASE_CACHE = (fallback, now)
+    return fallback
 
 
 def _normalize_openclaw_guide_lang(lang: str | None) -> str:
@@ -302,8 +349,21 @@ async def proxy_mcp_availability():
 
 
 @router.get('/user_plugin/dashboard')
-async def redirect_plugin_dashboard():
-    return RedirectResponse(f"{USER_PLUGIN_BASE}/ui")
+async def redirect_plugin_dashboard(request: Request):
+    user_plugin_base = await _resolve_user_plugin_base()
+    target_url = f"{user_plugin_base}/ui"
+    query_params: dict[str, str] = {}
+    if "v" in request.query_params:
+        v = request.query_params["v"].strip()
+        if v:
+            query_params["v"] = v
+    if "yui_opener_origin" in request.query_params:
+        opener_origin = request.query_params["yui_opener_origin"].strip()
+        if opener_origin and _is_loopback_origin(opener_origin):
+            query_params["yui_opener_origin"] = opener_origin
+    if query_params:
+        target_url = f"{target_url}?{urlencode(query_params)}"
+    return RedirectResponse(target_url)
 
 
 @router.get('/openclaw/guide', response_class=HTMLResponse)
@@ -345,9 +405,10 @@ async def openclaw_guide_asset(asset_path: str):
 async def proxy_up_availability():
     try:
         client = _get_http_client()
-        r = await client.get(f"{USER_PLUGIN_BASE}/available", timeout=1.5)
+        user_plugin_base = await _resolve_user_plugin_base()
+        r = await client.get(f"{user_plugin_base}/available", timeout=1.5)
         if r.is_success:
-            return JSONResponse({"ready": True, "reasons": ["user_plugin server reachable"]}, status_code=200)
+            return JSONResponse({"ready": True, "reasons": [f"user_plugin server reachable: {user_plugin_base}"]}, status_code=200)
         else:
             return JSONResponse({"ready": False, "reasons": [f"user_plugin server responded {r.status_code}"]}, status_code=502)
     except Exception as e:
@@ -359,7 +420,9 @@ async def openclaw_availability():
     """检查 OpenClaw Agent 能力是否可用"""
     try:
         client = _get_http_client()
-        r = await client.get(f"{TOOL_SERVER_BASE}/openclaw/availability", timeout=1.5)
+        # OpenClaw availability may perform a downstream health probe and can
+        # legitimately take a bit longer than the lightweight local checks.
+        r = await client.get(f"{TOOL_SERVER_BASE}/openclaw/availability", timeout=4.0)
         if not r.is_success:
             return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
         return r.json()

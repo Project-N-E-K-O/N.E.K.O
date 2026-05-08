@@ -1,5 +1,15 @@
 <template>
   <div class="plugin-actions">
+    <el-button
+      v-if="uiAction"
+      type="primary"
+      plain
+      :icon="Monitor"
+      @click="handleOpenUi"
+      :disabled="uiDisabled"
+    >
+      {{ uiActionLabel }}
+    </el-button>
     <!-- Extension 操作按钮 -->
     <el-button-group v-if="isExtension">
       <el-button
@@ -56,10 +66,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { VideoPlay, VideoPause, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import { VideoPlay, VideoPause, Refresh, SwitchButton, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
 
 interface Props {
   pluginId: string
@@ -67,7 +79,8 @@ interface Props {
 
 const props = defineProps<Props>()
 const pluginStore = usePluginStore()
-const { t } = useI18n()
+const router = useRouter()
+const { t, locale } = useI18n()
 
 const loading = ref(false)
 
@@ -78,6 +91,88 @@ const currentPlugin = computed(() => {
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const isExtension = computed(() => currentPlugin.value?.type === 'extension')
 const isDisabled = computed(() => status.value === 'disabled')
+const uiAction = computed(() => {
+  return currentPlugin.value?.list_actions?.find((action) => action.kind === 'ui') || null
+})
+const uiDisabled = computed(() => {
+  if (!uiAction.value) return true
+  if (uiAction.value.disabled) return true
+  if (uiAction.value.requires_running && status.value !== 'running') return true
+  return false
+})
+// label 可能是 string 或 locale-keyed dict（与 backend list_action contract
+// 对齐，见 utils/i18nLabel.ts）。直接 `{{ uiAction.label }}` 在 dict 时会
+// 渲染成 "[object Object]"，必须先按当前 locale 解析。
+const uiActionLabel = computed(() =>
+  resolveLocalizedText(uiAction.value?.label, locale.value, t('plugins.ui.open')),
+)
+
+async function handleOpenUi() {
+  if (!uiAction.value || uiDisabled.value) {
+    return
+  }
+
+  // 尊重 backend 的 list_action 契约（plugin/server/application/plugins/ui_query_service.py
+  // _normalize_list_action 会显式 normalize `target` 和 `open_in`）。
+  // 若 plugin 声明了外部 URL / 自定义路由 / 新 tab 打开，UI 必须按字段路由，
+  // 而不是无条件回退到默认的 `/plugins/{id}?tab=ui` 静态详情页。
+  const action = uiAction.value
+
+  // 与 usePluginListContextActions.ts confirmIfNeeded 行为对齐：跳转前若
+  // plugin 声明了 confirm_message 就弹 dialog 确认，否则按钮会绕过 plugin
+  // 自己配的二次确认。`confirm_mode === 'hold'` 依赖 PluginDangerConfirmDialog
+  // 这种 host 组件呈现，按钮上下文不支持，跳过即可（plugin 给 kind: "ui"
+  // 配 hold mode 极少见）。
+  if (action.confirm_mode !== 'hold') {
+    const confirmMsg = resolveLocalizedText(action.confirm_message, locale.value, '')
+    if (confirmMsg) {
+      try {
+        await ElMessageBox.confirm(confirmMsg, t('common.confirm'), {
+          type: action.danger ? 'warning' : 'info',
+        })
+      } catch {
+        return
+      }
+    }
+  }
+
+  const target = action.target?.trim() || ''
+  // open_in 缺省时统一默认 new_tab，与 usePluginListContextActions.ts:366
+  // 的 list-action executor convention 对齐（`open_in === 'same_tab' ? '_self'
+  // : '_blank'`）。否则同一个 plugin manager 里 Open UI 按钮和右键菜单
+  // action 行为分叉，用户体验不一致。
+  const openInNewTab = action.open_in !== 'same_tab'
+
+  // 显式 target：用 browser navigation（window.open），不走 SPA router——
+  // 与 list-action executor 的 ui/url 分支行为一致。SPA router（
+  // src/router/index.ts）只认识 manager 内部路由（/plugins/:id 等），plugin
+  // server 暴露的 path（如 /plugin/<id>/ui/）和外部 URL 都得走 browser
+  // navigation 才能正确跳转，否则 same_tab + plugin-server path 会被当
+  // unmatched SPA route，UI 不打开。
+  if (target) {
+    const windowTarget = openInNewTab ? '_blank' : '_self'
+    window.open(
+      target,
+      windowTarget,
+      openInNewTab ? 'noopener,noreferrer' : undefined,
+    )
+    return
+  }
+
+  // 无 target 时退回默认 plugin 详情页 ?tab=ui，这是 manager 内部路由，
+  // 用 router.push 走 SPA 内导航更平顺；new_tab 时仍 window.open 新窗口。
+  const fallback = {
+    path: `/plugins/${encodeURIComponent(props.pluginId)}`,
+    query: { tab: 'ui' },
+  }
+  if (openInNewTab) {
+    const resolved = router.resolve(fallback)
+    window.open(resolved.href, '_blank', 'noopener,noreferrer')
+  } else {
+    await router.push(fallback)
+  }
+}
+
 async function handleStart() {
   if (isDisabled.value) {
     ElMessage.warning(t('messages.pluginDisabled'))
@@ -170,5 +265,6 @@ async function handleEnableExt() {
 .plugin-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 </style>

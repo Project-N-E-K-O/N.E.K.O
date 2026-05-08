@@ -181,12 +181,16 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         Returns:
             属性值
         """
+        params = [{"did": device_id, "siid": siid, "piid": piid}]
         response = await self._http.post(
             "/miotspec/prop/get",
-            {"did": device_id, "siid": siid, "piid": piid},
+            {"params": params, "datasource": 1},
             credential,
         )
-        return response.get("result", {}).get("value")
+        result = response.get("result", [])
+        if result and len(result) > 0:
+            return result[0].get("value")
+        return None
 
     async def set_property(
         self, device_id: str, siid: int, piid: int, value: Any, credential: Credential
@@ -203,15 +207,19 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         Returns:
             是否成功
         """
+        params = [{"did": device_id, "siid": siid, "piid": piid, "value": value}]
         response = await self._http.post(
             "/miotspec/prop/set",
-            {"did": device_id, "siid": siid, "piid": piid, "value": value},
+            {"params": params},
             credential,
         )
 
         # 失效相关缓存（限制到当前用户范围）
         self._cache.invalidate_pattern(f"{credential.user_id}:devices:")
 
+        result = response.get("result", [])
+        if result and len(result) > 0:
+            return result[0].get("code") == 0
         return response.get("code") == 0
 
     async def call_action(
@@ -249,9 +257,9 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             结果列表
         """
         response = await self._http.post(
-            "/miotspec/prop/get_batch",
-            {"params": requests},
-            credential
+            "/miotspec/prop/get",
+            {"params": requests, "datasource": 1},
+            credential,
         )
         return response.get("result", [])
 
@@ -268,7 +276,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             结果列表
         """
         response = await self._http.post(
-            "/miotspec/prop/set_batch",
+            "/miotspec/prop/set",
             {"params": requests},
             credential
         )
@@ -278,8 +286,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
         for device_id in device_ids:
             self._cache.invalidate_pattern(f"{credential.user_id}:device:{device_id}")
 
-        results = response.get("result", [])
-        return [r.get("code") == 0 for r in results]
+        return response.get("result", [])
 
     def _parse_device(self, data: Dict[str, Any], home_id: str) -> Device:
         """解析设备数据

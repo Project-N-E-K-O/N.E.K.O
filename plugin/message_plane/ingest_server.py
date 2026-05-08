@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import ormsgpack
 import zmq
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.settings import (
     MESSAGE_PLANE_INGEST_BACKPRESSURE_SLEEP_SECONDS,

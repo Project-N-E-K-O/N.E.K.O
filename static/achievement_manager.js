@@ -318,13 +318,37 @@
         }
     }
 
-    // 创建全局实例
-    window.achievementManager = new AchievementManager();
+    function installAchievementManager(manager) {
+        window.achievementManager = manager;
 
-    // 导出便捷函数
-    window.unlockAchievement = (name) => window.achievementManager.unlockAchievement(name);
-    window.incrementAchievementCounter = (counter, amount) => window.achievementManager.incrementCounter(counter, amount);
-    window.getAchievementStats = () => window.achievementManager.getStats();
+        // 导出便捷函数
+        window.unlockAchievement = (name) => window.achievementManager.unlockAchievement(name);
+        window.incrementAchievementCounter = (counter, amount) => window.achievementManager.incrementCounter(counter, amount);
+        window.getAchievementStats = () => window.achievementManager.getStats();
 
-    console.log('成就管理系统已初始化');
+        console.log('成就管理系统已初始化');
+    }
+
+    async function initAchievementManagerAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (error) {
+                console.warn('[Achievement] storage startup barrier failed; achievement manager init deferred', error);
+                return;
+            }
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (error) {
+                console.warn('[Achievement] storage startup barrier failed; achievement manager init deferred', error);
+                return;
+            }
+        }
+
+        installAchievementManager(new AchievementManager());
+    }
+
+    initAchievementManagerAfterStorageBarrier();
 })();

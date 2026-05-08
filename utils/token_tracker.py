@@ -78,7 +78,7 @@ def _deep_copy_day(day: dict) -> dict:
 def _merge_day_stats(target: dict, source: dict):
     """将 source 的统计数据累加到 target 中（原地修改 target）。"""
     for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
-              "cached_tokens", "call_count", "error_count"):
+              "cached_tokens", "total_prompt_chars", "call_count", "error_count"):
         target[k] = target.get(k, 0) + source.get(k, 0)
 
     # by_model
@@ -86,8 +86,9 @@ def _merge_day_stats(target: dict, source: dict):
     for model, bucket in source.get("by_model", {}).items():
         if model not in t_bm:
             t_bm[model] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                           "cached_tokens": 0, "call_count": 0}
-        for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "call_count"):
+                           "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens",
+                  "cached_tokens", "prompt_chars", "call_count"):
             t_bm[model][k] = t_bm[model].get(k, 0) + bucket.get(k, 0)
 
     # by_call_type
@@ -95,8 +96,9 @@ def _merge_day_stats(target: dict, source: dict):
     for ct, bucket in source.get("by_call_type", {}).items():
         if ct not in t_bt:
             t_bt[ct] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                        "cached_tokens": 0, "call_count": 0}
-        for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "call_count"):
+                        "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens",
+                  "cached_tokens", "prompt_chars", "call_count"):
             t_bt[ct][k] = t_bt[ct].get(k, 0) + bucket.get(k, 0)
 
 
@@ -464,6 +466,7 @@ class TokenTracker:
         call_type: str = "unknown",
         source: str = "",
         success: bool = True,
+        prompt_chars: int = 0,
     ):
         """记录一次 LLM 调用的 token 用量。线程安全。
 
@@ -474,12 +477,16 @@ class TokenTracker:
             completion_tokens: 生成 tokens
             total_tokens: prompt + completion
             cached_tokens: prompt 中被缓存命中的部分（OpenAI prompt_tokens_details.cached_tokens）
+            prompt_chars: 字符计费 SKU 的输入字符数。Use this for TTS / ASR /
+                embedding-by-char endpoints whose pricing unit is characters,
+                not tokens — keeps the token aggregates clean.
         """
         model = model or "unknown"
         prompt_tokens = prompt_tokens or 0
         completion_tokens = completion_tokens or 0
         total_tokens = total_tokens or 0
         cached_tokens = cached_tokens or 0
+        prompt_chars = prompt_chars or 0
 
         today = date.today().isoformat()
 
@@ -490,6 +497,7 @@ class TokenTracker:
             "ct": completion_tokens,
             "tt": total_tokens,
             "cch": cached_tokens,
+            "pch": prompt_chars,
             "type": call_type,
             "src": source,
             "ok": success,
@@ -504,6 +512,7 @@ class TokenTracker:
             day["total_completion_tokens"] += completion_tokens
             day["total_tokens"] += total_tokens
             day["cached_tokens"] += cached_tokens
+            day["total_prompt_chars"] += prompt_chars
             day["call_count"] += 1
             if not success:
                 day["error_count"] += 1
@@ -517,6 +526,7 @@ class TokenTracker:
             b["completion_tokens"] += completion_tokens
             b["total_tokens"] += total_tokens
             b["cached_tokens"] += cached_tokens
+            b["prompt_chars"] += prompt_chars
             b["call_count"] += 1
 
             # by_call_type
@@ -528,6 +538,7 @@ class TokenTracker:
             c["completion_tokens"] += completion_tokens
             c["total_tokens"] += total_tokens
             c["cached_tokens"] += cached_tokens
+            c["prompt_chars"] += prompt_chars
             c["call_count"] += 1
 
             self._delta_records.append(rec)
@@ -814,6 +825,7 @@ class TokenTracker:
             "total_completion_tokens": 0,
             "total_tokens": 0,
             "cached_tokens": 0,
+            "total_prompt_chars": 0,
             "call_count": 0,
             "error_count": 0,
             "by_model": {},
@@ -823,7 +835,7 @@ class TokenTracker:
     @staticmethod
     def _empty_bucket() -> dict:
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                "cached_tokens": 0, "call_count": 0}
+                "cached_tokens": 0, "prompt_chars": 0, "call_count": 0}
 
     @staticmethod
     def _empty_file_data() -> dict:

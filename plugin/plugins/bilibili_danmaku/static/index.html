@@ -538,6 +538,185 @@
       font-size: 0.9rem;
     }
 
+    .tool-result-shell {
+      background: var(--bg-page);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .tool-result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tool-result-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .tool-result-sub {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .tool-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .tool-item-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+
+    .tool-item-meta {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+      line-height: 1.45;
+    }
+
+    .tool-item-desc {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.55;
+      margin-top: 8px;
+    }
+
+    .tool-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .tool-stat {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+
+    .tool-stat-label {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .tool-stat-value {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--accent-pink);
+    }
+
+    .tool-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .tool-empty,
+    .tool-error,
+    .tool-success {
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 0.84rem;
+      line-height: 1.6;
+    }
+
+    .tool-empty {
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .tool-error {
+      background: var(--danger-light);
+      border-left: 4px solid var(--danger);
+      color: var(--danger);
+    }
+
+    .tool-success {
+      background: var(--success-light);
+      border-left: 4px solid var(--success);
+      color: var(--text);
+    }
+
+    .tool-raw {
+      margin-top: 12px;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 0.76rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: Consolas, monospace;
+    }
+
+    .tool-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .tool-tag {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-blue-light);
+      color: var(--accent-blue);
+      font-weight: 600;
+    }
+
+    .tool-longtext {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 0.82rem;
+      line-height: 1.65;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
+    .tool-result-shell details {
+      margin-top: 12px;
+    }
+
+    .tool-result-shell summary {
+      cursor: pointer;
+      color: var(--accent-pink);
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    @media (max-width: 640px) {
+      .tool-grid { grid-template-columns: 1fr; }
+      .tool-stats { grid-template-columns: repeat(2, 1fr); }
+    }
+
     .toast {
       position: fixed;
       bottom: 28px;
@@ -599,7 +778,7 @@
     <div class="logo-wrap">📺</div>
     <div class="header-text">
       <h1>B站弹幕监听</h1>
-      <p>N.E.K.O 插件控制台 · bilibili_danmaku</p>
+      <p>N.E.K.O 插件控制台</p>
     </div>
   </div>
 
@@ -639,50 +818,27 @@
       <span class="login-toggle-text" id="loginToggleText">点击展开 ▼</span>
     </div>
     <div class="login-panel" id="loginPanel">
-      <div class="cookie-grid">
-        <div class="input-group">
-          <label>SESSDATA <span style="color:var(--danger)">*</span></label>
-          <div class="input-wrap">
-            <input type="password" id="f_sessdata" placeholder="粘贴 SESSDATA" autocomplete="off">
-            <button class="reveal-btn" onclick="toggleReveal('f_sessdata')">👁</button>
-          </div>
-        </div>
-        <div class="input-group">
-          <label>bili_jct <span style="color:var(--danger)">*</span></label>
-          <div class="input-wrap">
-            <input type="password" id="f_bili_jct" placeholder="粘贴 bili_jct" autocomplete="off">
-            <button class="reveal-btn" onclick="toggleReveal('f_bili_jct')">👁</button>
-          </div>
-        </div>
-        <div class="input-group">
-          <label>DedeUserID <span style="color:var(--danger)">*</span></label>
-          <div class="input-wrap">
-            <input type="password" id="f_dedeuserid" placeholder="你的 B站 UID" autocomplete="off" class="show-visible">
-            <button class="reveal-btn" onclick="toggleReveal('f_dedeuserid')">👁</button>
-          </div>
-        </div>
-        <div class="input-group">
-          <label>buvid3 <span style="color:var(--text-muted)">（推荐）</span></label>
-          <div class="input-wrap">
-            <input type="password" id="f_buvid3" placeholder="粘贴 buvid3" autocomplete="off">
-            <button class="reveal-btn" onclick="toggleReveal('f_buvid3')">👁</button>
-          </div>
-        </div>
-      </div>
       <div class="btn-group">
-        <button class="btn btn-success" id="saveCredBtn" onclick="saveCredential()">🔐 加密保存</button>
-        <button class="btn btn-danger btn-sm" id="clearCredBtn" onclick="clearCredential()">🗑 清除</button>
+        <button class="btn btn-primary" id="qrLoginBtn" onclick="startQrLogin()">扫码登录</button>
+        <button class="btn btn-ghost btn-sm" onclick="checkQrLogin()">检查扫码</button>
+        <button class="btn btn-ghost btn-sm" onclick="checkBiliCredential()">检查凭据</button>
+        <button class="btn btn-ghost btn-sm" id="reloadCredBtn" onclick="reloadCredential()">重载凭据</button>
+        <button class="btn btn-danger btn-sm" id="clearCredBtn" onclick="clearCredential()">清除登录</button>
+      </div>
+      <div id="qrLoginBox" style="display:none;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg-page);">
+        <div id="qrLoginMessage" style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:10px;"></div>
+        <img id="qrLoginImage" alt="B站登录二维码" style="max-width:220px;border-radius:10px;background:white;padding:8px;display:none;">
       </div>
       <div class="help-box">
-        <strong>获取 Cookie：</strong>登录 bilibili.com → F12 → Application → Cookies → 复制对应值<br>
-        <strong>安全说明：</strong>Cookie 使用加密存储在本地，不会上传任何服务器
+        <strong>登录方式：</strong>使用 B站 App 扫描二维码登录，登录成功后凭据会加密保存在本地。<br>
+        <strong>安全说明：</strong>不再提供手填 Cookie 入口，避免复制敏感 Cookie 时误泄露。
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="card-title">直播间设置</div>
-    <div class="form-row">
+    <div class="form-row" style="margin-bottom:12px;">
       <div class="input-group">
         <label>直播间 ID</label>
         <input type="number" id="roomIdInput" placeholder="输入直播间号码，如 22925943">
@@ -691,6 +847,18 @@
       <button class="btn btn-success" id="connectBtn" onclick="connect()">▶ 开始监听</button>
       <button class="btn btn-danger" id="disconnectBtn" onclick="disconnect()">⏹ 停止</button>
     </div>
+    <div class="form-row" style="margin-bottom:0;align-items:flex-end;">
+      <div class="input-group" style="flex:1.6;">
+        <label>发送直播弹幕</label>
+        <input type="text" id="liveDanmakuInput" maxlength="80" placeholder="输入要发送的弹幕，或写给 NEKO 的回复意图">
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-secondary);white-space:nowrap;margin-bottom:10px;">
+        <input type="checkbox" id="nekoSayToggle">
+        是否让NEKO说
+      </label>
+      <button class="btn btn-danger" id="sendDanmakuBtn" onclick="sendLiveDanmaku()">发送弹幕</button>
+    </div>
+    <div class="slider-hint" style="margin-top:10px;color:var(--danger);">关闭“是否让NEKO说”会直接发送输入内容；开启后会把输入和直播间弹幕交给 NEKO，由 NEKO 使用人设和记忆生成回复再发送。</div>
   </div>
 
   <div class="card">
@@ -713,12 +881,23 @@
       </div>
       <div class="slider-hint">B站弹幕限制 20 字符，建议保持 20</div>
     </div>
-    <div class="form-row" style="margin-bottom:0;">
+    <div class="form-row" style="margin-bottom:14px;">
       <div class="input-group">
         <label>目标 AI 名称</label>
         <input type="text" id="targetLanlanInput" placeholder="留空则不指定，如：小天">
       </div>
       <button class="btn btn-ghost btn-sm" onclick="setTargetLanlan()">保存</button>
+    </div>
+    <div class="form-row" style="margin-bottom:0;">
+      <div class="input-group">
+        <label>主人 B站 UID</label>
+        <input type="number" id="masterBiliUidInput" placeholder="留空或 0 表示未设置">
+      </div>
+      <div class="input-group">
+        <label>主人 B站 用户名</label>
+        <input type="text" id="masterBiliNameInput" placeholder="如：你的 B站 用户名">
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="setMasterBiliAccount()">保存</button>
     </div>
   </div>
 
@@ -739,11 +918,189 @@
     </div>
   </div>
 
+  <div class="card">
+    <div class="card-title">B站读工具</div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="input-group">
+        <label>关键词</label>
+        <input type="text" id="toolKeyword" placeholder="搜索视频 / 评论 / 字幕 / 历史弹幕">
+      </div>
+      <div class="input-group">
+        <label>BV号</label>
+        <input type="text" id="toolBvid" placeholder="如 BV1xx411c7mD">
+      </div>
+      <div class="input-group">
+        <label>UID</label>
+        <input type="number" id="toolUid" placeholder="用户 UID / 私信对象 UID">
+      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="input-group">
+        <label>收藏夹 ID</label>
+        <input type="number" id="toolMediaId" placeholder="收藏夹 media_id">
+      </div>
+      <div class="input-group">
+        <label>排序 / 分区</label>
+        <input type="text" id="toolOrder" placeholder="totalrank / pubdate / all / game">
+      </div>
+      <div class="input-group">
+        <label>数量 / 周期</label>
+        <input type="number" id="toolNum" placeholder="10 / 30 / 100 / 3 / 7">
+      </div>
+    </div>
+    <div class="btn-group" style="flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" onclick="runBiliTool('bili_search')">搜索视频</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_hot_videos')">热门视频</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_hot_buzzwords')">热搜词</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_weekly_hot')">每周必看</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_rank')">排行榜</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_video_info')">视频信息</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_comments')">视频评论</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_subtitle')">视频字幕</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_danmaku')">历史弹幕</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_user_info')">用户信息</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_user_videos')">用户投稿</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_favorite_lists')">收藏夹列表</button>
+      <button class="btn btn-ghost btn-sm" onclick="runBiliTool('bili_favorite_content')">收藏夹内容</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">B站写工具</div>
+    <div class="form-row" style="margin-bottom:12px;align-items:center;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-secondary);white-space:nowrap;">
+        <input type="checkbox" id="toolUseNekoToggle">
+        是否让NEKO说
+      </label>
+      <div class="slider-hint" style="margin:0;color:var(--text-secondary);">开启后，评论/动态/私信会交给 NEKO 按宿主人设和记忆生成后再发送。</div>
+    </div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="input-group">
+        <label>文本内容 / 给 NEKO 的意图</label>
+        <input type="text" id="toolText" placeholder="直接发送的文本，或让 NEKO 组织语气后的表达意图">
+      </div>
+      <div class="input-group">
+        <label>图片列表</label>
+        <input type="text" id="toolImages" placeholder="本地路径或 URL，多个用 | 分隔">
+      </div>
+      <div class="input-group">
+        <label>评论 rpid</label>
+        <input type="number" id="toolRpid" placeholder="回复评论时填写">
+      </div>
+    </div>
+    <div class="btn-group" style="flex-wrap:wrap;">
+      <button class="btn btn-danger btn-sm" onclick="runBiliTool('bili_reply', true)">发评论/回复</button>
+      <button class="btn btn-danger btn-sm" onclick="runBiliTool('bili_send_dynamic', true)">发动态</button>
+      <button class="btn btn-danger btn-sm" onclick="runBiliTool('bili_send_message', true)">发私信</button>
+    </div>
+    <div class="slider-hint" style="margin-top:10px;color:var(--danger);">红色按钮会对 B站 产生写操作，请确认内容、账号和对象后再发送。</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">B站工具结果</div>
+    <div id="biliToolResult" style="margin-top:0;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg-page);white-space:pre-wrap;word-break:break-word;font-family:Consolas,monospace;font-size:0.8rem;overflow-wrap:anywhere;">等待调用工具…</div>
+  </div>
+
+  <style>
+    .toggle-wrap { display:inline-flex; align-items:center; gap:6px; margin-right:8px; }
+    .toggle-switch { position:relative; width:36px; height:20px; background:var(--border); border-radius:10px; cursor:pointer; transition:background .2s; flex-shrink:0; }
+    .toggle-switch.active { background:var(--accent-pink); }
+    .toggle-switch .knob { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:transform .2s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+    .toggle-switch.active .knob { transform:translateX(16px); }
+    .toggle-label { font-size:0.75rem; color:var(--text-secondary); user-select:none; }
+  </style>
+
+  <div class="card">
+    <div class="card-title">背景LLM设置</div>
+
+    <div class="status-card" style="margin-bottom:16px;">
+      <div class="status-dot" id="bgLlmDot"></div>
+      <div class="status-info">
+        <div class="status-text" id="bgLlmStatus">未启用</div>
+        <div class="status-sub" id="bgLlmStats"></div>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch" id="bgLlmToggle" onclick="toggleBgLLM()">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" style="display:none;">启用</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="testBgLLM()">🔍 测试</button>
+      <button class="btn btn-primary btn-sm" id="bgLlmSaveBtn" onclick="saveBgLLM()">保存配置</button>
+    </div>
+
+    <div style="margin-bottom:18px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">Cloud API 配置</label>
+      <div class="form-row" style="margin-bottom:10px;">
+        <div class="input-group">
+          <label>API 地址</label>
+          <input type="text" id="bgLlmApiUrl" placeholder="https://api.openai.com/v1/chat/completions">
+        </div>
+        <div class="input-group">
+          <label>模型名称</label>
+          <input type="text" id="bgLlmModel" placeholder="如 gpt-4o-mini">
+        </div>
+      </div>
+      <div class="input-group">
+        <label>API Key</label>
+        <div class="input-wrap">
+          <input type="password" id="bgLlmApiKey" placeholder="sk-...">
+          <button class="reveal-btn" onclick="toggleReveal('bgLlmApiKey')">👁</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">聚合窗口</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmWindowSlider" min="5" max="60" value="15">
+        <span class="slider-value" id="bgLlmWindowDisplay">15</span>
+      </div>
+      <div class="slider-hint">收集多少条弹幕后触发 LLM 总结</div>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;">最大采样数</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmMaxSamplesSlider" min="10" max="200" value="30">
+        <span class="slider-value" id="bgLlmMaxSamplesDisplay">30</span>
+      </div>
+      <div class="slider-hint">弹幕采样池最大容量</div>
+    </div>
+
+    <div class="login-toggle" onclick="toggleBgLlmAdvanced()" style="margin-bottom:0;">
+      <span style="font-size:0.8rem;font-weight:500;">进阶设置（画像 / 知识库 / 提示词）</span>
+      <span class="login-toggle-text" id="bgLlmAdvToggleText">点击展开 ▼</span>
+    </div>
+    <div class="login-panel" id="bgLlmAdvPanel">
+      <div class="input-group" style="margin-bottom:12px;">
+        <label>猫娘名字 <span style="font-size:0.75rem;color:var(--text-secondary);">（用于知识库/提示词中的 <code>{name}</code> 占位符）</span></label>
+        <input type="text" id="bgLlmNekoName" placeholder="如：皖萱、小天……留空则不填充"
+          style="background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;width:100%;box-sizing:border-box;">
+      </div>
+      <div class="input-group" style="margin-bottom:12px;">
+        <label>知识库上下文 <span style="font-size:0.75rem;color:var(--text-secondary);">（角色人设、口头禅、常见梗，支持 <code>{name}</code>）</span></label>
+        <textarea id="bgLlmKnowledge" rows="4" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="例：{name} 是一只温柔的猫娘，喜欢喝奶茶，口头禅是「喵~」。遇到夸奖会害羞……"></textarea>
+      </div>
+      <div class="input-group" style="margin-bottom:12px;">
+        <label>用户画像摘要</label>
+        <textarea id="bgLlmProfile" rows="3" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="描述主播/用户的基本画像，用于 LLM 上下文..."></textarea>
+      </div>
+      <div class="input-group">
+        <label>提示词模板 <span style="font-size:0.75rem;color:var(--text-secondary);">（留空使用默认，支持 <code>{name}</code> / <code>{knowledge_context}</code>）</span></label>
+        <textarea id="bgLlmPromptTemplate" rows="4" style="width:100%;resize:vertical;background:var(--bg-input);border:1.5px solid var(--border);border-radius:10px;color:var(--text);padding:10px 14px;font-size:0.9rem;font-family:inherit;"
+          placeholder="自定义 System Prompt 模板，留空使用默认。&#10;示例：你是 {name}，一只可爱的猫娘主播。&#10;知识库参考：{knowledge_context}&#10;请根据弹幕生成引导词。"></textarea>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
   const PLUGIN_ID = 'bilibili_danmaku';
-  const RUNS_URL  = '/runs';
+  const RUNS_URL = '/runs';
 
   async function callPlugin(entry, args = {}) {
     const resp = await fetch(RUNS_URL, {
@@ -757,8 +1114,10 @@
     if (!runId) throw new Error('未获取到 run_id');
 
     const deadline = Date.now() + 20000;
+    let delay = 300;
     while (Date.now() < deadline) {
-      await sleep(300);
+      await sleep(delay);
+      delay = Math.min(delay + 200, 1200);
       const poll = await fetch(`${RUNS_URL}/${runId}`);
       if (!poll.ok) continue;
       const rec = await poll.json();
@@ -780,6 +1139,9 @@
     }
     throw new Error('调用超时');
   }
+
+  let pollTimer = null;
+  let statusRefreshPromise = null;
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -823,39 +1185,6 @@
     }
   }
 
-  async function saveCredential() {
-    const sessdata = document.getElementById('f_sessdata').value.trim();
-    const bili_jct = document.getElementById('f_bili_jct').value.trim();
-    const dedeuserid = document.getElementById('f_dedeuserid').value.trim();
-    const buvid3 = document.getElementById('f_buvid3').value.trim();
-
-    if (!sessdata) { toast('请填写 SESSDATA', 'error'); return; }
-    if (!bili_jct) { toast('请填写 bili_jct', 'error'); return; }
-    if (!dedeuserid) { toast('请填写 DedeUserID', 'error'); return; }
-
-    const btn = document.getElementById('saveCredBtn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> 保存中...';
-    try {
-      const data = await callPlugin('save_credential', { sessdata, bili_jct, dedeuserid, buvid3 });
-      toast(data.message || '凭据已保存', 'success');
-      updateLoginBadge(true);
-      ['f_sessdata','f_bili_jct','f_dedeuserid','f_buvid3'].forEach(id => {
-        const el = document.getElementById(id);
-        el.value = '';
-        el.type = 'password';
-        el.classList.remove('show-visible');
-      });
-      toggleLoginPanel();
-      await refreshStatus(true);
-    } catch (e) {
-      toast('保存失败：' + e.message, 'error');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '🔐 加密保存';
-    }
-  }
-
   async function clearCredential() {
     if (!confirm('确定要清除 B站凭据吗？')) return;
     const btn = document.getElementById('clearCredBtn');
@@ -864,11 +1193,54 @@
       const data = await callPlugin('clear_credential', {});
       toast(data.message || '凭据已清除', 'success');
       updateLoginBadge(false);
-      await refreshStatus(true);
+      await refreshStatus(true, true);
     } catch (e) {
       toast('清除失败：' + e.message, 'error');
     } finally {
       btn.disabled = false;
+    }
+  }
+
+  async function reloadCredential() {
+    const btn = document.getElementById('reloadCredBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 重载中...';
+    try {
+      const data = await callPlugin('reload_credential', {});
+      toast(data.message || '凭据已重载', 'success');
+      updateLoginBadge(Boolean(data.logged_in));
+      await refreshStatus(true, true);
+    } catch (e) {
+      toast('重载失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '重载凭据';
+    }
+  }
+
+  async function sendLiveDanmaku() {
+    const input = document.getElementById('liveDanmakuInput');
+    const toggle = document.getElementById('nekoSayToggle');
+    const message = input.value.trim();
+    const useNeko = Boolean(toggle && toggle.checked);
+    if (!message) { toast(useNeko ? '请输入要交给 NEKO 的内容' : '请输入弹幕内容', 'error'); return; }
+    const confirmText = useNeko
+      ? `确认交给 NEKO 生成并发送直播弹幕吗？\n\n主播意图：${message}`
+      : `确认发送这条直播弹幕吗？\n\n${message}`;
+    if (!confirm(confirmText)) return;
+    const btn = document.getElementById('sendDanmakuBtn');
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> ${useNeko ? '交给NEKO中...' : '发送中...'}`;
+    try {
+      const data = await callPlugin('send_danmaku', { message });
+      toast(data.message || (useNeko ? '已交给 NEKO 处理' : '弹幕已发送'), 'success');
+      input.value = '';
+      await refreshStatus(true, true);
+    } catch (e) {
+      toast((useNeko ? 'NEKO 代发失败：' : '发送失败：') + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '发送弹幕';
     }
   }
 
@@ -890,6 +1262,7 @@
     try {
       const data = await callPlugin('connect', {});
       toast(data.message || '已开始监听', 'success');
+      resumePolling();
       await refreshStatus();
     } catch (e) {
       toast('连接失败：' + e.message, 'error');
@@ -905,6 +1278,7 @@
     try {
       const data = await callPlugin('disconnect', {});
       toast(data.message || '已停止监听', 'success');
+      pausePolling();
       await refreshStatus();
     } catch (e) {
       toast('停止失败：' + e.message, 'error');
@@ -943,10 +1317,23 @@
     }
   }
 
+  async function setMasterBiliAccount() {
+    const uid = parseInt(document.getElementById('masterBiliUidInput').value, 10) || 0;
+    const name = document.getElementById('masterBiliNameInput').value.trim();
+    try {
+      const data = await callPlugin('set_master_bili_account', { uid, name });
+      toast(data.message || '已保存', 'success');
+    } catch (e) {
+      toast('保存失败：' + e.message, 'error');
+    }
+  }
+
   function renderStatus(data) {
     const dot = document.getElementById('statusDot');
     const text = document.getElementById('statusText');
     const sub = document.getElementById('statusSub');
+    window.__biliListening = Boolean(data.listening);
+    window.__biliConnecting = Boolean(data.connecting);
 
     dot.className = 'status-dot';
     if (data.listening) {
@@ -982,17 +1369,52 @@
     if (data.target_lanlan !== undefined) {
       document.getElementById('targetLanlanInput').value = data.target_lanlan || '';
     }
+    if (data.master_bili_uid !== undefined) {
+      document.getElementById('masterBiliUidInput').value = data.master_bili_uid || '';
+    }
+    if (data.master_bili_name !== undefined) {
+      document.getElementById('masterBiliNameInput').value = data.master_bili_name || '';
+    }
+
+    if (data.background_llm) {
+      const bg = data.background_llm;
+      const enabled = bg.enabled === true;
+      syncBgLlmToggle(enabled);
+
+      const dot = document.getElementById('bgLlmDot');
+      dot.className = 'status-dot';
+      if (enabled) {
+        dot.classList.add('connected');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 已启用';
+        document.getElementById('bgLlmStats').textContent =
+          `窗口: ${bg.window_size ?? '\u2014'} · 采样: ${bg.max_samples ?? '\u2014'}` +
+          (bg.llm_stats ? ` · LLM调用: ${bg.llm_stats.total_calls ?? 0}` : '');
+      } else {
+        dot.classList.add('error');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 未启用';
+        document.getElementById('bgLlmStats').textContent = '请在下方配置 Cloud API 并连接后启用';
+      }
+    }
 
     updateLoginBadge(data.logged_in === true);
+    updatePollingButtonState();
   }
 
-  async function refreshStatus(silent = false) {
-    try {
-      const data = await callPlugin('get_status', {});
-      renderStatus(data);
-    } catch (e) {
-      if (!silent) toast('获取状态失败', 'error');
-    }
+  async function refreshStatus(silent = false, force = false) {
+    if (!force && statusRefreshPromise) return statusRefreshPromise;
+    statusRefreshPromise = (async () => {
+      try {
+        const data = await callPlugin('get_status', {});
+        renderStatus(data);
+        return data;
+      } catch (e) {
+        if (!silent) toast('获取状态失败', 'error');
+        return null;
+      } finally {
+        statusRefreshPromise = null;
+      }
+    })();
+    return statusRefreshPromise;
   }
 
   const feed = document.getElementById('danmakuFeed');
@@ -1055,40 +1477,551 @@
     return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function formatNumber(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toLocaleString() : esc(String(value));
+  }
+
+  function renderToolStats(items = []) {
+    if (!items.length) return '';
+    return `<div class="tool-stats">${items.map(item => `
+      <div class="tool-stat">
+        <div class="tool-stat-label">${esc(item.label)}</div>
+        <div class="tool-stat-value">${esc(String(item.value ?? '—'))}</div>
+      </div>
+    `).join('')}</div>`;
+  }
+
+  function renderToolEmpty(message = '暂无结果') {
+    return `<div class="tool-empty">${esc(message)}</div>`;
+  }
+
+  function renderToolError(message = '调用失败') {
+    return `<div class="tool-error">${esc(message)}</div>`;
+  }
+
+  function renderRawFallback(payload) {
+    return `<details><summary>查看原始响应</summary><div class="tool-raw">${esc(JSON.stringify(payload, null, 2))}</div></details>`;
+  }
+
+  function renderToolList(items, mapper) {
+    if (!items || !items.length) return renderToolEmpty('暂无可显示的数据');
+    return `<div class="tool-grid">${items.map(item => mapper(item)).join('')}</div>`;
+  }
+
+  function wrapToolResult(title, subtitle, body, rawPayload = null) {
+    return `
+      <div class="tool-result-shell">
+        <div class="tool-result-header">
+          <div>
+            <div class="tool-result-title">${esc(title)}</div>
+            <div class="tool-result-sub">${esc(subtitle || '')}</div>
+          </div>
+        </div>
+        ${body}
+        ${rawPayload ? renderRawFallback(rawPayload) : ''}
+      </div>
+    `;
+  }
+
+  function renderBiliToolResult(entry, payload) {
+    if (!payload || typeof payload !== 'object') {
+      return wrapToolResult('调用结果', '', renderToolEmpty('没有返回结构化数据'));
+    }
+
+    const message = payload.message || payload.summary || '调用完成';
+
+    switch (entry) {
+      case 'bili_hot_buzzwords': {
+        const items = payload.buzzwords || [];
+        const body = renderToolList(items, item => `
+          <div class="tool-item">
+            <div class="tool-item-title">${esc(item.name || item.keyword || `热搜 ${item.id || ''}`)}</div>
+            <div class="tool-item-meta">ID ${esc(String(item.id || '—'))}</div>
+            ${item.picture ? `<div class="tool-item-meta">配图：${esc(item.picture)}</div>` : ''}
+          </div>
+        `);
+        return wrapToolResult('热搜词', message, body, payload);
+      }
+      case 'bili_weekly_hot': {
+        const items = payload.videos || payload.list || [];
+        const isWeekIndex = !payload.videos && Array.isArray(payload.list) && payload.list.length && payload.list[0] && payload.list[0].number !== undefined;
+        const body = isWeekIndex
+          ? renderToolList(items, item => `
+              <div class="tool-item">
+                <div class="tool-item-title">${esc(item.name || item.subject || `第 ${item.number} 期`)}</div>
+                <div class="tool-item-meta">期数 ${esc(String(item.number || '—'))} · 状态 ${esc(String(item.status ?? '—'))}</div>
+                ${item.subject ? `<div class="tool-item-desc">${esc(item.subject)}</div>` : ''}
+              </div>
+            `)
+          : renderToolList(items, item => `
+              <div class="tool-item">
+                <div class="tool-item-title">${esc(item.title || item.bvid || '未命名')}</div>
+                <div class="tool-item-meta">UP：${esc(item.author || '')}${item.bvid ? ` · ${esc(item.bvid)}` : ''}</div>
+                <div class="tool-item-meta">播放 ${formatNumber(item.play)} · 点赞 ${formatNumber(item.like)} · 评论 ${formatNumber(item.reply)}</div>
+                <div class="tool-item-meta">分区 ${esc(item.tname || '—')}</div>
+                ${item.desc ? `<div class="tool-item-desc">${esc(item.desc)}</div>` : ''}
+              </div>
+            `);
+        return wrapToolResult('每周必看', message, body, payload);
+      }
+      case 'bili_hot_videos':
+      case 'bili_search':
+      case 'bili_rank':
+      case 'bili_user_videos':
+      case 'bili_favorite_lists':
+      case 'bili_favorite_content': {
+        const items = payload.videos || payload.lists || payload.medias || [];
+        const body = renderToolList(items, item => `
+          <div class="tool-item">
+            <div class="tool-item-title">${esc(item.title || item.name || item.bvid || item.id || '未命名')}</div>
+            <div class="tool-item-meta">${item.author ? `UP：${esc(item.author)}` : ''}${item.bvid ? ` · ${esc(item.bvid)}` : ''}${item.id ? ` · ID ${esc(String(item.id))}` : ''}</div>
+            <div class="tool-item-meta">播放 ${formatNumber(item.play)} · 点赞 ${formatNumber(item.like)} · 评论 ${formatNumber(item.reply || item.comment || item.media_count)}</div>
+            <div class="tool-item-meta">${item.duration ? `时长 ${esc(String(item.duration))}` : ''}${item.tname ? ` · 分区 ${esc(item.tname)}` : ''}${item.fav_state !== undefined ? ` · 状态 ${esc(String(item.fav_state))}` : ''}</div>
+            ${item.description || item.desc ? `<div class="tool-item-desc">${esc(item.description || item.desc)}</div>` : ''}
+          </div>
+        `);
+        return wrapToolResult('列表结果', message, body, payload);
+      }
+      case 'bili_video_info': {
+        const body = `
+          ${renderToolStats([
+            { label: '播放', value: formatNumber(payload.stat?.view) },
+            { label: '点赞', value: formatNumber(payload.stat?.like) },
+            { label: '评论', value: formatNumber(payload.stat?.reply) },
+            { label: '弹幕', value: formatNumber(payload.stat?.danmaku) },
+            { label: '收藏', value: formatNumber(payload.stat?.favorite) },
+            { label: '硬币', value: formatNumber(payload.stat?.coin) },
+          ])}
+          <div class="tool-item">
+            <div class="tool-item-title">${esc(payload.title || payload.bvid || '视频详情')}</div>
+            <div class="tool-item-meta">作者：${esc(payload.author || '未知')} · BV：${esc(payload.bvid || '—')} · AV：${esc(String(payload.aid || '—'))}</div>
+            <div class="tool-item-meta">时长：${esc(String(payload.duration || '—'))} · 分P：${esc(String(payload.pages || '—'))}</div>
+            ${payload.description ? `<div class="tool-item-desc">${esc(payload.description)}</div>` : ''}
+            ${payload.tags?.length ? `<div class="tool-tags">${payload.tags.map(tag => `<span class="tool-tag">${esc(tag)}</span>`).join('')}</div>` : ''}
+          </div>
+        `;
+        return wrapToolResult('视频详情', message, body, payload);
+      }
+      case 'bili_user_info': {
+        const body = `
+          ${renderToolStats([
+            { label: '粉丝', value: formatNumber(payload.fans) },
+            { label: '关注', value: formatNumber(payload.following) },
+            { label: '获赞', value: formatNumber(payload.likes) },
+            { label: '等级', value: formatNumber(payload.level) },
+            { label: '稿件播放', value: formatNumber(payload.archive_view) },
+            { label: '专栏播放', value: formatNumber(payload.article_view) },
+          ])}
+          <div class="tool-item">
+            <div class="tool-item-title">${esc(payload.name || '用户信息')}</div>
+            <div class="tool-item-meta">UID：${esc(String(payload.uid || '—'))}${payload.face ? ` · 头像：${esc(payload.face)}` : ''}</div>
+            ${payload.sign ? `<div class="tool-item-desc">${esc(payload.sign)}</div>` : ''}
+          </div>
+        `;
+        return wrapToolResult('用户详情', message, body, payload);
+      }
+      case 'bili_comments': {
+        const body = payload.comments?.length ? `<div class="tool-list">${payload.comments.map(item => `
+          <div class="tool-item">
+            <div class="tool-item-title">${esc(item.user || '匿名用户')}</div>
+            <div class="tool-item-meta">点赞 ${formatNumber(item.like)} · 回复 ${formatNumber(item.reply_count)} · rpid ${formatNumber(item.rpid)}</div>
+            <div class="tool-item-desc">${esc(item.content || '')}</div>
+            ${item.top_replies?.length ? `<div class="tool-item-meta">楼中楼：${item.top_replies.map(reply => `${reply.user}: ${reply.content}`).join(' / ')}</div>` : ''}
+          </div>
+        `).join('')}</div>` : renderToolEmpty('暂无评论');
+        return wrapToolResult('视频评论', message, body, payload);
+      }
+      case 'bili_subtitle': {
+        const body = `
+          ${renderToolStats([
+            { label: '语言', value: payload.language || '—' },
+            { label: '段数', value: formatNumber(payload.segments) },
+          ])}
+          <div class="tool-longtext">${esc(payload.text || payload.message || '暂无字幕')}</div>
+        `;
+        return wrapToolResult('视频字幕', message, body, payload);
+      }
+      case 'bili_danmaku': {
+        const body = payload.danmakus?.length ? `<div class="tool-list">${payload.danmakus.map(item => `
+          <div class="tool-item">
+            <div class="tool-item-meta">时间：${esc(String(item.time || '—'))}</div>
+            <div class="tool-item-desc">${esc(item.text || '')}</div>
+          </div>
+        `).join('')}</div>` : renderToolEmpty('暂无历史弹幕');
+        return wrapToolResult('历史弹幕', message, body, payload);
+      }
+      case 'bili_reply':
+      case 'ask_neko_bili_reply':
+      case 'bili_send_dynamic':
+      case 'ask_neko_bili_send_dynamic':
+      case 'bili_send_message':
+      case 'ask_neko_bili_send_message': {
+        const body = `
+          <div class="tool-success">${esc(payload.message || '写操作已完成')}</div>
+          ${payload.data ? renderRawFallback(payload.data) : ''}
+        `;
+        return wrapToolResult('写操作结果', message, body, null);
+      }
+      default: {
+        const body = `<div class="tool-success">${esc(message)}</div>`;
+        return wrapToolResult('工具结果', message, body, payload);
+      }
+    }
+  }
+
+  async function startQrLogin() {
+    const btn = document.getElementById('qrLoginBtn');
+    const box = document.getElementById('qrLoginBox');
+    const img = document.getElementById('qrLoginImage');
+    const msg = document.getElementById('qrLoginMessage');
+    btn.disabled = true;
+    try {
+      const data = await callPlugin('bili_login', {});
+      const r = data.result || data;
+      if (r.status === 'qrcode_ready') {
+        img.src = r.qrcode_image;
+        img.style.display = 'block';
+        box.style.display = 'block';
+        msg.textContent = r.message || '请用B站App扫描二维码登录';
+        toast('二维码已生成', 'success');
+        // 启动自动轮询
+        pollQrLogin();
+      } else if (r.status === 'already_logged_in') {
+        toast('已经登录', 'success');
+        await refreshStatus(true, true);
+      } else {
+        toast(r.message || '生成二维码失败', 'error');
+      }
+    } catch (e) {
+      toast('生成二维码失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  let qrPollTimer = null;
+
+  function pollQrLogin() {
+    if (qrPollTimer) clearInterval(qrPollTimer);
+    qrPollTimer = setInterval(async () => {
+      try {
+        const data = await callPlugin('bili_login_check', {});
+        const r = data.result || data;
+        const msg = document.getElementById('qrLoginMessage');
+        if (r.status === 'scanning') {
+          msg.textContent = '✅ 已扫码，等待确认...';
+        } else if (r.status === 'confirming') {
+          msg.textContent = '⏳ 确认中...';
+        } else if (r.status === 'done' || r.status === 'already_logged_in') {
+          clearInterval(qrPollTimer);
+          qrPollTimer = null;
+          msg.textContent = '🎉 登录成功！';
+          document.getElementById('qrLoginImage').style.display = 'none';
+          document.getElementById('qrLoginBox').style.display = 'none';
+          toast('B站登录成功', 'success');
+          await refreshStatus(true, true);
+        } else if (r.status === 'timeout') {
+          clearInterval(qrPollTimer);
+          qrPollTimer = null;
+          msg.textContent = '⏰ 二维码已过期，请重新生成';
+          toast('二维码已过期', 'error');
+        } else if (r.status === 'no_session') {
+          // 没有进行中的登录，停止轮询
+          clearInterval(qrPollTimer);
+          qrPollTimer = null;
+        }
+      } catch (e) {
+        // 轮询出错不弹 toast，静默重试
+      }
+    }, 2000);
+  }
+
+  async function checkQrLogin() {
+    try {
+      const data = await callPlugin('bili_login_check', {});
+      const r = data.result || data;
+      const msg = document.getElementById('qrLoginMessage');
+      const box = document.getElementById('qrLoginBox');
+      if (r.status === 'qrcode_ready' || r.status === 'scanning' || r.status === 'confirming') {
+        box.style.display = 'block';
+        msg.textContent = r.message || '等待扫码...';
+        // 启动自动轮询
+        pollQrLogin();
+      } else if (r.status === 'done' || r.status === 'already_logged_in') {
+        toast('已经登录', 'success');
+        await refreshStatus(true, true);
+      } else if (r.status === 'timeout') {
+        toast('二维码已过期，请重新生成', 'error');
+      } else {
+        toast(r.message || '没有进行中的登录', 'info');
+      }
+    } catch (e) {
+      toast('检查扫码失败：' + e.message, 'error');
+    }
+  }
+
+  async function checkBiliCredential() {
+    try {
+      await refreshStatus(true, true);
+      toast('已检查凭据状态', 'success');
+    } catch (e) {
+      toast('检查凭据失败：' + e.message, 'error');
+    }
+  }
+
+  function parseToolArgs(entry) {
+    const keyword = document.getElementById('toolKeyword').value.trim();
+    const bvid = document.getElementById('toolBvid').value.trim();
+    const uid = parseInt(document.getElementById('toolUid').value) || 0;
+    const mediaId = parseInt(document.getElementById('toolMediaId').value) || 0;
+    const order = document.getElementById('toolOrder').value.trim();
+    const num = parseInt(document.getElementById('toolNum').value) || 0;
+    const text = document.getElementById('toolText').value.trim();
+    const images = document.getElementById('toolImages').value.trim();
+    const rpid = parseInt(document.getElementById('toolRpid').value) || 0;
+
+    switch (entry) {
+      case 'bili_search': return { keyword, num: num || 10, order: order || 'totalrank' };
+      case 'bili_hot_videos': return { pn: 1, ps: num || 20 };
+      case 'bili_hot_buzzwords': return { page_num: 1, page_size: num || 20 };
+      case 'bili_weekly_hot': return { week: num || 0 };
+      case 'bili_rank': return { category: order || 'all', day: num || 3 };
+      case 'bili_video_info': return bvid ? { bvid } : { aid: num || 0 };
+      case 'bili_comments': return bvid ? { bvid, num: num || 30 } : { keyword, num: num || 30 };
+      case 'bili_subtitle': return bvid ? { bvid } : { keyword };
+      case 'bili_danmaku': return bvid ? { bvid, num: num || 100 } : { keyword, num: num || 100 };
+      case 'bili_user_info': return { uid };
+      case 'bili_user_videos': return { uid, pn: 1, ps: num || 30, order: order || 'pubdate', keyword };
+      case 'bili_favorite_lists': return uid ? { uid } : {};
+      case 'bili_favorite_content': return { media_id: mediaId, page: 1, keyword };
+      case 'bili_reply':
+      case 'ask_neko_bili_reply': return { bvid, text, rpid, root: rpid };
+      case 'bili_send_dynamic':
+      case 'ask_neko_bili_send_dynamic': return { text, images: images ? images.split('|').map(s => s.trim()).filter(Boolean) : [], topic_id: 0, schedule_time: 0 };
+      case 'bili_send_message':
+      case 'ask_neko_bili_send_message': return { receiver_uid: uid, text };
+      default: return {};
+    }
+  }
+
+  async function runBiliTool(entry, confirmWrite = false) {
+    const useNeko = confirmWrite && Boolean(document.getElementById('toolUseNekoToggle')?.checked);
+    const confirmMsg = useNeko
+      ? `确认交给 NEKO 生成人设化内容后执行 ${entry} 吗？这会对 B站 产生写操作。`
+      : `确认执行 ${entry} 吗？这会对 B站 产生写操作。`;
+    if (confirmWrite && !confirm(confirmMsg)) return;
+    const resultBox = document.getElementById('biliToolResult');
+    resultBox.innerHTML = renderToolEmpty(useNeko ? '已提交给 NEKO...' : '调用中...');
+    try {
+      // ask_neko_bili_* 前缀表示让 NEKO 生成人设化内容，此处复用对应接口
+      const actualEntry = entry.replace(/^ask_neko_bili_/, 'bili_');
+      const args = parseToolArgs(entry);
+      const data = await callPlugin(actualEntry, args);
+      const html = renderBiliToolResult(actualEntry, data);
+      resultBox.innerHTML = html;
+      toast('调用成功', 'success');
+    } catch (e) {
+      resultBox.innerHTML = renderToolError(e.message);
+      toast('调用失败：' + e.message, 'error');
+    }
+  }
+
   function clearFeed() {
     feed.innerHTML = '';
     totalShown = 0;
     feedEmpty.style.display = 'block';
   }
 
-  let polling = true;
+  let polling = false;
   let pollActive = false;
+  window.__biliListening = false;
+  window.__biliConnecting = false;
 
   async function pollDanmaku() {
     if (pollActive) return;
     pollActive = true;
-    while (polling) {
-      try {
-        const data = await callPlugin('get_danmaku', { max_count: 20, include_gifts: true });
-        const hasContent = (data.danmaku?.length || data.superchat?.length || data.gifts?.length);
-        if (hasContent) {
-          renderBatch(data);
+    try {
+      while (polling) {
+        try {
+          const data = await callPlugin('get_danmaku', { max_count: 20, include_gifts: true });
+          const hasContent = (data.danmaku?.length || data.superchat?.length || data.gifts?.length);
+          if (hasContent) {
+            renderBatch(data);
+          }
+          renderStatus(data);
+        } catch (e) {
+          console.warn('[poll]', e.message);
         }
-        renderStatus(data);
-      } catch (e) {
-        console.warn('[poll]', e.message);
+        await sleep(1200);
       }
-      await sleep(800);
+    } finally {
+      pollActive = false;
+      updatePollingButtonState();
     }
-    pollActive = false;
+  }
+
+  function updatePollingButtonState() {
+    const btn = document.getElementById('pollBtn');
+    if (!btn) return;
+    btn.textContent = polling ? '⏸ 暂停' : '▶ 继续';
+    btn.disabled = !polling && !pollActive && !(window.__biliListening || window.__biliConnecting);
+  }
+
+  function setPollingState(enabled) {
+    polling = enabled;
+    updatePollingButtonState();
+  }
+
+  function pausePolling() {
+    setPollingState(false);
+  }
+
+  function resumePolling() {
+    setPollingState(true);
+    if (!pollActive) pollDanmaku();
   }
 
   function togglePoll() {
-    polling = !polling;
-    const btn = document.getElementById('pollBtn');
-    btn.textContent = polling ? '⏸ 暂停' : '▶ 继续';
-    if (polling && !pollActive) pollDanmaku();
+    if (polling) {
+      pausePolling();
+    } else {
+      resumePolling();
+    }
   }
+
+  // ---------- 背景LLM 配置 ----------
+
+  function syncBgLlmToggle(enabled) {
+    const toggle = document.getElementById('bgLlmToggle');
+    toggle.classList.toggle('active', !!enabled);
+  }
+
+  async function loadBgLLMConfig() {
+    try {
+      const data = await callPlugin('get_bg_llm_config', {});
+      const config = data.config || {};
+      const cloud = config.cloud || {};
+
+      document.getElementById('bgLlmApiUrl').value = cloud.url || '';
+      document.getElementById('bgLlmModel').value = cloud.model || '';
+      document.getElementById('bgLlmApiKey').value = '';
+
+      const ws = config.window_size || 15;
+      document.getElementById('bgLlmWindowSlider').value = ws;
+      document.getElementById('bgLlmWindowDisplay').textContent = ws;
+
+      const ms = config.max_samples || 30;
+      document.getElementById('bgLlmMaxSamplesSlider').value = ms;
+      document.getElementById('bgLlmMaxSamplesDisplay').textContent = ms;
+
+      const nekoNameEl = document.getElementById('bgLlmNekoName');
+      if (nekoNameEl) nekoNameEl.value = config.neko_name || '';
+
+      const knowledgeEl = document.getElementById('bgLlmKnowledge');
+      if (knowledgeEl) knowledgeEl.value = config.knowledge_context || '';
+
+      document.getElementById('bgLlmProfile').value = config.user_profile || '';
+      document.getElementById('bgLlmPromptTemplate').value = config.prompt_template || '';
+
+      const enabled = data.enabled === true;
+      syncBgLlmToggle(enabled);
+
+      const dot = document.getElementById('bgLlmDot');
+      dot.className = 'status-dot';
+      if (enabled) {
+        dot.classList.add('connected');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 已启用';
+      } else {
+        dot.classList.add('error');
+        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 未启用';
+      }
+    } catch (e) {
+      console.warn('[bgLLM] 加载配置失败:', e.message);
+    }
+  }
+
+  async function saveBgLLM() {
+    const btn = document.getElementById('bgLlmSaveBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 保存中...';
+    try {
+      const apiUrl = document.getElementById('bgLlmApiUrl').value.trim();
+      const model = document.getElementById('bgLlmModel').value.trim();
+      const apiKey = document.getElementById('bgLlmApiKey').value.trim();
+      const windowSize = parseInt(document.getElementById('bgLlmWindowSlider').value);
+      const maxSamples = parseInt(document.getElementById('bgLlmMaxSamplesSlider').value);
+      const nekoName = (document.getElementById('bgLlmNekoName')?.value || '').trim();
+      const knowledgeCtx = (document.getElementById('bgLlmKnowledge')?.value || '').trim();
+      const userProfile = document.getElementById('bgLlmProfile').value.trim();
+      const promptTemplate = document.getElementById('bgLlmPromptTemplate').value.trim();
+
+      const enabled = document.getElementById('bgLlmToggle').classList.contains('active');
+      const config = {
+        enabled: enabled,
+        cloud: { url: apiUrl, model: model },
+        window_size: windowSize,
+        max_samples: maxSamples,
+        neko_name: nekoName,
+        knowledge_context: knowledgeCtx,
+        user_profile: userProfile,
+        prompt_template: promptTemplate,
+      };
+      if (apiKey) {
+        config.cloud.api_key = apiKey;
+      }
+
+      const data = await callPlugin('update_guidance_config', config);
+      toast('背景LLM配置已保存', 'success');
+      document.getElementById('bgLlmApiKey').value = '';
+      await loadBgLLMConfig();
+      await refreshStatus(true, true);
+    } catch (e) {
+      toast('保存失败：' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '保存配置';
+    }
+  }
+
+  async function testBgLLM() {
+    try {
+      const data = await callPlugin('get_guidance_config', {});
+      toast('背景LLM连接正常', 'success');
+      if (data.stats) {
+        document.getElementById('bgLlmStats').textContent =
+          `LLM调用: ${data.stats.llm_calls ?? data.stats.total_calls ?? 0} · ` +
+          `Token: ${data.stats.total_tokens ?? '\u2014'}`;
+      }
+    } catch (e) {
+      toast('测试失败：' + e.message, 'error');
+    }
+  }
+
+  async function toggleBgLLM() {
+    const toggle = document.getElementById('bgLlmToggle');
+    const newEnabled = !toggle.classList.contains('active');
+    toggle.classList.toggle('active');
+    try {
+      await callPlugin('update_guidance_config', { enabled: newEnabled });
+      toast(newEnabled ? '背景LLM 已启用' : '背景LLM 已停用', 'success');
+      await refreshStatus(true, true);
+    } catch (e) {
+      // 回滚开关状态
+      toggle.classList.toggle('active');
+      toast('操作失败：' + e.message, 'error');
+    }
+  }
+
+  function toggleBgLlmAdvanced() {
+    const panel = document.getElementById('bgLlmAdvPanel');
+    const text = document.getElementById('bgLlmAdvToggleText');
+    panel.classList.toggle('open');
+    text.textContent = panel.classList.contains('open') ? '点击收起 \u25B2' : '点击展开 \u25BC';
+  }
+
+  // ---------- 背景LLM 配置结束 ----------
 
   document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('intervalSlider').addEventListener('input', e => {
@@ -1098,9 +2031,15 @@
       document.getElementById('danmakuMaxDisplay').textContent = e.target.value;
     });
 
-    await refreshStatus();
+    loadBgLLMConfig();
+
+    const status = await refreshStatus();
     addSystemMsg('控制台已就绪');
-    pollDanmaku();
+    if (status?.listening || status?.connecting) {
+      resumePolling();
+    } else {
+      pausePolling();
+    }
   });
 </script>
 </body>

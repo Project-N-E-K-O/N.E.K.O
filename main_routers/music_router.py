@@ -1,4 +1,14 @@
-# 音乐路由
+# -*- coding: utf-8 -*-
+"""
+Music Router
+
+Handles music search / playback / lyric proxy endpoints.
+
+URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
+See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
+"""
 
 import asyncio
 

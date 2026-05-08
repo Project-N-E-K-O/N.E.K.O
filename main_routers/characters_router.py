@@ -6,8 +6,20 @@ Handles character (catgirl) management endpoints including:
 - Character CRUD operations
 - Voice settings
 - Microphone settings
-"""
 
+URL convention
+--------------
+Every endpoint here is declared WITHOUT a trailing slash (e.g.
+``@router.get('')`` not ``@router.get('/')``, ``@router.get('/voices')`` not
+``@router.get('/voices/')``). Frontend callers must match exactly — never
+``fetch('/api/characters/')``. Triggering Starlette's slash-redirect 307
+returns an absolute ``Location`` built from the request ``Host`` and breaks
+under reverse proxies that don't transparently forward ``Host``. See
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the full
+rationale and the PR #938 incident; ``scripts/check_api_trailing_slash.py``
++ ``scripts/check_frontend_api_trailing_slash.py`` enforce this in CI.
+"""
+import re
 import json
 import io
 import os
@@ -43,9 +55,21 @@ from utils.character_memory import (
     list_character_memory_paths,
     rename_character_memory_storage,
 )
-from utils.config_manager import get_reserved, set_reserved, flatten_reserved
+from utils.config_manager import (
+    delete_reserved,
+    flatten_reserved,
+    get_reserved,
+    set_reserved,
+    strip_generated_persona_selection_prompt,
+)
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.initial_personality_state import (
+    clear_manual_personality_reselect,
+    load_initial_personality_state,
+    mark_manual_personality_reselect,
+    mark_initial_personality_state,
+)
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -64,15 +88,65 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.new_character_greeting_state import (
+    mark_pending as mark_new_character_greeting_pending,
+    remove_pending as remove_new_character_greeting_pending,
+    rename_pending as rename_new_character_greeting_pending,
+)
+from utils.persona_presets import (
+    build_persona_override_payload,
+    get_persona_preset,
+    list_persona_presets,
+)
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
+from config import (
+    MEMORY_SERVER_PORT,
+    TFLINK_UPLOAD_URL,
+    CHARACTER_RESERVED_FIELDS,
+    DEFAULT_LIVE2D_MODEL_NAME,
+)
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
+VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+
+
+def _voice_session_starting_response():
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "VOICE_SESSION_STARTING",
+            "error": VOICE_SESSION_STARTING_ERROR,
+            "retryable": True,
+        },
+        status_code=409,
+    )
+
+
+def _is_current_catgirl_voice_session_starting(name: str, characters, session_manager) -> bool:
+    if name != characters.get("当前猫娘", ""):
+        return False
+    mgr = session_manager.get(name) if session_manager else None
+    if not mgr:
+        return False
+    return bool(
+        getattr(mgr, "is_starting", False)
+        and not getattr(mgr, "is_active", False)
+        and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
+    )
+
+
+async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
+    try:
+        await mark_new_character_greeting_pending(config_manager, character_name, source=source)
+        return True, ""
+    except Exception as exc:
+        logger.exception("mark new character greeting pending failed: %s", character_name)
+        return False, str(exc)
 
 
 def _json_no_store_response(content, *, status_code: int = 200):
@@ -84,6 +158,71 @@ def _json_no_store_response(content, *, status_code: int = 200):
             "Pragma": "no-cache",
         },
     )
+
+
+def _build_persona_selection_payload(character_payload: dict) -> dict:
+    override = get_reserved(character_payload, "persona_override", default=None)
+    if not isinstance(override, dict):
+        return {
+            "mode": "default",
+            "preset_id": "",
+            "source": "",
+            "selected_at": "",
+            "profile": {},
+        }
+
+    profile = override.get("profile")
+    return {
+        "mode": "override",
+        "preset_id": str(override.get("preset_id") or "").strip(),
+        "source": str(override.get("source") or "").strip(),
+        "selected_at": str(override.get("selected_at") or "").strip(),
+        "profile": dict(profile) if isinstance(profile, dict) else {},
+    }
+
+
+def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
+    return isinstance(prompt_text, str) and "<NEKO_PERSONA_SELECTION>" in prompt_text
+
+
+def _clear_stale_generated_persona_prompt(character_payload: dict) -> None:
+    if not isinstance(character_payload, dict):
+        return
+    stored_prompt = get_reserved(
+        character_payload,
+        "system_prompt",
+        default=None,
+        legacy_keys=("system_prompt",),
+    )
+    if _has_generated_persona_selection_prompt(stored_prompt):
+        cleaned_prompt = strip_generated_persona_selection_prompt(stored_prompt)
+        if cleaned_prompt:
+            set_reserved(character_payload, "system_prompt", cleaned_prompt)
+        else:
+            delete_reserved(character_payload, "system_prompt")
+
+
+async def _read_json_object_or_400(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return None, JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+    return payload if isinstance(payload, dict) else {}, None
+
+
+async def _clear_character_recent_history(config_manager, character_name: str) -> None:
+    recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    assert_cloudsave_writable(
+        config_manager,
+        operation="save",
+        target=f"memory/{character_name}/recent.json",
+    )
+    await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
+    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
+
+
+async def _rollback_character_persona_selection_change(config_manager, previous_characters: dict) -> None:
+    await config_manager.asave_characters(previous_characters)
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -664,6 +803,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         # 查找指定角色的Live2D模型
         live2d_model_name = None
         model_info = None
+        saved_model_path = ""
+        saved_asset_source = ""
+        saved_item_id = ""
         
         # 首先尝试通过item_id查找模型
         if item_id:
@@ -780,16 +922,16 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     matching_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,
-                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
-                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
-                        item_id=saved_item_id if 'saved_item_id' in locals() else '',
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
+                        item_id=saved_item_id,
                     )
-                elif not item_id and not (saved_item_id if 'saved_item_id' in locals() else ''):
+                elif not item_id and not saved_item_id:
                     fallback_model = _find_live2d_model_catalog_entry(
                         all_models,
                         model_name=live2d_model_name,
-                        model_path=saved_model_path if 'saved_model_path' in locals() else '',
-                        asset_source=saved_asset_source if 'saved_asset_source' in locals() else '',
+                        model_path=saved_model_path,
+                        asset_source=saved_asset_source,
                         item_id='',
                     )
                     if fallback_model is not None:
@@ -840,33 +982,50 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
         
-        # 回退机制：如果没有找到模型，使用默认的mao_pro
+        # 回退机制：如果没有找到模型，使用默认模型 (DEFAULT_LIVE2D_MODEL_NAME)
         if not live2d_model_name or not model_info:
-            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
-            live2d_model_name = 'mao_pro'
+            logger.info(
+                f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 "
+                f"{DEFAULT_LIVE2D_MODEL_NAME}"
+            )
+            live2d_model_name = DEFAULT_LIVE2D_MODEL_NAME
             try:
-                # 先从完整的模型列表中查找mao_pro
+                # 先从完整的模型列表中查找内置/static 默认模型，避免误匹配用户/工坊同名模型
                 all_models = find_models()
-                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
-                
+                matching_model = next(
+                    (
+                        m for m in all_models
+                        if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME
+                        and m.get('source') in ('static', 'builtin')
+                    ),
+                    None,
+                )
+                if matching_model is None:
+                    matching_model = next(
+                        (m for m in all_models if m.get('name') == DEFAULT_LIVE2D_MODEL_NAME),
+                        None,
+                    )
+
                 if matching_model:
                     model_info = matching_model.copy()
                     model_info['is_fallback'] = True
                 else:
                     # 如果找不到，回退到原来的逻辑
-                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    model_dir, url_prefix = find_model_directory(DEFAULT_LIVE2D_MODEL_NAME)
                     if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_path = f'{url_prefix}/{DEFAULT_LIVE2D_MODEL_NAME}/{model_file}'
                             model_info = {
-                                'name': 'mao_pro',
+                                'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
                                 'is_fallback': True  # 标记这是回退模型
                             }
             except Exception as e:
-                logger.error(f"获取默认模型mao_pro失败: {e}")
+                logger.error(
+                    f"获取默认模型 {DEFAULT_LIVE2D_MODEL_NAME} 失败: {e}"
+                )
         
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
@@ -1087,8 +1246,37 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_model_path,
             )
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
+
+            if 'live2d_idle_animation' in data:
+                live2d_idle_animation = data.get('live2d_idle_animation')
+                logger.info(f"[Live2D Save] 收到 live2d_idle_animation 请求: {live2d_idle_animation}")
+
+                if live2d_idle_animation is None:
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                    logger.info(f"[Live2D Save] 已清空 idle_animation")
+                elif isinstance(live2d_idle_animation, str):
+                    live2d_idle_str = live2d_idle_animation.strip()
+                    if not live2d_idle_str:
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
+                        logger.info(f"[Live2D Save] 已清空 idle_animation")
+                    else:
+                        if '://' in live2d_idle_str or live2d_idle_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
+                        if '..' in live2d_idle_str:
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
+                        if not live2d_idle_str.lower().endswith('.motion3.json'):
+                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作必须是 .motion3.json 文件'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)
+                        logger.info(f"[Live2D Save] 已保存 idle_animation: {live2d_idle_str}")
+                else:
+                    return JSONResponse(content={'success': False, 'error': 'live2d_idle_animation 必须是字符串或 null'}, status_code=400)
+            else:
+                logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
+
             if resolved_item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', resolved_item_id)
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
             else:
@@ -1489,6 +1677,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
         logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
+    if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+        return _voice_session_starting_response()
+
     # 验证voice_id是否在voice_storage中
     if not _config_manager.validate_voice_id(voice_id):
         voices = _config_manager.get_voices_for_current_api()
@@ -1521,7 +1712,11 @@ async def update_catgirl_voice_id(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-    
+            # 切音色后，前一会话累计的失败计数 / 熔断不再适用：
+            # reload 页面后用户的下一次 start_session 应是全新尝试，否则
+            # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
+            session_manager[name].reset_session_start_circuit()
+
     # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
     if is_current_catgirl:
         # 3. 重新加载配置，让新的voice_id生效
@@ -1543,21 +1738,34 @@ async def get_catgirl_voice_mode_status(name: str):
     is_current = characters.get('当前猫娘') == name
     
     if name not in session_manager:
-        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
-    
+        return _json_no_store_response({
+            'is_voice_mode': False,
+            'is_current': is_current,
+            'is_active': False,
+            'is_starting': False,
+            'is_voice_starting': False,
+        })
+
     mgr = session_manager[name]
     is_active = mgr.is_active if mgr else False
-    
-    is_voice_mode = False
+    is_starting = bool(getattr(mgr, 'is_starting', False)) if mgr else False
+    is_audio_starting = _is_current_catgirl_voice_session_starting(name, characters, session_manager)
+
+    is_voice_mode = is_audio_starting
     if is_active and mgr:
         # 检查是否是语音模式（通过session类型判断）
         from main_logic.omni_realtime_client import OmniRealtimeClient
-        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
-    
-    return JSONResponse({
+        is_voice_mode = is_voice_mode or bool(
+            getattr(mgr, 'input_mode', '') == 'audio'
+            or (mgr.session and isinstance(mgr.session, OmniRealtimeClient))
+        )
+
+    return _json_no_store_response({
         'is_voice_mode': is_voice_mode,
         'is_current': is_current,
-        'is_active': is_active
+        'is_active': is_active,
+        'is_starting': is_starting,
+        'is_voice_starting': is_audio_starting,
     })
 
 
@@ -1638,6 +1846,15 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    # 卡面文件纳入 snapshot，使迁移失败也能回滚
+    old_face = _config_manager.card_faces_dir / f"{old_name}.png"
+    new_face = _config_manager.card_faces_dir / f"{new_name}.png"
+    old_meta = _config_manager.card_face_meta_path(old_name)
+    new_meta = _config_manager.card_face_meta_path(new_name)
+    memory_targets.append(old_face)
+    memory_targets.append(new_face)
+    memory_targets.append(old_meta)
+    memory_targets.append(new_meta)
     memory_server_reloaded = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
@@ -1657,6 +1874,24 @@ async def rename_catgirl(old_name: str, request: Request):
             # 自动重新加载配置
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
+
+            # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime('%Y%m%d%H%M%S')
+            if old_face.exists():
+                if new_face.exists():
+                    backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+                    await asyncio.to_thread(new_face.rename, backup_face)
+                    logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
+                await asyncio.to_thread(old_face.rename, new_face)
+                logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
+            if old_meta.exists():
+                if new_meta.exists():
+                    backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
+                await asyncio.to_thread(old_meta.rename, new_meta)
+                logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
@@ -1683,6 +1918,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     },
                     status_code=500,
                 )
+
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
@@ -1706,7 +1942,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
-    # 数据更新+重载完成后再通知前端，避免前端 fetch /api/characters 时新名称尚未就绪
+    # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
             await rename_notification_ws.send_text(rename_notification_message)
@@ -1714,11 +1950,26 @@ async def rename_catgirl(old_name: str, request: Request):
         except Exception as e:
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
-    return {
+    pending_rename_ok = True
+    pending_rename_error = ""
+    try:
+        await rename_new_character_greeting_pending(_config_manager, old_name, new_name)
+    except Exception as exc:
+        pending_rename_ok = False
+        pending_rename_error = str(exc)
+        logger.exception("rename new character greeting pending failed: %s -> %s", old_name, new_name)
+
+    result = {
         "success": True,
         "memory_renamed": True,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_rename_ok:
+        result["partial_success"] = True
+        result["pending_rename_ok"] = False
+        result["pending_rename_failed"] = True
+        result["pending_rename_error"] = pending_rename_error
+    return result
 
 
 @router.post('/catgirl/{name}/unregister_voice')
@@ -1735,6 +1986,9 @@ async def unregister_voice(name: str):
         old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
         if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
+
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
@@ -1754,6 +2008,9 @@ async def unregister_voice(name: str):
                     logger.info(f"{name} 的session已结束")
                 except Exception as e:
                     logger.error(f"结束session时出错: {e}")
+                # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                session_manager[name].reset_session_start_circuit()
 
         # 自动重新加载配置
         if is_current_catgirl:
@@ -1774,6 +2031,191 @@ async def get_current_catgirl():
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return _json_no_store_response({'current_catgirl': current_catgirl})
+
+
+@router.get('/persona-presets')
+async def list_persona_presets_route():
+    return _json_no_store_response({
+        "success": True,
+        "presets": list_persona_presets(),
+    })
+
+
+@router.get('/persona-onboarding-state')
+async def get_persona_onboarding_state():
+    config_manager = get_config_manager()
+    state = await asyncio.to_thread(load_initial_personality_state, config_manager)
+    return _json_no_store_response({
+        "success": True,
+        "state": state,
+    })
+
+
+@router.post('/persona-onboarding-state')
+async def set_persona_onboarding_state(request: Request):
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
+    config_manager = get_config_manager()
+    state = await asyncio.to_thread(
+        mark_initial_personality_state,
+        str((payload or {}).get("status") or "").strip(),
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.post('/persona-reselect-current')
+async def request_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    current_character_name = str(characters.get('当前猫娘') or '').strip()
+    if not current_character_name:
+        return JSONResponse({'success': False, 'error': '当前没有可用角色'}, status_code=400)
+
+    state = await asyncio.to_thread(
+        mark_manual_personality_reselect,
+        current_character_name,
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.delete('/persona-reselect-current')
+async def clear_current_character_persona_reselect():
+    config_manager = get_config_manager()
+    state = await asyncio.to_thread(
+        clear_manual_personality_reselect,
+        config_manager=config_manager,
+    )
+    return {
+        "success": True,
+        "state": state,
+    }
+
+
+@router.get('/character/{name}/persona-selection')
+async def get_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    return _json_no_store_response({
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    })
+
+
+@router.put('/character/{name}/persona-selection')
+async def update_character_persona_selection(name: str, request: Request):
+    payload, error_response = await _read_json_object_or_400(request)
+    if error_response is not None:
+        return error_response
+    preset_id = str((payload or {}).get("preset_id") or "").strip()
+    source = str((payload or {}).get("source") or "").strip()
+    preset = get_persona_preset(preset_id)
+    if preset is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    override_payload = build_persona_override_payload(
+        preset_id,
+        source=source,
+        selected_at=selected_at,
+    )
+    if override_payload is None:
+        return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
+
+    previous_characters = copy.deepcopy(characters)
+    set_reserved(character_payload, "persona_override", override_payload)
+    _clear_stale_generated_persona_prompt(character_payload)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
+
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+        if source == "manual_reselect":
+            await asyncio.to_thread(
+                clear_manual_personality_reselect,
+                config_manager=config_manager,
+            )
+        elif source == "onboarding":
+            await asyncio.to_thread(
+                mark_initial_personality_state,
+                "completed",
+                config_manager=config_manager,
+            )
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
+
+
+@router.delete('/character/{name}/persona-selection')
+async def clear_character_persona_selection(name: str):
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    character_payload = (characters.get('猫娘') or {}).get(name)
+    if not isinstance(character_payload, dict):
+        return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
+
+    previous_characters = copy.deepcopy(characters)
+    delete_reserved(character_payload, "persona_override")
+    _clear_stale_generated_persona_prompt(character_payload)
+    try:
+        await config_manager.asave_characters(characters)
+        await _clear_character_recent_history(config_manager, name)
+
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        mgr = session_manager[name] if is_current_catgirl and name in session_manager else None
+        expected_session = getattr(mgr, "session", None) if mgr and mgr.is_active else None
+        if expected_session is not None:
+            await send_reload_page_notice(mgr, "人格设定已更新，页面即将刷新")
+            try:
+                await mgr.end_session(by_server=True, expected_session=expected_session)
+            except Exception as e:
+                logger.error(f"结束 session 时出错: {e}")
+
+        initialize_one_character = get_init_one_catgirl()
+        await initialize_one_character(name, is_new=False)
+    except Exception:
+        await _rollback_character_persona_selection_change(config_manager, previous_characters)
+        raise
+
+    return {
+        "success": True,
+        "selection": _build_persona_selection_payload(character_payload),
+    }
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
@@ -1811,7 +2253,28 @@ async def set_current_catgirl(request: Request):
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
-    
+
+    # B8: if the previous character had an active game route, finalize it
+    # immediately. Otherwise the heartbeat-based timeout (10-60s) would
+    # leave a stale ``OmniOfflineClient`` consuming game events under the
+    # outgoing character's name and keep the SessionManager takeover
+    # muting the incoming character's ordinary chat output.
+    if old_catgirl and old_catgirl != catgirl_name:
+        try:
+            from main_routers.game_router import finalize_game_routes_for_character
+            finalized = await finalize_game_routes_for_character(old_catgirl)
+            if finalized:
+                logger.info(
+                    "角色切换：已收尾 %d 个旧角色 %s 的游戏路由",
+                    finalized,
+                    old_catgirl,
+                )
+        except Exception as exc:
+            # Swallow — character switch must not fail because of
+            # game-route cleanup; the heartbeat sweep will eventually
+            # clean up if this hook misses.
+            logger.warning("角色切换游戏路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
+
     # 通过WebSocket通知所有连接的客户端
     # 使用session_manager中的websocket，但需要确保websocket已设置
     notification_count = 0
@@ -1988,18 +2451,31 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时退回 PR 前 yui-origin 历史值。
+    from utils.api_config_loader import get_free_voices
+    default_free_voice_id = (get_free_voices() or {}).get('cuteGirl') or 'voice-tone-PGLiyZt65w'
+    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
+    pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
     memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
 
-    return {
+    response: dict = {
         "success": True,
         "character_name": key,
         "memory_server_reloaded": memory_server_reloaded,
     }
+    if not pending_mark_ok:
+        response["partial_success"] = True
+        response["pending_mark_ok"] = False
+        response["pending_mark_failed"] = True
+        response["pending_mark_error"] = pending_mark_error
+    return response
 
 
 @router.put('/catgirl/{name}')
@@ -2039,6 +2515,11 @@ async def update_catgirl(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
     old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    voice_id_will_change = voice_id_in_payload and str(old_voice_id or '').strip() != requested_voice_id
+    if voice_id_will_change:
+        session_manager = get_session_manager()
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
 
     if voice_id_in_payload and requested_voice_id:
         # 验证 voice_id 是否在 voice_storage 中
@@ -2103,6 +2584,9 @@ async def update_catgirl(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
+            # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+            # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+            session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
             # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
@@ -2166,6 +2650,10 @@ async def delete_catgirl(name: str):
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    meta_path = _config_manager.card_face_meta_path(name)
+    memory_targets.append(face_path)
+    memory_targets.append(meta_path)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = await asyncio.to_thread(
@@ -2181,6 +2669,12 @@ async def delete_catgirl(name: str):
             )
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
+
+            # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
+            if face_path.exists():
+                await asyncio.to_thread(face_path.unlink)
+            if meta_path.exists():
+                await asyncio.to_thread(meta_path.unlink)
 
             await asyncio.to_thread(
                 _config_manager.save_character_tombstones_state,
@@ -2228,7 +2722,22 @@ async def delete_catgirl(name: str):
                 status_code=500,
             )
 
-    return {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    pending_remove_ok = True
+    pending_remove_error = ""
+    try:
+        await remove_new_character_greeting_pending(_config_manager, name)
+    except Exception as exc:
+        pending_remove_ok = False
+        pending_remove_error = str(exc)
+        logger.exception("remove new character greeting pending failed: %s", name)
+
+    result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    if not pending_remove_ok:
+        result["partial_success"] = True
+        result["pending_remove_ok"] = False
+        result["pending_remove_failed"] = True
+        result["pending_remove_error"] = pending_remove_error
+    return result
 
 @router.post('/clear_voice_ids')
 async def clear_voice_ids():
@@ -2564,6 +3073,9 @@ async def delete_voice(voice_id: str):
                         logger.info(f"已结束受影响角色 {name} 的 session")
                     except Exception as e:
                         logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+                    # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
+                    # 否则 reload 后新 start_session 会被旧熔断静默拦截。
+                    session_manager[name].reset_session_start_circuit()
 
                 if affected_active_names:
                     await asyncio.gather(
@@ -2598,6 +3110,7 @@ async def delete_voice(voice_id: str):
 _trim_tasks: dict[str, dict] = {}
 
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_CARD_FACE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class _UploadTooLargeError(Exception):
@@ -3202,7 +3715,8 @@ async def voice_clone_direct(request: Request):
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
             'code': 'TTS_PROVIDER_INVALID',
-            'message': f'支持的服务商: {", ".join(valid_providers)}'
+            'message': f'支持的服务商: {", ".join(valid_providers)}',
+            'details': {'provider': provider, 'valid_providers': ', '.join(valid_providers)},
         }, status_code=400)
 
     # 获取 API Key
@@ -3601,6 +4115,7 @@ async def save_character_card(request: Request):
         if name_error:
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()
+        is_new_character = chara_name not in characters['猫娘']
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段
@@ -3615,14 +4130,26 @@ async def save_character_card(request: Request):
         
         # 保存到characters.json
         await _config_manager.asave_characters(characters)
-        
+
+        if is_new_character:
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, chara_name, "character_card_save")
+        else:
+            pending_mark_ok = True
+            pending_mark_error = ""
+
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         if initialize_character_data:
             await initialize_character_data()
-        
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
-        return {"success": True, "character_card_name": chara_name}
+        result: dict = {"success": True, "character_card_name": chara_name}
+        if not pending_mark_ok:
+            result["partial_success"] = True
+            result["pending_mark_ok"] = False
+            result["pending_mark_failed"] = True
+            result["pending_mark_error"] = pending_mark_error
+        return result
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -3638,7 +4165,7 @@ async def export_catgirl_card(name: str):
     3. 将压缩包数据拼接到PNG图片中
     4. 返回PNG图片供下载
 
-    注意：默认模型(mao_pro)不会被包含在导出中
+    注意：默认模型(DEFAULT_LIVE2D_MODEL_NAME)不会被包含在导出中
     """
     import zipfile
     import tempfile
@@ -3709,8 +4236,11 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # 检查是否是默认模型
-                        if live2d_name == 'mao_pro':
-                            logger.info(f'猫娘 {name} 使用的是默认模型 mao_pro，跳过模型打包')
+                        if live2d_name == DEFAULT_LIVE2D_MODEL_NAME:
+                            logger.info(
+                                f'猫娘 {name} 使用的是默认模型 '
+                                f'{DEFAULT_LIVE2D_MODEL_NAME}，跳过模型打包'
+                            )
                         else:
                             # 查找模型目录
                             model_dir, _ = find_model_directory(live2d_name)
@@ -3778,97 +4308,137 @@ async def export_catgirl_card(name: str):
                             else:
                                 logger.warning(f'找不到VRM模型文件: {vrm_path}')
 
-                # 3. 添加元数据文件
+                # 3. 读取卡面元数据 sidecar（作者 / 创建时间）
+                _sidecar_meta_path = _config_manager.card_face_meta_path(name)
+                _sidecar_existed = await asyncio.to_thread(_sidecar_meta_path.exists)
+                _sidecar_meta = await asyncio.to_thread(_read_card_meta, _sidecar_meta_path)
+                now_iso = datetime.now().isoformat(timespec='seconds')
+                # 优先使用已有的创建时间；未设置时使用当前时间并回写 sidecar，
+                # 以确保后续导出不会重复刷新。
+                _author = str(_sidecar_meta.get('author') or '').strip()[:64]
+                _existing_created_at = str(_sidecar_meta.get('created_at') or '').strip()
+                _created_at = _existing_created_at or now_iso
+                if not _existing_created_at:
+                    try:
+                        _config_manager.ensure_card_faces_directory()
+                        _new_meta = dict(_sidecar_meta)
+                        _new_meta['created_at'] = _created_at
+                        if not _new_meta.get('updated_at'):
+                            _new_meta['updated_at'] = now_iso
+                        # 仅当 sidecar 原本不存在且 origin 为默认值（None/空/'self'）时才推断来源，
+                        # 避免覆盖已有的 self 默认值或用户设定。
+                        if not _sidecar_existed and _new_meta.get('origin') in (None, '', 'self'):
+                            _new_meta['origin'] = _detect_card_origin_from_character(catgirl_data or {})
+                        await asyncio.to_thread(_write_card_meta, _sidecar_meta_path, _new_meta)
+                    except Exception as _meta_persist_err:
+                        logger.warning(f"[导出角色卡] 回写创建时间到 sidecar 失败: {_meta_persist_err}")
+
+                # 4. 添加元数据文件
                 metadata = {
                     'version': '1.0',
-                    'export_time': datetime.now().isoformat(),
+                    'export_time': now_iso,
                     'character_name': name,
+                    'author': _author,
+                    'created_at': _created_at,
                     'model_included': model_added,
                     'model_type': model_type
                 }
                 zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
 
-            # 4. 创建PNG图片（长方形角色卡样式）
-            from PIL import Image, ImageDraw, ImageFont
-
-            # 创建长方形图片 (宽:高 = 3:4)
-            width, height = 600, 800
-            img = Image.new('RGB', (width, height), color='#E8F4F8')  # 淡蓝色背景
-            draw = ImageDraw.Draw(img)
-
-            # 顶部1/6区域使用深蓝色
-            header_height = height // 6
-            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-            # 在顶部左侧添加角色名称
-            try:
-                # 尝试使用系统默认字体，支持中文
-                font_size = 36
-                font = ImageFont.truetype("msyh.ttc", font_size)  # 微软雅黑
-            except (OSError, IOError):
+            # 5. 获取卡面图：优先使用保存的 card_faces/{name}.png，
+            #    不存在时才回退到合成图。
+            from utils.screenshot_utils import _validate_image_data
+            saved_face_path = _config_manager.card_faces_dir / f"{name}.png"
+            png_data = None
+            if saved_face_path.exists():
                 try:
-                    font = ImageFont.truetype("simhei.ttf", font_size)  # 黑体
-                except (OSError, IOError):
+                    png_data = await asyncio.to_thread(saved_face_path.read_bytes)
+                    validated = await asyncio.to_thread(_validate_image_data, png_data)
+                    if validated is None:
+                        logger.warning(f"[导出角色卡] 已保存卡面验证失败，回退到合成图")
+                        png_data = None
+                    elif not png_data.startswith(b'\x89PNG\r\n\x1a\n'):
+                        try:
+                            from PIL import Image
+                            from io import BytesIO
+                            img = await asyncio.to_thread(Image.open, BytesIO(png_data))
+                            buf = BytesIO()
+                            await asyncio.to_thread(img.save, buf, format='PNG')
+                            png_data = buf.getvalue()
+                        except Exception as _conv_err:
+                            logger.warning(f"[导出角色卡] 卡面非 PNG 且重新编码失败，回退到合成图: {_conv_err}")
+                            png_data = None
+                except Exception as _read_err:
+                    logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
+                    png_data = None
+
+            if png_data is None:
+                # 回退：合成一张默认长方形角色卡图片
+                from PIL import Image, ImageDraw, ImageFont
+                width, height = 600, 800
+                img = Image.new('RGB', (width, height), color='#E8F4F8')
+                draw = ImageDraw.Draw(img)
+                header_height = height // 6
+                draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
+
+                font_size = 36
+                font = None
+                font_candidates = [
+                    "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
+                    "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
+                    "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
+                ]
+                for font_name in font_candidates:
+                    try:
+                        font = ImageFont.truetype(font_name, font_size)
+                        break
+                    except (OSError, IOError):
+                        continue
+
+                if font is None:
                     font = ImageFont.load_default()
+                    logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
 
-            # 计算文字位置（左侧居中偏上）
-            text = name
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
+                text = name
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_height = bbox[3] - bbox[1]
+                text_x = 30
+                text_y = (header_height - text_height) // 2 - bbox[1]
+                draw.text((text_x, text_y), text, fill='white', font=font)
+                png_path = temp_path / 'character_card.png'
+                img.save(png_path, 'PNG')
+                with open(png_path, 'rb') as f:
+                    png_data = f.read()
 
-            # 文字位置：左侧留边距，垂直居中
-            text_x = 30
-            text_y = (header_height - text_height) // 2 - bbox[1]
-
-            # 绘制白色文字
-            draw.text((text_x, text_y), text, fill='white', font=font)
-
-            png_path = temp_path / 'character_card.png'
-            img.save(png_path, 'PNG')
-
-            # 5. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
-            with open(png_path, 'rb') as f:
-                png_data = f.read()
-
+            # 6. 将压缩包数据嵌入 PNG 的 neKo 块（合法 PNG chunk，Electron 可正常预览）
             with open(zip_path, 'rb') as f:
                 zip_data = f.read()
 
             combined_data = _embed_zip_in_png_chunk(png_data, zip_data)
 
-            # 6. 返回图片文件
-            # 使用档案名作为文件名，并进行安全编码
+            # 7. 返回文件下载
             from urllib.parse import quote
 
-            # 清理档案名：移除不安全的文件系统字符，但保留中文
             safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '·', '•') or '\u4e00' <= c <= '\u9fff').strip()
             if not safe_name:
                 safe_name = "character_card"
-
-            # 构建文件名：档案名.png
             original_filename = f"{safe_name}.png"
-
-            # 对文件名进行 RFC 5987 编码（UTF-8 + URL 编码）
-            # 这样浏览器可以正确显示中文文件名
             encoded_filename = quote(original_filename, safe='')
-
-            # 构建 Content-Disposition 头
-            # filename*=UTF-8'' 语法允许使用 URL 编码的 UTF-8 字符
             content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
-
-            # X-Filename 头必须使用 ASCII 字符
             try:
                 ascii_filename = original_filename.encode('ascii').decode('ascii')
             except UnicodeEncodeError:
-                # 如果包含非 ASCII 字符，使用安全的 ASCII 文件名
                 ascii_filename = "character_card.png"
 
             return Response(
                 content=combined_data,
-                media_type='image/png',
+                # 用 octet-stream 避免浏览器将响应作为图片在新标签中预览，
+                # 配合前端 <a download> 开启下载流程。
+                media_type='application/octet-stream',
                 headers={
                     'Content-Disposition': content_disposition,
-                    'X-Filename': ascii_filename
+                    'X-Filename': ascii_filename,
+                    'Cache-Control': 'no-store',
                 }
             )
 
@@ -3963,15 +4533,15 @@ async def export_catgirl_settings_only(name: str):
 
 
 @router.post('/import-card')
-async def import_character_card(zip_file: UploadFile = File(...)):
+async def import_character_card(
+    zip_file: UploadFile = File(...),
+    card_image: UploadFile = File(None),
+):
     """导入角色卡（从PNG图片中提取的ZIP文件）
 
-    导入流程：
-    1. 接收ZIP文件数据
-    2. 解压并读取角色设定JSON
-    3. 如果有模型文件，解压到用户模型目录
-    4. 将角色设定添加到characters.json
-    5. 返回导入结果
+    可选参数：
+      - card_image: 原始载体 PNG。若提供且本地尚未存在同名卡面，则直接存为
+        该角色的 card-face，以谙则老角色卡「封面图即卡面」的习惯。
     """
     import zipfile
     import tempfile
@@ -4295,17 +4865,97 @@ async def import_character_card(zip_file: UploadFile = File(...)):
 
             # 保存到文件
             await _config_manager.asave_characters(characters)
+            pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
 
-        return JSONResponse({
+            # 写入卡面元数据 sidecar（origin=imported）
+            try:
+                _config_manager.ensure_card_faces_directory()
+                meta_path = _config_manager.card_face_meta_path(character_name)
+                imported_author = ''
+                imported_created_at = ''
+                if isinstance(metadata, dict):
+                    imported_author = str(metadata.get('author', '') or '').strip()[:64]
+                    imported_created_at = str(metadata.get('created_at', '') or '').strip()[:32]
+                    if not imported_created_at:
+                        imported_created_at = str(metadata.get('export_time', '') or '').strip()[:32]
+                now_iso = datetime.now().isoformat(timespec='seconds')
+                # 优先使用源卡中的创建时间，未提供时才赋为当前时间
+                created_at = imported_created_at or now_iso
+                meta = {
+                    'author': imported_author,
+                    'origin': 'imported',
+                    'created_at': created_at,
+                    'updated_at': now_iso,
+                }
+                await asyncio.to_thread(_write_card_meta, meta_path, meta)
+            except Exception as meta_err:
+                logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
+                partial_result = {
+                    "success": True,
+                    "partial_success": True,
+                    "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
+                    "card_meta_saved": False,
+                    "character_name": character_name,
+                    "pending_mark_ok": pending_mark_ok,
+                }
+                if not pending_mark_ok:
+                    partial_result["pending_mark_failed"] = True
+                    partial_result["pending_mark_error"] = pending_mark_error
+                return JSONResponse(partial_result, status_code=200)
+
+            # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
+            # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。
+            try:
+                if card_image is not None and card_image.filename:
+                    face_path = _config_manager.card_faces_dir / f"{character_name}.png"
+                    if not face_path.exists():
+                        try:
+                            # 先用更大的上传限制读取载体 PNG（可能嵌入 ZIP）
+                            face_buffer = await _read_limited_stream(card_image, MAX_UPLOAD_SIZE)
+                            face_bytes = face_buffer.getvalue()
+                        except _UploadTooLargeError as e:
+                            logger.warning(f"[导入角色卡] 载体 PNG 超过上传限制，跳过保存: {e}")
+                            face_bytes = b''
+                        if face_bytes:
+                            try:
+                                from utils.screenshot_utils import _validate_image_data
+                                from PIL import Image as PILImage
+
+                                validated = await asyncio.to_thread(_validate_image_data, face_bytes)
+                                if validated is None:
+                                    logger.warning(f"[导入角色卡] 载体 PNG 验证失败，跳过保存")
+                                else:
+                                    if validated.mode not in ('RGB', 'RGBA', 'L'):
+                                        validated = validated.convert('RGB')
+                                    out = io.BytesIO()
+                                    validated.save(out, format='PNG')
+                                    valid_png = out.getvalue()
+                                    if len(valid_png) > MAX_CARD_FACE_SIZE:
+                                        logger.warning(f"[导入角色卡] 重编码后的卡面图 ({len(valid_png)} bytes) 超过最大限制 ({MAX_CARD_FACE_SIZE} bytes)，跳过保存")
+                                    else:
+                                        await asyncio.to_thread(face_path.write_bytes, valid_png)
+                                        logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                            except Exception as pil_err:
+                                logger.warning(f"[导入角色卡] 卡面图 PNG 处理失败，跳过保存: {pil_err}")
+            except Exception as face_err:
+                logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
+
+        import_result: dict = {
             'success': True,
             'character_name': character_name,
-            'message': f'角色卡 "{character_name}" 导入成功'
-        })
+            'message': f'角色卡 "{character_name}" 导入成功',
+        }
+        if not pending_mark_ok:
+            import_result['partial_success'] = True
+            import_result['pending_mark_ok'] = False
+            import_result['pending_mark_failed'] = True
+            import_result['pending_mark_error'] = pending_mark_error
+        return JSONResponse(import_result)
 
     except zipfile.BadZipFile:
         logger.error("导入角色卡失败：无效的ZIP文件")
@@ -4317,6 +4967,278 @@ async def import_character_card(zip_file: UploadFile = File(...)):
         # 清理临时目录
         if temp_dir and os.path.exists(temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+
+
+# ====== 角色卡卡面（Card Face）存储 ======
+
+# 卡面元数据 sidecar 默认结构
+def _default_card_meta(origin: str = 'self') -> dict:
+    """返回默认卡面元数据。"""
+    return {
+        'author': '',
+        'origin': origin,  # self / imported / steam
+        'created_at': None,
+        'updated_at': None,
+    }
+
+
+def _read_card_meta(meta_path) -> dict:
+    """读取 sidecar JSON，文件不存在或损坏时返回默认值。"""
+    try:
+        if meta_path.exists():
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(f"卡面元数据内容无效（非字典）{meta_path}: {type(data).__name__}")
+                return _default_card_meta(origin=None)
+            # 合并默认字段，保证字段完整
+            merged = _default_card_meta()
+            merged.update({k: v for k, v in data.items() if k in merged})
+            return merged
+    except Exception as e:
+        logger.warning(f"读取卡面元数据失败 {meta_path}: {e}")
+        return _default_card_meta(origin=None)
+    return _default_card_meta()
+
+
+def _write_card_meta(meta_path, meta: dict) -> None:
+    """写入 sidecar JSON（原子写入）。调用方需先 ensure_card_faces_directory()。"""
+    from utils.file_utils import atomic_write_json
+    atomic_write_json(meta_path, meta, ensure_ascii=False, indent=2)
+
+
+def _detect_card_origin_from_character(catgirl_data: dict) -> str:
+    """从猫娘配置推断 origin（用于无 sidecar 时的回退）。
+    依据角色卡本身的来源（character_origin.source），而非模型来源（avatar.asset_source），
+    确保更换模型不会改变角色卡来源标注。"""
+    try:
+        char_source = get_reserved(catgirl_data, 'character_origin', 'source', default='')
+        if char_source == 'steam_workshop':
+            return 'steam'
+    except Exception:
+        pass
+    return 'self'
+
+
+@router.get('/card-faces')
+async def list_card_faces():
+    """返回所有已设置自定义卡面的猫娘名列表（用于前端避免无意义的 404 请求）"""
+    _config_manager = get_config_manager()
+    faces_dir = _config_manager.card_faces_dir
+    names: list[str] = []
+    orphans: list[str] = []
+    try:
+        characters = await _config_manager.aload_characters()
+        valid_names = set(characters.get('猫娘', {}).keys())
+        if faces_dir.exists():
+            for p in await asyncio.to_thread(lambda: list(faces_dir.glob('*.png'))):
+                stem = p.stem
+                if stem in valid_names:
+                    names.append(stem)
+                else:
+                    orphans.append(stem)
+        if orphans:
+            logger.info(f"[list_card_faces] 孤儿卡面文件（无对应角色）: {orphans}")
+    except Exception:
+        logger.exception("list_card_faces failed")
+        return JSONResponse({'success': False, 'error': '读取卡面列表失败'}, status_code=500)
+
+    return JSONResponse({'success': True, 'names': names}, status_code=200)
+
+
+@router.get('/card-metas')
+async def list_card_metas():
+    """批量返回所有猫娘的卡面元数据。
+
+    对于没有 sidecar JSON 的历史角色卡，会根据猫娘配置推断 origin 后
+    返回默认值，保证旧版本升级后前端仍能显示卡面信息。
+    """
+    _config_manager = get_config_manager()
+    faces_dir = _config_manager.card_faces_dir
+    metas: dict = {}
+    try:
+        # 先加载角色列表，构建有效名称集合
+        characters = await _config_manager.aload_characters()
+        valid_names = set((characters.get('猫娘', {}) or {}).keys())
+        # 只读取属于有效角色的 sidecar
+        if faces_dir.exists():
+            json_files = await asyncio.to_thread(lambda: list(faces_dir.glob('*.json')))
+            for p in json_files:
+                if p.stem in valid_names:
+                    meta = await asyncio.to_thread(_read_card_meta, p)
+                    if meta.get('origin') is None:
+                        # sidecar 损坏：当作缺失处理，重新推断 origin
+                        meta = _default_card_meta(_detect_card_origin_from_character(characters['猫娘'][p.stem]))
+                    metas[p.stem] = meta
+        # 补齐缺失 sidecar 的猫娘：按配置推断 origin，返回默认值
+        for cname, cdata in (characters.get('猫娘', {}) or {}).items():
+            if cname in metas:
+                continue
+            inferred = _default_card_meta(_detect_card_origin_from_character(cdata or {}))
+            metas[cname] = inferred
+    except Exception as e:
+        logger.warning(f"批量读取卡面元数据失败: {e}")
+        return JSONResponse({'success': False, 'error': '批量读取卡面元数据失败', 'details': str(e)}, status_code=500)
+
+    return JSONResponse({'success': True, 'metas': metas})
+
+
+@router.get('/catgirl/{name}/card-meta')
+async def get_card_meta(name: str):
+    """获取单个猫娘的卡面元数据。无 sidecar 时根据猫娘配置推断 origin 后返回默认。"""
+    _config_manager = get_config_manager()
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    meta_path = _config_manager.card_face_meta_path(name)
+    meta = await asyncio.to_thread(_read_card_meta, meta_path)
+    if not meta_path.exists() or meta.get('origin') is None:
+        # 无 sidecar 或读取失败：根据猫娘配置推断 origin
+        meta['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
+    return JSONResponse({'success': True, 'meta': meta})
+
+
+@router.put('/catgirl/{name}/card-meta')
+async def put_card_meta(name: str, request: Request):
+    """更新卡面元数据（当前仅支持 author 字段，且仅 origin=self 时允许）。"""
+    _config_manager = get_config_manager()
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
+
+    new_author = data.get('author') if isinstance(data, dict) else None
+    if new_author is None:
+        return JSONResponse({'success': False, 'error': '缺少 author 字段'}, status_code=400)
+    new_author = str(new_author).strip()
+    if len(new_author) > 64:
+        return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
+
+    meta_path = _config_manager.card_face_meta_path(name)
+    existing = await asyncio.to_thread(_read_card_meta, meta_path)
+    if not meta_path.exists() or existing.get('origin') is None:
+        existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
+
+    if existing.get('origin') != 'self':
+        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改作者'}, status_code=403)
+
+    existing['author'] = new_author
+    now_iso = datetime.now().isoformat(timespec='seconds')
+    existing['updated_at'] = now_iso
+    if not existing.get('created_at'):
+        existing['created_at'] = now_iso
+
+    _config_manager.ensure_card_faces_directory()
+    await asyncio.to_thread(_write_card_meta, meta_path, existing)
+    return JSONResponse({'success': True, 'meta': existing})
+
+
+@router.get('/catgirl/{name}/card-face')
+async def get_card_face(name: str):
+    """获取角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    if not face_path.exists():
+        return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
+
+    image_data = await asyncio.to_thread(face_path.read_bytes)
+    return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+
+@router.put('/catgirl/{name}/card-face')
+async def put_card_face(name: str, image: UploadFile = File(...)):
+    """保存角色的自定义卡面图片"""
+    _config_manager = get_config_manager()
+    # 安全检查：防止路径遍历
+    safe_name = os.path.basename(name)
+    if safe_name != name or not name:
+        return JSONResponse({'success': False, 'error': '无效的角色名'}, status_code=400)
+
+    characters = await _config_manager.aload_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    # 验证文件类型
+    content_type = image.content_type or ''
+    if not content_type.startswith('image/'):
+        return JSONResponse({'success': False, 'error': '文件类型无效，请上传图片'}, status_code=400)
+
+    # 流式读取并限制大小
+    try:
+        image_buffer = await _read_limited_stream(image, MAX_CARD_FACE_SIZE)
+    except _UploadTooLargeError:
+        return JSONResponse({'success': False, 'error': '图片文件过大（最大 10MB）'}, status_code=400)
+
+    # 在线程中验证并重新编码为 PNG
+    try:
+        from utils.screenshot_utils import _validate_image_data
+        from PIL import Image as PILImage
+
+        image_buffer.seek(0)
+        validated_img = await asyncio.to_thread(_validate_image_data, image_buffer.getvalue())
+        if validated_img is None:
+            return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+        def _reencode(img) -> bytes:
+            if img.mode not in ('RGB', 'RGBA', 'L'):
+                img = img.convert('RGB')
+            out = io.BytesIO()
+            img.save(out, format='PNG')
+            return out.getvalue()
+
+        png_bytes = await asyncio.to_thread(_reencode, validated_img)
+    except Exception:
+        return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+    # 重编码后再次校验大小（压缩后仍可能超过限制）
+    if len(png_bytes) > MAX_CARD_FACE_SIZE:
+        return JSONResponse({'success': False, 'error': '文件过大（重编码后超过10MB）'}, status_code=413)
+
+    # 确保目录存在
+    _config_manager.ensure_card_faces_directory()
+
+    face_path = _config_manager.card_faces_dir / f"{name}.png"
+    await asyncio.to_thread(face_path.write_bytes, png_bytes)
+
+    # 同步更新 sidecar 元数据
+    meta_path = _config_manager.card_face_meta_path(name)
+    try:
+        meta = await asyncio.to_thread(_read_card_meta, meta_path)
+        now_iso = datetime.now().isoformat(timespec='seconds')
+        # 上传即视为本地创作；若此前是导入的，刷新创建时间
+        previous_origin = meta.get('origin')
+        meta['origin'] = 'self'
+        if previous_origin != 'self' or not meta.get('created_at'):
+            meta['created_at'] = now_iso
+        meta['updated_at'] = now_iso
+        await asyncio.to_thread(_write_card_meta, meta_path, meta)
+    except Exception as meta_err:
+        logger.warning(f"[上传卡面] 写入 sidecar 元数据失败: {meta_err}")
+        return JSONResponse({
+            'success': True,
+            'partial_success': True,
+            'error': f"卡面已保存，但元数据写入失败: {meta_err}",
+        }, status_code=200)
+
+    return JSONResponse({'success': True})
 
 
 class _InvalidPortraitError(ValueError):
@@ -4403,7 +5325,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != 'mao_pro':
+                        if live2d_name and live2d_name != DEFAULT_LIVE2D_MODEL_NAME:
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):
@@ -4504,6 +5426,8 @@ async def export_catgirl_with_portrait(
                 ("simsun.ttc", font_size),
                 ("msyh.ttc", font_size),
                 ("Microsoft YaHei.ttf", font_size),
+                ("NotoSansCJK-Regular.ttc", font_size),
+                ("wqy-microhei.ttc", font_size),
             ]
             for font_name, size in font_candidates:
                 try:

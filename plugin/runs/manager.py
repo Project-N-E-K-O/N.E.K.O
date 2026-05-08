@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, Field
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus

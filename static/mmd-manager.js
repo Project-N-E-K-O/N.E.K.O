@@ -149,6 +149,18 @@ class MMDManager {
                 this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
             }
 
+            // 兜底：模型加载成功后再 setup 一次浮动按钮（与 VRM 对齐）。
+            // init() 阶段虽然也会调用，但若彼时 lanlan_config 还没切到 mmd（早期启动 / 跨模型切换），
+            // 守卫会让 setup 静默退出，且不会再有第二次机会。loadModel 成功后必然处于 mmd 模式，
+            // 在此补一刀确保按钮始终存在。
+            if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+                try {
+                    this.setupFloatingButtons();
+                } catch (err) {
+                    console.warn('[MMD Manager] setupFloatingButtons 失败 (loadModel success path):', err);
+                }
+            }
+
             // 派发模型加载完成事件
             window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
                 detail: { modelInfo, modelPath }
@@ -188,6 +200,15 @@ class MMDManager {
                         this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
                     }
 
+                    // 兜底：回退模型加载成功后也补一次 setupFloatingButtons（与 VRM 对齐）
+                    if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+                        try {
+                            this.setupFloatingButtons();
+                        } catch (err) {
+                            console.warn('[MMD Manager] setupFloatingButtons 失败 (fallback model path):', err);
+                        }
+                    }
+
                     window.dispatchEvent(new CustomEvent('mmd-model-loaded', {
                         detail: { modelInfo, modelPath: defaultModelPath }
                     }));
@@ -206,9 +227,17 @@ class MMDManager {
 
     // ═══════════════════ 动画 ═══════════════════
 
-    async loadAnimation(vmdPath) {
-        if (!this.animationModule) throw new Error('MMDAnimation 未初始化');
-        const clip = await this.animationModule.loadAnimation(vmdPath);
+    async loadAnimation(vmdPath, options = {}) {
+        // 防御性检查：如果 animationModule 未初始化（并行加载竞态），尝试延迟初始化
+        if (!this.animationModule) {
+            if (typeof MMDAnimation !== 'undefined') {
+                this.animationModule = new MMDAnimation(this);
+                console.warn('[MMD Manager] animationModule 延迟初始化成功（并行加载竞态）');
+            } else {
+                throw new Error('MMDAnimation 未初始化');
+            }
+        }
+        const clip = await this.animationModule.loadAnimation(vmdPath, options);
         this.currentAnimationUrl = vmdPath;
         return clip;
     }
@@ -483,6 +512,29 @@ class MMDManager {
         return {
             x: canvasRect.left + (this._headScreenAnchorProjection.x * 0.5 + 0.5) * canvasRect.width,
             y: canvasRect.top + (-this._headScreenAnchorProjection.y * 0.5 + 0.5) * canvasRect.height
+        };
+    }
+
+    getHeadDetectionGeometryInfo() {
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        const headAnchor = this.getHeadScreenAnchor();
+        return {
+            type: 'mmd',
+            bounds,
+            rawHeadAnchor: headAnchor || null,
+            headAnchor: headAnchor || null,
+            headRect: null,
+            headMode: 'head',
+            headSource: 'bone',
+            bodyRect: null,
+            bodySource: null,
+            reliableHeadRect: false,
+            preciseDisplayInfoRect: false,
+            coarseHitAreaHeadRect: false
         };
     }
 

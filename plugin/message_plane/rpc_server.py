@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import zmq
 import ormsgpack
-from loguru import logger
+from plugin.logging_config import logger
 
 try:
     import regex as safe_regex  # type: ignore

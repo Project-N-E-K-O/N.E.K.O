@@ -4,7 +4,7 @@ import signal
 import threading
 from typing import Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.settings import (
     MESSAGE_PLANE_STORE_MAXLEN,

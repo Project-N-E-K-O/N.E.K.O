@@ -117,4 +117,5 @@ curl -X POST http://localhost:48916/plugin/trigger \
 
 - [SDK 参考](./sdk-reference) — 了解 `NekoPluginBase`、Result 类型和运行时辅助工具
 - [装饰器](./decorators) — 所有可用的装饰器类型，包括钩子
+- [Hosted UI](./hosted-ui) — 添加交互式 TSX 面板或 Markdown 教程页
 - [示例](./examples) — 完整的可运行插件示例

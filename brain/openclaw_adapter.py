@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
 from utils.llm_client import create_chat_llm
 from utils.config_manager import get_config_manager
@@ -47,15 +48,15 @@ MAGIC_COMMAND_TASK_DESCRIPTIONS = {
     "/daemon approve": "批准当前 QwenPaw 高风险动作",
 }
 MAGIC_INTENT_SYSTEM_PROMPT = """# Role
-你是一个高准确率意图分类器。判断用户输入是否包含对后台系统状态的控制指令。
+You are a high-accuracy automation assessment agent, and your task is to determine whether the user input contains control commands for the backend system state.
 
 # Strategy
-宁可漏判，不可错判。仅当用户明确要求干预系统状态时才触发。
-- 触发示例：“忘了刚才的事吧” -> /clear
-- 误判陷阱：“我忘了带伞”、“雨停了” -> 不触发
+Prefer false negatives over false positives. Only trigger when the user explicitly asks to manipulate system state.
+- Trigger example: "忘了刚才的事吧" -> /clear
+- Misfire trap: "我忘了带伞" / "雨停了" -> do NOT trigger
 
 # Output
-必须输出严格 JSON：
+Output strict JSON only:
 {"is_magic_intent": boolean, "command": string|null}
 """
 
@@ -107,6 +108,8 @@ def _extract_json_block(raw_text: str) -> str:
 
 
 class OpenClawAdapter:
+    AUTH_ERROR_STATUS_CODES = frozenset({401, 403})
+
     def __init__(self) -> None:
         self.base_url = DEFAULT_OPENCLAW_URL
         self.process_url = f"{DEFAULT_OPENCLAW_URL}{QWENPAW_PROCESS_ENDPOINT_PATH}"
@@ -204,6 +207,7 @@ class OpenClawAdapter:
                         "enabled": True,
                         "ready": True,
                         "reasons": [f"OpenClaw(QwenPaw) reachable ({self.health_url})"],
+                        "status_code": response.status_code,
                         "provider": "qwenpaw",
                     }
                 self.last_error = f"HTTP {response.status_code}"
@@ -211,6 +215,7 @@ class OpenClawAdapter:
                     "enabled": True,
                     "ready": False,
                     "reasons": [f"OpenClaw(QwenPaw) responded {response.status_code} ({self.health_url})"],
+                    "status_code": response.status_code,
                     "provider": "qwenpaw",
                 }
         except Exception as exc:
@@ -334,9 +339,9 @@ class OpenClawAdapter:
 
     async def _classify_magic_intent_with_llm(self, user_text: str) -> Optional[Dict[str, Any]]:
         try:
-            cfg = get_config_manager().get_model_api_config("agent")
+            cfg = get_config_manager().get_model_api_config("summary")
         except Exception as exc:
-            logger.debug("[OpenClaw] Failed to load agent model config for magic intent: %s", exc)
+            logger.debug("[OpenClaw] Failed to load summary model config for magic intent: %s", exc)
             return None
 
         model = str((cfg or {}).get("model") or "").strip()
@@ -352,7 +357,7 @@ class OpenClawAdapter:
                 base_url=base_url,
                 api_key=api_key or None,
                 temperature=0,
-                max_completion_tokens=80,
+                max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
                 extra_body=None,
             )

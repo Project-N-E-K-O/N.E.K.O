@@ -1,0 +1,398 @@
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from plugin.plugins.sts2_autoplay.decisioning import DecisioningMixin
+
+
+class DummyLogger:
+    def __init__(self) -> None:
+        self.infos: list[str] = []
+        self.warnings: list[str] = []
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self.infos.append(str(message))
+
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self.warnings.append(str(message))
+
+
+class DummyLlmStrategy:
+    def sanitize_combat_for_prompt(self, combat: dict[str, Any], strategy_constraints_loader, character_strategy: str | None = None) -> dict[str, Any]:
+        return combat
+
+
+class DummyCombatAnalyzer:
+    def __init__(self) -> None:
+        self.orb_state_calls = 0
+
+    def build_tactical_summary(self, combat: dict[str, Any], strategy_constraints_loader, character_strategy: str | None = None) -> dict[str, Any]:
+        incoming = sum(int(enemy.get("intent_attack", 0) or 0) for enemy in combat.get("enemies", []) if isinstance(enemy, dict))
+        current_block = int(combat.get("player_block", 0) or 0)
+        lethal_targets = []
+        for enemy in combat.get("enemies", []):
+            if not isinstance(enemy, dict):
+                continue
+            target_index = enemy.get("index")
+            hp = int(enemy.get("hp", 0) or 0) + int(enemy.get("block", 0) or 0)
+            best_damage = max(
+                (
+                    self._card_total_damage_value(card, combat, target_index=target_index, strategy_constraints={})
+                    for card in combat.get("hand", [])
+                    if isinstance(card, dict) and target_index in (card.get("valid_target_indices") or [])
+                ),
+                default=0,
+            )
+            if hp > 0 and best_damage >= hp:
+                lethal_targets.append({"index": target_index, "effective_hp": hp, "best_targeted_damage": best_damage})
+        return {
+            "incoming_attack_total": incoming,
+            "current_block": current_block,
+            "remaining_block_needed": max(0, incoming - current_block),
+            "should_prioritize_defense": incoming > current_block,
+            "should_prioritize_lethal": bool(lethal_targets),
+            "lethal_targets": lethal_targets,
+            "recommended_target_index": lethal_targets[0]["index"] if lethal_targets else 0,
+        }
+
+    def _card_total_damage_value(self, card: dict[str, Any], combat: dict[str, Any], target_index: Any = None, strategy_constraints=None) -> int:
+        return int(card.get("damage", 0) or 0)
+
+    def _card_block_value(self, card: dict[str, Any]) -> int:
+        return int(card.get("block", 0) or 0)
+
+    def _card_orb_damage_value(self, card: dict[str, Any], combat: dict[str, Any], target_index: Any = None) -> int:
+        return int(card.get("orb_damage", 0) or 0)
+
+    def _combat_orb_state(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
+        self.orb_state_calls += 1
+        value = combat.get("orbs")
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    def _combat_player_block(self, combat: dict[str, Any]) -> int:
+        return int(combat.get("player_block", 0) or 0)
+
+    def sanitize_combat_for_prompt(self, combat: dict[str, Any], strategy_constraints_loader, character_strategy: str | None = None) -> dict[str, Any]:
+        payload = dict(combat)
+        payload["loaded_strategy_constraints"] = strategy_constraints_loader(character_strategy)
+        return payload
+
+    def _best_playable_damage_card(self, combat: dict[str, Any], *, target_index: Any = None, strategy_constraints=None) -> dict[str, Any] | None:
+        playable = [card for card in combat.get("hand", []) if isinstance(card, dict) and bool(card.get("playable"))]
+        return max(playable, key=lambda card: self._card_total_damage_value(card, combat, target_index=target_index, strategy_constraints=strategy_constraints), default=None)
+
+    def _best_playable_block_card(self, combat: dict[str, Any]) -> dict[str, Any] | None:
+        playable = [card for card in combat.get("hand", []) if isinstance(card, dict) and bool(card.get("playable"))]
+        return max(playable, key=lambda card: int(card.get("block", 0) or 0), default=None)
+
+
+class DecisionServiceBase(DecisioningMixin):
+    def __init__(self) -> None:
+        self._cfg = {"neko_desperate_enabled": True, "neko_desperate_hp_threshold": 0.5}
+        self.logger = DummyLogger()
+        self._combat_analyzer = DummyCombatAnalyzer()
+        self._context_analyzer = DummyContextAnalyzer()
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def _first_present(self, *values: Any, default: Any = None) -> Any:
+        for value in values:
+            if value is not None:
+                return value
+        return default
+
+    def _configured_mode(self) -> str:
+        return "full-program"
+
+    def _configured_character_strategy(self) -> str:
+        return "defect"
+
+    def _load_strategy_constraints(self, strategy: str) -> dict[str, Any]:
+        if self._cfg.get("raise_strategy_constraints"):
+            raise RuntimeError("broken constraints")
+        return {}
+
+    def _combat_state(self, context: dict[str, Any]) -> dict[str, Any]:
+        return context["snapshot"]["raw_state"]["combat"]
+
+    def _combat_player_block(self, combat: dict[str, Any]) -> int:
+        return self._combat_analyzer._combat_player_block(combat)
+
+    def _enemy_intent_attack_total(self, enemy: dict[str, Any]) -> int:
+        return int(enemy.get("intent_attack", 0) or 0)
+
+    def _find_defensive_action(self, actions: list[dict[str, Any]], combat: dict[str, Any], tactical_summary: dict[str, Any]) -> dict[str, Any] | None:
+        block_card = self._best_playable_block_card(combat)
+        if block_card is None:
+            return None
+        return self._action_for_card(actions, block_card)
+
+    def _action_for_card(self, actions: list[dict[str, Any]], card: dict[str, Any], *, target_index: Any = None) -> dict[str, Any] | None:
+        for action in actions:
+            raw = action.get("raw") if isinstance(action.get("raw"), dict) else {}
+            if raw.get("card_index") == card.get("index"):
+                selected = dict(action)
+                selected_raw = dict(raw)
+                if target_index is not None:
+                    selected_raw["target_index"] = target_index
+                selected["raw"] = selected_raw
+                return selected
+        return None
+
+    def _describe_legal_action(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        return action
+
+
+class DecisionService(DecisionServiceBase):
+    def _combat_orbs(self, combat: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
+
+
+class DummyContextAnalyzer:
+    def _build_map_summary(self, context: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+
+def combat_context(hand: list[dict[str, Any]], *, hp: int = 4, max_hp: int = 20, block: int = 0, incoming: int = 8, enemy_hp: int = 30, energy: int = 3) -> dict[str, Any]:
+    return {
+        "snapshot": {
+            "raw_state": {
+                "combat": {
+                    "player": {"hp": hp, "max_hp": max_hp, "energy": energy},
+                    "player_block": block,
+                    "player_energy": energy,
+                    "hand": hand,
+                    "enemies": [{"index": 0, "hp": enemy_hp, "intent_attack": incoming}],
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.unit
+def test_desperate_prefers_defense_when_no_lethal() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "damage": 6, "valid_target_indices": [0]}
+    defend = {"index": 1, "name": "防御", "type": "skill", "card_type": "skill", "playable": True, "block": 8}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+    ]
+
+    selected = service._select_desperate_action(actions, combat_context([strike, defend], enemy_hp=30))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 1
+
+
+@pytest.mark.unit
+def test_desperate_uses_attack_when_lethal_exists() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "damage": 12, "valid_target_indices": [0]}
+    defend = {"index": 1, "name": "防御", "type": "skill", "card_type": "skill", "playable": True, "block": 8}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+    ]
+
+    selected = service._select_desperate_action(actions, combat_context([strike, defend], enemy_hp=10))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+    assert selected["raw"]["target_index"] == 0
+
+
+@pytest.mark.unit
+def test_marginal_benefit_reads_orbs_from_combat_analyzer_without_service_helper() -> None:
+    service = DecisionServiceBase()
+    zap = {"index": 0, "name": "电击", "type": "skill", "card_type": "skill", "playable": True, "cost": 0, "description": "channel lightning", "orb_damage": 8}
+    combat = {"player_energy": 3, "player_block": 0, "hand": [zap], "orbs": [{"type": "lightning"}], "enemies": [{"index": 0, "hp": 40, "intent_attack": 0}]}
+    tactical = {"recommended_target_index": 0, "incoming_attack_total": 0}
+    state = {"energy": 3, "block": 0, "str_stacks": 0, "weaken_stacks": 0, "vulnerable_stacks": 0}
+
+    benefit = service._calc_marginal_benefit(zap, state, combat, tactical, {}, remaining_cards=[])
+
+    assert benefit > 0
+    assert service._combat_analyzer.orb_state_calls == 1
+
+
+@pytest.mark.unit
+def test_marginal_benefit_uses_remaining_cards_for_setup_synergy() -> None:
+    service = DecisionService()
+    bash = {"index": 0, "name": "痛击 易伤", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "description": "给予易伤"}
+    strike = {"index": 1, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 20, "valid_target_indices": [0]}
+    combat = {"player_energy": 3, "player_block": 0, "hand": [bash, strike], "enemies": [{"index": 0, "hp": 40, "intent_attack": 0}]}
+    tactical = {"recommended_target_index": 0, "incoming_attack_total": 0}
+    state = {"energy": 3, "block": 0, "str_stacks": 0, "weaken_stacks": 0, "vulnerable_stacks": 0}
+
+    without_followup = service._calc_marginal_benefit(bash, state, combat, tactical, {}, remaining_cards=[])
+    with_followup = service._calc_marginal_benefit(bash, state, combat, tactical, {}, remaining_cards=[strike])
+
+    assert with_followup > without_followup
+
+
+@pytest.mark.unit
+def test_desperate_uses_tactical_target_for_lethal() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "damage": 12, "valid_target_indices": [0, 1]}
+    actions = [{"type": "play_card", "raw": {"card_index": 0}}]
+    context = combat_context([strike], enemy_hp=30)
+    context["snapshot"]["raw_state"]["combat"]["enemies"] = [
+        {"index": 0, "hp": 30, "intent_attack": 0},
+        {"index": 1, "hp": 10, "intent_attack": 0},
+    ]
+
+    selected = service._select_desperate_action(actions, context)
+
+    assert selected is not None
+    assert selected["raw"]["target_index"] == 1
+
+
+@pytest.mark.unit
+def test_desperate_attack_allows_cards_without_targets() -> None:
+    service = DecisionService()
+    aoe = {"index": 0, "name": "顺劈斩", "type": "attack", "card_type": "attack", "playable": True, "damage": 12, "valid_target_indices": []}
+    actions = [{"type": "play_card", "raw": {"card_index": 0}}]
+
+    selected = service._select_desperate_action(actions, combat_context([aoe], enemy_hp=10, incoming=0))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+    assert "target_index" not in selected["raw"]
+
+
+@pytest.mark.unit
+def test_synergy_boost_reads_vulnerable_from_debuffs() -> None:
+    service = DecisionService()
+    strike = {"index": 0, "name": "打击", "type": "attack", "card_type": "attack", "playable": True}
+    combat = {"enemies": [{"index": 0, "hp": 30, "debuffs": [{"id": "vulnerable"}]}]}
+
+    assert service._calc_synergy_boost(strike, {}, combat, {}) > 0
+
+
+@pytest.mark.unit
+def test_desperate_uses_zero_player_hp_without_truthy_fallback() -> None:
+    service = DecisionService()
+    context = combat_context([], hp=0, max_hp=20, incoming=0)
+    context["snapshot"]["raw_state"]["current_hp"] = 10
+    context["snapshot"]["raw_state"]["run"] = {"current_hp": 10, "hp": 10, "max_hp": 20}
+
+    assert service._is_desperate_situation(context) is True
+
+
+@pytest.mark.unit
+def test_llm_decision_payload_preserves_zero_player_hp() -> None:
+    service = DecisionService()
+    context = combat_context([], hp=0, max_hp=20, incoming=0)
+    context["snapshot"]["raw_state"]["run"] = {"current_hp": 10, "hp": 10, "max_hp": 20}
+
+    payload = service._build_llm_decision_payload(context)
+
+    assert payload["snapshot"]["player_hp"] == 0
+
+
+@pytest.mark.unit
+def test_llm_decision_payload_includes_user_context() -> None:
+    service = DecisionService()
+    context = combat_context([], hp=10, max_hp=20, incoming=0)
+    user_context = {"latest_user_turn": {"content": "优先保血"}, "recent_user_turns": [{"content": "优先保血"}]}
+
+    payload = service._build_llm_decision_payload(context, user_context=user_context)
+
+    assert payload["user_context"] == user_context
+
+
+@pytest.mark.unit
+def test_llm_decision_payload_uses_empty_constraints_when_strategy_loading_fails() -> None:
+    service = DecisionService()
+    service._cfg["raise_strategy_constraints"] = True
+    context = combat_context([], hp=10, max_hp=20, incoming=0)
+
+    payload = service._build_llm_decision_payload(context)
+
+    assert payload["strategy_constraints"] == {}
+    assert payload["combat"]["loaded_strategy_constraints"] == {}
+    assert any("加载策略约束失败" in message for message in service.logger.warnings)
+
+
+@pytest.mark.unit
+def test_best_playable_damage_card_uses_empty_constraints_when_strategy_loading_fails() -> None:
+    service = DecisionService()
+    service._cfg["raise_strategy_constraints"] = True
+    combat = {"hand": [{"index": 0, "playable": True, "damage": 1}]}
+
+    assert service._best_playable_damage_card(combat) == {"index": 0, "playable": True, "damage": 1}
+    assert any("加载策略约束失败" in message for message in service.logger.warnings)
+
+
+@pytest.mark.unit
+def test_maximize_considers_zero_cost_cards_at_zero_energy() -> None:
+    service = DecisionService()
+    zap = {"index": 0, "name": "电击", "type": "attack", "card_type": "attack", "playable": True, "cost": 0, "damage": 5, "valid_target_indices": [0]}
+    strike = {"index": 1, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 50, "valid_target_indices": [0]}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+    ]
+
+    selected = service._select_maximize_benefit_action(actions, combat_context([zap, strike], energy=0, incoming=0, enemy_hp=30))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+
+
+@pytest.mark.unit
+def test_maximize_continues_to_zero_cost_cards_after_spending_last_energy() -> None:
+    service = DecisionService()
+    defend = {"index": 0, "name": "防御", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "block": 8}
+    zap = {"index": 1, "name": "电击", "type": "attack", "card_type": "attack", "playable": True, "cost": 0, "damage": 5, "valid_target_indices": [0]}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+    ]
+    context = combat_context([defend, zap], energy=1, incoming=10, enemy_hp=30)
+
+    selected = service._select_maximize_benefit_action(actions, context)
+
+    assert selected is not None
+    assert "电击" in service.logger.infos[-1]
+
+
+@pytest.mark.unit
+def test_setup_synergy_weaken_reads_enemy_weak_not_vulnerable() -> None:
+    service = DecisionService()
+    weak_setup = {"index": 0, "name": "致虚弱", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "description": "给予虚弱"}
+    strike = {"index": 1, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 12, "valid_target_indices": [0]}
+    combat = {"player_energy": 3, "player_block": 0, "hand": [weak_setup, strike], "enemies": [{"index": 0, "hp": 40, "debuffs": [{"id": "weak"}]}]}
+    tactical = {"recommended_target_index": 0, "incoming_attack_total": 0}
+    state = {"energy": 3, "block": 0, "str_stacks": 0, "weaken_stacks": 0, "vulnerable_stacks": 0}
+
+    benefit = service._calc_marginal_benefit(weak_setup, state, combat, tactical, {}, remaining_cards=[strike])
+
+    assert benefit == -15.0
+    assert service._calc_synergy_boost(weak_setup, state, combat, {}) > 0
+
+
+@pytest.mark.unit
+def test_maximize_accumulates_block_after_selected_card() -> None:
+    service = DecisionService()
+    big_defend = {"index": 0, "name": "大防御", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "block": 8}
+    small_defend = {"index": 1, "name": "小防御", "type": "skill", "card_type": "skill", "playable": True, "cost": 1, "block": 3}
+    strike = {"index": 2, "name": "打击", "type": "attack", "card_type": "attack", "playable": True, "cost": 1, "damage": 6, "valid_target_indices": [0]}
+    actions = [
+        {"type": "play_card", "raw": {"card_index": 0}},
+        {"type": "play_card", "raw": {"card_index": 1}},
+        {"type": "play_card", "raw": {"card_index": 2}},
+    ]
+
+    selected = service._select_maximize_benefit_action(actions, combat_context([big_defend, small_defend, strike], energy=3, incoming=8, enemy_hp=30))
+
+    assert selected is not None
+    assert selected["raw"]["card_index"] == 0
+    assert "小防御" not in service.logger.infos[-1]

@@ -1193,6 +1193,7 @@
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
         resetReturnBallTemporaryStyle(container);
+        container.removeAttribute('data-neko-return-visible');
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
@@ -1229,6 +1230,7 @@
         cancelReturnBallReveal(container);
         restoreSavedReturnBallStyle(container);
         resetReturnBallTemporaryStyle(container);
+        container.setAttribute('data-neko-return-visible', 'true');
         container.style.display = 'flex';
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
@@ -2077,7 +2079,7 @@
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/icons/expand_icon_off.png';
+                        iconImg.src = '/static/icons/expand_icon_off_ball.png';
                         iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
@@ -2481,6 +2483,7 @@
             stopButton.disabled = true;
 
             // 显示文本输入区
+            S.voiceChatActive = false;
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea) {
                 textInputArea.classList.remove('hidden');

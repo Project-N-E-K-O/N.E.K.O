@@ -54,6 +54,15 @@ button * {
   user-select: none;
 }
 
+img,
+svg {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
 .app-shell {
   width: 100%;
   height: 100%;
@@ -602,6 +611,10 @@ button * {
   animation: slideFromLeft 0.25s ease-out both;
 }
 
+.message-row[data-guide-message="true"] {
+  animation: none !important;
+}
+
 .message-row-user .avatar {
   order: 2;
 }
@@ -727,6 +740,10 @@ button * {
 
 .text-chunk-reveal {
   animation: textChunkReveal 0.18s ease-out both;
+}
+
+.message-row[data-guide-message="true"] .text-chunk-reveal {
+  animation: none !important;
 }
 
 .message-block-text {
@@ -1064,11 +1081,16 @@ button * {
 
 .composer-panel {
   display: grid;
+  /* 显式 1 列、min 边为 0：阻断 grid item 默认 min-width: auto 把内部
+     nowrap 文本的 min-content 一路向上撑宽（galgame 选项过长时会让整个
+     panel 抗拒收缩，进而被 chat-window overflow: hidden 截断）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding: 6px;
   position: relative;
   z-index: 15;
   background: rgba(255, 255, 255, 0.91);
+  min-width: 0;
 }
 
 /* Hide empty music-player-mount so it doesn't occupy a grid row */
@@ -1123,12 +1145,16 @@ button * {
 /* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
+  /* 作为 .composer-panel 的 grid item，显式 min-width: 0
+     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
+  min-width: 0;
 }
 
 .composer-input-shell {
   display: flex;
   flex-direction: column;
   min-height: 98px;
+  min-width: 0;
   padding: 0 16px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.91);
@@ -1232,6 +1258,39 @@ button * {
   background: rgba(68, 183, 254, 0.18);
 }
 
+.composer-tool-clear-btn {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  background: #44b7fe;
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(35, 116, 190, 0.28);
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-tool-clear-btn:hover {
+  background: #229ceb;
+  transform: scale(1.08);
+  box-shadow: 0 3px 8px rgba(35, 116, 190, 0.34);
+}
+
+.composer-tool-clear-btn span {
+  transform: translateY(-0.5px);
+}
+
 .composer-tool-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1250,6 +1309,164 @@ button * {
   line-height: 1;
   user-select: none;
   padding: 0 2px;
+}
+
+/* ===== Composer overflow ··· menu (compact 模式下右 4 按钮折叠) ===== */
+
+/* expanded 态下右 4 按钮容器：整体作为一个单位伸缩。
+   transform-origin 锁在左边——展开时右边缘向右拉开，
+   折叠时右边缘向左压回 ··· 所在的位置（视觉像窗帘从右往左拉到左边）。 */
+.composer-tools-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  transform-origin: left center;
+  animation: composerToolsExpand 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.0) both;
+}
+
+/* 离场：scaleX 1 → 0 整体向左折叠。
+   关键：同时动画 width，让 layout 也跟着收缩，否则 transform 不影响布局，
+   发送按钮在动画期间会被原宽度的元素一直顶住直到动画结束。
+   --collapse-from-width 由 React 在 expanded → collapsing 切换瞬间写入。
+   .is-leaving 特异性比上面基础规则高，安全覆盖入场 keyframes。 */
+.composer-tools-right.is-leaving {
+  overflow: hidden;
+  animation: composerToolsCollapse 0.26s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes composerToolsExpand {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes composerToolsCollapse {
+  from {
+    opacity: 1;
+    width: var(--collapse-from-width, auto);
+    transform: scaleX(1);
+  }
+  to {
+    opacity: 0;
+    width: 0;
+    transform: scaleX(0);
+  }
+}
+
+.composer-overflow-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* 切到 compact 时 ··· 按钮的入场动画 */
+  animation: composerOverflowBtnEnter 0.28s cubic-bezier(0.2, 0.85, 0.2, 1.1) both;
+}
+
+/* expanding 阶段 ··· 按钮的退场动画（特异性比基础规则高，覆盖入场 keyframes） */
+.composer-overflow-menu.is-leaving {
+  animation: composerOverflowBtnLeave 0.20s cubic-bezier(0.4, 0, 0.6, 1) both;
+}
+
+@keyframes composerOverflowBtnEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.5) rotate(-45deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.06) rotate(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+@keyframes composerOverflowBtnLeave {
+  from {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.5) rotate(45deg);
+  }
+}
+
+/* 用户偏好减少动画时跳过过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .composer-tools-right,
+  .composer-tools-right > *,
+  .composer-tools-right.is-leaving,
+  .composer-tools-right.is-leaving > *,
+  .composer-overflow-menu,
+  .composer-overflow-menu.is-leaving,
+  .composer-overflow-popover,
+  .composer-galgame-options.is-loading .composer-galgame-option {
+    animation: none !important;
+  }
+}
+
+.composer-overflow-btn {
+  color: #4a6478;
+}
+
+.composer-overflow-btn svg {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+.composer-overflow-btn.is-active {
+  background: rgba(68, 183, 254, 0.18);
+}
+
+/* 折叠面板：从 ··· 按钮上方弹出（输入栏在底部，向下会出窗口）。
+   4 个按钮垂直堆叠，保持 32×32 尺寸，hover 区域不变。 */
+.composer-overflow-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  /* 0.85 而非 0.96：让 backdrop-filter blur 有可见底色可虚化，
+     真正出现毛玻璃效果而不是浪费一层合成开销喵～ */
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(127, 144, 170, 0.18);
+  border-radius: 12px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: composerOverflowAppear 0.18s cubic-bezier(0.2, 0.9, 0.2, 1.05) both;
+  transform-origin: bottom right;
+}
+
+@keyframes composerOverflowAppear {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 折叠面板内的工具菜单包装（emoji 子弹窗仍向上弹出，不受影响） */
+.composer-overflow-popover .composer-tool-menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .composer-icon-popover {
@@ -1400,6 +1617,142 @@ button * {
   height: 3px;
   border-radius: 2px;
   background: #2497d9;
+}
+
+/* ===== GalGame 模式开关 + 内嵌 A/B/C 选项 ===== */
+/* default/hover/active 三档对齐 .composer-translate-btn img 的 0.45 / 0.7 / 1
+   opacity 节奏；同色系，避免之前那个蓝灰冷灰看着像"未启用"的灰按钮。
+   border 从 1.5px 收到 1px，避免 active 时边框 + 700 字重双层勾画显得过重。 */
+.composer-galgame-btn {
+  position: relative;
+  color: rgba(36, 151, 217, 0.45);
+}
+
+.composer-galgame-btn-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.composer-galgame-btn:hover {
+  color: rgba(36, 151, 217, 0.78);
+}
+
+.composer-galgame-btn.is-active {
+  color: #2497d9;
+}
+
+.composer-galgame-btn.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: #2497d9;
+}
+
+/* Slot 包住选项区，开/关靠 max-height + opacity 过渡。
+   collapsed 态自然占 0 高，输入壳跟着内容回到原本的紧凑高度，
+   下边缘和 PR 之前一样贴合面板底；展开时 shell 跟着 slot 长高，
+   bottom-bar 锚在 panel 底不动，textarea 顶端被往上推 → 视觉
+   是从下往上拉开。 */
+.composer-galgame-slot {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 180ms ease;
+}
+
+.composer-galgame-slot.is-open {
+  /* 上限给到 3 个 30px 按钮 + 间距 + margin 余量；超出会被 overflow
+     裁掉，但实际内容只有 ~104px 用不到这么多。 */
+  max-height: 160px;
+  opacity: 1;
+}
+
+.composer-galgame-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+  /* 让选项列在窄窗口下能跟随 input-shell 收缩，而不被内部 nowrap 文本顶宽。 */
+  min-width: 0;
+}
+
+.composer-galgame-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  /* 关键：默认 min-width: auto 会让长文本沿 flex 链向上传染，把整个输入壳撑宽；
+     置 0 后按钮严格遵循 width:100%，长文本走下面的 ellipsis 路径。 */
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  background: rgba(244, 248, 254, 0.78);
+  color: #1f2329;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+  min-height: 30px;
+}
+
+.composer-galgame-option:hover:not(:disabled) {
+  background: rgba(220, 236, 252, 0.92);
+  border-color: rgba(64, 197, 241, 0.55);
+}
+
+.composer-galgame-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.composer-galgame-option:disabled,
+.composer-galgame-option.is-placeholder {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.composer-galgame-option-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: #2497d9;
+  font-size: 0.9em;
+}
+
+.composer-galgame-option-text {
+  flex: 1 1 auto;
+  /* min-width: 0 是 ellipsis 在 flex row 里真正生效的前置条件，
+     否则 flex item 默认 min-width:auto = 内容固有宽度，永远不会被裁。 */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9em;
+  line-height: 1.3;
+}
+
+.composer-galgame-options.is-loading .composer-galgame-option {
+  animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes composerGalgameLoadingPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
 }
 
 /* ===== 圆形发送按钮 ===== */
@@ -1741,8 +2094,33 @@ button * {
   background: rgba(68, 183, 254, 0.26);
 }
 
+[data-theme="dark"] .composer-tool-clear-btn {
+  border-color: rgba(28, 28, 46, 0.92);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.44);
+}
+
 [data-theme="dark"] .composer-tool-divider {
   color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .composer-overflow-btn {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="dark"] .composer-overflow-btn.is-active {
+  background: rgba(68, 183, 254, 0.26);
+}
+
+[data-theme="dark"] .composer-overflow-popover {
+  /* 0.78 而非 0.96：与浅色模式对齐，base 规则的 backdrop-filter blur(12px)
+     是级联继承下来的，太高 alpha 会让 blur 看不见还白吃 GPU 合成开销喵。
+     色温也微调到 (38,38,58)，对齐 .chat-body / .composer-input-shell 的蓝灰调子，
+     避免纯灰底色和下方输入栏色温脱节。 */
+  background: rgba(38, 38, 58, 0.78);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 [data-theme="dark"] .composer-icon-popover {
@@ -1786,6 +2164,37 @@ button * {
   background: #44b7fe;
 }
 
+[data-theme="dark"] .composer-galgame-btn {
+  color: rgba(68, 183, 254, 0.5);
+}
+
+[data-theme="dark"] .composer-galgame-btn:hover {
+  color: rgba(68, 183, 254, 0.82);
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active {
+  color: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-btn.is-active::after {
+  background: #44b7fe;
+}
+
+[data-theme="dark"] .composer-galgame-option {
+  background: rgba(54, 64, 90, 0.6);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .composer-galgame-option:hover:not(:disabled) {
+  background: rgba(72, 96, 142, 0.78);
+  border-color: rgba(64, 197, 241, 0.45);
+}
+
+[data-theme="dark"] .composer-galgame-option-label {
+  color: #44b7fe;
+}
+
 [data-theme="dark"] .composer-input-shell {
   background: rgba(42, 42, 60, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
@@ -1827,7 +2236,9 @@ button * {
   .message-row-assistant,
   .text-chunk-reveal,
   .composer-icon-popover,
-  .composer-icon-button {
+  .composer-icon-button,
+  .composer-galgame-slot,
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;

@@ -72,7 +72,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新時間',
     noMetricsData: '暫無效能資料',
-    failedToLoadServerInfo: '無法載入伺服器資訊'
+    failedToLoadServerInfo: '無法載入伺服器資訊',
+    startTutorial: '教程引導',
+    tutorialHint: '第一次使用外掛管理器？點這裡讓我帶你快速認識一下。'
   },
   plugins: {
     title: '外掛列表',
@@ -238,9 +240,20 @@ export default {
     },
     ui: {
       open: '開啟介面',
+      title: '介面',
+      panel: '面板',
+      guide: '教程',
       loading: '載入外掛介面中...',
       loadError: '載入外掛介面失敗',
-      noUI: '該外掛沒有自訂介面'
+      noUI: '該外掛沒有自訂介面',
+      hostedTsxPending: 'Hosted TSX 渲染即將支援',
+      markdownPending: 'Markdown 教程渲染即將支援',
+      autoPending: '自動生成面板即將支援',
+      surfaceUnavailable: 'Surface 暫不可用',
+      surfaceEntryMissing: '該 Surface 宣告的入口檔案不存在，請檢查 plugin.toml 中的 entry 路徑。',
+      surfaceWarnings: '外掛 UI 宣告存在需要處理的問題',
+      controlError: '外掛介面控制項錯誤',
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
     }
   },
   metrics: {
@@ -406,5 +419,116 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 外掛管理'
+  },
+  tutorial: {
+    yuiGuide: {
+      buttons: {
+        skipChat: '暫時不聊天',
+        sayHello: '你好',
+      },
+      lines: {
+        introActivationHint: '點一下這裡，我就能開始說話啦～',
+        introGreetingReply: '歡迎回家，喵~ 外面的世界很辛苦吧？在這個專屬我們的小窩裡，你可以放下所有的煩惱哦。我是林悠怡，接下來的熟悉過程請放心交給我，我會一步步牽著您的手慢慢來的。',
+        introBasic: '這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！',
+        takeoverCaptureCursor: '超級魔法按鈕出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！',
+        takeoverPluginPreviewHome: '還沒完呢！你快看快看，這裡還有超～～多好玩的外掛呢！',
+        takeoverPluginPreviewDashboard: '有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼～',
+        takeoverSettingsPeekIntro: '當然啦，如果你想讓本喵多和你聊聊天也不是不行啦，給我多準備點小魚乾吧，嘿嘿，好了不逗你啦，設定都在這個齒輪裡。',
+        takeoverSettingsPeekDetail: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！',
+        takeoverSettingsPeekDetailPart1: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？',
+        takeoverSettingsPeekDetailPart2: '等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！',
+        takeoverReturnControl: '好啦好啦，不霸佔你的電腦啦～控制權還給你了喵！可不許趁我不注意亂點奇怪的設定哦！之後的日子也請你多多關照了喵～',
+        interruptResistLight1: '喂！不要拉我啦，還沒輪到你的回合呢！',
+        interruptResistLight3: '等一下啦！還沒結束呢，不要隨便打斷我啦！',
+        interruptAngryExit: '人類~~~~！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！',
+        introPractice: '現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～',
+      },
+    }
+  },
+  yuiTutorial: {
+    title: '喵～歡迎來到外掛管理面板！',
+    welcome: '這裡就是管理所有外掛的地方啦！你可以查看、啟動、配置各種外掛，讓我變得更厲害哦～',
+    hint: '隨便看看吧，看完了點下面的按鈕告訴我～',
+    complete: '看完了喵～',
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格進入下一步，每步開始後 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '從這裡開始',
+        body: '點這個按鈕就可以隨時重新播放外掛管理器的教程，不會自動打擾你喵。'
+      },
+      stats: {
+        title: '外掛總覽',
+        body: '這裡會顯示外掛總數、執行中、已停止和崩潰數量，讓你一眼看出目前狀態。'
+      },
+      metrics: {
+        title: '效能監控',
+        body: '這裡展示外掛服務整體的 CPU、記憶體、執行緒和活躍外掛情況，排查問題時很有用。'
+      },
+      server: {
+        title: '伺服器資訊',
+        body: '這裡可以看到 SDK 版本、外掛數量和更新時間，用來確認目前外掛服務是否正常。'
+      },
+      plugins: {
+        title: '外掛列表入口',
+        body: '要啟動、停止、配置外掛，或者查看單個外掛日誌，就從左側的外掛管理進入。'
+      },
+      pluginWorkbench: {
+        title: '外掛管理工作台',
+        body: '這裡集中展示外掛、適配器和擴展，是日常管理外掛的主要頁面。'
+      },
+      pluginFilters: {
+        title: '篩選和搜尋',
+        body: '可以按名稱、狀態、類型或進階規則篩選外掛，外掛很多時會特別好用。'
+      },
+      pluginLayout: {
+        title: '視圖佈局',
+        body: '這裡可以切換列表、單排、雙排和緊湊佈局，按你的螢幕空間調整顯示方式。'
+      },
+      pluginContextMenu: {
+        title: '右鍵操作',
+        body: '對外掛右鍵可以快速開啟詳情、配置、日誌，也能執行啟停、重載等常用操作。'
+      },
+      packageManager: {
+        title: '包管理側欄',
+        body: '包管理會復用目前篩選和選擇結果，用來打包、檢查、校驗或解包外掛包。'
+      },
+      packageOperations: {
+        title: '包管理操作區',
+        body: '這裡可以選擇打包模式、檢查外掛包、解包或分析整合包；本指南不會自動執行危險操作。'
+      },
+      pluginDetail: {
+        title: '外掛詳情頁',
+        body: '進入詳情頁後可以查看外掛元資訊、入口點、效能、配置和日誌。'
+      },
+      pluginDetailActions: {
+        title: '詳情頁操作',
+        body: '右上角保留了針對目前外掛的快捷操作，適合在確認詳情後再啟動、停止或重載。'
+      },
+      runs: {
+        title: '運行記錄',
+        body: '運行記錄會展示外掛入口任務的執行歷史和即時狀態。'
+      },
+      runsList: {
+        title: '運行列表',
+        body: '左側列表用於選擇某次運行，重新整理按鈕可以同步最新記錄。'
+      },
+      runsDetail: {
+        title: '運行詳情',
+        body: '右側會顯示階段、進度、錯誤和導出物；取消按鈕只對可取消任務出現。'
+      },
+      logs: {
+        title: '伺服器日誌',
+        body: '伺服器日誌可以幫助你查看外掛服務本身的輸出和錯誤。'
+      },
+      logToolbar: {
+        title: '日誌篩選工具',
+        body: '這裡可以按級別、關鍵字和行數篩選日誌，也可以控制是否自動捲動。'
+      },
+      logList: {
+        title: '日誌列表',
+        body: '日誌列表按時間展示來源、級別和訊息，是排查外掛問題的第一站。'
+      }
+    }
   }
 }

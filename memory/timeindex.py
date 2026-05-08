@@ -1,6 +1,7 @@
 from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
+from memory.stop_names import collect_stop_names, strip_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -306,10 +307,19 @@ class TimeIndexedMemory:
     async def aretrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         return []
 
-    def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
-        # 懒加载：首次访问时（例如重启后立刻读取）需要注册 engine，
-        # 否则 rebuttal loop 会静默跳过，直到 store_conversation 才触发建表。
-        # 读路径走 readonly，维护态也允许读。
+    def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
+        """读取 [start_time, end_time] 窗口内的原始对话行。
+
+        返回 ``[(timestamp, session_id, message), ...]``，按 timestamp ASC 排
+        序——保证 caller 可以基于最后一行的 ts 推进 cursor 做 drainage。
+
+        ``limit_rows`` 不为 None 时在 SQL 层加 LIMIT，防止超长 fallback 窗口
+        把整张表拉进内存。
+
+        懒加载：首次访问（例如重启后立刻读取）需要注册 engine，否则 rebuttal
+        loop 会静默跳过，直到 store_conversation 才触发建表。读路径走
+        readonly，维护态也允许读。
+        """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
                 return []
@@ -318,20 +328,25 @@ class TimeIndexedMemory:
             return []
         table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         try:
-            # 查询指定时间范围内的对话
+            sql = (
+                f"SELECT timestamp, session_id, message FROM {table_name} "
+                f"WHERE timestamp BETWEEN :start_time AND :end_time "
+                f"ORDER BY timestamp ASC"
+            )
+            params: dict = {"start_time": start_time, "end_time": end_time}
+            if limit_rows is not None and limit_rows > 0:
+                sql += " LIMIT :limit_rows"
+                params["limit_rows"] = int(limit_rows)
             with self.engines[lanlan_name].connect() as conn:
-                result = conn.execute(
-                    text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
-                    {"start_time": start_time, "end_time": end_time}
-                )
+                result = conn.execute(text(sql), params)
                 return result.fetchall()
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 按时间范围读取原始对话失败: {e}")
             return []
 
-    async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
+    async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
         return await asyncio.to_thread(
-            self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time
+            self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────
@@ -373,12 +388,21 @@ class TimeIndexedMemory:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        """将事实插入 FTS5 索引。"""
+        """将事实插入 FTS5 索引。
+
+        索引前先剥离 master/lanlan + 各自昵称：这些 token 几乎在每条 fact
+        里都出现，BM25 IDF 虽然会自动降权，但留着仍会让 dedup 时的得分
+        被它们噪声化（"主人喜欢猫" vs "主人讨厌狗" 仍因共享"主人"获得
+        非零相似度）。索引侧 + 查询侧同步剥离才能让 BM25 完全围绕
+        substantive 内容算分。
+        """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         if not self._ensure_fts_table(lanlan_name):
             return
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        indexed_content = strip_stop_names(content, stop_names)
         try:
             with self.engines[lanlan_name].connect() as conn:
                 # 先检查是否已存在
@@ -390,7 +414,7 @@ class TimeIndexedMemory:
                     return  # 已索引
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
-                    {"fid": fact_id, "content": content}
+                    {"fid": fact_id, "content": indexed_content}
                 )
                 conn.commit()
         except Exception as e:
@@ -403,6 +427,9 @@ class TimeIndexedMemory:
         """通过 FTS5 BM25 搜索事实。返回 [(fact_id, bm25_score), ...]。
 
         FTS5 bm25() 分数通常为负值，分数越小（越负）代表相关性越高。
+        查询前先剥离 master/lanlan + 各自昵称：和 ``index_fact`` 对称，
+        只有索引侧与查询侧同时去掉这些 stop-name，BM25 才能围绕
+        substantive 内容真正区分相似度。
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
@@ -412,9 +439,15 @@ class TimeIndexedMemory:
         except MaintenanceModeError as exc:
             logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        normalized_query = strip_stop_names(query, stop_names)
+        if not normalized_query.strip():
+            # Stripping 后什么都没剩——多半是纯名字查询，不让 FTS5 在空
+            # query 上抛 syntax error。
+            return []
         try:
             # 转义 FTS5 特殊字符
-            safe_query = query.replace('"', '""')
+            safe_query = normalized_query.replace('"', '""')
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(

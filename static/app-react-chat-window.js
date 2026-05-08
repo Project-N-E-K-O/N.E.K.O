@@ -14,6 +14,8 @@
     var STORAGE_TOP_KEY = 'neko.reactChatWindow.top';
     var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
     var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
+    var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
+    var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
 
     var loadedPromise = null;
@@ -36,16 +38,67 @@
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
         onAvatarInteraction: null,
+        onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
-        rollbackDraft: ''
+        rollbackDraft: '',
+        _toolCursorResetKey: '',
+        // Off until init() reads the persisted preference post-barrier and
+        // calls setGalgameModeEnabled(true) — that path fires the
+        // galgame-mode-change event, which is the only signal chat.html's
+        // syncWindowToGalgameMin uses to bump Electron window height.
+        // Defaulting to true here would leave saved-OFF users permanently
+        // bumped: chat.html's listener only ever grows the window.
+        galgameModeEnabled: false,
+        galgameOptions: [],
+        galgameOptionsLoading: false,
+        galgameTemporarilyDisabled: false,
+        homeTutorialInteractionLocked: false,
+        _galgameRequestSeq: 0,
+        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
+        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        choicePrompt: null,
+        // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
+        // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
+        _launchedMiniGameSessionIds: Object.create(null)
     };
+
+    function readGalgameModePreference() {
+        try {
+            var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
+            if (raw === null) return true; // default ON per spec
+            return raw === 'true';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function persistGalgameModePreference(enabled) {
+        try {
+            localStorage.setItem(GALGAME_STORAGE_KEY, enabled ? 'true' : 'false');
+        } catch (_) {}
+    }
+
+    function applyGalgameBodyClass(enabled) {
+        if (typeof document === 'undefined' || !document.body) return;
+        document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+    }
+    // No module-eval apply: state defaults to off here; init() resolves the
+    // persisted preference and calls setGalgameModeEnabled(...) which flips
+    // the class and fires the change event chat.html listens to.
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.85;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var DESKTOP_DEFAULT_LEFT_RATIO = 0.05;
     var MOBILE_MIN_HEIGHT = 150;
     var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
+    var MOBILE_EXPAND_CLICK_GUARD_MS = 700;
+    var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
+    var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
+    var mobileExpandClickGuard = null;
+    var mobileExpandVisualGuardTimer = 0;
 
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
@@ -70,6 +123,71 @@
         return window.innerWidth <= 768;
     }
 
+    function clearMobileExpandVisualGuard() {
+        if (mobileExpandVisualGuardTimer) {
+            window.clearTimeout(mobileExpandVisualGuardTimer);
+            mobileExpandVisualGuardTimer = 0;
+        }
+        var shell = getShell();
+        if (shell) {
+            shell.classList.remove('is-mobile-expand-guarding');
+        }
+    }
+
+    function armMobileExpandClickGuard(clientX, clientY) {
+        if (!isMobileWidth()) return;
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+        mobileExpandClickGuard = {
+            clientX: clientX,
+            clientY: clientY,
+            expiresAt: Date.now() + MOBILE_EXPAND_CLICK_GUARD_MS
+        };
+        var shell = getShell();
+        if (shell) {
+            shell.classList.add('is-mobile-expand-guarding');
+        }
+        if (mobileExpandVisualGuardTimer) {
+            window.clearTimeout(mobileExpandVisualGuardTimer);
+        }
+        mobileExpandVisualGuardTimer = window.setTimeout(clearMobileExpandVisualGuard, MOBILE_EXPAND_VISUAL_GUARD_MS);
+    }
+
+    function shouldBlockMobileExpandClick(event) {
+        if (!mobileExpandClickGuard) return false;
+        var guard = mobileExpandClickGuard;
+        if (Date.now() > guard.expiresAt) {
+            mobileExpandClickGuard = null;
+            clearMobileExpandVisualGuard();
+            return false;
+        }
+        if (!isMobileWidth()) {
+            mobileExpandClickGuard = null;
+            clearMobileExpandVisualGuard();
+            return false;
+        }
+        var dx = event.clientX - guard.clientX;
+        var dy = event.clientY - guard.clientY;
+        var withinGuardRadius = Math.sqrt(dx * dx + dy * dy) <= MOBILE_EXPAND_CLICK_GUARD_RADIUS;
+        if (!withinGuardRadius) return false;
+
+        var shell = getShell();
+        if (shell && !shell.contains(event.target)) return false;
+        if (event.type === 'click') {
+            mobileExpandClickGuard = null;
+        }
+        return true;
+    }
+
+    function blockMobileExpandSyntheticPointerEvent(event) {
+        if (!shouldBlockMobileExpandClick(event)) return;
+        // 手机端触摸展开后浏览器会补发同坐标鼠标事件；从 mousedown 起吞掉，避免按钮出现按压反馈。
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    }
+
     function getOverlay() {
         return $('react-chat-window-overlay');
     }
@@ -80,6 +198,14 @@
 
     function getHeader() {
         return $('react-chat-window-drag-handle');
+    }
+
+    function isYuiGuideDragLocked() {
+        var body = document.body;
+        if (!body) return false;
+        return body.classList.contains('yui-guide-home-driver-hidden')
+            || body.classList.contains('yui-taking-over')
+            || body.classList.contains('yui-guide-chat-buttons-disabled');
     }
 
     function getMinimizeButton() {
@@ -205,7 +331,8 @@
 
     function getCurrentAssistantName() {
         return sanitizeDisplayName(
-            (window.lanlan_config && window.lanlan_config.lanlan_name)
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
         ) || 'Neko';
@@ -292,7 +419,11 @@
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
             translateButtonLabel: getI18nText('subtitle.enable', '字幕翻译'),
-            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关')
+            translateButtonAriaLabel: getI18nText('subtitle.enableAriaLabel', '字幕翻译开关'),
+            galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
+            galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
+            galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
+            composerDisabled: !!state.homeTutorialInteractionLocked
         };
     }
 
@@ -397,16 +528,25 @@
             composerAttachments: state.composerAttachments,
             rollbackDraft: state.rollbackDraft || undefined,
             _rollbackKey: state._rollbackKey || undefined,
+            _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
+            galgameModeEnabled: !!state.galgameModeEnabled,
+            galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
+            galgameOptionsLoading: !!state.galgameOptionsLoading,
+            choicePrompt: state.choicePrompt || null,
             onMessageAction: handleMessageAction,
             onComposerImportImage: handleComposerImportImage,
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
             onAvatarInteraction: handleAvatarInteraction,
+            onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
-            onTranslateToggle: handleTranslateToggle
+            onTranslateToggle: handleTranslateToggle,
+            onGalgameModeToggle: handleGalgameModeToggle,
+            onGalgameOptionSelect: handleGalgameOptionSelect,
+            onChoiceSelect: handleChoiceSelect
         });
     }
 
@@ -563,12 +703,12 @@
         shell.style.transform = 'none';
     }
 
-    function centerWindow() {
+    function positionWindowAtLeftMiddle() {
         var shell = getShell();
         if (!shell || isMobileWidth()) return;
 
         var rect = shell.getBoundingClientRect();
-        var left = Math.max(0, Math.round((window.innerWidth - rect.width) / 2));
+        var left = Math.max(0, Math.round(window.innerWidth * DESKTOP_DEFAULT_LEFT_RATIO));
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
         persistPosition(left, top);
@@ -603,7 +743,7 @@
         if (stored) {
             applyPosition(stored.left, stored.top);
         } else {
-            centerWindow();
+            positionWindowAtLeftMiddle();
         }
     }
 
@@ -649,6 +789,9 @@
     }
 
     function handleComposerSubmit(payload) {
+        if (state.homeTutorialInteractionLocked) {
+            return;
+        }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
             ? payload.requestId
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -659,6 +802,16 @@
 
         var hasAttachments = state.composerAttachments && state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
+
+        // Clear stale GalGame options as soon as the user sends anything; the
+        // next turn-end will trigger a fresh fetch if the mode is still on.
+        // invalidatePendingGalgameRequest unconditionally bumps the seq + aborts
+        // the in-flight fetch (so a still-pending wait callback or response
+        // can't land into the new turn context); we only re-render when the
+        // visible state actually changed.
+        if (invalidatePendingGalgameRequest()) {
+            renderWindow();
+        }
 
         // Store last submitted text for rollback on RESPONSE_TOO_LONG
         // Preserve original whitespace so rollback restores exactly what the user typed
@@ -709,6 +862,20 @@
         }
 
         dispatchHostEvent('avatar-interaction', detail);
+    }
+
+    function handleAvatarToolStateChange(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onAvatarToolStateChange === 'function') {
+            try {
+                state.onAvatarToolStateChange(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onAvatarToolStateChange failed:', error);
+            }
+        }
+
+        dispatchHostEvent('avatar-tool-state', detail);
     }
 
     function handleComposerImportImage() {
@@ -932,10 +1099,576 @@
         dispatchHostEvent('translate-toggle', { enabled: next });
     }
 
+    // ============================ GalGame mode ============================
+    function isGalgameModeTemporarilyDisabled() {
+        return !!state.galgameTemporarilyDisabled;
+    }
+
+    function isHomeTutorialRunning() {
+        var manager = window.universalTutorialManager;
+        return !!(
+            manager
+            && manager.currentPage === 'home'
+            && manager.isTutorialRunning
+        );
+    }
+
+    function isHomeTutorialInteractionLocked() {
+        if (state.homeTutorialInteractionLocked || isHomeTutorialRunning()) {
+            return true;
+        }
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function setGalgameModeTemporarilyDisabled(disabled) {
+        var next = !!disabled;
+        var changed = state.galgameTemporarilyDisabled !== next;
+        state.galgameTemporarilyDisabled = next;
+
+        if (next) {
+            setGalgameModeEnabled(false, { persist: false });
+        } else if (changed) {
+            setGalgameModeEnabled(readGalgameModePreference(), {
+                persist: false,
+                suppressRefetch: true
+            });
+        }
+    }
+
+    function setGalgameModeEnabled(enabled, options) {
+        var requestOptions = options || {};
+        var next = !!enabled;
+        if (next && !requestOptions.force && (isGalgameModeTemporarilyDisabled() || isHomeTutorialInteractionLocked())) {
+            next = false;
+        }
+        var changed = state.galgameModeEnabled !== next;
+        state.galgameModeEnabled = next;
+        if (!next) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            state._galgameRequestSeq += 1;
+            // Toggling off mid-fetch must also kill the in-flight request so
+            // the summary-tier inference doesn't keep running uselessly until
+            // the 30s timeout (or finishes and is silently discarded).
+            abortPendingGalgameFetch();
+        }
+        applyGalgameBodyClass(next);
+        if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
+            persistGalgameModePreference(next);
+        }
+        renderWindow();
+        if (changed) {
+            dispatchHostEvent('galgame-mode-change', { enabled: next });
+            // OFF→ON: if the chat overlay is currently visible, refetch the
+            // latest turn's options so the user sees A/B/C immediately rather
+            // than waiting for the next turn-end. Gating on overlay visibility
+            // avoids wasting a summary-tier call during init() (where the
+            // window is still hidden) and respects the same skip rule the
+            // turn-end handler uses for voice-only / proactive paths.
+            if (next && !requestOptions.suppressRefetch) {
+                var overlay = getOverlay();
+                if (overlay && !overlay.hidden) {
+                    fetchGalgameOptionsForLatestTurn();
+                }
+            }
+        }
+    }
+
+    function waitForAssistantBubblesFlushed(maxWaitMs) {
+        // Resolve as soon as app-chat-adapter's realistic-mode queue is empty
+        // and not in the middle of processing a sentence. In merge / non-Gemini
+        // paths the queue is never populated and the predicate is true on the
+        // first check, so this just collapses to a microtask.
+        return new Promise(function (resolve) {
+            var deadline = Date.now() + (typeof maxWaitMs === 'number' ? maxWaitMs : 4000);
+            function isDrained() {
+                var q = window._realisticGeminiQueue;
+                var processing = !!window._isProcessingRealisticQueue;
+                var queueEmpty = !Array.isArray(q) || q.length === 0;
+                return queueEmpty && !processing;
+            }
+            if (isDrained()) {
+                resolve();
+                return;
+            }
+            var pollId = setInterval(function () {
+                if (isDrained() || Date.now() >= deadline) {
+                    clearInterval(pollId);
+                    resolve();
+                }
+            }, 100);
+        });
+    }
+
+    function getRecentGalgameMessageHistory() {
+        var msgs = Array.isArray(state.messages) ? state.messages : [];
+        var collected = [];
+        for (var i = msgs.length - 1; i >= 0 && collected.length < GALGAME_HISTORY_LIMIT; i--) {
+            var m = msgs[i];
+            if (!m) continue;
+            if (m.role !== 'assistant' && m.role !== 'user') continue;
+            var text = '';
+            if (Array.isArray(m.blocks)) {
+                for (var j = 0; j < m.blocks.length; j++) {
+                    var block = m.blocks[j];
+                    if (block && block.type === 'text' && typeof block.text === 'string') {
+                        text += (text ? '\n' : '') + block.text;
+                    }
+                }
+            }
+            text = text.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+            if (!text) continue;
+            collected.push({ role: m.role, text: text });
+        }
+        return collected.reverse();
+    }
+
+    function pickAcceptLanguage() {
+        try {
+            if (typeof window.getCurrentLocale === 'function') {
+                var loc = window.getCurrentLocale();
+                if (loc) return String(loc);
+            }
+        } catch (_) {}
+        if (window.i18next && typeof window.i18next.language === 'string') return window.i18next.language;
+        if (typeof navigator !== 'undefined' && typeof navigator.language === 'string') return navigator.language;
+        return '';
+    }
+
+    var GALGAME_FETCH_TIMEOUT_MS = 30000;
+    var _galgameAbortController = null;
+
+    function abortPendingGalgameFetch() {
+        if (_galgameAbortController) {
+            try { _galgameAbortController.abort(); } catch (_) {}
+            _galgameAbortController = null;
+        }
+    }
+
+    function fetchGalgameOptionsForLatestTurn() {
+        if (isGalgameModeTemporarilyDisabled()) return;
+        if (!state.galgameModeEnabled) return;
+        var history = getRecentGalgameMessageHistory();
+        if (!history.length) return;
+        if (history[history.length - 1].role !== 'assistant') return;
+
+        // Cancel any prior in-flight request — keeps summary-tier load down
+        // when turns arrive faster than the model can answer, and ensures a
+        // hung server side isn't held open while the panel is no longer
+        // listening for it.
+        abortPendingGalgameFetch();
+        var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+        _galgameAbortController = controller;
+        var requestSeq = ++state._galgameRequestSeq;
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = true;
+        renderWindow();
+
+        // 30s timeout cleanup: clears loading state in addition to aborting,
+        // so the catch's blanket AbortError swallow doesn't leave the panel
+        // stuck. Aborts triggered by invalidation paths instead bump the seq
+        // *and* clear state up front, so the catch's seq-mismatch return is
+        // still the right thing for those.
+        var timeoutId = controller ? setTimeout(function () {
+            timeoutId = null;
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+            try { controller.abort(); } catch (_) {}
+            if (requestSeq !== state._galgameRequestSeq) return;
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }, GALGAME_FETCH_TIMEOUT_MS) : null;
+
+        var payload = {
+            messages: history,
+            language: pickAcceptLanguage()
+        };
+        try {
+            if (window.appState && typeof window.appState.lanlan_name === 'string' && window.appState.lanlan_name) {
+                payload.lanlan_name = window.appState.lanlan_name;
+            }
+        } catch (_) {}
+        try {
+            // getCurrentUserName() returns the literal English placeholder 'You'
+            // when no real user name can be resolved. Sending that overrides the
+            // backend's localized GALGAME_DEFAULT_MASTER_PLACEHOLDER fallback,
+            // so we only forward a name when it's a genuine user-set value.
+            var currentUserName = getCurrentUserName();
+            if (typeof currentUserName === 'string' && currentUserName && currentUserName !== 'You') {
+                payload.master_name = currentUserName;
+            }
+        } catch (_) {}
+
+        function clearTimer() {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            if (_galgameAbortController === controller) {
+                _galgameAbortController = null;
+            }
+        }
+
+        fetch('/api/galgame/options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller ? controller.signal : undefined
+        }).then(function (resp) {
+            if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
+            return resp.json();
+        }).then(function (data) {
+            clearTimer();
+            if (requestSeq !== state._galgameRequestSeq) return;
+            var opts = (data && Array.isArray(data.options)) ? data.options.slice(0, 3) : [];
+            opts = opts.filter(function (o) {
+                return o && typeof o.label === 'string' && typeof o.text === 'string';
+            }).map(function (o) {
+                return { label: String(o.label).slice(0, 4), text: String(o.text) };
+            });
+            state.galgameOptions = opts;
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        }).catch(function (err) {
+            clearTimer();
+            if (requestSeq !== state._galgameRequestSeq) return;
+            // Aborts come from invalidation paths that have already cleared
+            // visible state, so swallow them silently.
+            if (err && err.name === 'AbortError') return;
+            console.warn('[ReactChatWindow] galgame options fetch failed:', err);
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+            renderWindow();
+        });
+    }
+
+    function handleGalgameModeToggle() {
+        if (isHomeTutorialInteractionLocked()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
+        if (isGalgameModeTemporarilyDisabled()) {
+            setGalgameModeEnabled(false, { persist: false });
+            return;
+        }
+        // setGalgameModeEnabled handles the OFF→ON refetch internally.
+        setGalgameModeEnabled(!state.galgameModeEnabled);
+    }
+
+    function handleGalgameOptionSelect(option) {
+        if (isHomeTutorialInteractionLocked()) return;
+        if (!option || typeof option.text !== 'string') return;
+        var text = option.text.trim();
+        if (!text) return;
+        // Clear options immediately so the panel doesn't keep stale entries while
+        // the next turn streams in.
+        state.galgameOptions = [];
+        state.galgameOptionsLoading = false;
+        state._galgameRequestSeq += 1;
+        renderWindow();
+
+        var detail = {
+            text: text,
+            requestId: 'galgame-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+            source: 'galgame-option',
+            label: option.label
+        };
+        handleComposerSubmit(detail);
+        dispatchHostEvent('galgame-option-select', detail);
+    }
+
+    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
+    // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
+    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+
+    function handleChoiceSelect(option, source) {
+        if (isHomeTutorialInteractionLocked()) return;
+        if (!option || typeof option.choice !== 'string') return;
+        if (source === 'galgame') {
+            // Forward to legacy galgame handler if it shows up here
+            if (typeof option.text === 'string') {
+                handleGalgameOptionSelect(option);
+            }
+            return;
+        }
+        if (source === 'mini_game_invite') {
+            handleMiniGameInviteChoice(option);
+            return;
+        }
+    }
+
+    function handleMiniGameInviteChoice(option) {
+        if (isHomeTutorialInteractionLocked()) return;
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'mini_game_invite') return;
+        var sessionId = prompt.sessionId || '';
+        // 暂存原 prompt 用于失败回滚——网络异常时让用户能再点一次（CodeRabbit
+        // Major 指出原版 fetch fail 仅 console.warn，用户看着空 UI 不知道发生
+        // 啥）。立即清 prompt 防连点；fail catch 里恢复。
+        var rollbackPrompt = prompt;
+        state.choicePrompt = null;
+        renderWindow();
+
+        var lanlanName = '';
+        try {
+            // 优先读 window.appState.lanlan_name —— 角色切换时 appState 先更新，
+            // window.lanlan_config 可能滞后；用旧 lanlan_name 调 endpoint 会被
+            // 后端按错误角色查 pending invite 直接 expired。同 GalGame 请求路径
+            // 保持一致（CodeRabbit Major 指出）。
+            lanlanName = (window.appState && window.appState.lanlan_name)
+                || (window.lanlan_config && window.lanlan_config.lanlan_name)
+                || '';
+        } catch (_) {}
+
+        var requestBody = {
+            lanlan_name: lanlanName,
+            choice: option.choice,
+            session_id: sessionId
+        };
+
+        // accept 路径预开 popup（**仍在用户点击的同步上下文**）保留 user-gesture
+        // 上下文。后续 fetch resolve 后再 window.open 会被浏览器 popup blocker
+        // 识别为非手势触发拦截——pre-open 后 .location.href 注入 URL 不会被拦
+        // （codex P2 指出原版 fetch 后 window.open 失败时 state 已 responded
+        // 用户失去重试入口）。decline / later 路径不开窗口，无此处理。
+        var preOpenedWindow = null;
+        if (option.choice === 'accept') {
+            try {
+                preOpenedWindow = window.open('', '_blank');
+                if (preOpenedWindow) {
+                    // 给个临时占位文本免得用户看到 about:blank 一闪
+                    try {
+                        preOpenedWindow.document.write(
+                            '<title>Loading…</title><body style="background:#111;color:#888;font:14px sans-serif;padding:20px">Loading mini-game…</body>'
+                        );
+                    } catch (_) {}
+                }
+            } catch (_) {
+                preOpenedWindow = null;
+            }
+        }
+        var closePreOpened = function () {
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try { preOpenedWindow.close(); } catch (_) {}
+            }
+        };
+
+        // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request
+        // 拒绝缺 token 的请求，否则所有合法点击都会被 403 reject、prompt 已清掉
+        // 但 invite state 没更新 —— codex P1 指出。沿用 nekoLocalMutationSecurity
+        // 共享 helper（其它 prompt endpoint 同款），含 token 缺失时 refresh + 重
+        // 试一次的协议。
+        var bodyJson = JSON.stringify(requestBody);
+        var doFetch = function (headers) {
+            return fetch('/api/mini_game/invite/respond', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
+                body: bodyJson
+            });
+        };
+        var sec = window.nekoLocalMutationSecurity;
+        var firstHeadersPromise = sec && typeof sec.getMutationHeaders === 'function'
+            ? sec.getMutationHeaders()
+            : Promise.resolve({});
+        firstHeadersPromise.then(doFetch).then(function (resp) {
+            // 403 + csrf_validation_failed → refresh token 重试一次（与 prompt
+            // endpoint 同协议）
+            if (resp.status === 403 && sec && typeof sec.refreshToken === 'function') {
+                return resp.clone().json().catch(function () { return null; }).then(function (errBody) {
+                    var code = errBody && errBody.error_code;
+                    if (code === 'csrf_validation_failed') {
+                        return sec.refreshToken().then(function () {
+                            return sec.getMutationHeaders();
+                        }).then(doFetch);
+                    }
+                    return resp;
+                });
+            }
+            return resp;
+        }).then(function (resp) {
+            return resp.ok ? resp.json() : Promise.reject(new Error('HTTP ' + resp.status));
+        }).then(function (data) {
+            if (!data || data.action !== 'open_game' || !data.game_url) {
+                // 非 accept outcome（cooldown / suppress / expired）→ 关掉占位 popup
+                closePreOpened();
+                return;
+            }
+            // accept：优先注入 URL 进 pre-opened popup（保留用户手势上下文，
+            // 浏览器 popup blocker 不拦）；pre-open 失败时 fallback 调
+            // launchMiniGameInternal（可能被拦但留个 console.warn 兜底）。
+            if (preOpenedWindow && !preOpenedWindow.closed) {
+                try {
+                    preOpenedWindow.location.href = data.game_url;
+                    if (sessionId) {
+                        state._launchedMiniGameSessionIds[sessionId] = true;
+                    }
+                    return;
+                } catch (err) {
+                    console.warn('[MiniGameInvite] pre-opened window navigation failed:', err);
+                    closePreOpened();
+                }
+            }
+            // pre-open 失败 fallback：直接 window.open（有被 popup blocker 拦
+            // 的风险，但 accept-path-via-pre-open 已是主路径，到此处罕见）。
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: data.game_type || rollbackPrompt.gameType || '',
+                url: data.game_url,
+                source: 'button'
+            });
+        }).catch(function (err) {
+            console.warn('[MiniGameInvite] respond endpoint failed:', err);
+            closePreOpened();
+            // 网络/服务异常 → 回滚 prompt 让用户能再试。但只在当前 prompt 仍是
+            // null（即用户没在 fetch 期间触发新 prompt）且会话仍未被 launch 过的
+            // 情况下回滚——否则强复活旧 UI 可能撞新邀请。
+            if (state.choicePrompt === null
+                    && sessionId
+                    && !state._launchedMiniGameSessionIds[sessionId]) {
+                state.choicePrompt = rollbackPrompt;
+                renderWindow();
+            }
+        });
+    }
+
+    function setMiniGameInvitePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        // 已经为该 session 开过游戏了 → 忽略 stale options（罕见：邀请 push 比
+        // 用户键盘/按钮路径慢，但为了对偶仍 guard 一下）
+        if (state._launchedMiniGameSessionIds[sessionId]) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        // map → filter，再 recheck 长度——后端数据异常导致全部 filter 掉时不
+        // 渲染空按钮 prompt（CodeRabbit Minor 指出原版只检 raw 长度漏了这条）。
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[MiniGameInvite] all options filtered out, skipping render', payload);
+            return;
+        }
+        state.choicePrompt = {
+            source: 'mini_game_invite',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || ''),
+            options: cleanedOptions
+        };
+        // mini-game invite 占用 composer 底部 slot 视觉位 → galgame options
+        // 让位（App.tsx 已把 galgame slot 在 choicePromptHasOptions 下不挂树）。
+        // 这里同步 abort 任何 in-flight / pending wait 的 galgame fetch + 清掉
+        // 残留 loading/options state：
+        //   1) 不再浪费 summary tier 推理（proactive invite 文本基本是
+        //      sudden-context，galgame option 生成大概率 timeout / unparseable
+        //      → 全是 fallback，纯浪费）
+        //   2) 防止 fetch 在 invite 解决前才返回，写回 state.galgameOptions
+        //      让 invite dismiss 后老结果突然冒出来（A/B/C 选项是基于 invite
+        //      文本生成的，与后续对话无关）
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function dismissChoicePromptIfMatches(sessionId) {
+        if (!sessionId) return;
+        if (state.choicePrompt
+                && state.choicePrompt.source === 'mini_game_invite'
+                && state.choicePrompt.sessionId === sessionId) {
+            state.choicePrompt = null;
+            renderWindow();
+        }
+    }
+
+    function handleMiniGameInviteResolved(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        // 任一 outcome（open_game / cooldown / suppress）都 dismiss 当前 prompt——
+        // 跨窗口一致性。即便本 page 不是触发方，也保持 UI 同步。
+        dismissChoicePromptIfMatches(sessionId);
+        // launch path（仅 keyword 触发会带 game_url，button path backend 已不推
+        // game_url）：多窗口 Electron 模式下 backend 通过 RAW_MESSAGE IPC 把
+        // event 转给所有 page (pet + chat.html mirrors)，每个 page 都执行此函数。
+        // 不分 ownership 直接 window.open 会让所有 page 各自开一个 game 窗口
+        // （codex P2 指出，per-page _launchedMiniGameSessionIds 跨 page 不 dedupe）。
+        // 约定：only **non-follower** owner page (pet / 单窗口) 处理 WS-trigger
+        // launch；chat.html follower (window.__NEKO_MULTI_WINDOW__ === true) 仅
+        // dismiss UI。Button path 不走这条 WS launch（HTTP 响应里 chat.html 自己
+        // launch），所以不会双开。
+        if (payload.action === 'open_game' && payload.url) {
+            if (window.__NEKO_MULTI_WINDOW__) {
+                return;  // chat.html follower：let pet leader 处理 launch
+            }
+            launchMiniGameInternal({
+                sessionId: sessionId,
+                gameType: String(payload.gameType || ''),
+                url: payload.url,
+                source: 'ws'
+            });
+        }
+    }
+
+    function launchMiniGameInternal(payload) {
+        if (!payload || !payload.url) return;
+        var sessionId = String(payload.sessionId || '');
+        // 同一 session 只 open 一次：按钮 endpoint 直接 open 后，backend 还会 push
+        // mini_game_invite_resolved（cross-window 一致性广播）；不 dedupe 会双开。
+        if (sessionId && state._launchedMiniGameSessionIds[sessionId]) return;
+        // window.open 在 Electron 模式下被主进程 setWindowOpenHandler 拦截开独立
+        // BrowserWindow；普通浏览器是新 tab。'_blank' target 让浏览器治理一致。
+        // dedupe flag 只在成功后设——popup blocker / throw 时让用户能再触发一次
+        // (codex P2 + CodeRabbit Major 指出原版 set-before-open 会让失败的 session
+        // 永远被 dedupe 锁死，prompt 已清掉用户彻底失去入口)。
+        var opened = false;
+        try {
+            var w = window.open(payload.url, '_blank');
+            if (!w) {
+                console.warn('[MiniGameInvite] window.open returned null (popup blocked?)');
+            } else {
+                opened = true;
+            }
+        } catch (err) {
+            console.warn('[MiniGameInvite] window.open failed:', err);
+        }
+        if (opened && sessionId) {
+            state._launchedMiniGameSessionIds[sessionId] = true;
+        }
+    }
+
     function setViewProps(nextViewProps) {
         state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
         renderWindow();
         return state.viewProps;
+    }
+
+    function invalidatePendingGalgameRequest() {
+        // Conversation advanced / switched / cleared — drop any in-flight
+        // options fetch (or pending wait callback that hasn't fired yet) so
+        // its response can't render stale A/B/C into the new context.
+        // The seq bump must be UNCONDITIONAL: callers like
+        // waitForAssistantBubblesFlushed snapshot _galgameRequestSeq before
+        // their fetch goes out, so even when the panel is idle (loading
+        // false, options empty) we still need to advance the seq to invalidate
+        // those pending callbacks. The fetch itself is also aborted.
+        state._galgameRequestSeq += 1;
+        abortPendingGalgameFetch();
+        var hadVisibleState = state.galgameOptionsLoading
+            || (state.galgameOptions && state.galgameOptions.length > 0);
+        if (hadVisibleState) {
+            state.galgameOptions = [];
+            state.galgameOptionsLoading = false;
+        }
+        return hadVisibleState;
     }
 
     function setMessages(messages) {
@@ -958,12 +1691,30 @@
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
         }
+        invalidatePendingGalgameRequest();
         renderWindow();
         return state.messages;
     }
 
     function setComposerHidden(hidden) {
         state.composerHidden = !!hidden;
+        renderWindow();
+    }
+
+    function setHomeTutorialInteractionLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInteractionLocked === next) {
+            return;
+        }
+        state.homeTutorialInteractionLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            composerDisabled: next
+        });
+        renderWindow();
+    }
+
+    function deactivateToolCursor() {
+        state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
     }
 
@@ -991,6 +1742,13 @@
         state.messages = sortMessages(state.messages.concat([normalized]));
         if (state.messages.length > MAX_MESSAGES) {
             state.messages = state.messages.slice(-MAX_MESSAGES);
+        }
+        // A new user-role message means the conversation has advanced — even
+        // when the message came in via voice / proactive / sendTextPayload
+        // rather than the React composer. Invalidate any pending GalGame fetch
+        // so its response can't render against the old turn context.
+        if (normalized.role === 'user') {
+            invalidatePendingGalgameRequest();
         }
         renderWindow();
         return normalized;
@@ -1025,6 +1783,14 @@
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
+        invalidatePendingGalgameRequest();
+        // 角色切换 / cloud reload 等触发 clearMessages 的路径也必须清掉 mini-game
+        // invite prompt——否则旧角色的按钮残留在新 context 里，用户点了 endpoint
+        // 会按新 lanlan_name 查旧 session_id 直接 expired。dedupe set 也清，防止
+        // 上一会话的 launched 标记错误地阻断新会话同 session_id 的 launch（虽然
+        // session_id 是 uuid 实际撞概率几乎 0，对偶清理更干净）。codex P2 指出。
+        state.choicePrompt = null;
+        state._launchedMiniGameSessionIds = Object.create(null);
         renderWindow();
     }
 
@@ -1074,7 +1840,7 @@
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off.png';
+            icon.src = '/static/icons/expand_icon_off_ball.png';
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -1322,16 +2088,16 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         if (button) {
-            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框'));
+            button.setAttribute('aria-label', minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框'));
             button.title = minimized ? getI18nText('chat.reactWindowRestoreShort', '恢复') : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         }
         if (btnIcon) {
             btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
-            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复新版聊天框') : getI18nText('chat.reactWindowMinimize', '最小化新版聊天框');
+            btnIcon.alt = minimized ? getI18nText('chat.reactWindowRestore', '恢复聊天框') : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off.png';
+            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
         }
     }
 
@@ -1354,7 +2120,7 @@
         ensureBundleLoaded()
             .then(function () {
                 if (!mountWindow()) {
-                    showToast(getI18nText('chat.reactWindowMountFailed', '新版聊天框挂载失败'), 3000);
+                    showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
                 // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
@@ -1372,17 +2138,43 @@
                     restorePosition();
                     scheduleMobileContentLayout();
                 }
+                // closeWindow / hidden-state turn-end both invalidate the
+                // GalGame option list, so reopening must re-fetch for the
+                // latest assistant turn or the user would see a permanently
+                // empty panel until the next reply arrives.
+                // Wait for app-chat-adapter's realistic queue to drain before
+                // building the request — same race the turn-end handler
+                // protects against, just with a shorter cap because by the
+                // time the user reopens the window the queue has usually
+                // already finished.
+                if (state.galgameModeEnabled) {
+                    var seqAtOpen = state._galgameRequestSeq;
+                    waitForAssistantBubblesFlushed(2000).then(function () {
+                        if (!state.galgameModeEnabled) return;
+                        if (state._galgameRequestSeq !== seqAtOpen) return;
+                        var overlayNow = getOverlay();
+                        if (!overlayNow || overlayNow.hidden) return;
+                        fetchGalgameOptionsForLatestTurn();
+                    });
+                }
             })
             .catch(function (error) {
                 console.error('[ReactChatWindow] open failed:', error);
-                showToast(getI18nText('chat.reactWindowLoadFailed', '新版聊天框资源加载失败'), 3500);
+                showToast(getI18nText('chat.reactWindowLoadFailed', '聊天框资源加载失败'), 3500);
             });
     }
 
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        // Closing the overlay should also abort any in-flight GalGame fetch
+        // (parity with setGalgameModeEnabled(false) / setMessages /
+        // clearMessages). Without this, a request that lands after close
+        // still passes the seq guard and writes options into hidden state,
+        // surfacing stale A/B/C the next time the user opens the window.
+        invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -1408,6 +2200,12 @@
         overlay.hidden = true;
         document.body.classList.remove('react-chat-window-open');
         clearMobileContentCap();
+        handleAvatarToolStateChange({
+            active: false,
+            toolId: null,
+            tool: null,
+            timestamp: Date.now()
+        });
     }
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
@@ -1415,6 +2213,7 @@
     function startDrag(clientX, clientY) {
         var shell = getShell();
         if (!shell) return;
+        if (isYuiGuideDragLocked()) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1431,6 +2230,11 @@
 
     function updateDrag(clientX, clientY) {
         if (!dragState) return;
+        if (isYuiGuideDragLocked()) {
+            // 教程接管期强制中断拖拽：抑制后续 toggleMinimized，避免最小化球被误展开
+            stopDrag({ suppressClick: true });
+            return;
+        }
 
         var dx = clientX - dragState.startClientX;
         var dy = clientY - dragState.startClientY;
@@ -1444,8 +2248,10 @@
         applyPosition(clamped.left, clamped.top);
     }
 
-    function stopDrag() {
+    function stopDrag(options) {
         if (!dragState) return;
+        var opts = options || {};
+        var changedTouch = opts.changedTouches && opts.changedTouches.length > 0 ? opts.changedTouches[0] : null;
 
         var wasMoved = dragState.moved;
 
@@ -1465,7 +2271,11 @@
         document.body.classList.remove('react-chat-window-dragging');
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
-        if (minimized && !wasMoved) {
+        // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
+        if (minimized && !wasMoved && !opts.suppressClick) {
+            if (changedTouch && isMobileWidth()) {
+                armMobileExpandClickGuard(changedTouch.clientX, changedTouch.clientY);
+            }
             toggleMinimized();
         }
     }
@@ -1511,13 +2321,24 @@
         }, { passive: false });
 
         document.addEventListener('mouseup', stopDrag);
-        document.addEventListener('touchend', stopDrag);
-        document.addEventListener('touchcancel', stopDrag);
+        document.addEventListener('touchend', function (event) {
+            stopDrag({ changedTouches: event.changedTouches });
+        });
+        document.addEventListener('touchcancel', function (event) {
+            stopDrag({ changedTouches: event.changedTouches, suppressClick: true });
+        });
     }
 
     var MIN_WIDTH = 320;
     var MIN_HEIGHT = 280;
+    var GALGAME_MIN_HEIGHT = 420;
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+    function getDesktopMinHeight() {
+        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
+        return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
+    }
 
     function createResizeEdges() {
         var shell = getShell();
@@ -1534,6 +2355,8 @@
     function startResize(clientX, clientY, direction) {
         var shell = getShell();
         if (!shell) return;
+        // 教程接管期禁止 resize，否则用户拉伸会让教程锚点和高亮错位
+        if (isYuiGuideDragLocked()) return;
         // 手机端仅允许向上拖动调整高度（北侧边缘）
         if (isMobileWidth() && direction !== 'n') return;
         if (minimized) return;
@@ -1554,6 +2377,11 @@
 
     function updateResize(clientX, clientY) {
         if (!resizeState) return;
+        // 教程接管期强制中断 resize，与 updateDrag 的 lock 行为对称
+        if (isYuiGuideDragLocked()) {
+            stopResize();
+            return;
+        }
 
         var shell = getShell();
         if (!shell) return;
@@ -1583,11 +2411,13 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
+        var desktopMinHeight = getDesktopMinHeight();
+
         if (!mobile && dir.indexOf('s') !== -1) {
-            newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
+            newHeight = Math.max(desktopMinHeight, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
-            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
+            var minH = mobile ? MOBILE_MIN_HEIGHT : desktopMinHeight;
             var proposedHeight = resizeState.origHeight - dy;
             if (proposedHeight >= minH) {
                 newHeight = proposedHeight;
@@ -1718,6 +2548,63 @@
         window.addEventListener(EVENT_PREFIX + 'set-composer-hidden', function (event) {
             setComposerHidden(event.detail && event.detail.hidden);
         });
+
+        window.addEventListener(EVENT_PREFIX + 'set-galgame-mode', function (event) {
+            var detail = event.detail || {};
+            setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
+        });
+
+        window.addEventListener('neko:tutorial-started', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(true);
+        });
+
+        window.addEventListener('neko:tutorial-completed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
+        window.addEventListener('neko:tutorial-skipped', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            if (detail.page !== 'home') return;
+            setGalgameModeTemporarilyDisabled(false);
+        });
+
+        // Refresh option list whenever an assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function () {
+            if (!state.galgameModeEnabled) return;
+            // Skip when the chat overlay is hidden — otherwise galgame mode's
+            // default-on flag would spam /api/galgame/options (and summary-tier
+            // inference) on every assistant turn even for users who never
+            // opened the React chat window (voice-only / proactive paths).
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden) return;
+            // app-chat-adapter's processRealisticQueue can still be sleeping
+            // 1-2s between bubble flushes when turn-end fires, so the message
+            // list may not yet contain the final assistant sentences. Wait
+            // until the queue is drained and the lock is released before
+            // building the request, with a hard cap so a stuck queue can't
+            // permanently block the option fetch.
+            //
+            // Snapshot _galgameRequestSeq before waiting: invalidatePending…
+            // (called by setMessages / clearMessages / handleComposerSubmit)
+            // bumps the seq when the conversation switches or the user moves
+            // on. If that happens during the wait window, we drop this fetch
+            // so a stale turn-end can't render A/B/C into the new context.
+            var seqAtSchedule = state._galgameRequestSeq;
+            waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!state.galgameModeEnabled) return;
+                if (state._galgameRequestSeq !== seqAtSchedule) return;
+                // The overlay may have been closed during the 4s wait — re-check
+                // before firing the fetch so closing the chat mid-turn doesn't
+                // still kick off a background summary-tier inference.
+                var overlayNow = getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                fetchGalgameOptionsForLatestTurn();
+            });
+        });
     }
 
     function init() {
@@ -1729,6 +2616,17 @@
 
         ensureViewProps();
         prewarmUserDisplayName();
+        // Resolve the persisted GalGame preference now that the storage-location
+        // barrier has settled (initAfterStorageBarrier has awaited it before
+        // calling init). Reading at module-eval would risk capturing the value
+        // from a storage namespace the barrier is about to remap.
+        // setGalgameModeEnabled idempotently syncs state + body class + fires
+        // the change event when the resolved pref differs from the safe default.
+        if (isHomeTutorialInteractionLocked()) {
+            setGalgameModeTemporarilyDisabled(true);
+        } else {
+            setGalgameModeEnabled(readGalgameModePreference(), { persist: false });
+        }
 
         if (trigger) {
             trigger.addEventListener('click', openWindow);
@@ -1760,6 +2658,9 @@
             }
         }
 
+        document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
         bindDragging();
         createResizeEdges();
         bindResizing();
@@ -1789,7 +2690,7 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off.png';
+                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
             });
         }
 
@@ -1840,10 +2741,48 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
+    function applyInitialComposerHiddenState() {
+        // 独立 Chat 刷新时，语音态广播可能早于 React host 初始化到达。
+        // 初始化完成后补读一次共享状态，避免 composer 以默认显示态首绘。
+        try {
+            var initialComposerShouldHide = false;
+            if (typeof window.shouldKeepVoiceComposerHidden === 'function') {
+                initialComposerShouldHide = window.shouldKeepVoiceComposerHidden();
+            } else if (window.appState) {
+                initialComposerShouldHide = !!(
+                    window.appState.isRecording ||
+                    window.appState.voiceChatActive ||
+                    window.appState.voiceStartPending ||
+                    window.isMicStarting
+                );
+            }
+            if (initialComposerShouldHide) {
+                setComposerHidden(true);
+            }
+        } catch (_) {
+            // 首绘兜底失败不影响后续 session_started 同步
+        }
+    }
+
+    async function initAfterStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            try {
+                await window.waitForStorageLocationStartupBarrier();
+            } catch (_) {}
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            try {
+                await window.__nekoStorageLocationStartupBarrier;
+            } catch (_) {}
+        }
         init();
+        applyInitialComposerHiddenState();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAfterStorageBarrier);
+    } else {
+        initAfterStorageBarrier();
     }
 
     window.reactChatWindowHost = {
@@ -1854,6 +2793,8 @@
         setMessages: setMessages,
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
+        setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
@@ -1877,8 +2818,24 @@
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },
+        setOnAvatarToolStateChange: function (handler) {
+            state.onAvatarToolStateChange = typeof handler === 'function' ? handler : null;
+        },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,
+        setGalgameModeEnabled: function (enabled, options) {
+            setGalgameModeEnabled(enabled, options || {});
+        },
+        isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
+        refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
+        // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
+        setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        // unified resolved handler：accept 兼 launch / decline / suppress 都通过
+        // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
+        // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
+        // dismiss 一致性能 cover decline / later 路径。
+        handleMiniGameInviteResolved: handleMiniGameInviteResolved,
         isMounted: function () { return mounted; }
     };
+
 })();

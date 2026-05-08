@@ -175,12 +175,21 @@ class MMDInteraction {
             return;
         }
 
+        const isYuiGuideDragLocked = () => {
+            const body = document.body;
+            return !!(body && (
+                body.classList.contains('yui-guide-home-driver-hidden')
+                || body.classList.contains('yui-taking-over')
+            ));
+        };
+
         this.cleanupDragAndZoom();
 
         // 鼠标按下
         this.mouseDownHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
+            if (isYuiGuideDragLocked()) return;
 
             if (this._snapAnimationFrameId) {
                 cancelAnimationFrame(this._snapAnimationFrameId);
@@ -223,6 +232,15 @@ class MMDInteraction {
 
         // 鼠标移动（拖拽）
         this.dragHandler = (e) => {
+            if (isYuiGuideDragLocked()) {
+                if (this.isDragging) {
+                    this.isDragging = false;
+                    this.dragMode = null;
+                    canvas.style.cursor = 'default';
+                    this._restoreButtonPointerEvents();
+                }
+                return;
+            }
             if (!this.isDragging || !this.manager.camera) return;
 
             // 【维护注意】拖动中外部可能触发 setLocked，此时 dragHandler 仍会被 mousemove 调用。

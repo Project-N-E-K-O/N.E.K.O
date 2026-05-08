@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import App from './App';
 import { parseChatMessage } from './message-schema';
 
@@ -69,6 +69,19 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
   });
 
+  it('disables composer submission while the home tutorial owns interaction', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App composerDisabled onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
     const onComposerSubmit = vi.fn();
     render(<App onComposerSubmit={onComposerSubmit} />);
@@ -116,6 +129,26 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
+  });
+
+  it('keeps pending composer attachments locked while the composer is disabled', () => {
+    const onComposerRemoveAttachment = vi.fn();
+
+    render(
+      <App
+        composerDisabled
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+        onComposerRemoveAttachment={onComposerRemoveAttachment}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton).toBeDisabled();
+    fireEvent.click(removeButton);
+
+    expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
   });
 
   it('only emits avatar interactions when the pointer hits the avatar range', () => {
@@ -287,6 +320,73 @@ describe('App', () => {
     }
   });
 
+  it('keeps the lollipop avatar-range image through transient avatar bounds loss', async () => {
+    vi.useFakeTimers();
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    let boundsAvailable = true;
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => (boundsAvailable
+          ? {
+            left: 100,
+            right: 200,
+            top: 100,
+            bottom: 200,
+            width: 100,
+            height: 100,
+          }
+          : null),
+      },
+    });
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      const avatarImage = () => container.querySelector('.avatar-cursor-overlay-image-lollipop');
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+
+      boundsAvailable = false;
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90);
+      });
+
+      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1_cursor.png');
+    } finally {
+      vi.useRealTimers();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
   it('escalates fist interactions to rapid on repeated in-range taps', () => {
     const onAvatarInteraction = vi.fn();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
@@ -388,7 +488,7 @@ describe('App', () => {
     }
   });
 
-  it('exposes avatar tools as a toggle group with pressed state', () => {
+  it('selects an avatar tool from the group and clears it from the active badge', () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -399,9 +499,58 @@ describe('App', () => {
     expect(lollipopButton).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(lollipopButton);
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji: 棒棒糖' }));
 
-    expect(screen.getByRole('button', { name: '棒棒糖' })).toHaveAttribute('aria-pressed', 'true');
+    const activeBadgeButton = screen.getByRole('button', { name: 'Emoji: 棒棒糖' });
+    expect(activeBadgeButton).toHaveClass('is-active');
+    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
+
+    fireEvent.click(activeBadgeButton);
+
+    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
+  });
+
+  it('clears the selected avatar tool from the icon badge', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji: 猫爪' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+
+    expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Emoji: 猫爪' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '恢复鼠标' })).not.toBeInTheDocument();
+  });
+
+  it('emits avatar tool state changes for desktop hosts', () => {
+    const onAvatarToolStateChange = vi.fn();
+    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      tool: null,
+    }));
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '锤子' }));
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'hammer',
+      variant: 'primary',
+      tool: expect.objectContaining({
+        id: 'hammer',
+        cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
+        cursorHotspotX: 50,
+        cursorHotspotY: 54,
+      }),
+    }));
   });
 
   it('anchors the desktop cursor overlay to the current pointer when a tool is activated', () => {
@@ -415,7 +564,131 @@ describe('App', () => {
 
     const overlay = container.querySelector('.avatar-cursor-overlay');
     expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 280px, 0)');
+    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
+  });
+
+  it('clears the tool cursor when the composer is hidden for voice mode', () => {
+    const { container, rerender } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    rerender(<App composerHidden />);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+  });
+
+  it('clears the tool cursor when the host issues a reset key', () => {
+    const { container, rerender } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    rerender(<App _toolCursorResetKey="voice-mode-reset-1" />);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+  });
+
+  it('preserves the outside-window cursor state when the host resets a tool cursor', () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { rerender } = render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.blur(window);
+    expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'fist',
+      insideHostWindow: false,
+    }));
+
+    onAvatarToolStateChange.mockClear();
+    rerender(<App onAvatarToolStateChange={onAvatarToolStateChange} _toolCursorResetKey="voice-mode-reset-2" />);
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      insideHostWindow: false,
+    }));
+  });
+
+  it('marks the cursor back inside the host when clearing a tool from the composer', () => {
+    const onAvatarToolStateChange = vi.fn();
+    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    fireEvent.blur(window);
+
+    onAvatarToolStateChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
+
+    expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+      insideHostWindow: true,
+    }));
+  });
+
+  it('restores the native cursor while desktop system UI owns focus', () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+    fireEvent.blur(window);
+
+    expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    expect(document.documentElement.style.getPropertyValue('--neko-chat-tool-cursor')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
+
+    fireEvent.pointerMove(window, { clientX: 180, clientY: 260 });
+
+    expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
+    expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+  });
+
+  it('uses the native cursor and clears it when leaving the Electron chat window', () => {
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+
+    try {
+      const { container } = render(<App />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+      fireEvent.pointerOut(window, { relatedTarget: null, clientX: 160, clientY: 220 });
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+
+      fireEvent.pointerOut(window, { relatedTarget: null, clientX: -1, clientY: 220 });
+
+      expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
+      expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+    } finally {
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
   });
 
   it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {

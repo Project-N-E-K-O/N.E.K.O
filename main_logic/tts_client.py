@@ -30,17 +30,24 @@ TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
 
 def _record_tts_telemetry(model_name: str, text: str):
-    """Record TTS usage telemetry via TokenTracker."""
+    """Record TTS usage telemetry via TokenTracker.
+
+    TTS providers (CosyVoice, CogTTS, GPT-SoVITS, etc.) bill per character,
+    not per token, so we report the input length on the dedicated
+    `prompt_chars` field instead of squatting in `prompt_tokens`. Token
+    aggregates stay clean for actual LLM usage tracking.
+    """
     if not text or not text.strip():
         return
     try:
         from utils.token_tracker import TokenTracker
         TokenTracker.get_instance().record(
             model=f"tts:{model_name}",
-            prompt_tokens=len(text),
+            prompt_tokens=0,
             completion_tokens=0,
-            total_tokens=len(text),
-            call_type='tts'
+            total_tokens=0,
+            call_type='tts',
+            prompt_chars=len(text),
         )
     except Exception:
         pass
@@ -751,13 +758,33 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     """
     StepFun实时TTS worker（用于默认音色）
     使用阶跃星辰的实时TTS API（step-tts-mini）
-    
+
     Args:
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
         voice_id: 音色ID，默认使用"qingchunshaonv"
     """
+    # free + livestream 子模式：voice_id 优先取 api_providers.json 的
+    # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
+    # 多进程 worker 这里独立 import，与主进程对偶。
+    if free_mode:
+        try:
+            from utils.api_config_loader import is_livestream_active, get_livestream_config
+            if is_livestream_active():
+                ls_voice = get_livestream_config().get('voice_id', '')
+                if ls_voice:
+                    voice_id = ls_voice
+                else:
+                    # 半配置状态（启用了但没填 voice_id）：明确告警，避免误以为
+                    # 直播音色已生效却实际还在用 caller 传入或默认 preset
+                    logger.warning(
+                        "livestream_config.enabled=true 但 voice_id 为空，"
+                        f"继续使用 caller 传入或默认音色: {voice_id or 'qingchunshaonv'}"
+                    )
+        except Exception as e:
+            logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
+
     # 使用默认音色 "qingchunshaonv"
     if not voice_id:
         voice_id = "qingchunshaonv"
@@ -2346,7 +2373,10 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                             msg = json.loads(message)
                             msg_type = msg.get('type', '')
                             if msg_type == 'sentence':
-                                logger.debug(f"[GPT-SoVITS v3] 合成: {msg.get('text', '')[:30]}...")
+                                # TTS 文本原文不写 logger
+                                _gsv_text = msg.get('text', '')
+                                logger.debug(f"[GPT-SoVITS v3] 合成 (len={len(_gsv_text)} chars)")
+                                print(f"[GPT-SoVITS v3] 合成: {_gsv_text[:30]}...")
                             elif msg_type == 'sentence_done':
                                 logger.debug(f"[GPT-SoVITS v3] 句完成 (task={msg.get('task_id')}, chunks={msg.get('chunks_sent', '?')})")
                             elif msg_type == 'done':
@@ -2488,7 +2518,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     try:
                         await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
                         _record_tts_telemetry("gptsovits", tts_text)
-                        logger.debug(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
+                        # TTS 文本原文不写 logger
+                        logger.debug(f"[GPT-SoVITS v3] append (len={len(tts_text)} chars)")
+                        print(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
                     except Exception as e:
                         logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
                         ws = None
@@ -2639,7 +2671,9 @@ async def _minimax_sse_synthesize(
                                     flush_audio(force=True)
                                     return
                             except json.JSONDecodeError:
-                                logger.warning("MiniMax TTS SSE JSON 解析失败: %s", json_str[:200])
+                                # 上游响应可能含 TTS 原文，不写 logger
+                                logger.warning("MiniMax TTS SSE JSON 解析失败 (len=%d)", len(json_str))
+                                print(f"[MiniMax TTS] SSE JSON 解析失败 raw: {json_str[:200]}")
                                 continue
 
                 # 处理流结束后 buffer 中可能残留的最后一行（服务端未发尾部换行）
@@ -2652,7 +2686,8 @@ async def _minimax_sse_synthesize(
                                 event = json.loads(json_str)
                                 process_event(event)
                             except json.JSONDecodeError:
-                                logger.warning("MiniMax TTS SSE JSON 解析失败 (残留): %s", json_str[:200])
+                                logger.warning("MiniMax TTS SSE JSON 解析失败 (残留, len=%d)", len(json_str))
+                                print(f"[MiniMax TTS] SSE JSON 解析失败 (残留) raw: {json_str[:200]}")
 
             # JSON 流格式: application/json (逐行 JSON 对象)
             else:
@@ -2682,8 +2717,9 @@ async def _minimax_sse_synthesize(
                                 flush_audio(force=True)
                                 return
                         except json.JSONDecodeError:
-                            # 不完整的 JSON 或格式错误，记录警告后跳过
-                            logger.warning("MiniMax TTS JSON 解析失败: %s", line[:200])
+                            # 不完整的 JSON 或格式错误，记录警告后跳过；不写原文到 logger
+                            logger.warning("MiniMax TTS JSON 解析失败 (len=%d)", len(line))
+                            print(f"[MiniMax TTS] JSON 解析失败 raw: {line[:200]}")
                             continue
 
                 # 处理流结束后 buffer 中可能残留的最后一行
@@ -2698,7 +2734,8 @@ async def _minimax_sse_synthesize(
                             event = json.loads(residual)
                             process_event(event)
                         except json.JSONDecodeError:
-                            logger.warning("MiniMax TTS JSON 解析失败 (残留): %s", residual[:200])
+                            logger.warning("MiniMax TTS JSON 解析失败 (残留, len=%d)", len(residual))
+                            print(f"[MiniMax TTS] JSON 解析失败 (残留) raw: {residual[:200]}")
 
             flush_audio(force=True)
 
@@ -3077,7 +3114,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
                     _record_tts_telemetry("local_cosyvoice", tts_text)
-                    logger.debug(f"发送合成片段: {tts_text}")
+                    # TTS 文本原文不写 logger
+                    logger.debug(f"发送合成片段 (len={len(tts_text)} chars)")
+                    print(f"发送合成片段: {tts_text}")
                 except Exception as e:
                     _enqueue_error(response_queue, f"发送失败: {e}")
                     ws = None

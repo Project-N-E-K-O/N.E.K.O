@@ -53,6 +53,32 @@ def test_is_default_prompt_rejects_custom_memory_integrity_line() -> None:
     assert is_default_prompt(customized_prompt) is False
 
 
+def test_is_default_prompt_accepts_legacy_in_place_wording() -> None:
+    """Old shipped defaults that differ only by in-place wording edits must still be
+    classified as default — otherwise existing users lose auto-localization on
+    every cosmetic prompt tweak."""
+    cases = {
+        "zh": ("无需客套", "无需客气"),
+        "zh-TW": ("無需客套", "無需客氣"),
+        "ja": ("他人行儀は不要", "遠慮は不要"),
+        "en": ('"settings/character setting"', '"character setting"'),
+    }
+    for lang, (current, legacy) in cases.items():
+        current_prompt = get_lanlan_prompt(lang)
+        assert current in current_prompt, f"{lang}: current wording absent from template"
+        legacy_prompt = current_prompt.replace(current, legacy)
+        assert is_default_prompt(legacy_prompt) is True, f"{lang}: legacy wording not normalized"
+
+
+def test_is_default_prompt_accepts_legacy_screen_capture_typo() -> None:
+    """Old shipped defaults had ``an screen capture`` typo — fixed to ``a screen capture``.
+    Users who stored the typo'd version should still be classified as default."""
+    current_prompt = get_lanlan_prompt("zh")
+    legacy_prompt = current_prompt.replace("a screen capture", "an screen capture")
+    assert legacy_prompt != current_prompt
+    assert is_default_prompt(legacy_prompt) is True
+
+
 def test_agent_router_exports_openclaw_availability_proxy() -> None:
     paths = {
         path

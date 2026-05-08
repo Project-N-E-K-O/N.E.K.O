@@ -2,10 +2,19 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
+from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
+
+
+def _expected_plugin_dashboard_location(v: str = "") -> str:
+    from config import USER_PLUGIN_BASE
+
+    base_ui = USER_PLUGIN_BASE.rstrip("/") + "/ui"
+    return f"{base_ui}?{urlencode({'v': v})}" if v else base_ui
 
 
 def _route_paths_from_decorators(py_file_path: str, target_name: str):
@@ -94,6 +103,123 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
         assert expected in paths
 
 
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_uses_base_ui_url_without_query():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_only_v_query():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_guide=1&handoff=token",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location("abc123")
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_ignores_empty_v_query():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=&yui_guide=1",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_keeps_loopback_yui_opener_origin():
+    from config import USER_PLUGIN_BASE
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"v=abc123&yui_opener_origin=http%3A%2F%2F127.0.0.1%3A48923&unsafe=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    location = response.headers["location"]
+    parsed_location = urlparse(location)
+    expected_location = urlparse(USER_PLUGIN_BASE.rstrip("/") + "/ui")
+    assert parsed_location.scheme == expected_location.scheme
+    assert parsed_location.netloc == expected_location.netloc
+    assert parsed_location.path == expected_location.path
+    query = parse_qs(parsed_location.query)
+    assert query == {
+        "v": ["abc123"],
+        "yui_opener_origin": ["http://127.0.0.1:48923"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_main_agent_router_plugin_dashboard_redirect_rejects_non_loopback_yui_opener_origin():
+    from main_routers.agent_router import redirect_plugin_dashboard
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/agent/user_plugin/dashboard",
+        "headers": [],
+        "query_string": b"yui_opener_origin=https%3A%2F%2Fexample.com",
+    })
+    response = await redirect_plugin_dashboard(request)
+
+    assert response.headers["location"] == _expected_plugin_dashboard_location()
+
+
+def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff():
+    page_source = Path("templates/index.html").read_text(encoding="utf-8")
+    pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+    index_source = Path("static/js/index.js").read_text(encoding="utf-8")
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    handoff_source = Path("static/yui-guide-page-handoff.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "def _user_plugin_ctx()" not in pages_router_source
+    assert "window.NEKO_USER_PLUGIN_BASE = {{ user_plugin_base | tojson }};" not in page_source
+    assert "data.user_plugin_base" not in index_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';" in hud_source
+    assert "getPluginDashboardRedirectUrl" in hud_source
+    assert "url: getPluginDashboardRedirectUrl" in hud_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in handoff_source
+    assert "new URL('/api/agent/user_plugin/dashboard', window.location.origin)" in director_source
+    assert "handoff.ready ? handoff.targetOrigin : '*'" in director_source
+    assert "isTrustedPluginDashboardOrigin(event.origin)" in director_source
+    assert "yui_opener_origin" in handoff_source
+    assert "OPENER_ORIGIN_QUERY_PARAM = 'yui_opener_origin'" in plugin_runtime_source
+    assert "getQueryOpenerOrigin()" in plugin_runtime_source
+    assert "isLoopbackOrigin(origin)" in plugin_runtime_source
+    assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
+
+
 def test_agent_server_expected_event_driven_endpoints_exist():
     paths = _route_paths_from_decorators("agent_server.py", "app")
     for expected in {
@@ -156,6 +282,380 @@ def test_agent_router_has_internal_analyze_request_endpoint():
     assert "/internal/analyze_request" in paths
 
 
+def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
+    source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "const CONTRACT_VERSION = 2;",
+        "'intro_basic'",
+        "'takeover_capture_cursor'",
+        "'takeover_plugin_preview'",
+        "'takeover_settings_peek'",
+        "'takeover_return_control'",
+        "'handoff_api_key'",
+        "'handoff_memory_browser'",
+        "'handoff_plugin_dashboard'",
+        "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
+        "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
+        "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
+        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
+        "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
+        "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
+        "api_key: ['api_key_intro']",
+        "memory_browser: ['memory_browser_intro']",
+        "plugin_dashboard: ['plugin_dashboard_landing']",
+    ):
+        assert expected in source
+
+    # Keep concatenated literals here so search/grep does not match this test file.
+    for removed in (
+        "'intro_" + "proactive'",
+        "'intro_" + "cat_paw'",
+        "steps.intro_" + "proactive",
+        "steps.intro_" + "cat_paw",
+        "'handoff_steam_workshop'",
+        "steps.handoff_steam_workshop",
+        "steps.steam_workshop_intro",
+        "steam_workshop: ['steam_workshop_intro']",
+        "/steam_workshop_manager",
+    ):
+        assert removed not in source
+
+
+def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "yui-guide-bubble-header",
+        "yui-guide-bubble-meta",
+        "scoreBubbleCandidate",
+        "is-placement-",
+        "isCircularFloatingButtonElement(element)",
+        "geometry === 'circle' || isCircularFloatingButtonElement(element)",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "getHomePresentationSceneOrder()",
+        "getBubbleMetaForScene(sceneId)",
+        "主页引导 ",
+        "isCircularFloatingButtonSpotlight(element)",
+        "applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget)",
+        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
+        "this.applyCircularFloatingButtonSpotlightHint(primaryTarget)",
+        "this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget)",
+    ):
+        assert expected in director_source
+
+    for expected in (
+        ".yui-guide-bubble-meta",
+        ".yui-guide-bubble.is-placement-top::after",
+        "@keyframes yui-guide-spotlight-sheen",
+        "html[data-theme='dark'] .yui-guide-overlay",
+    ):
+        assert expected in style_source
+
+
+def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    for source in (overlay_source, director_source, plugin_runtime_source):
+        assert "DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420" in source
+
+    for expected in (
+        "this.cursorClickTimer",
+        "window.clearTimeout(this.cursorClickTimer)",
+        "this.cursorInner.classList.add('is-clicking')",
+        "CURSOR_CLICK_STAR_COUNT = 7",
+        "spawnCursorClickStars()",
+        "this.spawnCursorClickStars();",
+        "yui-guide-click-star",
+        "--star-mid-x",
+        "CURSOR_TRAIL_ICON_URLS",
+        "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42",
+        "/static/icons/send_icon.png",
+        "/static/icons/paw_ui.png",
+        "maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now)",
+        "isBlueParticle ? 'is-blue-particle' : 'is-icon'",
+        "is-blue-particle",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "this.cursor.click(clickVisibleMs)",
+        "await this.waitForSceneDelay(clickVisibleMs)",
+        "await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS)",
+    ):
+        assert expected in director_source
+
+    assert "animation: yui-guide-cursor-click 420ms ease;" in style_source
+    assert "@keyframes yui-guide-click-star-burst" in style_source
+    assert ".yui-guide-click-star" in style_source
+    assert ".yui-guide-cursor-trail.is-glow" in style_source
+    assert ".yui-guide-cursor-trail.is-icon" in style_source
+    assert ".yui-guide-cursor-trail.is-blue-particle" in style_source
+    assert "rgba(119, 233, 255, 0.96)" in style_source
+    assert "opacity: 0.52;" in style_source
+    assert "drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))" in style_source
+    assert "@keyframes yui-guide-cursor-trail-fade" in style_source
+    assert "animation: yui-guide-plugin-click 420ms ease;" in plugin_runtime_source
+    assert "CURSOR_CLICK_STAR_COUNT = 7" in plugin_runtime_source
+    assert "const size = 6 + Math.random() * 6" in overlay_source
+    assert "const size = 6 + Math.random() * 6" in plugin_runtime_source
+    assert "0.09 + Math.random() * 0.1" in plugin_runtime_source
+    assert "CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl]" in plugin_runtime_source
+    assert "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42" in plugin_runtime_source
+    assert "yui-guide-plugin-click-star" in plugin_runtime_source
+    assert "yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}" in plugin_runtime_source
+    assert "is-blue-particle" in plugin_runtime_source
+    assert "maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)" in plugin_runtime_source
+    assert "spawnCursorClickStars()" in plugin_runtime_source
+    assert "await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent)" in plugin_runtime_source
+
+
+_YUI_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "yui-guide-director.js",
+)
+
+
+def _script_tag_position(source: str, script_name: str) -> int:
+    """Find the position of a `<script src="/static/{script_name}...">` tag,
+    ignoring the `?v=...` cache-buster query string."""
+    needle = f'<script src="/static/{script_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing script tag for {script_name}"
+    return position
+
+
+def _stylesheet_tag_position(source: str, stylesheet_name: str) -> int:
+    """Find a stylesheet link while allowing cache-buster query strings."""
+    needle = f'<link rel="stylesheet" href="/static/css/{stylesheet_name}'
+    position = source.find(needle)
+    assert position != -1, f"missing stylesheet link for {stylesheet_name}"
+    return position
+
+
+def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+
+    positions = [
+        _script_tag_position(source, name)
+        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+    ]
+    assert positions == sorted(positions)
+
+
+def test_home_template_loads_yui_wakeup_before_director():
+    source = Path("templates/index.html").read_text(encoding="utf-8")
+
+    positions = [
+        _script_tag_position(source, name)
+        for name in (
+            "yui-guide-overlay.js",
+            "yui-guide-page-handoff.js",
+            "yui-guide-wakeup.js",
+            "yui-guide-director.js",
+            "universal-tutorial-manager.js",
+        )
+    ]
+    assert positions == sorted(positions)
+
+
+def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
+    source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
+    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
+    yui_param_ids = {
+        item.get("Id")
+        for item in yui_display_info.get("Parameters", [])
+        if isinstance(item, dict)
+    }
+
+    assert "class Live2DWakeupSession" in source
+    assert "DEFAULT_DURATION_MS = 4000" in source
+    assert "LIVE2D_HANDOFF_MS = 620" in source
+    assert "LIVE2D_HANDOFF_MS" in source
+    assert "_suspendEyeBlinkOverride" in source
+    assert "removeBlockingGuideOverlay" in source
+    assert "#yui-guide-overlay" in source
+    assert "yui-taking-over" in source
+    assert "setTemporaryPoseOverride" in source
+    assert "applyTemporaryPose" in source
+    assert "restoreCapturedParams()" in source
+    assert "this.clearTemporaryPoseOverride();" in source
+    assert "this.clearMotionHold();" in source
+    assert "this.restoreCapturedParams();" in source
+    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in source
+    assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
+    assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
+    for param_id in (
+        "ParamEyeLOpen",
+        "ParamEyeROpen",
+        "ParamAngleX",
+        "ParamAngleY",
+        "ParamAngleZ",
+        "ParamEyeBallX",
+        "ParamEyeBallY",
+        "ParamBodyAngleX",
+        "ParamBodyAngleY",
+        "ParamBodyAngleZ",
+    ):
+        assert param_id in source
+
+    yui_file_refs = yui_model.get("FileReferences", {})
+    assert yui_file_refs.get("Moc") == "yui-origin.moc3"
+    assert yui_file_refs.get("DisplayInfo") == "yui-origin.cdi3.json"
+    for param_id in ("Param75", "Param90", "Param92", "Param95"):
+        assert param_id in yui_param_ids
+
+    assert "coreModel.update =" not in source
+    assert "motionManager.update =" not in source
+    assert "model.focus(" not in source
+    assert "document.createElement" not in source
+    assert "appendChild" not in source
+    assert "yui-guide-wakeup-stage" not in style_source
+    assert "yui-guide-wakeup-backdrop" not in style_source
+    assert "yui-guide-wakeup-particle" not in style_source
+
+
+def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
+    for template_path in (
+        "templates/api_key_settings.html",
+        "templates/memory_browser.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        positions = [
+            _script_tag_position(source, name)
+            for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        ]
+        assert positions == sorted(positions), template_path
+        _stylesheet_tag_position(source, "yui-guide.css")
+
+
+def test_home_yui_guide_does_not_route_to_steam_workshop():
+    yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "handoff_steam_workshop" not in yui_source
+    assert "/steam_workshop_manager" not in yui_source
+    assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source
+    assert "#${p}-menu-steam-workshop" not in tutorial_source
+
+
+def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "getYuiGuidePageKey(page = this.currentPage)",
+        "return 'api_key';",
+        "getPendingYuiGuideResumeScene(page = this.currentPage)",
+        "applyYuiGuideResumeScene(validSteps)",
+        "yuiGuideSceneId: 'api_key_intro'",
+        "yuiGuideSceneId: 'memory_browser_intro'",
+    ):
+        assert expected in source
+
+
+def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+
+    begin_start = tutorial_source.index("beginTutorialAvatarOverride()")
+    restore_start = tutorial_source.index("restoreTutorialAvatarOverride()")
+    restore_end = tutorial_source.index("/**", restore_start)
+    begin_block = tutorial_source[begin_start:restore_start]
+    restore_block = tutorial_source[restore_start:restore_end]
+
+    assert "saveTutorialModelPayload" not in begin_block
+    assert "saveTutorialModelPayload" not in restore_block
+    assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
+    assert "live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME" in begin_block
+    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "suppressInitialIdle: true" in tutorial_source
+    assert "suppressInitialIdle: skipIdleRestore" in interpage_source
+    assert "temporaryConfig" in interpage_source
+    assert "skipIdleRestore" in interpage_source
+    assert "suppressToast" in interpage_source
+    assert "async function _waitForLive2DManagerIdle" in interpage_source
+    assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_theme_system_preference_does_not_become_saved_user_choice():
+    theme_source = Path("static/theme-manager.js").read_text(encoding="utf-8")
+    plugin_dark_mode_source = Path("frontend/plugin-manager/src/composables/useDarkMode.ts").read_text(encoding="utf-8")
+
+    assert "applyTheme(isDark, { persist: shouldPersist });" in theme_source
+    assert "applyThemeAnimated(event.matches, { persist: false });" in theme_source
+    assert "applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })" in plugin_dark_mode_source
+    assert "applyDarkMode(event.matches, { persist: false })" in plugin_dark_mode_source
+
+
+def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "window.homeTutorialPlatformCapabilities" in director_source
+    assert "createHomeTutorialPlatformCapabilities" in director_source
+    assert "supportsExternalChat" in director_source
+    assert "supportsSystemTrayHint" in director_source
+    assert "supportsPluginDashboardWindow" in director_source
+    assert "preferredSkipHitPadding" in director_source
+    assert "forwardingTolerance" in director_source
+    assert "platformCapabilities" in plugin_runtime_source
+    assert "const explicitTolerance = Number(rect.forwardingTolerance)" in plugin_runtime_source
+    assert "if (platform === 'linux') return Math.max(8, Math.round(basePadding * 0.35))" in plugin_runtime_source
+    assert "if (platform === 'macos') return Math.max(6, Math.round(basePadding * 0.25))" in plugin_runtime_source
+
+
+def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
+    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "timeline: []" in steps_source
+    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
+    assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in steps_source
+    assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
+    assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
+    assert "cue.action !== normalizedCueName" in director_source
+    assert "GUIDE_NARRATION_TIMELINES_BY_KEY" in director_source
+    assert "estimateSpeechDurationMs(fallbackText || '')" in director_source
+
+
+def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "neko_home_tutorial_experience_metrics_v1" in director_source
+    assert "window.homeTutorialExperienceMetrics" in director_source
+    assert "recordExperienceMetric('scene_start'" in director_source
+    assert "recordExperienceMetric('scene_complete'" in director_source
+    assert "recordExperienceMetric('scene_failed'" in director_source
+    assert "recordExperienceMetric('skip'" in director_source
+    assert "recordExperienceMetric('angry_exit'" in director_source
+    assert "recordExperienceMetric('handoff_failed'" in director_source
+    assert ".localStorage.setItem(" in director_source
+
+
+def test_plugin_manager_bootstraps_plugin_dashboard_runtime_without_overlay_bridge():
+    app_source = Path("frontend/plugin-manager/src/App.vue").read_text(encoding="utf-8")
+    main_source = Path("frontend/plugin-manager/src/main.ts").read_text(encoding="utf-8")
+
+    assert "<YuiTutorialOverlay />" not in app_source
+    assert "useYuiTutorialBridge" not in main_source
+    assert "tutorialBridge.init()" not in main_source
+    assert "initPluginDashboardYuiGuideRuntime()" in main_source
+
+
 def test_task_executor_format_messages_marks_latest_user_request():
     from brain.task_executor import DirectTaskExecutor
 
@@ -182,6 +682,313 @@ def test_task_executor_format_messages_mentions_image_attachments():
     ]
     output = executor._format_messages(conversation)
     assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
+
+
+def test_plugin_terminal_status_defaults_and_run_data_overrides():
+    from agent_server import _plugin_terminal_status
+
+    # Default: success → completed, fail → failed.
+    assert _plugin_terminal_status(True, None) == "completed"
+    assert _plugin_terminal_status(False, None) == "failed"
+    assert _plugin_terminal_status(True, {}) == "completed"
+    assert _plugin_terminal_status(False, {}) == "failed"
+
+    # Explicit blocked signals (plugin opts in via run_data).
+    assert _plugin_terminal_status(True, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "blocked"
+    assert _plugin_terminal_status(True, {"status": "confirm_required", "needs_confirmation": True}) == "blocked"
+    assert _plugin_terminal_status(True, {"status": "blocked"}) == "blocked"
+
+    # Error signal forces failed even on raw success.
+    assert _plugin_terminal_status(True, {"status": "error"}) == "failed"
+
+    # observation_only bypasses overrides → fall back to raw success.
+    assert _plugin_terminal_status(True, {"status": "error", "observation_only": True}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "blocked", "observation_only": True}) == "completed"
+
+    # executed=False on its own is intentionally NOT enough — many plugins use
+    # it to mean "no game-side card played" while the control op succeeded
+    # (e.g. STS2 stop_autoplay returns status="idle", executed=False after a
+    # real stop). Inferring blocked from that misreports successful ops.
+    assert _plugin_terminal_status(True, {"status": "idle", "executed": False}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "stale", "executed": False}) == "completed"
+    assert _plugin_terminal_status(True, {"status": "ok", "executed": True}) == "completed"
+
+    # raw_success=False must always land on "failed". run_data signals cannot
+    # "upgrade" a protocol failure to a softer status like "blocked".
+    assert _plugin_terminal_status(False, {"status": "blocked"}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "confirm_required", "needs_confirmation": True}) == "failed"
+    assert _plugin_terminal_status(False, {"status": "error"}) == "failed"
+    # observation_only also doesn't change the picture on raw fail.
+    assert _plugin_terminal_status(False, {"status": "blocked", "observation_only": True}) == "failed"
+
+
+def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
+    from main_logic.core import _build_callback_instruction
+
+    output = _build_callback_instruction(
+        [
+            {
+                "status": "blocked",
+                "source_kind": "plugin",
+                "source_name": "示例插件",
+                "summary": "需要确认后才能执行",
+                "detail": "需要确认后才能执行",
+                "delivery_mode": "proactive",
+            }
+        ],
+        lang="zh",
+        lanlan_name="小天",
+        master_name="主人",
+    )
+
+    assert "未执行" in output
+    assert "说明未执行原因" in output
+    assert "执行失败" not in output
+    assert "需要确认后才能执行" in output
+
+
+def test_task_executor_hides_agent_auto_disabled_plugin_entries():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    plugins = [
+        {
+            "id": "demo_plugin",
+            "description": "示例插件",
+            "entries": [
+                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
+                {"id": "start_job", "description": "启动示例任务"},
+            ],
+        }
+    ]
+
+    desc = "\n".join(executor._build_plugin_desc_lines(plugins))
+    assert "diagnostics_snapshot" not in desc
+    assert "start_job" in desc
+    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
+    assert plugin is plugins[0]
+    assert entry is None
+
+
+def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    plugins = [
+        {
+            "id": "demo_plugin",
+            "description": "示例插件",
+            "entries": [
+                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
+            ],
+        }
+    ]
+
+    assert executor._build_plugin_desc_lines(plugins) == []
+    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
+    assert plugin is plugins[0]
+    assert entry is None
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_galgame_continue_phrase_through_plugin_assessment():
+    from unittest.mock import AsyncMock, patch
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
+
+    plugins = [{
+        "id": "galgame_plugin",
+        "description": "galgame plugin",
+        "short_description": "galgame control",
+        "entries": [{"id": "galgame_continue_auto_advance", "input_schema": {}}],
+    }]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+
+    decision = UserPluginDecision(
+        has_task=True,
+        can_execute=True,
+        task_description="继续自动推进 galgame 剧情",
+        plugin_id="galgame_plugin",
+        entry_id="galgame_continue_auto_advance",
+        plugin_args={"message": "继续推进剧情"},
+        reason="llm_user_plugin_assessment",
+    )
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        return_value=decision,
+    ) as mock_assess:
+        result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "继续推进剧情"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert result is not None
+    assert result.execution_method == "user_plugin"
+    assert result.tool_name == "galgame_plugin"
+    assert result.entry_id == "galgame_continue_auto_advance"
+    assert result.tool_args == {"message": "继续推进剧情"}
+    assert result.reason == "llm_user_plugin_assessment"
+    mock_assess.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessment():
+    from unittest.mock import AsyncMock, patch
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
+
+    plugins = [{
+        "id": "galgame_plugin",
+        "description": "galgame plugin",
+        "short_description": "galgame control",
+        "entries": [{"id": "galgame_set_mode", "input_schema": {}}],
+    }]
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    executor._external_plugin_provider = AsyncMock(return_value=plugins)
+    executor._short_desc_cache = {}
+
+    decisions = [
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到自动推进模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "choice_advisor", "push_notifications": True},
+            reason="llm_user_plugin_assessment_auto",
+        ),
+        UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description="切换 galgame 到伴读模式",
+            plugin_id="galgame_plugin",
+            entry_id="galgame_set_mode",
+            plugin_args={"mode": "companion", "push_notifications": True},
+            reason="llm_user_plugin_assessment_companion",
+        ),
+    ]
+    with patch.object(
+        DirectTaskExecutor,
+        "_assess_user_plugin",
+        new_callable=AsyncMock,
+        side_effect=decisions,
+    ) as mock_assess:
+        auto_result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "开启自动推进模式"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+        companion_result = await executor.analyze_and_execute(
+            [{"role": "user", "content": "切回伴读，不要自动点"}],
+            agent_flags={
+                "computer_use_enabled": False,
+                "browser_use_enabled": False,
+                "user_plugin_enabled": True,
+                "openclaw_enabled": False,
+                "openfang_enabled": False,
+            },
+        )
+
+    assert auto_result is not None
+    assert auto_result.execution_method == "user_plugin"
+    assert auto_result.tool_name == "galgame_plugin"
+    assert auto_result.entry_id == "galgame_set_mode"
+    assert auto_result.tool_args == {"mode": "choice_advisor", "push_notifications": True}
+    assert auto_result.reason == "llm_user_plugin_assessment_auto"
+    assert companion_result is not None
+    assert companion_result.entry_id == "galgame_set_mode"
+    assert companion_result.tool_args == {"mode": "companion", "push_notifications": True}
+    assert companion_result.reason == "llm_user_plugin_assessment_companion"
+    assert mock_assess.await_count == 2
+
+
+def test_task_executor_plugin_desc_includes_enum_values():
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    lines = executor._build_plugin_desc_lines([
+        {
+            "id": "galgame_plugin",
+            "description": "galgame plugin",
+            "entries": [
+                {
+                    "id": "galgame_agent_command",
+                    "description": "agent command",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "query_status",
+                                    "query_context",
+                                    "send_message",
+                                    "set_standby",
+                                    "list_messages",
+                                    "ack_message",
+                                ],
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+    ])
+
+    assert "action:string enum=[query_status|query_context|send_message|set_standby|list_messages|ack_message]" in "\n".join(lines)
+
+
+def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
+    """超过 12 个 enum 值时，截断标记必须在 [] 内并带 '+N more' 数量提示，
+    而不是孤零零的 '...'，以避免 LLM 把可见的 12 个误当成完整合法值清单。
+    """
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12，触发截断
+    lines = executor._build_plugin_desc_lines([
+        {
+            "id": "demo_plugin",
+            "description": "demo",
+            "entries": [
+                {
+                    "id": "demo_entry",
+                    "description": "demo entry",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": long_enum},
+                        },
+                    },
+                },
+            ],
+        },
+    ])
+    rendered = "\n".join(lines)
+
+    expected_inner = "|".join(long_enum[:12])
+    assert f"kind:string enum=[{expected_inner}|... +3 more]" in rendered
+    # 旧的 "]..." 形态必须消失，避免 LLM 误读为"列表完整、后面是注释省略号"
+    assert "]..." not in rendered
+    # 被截断的值不应该出现在 prompt 里
+    for v in long_enum[12:]:
+        assert v not in rendered
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
@@ -443,7 +1250,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
             break
     assert fn_src is not None
 
-    ns = {}
+    ns = {"AGENT_HISTORY_TURNS": 8}
     exec("from typing import Any\n" + fn_src, ns)
     resolver = ns["_resolve_openclaw_sender_id"]
 
@@ -1294,6 +2101,233 @@ def test_cross_server_publish_no_http_fallback():
         "_publish_analyze_request_with_fallback still contains HTTP fallback"
     assert "/agent/analyze_request" not in func_src, \
         "_publish_analyze_request_with_fallback still targets HTTP endpoint"
+
+
+class _FakeInternalResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.text = body
+
+
+def _make_fake_internal_client(status, body, capture=None):
+    class FakeInternalClient:
+        async def post(self, url, **kwargs):
+            if capture is not None:
+                capture.append({"url": url, **kwargs})
+            return _FakeInternalResponse(status, body)
+
+    return FakeInternalClient
+
+
+async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypatch):
+    """_post_memory_server should treat 2xx + JSON body as success and URL-encode names."""
+    from main_logic.cross_server import _post_memory_server
+
+    calls = []
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(
+            200,
+            json.dumps({"status": "cached", "count": 2}, ensure_ascii=False),
+            capture=calls,
+        )(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "小天/测试",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is True
+    assert err_detail == ""
+    assert payload.get("status") == "cached"
+    assert calls
+    assert calls[0]["url"].endswith("/cache/%E5%B0%8F%E5%A4%A9%2F%E6%B5%8B%E8%AF%95")
+    assert "input_history" in calls[0]["json"]
+
+
+async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch):
+    """_post_memory_server should convert non-2xx response into explicit error detail."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(502, "bad gateway")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "HTTP 502" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_non_json_2xx(monkeypatch):
+    """_post_memory_server should fail loudly when body is non-JSON despite 2xx."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, "<html>oops</html>")(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert "non-JSON response" in err_detail
+    assert payload == {}
+
+
+async def test_cross_server_post_memory_server_handles_business_error(monkeypatch):
+    """_post_memory_server should return explicit error when memory_server returns status=error."""
+    from main_logic.cross_server import _post_memory_server
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.get_internal_http_client",
+        lambda: _make_fake_internal_client(200, json.dumps({"status": "error", "message": "boom"}))(),
+    )
+
+    ok, err_detail, payload = await _post_memory_server(
+        "cache",
+        "Tian",
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        timeout_s=3.0,
+    )
+
+    assert ok is False
+    assert err_detail == "boom"
+    assert payload.get("status") == "error"
+
+
+def test_cross_server_session_end_uses_settle_for_zero_remaining():
+    """session end must call /settle when everything was already /cache-synced."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
+                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+
+    assert assignments["_settle_endpoint"] == ast.dump(
+        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+        include_attributes=False,
+    )
+    assert assignments["_settle_payload"] == ast.dump(
+        ast.parse("remaining if remaining else []", mode="eval").body,
+        include_attributes=False,
+    )
+
+
+def test_cross_server_memory_cache_failure_paths_are_selective():
+    """No warning-rate-limit helper should be reintroduced for memory cache writes."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    assert "MEMORY_WRITE_WARN_WINDOW_S" not in source
+    assert "_warn_memory_write_issue_rate_limited" not in source
+
+
+def test_cross_server_memory_write_exception_classification():
+    from main_logic.cross_server import _is_expected_memory_write_exception
+    import aiohttp
+
+    assert _is_expected_memory_write_exception(asyncio.TimeoutError()) is True
+    assert _is_expected_memory_write_exception(aiohttp.ClientError("x")) is True
+    assert _is_expected_memory_write_exception(ConnectionError("x")) is True
+    assert _is_expected_memory_write_exception(OSError("x")) is True
+    assert _is_expected_memory_write_exception(ValueError("x")) is False
+
+
+def test_cross_server_memory_cache_exception_logs_warning_once_then_debug(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_msgs = []
+    debug_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, asyncio.TimeoutError(), health_state)
+
+    assert len(warning_msgs) == 1
+    assert len(debug_msgs) == 1
+    assert "进入异常状态" in warning_msgs[0]
+    assert "持续" in debug_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_TURN_END] is True
+
+
+def test_cross_server_unknown_memory_cache_exception_keeps_traceback(monkeypatch):
+    import main_logic.cross_server as cs
+
+    warning_calls = []
+    monkeypatch.setattr(
+        cs.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warning_calls.append(
+            {"message": msg % args if args else msg, "kwargs": kwargs}
+        ),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_TURN_END: False}
+    cs._mark_memory_cache_exception("小天", cs.MEMORY_CACHE_SCOPE_TURN_END, ValueError("bad payload"), health_state)
+
+    assert len(warning_calls) == 1
+    assert "未知类型" in warning_calls[0]["message"]
+    assert warning_calls[0]["kwargs"].get("exc_info") is True
+
+
+def test_cross_server_memory_cache_business_failure_and_recovery(monkeypatch):
+    import main_logic.cross_server as cs
+
+    debug_msgs = []
+    info_msgs = []
+
+    monkeypatch.setattr(
+        cs.logger,
+        "debug",
+        lambda msg, *args, **kwargs: debug_msgs.append(msg % args if args else msg),
+    )
+    monkeypatch.setattr(
+        cs.logger,
+        "info",
+        lambda msg, *args, **kwargs: info_msgs.append(msg % args if args else msg),
+    )
+
+    health_state = {cs.MEMORY_CACHE_SCOPE_AVATAR: False}
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom", health_state)
+    cs._mark_memory_cache_business_failure("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, "boom2", health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+    cs._mark_memory_cache_success("小天", cs.MEMORY_CACHE_SCOPE_AVATAR, health_state)
+
+    assert "进入失败状态" in debug_msgs[0]
+    assert "持续" in debug_msgs[1]
+    assert len(info_msgs) == 1
+    assert "已恢复" in info_msgs[0]
+    assert health_state[cs.MEMORY_CACHE_SCOPE_AVATAR] is False
 
 
 # ---------------------------------------------------------------------------

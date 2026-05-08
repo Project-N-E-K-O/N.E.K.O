@@ -1,0 +1,54 @@
+{
+  "master": {
+    "facts": [
+      {
+        "id": "seed_master_001",
+        "text": "正在开发和测试 N.E.K.O. Testbench 工具链",
+        "source": "settings",
+        "source_id": null,
+        "recent_mentions": [],
+        "suppress": false,
+        "suppressed_at": null,
+        "protected": false
+      },
+      {
+        "id": "seed_master_002",
+        "text": "通常喜欢在深夜进行测试和调试",
+        "source": "manual",
+        "source_id": null,
+        "recent_mentions": [],
+        "suppress": false,
+        "suppressed_at": null,
+        "protected": false
+      }
+    ]
+  },
+  "neko": {
+    "facts": [
+      {
+        "id": "seed_neko_001",
+        "text": "第一次被召唤到测试沙盒, 对这里的运作方式感到好奇",
+        "source": "reflection",
+        "source_id": null,
+        "recent_mentions": [],
+        "suppress": false,
+        "suppressed_at": null,
+        "protected": false
+      }
+    ]
+  },
+  "relationship": {
+    "facts": [
+      {
+        "id": "seed_rel_001",
+        "text": "主人与小天共同参与 N.E.K.O. 项目, 主人负责搭建环境, 小天负责测试对话体验",
+        "source": "settings",
+        "source_id": null,
+        "recent_mentions": [],
+        "suppress": false,
+        "suppressed_at": null,
+        "protected": false
+      }
+    ]
+  }
+}

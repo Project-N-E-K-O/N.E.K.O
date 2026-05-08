@@ -26,7 +26,7 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 
 ## 4. キャラクターのカスタマイズ
 
-`http://localhost:48911/chara_manager` にアクセスして、以下の操作ができます：
+`http://localhost:48911/character_card_manager` にアクセスして、以下の操作ができます：
 
 - キャラクターの名前、性別、年齢、性格特性の変更
 - カスタムLive2DまたはVRMモデルの設定
@@ -38,14 +38,12 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 | URL | 用途 |
 |-----|------|
 | `/` | メインチャットインターフェース |
-| `/chara_manager` | キャラクター設定 |
 | `/api_key` | APIキーの設定 |
 | `/model_manager` | Live2D/VRMモデル管理 |
 | `/live2d_emotion_manager` | 感情からアニメーションへのマッピング |
 | `/vrm_emotion_manager` | VRM感情マッピング |
 | `/voice_clone` | 音声クローン |
 | `/memory_browser` | メモリの閲覧と編集 |
-| `/steam_workshop_manager` | Steam Workshopアイテム |
 
 ## 次のステップ
 

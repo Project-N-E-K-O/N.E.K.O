@@ -59,6 +59,43 @@
     }
     mod.pushSelectedSourceToMain = pushSelectedSourceToMain;
 
+    // ======================== clearSelectedScreenSource ========================
+    /**
+     * 统一清除已失效的选中屏幕源 ID：渲染器 state + localStorage + 主进程三处一起清，
+     * 并同步 popup UI 高亮状态。用在检测到 selectedScreenSourceId 对应的窗口/屏幕
+     * 已不复存在（HWND 失效、窗口被关、屏幕被拔掉）时，防止下一次截图仍拿同一个
+     * 过期 ID 去走必然失败的快路径。
+     */
+    function clearSelectedScreenSource(reason) {
+        if (S.selectedScreenSourceId == null) return;
+        try {
+            console.log('[屏幕源] 清除失效的选中源' + (reason ? ' (' + reason + ')' : ''), S.selectedScreenSourceId);
+        } catch (_) { }
+        S.selectedScreenSourceId = null;
+        try { localStorage.removeItem('selectedScreenSourceId'); } catch (_) { }
+        pushSelectedSourceToMain(null);
+        try {
+            if (typeof updateScreenSourceListSelection === 'function') {
+                updateScreenSourceListSelection();
+            }
+        } catch (_) { }
+    }
+    mod.clearSelectedScreenSource = clearSelectedScreenSource;
+
+    // ======================== maybeClearSourceOnNotFound ========================
+    /**
+     * 通用兜底：主进程 captureSourceAsDataUrl 返回 { error: 'Source not found' }
+     * 时统一清掉失效的 selectedScreenSourceId。所有调用 captureSourceAsDataUrl 的
+     * 路径（截图、隐藏NEKO 重截、主动搭话）共用同一份语义，避免漏处理。
+     * 返回 true 表示已清理（调用方可据此判断要不要走下一个兜底）。
+     */
+    function maybeClearSourceOnNotFound(direct, reason) {
+        if (!direct || direct.error !== 'Source not found') return false;
+        clearSelectedScreenSource(reason);
+        return true;
+    }
+    mod.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
+
     // 模块初始化：立刻将还原的选择推送到主进程，覆盖上次会话遗留的值
     pushSelectedSourceToMain(S.selectedScreenSourceId);
 
@@ -305,6 +342,11 @@
                         var captureSourceId = selectedSourceId;
                         if (!sourceExists) {
                             console.warn('[acquireStream] 选中的源已不可用，尝试回退到全屏源');
+                            // 把失效的 ID 从 state / localStorage / 主进程一起清掉，
+                            // 否则下次截图还会拿这个过期 ID 去走 Priority 1 (主进程
+                            // 直接捕获 "Source not found") 和 Priority 2 的 Electron
+                            // getUserMedia（会跑到 500ms 超时），整条失败链路每次重放。
+                            clearSelectedScreenSource('getSources 未找到该源');
                             var screenSources = currentSources.filter(function (s) { return s.id.startsWith('screen:'); });
                             if (screenSources.length > 0) {
                                 captureSourceId = screenSources[0].id;
@@ -409,6 +451,62 @@
     }
     mod.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
 
+    async function buildLocalSecureHeaders() {
+        var helper = window.nekoLocalMutationSecurity;
+        if (!helper || typeof helper.getMutationHeaders !== 'function') {
+            return {};
+        }
+        try {
+            return await helper.getMutationHeaders();
+        } catch (e) {
+            console.warn('[截图] 获取本地安全请求头失败:', e);
+            return {};
+        }
+    }
+
+    async function isLocalCsrfFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var payload = await cloned.json();
+            return !!(payload && payload.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async function secureLocalScreenshotFetch(url, options) {
+        var helper = window.nekoLocalMutationSecurity;
+        var requestOptions = options || {};
+        var baseHeaders = Object.assign({}, requestOptions.headers);
+
+        async function send(headers) {
+            return fetch(url, {
+                method: requestOptions.method || 'POST',
+                headers: headers,
+                body: requestOptions.body,
+                cache: requestOptions.cache,
+            });
+        }
+
+        var headers = Object.assign({}, baseHeaders, await buildLocalSecureHeaders());
+        var resp = await send(headers);
+        if (
+            await isLocalCsrfFailure(resp)
+            && helper
+            && typeof helper.refreshToken === 'function'
+        ) {
+            try {
+                await helper.refreshToken();
+                headers = Object.assign({}, baseHeaders, await buildLocalSecureHeaders());
+                resp = await send(headers);
+            } catch (e) {
+                console.warn('[截图] 刷新本地安全 token 失败:', e);
+            }
+        }
+        return resp;
+    }
+
     // ======================== fetchBackendScreenshot ========================
     /**
      * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
@@ -421,7 +519,7 @@
             return { dataUrl: null, status: null };
         }
         try {
-            var resp = await fetch('/api/screenshot');
+            var resp = await secureLocalScreenshotFetch('/api/screenshot', { method: 'POST' });
             if (!resp.ok) return { dataUrl: null, status: resp.status };
             var json = await resp.json();
             if (json.success && json.data) {
@@ -435,6 +533,45 @@
         }
     }
     mod.fetchBackendScreenshot = fetchBackendScreenshot;
+
+    /**
+     * 后端系统原生交互截图：触发操作系统级的全桌面框选截图。
+     * 仅适合用户手势触发的场景（如点击聊天截图按钮）。
+     * @returns {Promise<{dataUrl: string|null, status: number|null, canceled?: boolean, error?: string|null}>}
+     */
+    async function fetchBackendInteractiveScreenshot() {
+        var h = window.location.hostname;
+        if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
+            return { dataUrl: null, status: null, canceled: false, error: null };
+        }
+        try {
+            var resp = await secureLocalScreenshotFetch('/api/screenshot/interactive', { method: 'POST' });
+            var json = null;
+            try {
+                json = await resp.json();
+            } catch (_) {
+                json = null;
+            }
+            if (json && json.canceled) {
+                console.log('[截图] 系统原生交互截图已取消');
+                return { dataUrl: null, status: resp.status, canceled: true, error: null };
+            }
+            if (resp.ok && json && json.success && json.data) {
+                console.log('[截图] 系统原生交互截图成功,', json.size, 'bytes');
+                return { dataUrl: json.data, status: resp.status, canceled: false, error: null };
+            }
+            return {
+                dataUrl: null,
+                status: resp.status,
+                canceled: false,
+                error: (json && json.error) ? json.error : null
+            };
+        } catch (e) {
+            console.warn('[截图] 系统原生交互截图请求失败:', e);
+            return { dataUrl: null, status: null, canceled: false, error: e && e.message ? e.message : null };
+        }
+    }
+    mod.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
 
     // ======================== stopScreening ========================
     function stopScreening() {
@@ -1468,6 +1605,7 @@
     window.captureFrameFromStream = captureFrameFromStream;
     window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
+    window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
     window.stopScreening = stopScreening;
@@ -1475,6 +1613,8 @@
     window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
     window.getAvatarScreenPosition = getAvatarScreenPosition;
     window.detectScreenshotCaptureType = detectScreenshotCaptureType;
+    window.clearSelectedScreenSource = clearSelectedScreenSource;
+    window.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
 
     // ======================== Export module ========================
     window.appScreen = mod;

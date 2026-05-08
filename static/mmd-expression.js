@@ -307,6 +307,16 @@ class MMDExpression {
                 });
             }
             if (lipValue > 0.05) {
+                // mixer.update 在本帧可能已写入待机 VMD 的 い/う/え 口型轨道，
+                // setMouth 之后只覆盖 あ/お，其余元音残留会与 lip sync 叠加成混合口型。
+                // 这里在写 あ/お 之前先把 lip sync 不主动驱动的 い/う/え 置 0，确保
+                // 语音口型同步期间嘴部完全由 lip sync 驱动。清零只在 lipValue>0.05
+                // 分支执行——非 lip sync 帧仍保留 VMD 口型轨道的正常播放。
+                for (const phoneme of ['i', 'u', 'e']) {
+                    for (const name of (this.lipMorphNames[phoneme] || [])) {
+                        this.setMorphWeight(name, 0);
+                    }
+                }
                 this.setMouth(lipValue);
             } else {
                 this.setMouth(0);

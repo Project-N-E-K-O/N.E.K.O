@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import logging
-from config import MONITOR_SERVER_PORT
+from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +41,11 @@ def get_resource_path(relative_path):
 templates = Jinja2Templates(directory=get_resource_path(""))
 
 app = FastAPI()
+
+DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
+LEGACY_DEFAULT_LIVE2D_MODELS = {
+    model_name for model_name in ("yui_default", "yui-default") if model_name != DEFAULT_LIVE2D_MODEL
+}
 
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
@@ -85,22 +90,33 @@ async def get_page_config(lanlan_name: str = ""):
             'avatar',
             'live2d',
             'model_path',
-            default='mao_pro',
+            default=DEFAULT_LIVE2D_MODEL,
             legacy_keys=('live2d',),
         )
         if not isinstance(live2d_model_path, str):
-            live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else 'mao_pro'
+            live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else DEFAULT_LIVE2D_MODEL
+        live2d_model_path = live2d_model_path.strip()
         if live2d_model_path.endswith('.model3.json'):
             parts = live2d_model_path.replace('\\', '/').split('/')
             live2d = parts[-2] if len(parts) >= 2 else parts[-1].removesuffix('.model3.json')
         else:
             live2d = live2d_model_path
+        live2d = live2d.strip()
+        if not live2d:
+            live2d = DEFAULT_LIVE2D_MODEL
+        if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
+            live2d = DEFAULT_LIVE2D_MODEL
         
         # 查找所有模型
         models = find_models()
         
         # 根据 live2d 字段查找对应的 model path
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+        if not model_path and live2d != DEFAULT_LIVE2D_MODEL:
+            model_path = next(
+                (m["path"] for m in models if m["name"] == DEFAULT_LIVE2D_MODEL),
+                find_model_config_file(DEFAULT_LIVE2D_MODEL),
+            )
         
         return {
             "success": True,

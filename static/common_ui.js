@@ -419,7 +419,7 @@ if (toggleBtn) {
                 }
 
                 if (becomingCollapsed) {
-                    iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.src = '/static/icons/expand_icon_off_ball.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                     // 折叠后执行回弹，避免位置越界
@@ -554,7 +554,7 @@ if (toggleBtn) {
 
             if (isMinimized) {
                 // 刚刚最小化，显示展开图标（加号）
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = '/static/icons/expand_icon_off_ball.png';
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
@@ -601,7 +601,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_off.png';
+                iconImg.src = '/static/icons/expand_icon_off_ball.png';
             }
         }
     });
@@ -1051,8 +1051,17 @@ if (toggleBtn) {
 const sidebar = document.getElementById('sidebar');
 
 
-// --- 初始化 ---
-document.addEventListener('DOMContentLoaded', () => {
+async function initCommonUiAfterStorageBarrier() {
+    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+        try {
+            await window.waitForStorageLocationStartupBarrier();
+        } catch (_) {}
+    } else if (window.__nekoStorageLocationStartupBarrier
+        && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+        try {
+            await window.__nekoStorageLocationStartupBarrier;
+        } catch (_) {}
+    }
 
     setupResizableChatContainer();
 
@@ -1073,7 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon_off.png';
+            iconImg.src = '/static/icons/expand_icon_off_ball.png';
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
@@ -1087,6 +1096,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 确保自动滚动在页面加载后生效
     scrollToBottom();
+}
+
+// --- 初始化 ---
+document.addEventListener('DOMContentLoaded', () => {
+    initCommonUiAfterStorageBarrier();
 });
 
 // 监听 DOM 变化，确保新内容添加后自动滚动

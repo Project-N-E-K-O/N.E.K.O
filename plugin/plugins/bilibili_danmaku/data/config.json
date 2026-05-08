@@ -1,9 +1,8 @@
 {
   "room_id": 0,
-  "interval_seconds": 30,
-  "_comment_interval": "推送间隔范围 5~180 秒",
+  "interval_seconds": 15,
   "target_lanlan": "",
-  "_comment_target_lanlan": "弹幕推送的目标 AI 名称（应与 lanlan_name 一致，留空则不指定）",
   "danmaku_max_length": 20,
-  "_comment_danmaku_max_length": "发送弹幕的最大长度限制（B站限制 20 字符，建议 20）"
+  "master_bili_uid": 0,
+  "master_bili_name": ""
 }

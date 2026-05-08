@@ -354,8 +354,8 @@ def on_event(
 def plugin_entry(
     *,
     id: str | None = None,
-    name: str | None = None,
-    description: str = "",
+    name: object | None = None,
+    description: object = "",
     input_schema: dict[str, object] | None = None,
     params: type | None = None,
     kind: EntryKind = "action",
@@ -392,7 +392,12 @@ def plugin_entry(
         event_id = (id or fn.__name__).strip()
         if event_id == "":
             raise ValueError("entry id must be non-empty")
-        event_name = (name or event_id).strip() or event_id
+        if name is None:
+            event_name: object = event_id
+        elif isinstance(name, str):
+            event_name = name.strip() or event_id
+        else:
+            event_name = name
         inferred_params_model: type | None = None
         inferred_params_schema: dict[str, object] | None = None
         if params is None and input_schema is None:

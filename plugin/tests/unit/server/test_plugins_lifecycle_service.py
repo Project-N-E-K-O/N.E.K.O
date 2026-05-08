@@ -12,6 +12,7 @@ from plugin.core import registry as registry_module
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import lifecycle_service as module
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure import runtime_overrides as runtime_overrides_module
 from plugin.sdk.plugin.decorators import plugin_entry
 
 
@@ -1063,6 +1064,129 @@ async def test_delete_plugin_rejects_host_with_bound_extensions(
         assert exc_info.value.status_code == 409
         assert "demo_ext" in exc_info.value.message
         assert host_dir.exists() is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+def _seed_extension(config_path: Path, host_plugin_id: str = "host_plugin") -> None:
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins.clear()
+        module.state.plugins["demo_ext"] = {
+            "id": "demo_ext",
+            "name": "Demo Extension",
+            "type": "extension",
+            "config_path": str(config_path),
+            "entry_point": "tests.fake_ext:Plugin",
+            "host_plugin_id": host_plugin_id,
+            "runtime_enabled": True,
+        }
+    with module.state.acquire_plugin_hosts_write_lock():
+        module.state.plugin_hosts.clear()
+        module.state.plugin_hosts[host_plugin_id] = _FakeProcessHost(
+            plugin_id=host_plugin_id,
+            entry_point="tests.fake:Host",
+            config_path=config_path.parent.parent / host_plugin_id / "plugin.toml",
+        )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_disable_and_enable_extension_persist_runtime_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = tmp_path / "demo_ext" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_ext'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        _seed_extension(config_path)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        await service.disable_extension("demo_ext")
+        assert _isolate_runtime_overrides == {"demo_ext": False}
+        assert runtime_overrides_module.get_runtime_override("demo_ext") is False
+
+        await service.enable_extension("demo_ext")
+        assert _isolate_runtime_overrides == {"demo_ext": True}
+        assert runtime_overrides_module.get_runtime_override("demo_ext") is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_clears_runtime_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "[plugin]\nid='demo_plugin'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo_plugin"] = {
+                "id": "demo_plugin",
+                "name": "Demo",
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        runtime_overrides_module.set_runtime_override("demo_plugin", False)
+        assert _isolate_runtime_overrides == {"demo_plugin": False}
+
+        async def _refresh_registry() -> dict[str, object]:
+            return {"success": True}
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        await service.delete_plugin("demo_plugin")
+
+        assert _isolate_runtime_overrides == {}
+        assert runtime_overrides_module.get_runtime_override("demo_plugin") is None
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

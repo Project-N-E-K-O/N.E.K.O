@@ -6,13 +6,21 @@ Handles WebSocket endpoints including:
 - Main WebSocket connection for chat
 - Proactive chat
 - Task notifications
+
+URL convention: WebSocket routes (``@router.websocket('/ws/...')``) follow the
+same no-trailing-slash rule as HTTP routes. See
+``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
 import uuid
 import asyncio
+import time
 
 from utils.logger_config import get_module_logger
+from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .shared_state import (
@@ -20,6 +28,7 @@ from .shared_state import (
     get_config_manager,
     get_session_id,
 )
+from .game_router import is_game_route_active, route_external_stream_message
 
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
@@ -41,6 +50,22 @@ def _fire_task(coro):
 
 # 每个角色的 WS 断开时间戳（epoch），用于区分"首次连接"与"刷新/重连"
 _ws_disconnect_time: dict[str, float] = {}
+
+# 前端首页新手引导的轻量兜底状态。只用于阻止已经穿过前端的 greeting_check，
+# 带 TTL，避免断线或前端异常导致后端长期误判仍在教程中。
+_HOME_TUTORIAL_STATE_TTL_SECONDS = 60.0
+_home_tutorial_blocking_greeting: dict[str, tuple[bool, float]] = {}
+
+
+def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
+    state = _home_tutorial_blocking_greeting.get(lanlan_name)
+    if not state:
+        return False
+    blocking, updated_at = state
+    if time.time() - updated_at > _HOME_TUTORIAL_STATE_TTL_SECONDS:
+        _home_tutorial_blocking_greeting.pop(lanlan_name, None)
+        return False
+    return bool(blocking)
 
 
 @router.websocket("/ws/{lanlan_name}")
@@ -76,7 +101,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     
     this_session_id = uuid.uuid4()
     # [DIAG] stream_data 计数器：按连接独立，重连后 `#1` 首包可见
-    sd_log_counter = 0
+    # sd_log_counter = 0
     async with _lock:
         session_id = get_session_id()
         session_id[lanlan_name] = this_session_id
@@ -119,24 +144,52 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = False
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text']:
+                    if is_game_route_active(lanlan_name):
+                        if input_type == "text":
+                            logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
+                            _fire_task(session_manager[lanlan_name].send_session_started("text"))
+                            continue
+                        if input_type == "audio":
+                            logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            if session_manager[lanlan_name]._starting_session_count == 0:
+                                session_manager[lanlan_name].reset_session_start_circuit()
+                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio"))
+                            continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
+                    # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
+                    # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
+                    # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
+                    # 正在跑的失败重新算第 1 次，熔断永远开不起来。这种情况下
+                    # 让正在跑的那次自己处理；新的 start_session 进入后会被
+                    # _starting_session_count > 0 的早退拦掉。
+                    if session_manager[lanlan_name]._starting_session_count == 0:
+                        session_manager[lanlan_name].reset_session_start_circuit()
                     _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
+                if is_game_route_active(lanlan_name):
+                    input_type = message.get("input_type")
+                    if input_type == "audio":
+                        await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
+                    else:
+                        handled_by_game = await route_external_stream_message(lanlan_name, message)
+                        if handled_by_game:
+                            continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
-                _input_type_dbg = message.get("input_type")
-                _data = message.get("data")
-                _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
-                # 按连接计数，重连后 #1 首包仍可见；每 50 次打一条够判断通路是否活
-                sd_log_counter += 1
-                if sd_log_counter == 1 or sd_log_counter % 50 == 0:
-                    logger.info(
-                        f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
-                    )
+                # _input_type_dbg = message.get("input_type")
+                # _data = message.get("data")
+                # _data_len = len(_data) if isinstance(_data, (str, bytes, bytearray)) else -1
+                # # 按连接计数，重连后 #1 首包仍可见；每 50 次打一条够判断通路是否活
+                # sd_log_counter += 1
+                # if sd_log_counter == 1 or sd_log_counter % 50 == 0:
+                #     logger.info(
+                #         f"[{lanlan_name}] stream_data #{sd_log_counter} input_type={_input_type_dbg} data_len={_data_len}"
+                #     )
                 # Extract and store avatar position metadata (paired with screenshot)
                 # 显式清空：前端不发 avatar_position = 不应叠加，防止旧坐标残留
                 av_pos = message.get("avatar_position")
@@ -144,7 +197,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = av_pos
                 else:
                     session_manager[lanlan_name]._avatar_position = None
-                _fire_task(session_manager[lanlan_name].stream_data(message))
+                if message.get("input_type") == "audio":
+                    await session_manager[lanlan_name].stream_data(message)
+                else:
+                    _fire_task(session_manager[lanlan_name].stream_data(message))
 
             elif action == "avatar_interaction":
                 _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
@@ -168,23 +224,46 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     session_manager[lanlan_name]._avatar_position = None
                 session_manager[lanlan_name].resolve_screenshot_request(b64)
 
+            elif action == "home_tutorial_state":
+                blocking = bool(message.get("blocking_greeting"))
+                _home_tutorial_blocking_greeting[lanlan_name] = (blocking, time.time())
+                logger.debug(
+                    "[%s] home_tutorial_state: blocking_greeting=%s reason=%s",
+                    lanlan_name, blocking, message.get("reason") or "",
+                )
+
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话
                 # is_switch=true 时始终触发；否则检查上次断开距今是否 >15s（排除刷新/重连）
-                import time as _time
+                if _is_home_tutorial_blocking_greeting(lanlan_name):
+                    logger.info(f"[{lanlan_name}] greeting_check: skipped by home tutorial guard")
+                    continue
                 is_switch = message.get("is_switch", False)
+                greeting_reason = str(message.get("reason") or "").strip().lower()[:64]
+                # 教程结束释放的是延迟问好，不应被刚经历过的页面/窗口重连保护吞掉。
+                bypass_reconnect_guard = greeting_reason in {"tutorial-completed", "tutorial-skipped"}
                 last_disconnect = _ws_disconnect_time.get(lanlan_name, 0)
-                since_disconnect = _time.time() - last_disconnect if last_disconnect else float('inf')
-                if is_switch or since_disconnect > 15:
-                    logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s → triggering")
-                    _fire_task(session_manager[lanlan_name].trigger_greeting())
+                since_disconnect = time.time() - last_disconnect if last_disconnect else float('inf')
+                if is_switch or since_disconnect > 15 or bypass_reconnect_guard:
+                    if await has_new_character_greeting_pending(_config_manager, lanlan_name):
+                        logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
+                        _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())
+                    else:
+                        logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
+                        _fire_task(session_manager[lanlan_name].trigger_greeting())
                 else:
-                    logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s → skip (refresh/reconnect)")
+                    logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
             elif action == "ping":
                 # 心跳保活消息，回复pong
                 await websocket.send_text(json.dumps({"type": "pong"}))
                 # logger.debug(f"收到心跳ping，已回复pong")
+
+            elif action == "language_update":
+                # 前端 i18next 'languageChanged' fire 时发的纯语言同步消息：``language``
+                # 字段已被 line 136-139 通用 handler 处理（``set_user_language``），
+                # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
+                pass
 
             else:
                 logger.warning(f"Unknown action received: {action}")
@@ -203,8 +282,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
-        import time as _time
-        _ws_disconnect_time[lanlan_name] = _time.time()
+        _ws_disconnect_time[lanlan_name] = time.time()
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()

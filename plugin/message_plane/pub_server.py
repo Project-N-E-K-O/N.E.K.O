@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 import zmq
-from loguru import logger
+from plugin.logging_config import logger
 
 
 @dataclass

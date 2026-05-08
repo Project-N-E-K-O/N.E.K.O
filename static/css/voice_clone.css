@@ -862,12 +862,29 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     border: 2px solid #e3f4ff;
     transition: all 0.2s ease;
     min-height: 70px;
+    cursor: pointer;
 }
 
 .voice-list-item:hover {
     border-color: #b3e5fc;
     box-shadow: 0 4px 12px rgba(64, 197, 241, 0.1);
     transform: translateY(-2px);
+}
+
+.voice-list-item:focus-visible {
+    outline: 3px solid rgba(64, 197, 241, 0.35);
+    outline-offset: 2px;
+}
+
+.voice-list-item.applying {
+    border-color: #40c5f1;
+    opacity: 0.75;
+    pointer-events: none;
+}
+
+.voice-list-item.selected {
+    border-color: #40c5f1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.16);
 }
 
 .voice-list-item:last-child {

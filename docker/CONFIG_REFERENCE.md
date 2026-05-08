@@ -70,17 +70,12 @@
 
 ### 5. 模型配置
 
-#### 直接被导入使用的模型（config/__init__.py 第 26-30 行）
+> 历史上的 `ROUTER_MODEL` / `SEMANTIC_MODEL` / `RERANKER_MODEL` /
+> `SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 全部退环境
+> （见 `config/__init__.py` 顶部说明）。memory 子系统的 LLM 调用统一按 tier
+> 走 `config_manager.get_model_api_config(<tier>)`，嵌入服务走本地 ONNX。
 
-| 配置项 | 代码常量 | 默认值 | 用途 |
-|-------|---------|--------|------|
-| 路由模型 | `ROUTER_MODEL` | `openai/gpt-4.1` | 记忆路由决策 |
-| 设置提议模型 | `SETTING_PROPOSER_MODEL` | `qwen-max` | 设置更新提议 |
-| 设置验证模型 | `SETTING_VERIFIER_MODEL` | `qwen-max` | 设置更新验证 |
-| 语义模型 | `SEMANTIC_MODEL` | `text-embedding-v4` | 语义嵌入 |
-| 重排序模型 | `RERANKER_MODEL` | `qwen-plus` | 搜索结果重排序 |
-
-#### 通过 config_manager 动态获取的模型（config/__init__.py 第 33-36 行）
+#### 通过 config_manager 动态获取的模型
 
 | 配置项 | 代码常量 | 环境变量 | 默认值 | 用途 |
 |-------|---------|---------|--------|------|

@@ -69,6 +69,69 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
 
 
 @pytest.mark.unit
+def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch, tmp_path):
+    import launcher
+
+    anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
+    selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
+    config_manager = SimpleNamespace(app_docs_dir=tmp_path / "legacy" / "N.E.K.O")
+    reset_calls = []
+    original_selected_env = launcher.os.environ.get("NEKO_STORAGE_SELECTED_ROOT")
+    original_anchor_env = launcher.os.environ.get("NEKO_STORAGE_ANCHOR_ROOT")
+    original_cloudsave_env = launcher.os.environ.get("NEKO_STORAGE_CLOUDSAVE_ROOT")
+
+    monkeypatch.delenv("NEKO_STORAGE_SELECTED_ROOT", raising=False)
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    monkeypatch.delenv("NEKO_STORAGE_CLOUDSAVE_ROOT", raising=False)
+
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: reset_calls.append("reset"))
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _config_manager: {
+            "attempted": True,
+            "completed": True,
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _config_manager: {
+            "selected_root": str(selected_root),
+            "anchor_root": str(anchor_root),
+            "cloudsave_root": str(anchor_root / "cloudsave"),
+            "source": "policy",
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+
+        assert result["migration_result"]["completed"] is True
+        assert result["layout"]["selected_root"] == str(selected_root)
+        assert result["layout"]["anchor_root"] == str(anchor_root)
+        assert result["layout"]["cloudsave_root"] == str(anchor_root / "cloudsave")
+        assert reset_calls == ["reset", "reset", "reset"]
+        assert launcher.os.environ["NEKO_STORAGE_SELECTED_ROOT"] == str(selected_root)
+        assert launcher.os.environ["NEKO_STORAGE_ANCHOR_ROOT"] == str(anchor_root)
+        assert launcher.os.environ["NEKO_STORAGE_CLOUDSAVE_ROOT"] == str(anchor_root / "cloudsave")
+    finally:
+        if original_selected_env is None:
+            launcher.os.environ.pop("NEKO_STORAGE_SELECTED_ROOT", None)
+        else:
+            launcher.os.environ["NEKO_STORAGE_SELECTED_ROOT"] = original_selected_env
+        if original_anchor_env is None:
+            launcher.os.environ.pop("NEKO_STORAGE_ANCHOR_ROOT", None)
+        else:
+            launcher.os.environ["NEKO_STORAGE_ANCHOR_ROOT"] = original_anchor_env
+        if original_cloudsave_env is None:
+            launcher.os.environ.pop("NEKO_STORAGE_CLOUDSAVE_ROOT", None)
+        else:
+            launcher.os.environ["NEKO_STORAGE_CLOUDSAVE_ROOT"] = original_cloudsave_env
+
+
+@pytest.mark.unit
 def test_launcher_uses_multi_process_mode_by_default_in_source(monkeypatch):
     import launcher
 
@@ -102,6 +165,234 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
 
 
 @pytest.mark.unit
+def test_launcher_suppresses_startup_failure_events_during_expected_shutdown(monkeypatch):
+    import launcher
+
+    emitted_events = []
+
+    monkeypatch.setattr(launcher, "_expected_launcher_shutdown", True)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event_type, payload=None: emitted_events.append((event_type, payload)),
+    )
+
+    launcher.report_startup_failure("Startup failed: Memory Server exited early (exitcode=-15)")
+
+    assert emitted_events == []
+
+
+@pytest.mark.unit
+def test_launcher_post_startup_root_state_preserves_non_normal_modes(monkeypatch):
+    import launcher
+
+    config_manager = SimpleNamespace(
+        app_docs_dir="/tmp/runtime/N.E.K.O",
+        load_root_state=lambda: {"mode": "deferred_init"},
+    )
+    set_root_mode_calls = []
+
+    monkeypatch.setattr(launcher, "set_root_mode", lambda *_args, **_kwargs: set_root_mode_calls.append((_args, _kwargs)))
+
+    launcher._persist_post_startup_root_state(config_manager)
+
+    assert set_root_mode_calls == []
+
+
+@pytest.mark.unit
+def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_migration(monkeypatch):
+    import launcher
+
+    emitted_events = []
+    released = {"called": False}
+    spawned = {"called": False}
+
+    config_manager = SimpleNamespace(
+        load_root_state=lambda: {
+            "mode": launcher.ROOT_MODE_MAINTENANCE_READONLY,
+            "last_migration_result": "restart_rebind:/tmp/original-root/N.E.K.O",
+        }
+    )
+
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "layout": {
+                "selected_root": "/tmp/original-root/N.E.K.O",
+                "anchor_root": "/tmp/anchor-root/N.E.K.O",
+                "cloudsave_root": "/tmp/anchor-root/N.E.K.O/cloudsave",
+            },
+            "migration_result": {
+                "attempted": False,
+                "completed": False,
+            },
+        },
+    )
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda event_type, payload=None: emitted_events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(launcher, "release_startup_lock", lambda: released.__setitem__("called", True))
+    monkeypatch.setattr(launcher, "_spawn_restarted_launcher", lambda: spawned.__setitem__("called", True))
+
+    result = launcher._maybe_schedule_storage_restart()
+
+    assert result is True
+    assert released["called"] is True
+    assert spawned["called"] is True
+    assert emitted_events == [
+        (
+            "storage_migration_restart",
+            {
+                "completed": True,
+                "error_code": "",
+                "error_message": "",
+                "layout": {
+                    "selected_root": "/tmp/original-root/N.E.K.O",
+                    "anchor_root": "/tmp/anchor-root/N.E.K.O",
+                    "cloudsave_root": "/tmp/anchor-root/N.E.K.O/cloudsave",
+                },
+                "restart_reason": "rebind_only",
+            },
+        )
+    ]
+
+
+@pytest.mark.unit
+def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovered_from_stale_maintenance(
+    monkeypatch,
+):
+    import launcher
+
+    released = {"called": False}
+    spawned = {"called": False}
+
+    config_manager = SimpleNamespace(
+        load_root_state=lambda: {
+            "mode": launcher.ROOT_MODE_NORMAL,
+            "current_root": "/tmp/anchor-root/N.E.K.O",
+            "last_migration_source": "/tmp/original-root/N.E.K.O",
+            "last_migration_result": "recovered_stale_mode:maintenance_readonly",
+        }
+    )
+
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_storage_layout_for_launch",
+        lambda: {
+            "layout": {
+                "selected_root": "/tmp/original-root/N.E.K.O",
+                "anchor_root": "/tmp/anchor-root/N.E.K.O",
+                "cloudsave_root": "/tmp/anchor-root/N.E.K.O/cloudsave",
+            },
+            "migration_result": {
+                "attempted": False,
+                "completed": False,
+            },
+        },
+    )
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(launcher, "release_startup_lock", lambda: released.__setitem__("called", True))
+    monkeypatch.setattr(launcher, "_spawn_restarted_launcher", lambda: spawned.__setitem__("called", True))
+
+    result = launcher._maybe_schedule_storage_restart()
+
+    assert result is True
+    assert released["called"] is True
+    assert spawned["called"] is True
+
+
+@pytest.mark.unit
+def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(monkeypatch):
+    import launcher
+
+    popen_calls = []
+
+    class _TTYStream:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(launcher.sys, "stdin", _TTYStream())
+    monkeypatch.setattr(launcher.sys, "stdout", _TTYStream())
+    monkeypatch.setattr(launcher.sys, "stderr", _TTYStream())
+    monkeypatch.setattr(launcher, "_build_launcher_relaunch_command", lambda: ["python", "launcher.py"])
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+
+    launcher._spawn_restarted_launcher()
+
+    assert len(popen_calls) == 1
+    _, kwargs = popen_calls[0]
+    assert kwargs["stdin"] is launcher.subprocess.DEVNULL
+    assert kwargs["stdout"] is launcher.subprocess.DEVNULL
+    assert kwargs["stderr"] is launcher.subprocess.DEVNULL
+
+
+@pytest.mark.unit
+def test_spawn_restarted_launcher_preserves_stdio_when_not_running_in_tty(monkeypatch):
+    import launcher
+
+    popen_calls = []
+
+    class _PipeStream:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(launcher.sys, "stdin", _PipeStream())
+    monkeypatch.setattr(launcher.sys, "stdout", _PipeStream())
+    monkeypatch.setattr(launcher.sys, "stderr", _PipeStream())
+    monkeypatch.setattr(launcher, "_build_launcher_relaunch_command", lambda: ["python", "launcher.py"])
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+
+    launcher._spawn_restarted_launcher()
+
+    assert len(popen_calls) == 1
+    _, kwargs = popen_calls[0]
+    assert "stdin" not in kwargs
+    assert "stdout" not in kwargs
+    assert "stderr" not in kwargs
+
+
+@pytest.mark.unit
+def test_spawn_restarted_launcher_clears_main_server_init_marker_from_relaunch_env(monkeypatch):
+    import launcher
+
+    popen_calls = []
+
+    class _PipeStream:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(launcher.sys, "stdin", _PipeStream())
+    monkeypatch.setattr(launcher.sys, "stdout", _PipeStream())
+    monkeypatch.setattr(launcher.sys, "stderr", _PipeStream())
+    monkeypatch.setattr(launcher, "_build_launcher_relaunch_command", lambda: ["python", "launcher.py"])
+    monkeypatch.setenv("_NEKO_MAIN_SERVER_INITIALIZED", "1")
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+
+    launcher._spawn_restarted_launcher()
+
+    assert len(popen_calls) == 1
+    _, kwargs = popen_calls[0]
+    assert kwargs["env"].get("_NEKO_MAIN_SERVER_INITIALIZED") is None
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_syncs_memory_server_after_startup_import():
     import main_server
@@ -127,6 +418,58 @@ async def test_main_server_skips_memory_reload_when_startup_import_did_not_run()
         await main_server._sync_memory_server_after_startup_import({"action": "skipped"})
 
     mock_reload.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_requests_local_server_shutdown_in_multi_process_mode(monkeypatch):
+    import main_server
+
+    shutdown_mock = AsyncMock()
+    start_config = {
+        "browser_mode_enabled": False,
+        "browser_page": "",
+        "shutdown_memory_server_on_exit": False,
+        "request_runtime_shutdown": None,
+        "server": object(),
+    }
+
+    monkeypatch.setenv("NEKO_LAUNCH_MODE", "multi")
+    monkeypatch.setenv("NEKO_LAUNCHER_PID", "54321")
+    monkeypatch.setattr(main_server, "get_start_config", lambda: start_config)
+    monkeypatch.setattr(main_server, "shutdown_server_async", shutdown_mock)
+
+    await main_server.request_application_shutdown_async()
+
+    shutdown_mock.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_uses_runtime_shutdown_bridge_when_available(monkeypatch):
+    import main_server
+
+    callback_calls = []
+
+    def _request_runtime_shutdown():
+        callback_calls.append("called")
+
+    monkeypatch.setattr(
+        main_server,
+        "get_start_config",
+        lambda: {
+            "browser_mode_enabled": False,
+            "browser_page": "",
+            "shutdown_memory_server_on_exit": False,
+            "request_runtime_shutdown": _request_runtime_shutdown,
+            "server": None,
+        },
+    )
+    monkeypatch.setattr(main_server, "shutdown_server_async", AsyncMock())
+
+    await main_server.request_application_shutdown_async()
+
+    assert callback_calls == ["called"]
 
 
 @pytest.mark.unit
@@ -330,3 +673,113 @@ def test_launcher_cleanup_survives_keyboardinterrupt_during_shutdown_wait(monkey
     launcher.cleanup_servers()
 
     assert process.terminate_called is True
+
+
+@pytest.mark.unit
+def test_wait_for_servers_treats_main_server_exit_as_storage_restart_during_startup(monkeypatch):
+    import launcher
+
+    marked_shutdown = []
+    startup_failures = []
+
+    class _DummyEvent:
+        def set(self):
+            return None
+
+    class _DummyThread:
+        def __init__(self, *args, **kwargs):
+            self.daemon = False
+
+        def start(self):
+            return None
+
+        def join(self):
+            return None
+
+    class _DummyProcess:
+        exitcode = 0
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(launcher.threading, "Event", _DummyEvent)
+    monkeypatch.setattr(launcher.threading, "Thread", _DummyThread)
+    monkeypatch.setattr(launcher, "SERVERS", [{"name": "Main Server", "module": "main_server", "port": 43111, "process": _DummyProcess()}], raising=False)
+    monkeypatch.setattr(launcher, "check_port", lambda _port: False)
+    monkeypatch.setattr(launcher, "_is_pending_storage_restart_request", lambda: True)
+    monkeypatch.setattr(launcher, "_mark_expected_launcher_shutdown", lambda: marked_shutdown.append("marked"))
+    monkeypatch.setattr(launcher, "report_startup_failure", lambda message, show_dialog=True: startup_failures.append(message))
+
+    result = launcher.wait_for_servers(timeout=1)
+
+    assert result == launcher.STARTUP_WAIT_RESULT_STORAGE_RESTART
+    assert marked_shutdown == ["marked"]
+    assert startup_failures == []
+
+
+@pytest.mark.unit
+def test_launcher_main_schedules_restart_for_storage_restart_requested_during_startup(monkeypatch):
+    import launcher
+
+    started_modules = []
+    cleanup_calls = []
+    restart_schedule_calls = []
+    release_calls = []
+    startup_failures = []
+    cleanup_state = {"done": False}
+
+    monkeypatch.setattr(launcher, "_cleanup_done", False)
+    monkeypatch.setattr(launcher, "_expected_launcher_shutdown", False)
+    monkeypatch.setattr(launcher, "freeze_support", lambda: None)
+    monkeypatch.setattr(launcher, "acquire_startup_lock", lambda: True)
+    monkeypatch.setattr(launcher, "release_startup_lock", lambda: release_calls.append("released"))
+    monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
+    monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
+    monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
+    monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
+    monkeypatch.setattr(launcher, "_prepare_cloudsave_runtime_for_launch", lambda: {})
+    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
+    monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        launcher,
+        "start_server",
+        lambda server: started_modules.append(server["module"]) or True,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "SERVERS",
+        [
+            {"name": "Memory Server", "module": "memory_server", "import_event": None},
+            {"name": "Main Server", "module": "main_server", "import_event": None},
+            {"name": "Agent Server", "module": "agent_server", "import_event": None},
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(launcher, "wait_for_servers", lambda timeout=60: launcher.STARTUP_WAIT_RESULT_STORAGE_RESTART)
+    def _cleanup_once():
+        if cleanup_state["done"]:
+            return
+        cleanup_state["done"] = True
+        cleanup_calls.append("cleanup")
+
+    monkeypatch.setattr(launcher, "cleanup_servers", _cleanup_once)
+    monkeypatch.setattr(
+        launcher,
+        "_maybe_schedule_storage_restart",
+        lambda: restart_schedule_calls.append("scheduled") or True,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "report_startup_failure",
+        lambda message, show_dialog=True: startup_failures.append(message),
+    )
+
+    result = launcher.main()
+
+    assert result == 0
+    assert started_modules == ["memory_server", "main_server", "agent_server"]
+    assert cleanup_calls == ["cleanup"]
+    assert restart_schedule_calls == ["scheduled"]
+    assert release_calls == []
+    assert startup_failures == []

@@ -1,7 +1,11 @@
 <template>
-  <div class="plugin-workbench" :class="{ 'plugin-workbench--package-open': packagePanelVisible }">
-    <section class="plugin-workbench__main">
-      <el-card class="plugin-list-card">
+  <div
+    class="plugin-workbench"
+    :class="{ 'plugin-workbench--package-open': packagePanelVisible }"
+    data-yui-guide-id="plugin-list-workbench"
+  >
+    <section class="plugin-workbench__main" data-yui-guide-id="plugin-list-main">
+      <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
@@ -9,6 +13,7 @@
                 class="multi-select-trigger"
                 :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
                 :type="multiSelectEnabled ? 'primary' : 'default'"
+                data-yui-guide-id="plugin-list-multi-select"
                 plain
                 @click="toggleMultiSelectMode"
               >
@@ -21,6 +26,7 @@
               <button
                 class="header-btn header-btn--accent"
                 :disabled="importing"
+                data-yui-guide-id="plugin-list-import"
                 @click="triggerImportFile"
               >
                 <el-icon><Upload /></el-icon>
@@ -36,6 +42,7 @@
               <button
                 class="header-btn"
                 :class="{ 'header-btn--active': packagePanelVisible }"
+                data-yui-guide-id="plugin-list-package-panel-toggle"
                 @click="togglePackagePanel"
               >
                 <el-icon><Box /></el-icon>
@@ -44,6 +51,7 @@
               <button
                 class="header-btn"
                 :class="{ 'header-btn--active header-btn--success': showMetrics }"
+                data-yui-guide-id="plugin-list-metrics-toggle"
                 @click="toggleMetrics"
               >
                 <el-icon><DataAnalysis /></el-icon>
@@ -60,6 +68,7 @@
               <button
                 class="header-btn header-btn--primary"
                 :disabled="loading"
+                data-yui-guide-id="plugin-list-refresh"
                 @click="handleRefresh"
               >
                 <el-icon><Refresh /></el-icon>
@@ -78,6 +87,7 @@
                   class="filter-rules-trigger"
                   :class="{ 'filter-rules-trigger--active': filterRulesVisible }"
                   type="button"
+                  data-yui-guide-id="plugin-list-filter-rules"
                   @click.stop="toggleFilterRules"
                 >
                   <el-icon><Operation /></el-icon>
@@ -133,6 +143,7 @@
                 v-model="filterText"
                 clearable
                 class="filter-input"
+                data-yui-guide-id="plugin-list-filter-input"
                 :placeholder="$t('plugins.filterPlaceholder')"
               />
 
@@ -157,7 +168,7 @@
 
           <div class="workbench-toolbar">
             <div class="type-filter-bar">
-              <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
+              <el-checkbox-group v-model="selectedTypes" class="type-filter-group" data-yui-guide-id="plugin-list-type-filter">
                 <el-checkbox-button label="plugin">
                   <el-icon><Box /></el-icon>
                   {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
@@ -173,7 +184,7 @@
               </el-checkbox-group>
             </div>
 
-            <div class="layout-toolbar">
+            <div class="layout-toolbar" data-yui-guide-id="plugin-list-layout-mode">
               <el-icon class="layout-toolbar__icon"><Grid /></el-icon>
               <el-radio-group v-model="layoutMode" size="small">
                 <el-radio-button label="list">列表</el-radio-button>
@@ -212,13 +223,17 @@
       </el-card>
     </section>
 
-    <aside class="plugin-workbench__side" :class="{ 'plugin-workbench__side--visible': packagePanelVisible }">
-      <PackageManagerPanel embedded @close="closePackagePanel" />
+    <aside
+      class="plugin-workbench__side"
+      :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
+      data-yui-guide-id="plugin-list-package-panel"
+    >
+      <PackageManagerPanel v-if="packagePanelVisible" embedded @close="closePackagePanel" />
     </aside>
 
     <!-- Floating multi-select action bar -->
     <Transition name="float-bar">
-      <div v-if="multiSelectEnabled" class="floating-select-bar">
+      <div v-if="multiSelectEnabled" class="floating-select-bar" data-yui-guide-id="plugin-list-float-bar">
         <!-- Batch operations row (visible when plugins are selected) -->
         <Transition name="batch-row">
           <div v-if="selectedCount > 0" class="floating-select-bar__batch">
@@ -314,9 +329,7 @@
       :visible="dangerDialogVisible"
       :loading="dangerDialogLoading"
       :title="t('plugins.dangerDialog.title')"
-      :message="pendingDangerAction?.confirm_message || t('plugins.dangerDialog.deleteMessage', {
-        pluginName: pendingDangerPlugin?.name || pendingDangerPlugin?.id || '',
-      })"
+      :message="dangerDialogMessage"
       :hint="t('plugins.dangerDialog.hint')"
       :action-label="pendingDangerAction?.label || t('plugins.delete')"
       :warning-title="t('plugins.dangerDialog.warningTitle')"
@@ -348,6 +361,7 @@ import { uploadAndUnpackPlugin, packPluginCli, downloadPluginPackage } from '@/a
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
 
@@ -355,8 +369,9 @@ const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
+const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
 const batchBusy = ref(false)
@@ -371,6 +386,21 @@ const dangerDialogVisible = ref(false)
 const dangerDialogLoading = ref(false)
 const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
 const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
+
+// confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
+// 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
+// `pendingDangerAction?.confirm_message || t(...)` 在 dict 真值时会跳过
+// fallback 并把 dict 渲染成 "[object Object]"。统一走 helper 解析。
+const dangerDialogMessage = computed(() => {
+  const fallback = t('plugins.dangerDialog.deleteMessage', {
+    pluginName: pendingDangerPlugin.value?.name || pendingDangerPlugin.value?.id || '',
+  })
+  return resolveLocalizedText(
+    pendingDangerAction.value?.confirm_message,
+    locale.value,
+    fallback,
+  )
+})
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
@@ -652,6 +682,10 @@ function togglePackagePanel() {
   packagePanelVisible.value = !packagePanelVisible.value
 }
 
+function openPackagePanel() {
+  packagePanelVisible.value = true
+}
+
 function closePackagePanel() {
   packagePanelVisible.value = false
 }
@@ -701,6 +735,51 @@ function handlePluginContextMenu(
     y: event.clientY,
   }
   contextMenuVisible.value = contextMenuActions.value.length > 0
+}
+
+function getTutorialPlugin() {
+  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || filteredExtensions.value[0] || rawPlugins.value[0] || null
+}
+
+async function showTutorialContextMenu() {
+  const plugin = getTutorialPlugin()
+  if (!plugin) {
+    return
+  }
+  packagePanelVisible.value = false
+  await nextTick()
+  const target = document.querySelector('[data-yui-guide-id="plugin-list-card"]') as HTMLElement | null
+  const rect = target?.getBoundingClientRect()
+  contextMenuPlugin.value = plugin
+  contextMenuActions.value = buildActions(plugin)
+  contextMenuPosition.value = {
+    x: rect ? Math.min(rect.left + rect.width * 0.72, window.innerWidth - 240) : window.innerWidth / 2,
+    y: rect ? Math.min(rect.top + 24, window.innerHeight - 260) : window.innerHeight / 2,
+  }
+  contextMenuVisible.value = contextMenuActions.value.length > 0
+}
+
+function openTutorialPluginDetail() {
+  const plugin = getTutorialPlugin()
+  if (!plugin) {
+    return
+  }
+  handlePluginClick(plugin.id)
+}
+
+function handleTutorialAction(event: Event) {
+  const action = (event as CustomEvent<{ action?: string }>).detail?.action
+  if (action === 'open-package-panel') {
+    openPackagePanel()
+    return
+  }
+  if (action === 'show-plugin-context-menu') {
+    void showTutorialContextMenu()
+    return
+  }
+  if (action === 'open-first-plugin-detail') {
+    openTutorialPluginDetail()
+  }
 }
 
 async function handleContextActionSelect(action: ResolvedPluginListAction) {
@@ -1009,10 +1088,12 @@ watch(packagePanelVisible, (visible) => {
 })
 
 onMounted(async () => {
+  window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   await handleRefresh()
 })
 
 onUnmounted(() => {
+  window.removeEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()

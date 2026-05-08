@@ -182,17 +182,17 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Plugin Development', overview: 'Overview', quick: 'Quick Start',
       sdk: 'SDK Reference', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
-      best: 'Best Practices',
+      hosted: 'Hosted UI', best: 'Best Practices',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览', quick: '快速开始',
       sdk: 'SDK 参考', dec: '装饰器', ex: '示例', adv: '进阶话题',
-      best: '最佳实践',
+      hosted: 'Hosted UI', best: '最佳实践',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要', quick: 'クイックスタート',
       sdk: 'SDK リファレンス', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
-      best: 'ベストプラクティス',
+      hosted: 'Hosted UI', best: 'ベストプラクティス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -204,6 +204,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.quick, link: `${p}/plugins/quick-start` },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
+        ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
         { text: t.best, link: `${p}/plugins/best-practices` },
@@ -310,14 +311,17 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
+      nuitka: 'Nuitka Packaging',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
+      nuitka: 'Nuitka 打包注意事项',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
+      nuitka: 'Nuitka パッケージング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -330,6 +334,7 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.ai, link: `${p}/contributing/ai-assisted-dev` },
         { text: t.test, link: `${p}/contributing/testing` },
         { text: t.code, link: `${p}/contributing/code-style` },
+        { text: t.nuitka, link: `${p}/contributing/nuitka-packaging` },
         { text: t.road, link: `${p}/contributing/roadmap` },
       ],
     },

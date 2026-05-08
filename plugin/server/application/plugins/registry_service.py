@@ -14,6 +14,7 @@ from plugin.core.registry import (
     _build_plugin_meta,
     _check_plugin_dependency,
     _extract_entries_preview,
+    _extract_plugin_ui_config,
     _find_missing_python_requirements,
     _parse_single_plugin_config,
     _prepare_plugin_import_roots,
@@ -47,6 +48,8 @@ _MANAGED_META_KEYS = {
     "author",
     "dependencies",
     "host_plugin_id",
+    "i18n",
+    "plugin_ui",
     "config_path",
     "entry_point",
     "runtime_enabled",
@@ -444,6 +447,7 @@ def _build_discovery_payload(
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
         host_plugin_id=host_plugin_id,
+        plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=plugin_id, logger=logger),
     )
     payload = plugin_meta.model_dump(mode="python")
     payload["config_path"] = str(ctx.toml_path)
@@ -536,6 +540,7 @@ def _apply_discovery_record_sync(
         sdk_conflicts_list=record.meta_payload.get("sdk_conflicts") if isinstance(record.meta_payload.get("sdk_conflicts"), list) else None,
         dependencies=record.meta_payload.get("dependencies") if isinstance(record.meta_payload.get("dependencies"), list) else None,
         host_plugin_id=record.meta_payload.get("host_plugin_id") if isinstance(record.meta_payload.get("host_plugin_id"), str) else None,
+        plugin_ui=record.meta_payload.get("plugin_ui") if isinstance(record.meta_payload.get("plugin_ui"), dict) else None,
     )
     resolved_id = register_plugin(
         plugin_meta,

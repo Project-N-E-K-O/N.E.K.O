@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/static/css/model_manager.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <link rel="stylesheet" href="/static/css/model-profiler.css">
     <script src="/static/theme-manager.js"></script>
 </head>
 
@@ -24,9 +25,9 @@
         <div id="sidebar-controls" class="sidebar-controls">
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.backToMain">
-                <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" draggable="false" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                 <span class="round-stroke-text" id="back-text" data-i18n="live2d.backToMain" data-text="Back to Main">返回主页</span>
-                <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" draggable="false" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
             </button>
         </div>
 
@@ -518,6 +519,9 @@
 
         </div>
 
+        <!-- 性能分析器挂载点 -->
+        <div id="profiler-mount" class="control-group"></div>
+
         <div id="status">
             <img src="/static/icons/reminder_icon.png?v=1" data-i18n-alt="common.alert" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;">
             <span id="status-text" data-i18n="status.initializing">正在初始化...</span>
@@ -634,12 +638,68 @@
 
     <script src="/static/js/model_manager.js"></script>
 
+    <!-- 性能分析器 -->
+    <script src="/static/model-profiler.js"></script>
+    <script src="/static/model-profiler-ui.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const mount = document.getElementById('profiler-mount');
+            if (mount && typeof ModelProfilerUI !== 'undefined') {
+                const isVisible = function(el) {
+                    return !!(el && el.style.display !== 'none' && !el.classList.contains('hidden'));
+                };
+                const getActiveManager = function() {
+                    const vrmManager = window.vrmManager || null;
+                    const mmdManager = window.mmdManager || null;
+                    const vrmContainer = document.getElementById('vrm-container');
+                    const mmdContainer = document.getElementById('mmd-container');
+
+                    const vrmReady = !!vrmManager?.currentModel?.vrm;
+                    const mmdReady = !!mmdManager?.currentModel?.mesh;
+
+                    if (isVisible(vrmContainer) && vrmReady) return vrmManager;
+                    if (isVisible(mmdContainer) && mmdReady) return mmdManager;
+                    if (vrmReady) return vrmManager;
+                    if (mmdReady) return mmdManager;
+                    return vrmManager || mmdManager || null;
+                };
+
+                const isLive2DActive = function() {
+                    const live2dContainer = document.getElementById('live2d-container');
+                    if (!isVisible(live2dContainer)) return false;
+                    if (!window.live2dManager?.currentModel) return false;
+                    const vrmReady = !!window.vrmManager?.currentModel?.vrm;
+                    const mmdReady = !!window.mmdManager?.currentModel?.mesh;
+                    return !vrmReady && !mmdReady;
+                };
+
+                window._profilerUI = new ModelProfilerUI({
+                    container: mount,
+                    collapsed: true,
+                    getManager: function() {
+                        return getActiveManager();
+                    },
+                    getRenderer: function() {
+                        var mgr = getActiveManager();
+                        return mgr ? mgr.renderer : null;
+                    },
+                    getUnsupportedReason: function() {
+                        return isLive2DActive()
+                            ? { key: 'profiler.placeholder.live2dUnsupported', fallback: 'Live2D 模型暂不支持性能分析' }
+                            : null;
+                    }
+                });
+                window._profilerUI.mount();
+            }
+        });
+    </script>
+
     <!-- Driver.js 库 -->
     <script src="/static/libs/driver.min.js"></script>
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v=12"></script>
+    <script src="/static/universal-tutorial-manager.js?v=13"></script>
     <link rel="stylesheet" href="/static/css/touch-config.css">
     <script src="/static/touch-config.js"></script>
     <!-- 初始化 -->

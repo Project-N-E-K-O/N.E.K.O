@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
-
-import cli as neko_plugin_cli
-from public import inspect_package, pack_plugin, unpack_package
-from public.plugin_source import load_plugin_source
+from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.public import inspect_package, pack_plugin, unpack_package
+from plugin.neko_plugin_cli.public.plugin_source import load_plugin_source
 
 REPO_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "plugins"
 

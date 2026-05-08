@@ -28,6 +28,95 @@
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
     let _pendingAudioMetaStallTimer = 0;
+    const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
+    const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+    const SPEECH_PLAYBACK_STATE_HEARTBEAT_MS = 200;
+    let _speechPlaybackChannel = null;
+    let _speechPlaybackStateHeartbeatTimer = 0;
+
+    function getSpeechPlaybackChannel() {
+        if (_speechPlaybackChannel !== null) {
+            return _speechPlaybackChannel;
+        }
+        _speechPlaybackChannel = false;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                _speechPlaybackChannel = new BroadcastChannel(SPEECH_PLAYBACK_CHANNEL_NAME);
+            }
+        } catch (err) {
+            _speechPlaybackChannel = false;
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] playback BroadcastChannel init failed:', err);
+            }
+        }
+        return _speechPlaybackChannel || null;
+    }
+
+    function clearSpeechPlaybackStateHeartbeat() {
+        if (_speechPlaybackStateHeartbeatTimer) {
+            clearTimeout(_speechPlaybackStateHeartbeatTimer);
+            _speechPlaybackStateHeartbeatTimer = 0;
+        }
+    }
+
+    function scheduleSpeechPlaybackStateHeartbeat() {
+        if (_speechPlaybackStateHeartbeatTimer) {
+            return;
+        }
+        _speechPlaybackStateHeartbeatTimer = setTimeout(function () {
+            _speechPlaybackStateHeartbeatTimer = 0;
+            publishSpeechPlaybackState('heartbeat');
+        }, SPEECH_PLAYBACK_STATE_HEARTBEAT_MS);
+    }
+
+    function publishSpeechPlaybackState(reason, patch) {
+        var audioTime = S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0;
+        var scheduledEnd = patch && Number.isFinite(patch.scheduledEndAudioTime)
+            ? patch.scheduledEndAudioTime
+            : (S.nextChunkTime || 0);
+        var remaining = Math.max(0, scheduledEnd - audioTime);
+        var pendingAudioWork = (
+            S.pendingAudioChunkMetaQueue.length > 0 ||
+            S.incomingAudioBlobQueue.length > 0 ||
+            !!S.pendingDecoderReset ||
+            !!S.decoderResetPromise ||
+            !!S.isProcessingIncomingAudioBlob
+        );
+        var state = Object.assign({
+            type: 'speech_playback_state',
+            active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
+            speechId: S.currentPlayingSpeechId || null,
+            turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+            scheduledEndAudioTime: scheduledEnd,
+            audioContextTime: audioTime,
+            audioContextState: S.audioPlayerContext ? S.audioPlayerContext.state : '',
+            remainingSeconds: remaining,
+            updatedAt: Date.now(),
+            reason: reason || 'update',
+            source: 'audio_playback'
+        }, patch || {});
+
+        if (!state.active) {
+            state.remainingSeconds = 0;
+        }
+
+        window.NekoSpeechPlaybackState = state;
+        try {
+            localStorage.setItem(SPEECH_PLAYBACK_STATE_KEY, JSON.stringify(state));
+        } catch (_) { /* noop */ }
+
+        var channel = getSpeechPlaybackChannel();
+        if (channel) {
+            try { channel.postMessage(state); } catch (_) { /* noop */ }
+        }
+
+        if (state.active) {
+            scheduleSpeechPlaybackStateHeartbeat();
+        } else {
+            clearSpeechPlaybackStateHeartbeat();
+        }
+        return state;
+    }
 
     function audioTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
@@ -59,6 +148,32 @@
                 timestamp: Date.now()
             }, detail || {})
         }));
+    }
+
+    function getActiveAvatarModelType() {
+        // 优先按当前可见容器判断，避免 Live2D 全局引用残留时抢走 VRM/MMD 的口型同步。
+        var vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer && vrmContainer.style.display !== 'none' && !vrmContainer.classList.contains('hidden')) {
+            return 'vrm';
+        }
+
+        var mmdContainer = document.getElementById('mmd-container');
+        if (mmdContainer && mmdContainer.style.display !== 'none' && !mmdContainer.classList.contains('hidden')) {
+            return 'mmd';
+        }
+
+        var cfg = window.lanlan_config || {};
+        var modelType = String(cfg.model_type || '').toLowerCase();
+        if (modelType === 'live3d') {
+            var subType = String(cfg.live3d_sub_type || '').toLowerCase();
+            if (subType === 'vrm' || subType === 'mmd') {
+                return subType;
+            }
+        }
+        if (modelType === 'vrm' || modelType === 'mmd') {
+            return modelType;
+        }
+        return 'live2d';
     }
 
     function clearPendingAudioMetaStallTimer() {
@@ -384,19 +499,20 @@
     }
 
     function stopActiveLipSync() {
-        if (window.LanLan1 && window.LanLan1.live2dModel) {
-            stopLipSync(window.LanLan1.live2dModel);
-        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+        var activeModelType = getActiveAvatarModelType();
+        if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             if (typeof window.vrmManager.animation.stopLipSync === 'function') {
                 window.vrmManager.animation.stopLipSync();
             }
             S.lipSyncActive = false;
-        } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+        } else if (activeModelType === 'mmd' && window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
             if (typeof window.mmdManager.animationModule.stopLipSync === 'function') {
                 window.mmdManager.animationModule.stopLipSync();
                 console.log('[Audio] MMD 口型同步已停止');
             }
             S.lipSyncActive = false;
+        } else if (window.LanLan1 && window.LanLan1.live2dModel) {
+            stopLipSync(window.LanLan1.live2dModel);
         } else {
             S.lipSyncActive = false;
         }
@@ -501,6 +617,13 @@
                 S.isPlaying = false;
             }
             S.audioStartTime = 0;
+            publishSpeechPlaybackState('speech_cancel', {
+                active: false,
+                speechId: S.currentPlayingSpeechId || null,
+                turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+                scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+                remainingSeconds: 0
+            });
             try { stopActiveLipSync(); } catch (_e) { /* ignore */ }
         });
     }
@@ -531,6 +654,13 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        publishSpeechPlaybackState('clear_audio_queue', {
+            active: false,
+            speechId: null,
+            turnId: null,
+            scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+            remainingSeconds: 0
+        });
 
         await resetOggOpusDecoder();
     }
@@ -555,6 +685,13 @@
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
+        publishSpeechPlaybackState('clear_audio_queue_without_decoder_reset', {
+            active: false,
+            speechId: null,
+            turnId: null,
+            scheduledEndAudioTime: S.audioPlayerContext ? S.audioPlayerContext.currentTime : 0,
+            remainingSeconds: 0
+        });
         // Note: decoder is NOT reset here.
     }
 
@@ -571,16 +708,39 @@
                 try {
                     S.globalAnalyser = S.audioPlayerContext.createAnalyser();
                     S.globalAnalyser.fftSize = 2048;
-                    // Insert speaker gain node: source -> analyser -> gainNode -> destination
+                    // Audio graph:
+                    //   source -> analyser -> spatialPanner -> spatialDistanceGain -> speakerGain -> destination
+                    // spatialPanner / spatialDistanceGain 始终存在；当空间音频关闭时
+                    // pan=0 / gain=1 形成 transparent passthrough，避免动态切换图结构。
+                    S.spatialPannerNode = S.audioPlayerContext.createStereoPanner();
+                    S.spatialPannerNode.pan.value = 0;
+                    S.spatialDistanceGainNode = S.audioPlayerContext.createGain();
+                    S.spatialDistanceGainNode.gain.value = 1;
+
                     S.speakerGainNode = S.audioPlayerContext.createGain();
                     var vol = (typeof window.getSpeakerVolume === 'function')
                         ? window.getSpeakerVolume() : 100;
                     S.speakerGainNode.gain.value = vol / 100;
-                    S.globalAnalyser.connect(S.speakerGainNode);
+
+                    S.globalAnalyser.connect(S.spatialPannerNode);
+                    S.spatialPannerNode.connect(S.spatialDistanceGainNode);
+                    S.spatialDistanceGainNode.connect(S.speakerGainNode);
                     S.speakerGainNode.connect(S.audioPlayerContext.destination);
-                    console.log('[Audio] 全局分析器和扬声器增益节点已创建并连接');
+                    console.log('[Audio] 全局分析器、空间音频与扬声器增益节点已创建并连接');
+
+                    if (window.appSpatialAudio && typeof window.appSpatialAudio.attach === 'function') {
+                        window.appSpatialAudio.attach();
+                    }
                 } catch (e) {
                     console.error('[Audio] 创建分析器失败:', e);
+                    // 任意节点构造失败时，把整条链路上的 ref 全部 null 掉，
+                    // 让 scheduleAudioChunks 的 hasAnalyser=!!globalAnalyser 路径
+                    // 退化为 source.connect(destination) 直连，避免把音频灌进
+                    // 一个未连接到 destination 的 dangling analyser 而静音。
+                    S.globalAnalyser = null;
+                    S.spatialPannerNode = null;
+                    S.spatialDistanceGainNode = null;
+                    S.speakerGainNode = null;
                 }
             }
             // Always sync global references (even when no new nodes were created)
@@ -710,20 +870,21 @@
                                 hasAnalyser: hasAnalyser
                             });
                         }
-                        if (window.LanLan1 && window.LanLan1.live2dModel) {
-                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
-                            S.lipSyncActive = true;
-                        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+                        var activeModelType = getActiveAvatarModelType();
+                        if (activeModelType === 'vrm' && window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                             if (typeof window.vrmManager.animation.startLipSync === 'function') {
                                 window.vrmManager.animation.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
                             }
-                        } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+                        } else if (activeModelType === 'mmd' && window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
                             if (typeof window.mmdManager.animationModule.startLipSync === 'function') {
                                 window.mmdManager.animationModule.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
                                 console.log('[Audio] MMD 口型同步已启动');
                             }
+                        } else if (window.LanLan1 && window.LanLan1.live2dModel) {
+                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
+                            S.lipSyncActive = true;
                         } else {
                             if (window.DEBUG_AUDIO) {
                                 console.warn('[Audio] 无法启动口型同步：没有可用的模型');
@@ -731,8 +892,13 @@
                         }
                     }
 
+                    var scheduledStartTime = S.nextChunkTime;
+                    var scheduledEndTime = scheduledStartTime + nextBuffer.duration;
+
                     // Precise time scheduling
-                    source.start(S.nextChunkTime);
+                    source.start(scheduledStartTime);
+                    source._nekoSpeechId = normalizeAssistantTurnId(item.speechId);
+                    source._nekoScheduledEndAudioTime = scheduledEndTime;
 
                     // On-ended callback: handle lip sync stop & cleanup
                     source.onended = (function (src) {
@@ -741,14 +907,25 @@
                             if (index !== -1) {
                                 S.scheduledSources.splice(index, 1);
                             }
+                            publishSpeechPlaybackState('source_ended', {
+                                active: S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || S.incomingAudioBlobQueue.length > 0,
+                                speechId: S.currentPlayingSpeechId || src._nekoSpeechId || null,
+                                turnId: src._nekoAssistantTurnId || null
+                            });
                             maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId);
                         };
                     })(source);
 
                     // Update next chunk time
-                    S.nextChunkTime += nextBuffer.duration;
+                    S.nextChunkTime = scheduledEndTime;
 
                     S.scheduledSources.push(source);
+                    publishSpeechPlaybackState('chunk_scheduled', {
+                        active: true,
+                        speechId: normalizeAssistantTurnId(item.speechId) || S.currentPlayingSpeechId || null,
+                        turnId: source._nekoAssistantTurnId || null,
+                        scheduledEndAudioTime: S.nextChunkTime
+                    });
                 } else {
                     break;
                 }

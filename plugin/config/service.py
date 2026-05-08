@@ -6,7 +6,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from fastapi import HTTPException
 

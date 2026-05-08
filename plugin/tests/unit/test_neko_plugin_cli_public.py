@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 import zipfile
 
 import pytest
 
-CLI_ROOT = Path(__file__).resolve().parents[2] / "neko-plugin-cli"
-if str(CLI_ROOT) not in sys.path:
-    sys.path.insert(0, str(CLI_ROOT))
-
-from public import inspect_package, pack_bundle, pack_plugin, unpack_package
-from public.pack_rules import PackRuleSet, should_skip_path
+from plugin.neko_plugin_cli.public import inspect_package, pack_bundle, pack_plugin, unpack_package
+from plugin.neko_plugin_cli.public.pack_rules import PackRuleSet, should_skip_path
 
 pytestmark = pytest.mark.plugin_unit
 

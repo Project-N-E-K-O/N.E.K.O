@@ -28,7 +28,7 @@ Raw conversation ──> Summary model (qwen-plus) ──> Compressed summary
                                                    time_indexed_compressed に保存
 ```
 
-`ROUTER_MODEL`（デフォルト：`qwen-plus`）が、どのメモリを完全に保持するか、圧縮するかを決定します。
+summary tier のモデル（`NEKO_SUMMARY_MODEL` で設定）が、生の会話を保存用の要約に圧縮します。
 
 ## メモリレビュー
 

@@ -117,4 +117,5 @@ curl -X POST http://localhost:48916/plugin/trigger \
 
 - [SDK Reference](./sdk-reference) — Learn about `NekoPluginBase`, Result types, and runtime helpers
 - [Decorators](./decorators) — All available decorator types including hooks
+- [Hosted UI](./hosted-ui) — Add an interactive TSX panel or Markdown guide
 - [Examples](./examples) — Complete working plugin examples

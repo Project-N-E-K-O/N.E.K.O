@@ -151,6 +151,9 @@ def test_plugin_meta_fields_shape() -> None:
         "version",
         "sdk_version",
         "description",
+        "short_description",
+        "keywords",
+        "passive",
         "sdk_recommended",
         "sdk_supported",
         "sdk_untested",
@@ -172,6 +175,29 @@ def test_neko_plugin_base_init_wires_ctx_config_plugins() -> None:
     assert isinstance(base._routers, list)
     assert base.config is not None
     assert base.plugins is not None
+
+
+def test_neko_plugin_base_i18n_uses_plugin_toml_config(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    locale_dir = plugin_dir / "locales"
+    locale_dir.mkdir(parents=True)
+    (locale_dir / "ja.json").write_text('{"hello": "こんにちは"}', encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join([
+            "[plugin]",
+            'id = "demo"',
+            "[plugin.i18n]",
+            'default_locale = "ja"',
+            'locales_dir = "locales"',
+        ]),
+        encoding="utf-8",
+    )
+
+    base = _DemoPlugin(ctx=_Ctx(config_path=config_path))
+
+    assert base.i18n.default_locale == "ja"
+    assert base.i18n.t("hello", locale="en", default="Hello") == "こんにちは"
 
 
 def test_get_input_schema_returns_dict_or_empty() -> None:

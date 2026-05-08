@@ -109,7 +109,15 @@ class ServerLifecycleService:
         self._message_plane_runner = build_message_plane_runner()
         self._message_plane_runner.start()
         try:
-            healthy = self._message_plane_runner.health_check(timeout_s=1.0)
+            health_check_async = getattr(self._message_plane_runner, "health_check_async", None)
+            if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
+                healthy = await health_check_async(timeout_s=1.0)
+            else:
+                # Fallback: runner only exposes the sync API — offload to a worker thread so we
+                # never block the event loop on the ~1s TCP probe + RPC round-trip.
+                healthy = await asyncio.to_thread(
+                    self._message_plane_runner.health_check, timeout_s=1.0
+                )
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.warning(
                 "message_plane health check failed: err_type={}, err={}",

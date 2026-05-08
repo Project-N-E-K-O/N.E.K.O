@@ -13,6 +13,24 @@
     const C = window.appConst;
     const U = window.appUtils;
 
+    function isHomeTutorialInteractionLocked() {
+        try {
+            return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
+                && window.isNekoHomeTutorialInteractionLocked() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showHomeTutorialLockedToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('tutorial.homeInteractionLocked', '新手引导进行中，请先按引导完成当前步骤') : '新手引导进行中，请先按引导完成当前步骤',
+                2500
+            );
+        }
+    }
+
     // ======================== Screenshot helpers ========================
 
     /**
@@ -156,6 +174,11 @@
         input.addEventListener('change', function (event) {
             var files = event && event.target && event.target.files ? Array.from(event.target.files) : [];
             if (!files.length) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                input.value = '';
+                return;
+            }
 
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
@@ -217,8 +240,13 @@
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
+        if (isHomeTutorialInteractionLocked()) {
+            showHomeTutorialLockedToast();
+            return false;
+        }
         var input = mod.ensureImportImageInput();
         input.click();
+        return true;
     };
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
@@ -897,7 +925,16 @@
             return mod.openImageImportPicker();
         });
         host.setOnComposerScreenshot(function () {
-            return mod.captureScreenshotToPendingList();
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
+            if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
+                window.nekoScreenshotProxy.request();
+                return true;
+            } else {
+                return mod.captureScreenshotToPendingList();
+            }
         });
         host.setOnComposerRemoveAttachment(function (attachmentId) {
             return mod.removePendingAttachmentById(attachmentId);
@@ -908,6 +945,9 @@
 
         mod._boundReactChatWindowHost = host;
         mod.syncPendingComposerAttachments();
+        if (typeof host.setHomeTutorialInteractionLocked === 'function') {
+            host.setHomeTutorialInteractionLocked(isHomeTutorialInteractionLocked(), 'host-bound');
+        }
         return true;
     }
 
@@ -951,6 +991,59 @@
         var clearAllScreenshots  = S.dom.clearAllScreenshots   = document.getElementById('clear-all-screenshots');
         var textInputComposing = false;
         var lastTextCompositionEndAt = 0;
+        var homeTutorialLockedSnapshot = null;
+
+        function setElementTutorialLocked(element, locked, baseDisabledOverride) {
+            if (!element) return;
+            if (locked) {
+                if (element.dataset.nekoHomeTutorialLocked !== 'true') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = typeof baseDisabledOverride === 'boolean'
+                        ? (baseDisabledOverride ? 'true' : 'false')
+                        : (element.disabled ? 'true' : 'false');
+                } else if (typeof baseDisabledOverride === 'boolean') {
+                    element.dataset.nekoHomeTutorialPrevDisabled = baseDisabledOverride ? 'true' : 'false';
+                } else if (element.disabled === false) {
+                    element.dataset.nekoHomeTutorialPrevDisabled = 'false';
+                }
+                element.dataset.nekoHomeTutorialLocked = 'true';
+                element.disabled = true;
+                return;
+            }
+            if (element.dataset.nekoHomeTutorialLocked !== 'true') return;
+            element.disabled = element.dataset.nekoHomeTutorialPrevDisabled === 'true';
+            delete element.dataset.nekoHomeTutorialLocked;
+            delete element.dataset.nekoHomeTutorialPrevDisabled;
+        }
+
+        function refreshHomeTutorialLockedControls(baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(textSendButton, true, baseDisabled);
+            setElementTutorialLocked(textInputBox, true, baseDisabled);
+            setElementTutorialLocked(screenshotButton, true, baseDisabled);
+        }
+
+        function refreshHomeTutorialLockedElement(element, baseDisabled) {
+            if (!isHomeTutorialInteractionLocked()) {
+                return;
+            }
+            setElementTutorialLocked(element, true, baseDisabled);
+        }
+
+        function applyHomeTutorialInteractionLock(reason) {
+            var locked = isHomeTutorialInteractionLocked();
+            if (homeTutorialLockedSnapshot === locked) {
+                return;
+            }
+            homeTutorialLockedSnapshot = locked;
+            setElementTutorialLocked(textSendButton, locked);
+            setElementTutorialLocked(textInputBox, locked);
+            setElementTutorialLocked(screenshotButton, locked);
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.setHomeTutorialInteractionLocked === 'function') {
+                window.reactChatWindowHost.setHomeTutorialInteractionLocked(locked, reason || 'app-buttons');
+            }
+        }
 
         // ----------------------------------------------------------------
         // Mic button click
@@ -963,6 +1056,7 @@
             micButton.classList.add('active');
             window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
+            S.voiceStartPending = true;
             micButton.disabled = true;
 
             // Show preparing toast
@@ -978,6 +1072,22 @@
                 window.showStatusToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...', 3000);
                 window.showVoicePreparingToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...');
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+            }
+
+            // Deactivate tool cursor mode (lollipop/cat paw/hammer)
+            // Prefer the React host cleanup path so cursor teardown stays in one place.
+            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.deactivateToolCursor === 'function') {
+                window.reactChatWindowHost.deactivateToolCursor();
+            } else {
+                window.dispatchEvent(new CustomEvent('neko:deactivate-tool-cursor'));
+                var _body = document.body;
+                var _root = document.documentElement;
+                _root.style.setProperty('cursor', 'auto', 'important');
+                if (_body) {
+                    _body.style.setProperty('cursor', 'auto', 'important');
+                }
+                _root.classList.remove('neko-tool-cursor-active');
+                _root.style.removeProperty('--neko-chat-tool-cursor');
             }
 
             // Hide text input area (desktop only) + React composer + IPC
@@ -1000,6 +1110,24 @@
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
             try {
+                if (typeof window.waitForVoiceConfigSwitchReady === 'function') {
+                    var voiceConfigWaitResult = await window.waitForVoiceConfigSwitchReady({
+                        timeoutMs: 30000,
+                        stableMs: 300,
+                        onWaiting: function () {
+                            window.showVoicePreparingToast(window.t ? window.t('app.voiceConfigSwitching') : '\u97F3\u8272\u5207\u6362\u4E2D\uFF0C\u8BED\u97F3\u51C6\u5907\u4E2D...');
+                        }
+                    });
+                    if (voiceConfigWaitResult && voiceConfigWaitResult.timedOut) {
+                        var voiceConfigTimeoutMsg = window.t ? window.t('app.voiceConfigSwitchTimeout') : '\u97F3\u8272\u5207\u6362\u4ECD\u672A\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u518D\u5F00\u542F\u8BED\u97F3';
+                        window.showVoicePreparingToast(voiceConfigTimeoutMsg);
+                        var voiceConfigTimeoutError = new Error(voiceConfigTimeoutMsg);
+                        voiceConfigTimeoutError.voiceConfigSwitchTimedOut = true;
+                        throw voiceConfigTimeoutError;
+                    }
+                    window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
+                }
+
                 // Create a promise for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
                     S.sessionStartedResolver = resolve;
@@ -1084,6 +1212,7 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
 
@@ -1098,19 +1227,27 @@
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
-                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (!(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
                     console.log(window.t('console.sessionStartFailedEndSession'));
                 }
 
-                window.hideVoicePreparingToast();
+                if (error && error.voiceConfigSwitchTimedOut) {
+                    window.showVoicePreparingToast(error.message);
+                } else {
+                    window.hideVoicePreparingToast();
+                }
                 window.stopRecording();
 
                 micButton.classList.remove('active');
                 micButton.classList.remove('recording');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
+                S.voiceStartPending = false;
                 window.isRecording = false;
+                window.isMicStarting = false;
+                S.isSwitchingMode = false;
 
                 window.syncFloatingMicButtonState(false);
                 window.syncFloatingScreenButtonState(false);
@@ -1124,10 +1261,11 @@
                 if (typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
                 }
-                window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
-
-                window.isMicStarting = false;
-                S.isSwitchingMode = false;
+                if (error && error.voiceConfigSwitchTimedOut) {
+                    window.showStatusToast(error.message, 5000);
+                } else {
+                    window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
+                }
 
                 screenButton.classList.remove('active');
             }
@@ -1207,6 +1345,7 @@
                 }
 
                 var textInputArea = document.getElementById('text-input-area');
+                S.voiceChatActive = false;
                 textInputArea.classList.remove('hidden');
                 if (typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
@@ -1216,6 +1355,7 @@
                 textSendButton.disabled = false;
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 muteButton.disabled = true;
                 screenButton.disabled = true;
@@ -1279,6 +1419,7 @@
                 screenButton.classList.remove('active');
 
                 S.isRecording = false;
+                S.voiceChatActive = false;
                 window.isRecording = false;
 
                 var textInputArea = document.getElementById('text-input-area');
@@ -1370,6 +1511,7 @@
                 textInputBox.disabled = false;
                 screenshotButton.disabled = false;
                 resetSessionButton.disabled = false;
+                refreshHomeTutorialLockedControls(false);
 
                 // Disable voice control buttons
                 muteButton.disabled = true;
@@ -1414,10 +1556,22 @@
             }
         });
 
+        function markFirstUserInputForAchievement() {
+            if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
+                window.appChat.markFirstUserInput();
+                console.log(window.t('console.userFirstInputDetected'));
+            }
+        }
+
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var hasScreenshots = screenshotsList.children.length > 0;
+            if (!text && !hasScreenshots) return false;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
             var requestId = (typeof options.requestId === 'string' && options.requestId)
                 ? options.requestId
                 : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1430,8 +1584,6 @@
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
-
-            if (!text && !hasScreenshots) return false;
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
@@ -1521,6 +1673,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
                 } catch (error) {
@@ -1543,6 +1696,7 @@
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
                     screenshotButton.disabled = false;
+                    refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
                     return; // Don't send if session start failed
@@ -1636,12 +1790,8 @@
                             }
                         }
 
-                        // First user input check
-                        if (window.appChat && window.appChat.isFirstUserInput()) {
-                            window.appChat.markFirstUserInput();
-                            console.log(window.t('console.userFirstInputDetected'));
-                            window.checkAndUnlockFirstDialogueAchievement();
-                        }
+                        // 首次用户输入只标记状态；成就只在 AI 首次可见回复时触发
+                        markFirstUserInputForAchievement();
                     }
 
                     if (!isReactWindowSource && window.appChat && typeof window.appChat.appendReactUserMessage === 'function' && sentImageUrls.length > 0) {
@@ -1654,6 +1804,8 @@
                     updateReactOptimisticMessageStatus('sent');
 
                     if (sentUserContent) {
+                        // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
+                        markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
                     }
 
@@ -1689,6 +1841,10 @@
             var hasScreenshots = screenshotsList.children.length > 0;
 
             if (!text && !hasScreenshots) return;
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
 
             if (options.skipAvatarInteractionDeferral !== true
                     && text
@@ -1782,48 +1938,206 @@
         // ----------------------------------------------------------------
         // Hide NEKO UI, recapture screen, then restore
         // ----------------------------------------------------------------
-        var NEKO_UI_IDS = [
-            'live2d-container', 'vrm-container', 'mmd-container',
-            'chat-container', 'react-chat-window-overlay',
-            'chat-avatar-preview-popup',
-            'avatar-reaction-bubble', 'subtitle-display', 'status-toast',
-            'live2d-floating-buttons', 'vrm-floating-buttons', 'mmd-floating-buttons',
-            'live2d-lock-icon', 'vrm-lock-icon', 'mmd-lock-icon',
-            'live2d-return-button-container', 'vrm-return-button-container', 'mmd-return-button-container',
-            'crop-overlay'
-        ];
-
+        // 先前通过枚举固定 ID 列表逐个 display:none — 遗漏了动态挂载的浮层
+        // (avatar popup / HUD / tutorial overlay / 第三方对话框) 以及 Electron 下
+        // 另外开的透明窗口以外还残留在主窗口的各种子元素，导致重拍后 N.E.K.O 仍然
+        // 出现在截图里。改为直接对 <html> 根元素切 visibility:hidden —— 一次把整页
+        // 画面抹掉，OS 合成器拿到的只有 Electron 透明窗体后的桌面像素。
         function hideNekoUI() {
-            var saved = [];
-            NEKO_UI_IDS.forEach(function (id) {
-                var el = document.getElementById(id);
-                if (el) {
-                    saved.push({ el: el, prev: el.style.display });
-                    el.style.display = 'none';
-                }
-            });
+            var root = document.documentElement;
+            var saved = {
+                visibility: root.style.visibility,
+                // 保险：有些 reaction bubble / toast 直接挂在 body，visibility 继承即可覆盖
+            };
+            root.style.visibility = 'hidden';
             return saved;
         }
 
         function restoreNekoUI(saved) {
-            saved.forEach(function (item) {
-                item.el.style.display = item.prev;
-            });
+            if (!saved) return;
+            document.documentElement.style.visibility = saved.visibility || '';
+        }
+
+        function getDesktopRegionCaptureMethod() {
+            if (!window.electronDesktopCapturer) return null;
+            var bridge = window.electronDesktopCapturer;
+            var names = [
+                'beginDesktopRegionSelection',
+                'captureDesktopRegion',
+                'captureDesktopRegionAsDataUrl',
+                'captureSelectedRegion',
+                'startDesktopSelectionCapture'
+            ];
+            for (var i = 0; i < names.length; i++) {
+                var name = names[i];
+                if (typeof bridge[name] === 'function') {
+                    return { name: name, fn: bridge[name].bind(bridge) };
+                }
+            }
+            return null;
+        }
+
+        function isDesktopRegionCaptureUnavailable(errorLike) {
+            if (!errorLike) return false;
+            var code = errorLike.code || '';
+            if (code === 'ENOSYS' || code === 'UNSUPPORTED_API') return true;
+            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase();
+            return message.indexOf('not implemented') !== -1
+                || message.indexOf('not supported') !== -1
+                || message.indexOf('unsupported') !== -1
+                || message.indexOf('unavailable') !== -1;
+        }
+
+        function normalizeDesktopRegionCaptureResult(raw) {
+            if (!raw) return null;
+            if (typeof raw === 'string') {
+                return { success: true, dataUrl: raw, originalDataUrl: raw };
+            }
+            if (raw.canceled || raw.cancelled) {
+                return { canceled: true };
+            }
+            if (raw.success === false) {
+                return {
+                    success: false,
+                    error: raw.error || raw.message || 'DESKTOP_REGION_CAPTURE_FAILED',
+                    code: raw.code || null
+                };
+            }
+            if (raw.dataUrl) {
+                return {
+                    success: true,
+                    dataUrl: raw.dataUrl,
+                    originalDataUrl: raw.originalDataUrl || raw.dataUrl,
+                    avatarPos: raw.avatarPos || raw.avatarPosition || null,
+                    captureType: raw.captureType || 'desktop-region',
+                    width: raw.width || 0,
+                    height: raw.height || 0
+                };
+            }
+            return null;
+        }
+
+        async function captureDesktopRegionDirectly() {
+            var regionMethod = getDesktopRegionCaptureMethod();
+            if (!regionMethod) return null;
+
+            var selectedSourceId = S.selectedScreenSourceId || null;
+            var payload = {
+                sourceId: selectedSourceId,
+                hideNeko: true,
+                returnDataUrl: true,
+                includeOriginalDataUrl: true
+            };
+
+            var raw = null;
+            try {
+                raw = await regionMethod.fn(payload);
+            } catch (err) {
+                if (isDesktopRegionCaptureUnavailable(err)) {
+                    console.info('[截图] 桌面框选接口当前不可用，回退到内置裁剪:', regionMethod.name);
+                    return null;
+                }
+                throw err;
+            }
+
+            var normalized = normalizeDesktopRegionCaptureResult(raw);
+            if (!normalized) {
+                console.warn('[截图] 桌面框选接口返回了无法识别的结果，回退到内置裁剪:', regionMethod.name, raw);
+                return null;
+            }
+            if (normalized.canceled) {
+                console.log('[截图] 用户取消了桌面框选');
+                return { canceled: true };
+            }
+            if (!normalized.success) {
+                var sourceCleared = false;
+                if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                    sourceCleared = window.maybeClearSourceOnNotFound(
+                        normalized,
+                        'desktop region capture Source not found'
+                    );
+                }
+                if (sourceCleared) {
+                    console.info('[截图] 桌面框选源已失效，回退到既有截图链路');
+                    return null;
+                }
+                if (isDesktopRegionCaptureUnavailable(normalized)) {
+                    console.info('[截图] 桌面框选接口声明不可用，回退到内置裁剪:', regionMethod.name);
+                    return null;
+                }
+                throw new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
+            }
+
+            var scaled = await downscaleDataUrlTo720p(normalized.dataUrl);
+            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (scaled.width || normalized.width || 0) + 'x' + (scaled.height || normalized.height || 0));
+            return {
+                dataUrl: scaled.dataUrl,
+                originalDataUrl: normalized.originalDataUrl || normalized.dataUrl,
+                avatarPos: normalized.avatarPos || null,
+                captureType: normalized.captureType || 'desktop-region',
+                width: scaled.width || normalized.width || 0,
+                height: scaled.height || normalized.height || 0
+            };
         }
 
         async function recaptureWithoutNeko() {
+            // Priority 0 (Electron PC): 主进程原子化路径 — 一次 IPC 完成
+            //   隐藏所有 NEKO 窗口 → 等合成 → desktopCapturer 抓图 → 恢复窗口。
+            //   把 hide/等待/抓图/show 全放主进程是因为渲染器端 setTimeout 在 Pet 窗口
+            //   hide 后会被 backgroundThrottling 拖慢到秒级，且多次 IPC 之间有时序风险。
+            var selectedSourceId = S.selectedScreenSourceId;
+            if (selectedSourceId && window.electronDesktopCapturer
+                && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+                try {
+                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
+                    if (atomic && atomic.success && atomic.dataUrl) {
+                        var atomicScaled = await downscaleDataUrlTo720p(atomic.dataUrl);
+                        if (atomicScaled && atomicScaled.dataUrl) return atomicScaled.dataUrl;
+                    } else if (atomic && atomic.error) {
+                        console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(atomic, 'recaptureWithoutNeko atomic Source not found');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[隐藏NEKO] 主进程原子化路径抛错，回退到渲染器路径:', e);
+                }
+                // 主进程路径失败则继续走下面 renderer 端的兜底（visibility:hidden + MediaStream）
+            }
+
+            // Fallback：web 浏览器模式或主进程路径失败 —— 渲染器侧 CSS 隐藏 + 常规抓屏兜底
+            // Electron 下额外让主进程 hide 卫星窗口；Pet 自己的 DOM 用 visibility:hidden 处理。
+            // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
-            await new Promise(function (r) { setTimeout(r, 200); });
+            var fallbackHiddenIds = null;
+            if (window.electronDesktopCapturer
+                && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                try {
+                    var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                    if (hideRes && Array.isArray(hideRes.hiddenIds)) {
+                        fallbackHiddenIds = hideRes.hiddenIds;
+                    }
+                } catch (e) {
+                    console.warn('[隐藏NEKO][fallback] hide 卫星窗口失败:', e);
+                }
+            }
+            await new Promise(function (r) { setTimeout(r, 300); });
             try {
-                // Priority 1: Electron direct capture (mirrors main flow)
-                var selectedSourceId = S.selectedScreenSourceId;
-                if (selectedSourceId && window.electronDesktopCapturer
+                // Priority 1: Electron direct capture (不隐藏卫星窗口版本，仅为向后兼容兜底)
+                // 读当前的 S.selectedScreenSourceId —— Priority 0 若刚命中 'Source not found'
+                // 已经通过 maybeClearSourceOnNotFound 把它清空，此时 selectedSourceId 这个本地
+                // 快照已是僵尸 ID；继续用它只会让主进程再原样报一次 'Source not found'，
+                // 多一次 IPC 往返。重读 S 直接跳到 Priority 2 流路径。
+                var currentSourceId = S.selectedScreenSourceId;
+                if (currentSourceId && window.electronDesktopCapturer
                     && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
                         if (direct && direct.success && direct.dataUrl) {
                             var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                             if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, 'recaptureWithoutNeko Priority 1 Source not found');
                         }
                     } catch (e) { /* fallback below */ }
                 }
@@ -1864,35 +2178,46 @@
                 }
                 return null;
             } finally {
+                // 先恢复卫星窗口，再恢复 Pet 的 DOM visibility —— 反过来用户会看到
+                // 孤零零的 Pet 一帧。
+                if (fallbackHiddenIds && fallbackHiddenIds.length > 0
+                    && window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                    try {
+                        await window.electronDesktopCapturer.restoreNekoWindows(fallbackHiddenIds);
+                    } catch (e) {
+                        console.warn('[隐藏NEKO][fallback] 恢复卫星窗口失败:', e);
+                    }
+                }
                 restoreNekoUI(saved);
             }
         }
 
-        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
-            // 桌面端优先级：
-            //   1) 主进程直接 desktopCapturer 捕获选中源（最可靠，绕开所有 Chromium 桌面捕获管线问题）
-            //   2) acquireOrReuseCachedStream（缓存流 / Electron chromeMediaSourceId / getDisplayMedia）
-            //   3) 后端 pyautogui（只能截主屏）
-            // isCachedStream 用于区分缓存流（绝不能关）与一次性流（finally 要关）。
+        /**
+         * 纯截图+裁剪逻辑，不操作 UI。
+         * 返回 { dataUrl, originalDataUrl, avatarPos }；用户取消裁剪时返回 null。
+         */
+        var _captureScreenshotDataUrlBusy = false;
+
+        mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
+            if (_captureScreenshotDataUrlBusy) {
+                console.warn('[截图] 截图流程进行中，忽略重复请求');
+                throw new Error('SCREENSHOT_BUSY');
+            }
+            _captureScreenshotDataUrlBusy = true;
             var acquiredStream = null;
             var isCachedStream = false;
-            var captureType = null; // 'screen' | 'viewport' | null — 用于 Avatar 坐标映射
+            var captureType = null;
 
             try {
-                screenshotButton.disabled = true;
-                window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
-
                 var dataUrl = null;
                 var width = 0, height = 0;
 
                 if (U.isMobile()) {
-                    // 移动端：沿用摄像头采集，永远是一次性流
                     try {
                         acquiredStream = await window.getMobileCameraStream();
                     } catch (mobileErr) {
                         console.warn('[截图] 移动端摄像头获取失败:', mobileErr);
-                        // 无条件抛出：保留原始错误 name（NotAllowedError / NotFoundError /
-                        // NotReadableError 等），让外层 catch 的分支能给出对应的本地化提示。
                         throw mobileErr;
                     }
                     if (acquiredStream) {
@@ -1901,16 +2226,37 @@
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
                             height = mframe.height;
-                            captureType = null; // 手机相机，Avatar 不在画面中
+                            captureType = null;
                         }
                     }
                 } else {
-                    // === 优先级 1：主进程直接捕获选中源 ===
-                    // 只要渲染器知道用户选了某个源，就让主进程用 desktopCapturer 的高分辨率缩略图
-                    // 对该源做一次静态快照。完全绕开 getUserMedia(chromeMediaSourceId) 和
-                    // getDisplayMedia + setDisplayMediaRequestHandler 这条 Chromium 桌面捕获管线
-                    // ——在 Electron 41 / Windows 11 + useSystemPicker:true 的组合下，这条管线对窗口
-                    // 源常常返回整个屏幕。主进程 desktopCapturer 则直接由平台原生 API 支持，可靠。
+                    if (typeof window.fetchBackendInteractiveScreenshot === 'function') {
+                        var interactiveBackendResult = await window.fetchBackendInteractiveScreenshot();
+                        if (interactiveBackendResult && interactiveBackendResult.canceled) {
+                            return null;
+                        }
+                        if (interactiveBackendResult && interactiveBackendResult.dataUrl) {
+                            var interactiveScaled = await downscaleDataUrlTo720p(interactiveBackendResult.dataUrl);
+                            return {
+                                dataUrl: (interactiveScaled && interactiveScaled.dataUrl) || interactiveBackendResult.dataUrl,
+                                originalDataUrl: interactiveBackendResult.dataUrl,
+                                avatarPos: null
+                            };
+                        }
+                    }
+
+                    var desktopRegionResult = await captureDesktopRegionDirectly();
+                    if (desktopRegionResult) {
+                        if (desktopRegionResult.canceled) {
+                            return null;
+                        }
+                        return {
+                            dataUrl: desktopRegionResult.dataUrl,
+                            originalDataUrl: desktopRegionResult.originalDataUrl || desktopRegionResult.dataUrl,
+                            avatarPos: desktopRegionResult.avatarPos || null
+                        };
+                    }
+
                     var selectedSourceId = S.selectedScreenSourceId;
                     if (selectedSourceId && window.electronDesktopCapturer
                         && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
@@ -1919,27 +2265,25 @@
                             if (direct && direct.success && direct.dataUrl) {
                                 var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
                                 dataUrl = scaled.dataUrl;
-                                // 以降采样后的实际尺寸为准；解码失败时 scaled.width/height 为 0，
-                                // 此时回退到主进程上报的原始尺寸，避免日志空值。
                                 width = scaled.width || direct.width || 0;
                                 height = scaled.height || direct.height || 0;
-                                // 主进程直接捕获：靠 sourceId 前缀区分 screen/window
                                 captureType = window.detectScreenshotCaptureType
                                     ? window.detectScreenshotCaptureType(null, selectedSourceId)
                                     : null;
                                 console.log('[截图] 主进程直接捕获成功:', selectedSourceId, width + 'x' + height);
                             } else if (direct && direct.error) {
                                 console.warn('[截图] 主进程直接捕获失败:', direct.error);
+                                if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                                    window.maybeClearSourceOnNotFound(direct, '主进程 capture-source-as-dataurl Source not found');
+                                }
                             }
                         } catch (directErr) {
                             console.warn('[截图] 主进程直接捕获抛错，将回退到流路径:', directErr);
                         }
                     }
 
-                    // === 优先级 2：acquireOrReuseCachedStream 流路径 ===
                     if (!dataUrl && typeof window.acquireOrReuseCachedStream === 'function') {
                         try {
-                            // 用户手势上下文（点击截图按钮）→ allowPrompt:true，允许 getDisplayMedia
                             acquiredStream = await window.acquireOrReuseCachedStream({ allowPrompt: true });
                         } catch (acqErr) {
                             if (acqErr && acqErr.name === 'NotAllowedError') throw acqErr;
@@ -1948,7 +2292,6 @@
                         }
 
                         if (acquiredStream) {
-                            // 与全局缓存流等值比较 ⇒ acquireOrReuseCachedStream 新建的流一定写回 S.screenCaptureStream
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
                             var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
                             if (frame) {
@@ -1966,13 +2309,10 @@
                         }
                     }
 
-                    // === 优先级 3：后端 pyautogui（只能截主屏，且需 localhost）===
                     if (!dataUrl) {
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {
-                                // 后端 pyautogui 返回原生分辨率（2K/4K 显示器会超过 720p 上限），
-                                // 与主进程直接捕获路径保持一致，统一降采样到 MAX_SCREENSHOT_WIDTH/HEIGHT。
                                 var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
                                 dataUrl = beScaled.dataUrl;
                                 width = beScaled.width || 0;
@@ -1992,42 +2332,90 @@
                     console.log(window.t('console.screenshotSuccess'), width + 'x' + height);
                 }
 
-                // Capture avatar position at screenshot time, mapped to capture coordinate system.
-                // Only meaningful for the uncropped path — cropping invalidates the normalized coords.
                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                     ? window.getAvatarScreenPosition(captureType) : null;
 
-                // Release one-time stream BEFORE opening crop overlay
-                // Only release if it's a one-time stream — cached streams are managed globally
                 if (!isCachedStream && acquiredStream instanceof MediaStream) {
                     acquiredStream.getTracks().forEach(function (track) {
                         try { track.stop(); } catch (e) { }
                     });
-                    acquiredStream = null; // prevent double-release in finally
+                    acquiredStream = null;
                 }
 
-                // Open crop overlay for region selection
-                if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
-                    var croppedUrl = await window.appCrop.cropImage(dataUrl, {
-                        recaptureFn: function () { return recaptureWithoutNeko(); }
-                    });
-                    if (!croppedUrl) {
-                        // User cancelled cropping
-                        window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
-                        return;
+                // 在显示裁剪 overlay 前隐藏其他 NEKO 窗口（如 Chat 窗口），
+                // 避免它们的 z-order 遮挡 Pet 窗口中的全屏裁剪界面。
+                var hiddenIds = null;
+                if (window.electronDesktopCapturer
+                    && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                    try {
+                        var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                        if (hideRes && Array.isArray(hideRes.hiddenIds)) {
+                            hiddenIds = hideRes.hiddenIds;
+                        }
+                    } catch (hideErr) {
+                        console.warn('[截图] 隐藏其他窗口失败:', hideErr);
                     }
-                    // 裁切后坐标系变了，Avatar 位置无效：不附带 avatar_position
-                    // （除非裁切图与原图相同 — 但我们无法从 appCrop API 判定，保守跳过）
-                    mod.addScreenshotToList(croppedUrl, croppedUrl === dataUrl ? avatarPos : null);
-                } else {
-                    // Fallback: no crop module available, add full screenshot with avatar position
-                    mod.addScreenshotToList(dataUrl, avatarPos);
                 }
-                window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
 
+                try {
+                    if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
+                        var croppedUrl = await window.appCrop.cropImage(dataUrl, {
+                            recaptureFn: function () { return recaptureWithoutNeko(); }
+                        });
+                        if (!croppedUrl) {
+                            return null;
+                        }
+                        return { dataUrl: croppedUrl, originalDataUrl: dataUrl, avatarPos: avatarPos };
+                    } else {
+                        return { dataUrl: dataUrl, originalDataUrl: dataUrl, avatarPos: avatarPos };
+                    }
+                } finally {
+                    if (hiddenIds && hiddenIds.length > 0
+                        && window.electronDesktopCapturer
+                        && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                        try {
+                            await window.electronDesktopCapturer.restoreNekoWindows(hiddenIds);
+                        } catch (restoreErr) {
+                            console.warn('[截图] 恢复其他窗口失败:', restoreErr);
+                        }
+                    }
+                }
+            } finally {
+                _captureScreenshotDataUrlBusy = false;
+                if (!isCachedStream && acquiredStream instanceof MediaStream) {
+                    try {
+                        acquiredStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    } catch (e) { }
+                }
+            }
+        };
+        window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl;
+
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return false;
+            }
+            try {
+                screenshotButton.disabled = true;
+                window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
+
+                var result = await mod.captureScreenshotDataUrl();
+                if (!result) {
+                    window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
+                    return;
+                }
+
+                mod.addScreenshotToList(result.dataUrl, result.dataUrl === result.originalDataUrl ? result.avatarPos : null);
+                window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
             } catch (err) {
                 console.error(window.t('console.screenshotFailed'), err);
 
+                if (err.message === 'SCREENSHOT_BUSY') {
+                    return;
+                }
                 var errorMsg = window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25';
                 if (err.message === 'UNSUPPORTED_API') {
                     errorMsg = window.t ? window.t('app.screenshotUnsupported') : '\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u5C4F\u5E55\u622A\u56FE\u529F\u80FD';
@@ -2043,15 +2431,11 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
-                // 只释放一次性流；缓存流由 acquireOrReuseCachedStream 体系管理，绝不能在这里停
-                if (!isCachedStream && acquiredStream instanceof MediaStream) {
-                    try {
-                        acquiredStream.getTracks().forEach(function (track) {
-                            try { track.stop(); } catch (e) { }
-                        });
-                    } catch (e) { }
+                if (isHomeTutorialInteractionLocked()) {
+                    refreshHomeTutorialLockedElement(screenshotButton, false);
+                } else {
+                    screenshotButton.disabled = false;
                 }
-                screenshotButton.disabled = false;
             }
         };
 
@@ -2085,6 +2469,7 @@
         // ----------------------------------------------------------------
         document.addEventListener('paste', function (e) {
             if (!e.clipboardData || !e.clipboardData.items) return;
+            if (isHomeTutorialInteractionLocked()) return;
             // Don't handle paste when crop overlay is open
             var cropOverlay = document.getElementById('crop-overlay');
             if (cropOverlay && cropOverlay.style.display !== 'none') return;
@@ -2115,6 +2500,11 @@
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();
+        applyHomeTutorialInteractionLock('init');
+        window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+            var detail = event && event.detail ? event.detail : {};
+            applyHomeTutorialInteractionLock(detail.reason || 'lock-changed');
+        });
     };
 
     window.appButtons = mod;

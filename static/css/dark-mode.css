@@ -486,6 +486,36 @@ html #chat-container {
   background: #e53935;
 }
 
+/* model_manager.css 中 .modal-header h3 设置了 color: #333（特异性 0,1,1），
+   .modal-content 的 color: #e0e0e0 通过继承被它覆盖，需显式提亮。 */
+[data-theme="dark"] .modal-header h3 {
+  color: #ffffff;
+}
+
+[data-theme="dark"] .modal-close {
+  color: #b0b0b0;
+}
+
+[data-theme="dark"] .modal-close:hover {
+  color: #ffffff;
+}
+
+/* "Delete Imported Models" 弹窗内列表区与提示语 */
+[data-theme="dark"] .model-list-container {
+  background: #1e1e1e;
+  border-color: #3a3a3a;
+}
+
+[data-theme="dark"] .empty-message {
+  color: #b0b0b0;
+}
+
+/* 红色警告条：暗色下用更深的红色背景，文字保持红色保留语义 */
+[data-theme="dark"] .delete-warning {
+  background: rgba(220, 53, 69, 0.15);
+  color: #ff6b6b;
+}
+
 /* ===== 暗色模式：Live2D/VRM 浮动按钮弹出框（安全兜底） ===== */
 /* JS 已使用 CSS 变量, 以下为额外安全兜底 */
 
@@ -638,8 +668,8 @@ html #chat-container {
 
 /* ===========================================================
    子页面通用暗色模式覆盖
-   适用于 chara_manager, api_key_settings, memory_browser,
-   model_manager, steam_workshop_manager, voice_clone,
+   适用于 character_card_manager, api_key_settings, memory_browser,
+   model_manager, voice_clone,
    vrm_emotion_manager, live2d_emotion_manager 等
    =========================================================== */
 
@@ -741,7 +771,8 @@ html #chat-container {
 /* ===== 子页面：提示框 ===== */
 [data-theme="dark"] #advanced-options > div[style*="background: #e7f3ff"],
 [data-theme="dark"] #advanced-options > div[style*="background: #f0f8ff"],
-[data-theme="dark"] #custom-api-options > div[style*="background: #f0f8ff"] {
+[data-theme="dark"] #custom-api-options > div[style*="background: #f0f8ff"],
+[data-theme="dark"] #key-book-options > div[style*="background: #e7f3ff"] {
   background: rgba(42, 123, 196, 0.15) !important;
   border-color: rgba(74, 163, 223, 0.3) !important;
 }
@@ -890,6 +921,47 @@ html #chat-container {
 
 [data-theme="dark"] #advanced-options {
   background: #252525;
+}
+
+/* ===== 子页面：API Key Book 管理簿面板 =====
+   api_key_settings.css 中：
+   - #key-book-inputs：浅蓝面板 #f0f9ff + #d0e8ff 边框
+   - .key-book-row input：白底 #fff + #b3e5fc 边框 + var(--text-blue) 文字
+   - .key-book-row input::placeholder：浅蓝 #b3e5fc
+   - .key-book-row input[readonly]：#f0f0f0 灰底 + #666 文字
+   暗色基调：面板 #252525，输入 #2d2d2d，边框 #3a5a6e。 */
+[data-theme="dark"] #key-book-inputs {
+  background: #252525;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .key-book-row label {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .key-book-row input {
+  background: #2d2d2d;
+  color: #5cb8f0;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .key-book-row input:focus {
+  border-color: #4aa3df;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.2);
+}
+
+[data-theme="dark"] .key-book-row input::placeholder {
+  color: #6f98b0;
+}
+
+/* readonly 自动填充态（同时覆盖 .field-row input[readonly] 与 model-content
+   中的 readonly），避免在暗色下出现浅灰条 */
+[data-theme="dark"] .field-row input[readonly],
+[data-theme="dark"] .key-book-row input[readonly],
+[data-theme="dark"] .model-content .field-row input[readonly] {
+  background: #1a1a1a;
+  color: #888;
+  border-color: #3a3a3a;
 }
 
 /* ===== 子页面：模型配置区 ===== */
@@ -1274,6 +1346,67 @@ html #chat-container {
   color: #fff;
 }
 
+/* ===== 子页面：角色管理 - 隐藏猫娘区域 =====
+   背景/边框：rgba(74,163,223,*) 在 #1e1e1e 上为装饰性元素，符合 WCAG 1.4.11 非 UI 组件豁免；
+   文字 #5cb8f0 在 #252525 上 ≈7.2:1，符合 WCAG AA/AAA；
+   按钮白字在 #2a7bc4 上 ≈4.6:1，符合 WCAG AA。 */
+[data-theme="dark"] #hidden-catgirl-area {
+  background: rgba(74, 163, 223, 0.06);
+  border-color: rgba(74, 163, 223, 0.4);
+}
+
+[data-theme="dark"] .hidden-catgirl-header,
+[data-theme="dark"] .hidden-catgirl-arrow {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .hidden-catgirl-item {
+  background: #252525;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .hidden-catgirl-item .catgirl-name {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .hidden-catgirl-item:hover {
+  box-shadow: 0 8px 20px rgba(74, 163, 223, 0.3);
+}
+
+/* 提升特异性以覆盖 chara_manager.css 中的 .hidden-catgirl-item .btn.sm.unhide */
+[data-theme="dark"] .hidden-catgirl-item .btn.sm.unhide {
+  background: #2a7bc4;
+}
+
+[data-theme="dark"] .hidden-catgirl-item .btn.sm.unhide:hover {
+  background: #3590d9;
+}
+
+/* ===== 子页面：当前选中猫娘卡片（current）暗色覆盖 =====
+   chara_manager.css 中 .catgirl-block.current 及其子元素 (.catgirl-header / .catgirl-details)
+   设了 background: #E0FFFF（浅青）。复合选择器特异性高于 [data-theme="dark"] .catgirl-header，
+   需在此显式覆盖。
+   #1a3a4d 与默认卡片 #252525 区分明显（保留"当前"语义），同时不刺眼；
+   蓝色文字 #4aa3df 在 #1a3a4d 上 ≈4.5:1，符合 WCAG AA。 */
+[data-theme="dark"] .catgirl-block.current,
+[data-theme="dark"] .catgirl-block.current .catgirl-header,
+[data-theme="dark"] .catgirl-block.current .catgirl-details {
+  background: #1a3a4d;
+}
+
+[data-theme="dark"] .catgirl-block.current {
+  border-color: #00CED1;
+}
+
+/* ===== 子页面：页面根背景（修复白色滚动条） =====
+   多个子页面（chara_manager / api_key_settings / model_manager 等）的 CSS
+   将 html/body 背景设为 transparent。在暗色模式下，body 滚动条轨道（也是 transparent）
+   会透出底层白色窗口。把非主聊天页的 body 设为暗色解决此问题。
+   主页 body 带 .subtitle-web-host / .subtitle-window-host 类，必须保持透明（Live2D 透明背景）。 */
+[data-theme="dark"] body:not(.subtitle-web-host):not(.subtitle-window-host) {
+  background: #1e1e1e;
+}
+
 /* ===== 子页面：自定义滚动条 ===== */
 [data-theme="dark"] ::-webkit-scrollbar {
   width: 6px;
@@ -1291,6 +1424,11 @@ html #chat-container {
 
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
   background: rgba(74, 163, 223, 0.55);
+}
+
+/* Firefox 滚动条颜色（子页面 body 滚动条） */
+[data-theme="dark"] body:not(.subtitle-web-host):not(.subtitle-window-host) {
+  scrollbar-color: rgba(74, 163, 223, 0.45) #1e1e1e;
 }
 
 /* ===== 子页面：Live2D/VRM 表情管理器 ===== */
@@ -1476,6 +1614,368 @@ html #chat-container {
   opacity: 1 !important;
 }
 
+/* ===== 模型管理器（角色模型/Chara Appearance）：左侧 Sidebar 暗色适配 =====
+   原本的玻璃面板使用 rgba(255,255,255,0.5) 在暗色背景上显得过白，
+   常驻表情列表的 #fff 背景与列表项的浅蓝渐变在暗色模式下也很刺眼。
+   下方颜色基于 #1e1e1e 页面 / #252525 卡片的整体暗色基调。 */
+[data-theme="dark"] #sidebar.mode-live2d .sidebar-controls::before,
+[data-theme="dark"] #sidebar.mode-vrm .sidebar-controls::before {
+  background: rgba(30, 30, 30, 0.6);
+  border-color: rgba(74, 163, 223, 0.4);
+}
+
+/* 常驻表情列表容器 */
+[data-theme="dark"] #persistent-list {
+  background: #252525;
+  border-color: #3a5a6e;
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
+}
+
+/* 常驻表情列表项：深色蓝绿渐变；文字 #5cb8f0 在 #1d3a4d 上 ≈6:1，符合 WCAG AA */
+[data-theme="dark"] .persistent-item {
+  background: linear-gradient(135deg, rgba(58, 159, 216, 0.18), rgba(58, 159, 216, 0.1));
+  border-color: rgba(74, 163, 223, 0.35);
+  color: #cfdce6;
+}
+
+[data-theme="dark"] .persistent-item:hover {
+  background: linear-gradient(135deg, rgba(74, 163, 223, 0.32), rgba(74, 163, 223, 0.2));
+  border-color: rgba(74, 163, 223, 0.6);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(74, 163, 223, 0.2);
+}
+
+/* 常驻表情删除按钮在暗色下保持红色但稍微调亮以保证可识别 */
+[data-theme="dark"] .persistent-delete-btn {
+  background: #c62828;
+}
+
+[data-theme="dark"] .persistent-delete-btn:hover {
+  background: #d32f2f;
+}
+
+/* 常驻表情列表滚动条 */
+[data-theme="dark"] #persistent-list::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+[data-theme="dark"] #persistent-list::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.5);
+}
+
+[data-theme="dark"] #persistent-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.75);
+}
+
+/* Sidebar 滚动条（外层按钮容器）调整为暗色基调 */
+[data-theme="dark"] #sidebar {
+  scrollbar-color: rgba(74, 163, 223, 0.55) rgba(30, 30, 30, 0.4);
+}
+
+[data-theme="dark"] #sidebar::-webkit-scrollbar-track {
+  background: rgba(30, 30, 30, 0.4);
+}
+
+[data-theme="dark"] #sidebar::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.55);
+}
+
+[data-theme="dark"] #sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.8);
+}
+
+/* 模型管理器页面 body 背景图在暗色模式下被前面的
+   body:not(.subtitle-web-host):not(.subtitle-window-host) { background: #1e1e1e }
+   规则覆盖，移除浅色背景图。 */
+
+/* ===== 模型管理器：所有模型/动作/表情下拉菜单 =====
+   原浅色容器渐变 + dropdown_item_hover_bg.png 白色药丸悬停在暗色下太刺眼。
+   覆盖容器为暗色，悬停 background-image 替换为蓝色渐变。
+   文字 #40C5F1/#22b3ff 在 #1e1e1e 上 ≈4.7:1，符合 WCAG AA。 */
+[data-theme="dark"] .model-type-dropdown,
+[data-theme="dark"] .live2d-model-dropdown,
+[data-theme="dark"] .motion-dropdown,
+[data-theme="dark"] .expression-dropdown,
+[data-theme="dark"] .vrm-model-dropdown,
+[data-theme="dark"] .vrm-animation-dropdown,
+[data-theme="dark"] .vrm-expression-dropdown,
+[data-theme="dark"] .mmd-animation-dropdown,
+[data-theme="dark"] .persistent-expression-dropdown {
+  background: linear-gradient(to bottom, rgba(30, 30, 30, 0.92), rgba(40, 40, 40, 0.88));
+  border-color: rgba(74, 163, 223, 0.45);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* 悬停：用 CSS 渐变药丸取代白色 PNG 背景，保持 100% auto 拉伸特性 */
+[data-theme="dark"] .model-type-dropdown .dropdown-item:hover,
+[data-theme="dark"] .live2d-model-dropdown .dropdown-item:hover,
+[data-theme="dark"] .motion-dropdown .dropdown-item:hover,
+[data-theme="dark"] .expression-dropdown .dropdown-item:hover,
+[data-theme="dark"] .vrm-model-dropdown .dropdown-item:hover,
+[data-theme="dark"] .vrm-animation-dropdown .dropdown-item:hover,
+[data-theme="dark"] .vrm-expression-dropdown .dropdown-item:hover,
+[data-theme="dark"] .mmd-animation-dropdown .dropdown-item:hover,
+[data-theme="dark"] .persistent-expression-dropdown .dropdown-item:hover {
+  background-image: linear-gradient(135deg, rgba(74, 163, 223, 0.32), rgba(74, 163, 223, 0.18));
+}
+
+/* 各下拉菜单滚动条 */
+[data-theme="dark"] .model-type-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .live2d-model-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .motion-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .expression-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .vrm-model-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .vrm-animation-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .vrm-expression-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .mmd-animation-dropdown::-webkit-scrollbar-track,
+[data-theme="dark"] .persistent-expression-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-theme="dark"] .model-type-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .live2d-model-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .motion-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .expression-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .vrm-model-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .vrm-animation-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .vrm-expression-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .mmd-animation-dropdown::-webkit-scrollbar-thumb,
+[data-theme="dark"] .persistent-expression-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.45);
+}
+
+/* Steam / VRM 角标在暗色下提亮以保证可见 */
+[data-theme="dark"] .steam-badge {
+  color: #5cb8f0;
+  background-color: rgba(74, 163, 223, 0.18);
+  border-color: rgba(74, 163, 223, 0.6);
+}
+
+[data-theme="dark"] .vrm-badge {
+  color: #c4b5fd;
+  background-color: rgba(167, 139, 250, 0.2);
+  border-color: rgba(167, 139, 250, 0.6);
+}
+
+/* ===== Touch Anim Config 对话框 =====
+   背景从 #fff 切换到 #2d2d2d；分组卡片从浅蓝 #e3f4ff 切换到 #1d3a4d 风格。
+   文字 #cfdce6 在 #2d2d2d 上 ≈10:1（AAA），#5cb8f0 在 #1d3a4d 上 ≈6:1（AA）。 */
+[data-theme="dark"] .touch-config-window {
+  background: #2d2d2d;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .touch-config-content {
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
+  color: #cfdce6;
+}
+
+[data-theme="dark"] .touch-config-content::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+[data-theme="dark"] .touch-config-content::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.55);
+}
+
+[data-theme="dark"] .touch-config-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.8);
+}
+
+[data-theme="dark"] .hitarea-item {
+  background: #1d3a4d;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .hitarea-title {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .hitarea-label {
+  color: #b0b0b0;
+}
+
+[data-theme="dark"] .multiselect-header {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .multiselect-header:hover {
+  border-color: #4aa3df;
+}
+
+[data-theme="dark"] .multiselect-options {
+  background: #252525;
+  border-color: #3a5a6e;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
+}
+
+[data-theme="dark"] .multiselect-options::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+[data-theme="dark"] .multiselect-options::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.55);
+}
+
+[data-theme="dark"] .multiselect-item {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .multiselect-item:hover {
+  background: rgba(74, 163, 223, 0.18);
+}
+
+[data-theme="dark"] .selected-tag {
+  background: rgba(74, 163, 223, 0.18);
+  color: #8dd1ff;
+  border-color: rgba(74, 163, 223, 0.4);
+}
+
+[data-theme="dark"] .hitarea-btn-secondary {
+  background: #2d2d2d;
+  color: #5cb8f0;
+  border-color: #4aa3df;
+}
+
+[data-theme="dark"] .hitarea-btn-secondary:hover {
+  background: rgba(74, 163, 223, 0.18);
+}
+
+/* ===== Live2D 参数编辑器（Face Editor / Parameters） =====
+   参数列表卡片、搜索框、下拉框、参数项的暗色覆盖。
+   #reset-all-btn / #save-btn 使用图片背景，已在前面规则保持原样不被覆盖。 */
+[data-theme="dark"] .control-label {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .control-select,
+[data-theme="dark"] .search-box {
+  background: #2d2d2d;
+  color: #e0e0e0;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .control-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%235cb8f0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
+[data-theme="dark"] .parameters-list-wrapper {
+  background: linear-gradient(135deg, rgba(29, 58, 77, 0.85), rgba(37, 37, 37, 0.95));
+  border-color: rgba(74, 163, 223, 0.5);
+  box-shadow:
+    0 0 20px rgba(0, 0, 0, 0.4),
+    inset 0 0 30px rgba(74, 163, 223, 0.08);
+}
+
+[data-theme="dark"] .parameters-list-wrapper::before {
+  background-image:
+    linear-gradient(0deg, transparent 48%, rgba(74, 163, 223, 0.18) 50%, transparent 52%),
+    linear-gradient(90deg, transparent 48%, rgba(74, 163, 223, 0.18) 50%, transparent 52%);
+}
+
+[data-theme="dark"] .parameters-list::-webkit-scrollbar-track {
+  background: rgba(30, 30, 30, 0.5);
+}
+
+[data-theme="dark"] .parameters-list::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.5);
+}
+
+[data-theme="dark"] .parameters-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.75);
+}
+
+[data-theme="dark"] .parameters-list {
+  scrollbar-color: rgba(74, 163, 223, 0.5) rgba(30, 30, 30, 0.5);
+}
+
+[data-theme="dark"] .parameter-group {
+  background: rgba(45, 45, 45, 0.6);
+  border-color: rgba(74, 163, 223, 0.45);
+}
+
+[data-theme="dark"] .group-header {
+  background: linear-gradient(135deg, rgba(74, 163, 223, 0.2), rgba(74, 163, 223, 0.12));
+}
+
+[data-theme="dark"] .group-header:hover {
+  background: linear-gradient(135deg, rgba(74, 163, 223, 0.32), rgba(74, 163, 223, 0.2));
+}
+
+[data-theme="dark"] .group-header-text,
+[data-theme="dark"] .group-header-empty .group-header-text {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .group-header-count {
+  color: #5cb8f0;
+  background: rgba(74, 163, 223, 0.2);
+}
+
+[data-theme="dark"] .group-arrow {
+  border-top-color: #5cb8f0;
+}
+
+[data-theme="dark"] .parameter-item {
+  background: rgba(45, 45, 45, 0.7);
+  border-color: rgba(74, 163, 223, 0.3);
+}
+
+[data-theme="dark"] .parameter-name {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .parameter-value {
+  color: #b0b0b0;
+}
+
+[data-theme="dark"] .parameter-input {
+  background: #2d2d2d;
+  color: #e0e0e0;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .parameter-slider {
+  background: #444;
+}
+
+[data-theme="dark"] .parameter-slider::-webkit-slider-runnable-track,
+[data-theme="dark"] .parameter-slider::-moz-range-track {
+  background: #444;
+}
+
+[data-theme="dark"] .parameter-slider::-webkit-slider-thumb,
+[data-theme="dark"] .parameter-slider::-moz-range-thumb {
+  background: #5cb8f0;
+}
+
+[data-theme="dark"] .empty-hint-text {
+  color: #6f98b0;
+}
+
+/* btn-secondary 在 live2d_parameter_editor.css 中是浅蓝 #d5f1ff，
+   暗色模式下需调整为深色背景配亮色文字 */
+[data-theme="dark"] .btn-secondary {
+  background: #2d2d2d;
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .btn-secondary:hover:not(:disabled) {
+  background: rgba(74, 163, 223, 0.2);
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .btn:disabled {
+  background: #2a2a2a;
+  color: #666;
+}
+
+[data-theme="dark"] #status {
+  color: #5cb8f0;
+}
+
 /* ============================================================ */
 /* Chat Export — dark mode overrides                            */
 /* ============================================================ */
@@ -1606,3 +2106,367 @@ html #chat-container {
 }
 
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */
+
+/* ============================================================ */
+/* Live2D Emotion Mapping Manager — 内联样式暗色覆盖              */
+/* live2d_emotion_manager.html 的样式直接写在 <style> 标签内，    */
+/* 这里通过更高特异性的 [data-theme="dark"] 选择器覆盖。           */
+/* ============================================================ */
+
+/* 情感分组卡片：原 #e3f4ff（color-n-light）→ 深蓝灰 */
+[data-theme="dark"] .emotion-section {
+  background: #1d3a4d;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .emotion-header {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .emotion-header::before {
+  background: #5cb8f0;
+}
+
+[data-theme="dark"] .select-group label {
+  color: #b0b0b0;
+}
+
+/* 注：.field-row label 已在前面（子页面通用区块）有规则，无需重复定义 */
+
+/* 单选下拉触发条：原 white → #252525 */
+[data-theme="dark"] .singleselect-header {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] .singleselect-header:hover {
+  border-color: #4aa3df;
+}
+
+[data-theme="dark"] .singleselect-header::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%235cb8f0' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
+/* 单选下拉选项面板 */
+[data-theme="dark"] .singleselect-options {
+  background: #252525;
+  border-color: #3a5a6e;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
+}
+
+[data-theme="dark"] .singleselect-options::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+[data-theme="dark"] .singleselect-options::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.55);
+}
+
+[data-theme="dark"] .singleselect-options::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.8);
+}
+
+[data-theme="dark"] .singleselect-item {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .singleselect-item:hover {
+  background: rgba(74, 163, 223, 0.18);
+}
+
+[data-theme="dark"] .singleselect-item.selected {
+  background: rgba(74, 163, 223, 0.25);
+  color: #8dd1ff;
+}
+
+/* multiselect-* 已在 Touch Anim Config 区块覆盖（共用同一组类名），此处无需重复 */
+
+/* btn-secondary 内联样式额外有 border: 2px solid var(--color-n-border)，
+   需要单独覆盖边框颜色（前面 .btn-secondary 通用规则未涉及边框） */
+[data-theme="dark"] .btn-secondary {
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] .btn-secondary:hover {
+  border-color: #4aa3df;
+  background: rgba(74, 163, 223, 0.18);
+  color: #5cb8f0;
+}
+
+/* status-info 文字色在暗色下需调亮 */
+[data-theme="dark"] .status-info {
+  color: #5cb8f0;
+}
+
+/* loading 文字 */
+[data-theme="dark"] .loading {
+  color: #b0b0b0;
+}
+
+/* ============================================================ */
+/* VRM / MMD Model Settings 面板（侧边栏内）                     */
+/* model_manager.css 中：                                        */
+/*  - .vrm-lighting-content：浅蓝玻璃面板                         */
+/*  - .mmd-lighting-wrapper > .vrm-lighting-content：浅绿玻璃面板 */
+/*  - .lighting-control label：#555（暗色下不可读）              */
+/*  - .lighting-control span：#666（数值文字）                   */
+/*  - #tonemapping-select：浅蓝下拉                              */
+/*  - .toggle-slider off：#ccc                                   */
+/*  - 滑块 track：#ddd                                            */
+/* ============================================================ */
+
+/* VRM 蓝色面板 → 深蓝暗色玻璃 */
+[data-theme="dark"] .vrm-lighting-content {
+  background: linear-gradient(180deg, rgba(29, 58, 77, 0.65), rgba(37, 37, 37, 0.55));
+  border-color: rgba(74, 163, 223, 0.45);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* MMD 绿色面板 → 深绿暗色玻璃 */
+[data-theme="dark"] .mmd-lighting-wrapper > .vrm-lighting-content {
+  background: linear-gradient(180deg, rgba(29, 58, 45, 0.65), rgba(37, 37, 37, 0.55));
+  border-color: rgba(46, 204, 113, 0.45);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* 控件标签：原 #555（≈3:1 在 #2d2d2d 上，不达标），提亮到 #cfdce6 (~13:1) */
+[data-theme="dark"] .lighting-control label {
+  color: #cfdce6;
+}
+
+/* 数值文字：原 #666 → #b0b0b0 (~7:1 AA) */
+[data-theme="dark"] .lighting-control span {
+  color: #b0b0b0;
+}
+
+/* Tone Mapping 下拉框 — 原浅蓝渐变 + #4f8cff 文字 */
+[data-theme="dark"] #tonemapping-select {
+  background: linear-gradient(135deg, rgba(45, 45, 45, 0.95), rgba(37, 37, 37, 0.95)) !important;
+  border-color: rgba(74, 163, 223, 0.45) !important;
+  color: #5cb8f0 !important;
+}
+
+[data-theme="dark"] #tonemapping-select option {
+  background-color: #2d2d2d;
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] #tonemapping-select option:checked {
+  background-color: rgba(74, 163, 223, 0.35);
+  color: #ffffff;
+}
+
+/* 滑块 track 浅灰 → 深灰 */
+[data-theme="dark"] .lighting-control input[type="range"],
+[data-theme="dark"] .lighting-control input[type="range"]::-webkit-slider-runnable-track,
+[data-theme="dark"] .lighting-control input[type="range"]::-moz-range-track {
+  background: #444;
+}
+
+/* Toggle 开关 OFF 状态：浅灰 → 深灰 */
+[data-theme="dark"] .toggle-slider {
+  background-color: #555;
+}
+
+/* ============================================================ */
+/* VRM / MMD Idle Animation 面板                                 */
+/* ============================================================ */
+
+/* VRM 待机动作面板背景 */
+[data-theme="dark"] .vrm-idle-animation-content {
+  background: linear-gradient(180deg, rgba(29, 58, 77, 0.65), rgba(37, 37, 37, 0.55));
+  border-color: rgba(74, 163, 223, 0.45);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* MMD 待机动作面板背景 */
+[data-theme="dark"] .mmd-idle-animation-content {
+  background: linear-gradient(180deg, rgba(29, 58, 45, 0.65), rgba(37, 37, 37, 0.55));
+  border-color: rgba(46, 204, 113, 0.45);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* VRM 多选触发条 */
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-header {
+  color: #5cb8f0;
+  background: linear-gradient(135deg, rgba(45, 45, 45, 0.95), rgba(37, 37, 37, 0.95));
+  border: 1px solid rgba(74, 163, 223, 0.45);
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-header:hover {
+  border-color: rgba(74, 163, 223, 0.7);
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-options {
+  background: rgba(37, 37, 37, 0.98);
+  border: 1px solid rgba(74, 163, 223, 0.45);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-item {
+  color: #5cb8f0;
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-item:hover {
+  background: rgba(74, 163, 223, 0.18);
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .selected-tag {
+  background: rgba(74, 163, 223, 0.22);
+  color: #8dd1ff;
+  border: 1px solid rgba(74, 163, 223, 0.4);
+}
+
+/* MMD 多选触发条（绿色主题） */
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-header {
+  color: #5fd1a4;
+  background: linear-gradient(135deg, rgba(45, 45, 45, 0.95), rgba(37, 37, 37, 0.95));
+  border: 1px solid rgba(46, 204, 113, 0.5);
+}
+
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-header:hover {
+  border-color: rgba(46, 204, 113, 0.75);
+}
+
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-options {
+  background: rgba(37, 37, 37, 0.98);
+  border: 1px solid rgba(46, 204, 113, 0.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-item {
+  color: #5fd1a4;
+}
+
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-item:hover {
+  background: rgba(46, 204, 113, 0.18);
+}
+
+[data-theme="dark"] #mmd-idle-animation-multiselect .selected-tag {
+  background: rgba(46, 204, 113, 0.22);
+  color: #84e4b6;
+  border: 1px solid rgba(46, 204, 113, 0.45);
+}
+
+/* ============================================================ */
+/* Live2D Parameter Editor (Face Editor) "Select Model" 下拉菜单  */
+/* live2d_parameter_editor.css 中 .model-dropdown 用了与          */
+/* model_manager.css 不同的类名，需单独覆盖。                     */
+/* ============================================================ */
+
+[data-theme="dark"] .model-dropdown {
+  background: linear-gradient(to bottom, rgba(30, 30, 30, 0.92), rgba(40, 40, 40, 0.88));
+  border-color: rgba(74, 163, 223, 0.45);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .model-dropdown .dropdown-item:hover {
+  background-image: linear-gradient(135deg, rgba(74, 163, 223, 0.32), rgba(74, 163, 223, 0.18));
+}
+
+[data-theme="dark"] .model-dropdown .dropdown-item-text::before {
+  --button-text-stroke-color: #4aa3df;
+}
+
+/* 用 background-image 而不是 background 简写：原规则同时设置了
+   -webkit-background-clip: text 让渐变只填充文字形状；
+   写 background 简写会把 background-clip 重置为 border-box，
+   导致渐变铺满整个伪元素（看起来就是一整条亮色药丸盖住文字）。 */
+[data-theme="dark"] .model-dropdown .dropdown-item-text::after {
+  background-image: linear-gradient(to bottom, #4aa3df, #8dd1ff, #cfdce6);
+}
+
+/* ============================================================ */
+/* 暗色模式：滚动条统一兜底（!important 终止战）                  */
+/* 多个 CSS 文件用类/ID 选择器直接定义浅蓝色滚动条，它们的特异性   */
+/* 与 [data-theme="dark"] ::-webkit-scrollbar-* 通用规则相当或    */
+/* 更高（含 ID 时）。这里用 !important 强制把所有暗色模式下的滚    */
+/* 动条统一为中性灰色（参考 #chat-content-wrapper 和 IDE 习惯），  */
+/* 不再使用品牌蓝避免在深色 dropdown 上读起来像「亮色」。         */
+/* 使用 !important 是因为 webkit 滚动条伪元素不接受 inheritance， */
+/* 且页面级 CSS 中 ID 选择器（特异性 1,1,x）无法靠属性选择器压制。  */
+/* ============================================================ */
+
+[data-theme="dark"] ::-webkit-scrollbar {
+  width: 8px !important;
+  height: 8px !important;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25) !important;
+  border-radius: 4px !important;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 4px !important;
+  border: none !important;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35) !important;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/* Firefox: scrollbar-color 不能用 !important 在通用选择器，用 [class] 提
+   高特异性到 (0,2,0) 压住页面 .xxx { scrollbar-color: ... } (0,1,0)。
+   含 ID 的页面级规则 (1,1,0) 仍会赢，对此再补上常见 ID 选择器。 */
+[data-theme="dark"] [class] {
+  scrollbar-color: rgba(255, 255, 255, 0.22) rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] #vrm-idle-animation-multiselect .multiselect-options,
+[data-theme="dark"] #mmd-idle-animation-multiselect .multiselect-options,
+[data-theme="dark"] #memory-chat-edit,
+[data-theme="dark"] #character-cards-list.cards-container,
+[data-theme="dark"] #subtitle-scroll,
+[data-theme="dark"] #control-panel,
+[data-theme="dark"] #sticker-grid,
+[data-theme="dark"] #layer-list,
+[data-theme="dark"] #persistent-list,
+[data-theme="dark"] #sidebar,
+[data-theme="dark"] #screenshots-list,
+[data-theme="dark"] #chat-content-wrapper {
+  scrollbar-color: rgba(255, 255, 255, 0.22) rgba(0, 0, 0, 0.25);
+}
+
+/* ============================================================ */
+/* Chromium 121+ 原生支持 scrollbar-color：一旦 scrollbar-color   */
+/* 被设置，::-webkit-scrollbar-* 自定义伪元素就被忽略，浏览器     */
+/* 改用原生滚动条并直接采用 scrollbar-color 的颜色。本文件之前    */
+/* 多处用品牌蓝 (#4aa3df 系) 设置 scrollbar-color 作 Firefox 兼容， */
+/* 如今在 Chromium/Electron 也会"亮蓝"显示。                     */
+/* 用 !important 在 html / body / * 三层强制中性灰，覆盖所有更    */
+/* 早设置的 scrollbar-color，并且 scrollbar-color 在 html 上设置  */
+/* 后会被视口滚动条采用（视口滚动元素通常是 html）。              */
+/* ============================================================ */
+[data-theme="dark"],
+[data-theme="dark"] body,
+[data-theme="dark"] * {
+  scrollbar-color: rgba(255, 255, 255, 0.22) rgba(0, 0, 0, 0.25) !important;
+}
+
+/* ============================================================ */
+/* 页面初始化加载遮罩：暗色覆盖                                  */
+/* api_key_settings.html 的 #loading-overlay 是 inline 写死的    */
+/* background: rgba(255, 255, 255, 0.9)，在暗色模式下整个页面    */
+/* 会被白色雾蒙覆盖，需要用 !important 反转为深色。              */
+/* steam_workshop_manager.js 也通过 JS 动态创建同 id 的遮罩，    */
+/* 内含一个无 id 的 <div> 文本（color: #333），同样需要适配。    */
+/* card_export.css 的 #model-loading-overlay 已在该文件内有暗色   */
+/* 覆盖，此处不重复。                                            */
+/* ============================================================ */
+[data-theme="dark"] #loading-overlay {
+  background: rgba(20, 20, 20, 0.85) !important;
+}
+
+/* 仅作用于无 id 的直接子 div（steam_workshop_manager 的 loadingText），
+   避开 api_key_settings 的 #voice-preparing-toast（白字+蓝图背景，本就 OK）。 */
+[data-theme="dark"] #loading-overlay > div:not([id]) {
+  color: #e0e0e0;
+}

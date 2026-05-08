@@ -124,7 +124,9 @@ def _make_config_manager_cfa(cfa_env):
         self_inner._first_non_writable_readable_candidate = docs_dir
         return appdata_dir
 
-    with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
+    with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs), \
+         patch.object(ConfigManager, '_get_standard_data_directory_candidates', return_value=[appdata_dir]), \
+         patch('utils.config_manager.sys.platform', 'win32'):
         cm = ConfigManager.__new__(ConfigManager)
         cm.__init__(app_name=APP_NAME)
 
@@ -145,7 +147,9 @@ def _make_config_manager_normal(normal_env):
         self_inner._first_non_writable_readable_candidate = None
         return docs_dir
 
-    with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
+    with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs), \
+         patch.object(ConfigManager, '_get_standard_data_directory_candidates', return_value=[docs_dir]), \
+         patch('utils.config_manager.sys.platform', 'win32'):
         cm = ConfigManager.__new__(ConfigManager)
         cm.__init__(app_name=APP_NAME)
 
@@ -191,6 +195,21 @@ class TestConfigManagerCFA:
 
         assert cm._readable_docs_dir is None
 
+    def test_custom_storage_root_disables_cfa_readable_fallback(self, cfa_env):
+        """CFA readable fallback should not stay active after switching to a custom storage root."""
+        cm = _make_config_manager_cfa(cfa_env)
+        custom_root = cfa_env["tmp_path"] / "custom-storage" / APP_NAME
+        custom_root.mkdir(parents=True)
+        (custom_root / "live2d").mkdir(parents=True)
+
+        cm.app_docs_dir = custom_root
+        cm.docs_dir = custom_root.parent
+        cm.live2d_dir = custom_root / "live2d"
+
+        assert cm.is_windows_cfa_fallback_active is False
+        assert cm.readable_live2d_dir is None
+        assert cm.get_live2d_lookup_roots() == [custom_root / "live2d"]
+
     def test_appdata_storage_without_write_failure_does_not_trigger_cfa_mode(self, cfa_env):
         """Choosing AppData alone should not imply CFA if the legacy path is still writable."""
         from utils.config_manager import ConfigManager
@@ -203,12 +222,15 @@ class TestConfigManagerCFA:
             self_inner._first_non_writable_readable_candidate = None
             return appdata_dir
 
-        with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs):
+        with patch.object(ConfigManager, '_get_documents_directory', fake_get_docs), \
+             patch.object(ConfigManager, '_get_standard_data_directory_candidates', return_value=[appdata_dir]), \
+             patch('utils.config_manager.sys.platform', 'win32'):
             cm = ConfigManager.__new__(ConfigManager)
             cm.__init__(app_name=APP_NAME)
 
         assert cm.docs_dir == appdata_dir
         assert cm._readable_docs_dir is None
+        assert cm.is_windows_cfa_fallback_active is False
 
     def test_normal_readable_live2d_dir_returns_none(self, normal_env):
         """In normal mode, readable_live2d_dir should return None."""

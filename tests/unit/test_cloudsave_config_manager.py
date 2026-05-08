@@ -13,6 +13,10 @@ _ORIGINAL_GET_DOCUMENTS_DIRECTORY = ConfigManager._get_documents_directory
 def _make_config_manager(tmp_path):
     with patch.object(ConfigManager, "_get_documents_directory", return_value=tmp_path), patch.object(
         ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_path / "standard_data"],
+    ), patch.object(
+        ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
     ), patch.object(
@@ -24,16 +28,20 @@ def _make_config_manager(tmp_path):
 
 
 @pytest.mark.unit
-def test_cloudsave_paths_follow_app_dir(tmp_path):
+def test_cloudsave_paths_follow_anchor_root_instead_of_runtime_root(tmp_path):
     cm = _make_config_manager(tmp_path)
+    expected_runtime_root = tmp_path / "N.E.K.O"
+    expected_anchor_root = tmp_path / "standard_data" / "N.E.K.O"
 
-    assert cm.cloudsave_dir == tmp_path / "N.E.K.O" / "cloudsave"
+    assert cm.app_docs_dir == expected_runtime_root
+    assert cm.anchor_root == expected_anchor_root
+    assert cm.cloudsave_dir == expected_anchor_root / "cloudsave"
     assert cm.cloudsave_manifest_path == cm.cloudsave_dir / "manifest.json"
-    assert cm.cloudsave_staging_dir == tmp_path / "N.E.K.O" / ".cloudsave_staging"
-    assert cm.cloudsave_backups_dir == tmp_path / "N.E.K.O" / "cloudsave_backups"
-    assert cm.root_state_path == tmp_path / "N.E.K.O" / "state" / "root_state.json"
-    assert cm.cloudsave_local_state_path == tmp_path / "N.E.K.O" / "state" / "cloudsave_local_state.json"
-    assert cm.character_tombstones_state_path == tmp_path / "N.E.K.O" / "state" / "character_tombstones.json"
+    assert cm.cloudsave_staging_dir == expected_anchor_root / ".cloudsave_staging"
+    assert cm.cloudsave_backups_dir == expected_anchor_root / "cloudsave_backups"
+    assert cm.root_state_path == expected_anchor_root / "state" / "root_state.json"
+    assert cm.cloudsave_local_state_path == expected_anchor_root / "state" / "cloudsave_local_state.json"
+    assert cm.character_tombstones_state_path == expected_anchor_root / "state" / "character_tombstones.json"
 
 
 @pytest.mark.unit
@@ -290,6 +298,46 @@ def test_load_workshop_config_does_not_delete_invalid_file_on_read(tmp_path):
     assert isinstance(loaded, dict)
     assert config_path.is_file()
     assert config_path.read_text(encoding="utf-8") == "{not-valid-json"
+
+
+@pytest.mark.unit
+def test_load_workshop_config_rebases_paths_from_retained_migration_source(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    source_root = tmp_path / "old-root" / "N.E.K.O"
+    source_workshop = source_root / "workshop"
+    external_mods = tmp_path / "external-mods"
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    source_workshop.mkdir(parents=True, exist_ok=True)
+    external_mods.mkdir(parents=True, exist_ok=True)
+
+    atomic_write_json(
+        cm.config_dir / "workshop_config.json",
+        {
+            "default_workshop_folder": str(source_workshop),
+            "user_workshop_folder": str(source_workshop / "cached"),
+            "user_mod_folder": str(external_mods),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    cm.save_root_state(
+        {
+            **cm.build_default_root_state(),
+            "current_root": str(cm.app_docs_dir),
+            "last_known_good_root": str(cm.app_docs_dir),
+            "last_migration_source": str(source_root),
+            "last_migration_backup": str(source_root),
+            "last_migration_result": f"completed:{cm.app_docs_dir}",
+        }
+    )
+
+    loaded = cm.load_workshop_config()
+    persisted = json.loads((cm.config_dir / "workshop_config.json").read_text(encoding="utf-8"))
+
+    assert loaded["default_workshop_folder"] == str(cm.workshop_dir)
+    assert loaded["user_workshop_folder"] == str(cm.workshop_dir / "cached")
+    assert loaded["user_mod_folder"] == str(external_mods)
+    assert persisted == loaded
 
 
 @pytest.mark.unit

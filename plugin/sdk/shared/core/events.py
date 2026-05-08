@@ -12,8 +12,8 @@ from .types import InputSchema, JsonValue
 class EventMeta:
     event_type: str
     id: str
-    name: str = ""
-    description: str = ""
+    name: object = ""
+    description: object = ""
     input_schema: InputSchema | None = None
     kind: str = "action"
     auto_start: bool = False

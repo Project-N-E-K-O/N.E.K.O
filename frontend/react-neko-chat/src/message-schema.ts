@@ -48,6 +48,37 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const galgameOptionSchema = z.object({
+  label: z.string().min(1),
+  text: z.string().min(1),
+});
+
+// Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
+//
+// 当前 source：
+//   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
+//                           保留 BC，本框架不替换它，作为渐进迁移目标）
+//   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
+//
+// 未来扩展：
+//   - 'tutorial_step' / 'plugin_action' / ...
+//   - 当需要"对话框 + avatar 旁边同步显示"时，加 placement: 'composer' | 'avatar'
+//     | 'both'，不破坏 wire-format。
+//
+// option.choice 是后端 wire-format 标识符（accept/decline/later 之类），点击
+// 时回传给 onChoiceSelect；UI 显示用 option.label。
+const choiceOptionSchema = z.object({
+  choice: z.string().min(1),  // wire id (accept/decline/later/...)
+  label: z.string().min(1),   // 显示文本
+});
+
+const choicePromptSchema = z.object({
+  source: z.enum(['galgame', 'mini_game_invite']),
+  options: z.array(choiceOptionSchema).min(1),
+  sessionId: z.string().optional(),
+  gameType: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -78,6 +109,39 @@ export const avatarInteractionPayloadSchema = z.discriminatedUnion('toolId', [
     easterEgg: z.boolean().optional(),
   }).strict(),
 ]);
+
+const avatarToolIdSchema = z.enum(['lollipop', 'fist', 'hammer']);
+const avatarToolCursorVariantSchema = z.enum(['primary', 'secondary', 'tertiary']);
+const avatarToolImageKindSchema = z.enum(['cursor', 'icon']);
+
+const avatarToolDescriptorSchema = z.object({
+  id: avatarToolIdSchema,
+  label: z.string().optional(),
+  iconImagePath: z.string().min(1),
+  iconImagePathAlt: z.string().optional(),
+  iconImagePathAlt2: z.string().optional(),
+  cursorImagePath: z.string().min(1),
+  cursorImagePathAlt: z.string().optional(),
+  cursorImagePathAlt2: z.string().optional(),
+  cursorHotspotX: z.number().finite().optional(),
+  cursorHotspotY: z.number().finite().optional(),
+  menuIconScale: z.number().finite().positive().optional(),
+}).strict();
+
+export const avatarToolStatePayloadSchema = z.object({
+  active: z.boolean(),
+  toolId: avatarToolIdSchema.nullable().optional(),
+  variant: avatarToolCursorVariantSchema.optional(),
+  avatarRangeVariant: avatarToolCursorVariantSchema.optional(),
+  outsideRangeVariant: avatarToolCursorVariantSchema.optional(),
+  imageKind: avatarToolImageKindSchema.optional(),
+  withinAvatarRange: z.boolean().optional(),
+  overCompactZone: z.boolean().optional(),
+  insideHostWindow: z.boolean().optional(),
+  tool: avatarToolDescriptorSchema.nullable().optional(),
+  textContext: z.string().optional(),
+  timestamp: z.number().finite(),
+}).strict();
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
@@ -127,14 +191,22 @@ export const chatWindowPropsSchema = z.object({
   inputHint: z.string().optional(),
   rollbackDraft: z.string().optional(),
   _rollbackKey: z.string().optional(),
+  _toolCursorResetKey: z.string().optional(),
   jukeboxButtonLabel: z.string().optional(),
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
   avatarGeneratorButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
+  composerDisabled: z.boolean().optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
+  galgameModeEnabled: z.boolean().optional(),
+  galgameOptions: z.array(galgameOptionSchema).optional(),
+  galgameOptionsLoading: z.boolean().optional(),
+  galgameToggleButtonLabel: z.string().optional(),
+  galgameToggleButtonAriaLabel: z.string().optional(),
+  galgameLoadingLabel: z.string().optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
@@ -159,6 +231,10 @@ export const chatWindowPropsSchema = z.object({
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
     .optional(),
+  onAvatarToolStateChange: z.function()
+    .args(avatarToolStatePayloadSchema)
+    .returns(z.void())
+    .optional(),
   onJukeboxClick: z.function()
     .args()
     .returns(z.void())
@@ -171,6 +247,22 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  onGalgameModeToggle: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onGalgameOptionSelect: z.function()
+    .args(galgameOptionSchema)
+    .returns(z.void())
+    .optional(),
+  // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
+  choicePrompt: choicePromptSchema.optional(),
+  onChoiceSelect: z.function()
+    // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
+    // 任意 z.string() 会让 zod 验证变松。
+    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
+    .returns(z.void())
+    .optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];
@@ -181,7 +273,12 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
+export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
+export type ChoicePromptSource = ChoicePrompt['source'];
 export type AvatarInteractionPayload = z.infer<typeof avatarInteractionPayloadSchema>;
+export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;

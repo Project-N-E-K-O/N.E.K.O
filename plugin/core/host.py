@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
 from plugin.sdk import PERSIST_ATTR
@@ -35,7 +35,9 @@ from plugin.settings import (
     PROCESS_TERMINATE_TIMEOUT,
 )
 from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
+from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
+from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
 from plugin.core.bus.types import dispatch_bus_change
 from plugin.core.zmq_transport import (
     HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
@@ -224,94 +226,50 @@ def _inject_extensions(
 # ============================================================================
 
 def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
-    """
-    配置插件进程的 loguru logger。
-    
+    """配置插件子进程的 logger（走本体 RobustLoggerConfig，落到 我的文档/N.E.K.O/logs/）。
+
+    NOTE: 不要再引入 loguru / 不要再用 cwd 推日志目录 / 不要再造 FileHandler。
+    见 plugin/logging_config.py 顶部警告。
+
     Args:
         plugin_id: 插件 ID
-        project_root: 项目根目录
-    
+        project_root: 项目根目录（用于注入 sys.path）
+
     Returns:
-        配置好的 logger 实例
+        PluginLoggerAdapter，已绑定 plugin_id。
     """
-    from loguru import logger
-    from plugin.logging_config import get_plugin_format_console, get_plugin_format_file
-    
-    # 移除默认 handler，绑定插件 ID
-    logger.remove()
-    logger = logger.bind(plugin_id=plugin_id)
-    
-    # 添加控制台输出（使用统一格式）
     safe_pid = _sanitize_plugin_id(plugin_id)
-    logger.add(
-        sys.stdout,
-        format=get_plugin_format_console(safe_pid),
-        level="INFO",
-        colorize=True,
-        enqueue=False,
-    )
-    
-    # 添加文件输出（使用统一格式）
-    log_dir = project_root / "log" / "plugins" / safe_pid
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    logger.add(
-        str(log_file),
-        format=get_plugin_format_file(safe_pid),
-        level="INFO",
-        rotation="10 MB",
-        retention=10,
-        encoding="utf-8",
-    )
-    
-    return logger
+    # 让 plugin/logging_config.get_logger() 能算出正确的 service namespace。
+    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = f"Plugin_{safe_pid}"
+
+    # 子进程要先把项目根加到 sys.path，否则下面 import utils.logger_config 会失败。
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    try:
+        from utils.logger_config import setup_logging as _bootstrap_setup_logging
+        _bootstrap_setup_logging(
+            service_name=f"Plugin_{safe_pid}",
+            silent=True,
+            # plugin 子进程日志统一收纳到 logs/plugin/，别跟 PluginServer /
+            # Main / Memory / Agent 等宿主进程日志混在 logs/ 顶层。
+            log_subdir="plugin",
+        )
+    except Exception:
+        # RobustLoggerConfig 自己会做多级 fallback；这里只兜底，不要遮蔽根因。
+        pass
+
+    from plugin.logging_config import get_logger
+    return get_logger(f"plugin.{safe_pid}").bind(plugin_id=plugin_id)
 
 
 def _setup_logging_interception(logger: Any, project_root: Path) -> None:
+    """兼容性 no-op：本体即 stdlib logging，不需要拦截。
+
+    保留函数签名以避免老调用者破坏。仅做一件事：确保 project_root 在 sys.path。
     """
-    设置标准库 logging 拦截，转发到 loguru。
-    
-    Args:
-        logger: loguru logger 实例
-        project_root: 项目根目录
-    """
-    import logging
-    
-    # 确保项目根目录在 path 中
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    
-    logger.debug("[Plugin Process] Resolved project_root: {}", project_root)
-    logger.debug("[Plugin Process] Python path (head): {}", sys.path[:3])
-    
-    # 尝试使用项目的 InterceptHandler
-    handler_cls: Optional[Type[logging.Handler]] = None
-    try:
-        import utils.logger_config as _lc
-        handler_cls = getattr(_lc, "InterceptHandler", None)
-    except Exception:
-        handler_cls = None
-    
-    if handler_cls is None:
-        class _InterceptHandler(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                try:
-                    level = record.levelname
-                    msg = record.getMessage()
-                    logger.opt(exception=record.exc_info).log(level, msg)
-                except Exception:
-                    pass
-        handler_cls = _InterceptHandler
-    
-    logging.basicConfig(handlers=[handler_cls()], level=0, force=True)
-    
-    # 设置 uvicorn/fastapi logger
-    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
-        logging_logger = logging.getLogger(logger_name)
-        logging_logger.handlers = [handler_cls()]
-        logging_logger.propagate = False
-    
-    logger.debug("[Plugin Process] Standard logging intercepted and redirected to loguru")
 
 
 def _find_project_root(config_path: Path) -> Path:
@@ -694,6 +652,89 @@ def _plugin_process_runner(
         entry_map: Dict[str, Any] = {}
         entry_meta_map: Dict[str, Any] = {}  # 存储 EventMeta 用于获取自定义配置（如 timeout）
         events_by_type: Dict[str, Dict[str, Any]] = {}
+        ui_context_map: Dict[str, Any] = {}
+
+        def _get_ui_context_meta(member: Any) -> dict[str, Any] | None:
+            candidates: list[Any] = [member]
+            if hasattr(member, "__func__"):
+                candidates.append(member.__func__)
+            current = getattr(member, "__wrapped__", None)
+            seen: set[int] = set()
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                candidates.append(current)
+                if hasattr(current, "__func__"):
+                    candidates.append(current.__func__)
+                current = getattr(current, "__wrapped__", None)
+            for candidate in candidates:
+                meta = getattr(candidate, UI_CONTEXT_META_ATTR, None)
+                if isinstance(meta, dict):
+                    return dict(meta)
+            return None
+
+        def _rebuild_ui_context_map() -> None:
+            ui_context_map.clear()
+            for _name, member in inspect.getmembers(instance, predicate=callable):
+                meta = _get_ui_context_meta(member)
+                if not meta:
+                    continue
+                context_id = str(meta.get("id") or "main").strip() or "main"
+                ui_context_map[context_id] = member
+
+        def _serialize_ui_context_result(result: Any) -> Dict[str, Any]:
+            schema: Dict[str, Any] | None = None
+            data: Any
+            model_dump = getattr(result, "model_dump", None)
+            if callable(model_dump):
+                data = model_dump()
+                schema = model_schema_from_type(type(result))
+            elif isinstance(result, (dict, list)):
+                data = result
+            else:
+                data = {"value": result}
+            return {"state": data, "state_schema": schema}
+
+        def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
+            candidates: list[Any] = [member]
+            if hasattr(member, "__func__"):
+                candidates.append(member.__func__)
+            current = getattr(member, "__wrapped__", None)
+            seen: set[int] = set()
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                candidates.append(current)
+                if hasattr(current, "__func__"):
+                    candidates.append(current.__func__)
+                current = getattr(current, "__wrapped__", None)
+            for candidate in candidates:
+                meta = getattr(candidate, UI_ACTION_META_ATTR, None)
+                if isinstance(meta, dict):
+                    return dict(meta)
+            return None
+
+        def _collect_ui_actions() -> list[dict[str, Any]]:
+            actions: list[dict[str, Any]] = []
+            for entry_id, handler in entry_map.items():
+                ui_meta = _get_ui_action_meta(handler)
+                if not ui_meta:
+                    continue
+                entry_meta = entry_meta_map.get(entry_id)
+                action_id = str(ui_meta.get("id") or entry_id)
+                actions.append({
+                    "id": action_id,
+                    "entry_id": entry_id,
+                    "label": ui_meta.get("label") or getattr(entry_meta, "name", entry_id),
+                    "description": getattr(entry_meta, "description", ""),
+                    "input_schema": dict(getattr(entry_meta, "input_schema", None) or {}),
+                    "icon": ui_meta.get("icon"),
+                    "tone": ui_meta.get("tone") or "default",
+                    "group": ui_meta.get("group"),
+                    "order": int(ui_meta.get("order") or 0),
+                    "confirm": ui_meta.get("confirm") or False,
+                    "refresh_context": bool(ui_meta.get("refresh_context", True)),
+                })
+            actions.sort(key=lambda item: (str(item.get("group") or ""), int(item.get("order") or 0), str(item.get("label") or item.get("id"))))
+            return actions
 
         def _rebuild_entry_map() -> None:
             """重建 entry_map + events_by_type（Extension 注入/卸载后调用）。"""
@@ -750,6 +791,9 @@ def _plugin_process_runner(
         
         ctx._entry_map = entry_map
         ctx._instance = instance
+        _rebuild_ui_context_map()
+        if ui_context_map:
+            logger.info("Plugin UI contexts collected: {}", list(ui_context_map.keys()))
 
         # asyncio.Queue fed from the downlink for plugin-to-plugin responses
         _response_inbox: asyncio.Queue = asyncio.Queue()
@@ -1140,8 +1184,45 @@ def _plugin_process_runner(
                 except Exception:
                     logger.exception("Failed to send response for req_id={}", req_id)
 
+        async def _handle_ui_context(msg: dict):
+            req_id = msg.get("req_id", "unknown")
+            context_id = str(msg.get("context_id") or "main")
+            ret = {"req_id": req_id, "success": False, "data": None, "error": None}
+            try:
+                provider = ui_context_map.get(context_id)
+                if provider is None:
+                    _rebuild_ui_context_map()
+                    provider = ui_context_map.get(context_id)
+                if provider is None:
+                    ret["error"] = f"UI context '{context_id}' not found"
+                    return
+                result = provider()
+                if inspect.isawaitable(result):
+                    result = await _run_with_watchdog(result, f"ui_context.{context_id}", 5.0)
+                ret["success"] = True
+                ret["data"] = {
+                    **_serialize_ui_context_result(result),
+                    "actions": _collect_ui_actions(),
+                }
+            except Exception as e:
+                logger.exception("Failed to execute UI context '{}'", context_id)
+                ret["error"] = str(e)
+            finally:
+                try:
+                    res_sender.put(ret, timeout=10.0)
+                except Exception:
+                    logger.exception("Failed to send UI context response for req_id={}", req_id)
+
         async def _async_command_loop():
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
+            if callable(on_command_loop_start):
+                try:
+                    result = on_command_loop_start()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    logger.exception("[Plugin Process] _on_command_loop_start failed")
 
             while True:
                 try:
@@ -1234,6 +1315,15 @@ def _plugin_process_runner(
                     req_id = str(msg.get("req_id") or uuid.uuid4())
                     task_key = f"custom:{req_id}"
                     task = asyncio.create_task(_handle_trigger_custom(msg))
+                    _run_tasks[task_key] = task
+                    task.add_done_callback(lambda _t, key=task_key: _run_tasks.pop(key, None))
+                    continue
+
+                # ── UI_CONTEXT ──
+                if msg_type == "UI_CONTEXT":
+                    req_id = str(msg.get("req_id") or uuid.uuid4())
+                    task_key = f"ui_context:{req_id}"
+                    task = asyncio.create_task(_handle_ui_context(msg))
                     _run_tasks[task_key] = task
                     task.add_done_callback(lambda _t, key=task_key: _run_tasks.pop(key, None))
                     continue
@@ -1668,6 +1758,9 @@ class PluginHost:
             "profile": profile,
         }
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
+
+    async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
+        return await self.comm_manager.get_ui_context(context_id=context_id, timeout=timeout)
 
     def is_alive(self) -> bool:
         """检查进程是否存活"""

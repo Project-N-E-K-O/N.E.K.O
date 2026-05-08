@@ -33,7 +33,57 @@ critical_packages = [
     'browser_use',       # browser-use agent 需要 .md 模板文件
     'pyrnnoise',         # 音频降噪，含 rnnoise.dll native 库
     'bilibili_api',      # B站弹幕/视频，含 data/*.json 资源文件
+    # memory-evidence-rfc §3.6.7: tiktoken ships per-encoding data files
+    # under tiktoken/encodings/*.tiktoken (~1.5MB each). collect_all pulls
+    # them in alongside the Rust extension; without this, utils.tokenize
+    # falls back to the heuristic counter and the §8 S13 self-check warns
+    # at first call.
+    'tiktoken',
+    'tiktoken_ext',
+    # Optional embedding runtime. Present in release/nightly build envs;
+    # skipped gracefully for source installs that do not enable vectors.
+    'onnxruntime',
+    'tokenizers',
+    # NOTE: galgame OCR packages are NOT listed here — they're auto-merged
+    # below from galgame_group_packages + galgame_main_packages so the
+    # collection list and the hard-fail sets share a single source of truth.
 ]
+
+# onnxruntime + tokenizers are only needed when the bundle ships embedding
+# weights. If the build is going to package data/embedding_models but the
+# runtime libs cannot be collected, the resulting artifact would carry
+# multi-MB of weights it cannot load — the runtime would sticky-disable
+# vectors with NO_ONNXRUNTIME at first use. Treat that combination as a
+# build error rather than a silent warning.
+embedding_runtime_packages = {'onnxruntime', 'tokenizers'}
+embedding_assets_present = os.path.isdir(
+    os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
+)
+
+# galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
+# routes were removed). Two distinct failure modes get distinct diagnostics:
+#
+#   - galgame_group_packages: live in [dependency-groups] galgame in
+#     pyproject.toml. Failure means maintainer ran plain `uv sync` instead
+#     of `uv sync --group galgame` — the actionable fix is the group sync.
+#     `cv2` is provided by opencv-python-headless via [tool.uv].override-dependencies.
+#
+#   - galgame_main_packages: live in [project.dependencies]. They're always
+#     installed by default `uv sync`; failure here means the main venv state
+#     is broken (interrupted install, manual deletion, etc) — actionable
+#     fix is recreating the venv. `dxcam` is in this set only on Windows
+#     (PEP 508 sys_platform marker keeps it out of macOS/Linux installs).
+galgame_group_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper'}
+galgame_main_packages = {'mss'}
+if sys.platform == 'win32':
+    galgame_main_packages = galgame_main_packages | {'dxcam'}
+
+# Auto-merge galgame deps into the collection list so the sets above stay the
+# single source of truth — adding a package to either set automatically keeps
+# the bundling guard and the collection step in sync, no risk of drift.
+critical_packages.extend(
+    sorted((galgame_group_packages | galgame_main_packages) - set(critical_packages))
+)
 
 for pkg in critical_packages:
     try:
@@ -42,6 +92,28 @@ for pkg in critical_packages:
         binaries += tmp_ret[1]
         hiddenimports += tmp_ret[2]
     except Exception as e:
+        if pkg in embedding_runtime_packages and embedding_assets_present:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, but data/embedding_models is "
+                "present and will be bundled. Install with "
+                "`uv sync` or remove the embedding "
+                "assets directory before building."
+            ) from e
+        if pkg in galgame_group_packages:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, required for the bundled galgame "
+                "OCR pipeline. Run `uv sync --group galgame` before building "
+                "(see pyproject.toml [dependency-groups] galgame). Packaged "
+                "dist has no runtime install fallback to recover from this."
+            ) from e
+        if pkg in galgame_main_packages:
+            raise RuntimeError(
+                f"Cannot collect {pkg!r}, a [project.dependencies] entry "
+                "required by the bundled galgame OCR pipeline. Default "
+                "`uv sync` should have installed it — your venv is in a "
+                "broken state. Recreate the venv (`uv sync` from a clean "
+                "`.venv`) before building."
+            ) from e
         print(f"Warning: Could not collect {pkg}: {e}")
 
 # 添加配置文件（只添加 .json 文件，不包含 .py 代码）
@@ -90,6 +162,12 @@ add_data('static/*.png', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
 add_data('data/browser_use_prompts', 'data/browser_use_prompts')
+# tiktoken o200k_base is fetched on first use into TIKTOKEN_CACHE_DIR.
+# launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
+# exists in the bundle (PR #929). The CI build warms this dir before
+# packaging; for local source builds add_data warns and skips silently.
+add_data('data/tiktoken_cache', 'data/tiktoken_cache')
+add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（必须放在根目录）

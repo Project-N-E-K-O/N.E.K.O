@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
@@ -117,10 +118,20 @@ def _resolve_plugin_status(
     return "running" if plugin_id in running_plugin_ids else "stopped"
 
 
+def _resolve_default_locale() -> str:
+    try:
+        from utils.language_utils import get_global_language_full
+        return str(get_global_language_full() or "en")
+    except Exception:
+        return "en"
+
+
 def _build_entries_from_handlers(
     *,
     plugin_id: str,
     handlers_snapshot: Mapping[object, object],
+    plugin_meta: Mapping[str, object] | None = None,
+    locale: str | None = None,
 ) -> tuple[list[dict[str, object]], set[tuple[str, str]]]:
     entries: list[dict[str, object]] = []
     seen: set[tuple[str, str]] = set()
@@ -177,12 +188,12 @@ def _build_entries_from_handlers(
 
         entry_dict: dict[str, object] = {
             "id": entry_id,
-            "name": name_obj if isinstance(name_obj, str) else "",
-            "description": description_obj if isinstance(description_obj, str) else "",
+            "name": name_obj if isinstance(name_obj, (str, Mapping)) else "",
+            "description": description_obj if isinstance(description_obj, (str, Mapping)) else "",
             "event_key": event_key_obj,
             "timeout": getattr(meta, "timeout", None),
             "input_schema": input_schema,
-            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "return_message": return_message_obj if isinstance(return_message_obj, (str, Mapping)) else "",
             "llm_result_fields": llm_result_fields,
             "llm_result_schema": llm_result_schema,
             "metadata": metadata,
@@ -193,6 +204,12 @@ def _build_entries_from_handlers(
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
 
+        if plugin_meta is not None:
+            entry_dict = resolve_i18n_refs(
+                entry_dict,
+                load_plugin_i18n_from_meta(plugin_meta),
+                locale=locale or _resolve_default_locale(),
+            )  # type: ignore[assignment]
         entries.append(entry_dict)
 
     return entries, seen
@@ -265,12 +282,12 @@ def _append_entries_from_preview(
 
         entry_dict: dict[str, object] = {
             "id": entry_id_obj,
-            "name": name_obj if isinstance(name_obj, str) else "",
-            "description": description_obj if isinstance(description_obj, str) else "",
+            "name": name_obj if isinstance(name_obj, (str, Mapping)) else "",
+            "description": description_obj if isinstance(description_obj, (str, Mapping)) else "",
             "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
             "timeout": normalized_preview.get("timeout"),
             "input_schema": input_schema,
-            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            "return_message": return_message_obj if isinstance(return_message_obj, (str, Mapping)) else "",
             "llm_result_fields": llm_result_fields,
             "llm_result_schema": llm_result_schema,
             "metadata": metadata,
@@ -362,6 +379,7 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
             entries, seen = _build_entries_from_handlers(
                 plugin_id=plugin_id,
                 handlers_snapshot=handlers_snapshot,
+                plugin_meta=plugin_meta,
             )
             _append_entries_from_preview(
                 plugin_id=plugin_id,
@@ -369,9 +387,19 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 entries=entries,
                 seen=seen,
             )
+            plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            entries = [
+                resolve_i18n_refs(entry, plugin_i18n, locale=_resolve_default_locale())  # type: ignore[misc]
+                for entry in entries
+                if isinstance(entry, dict)
+            ]
 
             plugin_info["entries"] = entries
-            plugin_info["list_actions"] = _build_plugin_list_actions_from_meta(plugin_id, plugin_meta)
+            plugin_info["list_actions"] = resolve_i18n_refs(
+                _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
+                plugin_i18n,
+                locale=_resolve_default_locale(),
+            )
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

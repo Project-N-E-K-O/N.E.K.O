@@ -32,18 +32,90 @@ export type PluginType = 'plugin' | 'extension' | 'script' | 'adapter'
 
 export type PluginListActionKind = 'builtin' | 'ui' | 'route' | 'url'
 
+export type PluginUiSurfaceKind = 'panel' | 'guide' | 'docs'
+export type PluginUiSurfaceMode = 'static' | 'hosted-tsx' | 'markdown' | 'auto'
+
+// `label` / `confirm_message` 与 backend `_normalize_plugin_list_action`
+// （plugin/server/application/plugins/ui_query_service.py）的 contract 对齐：
+// 既可以是字符串，也可以是 locale-keyed 字典（e.g.
+// `{"en-US": "Open UI", "zh-CN": "打开界面"}`）。后端的 `resolve_i18n_refs`
+// 只解析 `$i18n` ref，不会把 locale-keyed 字典拍平，所以这种 dict 会原样
+// 发到 frontend。展示时统一走 `utils/i18nLabel.ts` 的 `resolveLocalizedText`。
+export type LocalizedText = string | Record<string, string>
+
 export interface PluginListAction {
   id: string
-  kind: PluginListActionKind
-  label?: string
+  entry_id?: string
+  kind?: PluginListActionKind
+  label?: LocalizedText
+  description?: string
+  input_schema?: JSONSchema
   icon?: string
+  tone?: string
+  group?: string | null
+  order?: number
+  confirm?: boolean | string
+  refresh_context?: boolean
   target?: string
   open_in?: 'new_tab' | 'same_tab'
-  confirm_message?: string
+  confirm_message?: LocalizedText
   confirm_mode?: 'dialog' | 'hold'
   danger?: boolean
   disabled?: boolean
   requires_running?: boolean
+}
+
+export interface PluginUiSurface {
+  id: string
+  kind: PluginUiSurfaceKind
+  mode: PluginUiSurfaceMode
+  title?: string
+  entry?: string
+  url?: string
+  ui_path?: string
+  open_in?: 'iframe' | 'new_tab' | 'same_tab'
+  context?: string
+  permissions?: string[]
+  available?: boolean
+}
+
+export interface PluginUiWarning {
+  path: string
+  code: string
+  message: string
+}
+
+export interface PluginUiContext {
+  plugin_id: string
+  kind: PluginUiSurfaceKind
+  surface_id: string
+  plugin: PluginMeta
+  surface: PluginUiSurface
+  state: Record<string, any>
+  state_schema?: JSONSchema | null
+  actions: PluginListAction[]
+  entries: PluginEntry[]
+  config: {
+    schema: JSONSchema
+    value: Record<string, any>
+    readonly?: boolean
+  }
+  warnings?: PluginUiWarning[]
+  i18n?: {
+    locale: string
+    default_locale?: string
+    messages?: Record<string, Record<string, string>>
+  }
+}
+
+export interface PluginUiInfo {
+  plugin_id: string
+  has_ui: boolean
+  explicitly_registered?: boolean
+  ui_path?: string | null
+  static_dir?: string | null
+  static_files?: string[]
+  static_files_count?: number
 }
 
 export interface PluginMeta {
@@ -64,6 +136,7 @@ export interface PluginMeta {
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
   host_plugin_id?: string
+  i18n?: Record<string, any>
   status?: string
   list_actions?: PluginListAction[]
 }

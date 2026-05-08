@@ -3,14 +3,46 @@
 Pages Router
 
 Handles HTML page rendering endpoints.
+
+URL convention: routes declared WITHOUT trailing slash. The literal root
+``@router.get("/")`` is the only legitimate trailing-slash route in the entire
+codebase (it serves ``index.html``); the lint exempts it explicitly. Every
+other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
+etc. See ``main_routers/characters_router.py`` docstring or
+``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import time
+from pathlib import Path
+
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .shared_state import get_templates
 
 router = APIRouter(tags=["pages"])
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_YUI_GUIDE_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/yui-guide-steps.js",
+    _PROJECT_ROOT / "static/yui-guide-overlay.js",
+    _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/yui-guide-wakeup.js",
+    _PROJECT_ROOT / "static/yui-guide-director.js",
+)
+_STATIC_ASSET_CACHE_TTL = 30.0
+_static_asset_version_cache: tuple[float, str] = (0.0, "0")
+_REACT_CHAT_ASSET_VERSION_PATHS = (
+    _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
+    _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
+    _PROJECT_ROOT / "static/app-react-chat-window.js",
+    _PROJECT_ROOT / "static/app-chat-adapter.js",
+    _PROJECT_ROOT / "static/app-buttons.js",
+)
+_REACT_CHAT_ASSET_CACHE_TTL = 30.0
+_react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
 
 
 def _vrm_defaults_ctx() -> dict:
@@ -19,12 +51,56 @@ def _vrm_defaults_ctx() -> dict:
     return {"vrm_defaults": dict(DEFAULT_VRM_LIGHTING)}
 
 
+def _static_assets_ctx() -> dict:
+    """返回模板静态资源统一缓存版本号。"""
+    from config import APP_VERSION
+
+    global _static_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _static_asset_version_cache
+    if now - cached_at < _STATIC_ASSET_CACHE_TTL:
+        return {"static_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _static_asset_version_cache = (now, version)
+    return {"static_asset_version": version}
+
+
+def _react_chat_assets_ctx() -> dict:
+    """返回 React Chat 相关静态资源的统一缓存版本号。"""
+    global _react_chat_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _react_chat_asset_version_cache
+    if now - cached_at < _REACT_CHAT_ASSET_CACHE_TTL:
+        return {"react_chat_asset_version": cached_version}
+
+    latest_mtime = 0
+    for path in _REACT_CHAT_ASSET_VERSION_PATHS:
+        try:
+            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
+        except OSError:
+            continue
+
+    version = str(latest_mtime or 0)
+    _react_chat_asset_version_cache = (now, version)
+    return {"react_chat_asset_version": version}
+
+
 @router.get("/", response_class=HTMLResponse)
 async def get_default_index(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
     })
 
 
@@ -58,6 +134,16 @@ async def live2d_parameter_editor(request: Request):
     })
 
 
+@router.get("/soccer_demo", response_class=HTMLResponse)
+async def soccer_demo(request: Request):
+    """Soccer MVP demo (VRM + L2D avatars)"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/soccer_demo.html", {
+        "request": request,
+        **_vrm_defaults_ctx(),
+    })
+
+
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
     """Live2D情感映射管理器页面"""
@@ -85,13 +171,6 @@ async def mmd_emotion_manager(request: Request):
     })
 
 
-@router.get('/chara_manager', response_class=HTMLResponse)
-async def chara_manager(request: Request):
-    """渲染主控制页面"""
-    templates = get_templates()
-    return templates.TemplateResponse('templates/chara_manager.html', {"request": request})
-
-
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()
@@ -103,26 +182,42 @@ async def api_key_settings(request: Request):
     """API Key 设置页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
-@router.get('/steam_workshop_manager', response_class=HTMLResponse)
-async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
+@router.get('/chara_manager')
+async def chara_manager_redirect(request: Request):
+    url = "/character_card_manager"
+    if request.query_params:
+        url += "?" + str(request.query_params)
+    return RedirectResponse(url=url, status_code=307)
+
+
+@router.get('/character_card_manager', response_class=HTMLResponse)
+async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
 
 
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/cloudsave_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/cloudsave_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/memory_browser', response_class=HTMLResponse)
 async def memory_browser(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
+    return templates.TemplateResponse('templates/memory_browser.html', {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cookies_login', response_class=HTMLResponse)
@@ -137,7 +232,12 @@ async def cookies_login_page(request: Request):
 async def get_chat_page(request: Request):
     """Chat 独立窗口页面"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {"request": request, **_vrm_defaults_ctx()})
+    return templates.TemplateResponse("templates/chat.html", {
+        "request": request,
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
 
 
 @router.get("/subtitle", response_class=HTMLResponse)
@@ -154,11 +254,11 @@ async def get_agenthud_page(request: Request):
     return templates.TemplateResponse("templates/agenthud.html", {"request": request})
 
 
-@router.get("/card_export", response_class=HTMLResponse)
-async def get_card_export_page(request: Request):
-    """角色卡导出页面（独立加载模型并可调整构图）"""
+@router.get("/card_maker", response_class=HTMLResponse)
+async def get_card_maker_page(request: Request):
+    """卡面制作页面（独立加载模型并可调整构图）"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/card_export.html", {
+    return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
     })
@@ -193,4 +293,6 @@ async def get_index(request: Request, lanlan_name: str):
     return templates.TemplateResponse("templates/index.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
     })

@@ -770,9 +770,9 @@
         };
     }
 
-    function getLive2dHeadRectInfoFromBubbleGeometry(model, metrics) {
+    function getLive2dHeadRectInfoFromManagerGeometry(model, metrics) {
         const manager = global.live2dManager;
-        if (!manager || typeof manager.getBubbleAnchorGeometryInfo !== 'function') {
+        if (!manager) {
             return null;
         }
 
@@ -783,15 +783,35 @@
             return null;
         }
 
-        let geometryInfo = null;
-        try {
-            geometryInfo = manager.getBubbleAnchorGeometryInfo();
-        } catch (error) {
-            console.warn('[avatar-portrait] 读取 Live2D 气泡几何失败，回退旧头像头框逻辑:', error);
+        const getHeadDetectionGeometryInfo = typeof manager.getHeadDetectionGeometryInfo === 'function'
+            ? manager.getHeadDetectionGeometryInfo.bind(manager)
+            : null;
+        const getBubbleAnchorGeometryInfo = typeof manager.getBubbleAnchorGeometryInfo === 'function'
+            ? manager.getBubbleAnchorGeometryInfo.bind(manager)
+            : null;
+        if (!getHeadDetectionGeometryInfo && !getBubbleAnchorGeometryInfo) {
             return null;
         }
 
-        const rect = normalizeLive2dGeometryRectToCss(geometryInfo?.headRect, metrics);
+        let geometryInfo = null;
+        try {
+            geometryInfo = getHeadDetectionGeometryInfo
+                ? getHeadDetectionGeometryInfo()
+                : getBubbleAnchorGeometryInfo();
+        } catch (error) {
+            console.warn('[avatar-portrait] 读取 Live2D 头部识别几何失败，回退旧头像头框逻辑:', error);
+            return null;
+        }
+
+        let rect = normalizeLive2dGeometryRectToCss(geometryInfo?.headRect, metrics);
+        if (!rect && getHeadDetectionGeometryInfo && getBubbleAnchorGeometryInfo) {
+            try {
+                geometryInfo = getBubbleAnchorGeometryInfo();
+                rect = normalizeLive2dGeometryRectToCss(geometryInfo?.headRect, metrics);
+            } catch (_) {
+                return null;
+            }
+        }
         if (!rect) {
             return null;
         }
@@ -815,9 +835,9 @@
     }
 
     function getLive2dHeadRectInfo(model, metrics) {
-        const bubbleGeometryInfo = getLive2dHeadRectInfoFromBubbleGeometry(model, metrics);
-        if (bubbleGeometryInfo && bubbleGeometryInfo.rect) {
-            return bubbleGeometryInfo;
+        const managerGeometryInfo = getLive2dHeadRectInfoFromManagerGeometry(model, metrics);
+        if (managerGeometryInfo && managerGeometryInfo.rect) {
+            return managerGeometryInfo;
         }
 
         const internalModel = model?.internalModel;
@@ -1270,6 +1290,77 @@
         };
     }
 
+    function normalizeManagerAnchorToCanvasCss(anchor, detectionInfo, manager, metrics) {
+        const x = finiteOr(anchor?.x, NaN);
+        const y = finiteOr(anchor?.y, NaN);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+
+        let canvasRect = detectionInfo?.canvasRect || null;
+        if (!canvasRect &&
+            manager?.renderer?.domElement &&
+            typeof manager.renderer.domElement.getBoundingClientRect === 'function') {
+            canvasRect = manager.renderer.domElement.getBoundingClientRect();
+        }
+
+        if (canvasRect &&
+            Number.isFinite(canvasRect.left) &&
+            Number.isFinite(canvasRect.top)) {
+            const bounds = detectionInfo?.bounds || null;
+            const canvasRight = canvasRect.left + finiteOr(canvasRect.width, 0);
+            const canvasBottom = canvasRect.top + finiteOr(canvasRect.height, 0);
+            const boundsLookScreenSpace = !!(
+                bounds &&
+                Number.isFinite(bounds.left) &&
+                Number.isFinite(bounds.right) &&
+                Number.isFinite(bounds.top) &&
+                Number.isFinite(bounds.bottom) &&
+                bounds.left >= canvasRect.left - 4 &&
+                bounds.right <= canvasRight + 4 &&
+                bounds.top >= canvasRect.top - 4 &&
+                bounds.bottom <= canvasBottom + 4
+            );
+            const shouldConvertFromScreenSpace = !bounds || boundsLookScreenSpace;
+            if (!shouldConvertFromScreenSpace) {
+                return {
+                    x: clamp(x, -metrics.cssWidth, metrics.cssWidth * 2),
+                    y: clamp(y, -metrics.cssHeight, metrics.cssHeight * 2)
+                };
+            }
+
+            const normalizedX = x - canvasRect.left;
+            const normalizedY = y - canvasRect.top;
+            if (Number.isFinite(normalizedX) && Number.isFinite(normalizedY)) {
+                return {
+                    x: clamp(normalizedX, -metrics.cssWidth, metrics.cssWidth * 2),
+                    y: clamp(normalizedY, -metrics.cssHeight, metrics.cssHeight * 2)
+                };
+            }
+        }
+
+        return {
+            x: clamp(x, -metrics.cssWidth, metrics.cssWidth * 2),
+            y: clamp(y, -metrics.cssHeight, metrics.cssHeight * 2)
+        };
+    }
+
+    function getManagerHeadDetectionAnchor(manager, metrics) {
+        if (!manager || typeof manager.getHeadDetectionGeometryInfo !== 'function') {
+            return null;
+        }
+
+        let detectionInfo = null;
+        try {
+            detectionInfo = manager.getHeadDetectionGeometryInfo();
+        } catch (_) {
+            return null;
+        }
+
+        const anchor = detectionInfo?.headAnchor || detectionInfo?.rawHeadAnchor || null;
+        return normalizeManagerAnchorToCanvasCss(anchor, detectionInfo, manager, metrics);
+    }
+
     function getVrmAdapter() {
         return {
             type: 'vrm',
@@ -1300,7 +1391,15 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.vrm.scene.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.vrm.scene, ctx.manager.camera, metrics, THREE);
-                const headAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
+                const managerHeadAnchor = getManagerHeadDetectionAnchor(ctx.manager, metrics);
+                const vrmBoneHeadAnchor = getVrmHeadAnchor(ctx.model, ctx.manager.camera, metrics, THREE);
+                const headAnchor = managerHeadAnchor
+                    ? {
+                        x: managerHeadAnchor.x,
+                        y: managerHeadAnchor.y,
+                        headHeight: finiteOr(vrmBoneHeadAnchor?.headHeight, 0)
+                    }
+                    : vrmBoneHeadAnchor;
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {
@@ -1445,7 +1544,15 @@
                 const metrics = getCanvasMetrics(ctx.canvas);
                 ctx.model.mesh.updateMatrixWorld(true);
                 const subjectRect = computeProjectedBoxCss(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
-                const headAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+                const managerHeadAnchor = getManagerHeadDetectionAnchor(ctx.manager, metrics);
+                const mmdBoneHeadAnchor = findMmdHeadAnchor(ctx.model.mesh, ctx.manager.camera, metrics, THREE);
+                const headAnchor = managerHeadAnchor
+                    ? {
+                        x: managerHeadAnchor.x,
+                        y: managerHeadAnchor.y,
+                        headHeight: finiteOr(mmdBoneHeadAnchor?.headHeight, 0)
+                    }
+                    : mmdBoneHeadAnchor;
 
                 // 立绘模式：返回全身包围盒
                 if (options.cropMode === 'portrait') {

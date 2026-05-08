@@ -152,7 +152,16 @@ class VRMManager {
     }
 
     _getLookAtHeadWorldPosition() {
-        const headBone = this.currentModel?.vrm?.humanoid?.getNormalizedBoneNode('head');
+        const humanoid = this.currentModel?.vrm?.humanoid;
+        let headBone = null;
+        if (humanoid) {
+            if (typeof humanoid.getRawBoneNode === 'function') {
+                headBone = humanoid.getRawBoneNode('head');
+            }
+            if (!headBone && typeof humanoid.getNormalizedBoneNode === 'function') {
+                headBone = humanoid.getNormalizedBoneNode('head');
+            }
+        }
         if (headBone) {
             headBone.updateMatrixWorld(true);
             headBone.getWorldPosition(this._lookAtHeadWorldPos);
@@ -249,13 +258,16 @@ class VRMManager {
                 this._cursorFollow.init(this);
             }
             // 同步鼠标跟踪启用状态
-            const isEnabled = window.mouseTrackingEnabled !== false;
+            const storedMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+            const isEnabled = window.nekoYuiGuideFaceForwardLock === true
+                ? false
+                : storedMouseTrackingEnabled;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
             }
             // 同步内部状态
-            this._mouseTrackingEnabled = isEnabled;
+            this._mouseTrackingEnabled = storedMouseTrackingEnabled;
             // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
             return;
         }
@@ -1611,9 +1623,10 @@ class VRMManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
+        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
 
         if (this._cursorFollow) {
-            this._cursorFollow.setEnabled(enabled);
+            this._cursorFollow.setEnabled(effectiveEnabled);
         }
     }
 
@@ -1622,6 +1635,9 @@ class VRMManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (window.nekoYuiGuideFaceForwardLock === true) {
+            return false;
+        }
         return this._mouseTrackingEnabled !== false;
     }
 
@@ -1663,6 +1679,29 @@ class VRMManager {
         }
 
         return this._projectWorldPositionToScreen(this._getLookAtHeadWorldPosition());
+    }
+
+    getHeadDetectionGeometryInfo() {
+        const bounds = this.getModelScreenBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        const headAnchor = this.getHeadScreenAnchor();
+        return {
+            type: 'vrm',
+            bounds,
+            rawHeadAnchor: headAnchor || null,
+            headAnchor: headAnchor || null,
+            headRect: null,
+            headMode: 'head',
+            headSource: 'bone',
+            bodyRect: null,
+            bodySource: null,
+            reliableHeadRect: false,
+            preciseDisplayInfoRect: false,
+            coarseHitAreaHeadRect: false
+        };
     }
 
     /**

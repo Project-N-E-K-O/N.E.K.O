@@ -6,6 +6,8 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     """Test that the API key settings page loads and can save configurations."""
     # Capture console logs
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
+    # 该用例关注 API 设置保存链路，不验证首次教程流程；先标记教程已读，避免保存按钮被教程锁住。
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     
     # Go to the settings page (route is /api_key)
     url = f"{running_server}/api_key"
@@ -25,6 +27,14 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     # Fill in a fake key
     test_key = "sk-test-1234567890"
     mock_page.fill("#apiKeyInput", test_key)
+    mock_page.evaluate("""
+        () => {
+            const currentApiKeyDiv = document.getElementById('current-api-key');
+            if (currentApiKeyDiv) {
+                currentApiKeyDiv.dataset.hasKey = 'false';
+            }
+        }
+    """)
     
     # Click Save
     save_btn = mock_page.locator("#save-settings-btn")
@@ -44,9 +54,8 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
     
     # Verify value
-    # Ensure options are loaded before checking value, or check if value is set
-    # The JS sets the value asynchronously after fetching config
-    expect(mock_page.locator("#apiKeyInput")).to_have_value(test_key, timeout=5000)
+    # 当前页面会把明文 key 掩码显示，真实值挂在 data-real-key 上。
+    expect(mock_page.locator("#apiKeyInput")).to_have_attribute("data-real-key", test_key, timeout=5000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("qwen", timeout=5000)
 
 

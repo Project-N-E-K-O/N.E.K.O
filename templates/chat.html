@@ -9,15 +9,15 @@
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
-    <script src="/static/i18n-i18next.js"></script>
-    <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/subtitle.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css">
-    <script src="/static/theme-manager.js"></script>
-    <link rel="stylesheet" href="/static/libs/APlayer.min.css">
-    <script src="/static/libs/APlayer.min.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/libs/APlayer.min.css?v={{ static_asset_version }}">
+    <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 
     <style>
         html, body {
@@ -35,7 +35,7 @@
         #react-chat-window-backdrop { display: none !important; }
         #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
             position: fixed !important;
-            inset: 20px !important;
+            inset: 40px 25px 25px 20px !important;
             width: auto !important; height: auto !important;
             max-width: none !important; max-height: none !important;
             transform: none !important;
@@ -73,6 +73,200 @@
         #reactChatWindowCloseButton {
             position: relative !important;
             top: -2px !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell button,
+        body.yui-guide-chat-buttons-disabled #toggle-chat-btn {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-panel,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input-shell,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #text-input-area,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #neko-resize-handle,
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .react-chat-resize-edge {
+            pointer-events: none !important;
+        }
+        body.yui-guide-chat-buttons-disabled #react-chat-window-shell .composer-input,
+        body.yui-guide-chat-buttons-disabled #textInputBox,
+        body.yui-guide-chat-buttons-disabled #toggle-chat-btn {
+            caret-color: transparent !important;
+            user-select: none !important;
+        }
+        @keyframes yui-guide-chat-window-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.014); }
+        }
+        @keyframes yui-guide-chat-input-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.01); }
+        }
+        @keyframes yui-guide-chat-spotlight-sweep {
+            0%,
+            62% {
+                opacity: 0;
+                transform: translateX(0) skewX(-12deg);
+            }
+            78% {
+                opacity: 0.42;
+            }
+            100% {
+                opacity: 0;
+                transform: translateX(420%) skewX(-12deg);
+            }
+        }
+        #yui-guide-chat-spotlight {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 0;
+            height: 0;
+            border-radius: 18px;
+            pointer-events: none;
+            z-index: 100055;
+            opacity: 0;
+            overflow: visible;
+            isolation: isolate;
+            transform-origin: center center;
+            transition: opacity 140ms ease;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right,
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            position: absolute;
+            pointer-events: none;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: contain;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome {
+            inset: 3px;
+            border-radius: inherit;
+            background: linear-gradient(180deg, rgba(84, 133, 255, 0.09), rgba(89, 211, 255, 0.03));
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 18px rgba(104, 194, 255, 0.56),
+                0 0 34px rgba(87, 136, 255, 0.26),
+                inset 0 0 16px rgba(131, 214, 255, 0.16);
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-chrome::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            padding: 2px;
+            border-radius: inherit;
+            --yui-guide-chat-spotlight-corner-size: min(34%, 138px);
+            --yui-guide-chat-spotlight-border-gap: min(68%, 144px);
+            background:
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) top center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) bottom center / calc(100% - var(--yui-guide-chat-spotlight-border-gap)) 2px no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) left center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                linear-gradient(90deg, rgba(39, 89, 228, 0.98), rgba(39, 89, 228, 0.98)) right center / 2px calc(100% - var(--yui-guide-chat-spotlight-border-gap)) no-repeat,
+                radial-gradient(circle at top left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at top right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) top right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom right,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom right / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat,
+                radial-gradient(circle at bottom left,
+                    rgba(235, 249, 255, 0.98) 0,
+                    rgba(186, 231, 255, 0.98) 13%,
+                    rgba(76, 137, 255, 0.95) 52%,
+                    rgba(39, 89, 228, 0.98) 96%,
+                    transparent 100%
+                ) bottom left / var(--yui-guide-chat-spotlight-corner-size) var(--yui-guide-chat-spotlight-corner-size) no-repeat;
+            -webkit-mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            -webkit-mask-composite: xor;
+            mask:
+                linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+            mask-composite: exclude;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep {
+            position: absolute;
+            inset: 8px;
+            border-radius: inherit;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 4;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-sweep::before {
+            content: '';
+            position: absolute;
+            top: -22%;
+            bottom: -22%;
+            left: -48%;
+            width: 34%;
+            background:
+                linear-gradient(108deg, transparent 0 10%, rgba(255, 255, 255, 0.58) 45%, rgba(125, 225, 255, 0.26) 58%, transparent 100%);
+            filter: blur(0.2px);
+            opacity: 0;
+            pointer-events: none;
+            transform: translateX(0) skewX(-12deg);
+            animation: yui-guide-chat-spotlight-sweep 2.4s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight.is-visible {
+            opacity: 1;
+        }
+        #yui-guide-chat-spotlight.is-window {
+            animation: yui-guide-chat-window-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight.is-input {
+            animation: yui-guide-chat-input-pulse 1.5s ease-in-out infinite;
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-left {
+            top: -29px;
+            left: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/left-cat-ear.png?v={{ static_asset_version }}');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-ear-right {
+            top: -30px;
+            right: 2px;
+            width: 94.5px;
+            height: 40.5px;
+            background-image: url('/static/assets/tutorial/highlight/right-cat-ear.png?v={{ static_asset_version }}');
+        }
+        #yui-guide-chat-spotlight .yui-guide-chat-spotlight-paw {
+            right: -18px;
+            bottom: -11px;
+            width: 51px;
+            height: 51px;
+            background-image: url('/static/assets/tutorial/highlight/cat-paw.png?v={{ static_asset_version }}');
+            filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
+        }
+        #yui-guide-chat-spotlight.is-window .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 22px rgba(104, 194, 255, 0.62),
+                0 0 42px rgba(87, 136, 255, 0.3),
+                inset 0 0 18px rgba(131, 214, 255, 0.18);
+        }
+        #yui-guide-chat-spotlight.is-input .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 1px rgba(214, 243, 255, 0.72),
+                0 0 16px rgba(104, 194, 255, 0.52),
+                0 0 28px rgba(87, 136, 255, 0.22),
+                inset 0 0 12px rgba(131, 214, 255, 0.14);
         }
         /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
         #react-chat-window-root {
@@ -182,6 +376,16 @@
            旧版在此处用 !important 重复声明 @keyframes + animation 规则，会导致浏览器
            对同名 @keyframes 做二次解析，且 !important 阻止 prefers-reduced-motion
            等未来覆盖，已移除。 */
+
+        /* GalGame 模式：撑高窗口和外壳，预留 A/B/C 一来就有位置，避免
+           jump-resize；输入壳本身不再硬撑 min-height，由 .composer-galgame-slot
+           的 max-height 过渡驱动自然长高，参见 react-neko-chat styles.css。 */
+        body.galgame-mode-enabled #react-chat-window-shell {
+            min-height: 320px !important;
+        }
+        body.galgame-mode-enabled {
+            min-height: 385px !important;
+        }
 
         /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
         #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
@@ -347,6 +551,13 @@
 <body class="electron-chat-window subtitle-web-host">
 
     <div id="status-toast"></div>
+    <div id="yui-guide-chat-spotlight" hidden>
+        <div class="yui-guide-chat-spotlight-chrome"></div>
+        <span class="yui-guide-chat-spotlight-sweep"></span>
+        <div class="yui-guide-chat-spotlight-ear-left"></div>
+        <div class="yui-guide-chat-spotlight-ear-right"></div>
+        <div class="yui-guide-chat-spotlight-paw"></div>
+    </div>
 
     <!-- 空壳 DOM：防止 app-ui.js / app-websocket.js 中 getElementById 返回 null -->
     <div id="live2d-container" style="display:none;"><canvas id="live2d-canvas"></canvas></div>
@@ -431,7 +642,7 @@
                     <img src="/static/icons/fenxiang.svg" alt="" aria-hidden="true" width="20" height="20">
                 </button>
                 <button id="reactChatWindowMinimizeButton" type="button" data-i18n-aria="chat.reactWindowMinimize" data-i18n-title="chat.reactWindowMinimize">
-                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化新版聊天框" width="32" height="32">
+                    <img id="reactChatWindowMinimizeIcon" src="/static/icons/expand_icon_off.png" data-i18n-alt="chat.reactWindowMinimize" alt="最小化聊天框" width="32" height="32">
                 </button>
                 <button id="reactChatWindowCloseButton" type="button" data-i18n-aria="chat.reactWindowClose" data-i18n-title="chat.reactWindowClose">×</button>
             </div>
@@ -491,47 +702,55 @@
                 </div>
             </div>
             <div class="avatar-cropper-buttons">
-                <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
-                <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+                <button id="avatar-cropper-retake" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropRetake">重新拍照</button>
+                <div class="avatar-cropper-decision-buttons">
+                    <button id="avatar-cropper-cancel" class="avatar-cropper-btn" type="button" data-i18n="chat.avatarCropCancel">取消</button>
+                    <button id="avatar-cropper-save" class="avatar-cropper-btn primary" type="button" data-i18n="chat.avatarCropSave">保存</button>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
-    <script src="/static/libs/ogg-opus-decoder.min.js"></script>
-    <script src="/static/music_ui.js"></script>
-    <script src="/static/js/index.js"></script>
+    <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
+    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <!-- 不加载 common_ui.js：它的 DOM 拖拽/resize 和独立窗口不兼容 -->
-    <script src="/static/achievement_manager.js"></script>
-    <script src="/static/js/agent_ui_v2.js"></script>
-    <script src="/static/ogg-opus-decoder-wrapper.js"></script>
+    <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/agent_ui_v2.js?v={{ static_asset_version }}"></script>
+    <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 模块（与 index.html 完全相同的加载顺序）-->
-    <script src="/static/subtitle-shared.js"></script>
-    <script src="/static/app-state.js"></script>
-    <script src="/static/app-ui.js"></script>
-    <script src="/static/app-chat-text-utils.js"></script>
-    <script src="/static/app-chat.js"></script>
-    <script src="/static/app-chat-avatar.js"></script>
-    <script src="/static/app-audio-playback.js"></script>
-    <script src="/static/app-audio-capture.js"></script>
-    <script src="/static/app-screen.js"></script>
-    <script src="/static/app-crop.js"></script>
-    <script src="/static/app-interpage.js"></script>
-    <script src="/static/app-proactive.js"></script>
-    <script src="/static/app-settings.js"></script>
-    <script src="/static/app-agent.js"></script>
-    <script src="/static/app-character.js"></script>
-    <script src="/static/app-websocket.js"></script>
-    <script src="/static/app-buttons.js"></script>
-    <script src="/static/app.js"></script>
-    <script src="/static/subtitle.js"></script>
+    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
 
     <!-- React Chat（与 index.html 相同的 bundle + 初始化器）-->
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app-react-chat-window.js"></script>
-    <script src="/static/app-chat-adapter.js"></script>
-    <script src="/static/app-chat-export.js"></script>
+    <!-- Local-mutation CSRF helper：mini-game invite respond endpoint 等本地
+         mutation 共用 window.nekoLocalMutationSecurity 拿 X-CSRF-Token；必须
+         在 app-react-chat-window.js 之前加载，与 index.html 同序。 -->
+    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>
     // =====================================================================
@@ -552,7 +771,44 @@
 
         // BALL: 折叠态呼吸球的窗口总尺寸（CSS .minimized 50px 内容 + 32px Electron 窗口边框/阴影余量）
         var BALL = 82;
-        var MIN_W = 300, MIN_H = 200;
+        var MIN_W = 300;
+        var MIN_H_BASE = 200;
+        // GalGame 模式开启时输入框需要额外 ~110px 容纳 A/B/C 选项 + 间距，
+        // 否则用户首次进入会看到选项被裁切到 send 按钮下方。
+        // GAL 模式的 320px 是内容壳最低高度；独立窗口还有 top/bottom inset，
+        // 需要把外层窗口最小高度抬高，否则压扁后输入区底部会被窗口裁掉。
+        var MIN_H_GALGAME = 385;
+        function isGalgameModeOn() {
+            return !!(document.body && document.body.classList.contains('galgame-mode-enabled'));
+        }
+        function currentMinH() {
+            return isGalgameModeOn() ? MIN_H_GALGAME : MIN_H_BASE;
+        }
+        Object.defineProperty(window, '__nekoChatMinH', {
+            get: currentMinH,
+            configurable: true
+        });
+
+        // GalGame 模式开/关时，如果当前窗口高度小于新最小值，主动 setBounds 撑高，
+        // 否则用户切到 ON 后会看到选项被裁切到 send 按钮下方。
+        function syncWindowToGalgameMin() {
+            if (collapsed || resizing || animating) return;
+            var minH = currentMinH();
+            try {
+                W.getBounds().then(function(b) {
+                    if (!b) return;
+                    if (b.height >= minH) return;
+                    W.setBounds(b.x, b.y, b.width, minH);
+                });
+            } catch (_) {}
+        }
+        // body class 由 app-react-chat-window.js 在 toggle 时刷新；这里订阅
+        // 主动同步事件，避免轮询 / MutationObserver 的重绘开销。
+        window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToGalgameMin);
+        // 启动时不再主动撑高：app-react-chat-window 在 storage barrier 之后
+        // 调 setGalgameModeEnabled(readPref) 把 false→true 翻转一次，change 事件
+        // 兜底；ON 持久化时这条路径必走、OFF 持久化时不会触发不必要的扩大。
+
         var collapsed = false;
         var animating = false;
         var savedWH = null;
@@ -649,7 +905,7 @@
             var dx = e.screenX - anchorSX;
             var dy = e.screenY - anchorSY;
             var w = Math.max(MIN_W, snapBounds.w + dx);
-            var h = Math.max(MIN_H, snapBounds.h + dy);
+            var h = Math.max(currentMinH(), snapBounds.h + dy);
             if (_expandMax) {
                 w = Math.min(w, _expandMax.w);
                 h = Math.min(h, _expandMax.h);
@@ -883,6 +1139,197 @@
             scrollToBottom(false);
         }
 
+        // ===================== 游戏窗口联动（收缩 → 还原）=====================
+        // mini-game 路由激活时把 chat.html 收成呼吸球（复用已有 collapseChat
+        // 动画+样式，等同于用户点击右上角最小化按钮的效果）并搬到工作区左下角；
+        // 路由结束时按之前的 (bounds, collapsed?) 快照还原。
+        //
+        // 单一事件源：app-websocket.js 收到 ``game_window_state_change`` 后
+        // dispatch ``neko-game-window-state-change``，多窗口模式 RAW_MESSAGE
+        // forwarding 自动转给 chat.html follower。closed 路径覆盖率与
+        // ``is_game_route_active`` 同源（_finalize 翻 false 时一并推 closed），
+        // 不会出现"游戏已结束但 UI 仍锁着球态"的孤岛。
+        var _gameMinimizeSnap = null;
+        // "用户当前是否仍应处于游戏最小化态"的目标态。所有异步分支（getBounds
+        // / rAF / collapseChat 700ms 落定 / restore 100ms 展开）都拿这个 flag
+        // 跟事件入口对照来判定 stale。
+        //
+        // 修两条 race：
+        // (1) codex P2：原版只在异步回调里写 _gameMinimizeSnap。opened →
+        //     getBounds pending 期间收到 closed → restore 因 snap=null 早返
+        //     → getBounds 落地把 snap 写出来 + 收成球态搬左下角 → 无 closed
+        //     抵消 → UI 永远卡球态。
+        // (2) CodeRabbit Major：closed 撞上 collapseChat() 进行中时，原版
+        //     restore 走 fallback setBounds 回原 bounds，但 doCollapse 内部
+        //     的 getWorkArea+setBounds 在动画 transitionend 后才跑，会把窗口
+        //     再 setBounds 到 ball 位 → 用户看到游戏已结束但聊天框已经被收
+        //     成球态、停在原始底部。
+        //
+        // 修法：
+        // - opened 设 active=true 后调 _gameMinimizeForGame，每条 await 出口
+        //   都 re-check active；closed 同理设 active=false 后调 restore。
+        // - restore 看到 animating=true 时 rAF 重试到动画落定再消费快照——避
+        //   开 doCollapse / expandChat 内部 setBounds 与 restore setBounds 抢位。
+        var _gameWindowActive = false;
+
+        function _moveBallToWorkAreaBottomLeft() {
+            return W.getWorkArea().then(function(wa) {
+                if (!wa) return;
+                if (!collapsed) return; // 状态在异步等待期变了 → 放弃，避免把展开窗口吸到 BALL 尺寸
+                // codex P1：getWorkArea pending 期间 closed 可能已到 → restore
+                // 已经把窗口搬回原 bounds；此时再 setBounds 到工作区左下角会
+                // 把刚还原的位置又覆盖掉，留个孤儿球在屏幕角。recheck 游戏态
+                // flag 与 snap 双双健在才搬位。
+                if (!_gameWindowActive || !_gameMinimizeSnap) return;
+                W.setBounds(wa.x, wa.y + wa.height - BALL, BALL, BALL);
+            });
+        }
+
+        function _gameMinimizeForGame() {
+            if (!_gameWindowActive || _gameMinimizeSnap) return;
+            if (animating) {
+                // 正在收/展过程中 → 等下一帧重试；rAF callback 自身仍 re-check
+                // active，closed 在 rAF 期间到达会让重试 noop
+                requestAnimationFrame(_gameMinimizeForGame);
+                return;
+            }
+            W.getBounds().then(function(b0) {
+                if (!b0 || !_gameWindowActive || _gameMinimizeSnap) return;
+                _gameMinimizeSnap = {
+                    bounds: { x: b0.x, y: b0.y, width: b0.width, height: b0.height },
+                    wasCollapsed: collapsed,
+                    // savedWH 是 collapseChat 折叠时记的展开尺寸；如果用户进游戏前
+                    // 已经手动折叠过一次，这个值非空，要原样保留以便 closed 还原后
+                    // 再用户手点展开时尺寸不变。
+                    savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null
+                };
+                if (collapsed) {
+                    _moveBallToWorkAreaBottomLeft();
+                } else {
+                    collapseChat();
+                    // collapseChat → doCollapse 内部链路：transitionend / 200ms timeout
+                    // 之后 collapsed=true、animating=false。这里给一个保守 700ms
+                    // 缓冲（400ms 折叠动画 + 200ms ball-show + 100ms IPC 余量），
+                    // 折叠真落定后再搬位置。
+                    setTimeout(function() {
+                        if (!_gameWindowActive || !_gameMinimizeSnap) return;
+                        if (collapsed && !animating) _moveBallToWorkAreaBottomLeft();
+                    }, 700);
+                }
+            });
+        }
+
+        function _gameRestoreAfterGame() {
+            if (_gameWindowActive || !_gameMinimizeSnap) return;
+            if (animating) {
+                // collapseChat / expandChat 进行中时不能立刻消费快照——doCollapse
+                // 的 getWorkArea+setBounds（或 expandChat 的对偶链）会在动画
+                // transitionend 后跑、把窗口拉到自己的目标位，覆盖 restore
+                // setBounds。等 animating 落定后再走 restore 主链路。
+                requestAnimationFrame(_gameRestoreAfterGame);
+                return;
+            }
+            // snap 一旦在本帧消费就 null 出去，避免 rAF 重入二次消费
+            var snap = _gameMinimizeSnap;
+            _gameMinimizeSnap = null;
+            if (snap.wasCollapsed) {
+                if (!collapsed) {
+                    // codex P2：进游戏前球态 + 用户在 game 期间手动点球展开了
+                    // → 当前是展开态，DOM 已 hdr/wrap/tia 显示。如果还按 snap.bounds
+                    // (BALL × BALL) setBounds，窗口被压成 82×82 但 DOM 仍展开 →
+                    // 内容裁切，UI broken 直到用户再次手动恢复。尊重用户当前展开
+                    // 意图，不强行复位窗口尺寸；只恢复 savedWHBefore（让用户下次
+                    // 主动 collapse 时尺寸是进游戏前那个，而不是 game 期 collapseChat
+                    // 写入的中间值）。
+                    if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                    return;
+                }
+                // 进游戏前球态 + 现在仍是球态 → 球搬回原坐标即可，savedWH 还原
+                // 成进游戏之前的展开尺寸（不是当前游戏期间窗口尺寸的副本）
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            // 进游戏前是展开态、当前是球态 → 把 expandChat 的目标尺寸钉到原 bounds
+            // 让动画展开到原大小；球先搬到原 bounds 的底部对齐位（与 expandChat
+            // 内部 newY = b.y + BALL - h 推算的"展开后还原原顶端"语义一致）。
+            if (!collapsed) {
+                // 异常态（用户在 game 期间手动展开了？）—— 至少 setBounds 回去，
+                // 不动画，不再调 expandChat（会被 animating guard 拦住）。注：
+                // animating 在此分支已被入口的 rAF 等待保证为 false，不需要再
+                // OR 一遍（github-code-quality bot 指出原版 `|| animating` 永
+                // 远为 false 是 dead branch）。
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+                if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+                return;
+            }
+            var b = snap.bounds;
+            W.setBounds(b.x, b.y + b.height - BALL, BALL, BALL);
+            setTimeout(function() {
+                // 100ms 内若 opened 又来（race：closed → restore → opened，
+                // 100ms 期间 active 翻 true），不再 expand 让新 opened 链路接手
+                if (_gameWindowActive) return;
+                if (!collapsed || animating) return;
+                savedWH = { w: b.width, h: b.height };
+                expandChat();
+            }, 100);
+        }
+
+        window.addEventListener('neko-game-window-state-change', function(ev) {
+            var detail = ev && ev.detail ? ev.detail : {};
+            if (detail.action === 'opened') {
+                _gameWindowActive = true;
+                _gameMinimizeForGame();
+            } else if (detail.action === 'closed') {
+                _gameWindowActive = false;
+                _gameRestoreAfterGame();
+            }
+        });
+
+        // Bootstrap reconciliation：edge-triggered 的 game_window_state_change WS
+        // 事件只在 activate / finalize 推送，订阅者初次加载时若 route 已经在
+        // active 状态会听不到历史 opened（chat.html 是后开起来的窗口，可能
+        // game 已经先跑起来了）。init 路径主动查 /api/game/route/active，
+        // active 就自己 dispatch opened 让 UI 对齐。codex P1。
+        // closed 不需要 sync——初始 _gameWindowActive=false / snap=null 就是
+        // idle 状态，已对齐。
+        // WS reconnect 后 missing closed 的还原是更复杂的 case（需要订阅
+        // reconnect 事件 + 主动检查），本 PR 暂不覆盖。
+        (function syncGameWindowStateOnInit() {
+            var lan = '';
+            try {
+                if (window.appState && typeof window.appState.lanlan_name === 'string') {
+                    lan = window.appState.lanlan_name;
+                }
+                if (!lan && window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string') {
+                    lan = window.lanlan_config.lanlan_name;
+                }
+            } catch (_) {}
+            if (!lan) {
+                // lanlan_name 还没解析出来 → 100ms 后重试一次（chat.html 通常
+                // 在 appState 已就绪后才挂这个 IIFE，但 storage barrier 等可能
+                // 让 appState 滞后，给一次 retry 兜底）
+                setTimeout(syncGameWindowStateOnInit, 100);
+                return;
+            }
+            fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
+                .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
+                .then(function(data) {
+                    if (!data || !data.active) return;
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                            detail: {
+                                action: 'opened',
+                                lanlanName: data.lanlan_name || lan,
+                                gameType: data.game_type || '',
+                                sessionId: data.session_id || ''
+                            }
+                        }));
+                    } catch (_) {}
+                })
+                .catch(function() { /* 静默 —— bootstrap 失败不影响普通态 UI */ });
+        })();
+
         // ===================== 边界检测与回弹 =====================
         var _bounceAnim = null;
         var _bouncing = false;
@@ -966,6 +1413,40 @@
         })();
 
         console.log('[Chat Standalone] ready');
+
+        // ===== 截图结果监听（多窗口模式下 Pet 窗口代为全屏截图裁剪后回传）=====
+        window.addEventListener('neko:screenshot-result', function(e) {
+            var result = e.detail;
+            if (result && result.dataUrl) {
+                // 优先写入旧版 pending list DOM，再由 syncPendingComposerAttachments
+                // 自动同步到 React Chat，确保 legacy sendTextPayloadInternal 和 React 都读到同一套数据。
+                if (typeof window.addScreenshotToList === 'function') {
+                    window.addScreenshotToList(result.dataUrl);
+                } else if (window.reactChatWindowHost) {
+                    var state = window.reactChatWindowHost.getState();
+                    var attachments = (state && state.composerAttachments) ? state.composerAttachments.slice() : [];
+                    attachments.push({
+                        id: 'screenshot-' + Date.now(),
+                        url: result.dataUrl,
+                        alt: (typeof window.t === 'function' ? window.t('chat.pendingImageAlt', { index: attachments.length + 1 }) : '') || ('图片 ' + (attachments.length + 1))
+                    });
+                    window.reactChatWindowHost.setComposerAttachments(attachments);
+                }
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        typeof window.t === 'function' ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
+                        3000
+                    );
+                }
+            } else if (result && result.error) {
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        (typeof window.t === 'function' ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25') + (result.error ? ': ' + result.error : ''),
+                        5000
+                    );
+                }
+            }
+        });
     })();
     </script>
 </body>

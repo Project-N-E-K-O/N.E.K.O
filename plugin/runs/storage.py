@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.settings import (
     BLOB_STORE_DIR,

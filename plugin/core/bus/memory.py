@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union, Coroutine
@@ -182,35 +181,12 @@ class MemoryClient:
             except Exception as e:
                 raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
 
-            start_time = time.time()
-            check_interval = 0.01
-            while time.time() - start_time < timeout:
-                response = state.get_plugin_response(request_id)
-                if response is None:
-                    time.sleep(check_interval)
-                    continue
+            # 使用 state 的事件驱动等待（per-request Event），避免 busy-wait 轮询
+            response = state.wait_for_plugin_response(request_id, timeout)
 
-                if not isinstance(response, dict):
-                    time.sleep(check_interval)
-                    continue
-
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-
-                result = response.get("result")
-                if isinstance(result, dict):
-                    items = result.get("history")
-                    if isinstance(items, list):
-                        history = items
-                    else:
-                        history = []
-                elif isinstance(result, list):
-                    history = result
-                else:
-                    history = []
-                break
-
-            else:
+            if response is None:
+                # 超时后兜底检查一次：wait_for_plugin_response 内部已做多次 fast-path 检查，
+                # 但仍可能在返回后有极晚到达的响应，这里尝试 pop 以清理孤儿响应。
                 orphan_response = None
                 try:
                     orphan_response = state.get_plugin_response(request_id)
@@ -226,6 +202,24 @@ class MemoryClient:
                         pass
                 raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
 
+            if not isinstance(response, dict):
+                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
+
+            if response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+
+            result = response.get("result")
+            if isinstance(result, dict):
+                items = result.get("history")
+                if isinstance(items, list):
+                    history = items
+                else:
+                    history = []
+            elif isinstance(result, list):
+                history = result
+            else:
+                history = []
+
         records: List[MemoryRecord] = []
         for item in history:
             if isinstance(item, dict):
@@ -234,7 +228,7 @@ class MemoryClient:
                 records.append(MemoryRecord.from_raw({"event": item}, bucket_id=bucket_id))
 
         return MemoryList(records, bucket_id=bucket_id)
-    
+
     async def get_async(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
         """异步版本:获取内存数据"""
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
@@ -296,35 +290,10 @@ class MemoryClient:
             except Exception as e:
                 raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
 
-            start_time = asyncio.get_event_loop().time()
-            check_interval = 0.01
-            while asyncio.get_event_loop().time() - start_time < timeout:
-                response = state.get_plugin_response(request_id)
-                if response is None:
-                    await asyncio.sleep(check_interval)
-                    continue
+            # 使用 state 的异步事件驱动等待，避免 busy-wait 污染事件循环
+            response = await state.wait_for_plugin_response_async(request_id, timeout)
 
-                if not isinstance(response, dict):
-                    await asyncio.sleep(check_interval)
-                    continue
-
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-
-                result = response.get("result")
-                if isinstance(result, dict):
-                    items = result.get("history")
-                    if isinstance(items, list):
-                        history = items
-                    else:
-                        history = []
-                elif isinstance(result, list):
-                    history = result
-                else:
-                    history = []
-                break
-
-            else:
+            if response is None:
                 orphan_response = None
                 try:
                     orphan_response = state.get_plugin_response(request_id)
@@ -339,6 +308,24 @@ class MemoryClient:
                     except Exception:
                         pass
                 raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
+
+            if not isinstance(response, dict):
+                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
+
+            if response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+
+            result = response.get("result")
+            if isinstance(result, dict):
+                items = result.get("history")
+                if isinstance(items, list):
+                    history = items
+                else:
+                    history = []
+            elif isinstance(result, list):
+                history = result
+            else:
+                history = []
 
         records: List[MemoryRecord] = []
         for item in history:

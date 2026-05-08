@@ -12,6 +12,9 @@
 """
 
 from ..repositories.async_device_repository import AsyncDeviceRepositoryImpl
+from ..repositories.async_device_spec_repository import AsyncDeviceSpecRepositoryImpl
+from ..repositories.async_home_repository import AsyncHomeRepositoryImpl
+from ..repositories.async_scene_repository import AsyncSceneRepositoryImpl
 from ..repositories.device_repository import DeviceRepositoryImpl
 from ..repositories.device_spec_repository import DeviceSpecRepositoryImpl
 from ..repositories.home_repository import HomeRepositoryImpl
@@ -34,10 +37,14 @@ __all__ = [
     "IDeviceSpecRepository",
     # 数据模型
     "DeviceSpec",
-    # 仓储实现
+    # 仓储实现（同步）
     "DeviceRepositoryImpl",
-    "AsyncDeviceRepositoryImpl",
     "HomeRepositoryImpl",
     "SceneRepositoryImpl",
     "DeviceSpecRepositoryImpl",
+    # 仓储实现（异步）
+    "AsyncDeviceRepositoryImpl",
+    "AsyncHomeRepositoryImpl",
+    "AsyncSceneRepositoryImpl",
+    "AsyncDeviceSpecRepositoryImpl",
 ]

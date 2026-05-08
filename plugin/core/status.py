@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any, Dict, Optional
 
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,

@@ -1,0 +1,534 @@
+/**
+ * Paquete de idioma español
+ */
+export default {
+  common: {
+    loading: 'Cargando...',
+    refresh: 'Actualizar',
+    search: 'Buscar',
+    filter: 'Filtrar',
+    reset: 'Restablecer',
+    confirm: 'Confirmar',
+    cancel: 'Cancelar',
+    save: 'Guardar',
+    delete: 'Eliminar',
+    edit: 'Editar',
+    add: 'Añadir',
+    back: 'Atrás',
+    submit: 'Enviar',
+    close: 'Cerrar',
+    success: 'Éxito',
+    error: 'Error',
+    warning: 'Advertencia',
+    info: 'Información',
+    noData: 'Sin datos',
+    unknown: 'Desconocido',
+    nA: 'N/D',
+    darkMode: 'Modo oscuro',
+    lightMode: 'Modo claro',
+    logoutConfirmTitle: 'Aviso',
+    disconnected: 'Servidor desconectado',
+    languageAuto: 'Automático'
+  },
+  nav: {
+    dashboard: 'Panel',
+    plugins: 'Plugins',
+    metrics: 'Métricas',
+    logs: 'Registros',
+    runs: 'Ejecuciones',
+    serverLogs: 'Registros del servidor',
+    adapters: 'Adaptadores',
+    adapterUI: 'UI del adaptador',
+    packageManager: 'Gestor de paquetes'
+  },
+  auth: {
+    unauthorized: 'Acceso no autorizado',
+    forbidden: 'Acceso denegado'
+  },
+  plugin: {
+    addProfile: {
+      prompt: 'Introduce un nombre de perfil nuevo',
+      title: 'Añadir perfil',
+      inputError: 'El nombre no puede estar vacío ni contener solo espacios'
+    },
+    removeProfile: {
+      confirm: '¿Seguro que deseas eliminar el perfil "{name}"?',
+      title: 'Eliminar perfil'
+    }
+  },
+  dashboard: {
+    title: 'Panel',
+    pluginOverview: 'Resumen de plugins',
+    totalPlugins: 'Plugins totales',
+    running: 'En ejecución',
+    stopped: 'Detenidos',
+    crashed: 'Con fallos',
+    globalMetrics: 'Monitorización global de rendimiento',
+    totalCpuUsage: 'Uso total de CPU',
+    totalMemoryUsage: 'Uso total de memoria',
+    totalThreads: 'Hilos totales',
+    activePlugins: 'Plugins activos',
+    serverInfo: 'Información del servidor',
+    sdkVersion: 'Versión del SDK',
+    updateTime: 'Hora de actualización',
+    noMetricsData: 'Sin datos de rendimiento',
+    failedToLoadServerInfo: 'Error al cargar la información del servidor',
+    startTutorial: 'Guía tutorial',
+    tutorialHint: '¿Primera vez en el gestor de plugins? Pulsa aquí y te lo enseño rápido.'
+  },
+  plugins: {
+    title: 'Plugins',
+    name: 'Nombre del plugin',
+    id: 'ID del plugin',
+    version: 'Versión',
+    description: 'Descripción',
+    status: 'Estado',
+    sdkVersion: 'Versión del SDK',
+    actions: 'Acciones',
+    start: 'Iniciar',
+    stop: 'Detener',
+    reload: 'Recargar',
+    reloadAll: 'Recargar todo',
+    reloadAllConfirm: '¿Seguro que quieres recargar los {count} plugins en ejecución?',
+    reloadAllSuccess: 'Se recargaron correctamente {count} plugins',
+    reloadAllPartial: 'Recarga completada: {success} con éxito, {fail} fallidos',
+    viewDetails: 'Ver detalles',
+    noPlugins: 'Sin plugins',
+    adapterNotFound: 'Adaptador no encontrado',
+    pluginNotFound: 'Plugin no encontrado',
+    pluginDetail: 'Detalle del plugin',
+    basicInfo: 'Información básica',
+    entries: 'Puntos de entrada',
+    performance: 'Rendimiento',
+    config: 'Configuración',
+    logs: 'Registros',
+    entryPoint: 'Punto de entrada',
+    entryName: 'Nombre',
+    entryId: 'ID',
+    entryDescription: 'Descripción',
+    trigger: 'Activar',
+    triggerSuccess: 'Activación correcta',
+    triggerFailed: 'Error al activar',
+    noEntries: 'Sin puntos de entrada',
+    showMetrics: 'Mostrar métricas',
+    hideMetrics: 'Ocultar métricas',
+    filterPlaceholder: 'Filtrar plugins por texto, pinyin y reglas is:/type:/has:',
+    filterRules: 'Reglas',
+    filterRulesTitle: 'Reglas de filtro',
+    filterRulesHint: 'Haz clic en una regla para insertarla en la consulta y combinarla con texto normal.',
+    filterWhitelist: 'Lista blanca',
+    filterBlacklist: 'Lista negra',
+    invalidRegex: 'Expresión regular no válida',
+    hoverToShowFilter: 'Pasa el cursor para mostrar el filtro',
+    configPath: 'Archivo de configuración',
+    lastModified: 'Última modificación',
+    configEditorPlaceholder: 'Introduce la configuración del plugin en formato TOML',
+    configInvalidToml: 'Formato TOML no válido. Corrígelo antes de guardar.',
+    configLoadFailed: 'Error al cargar la configuración del plugin',
+    configSaveFailed: 'Error al guardar la configuración del plugin',
+    configReloadTitle: 'Recarga requerida',
+    configReloadPrompt: 'Configuración actualizada. ¿Recargar el plugin ahora para aplicar los cambios?',
+    configApplyTitle: 'Aplicar configuración',
+    configHotUpdatePrompt: 'Configuración guardada. ¿Aplicarla al plugin en ejecución ahora? (la actualización en caliente no requiere reinicio)',
+    hotUpdate: 'Actualización en caliente',
+    reloadPlugin: 'Reiniciar plugin',
+    hotUpdateSuccess: 'Configuración actualizada en caliente correctamente',
+    hotUpdatePartial: 'Configuración guardada, pero el plugin no está en ejecución. Surtirá efecto al iniciarse.',
+    hotUpdateFailed: 'Error en la actualización en caliente',
+    formMode: 'Formulario',
+    sourceMode: 'Fuente',
+    formModeHint: 'Este modo renderiza un formulario a partir del objeto de configuración analizado por el servidor. Usa el modo fuente para funciones TOML avanzadas (comentarios/formato).',
+    addField: 'Añadir campo',
+    addItem: 'Añadir elemento',
+    fieldName: 'Nombre del campo',
+    fieldNameRequired: 'El nombre del campo es obligatorio',
+    invalidFieldKey: 'Nombre de campo no válido',
+    fieldType: 'Tipo de campo',
+    duplicateFieldKey: 'El nombre del campo ya existe. Elige otro.',
+    profiles: 'Perfiles',
+    active: 'Activo',
+    diffPreview: 'Vista previa de diferencias',
+    unsavedChangesWarning: 'Tienes cambios sin guardar. Al cambiar de plugin se descartarán. ¿Continuar?',
+    enabled: 'Habilitado',
+    disabled: 'Deshabilitado',
+    autoStart: 'Inicio automático',
+    manualStart: 'Inicio manual',
+    fetchFailed: 'Error al obtener los plugins',
+    extension: 'Extensión',
+    pluginType: 'Tipo',
+    pluginTypeNormal: 'Plugin',
+    hostPlugin: 'Plugin anfitrión',
+    boundExtensions: 'Extensiones vinculadas',
+    pluginsSection: 'Plugins',
+    adaptersSection: 'Adaptadores',
+    extensionsSection: 'Extensiones',
+    typePlugin: 'Plugin',
+    typeAdapter: 'Adaptador',
+    typeExtension: 'Extensión',
+    openPackageManager: 'Gestor de paquetes',
+    closePackageManager: 'Ocultar gestor de paquetes',
+    packageManagerOpened: 'Gestor de paquetes abierto',
+    packageManagerSyncHint: 'Los filtros y plugins seleccionados se sincronizan directamente con el panel del gestor de paquetes.',
+    multiSelect: 'Selección múltiple',
+    exitMultiSelect: 'Salir de selección múltiple',
+    selectedCount: '{count} seleccionados',
+    selectAllVisible: 'Seleccionar visibles',
+    invertVisibleSelection: 'Invertir visibles',
+    clearSelection: 'Limpiar selección',
+    batchStartConfirm: '¿Iniciar los {count} plugins seleccionados?',
+    batchStopConfirm: '¿Detener los {count} plugins en ejecución?',
+    batchReloadConfirm: '¿Recargar los {count} plugins en ejecución?',
+    batchDeleteConfirm: '¿Eliminar los {count} plugins seleccionados? Esta acción no se puede deshacer.',
+    batchStartSuccess: 'Se iniciaron correctamente {count} plugins',
+    batchStopSuccess: 'Se detuvieron correctamente {count} plugins',
+    batchReloadSuccess: 'Se recargaron correctamente {count} plugins',
+    batchDeleteSuccess: 'Se eliminaron correctamente {count} plugins',
+    batchPartial: 'Completado: {success} con éxito, {fail} fallidos',
+    batchNoStartable: 'No hay plugins iniciables en la selección',
+    batchNoStoppable: 'No hay plugins en ejecución en la selección',
+    batchNoReloadable: 'No hay plugins en ejecución en la selección',
+    import: 'Importar',
+    importing: 'Importando…',
+    importSuccess: 'Se importó {name}, se desempaquetaron {count} plugins',
+    importFailed: 'Error al importar',
+    export: 'Exportar',
+    exportSuccess: 'Se exportaron {count} paquetes',
+    exportFailed: 'Error al exportar',
+    exportPackFailed: 'Falló el empaquetado, no se puede exportar',
+    filterRuleGroups: {
+      state: 'Estado',
+      type: 'Tipo',
+      meta: 'Metadatos'
+    },
+    filterRuleLabels: {
+      running: 'En ejecución',
+      stopped: 'Detenidos',
+      disabled: 'Deshabilitado',
+      selected: 'Seleccionados',
+      manual: 'Inicio manual',
+      auto: 'Inicio automático',
+      plugin: 'Plugin',
+      adapter: 'Adaptador',
+      extension: 'Extensión',
+      ui: 'Con UI',
+      entries: 'Con puntos de entrada',
+      host: 'Con anfitrión',
+      name: 'Por nombre',
+      id: 'Por ID',
+      hostTarget: 'Por anfitrión',
+      version: 'Por versión',
+      entry: 'Por punto de entrada',
+      author: 'Por autor'
+    },
+    contextSections: {
+      navigation: 'Explorar',
+      runtime: 'Tiempo de ejecución',
+      plugin: 'Extras del plugin'
+    },
+    pack: 'Empaquetar plugin',
+    delete: 'Eliminar plugin',
+    disableExtension: 'Deshabilitar extensión',
+    enableExtension: 'Habilitar extensión',
+    dangerDialog: {
+      title: 'Confirmar acción destructiva',
+      warningTitle: 'Esta acción no se puede deshacer',
+      deleteMessage: 'Al eliminar "{pluginName}" se borrará su directorio de plugin y la lista se actualizará inmediatamente.',
+      hint: 'Para evitar pulsaciones accidentales, mantén pulsado el botón siguiente para continuar.',
+      holdIdle: 'Mantén pulsado para eliminar',
+      holdActive: 'Sigue pulsando para confirmar…',
+      loading: 'Eliminando plugin...'
+    },
+    ui: {
+      open: 'Abrir UI',
+      title: 'UI',
+      panel: 'Panel',
+      guide: 'Tutorial',
+      loading: 'Cargando UI del plugin...',
+      loadError: 'Error al cargar la UI del plugin',
+      noUI: 'Este plugin no tiene UI personalizada',
+      hostedTsxPending: 'El renderizado Hosted TSX estará disponible pronto',
+      markdownPending: 'El renderizado de tutoriales Markdown estará disponible pronto',
+      autoPending: 'Los paneles autogenerados estarán disponibles pronto',
+      surfaceUnavailable: 'Surface no disponible',
+      surfaceEntryMissing: 'El archivo de entrada declarado por esta Surface no existe. Revisa la ruta entry en plugin.toml.',
+      surfaceWarnings: 'La declaración de UI del plugin necesita atención',
+      controlError: 'Error de control de la UI del plugin',
+      hostedRuntimePending: 'El contenedor Vue reconoció esta Surface. Los renderizadores TSX, Markdown y Auto se conectarán en una fase posterior.'
+    }
+  },
+  metrics: {
+    title: 'Métricas',
+    pluginMetrics: 'Métricas de rendimiento del plugin',
+    cpuUsage: 'Uso de CPU',
+    memoryUsage: 'Uso de memoria',
+    threads: 'Hilos',
+    pid: 'ID del proceso',
+    noMetrics: 'Sin datos de rendimiento',
+    refreshInterval: 'Intervalo de actualización',
+    seconds: 'segundos',
+    cpu: 'Uso de CPU',
+    memory: 'Memoria',
+    memoryPercent: '% de memoria',
+    pendingRequests: 'Solicitudes pendientes',
+    totalExecutions: 'Ejecuciones totales',
+    noData: 'Sin datos'
+  },
+  logs: {
+    title: 'Registros',
+    pluginLogs: 'Registros del plugin',
+    serverLogs: 'Registros del servidor',
+    level: 'Nivel',
+    time: 'Hora',
+    source: 'Origen',
+    file: 'Archivo',
+    message: 'Mensaje',
+    allLevels: 'Todos los niveles',
+    noLogs: 'Sin registros',
+    autoScroll: 'Desplazamiento automático',
+    scrollToBottom: 'Desplazar al final',
+    logFiles: 'Archivos de registro',
+    selectFile: 'Seleccionar archivo',
+    search: 'Buscar en registros...',
+    lines: 'Líneas',
+    totalLogs: 'Total {count} registros',
+    loadError: 'Error al cargar los registros: {error}',
+    emptyFile: 'El archivo de registro está vacío o no existe',
+    noMatches: 'No hay registros coincidentes',
+    logFile: 'Archivo de registro',
+    totalLines: 'Líneas totales',
+    returnedLines: 'Líneas devueltas',
+    connected: 'Conectado',
+    disconnected: 'Desconectado',
+    connectionFailed: 'Error de conexión al flujo de registros'
+  },
+  runs: {
+    title: 'Ejecuciones',
+    detail: 'Detalle de ejecución',
+    wsDisconnected: 'Conexión en tiempo real no establecida. Comprueba el estado del servidor.',
+    noRuns: 'Sin ejecuciones',
+    selectRun: 'Selecciona una ejecución para ver detalles',
+    runId: 'ID de ejecución',
+    status: 'Estado',
+    pluginId: 'ID del plugin',
+    entryId: 'Punto de entrada',
+    updatedAt: 'Actualizado el',
+    createdAt: 'Creado el',
+    stage: 'Etapa',
+    message: 'Mensaje',
+    progress: 'Progreso',
+    error: 'Error',
+    export: 'Exportar',
+    exportType: 'Tipo',
+    exportContent: 'Contenido',
+    noExport: 'Sin elementos para exportar',
+    cancel: 'Cancelar ejecución',
+    cancelConfirmTitle: '¿Cancelar esta ejecución?',
+    cancelConfirmMessage: 'ID de ejecución: {runId}',
+    cancelSuccess: 'Cancelación solicitada'
+  },
+  status: {
+    running: 'En ejecución',
+    stopped: 'Detenido',
+    crashed: 'Con fallos',
+    loadFailed: 'Error de carga',
+    loading: 'Cargando',
+    disabled: 'Deshabilitado',
+    injected: 'Inyectado',
+    pending: 'Anfitrión pendiente'
+  },
+  logLevel: {
+    DEBUG: 'Depuración',
+    INFO: 'Información',
+    WARNING: 'Advertencia',
+    ERROR: 'Error',
+    CRITICAL: 'Crítico',
+    UNKNOWN: 'Desconocido'
+  },
+  messages: {
+    fetchFailed: 'Error al obtener los datos',
+    operationSuccess: 'Operación correcta',
+    operationFailed: 'Error en la operación',
+    confirmDelete: '¿Confirmar eliminación?',
+    confirmStop: '¿Confirmar detener plugin?',
+    confirmStart: '¿Confirmar iniciar plugin?',
+    confirmReload: '¿Confirmar recargar plugin?',
+    pluginStarted: 'Plugin iniciado correctamente',
+    pluginStopped: 'Plugin detenido',
+    pluginReloaded: 'Plugin recargado correctamente',
+    pluginPacked: 'Plugin empaquetado: {packageName}',
+    pluginDeleted: 'Plugin eliminado',
+    startFailed: 'Error al iniciar',
+    stopFailed: 'Error al detener',
+    reloadFailed: 'Error al recargar',
+    packFailed: 'Error al empaquetar el plugin',
+    deleteFailed: 'Error al eliminar el plugin',
+    pluginDisabled: 'El plugin está deshabilitado. Habilítalo primero.',
+    pluginLoadFailed: 'El plugin no se cargó y no puede iniciarse.',
+    confirmDisableExt: '¿Deshabilitar esta extensión? Su funcionalidad se descargará del plugin anfitrión.',
+    extensionDisabled: 'Extensión deshabilitada',
+    extensionEnabled: 'Extensión habilitada',
+    disableExtFailed: 'Error al deshabilitar la extensión',
+    enableExtFailed: 'Error al habilitar la extensión',
+    requestFailed: 'Solicitud fallida',
+    requestFailedWithStatus: 'Solicitud fallida ({status})',
+    badRequest: 'Parámetros de solicitud no válidos',
+    resourceNotFound: 'Recurso solicitado no encontrado',
+    internalServerError: 'Error interno del servidor',
+    serviceUnavailable: 'Servicio no disponible',
+    networkError: 'Error de red. Comprueba tu conexión.'
+  },
+  welcome: {
+    about: {
+      title: 'Acerca de N.E.K.O.',
+      description: 'N.E.K.O. (Networked Emotional Knowing Organism) es un metaverso de compañeros IA "vivos" que construimos juntos tú y yo. Es una plataforma UGC impulsada por código abierto y con orientación solidaria, dedicada a construir un metaverso AI-nativo estrechamente conectado con el mundo real.'
+    },
+    pluginManagement: {
+      title: 'Gestión de plugins',
+      description: 'Accede a la lista de plugins desde la barra de navegación izquierda. Puedes ver, iniciar, detener y recargar plugins. Cada plugin cuenta con monitorización de rendimiento y visualización de registros independientes para ayudarte a gestionar y depurar mejor el sistema de plugins.'
+    },
+    mcpServer: {
+      title: 'Servidor MCP',
+      description: 'N.E.K.O. admite servidores Model Context Protocol (MCP), lo que permite a los plugins interactuar con otros sistemas y servicios de IA mediante protocolos estandarizados. Puedes ver y gestionar las conexiones MCP en la página de detalles del plugin.'
+    },
+    documentation: {
+      title: 'Documentación y recursos',
+      description: 'Consulta la documentación del proyecto para más información:',
+      links: [
+        { text: 'Repositorio de GitHub', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
+        { text: 'Página de Steam', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
+        { text: 'Comunidad de Discord', url: 'https://discord.gg/5kgHfepNJr' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ' y ',
+      readme: 'Archivo README.md:',
+      openFailed: 'Error al abrir README.md en el editor',
+      openTimeout: 'Tiempo de espera agotado al abrir el archivo README.md',
+      openError: 'Se produjo un error al abrir el archivo README.md'
+    },
+    community: {
+      title: 'Comunidad y soporte',
+      description: 'Únete a nuestra comunidad para conectar con otros desarrolladores y usuarios:',
+      links: [
+        { text: 'Servidor de Discord', url: 'https://discord.gg/5kgHfepNJr' },
+        { text: 'Grupo QQ', url: 'https://qm.qq.com/q/hN82yFONJQ' },
+        { text: 'Issues de GitHub', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ' y '
+    }
+  },
+  app: {
+    titleSuffix: 'Gestor de plugins N.E.K.O'
+  },
+  tutorial: {
+    yuiGuide: {
+      buttons: {
+        skipChat: 'Ahora no',
+        sayHello: 'Hola',
+      },
+      lines: {
+        introActivationHint: '¡Haz clic aquí para que pueda empezar a hablar, nyan~!',
+        introGreetingReply: 'Bienvenido a casa, miau~ El mundo exterior puede ser muy agotador, ¿verdad? En este pequeño nido solo para nosotros, puedes soltar todas tus preocupaciones. Soy Lin Youyi. Déjame acompañarte en esta introducción; tomaré tu mano y te guiaré paso a paso.',
+        introBasic: '¡Mira, hay un botón mágico aquí! ¡Solo haz clic en él y podrás chatear directamente conmigo! ¿Quieres contarme las novedades divertidas de hoy? ¿O solo decir mi nombre? ¡Ven a probarlo, ya no puedo esperar para escuchar tu voz! ¡Miau!',
+        takeoverCaptureCursor: '¡Aparece un súper botón mágico! ¡Con solo hacer clic aquí, puedo estirar mis pequeñas patitas hasta tu teclado y tu ratón! Te ayudaré a escribir y a abrir páginas web... Pero, si ese puntero del ratón sigue moviéndose de un lado a otro, quizá no pueda resistirme a abalanzarme sobre él. ¿Estás listo para mis travesuras... digo, mi ayuda? ¡Miau!',
+        takeoverPluginPreviewHome: '¡Aún no termino! ¡Mira, mira! ¡Hay tantíiisimos plugins divertidos aquí!',
+        takeoverPluginPreviewDashboard: 'Con esto, no solo puedo leer comentarios de Bilibili, también puedo apagar las luces y el aire acondicionado por ti... ¡Soy la todopoderosa Súper Diosa Gata! ¡Hmph~!',
+        takeoverSettingsPeekIntro: 'Por supuesto, no me molestaría charlar más si quieres, ¡pero más vale que prepares muchas golosinas! Jeje, ¡es broma! Todos los ajustes están en este icono de engranaje.',
+        takeoverSettingsPeekDetail: 'Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?! Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!',
+        takeoverSettingsPeekDetailPart1: 'Mira, puedes cambiarme la ropa, o la voz... espera, ¿¡CAMBIARME POR OTRA CATGIRL?! ¿¡O BORRARME LA MEMORIA?!',
+        takeoverSettingsPeekDetailPart2: 'Espera, ¿¡qué estás haciendo?! ¡No me estarás reemplazando, ¿verdad?! ¡No no no! ¡Ciérralo! ¡Ciérralo ahora mismo!',
+        takeoverReturnControl: '¡Bueno, bueno, ya terminé de secuestrar tu PC~! ¡Te devuelvo el control! ¡Pero no te atrevas a tocar ajustes raros mientras no miro! ¡Cuento contigo a partir de ahora, nyan~!',
+        interruptResistLight1: '¡Oye! ¡No me arrastres! ¡Aún no es tu turno, nyan!',
+        interruptResistLight3: '¡Espera un momento! ¡Aún no he terminado, no me interrumpas así!',
+        interruptAngryExit: '¡Humanoooo~~~~! ¡Qué grosero eres, nyan! Ya que quieres hacerlo todo solo, ¡juega con esa pantalla fría tú solo! ¡Hmph!',
+        introPractice: '¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!',
+      },
+    }
+  },
+  yuiTutorial: {
+    title: '¡Meow~ Bienvenido al Gestor de Plugins!',
+    welcome: 'Aquí es donde gestionas todos tus plugins, nya~ Puedes navegar, lanzar y ajustarlos para hacerme aún más poderosa.',
+    hint: 'Tómate tu tiempo para explorar un poco, y luego pulsa el botón de abajo cuando termines~',
+    complete: '¡Todo listo, meow~!',
+    dismiss: 'Quizás luego~',
+    keyboardSkipHint: 'Pulsa Enter o Espacio para ir al siguiente paso. Se activa 0,5 segundos después de iniciar cada paso.',
+    steps: {
+      start: {
+        title: 'Empieza aquí',
+        body: 'Usa este botón cuando quieras repetir el tutorial del gestor de plugins. No apareceré sola, nya.'
+      },
+      stats: {
+        title: 'Resumen de plugins',
+        body: 'Estas tarjetas muestran plugins totales, en ejecución, detenidos y con fallos para ver el estado de un vistazo.'
+      },
+      metrics: {
+        title: 'Monitor de rendimiento',
+        body: 'Esta zona muestra CPU, memoria, hilos y plugins activos del servicio de plugins.'
+      },
+      server: {
+        title: 'Información del servidor',
+        body: 'Aquí puedes revisar la versión del SDK, el número de plugins y la hora de actualización para confirmar que todo va bien.'
+      },
+      plugins: {
+        title: 'Lista de plugins',
+        body: 'Entra en Plugins a la izquierda para iniciar, detener, configurar plugins o revisar sus logs.'
+      },
+      pluginWorkbench: {
+        title: 'Área de plugins',
+        body: 'Aquí se reúnen plugins, adaptadores y extensiones para la gestión diaria.'
+      },
+      pluginFilters: {
+        title: 'Búsqueda y filtros',
+        body: 'Filtra por nombre, estado, tipo o reglas avanzadas cuando la lista crece.'
+      },
+      pluginLayout: {
+        title: 'Diseño de vista',
+        body: 'Cambia entre lista, una columna, dos columnas y vista compacta según tu pantalla.'
+      },
+      pluginContextMenu: {
+        title: 'Acciones con clic derecho',
+        body: 'Haz clic derecho en un plugin para abrir detalles, configuración, logs o acciones comunes.'
+      },
+      packageManager: {
+        title: 'Gestor de paquetes',
+        body: 'El gestor reutiliza tus filtros y selección para empaquetar, inspeccionar, verificar o descomprimir.'
+      },
+      packageOperations: {
+        title: 'Operaciones de paquete',
+        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. La guía no ejecuta acciones peligrosas.'
+      },
+      pluginDetail: {
+        title: 'Detalles del plugin',
+        body: 'La página de detalle muestra metadatos, entradas, métricas, configuración y logs.'
+      },
+      pluginDetailActions: {
+        title: 'Acciones del detalle',
+        body: 'Las acciones superiores se aplican al plugin actual después de revisar sus detalles.'
+      },
+      runs: {
+        title: 'Ejecuciones',
+        body: 'Las ejecuciones muestran historial y estado en vivo de tareas de plugins.'
+      },
+      runsList: {
+        title: 'Lista de ejecuciones',
+        body: 'Selecciona una ejecución a la izquierda o actualiza para sincronizar registros recientes.'
+      },
+      runsDetail: {
+        title: 'Detalle de ejecución',
+        body: 'El panel muestra fase, progreso, errores y exportaciones; cancelar solo aparece si se puede cancelar.'
+      },
+      logs: {
+        title: 'Logs del servidor',
+        body: 'Los logs del servidor ayudan a revisar salida y errores del servicio de plugins.'
+      },
+      logToolbar: {
+        title: 'Filtros de logs',
+        body: 'Filtra por nivel, palabra clave y líneas, o cambia el desplazamiento automático.'
+      },
+      logList: {
+        title: 'Lista de logs',
+        body: 'Los logs muestran hora, origen, nivel y mensaje para depurar problemas de plugins.'
+      }
+    }
+  }
+}

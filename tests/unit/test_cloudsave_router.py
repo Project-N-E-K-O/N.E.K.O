@@ -2,10 +2,9 @@ import asyncio
 import importlib
 import sys
 import json
+import re
 import shutil
-import threading
 from pathlib import Path
-from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -18,11 +17,10 @@ from main_routers.shared_state import init_shared_state
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
     """See tests/unit/test_character_memory_regression.py for rationale."""
-    from main_server import RoleState
+    from main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
-            sync_message_queue=Queue(),
-            sync_shutdown_event=threading.Event(),
+            sync_message_queue=_SyncMessageQueue(),
             websocket_lock=asyncio.Lock(),
             session_manager=session_manager,
         )
@@ -49,9 +47,14 @@ def _make_config_manager(tmp_root: Path):
         ConfigManager,
         "get_legacy_app_root_candidates",
         return_value=[],
+    ), patch.object(
+        ConfigManager,
+        "_get_standard_data_directory_candidates",
+        return_value=[tmp_root],
     ):
         config_manager = ConfigManager("N.E.K.O")
     config_manager.get_legacy_app_root_candidates = lambda: []
+    config_manager._get_standard_data_directory_candidates = lambda: [tmp_root]
     return config_manager
 
 
@@ -92,6 +95,12 @@ class _DummyRequest:
         if self._json_exception is not None:
             raise self._json_exception
         return self.payload
+
+
+def _assert_localized_error_payload(payload: dict, expected_key: str):
+    assert payload["message_key"] == expected_key
+    assert isinstance(payload.get("message_params"), dict)
+    assert not re.search(r"[\u4e00-\u9fff]", payload.get("message", ""))
 
 
 @pytest.mark.unit
@@ -428,6 +437,7 @@ async def test_cloudsave_router_upload_download_and_blocking_paths():
             blocked_payload = json.loads(blocked.body)
             assert blocked.status_code == 409
             assert blocked_payload["code"] == "ACTIVE_SESSION_BLOCKED"
+            _assert_localized_error_payload(blocked_payload, "cloudsave.error.activeSessionBlocked")
 
             init_shared_state(
                 role_state={},
@@ -514,6 +524,7 @@ async def test_cloudsave_router_handles_not_found_and_release_failures():
             release_failed_payload = json.loads(release_failed.body)
             assert release_failed.status_code == 503
             assert release_failed_payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+            _assert_localized_error_payload(release_failed_payload, "cloudsave.error.memoryServerReleaseFailed")
 
 
 @pytest.mark.unit
@@ -552,6 +563,8 @@ async def test_cloudsave_router_upload_rejects_invalid_overwrite_and_invalid_jso
             invalid_parameter_payload = json.loads(invalid_parameter.body)
             assert invalid_parameter.status_code == 400
             assert invalid_parameter_payload["code"] == "INVALID_PARAMETER"
+            _assert_localized_error_payload(invalid_parameter_payload, "cloudsave.error.invalidBooleanParameter")
+            assert invalid_parameter_payload["message_params"] == {"parameter": "overwrite"}
 
             invalid_json = await cloudsave_router_module.post_cloudsave_character_upload(
                 "小满",
@@ -560,6 +573,7 @@ async def test_cloudsave_router_upload_rejects_invalid_overwrite_and_invalid_jso
             invalid_json_payload = json.loads(invalid_json.body)
             assert invalid_json.status_code == 400
             assert invalid_json_payload["code"] == "INVALID_JSON_BODY"
+            _assert_localized_error_payload(invalid_json_payload, "cloudsave.error.invalidJsonBody")
 
 
 @pytest.mark.unit
@@ -598,6 +612,8 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
             invalid_overwrite_payload = json.loads(invalid_overwrite.body)
             assert invalid_overwrite.status_code == 400
             assert invalid_overwrite_payload["code"] == "INVALID_PARAMETER"
+            _assert_localized_error_payload(invalid_overwrite_payload, "cloudsave.error.invalidBooleanParameter")
+            assert invalid_overwrite_payload["message_params"] == {"parameter": "overwrite"}
 
             invalid_backup = await cloudsave_router_module.post_cloudsave_character_download(
                 "小满",
@@ -606,6 +622,8 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
             invalid_backup_payload = json.loads(invalid_backup.body)
             assert invalid_backup.status_code == 400
             assert invalid_backup_payload["code"] == "INVALID_PARAMETER"
+            _assert_localized_error_payload(invalid_backup_payload, "cloudsave.error.invalidBooleanParameter")
+            assert invalid_backup_payload["message_params"] == {"parameter": "backup_before_overwrite"}
 
             invalid_json = await cloudsave_router_module.post_cloudsave_character_download(
                 "小满",
@@ -614,6 +632,7 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
             invalid_json_payload = json.loads(invalid_json.body)
             assert invalid_json.status_code == 400
             assert invalid_json_payload["code"] == "INVALID_JSON_BODY"
+            _assert_localized_error_payload(invalid_json_payload, "cloudsave.error.invalidJsonBody")
 
 
 @pytest.mark.unit
@@ -836,6 +855,7 @@ async def test_cloudsave_router_blocks_mutations_when_provider_is_unavailable():
             upload_payload = json.loads(upload.body)
             assert upload.status_code == 503
             assert upload_payload["code"] == "CLOUDSAVE_PROVIDER_UNAVAILABLE"
+            _assert_localized_error_payload(upload_payload, "cloudsave.error.providerUnavailable")
 
             download = await cloudsave_router_module.post_cloudsave_character_download(
                 "小满",
@@ -844,6 +864,7 @@ async def test_cloudsave_router_blocks_mutations_when_provider_is_unavailable():
             download_payload = json.loads(download.body)
             assert download.status_code == 503
             assert download_payload["code"] == "CLOUDSAVE_PROVIDER_UNAVAILABLE"
+            _assert_localized_error_payload(download_payload, "cloudsave.error.providerUnavailable")
 
 
 @pytest.mark.unit
@@ -975,6 +996,7 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             failed_payload = json.loads(failed.body)
             assert failed.status_code == 500
             assert failed_payload["code"] == "LOCAL_RELOAD_FAILED_ROLLED_BACK"
+            _assert_localized_error_payload(failed_payload, "cloudsave.error.localReloadFailedRolledBack")
             assert failed_payload["rolled_back"] is True
             assert target_cm.load_characters() == original_characters
             assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
@@ -1168,6 +1190,7 @@ async def test_download_active_session_no_force():
         payload = json.loads(resp.body)
         assert resp.status_code == 409
         assert payload["code"] == "ACTIVE_SESSION_BLOCKED"
+        _assert_localized_error_payload(payload, "cloudsave.error.activeSessionBlocked")
         assert payload["can_force"] is True
 
 
@@ -1190,6 +1213,7 @@ async def test_download_active_session_force_bool_coercion():
         payload = json.loads(resp.body)
         assert resp.status_code == 409
         assert payload["code"] == "ACTIVE_SESSION_BLOCKED"
+        _assert_localized_error_payload(payload, "cloudsave.error.activeSessionBlocked")
 
 
 @pytest.mark.unit
@@ -1257,6 +1281,8 @@ async def test_download_active_session_force_terminate_fail():
         payload = json.loads(resp.body)
         assert resp.status_code == 503
         assert payload["code"] == "SESSION_TERMINATE_FAILED"
+        _assert_localized_error_payload(payload, "cloudsave.error.sessionTerminateFailed")
+        assert payload["message_params"] == {"message": "websocket error"}
         release_mock.assert_not_awaited()
 
 
@@ -1287,6 +1313,7 @@ async def test_download_active_session_force_memory_release_fail():
         payload = json.loads(resp.body)
         assert resp.status_code == 503
         assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+        _assert_localized_error_payload(payload, "cloudsave.error.memoryServerReleaseFailed")
         import_mock.assert_not_called()
 
 
@@ -1325,8 +1352,8 @@ async def test_download_no_active_session_force_ignored():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_download_after_force_is_active_false():
-    """After force terminate, mgr.is_active should be False."""
+async def test_download_after_force_triggers_disconnect():
+    """force=true should trigger the active session disconnect before download."""
     with TemporaryDirectory() as td:
         mgr = _make_active_session_mgr()
         cm = _setup_force_test_env(Path(td), active_mgr=mgr)
@@ -1357,7 +1384,6 @@ async def test_download_after_force_is_active_false():
                     _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
                 )
 
-        # disconnected_by_server → cleanup → end_session sets is_active=False
         mgr.disconnected_by_server.assert_awaited_once()
 
 

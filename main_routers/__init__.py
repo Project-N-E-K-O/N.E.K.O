@@ -16,6 +16,7 @@ from . import memory_router
 from . import mmd_router
 from . import music_router
 from . import pages_router
+from . import storage_location_router
 from . import system_router
 from . import vrm_router
 from . import websocket_router
@@ -32,6 +33,7 @@ __all__ = [
     'mmd_router',
     'music_router',
     'pages_router',
+    'storage_location_router',
     'system_router',
     'vrm_router',
     'websocket_router',

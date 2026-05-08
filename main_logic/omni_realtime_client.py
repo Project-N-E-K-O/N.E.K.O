@@ -9,9 +9,22 @@ import wave
 import numpy as np
 from pathlib import Path
 
-from typing import Optional, Callable, Dict, Any, Awaitable
+from typing import Optional, Callable, Dict, Any, Awaitable, List
 from enum import Enum
-from config import NATIVE_IMAGE_MIN_INTERVAL, IMAGE_IDLE_RATE_MULTIPLIER
+from main_logic.tool_calling import (
+    OnToolCallCallback,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    parse_arguments_json,
+)
+from config import (
+    NATIVE_IMAGE_MIN_INTERVAL,
+    IMAGE_IDLE_RATE_MULTIPLIER,
+    OMNI_RECENT_RESPONSES_MAX,
+    OMNI_WS_FRAME_LIMIT_BYTES,
+    VISION_ANALYSIS_MAX_TOKENS,
+)
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.file_utils import atomic_write_json
@@ -194,7 +207,10 @@ class OmniRealtimeClient:
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
-        api_type: Optional[str] = None
+        api_type: Optional[str] = None,
+        on_tool_call: Optional[OnToolCallCallback] = None,
+        tool_definitions: Optional[List[ToolDefinition]] = None,
+        livestream_mode: bool = False,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -230,6 +246,17 @@ class OmniRealtimeClient:
         self._audio_in_buffer = False
         self._skip_until_next_response = False
         self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
+        self._audio_delta_total = 0  # monotonic diagnostic across responses
+        self._last_audio_delta_time = 0.0
+        self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
+        self._last_input_audio_committed_time = 0.0
+        self._response_created_total = 0  # diagnostic: response.created events observed
+        self._last_response_created_time = 0.0
+        self._response_done_total = 0  # diagnostic: response.done events observed
+        self._last_response_done_time = 0.0
+        self._last_response_transcript = ""
+        self._speech_started_total = 0  # diagnostic: server VAD start events observed
+        self._speech_stopped_total = 0  # diagnostic: server VAD stop events observed
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -243,8 +270,12 @@ class OmniRealtimeClient:
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
         self._last_speech_time = None
         self._api_type = api_type or ""
-        # 只在 GLM 和 free 时启用静默超时
-        self._enable_silence_timeout = self._api_type.lower() in ['glm', 'free']
+        self._livestream_mode = bool(livestream_mode)
+        # 只在 GLM 和 free 时启用静默超时；livestream 模式（主播长会话）整路跳过
+        self._enable_silence_timeout = (
+            self._api_type.lower() in ['glm', 'free']
+            and not self._livestream_mode
+        )
         self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
         self._silence_check_task = None
         self._silence_timeout_triggered = False
@@ -272,7 +303,7 @@ class OmniRealtimeClient:
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
         self._repetition_threshold = 0.8  # 相似度阈值
-        self._max_recent_responses = 3  # 最多存储的回复数
+        self._max_recent_responses = OMNI_RECENT_RESPONSES_MAX  # 最多存储的回复数
         self._current_response_transcript = ""  # 当前回复的转录文本
         
         # Backpressure control - 防止503过载错误
@@ -356,12 +387,124 @@ class OmniRealtimeClient:
         self._gemini_current_transcript = ""  # Current response transcript for Gemini
         self._gemini_user_transcript = ""  # Accumulated user input transcript
 
+        # ── Tool calling state ────────────────────────────────────────
+        # ``_tool_definitions`` is the canonical list (ToolDefinition);
+        # the wire-format snapshots are rebuilt from it on each connect/
+        # update_session so callers can mutate the list at any time.
+        self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
+        self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
+        # Provider behaviour matrix:
+        #   gpt   → flat schema, response.done has output[].type=function_call
+        #   glm   → flat schema, response.function_call_arguments.done event
+        #           (no call_id — synthesize from response_id+output_index)
+        #   step  → nested schema, response.function_call_arguments.done event
+        #   free  (lanlan.tech proxies StepFun) → same as step. lanlan.app
+        #          proxies Vertex Live and is NOT plumbed yet (server side
+        #          strips tools); see TODO in core.py.
+        #   qwen  → no custom tool calling per Aliyun docs (only enable_search)
+        #   gemini → genai SDK config.tools, response.tool_call.function_calls
+        # The provider-side flags below let event handlers cheaply route.
+        self._supports_tools_wire = self._api_type.lower() in ('gpt', 'glm', 'qwen', 'step', 'free', 'gemini')
+        # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments
+        # keyed by call_id. cleared on response.done.
+        self._inflight_tool_args: Dict[str, Dict[str, Any]] = {}
+        # GLM: track response_id+output_index → synthesized call_id since
+        # GLM's function_call_arguments.done lacks an explicit call_id field.
+        self._glm_tool_index_to_id: Dict[str, str] = {}
+
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    # ------------------------------------------------------------------
+    # Tool calling configuration
+    # ------------------------------------------------------------------
+
+    def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
+        """Replace the active tool list. Takes effect the next time the
+        client builds its session config (next ``connect`` call). For an
+        already-connected session, callers can also call
+        ``apply_tools_to_session`` to push the new list mid-conversation
+        (only providers whose protocol allows mid-session tool updates
+        will honour it; OpenAI Realtime and Step accept ``session.update``
+        with new ``tools``)."""
+        self._tool_definitions = list(tool_definitions or [])
+
+    def set_tool_call_handler(self, handler: Optional[OnToolCallCallback]) -> None:
+        self.on_tool_call = handler
+
+    def has_tools(self) -> bool:
+        return bool(self._tool_definitions) and self.on_tool_call is not None
+
+    def _tools_for_openai_realtime(self) -> List[Dict[str, Any]]:
+        """OpenAI Realtime / GLM Realtime schema — flat (type/name/
+        description/parameters at the same level)."""
+        return [t.to_openai_realtime() for t in self._tool_definitions] if self.has_tools() else []
+
+    def _tools_for_step(self) -> List[Dict[str, Any]]:
+        """StepFun Realtime schema — nested under ``function``."""
+        return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
+
+    def _tools_for_qwen(self) -> List[Dict[str, Any]]:
+        """Qwen-Omni-Realtime schema — nested under ``function``，与
+        StepFun 同形（参考 Aliyun client-events 文档示例）。"""
+        return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
+
+    def _tools_for_gemini_live(self) -> List[Any]:
+        """Gemini Live SDK ``tools`` config — list of ``types.Tool``.
+        Returns ``[]`` if no tools so caller can decide to keep the
+        existing google_search Tool intact."""
+        if not self.has_tools() or types is None:
+            return []
+        decls = [t.to_gemini_function_declaration() for t in self._tool_definitions]
+        return [types.Tool(function_declarations=decls)]
+
+    async def apply_tools_to_session(self) -> None:
+        """Push the current tools list to the connected session
+        mid-conversation. Caller is responsible for calling this only
+        after the session is connected."""
+        if not self.ws and not self._gemini_session:
+            return
+        if self._is_gemini:
+            # Gemini Live API does not support session.update mid-session;
+            # tool list is fixed at connect time. Log + ignore.
+            logger.info("apply_tools_to_session: Gemini Live does not support mid-session tools update — ignoring")
+            return
+        api = self._api_type.lower()
+        if api == 'step' or api == 'free':
+            # StepFun / 自由路 keep the built-in web_search tool alongside
+            # any custom tools — server expects the full list each update.
+            tools_payload: List[Dict[str, Any]] = [
+                {"type": "web_search",
+                 "function": {"description": "这个web_search用来搜索互联网的信息"}}
+            ]
+            tools_payload.extend(self._tools_for_step())
+            await self.update_session({"tools": tools_payload})
+        elif api == 'gpt':
+            payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
+            if self.has_tools():
+                payload["tool_choice"] = "auto"
+            await self.update_session(payload)
+        elif api == 'glm':
+            # GLM 文档要求："ServerVAD 时更新 tools 需同时传入 turn_detection"。
+            # 此方法的调用前提是已 connect()，连接时已把 turn_detection 设成
+            # server_vad —— 这里复发同样的值即可，免得服务端 reset 成默认。
+            await self.update_session({
+                "tools": self._tools_for_openai_realtime(),
+                "turn_detection": {"type": "server_vad"},
+            })
+        elif api == 'qwen':
+            # Qwen-Omni-Realtime: tools 与 enable_search 互斥；当我们
+            # 注册了自定义工具，强制关掉 enable_search 防止 server 拒绝。
+            qwen_payload: Dict[str, Any] = {"tools": self._tools_for_qwen()}
+            if self.has_tools():
+                qwen_payload["enable_search"] = False
+            await self.update_session(qwen_payload)
+        else:
+            logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
@@ -482,7 +625,11 @@ class OmniRealtimeClient:
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
-        
+        # Validate turn_detection_mode BEFORE any side effect (websockets.connect,
+        # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
+        if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
+            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -524,117 +671,179 @@ class OmniRealtimeClient:
         if self._enable_silence_timeout:
             self._silence_check_task = asyncio.create_task(self._check_silence_timeout())
         else:
-            logger.info(f"静默超时检测已禁用（API类型: {self._api_type}），不会自动关闭会话")
+            reason = "livestream模式" if self._livestream_mode else f"API类型: {self._api_type}"
+            logger.info(f"静默超时检测已禁用（{reason}），不会自动关闭会话")
 
         # Set up default session configuration
-        if self.turn_detection_mode == TurnDetectionMode.MANUAL:
-            raise NotImplementedError("Manual turn detection is not supported")
-        elif self.turn_detection_mode == TurnDetectionMode.SERVER_VAD:
-            self._modalities = ["text", "audio"] if native_audio else ["text"]
-            if 'glm' in self._model_lower:
-                await self.update_session({
-                    "instructions": instructions,
-                    "modalities": self._modalities ,
-                    "voice": self.voice if self.voice else "tongtong",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm",
-                    "turn_detection": {
-                        "type": "server_vad",
-                    },
-                    "input_audio_noise_reduction": {
-                        "type": "far_field",
-                    },
-                    "beta_fields":{
-                        "chat_mode": "video_passive",
-                        "auto_search": True,
-                    },
-                    "temperature": 1.0
-                })
-            elif "qwen" in self._model_lower:
-                await self.update_session({
-                    "instructions": instructions,
-                    "modalities": self._modalities ,
-                    "voice": self.voice if self.voice else "Momo",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "input_audio_transcription": {
-                        "model": "gummy-realtime-v1"
-                    },
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.55,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 650
-                    },
-                    "repetition_penalty": 1.2,
-                    "temperature": 0.7,
-                    # "enable_search": True,
-                    # "search_options": {'enable_source': True}
-                })
-            elif "gpt" in self._model_lower:
-                await self.update_session({
-                    "type": "realtime",
-                    "model": self.model,
-                    "instructions": instructions,
-                    "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
-                    "audio": {
-                        "input": {
-                            "transcription": {"model": "gpt-4o-mini-transcribe"},
-                            "turn_detection": { "type": "semantic_vad",
-                                "eagerness": "auto",
-                                "create_response": True,
-                                "interrupt_response": True 
-                            },
+        is_manual = self.turn_detection_mode == TurnDetectionMode.MANUAL
+        # MANUAL mode: every per-provider session.update below sends
+        # ``turn_detection: null``, so the provider will NOT emit
+        # speech_started / speech_stopped events. _has_server_vad was
+        # initialised in __init__ from provider/model heuristics
+        # (defaults to True for Qwen/GLM/GPT/Step/lanlan.tech-free), but
+        # those events won't arrive in MANUAL — so downstream branches in
+        # stream_audio() and _check_silence_timeout() must take the
+        # client-VAD path, same as Gemini / lanlan.app-free. Override the
+        # flag here uniformly across all providers; the Gemini connect
+        # path is unaffected because __init__ already set this to False
+        # for ``_is_gemini`` clients.
+        if is_manual:
+            self._has_server_vad = False
+        self._modalities = ["text", "audio"] if native_audio else ["text"]
+
+        if 'glm' in self._model_lower:
+            # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
+            # Best-effort — provider may reject; if so we degrade to local-suppression-only.
+            glm_session = {
+                "instructions": instructions,
+                "modalities": self._modalities ,
+                "voice": self.voice if self.voice else "tongtong",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad",
+                },
+                "input_audio_noise_reduction": {
+                    "type": "far_field",
+                },
+                "beta_fields":{
+                    "chat_mode": "video_passive",
+                    "auto_search": True,
+                },
+                "temperature": 1.0
+            }
+            # GLM Realtime: tools only honoured in audio mode per docs.
+            # Use the flat (OpenAI-Realtime-style) schema GLM expects.
+            if self.has_tools() and 'audio' in self._modalities:
+                glm_session["tools"] = self._tools_for_openai_realtime()
+            await self.update_session(glm_session)
+        elif "qwen" in self._model_lower:
+            qwen_session: Dict[str, Any] = {
+                "instructions": instructions,
+                "modalities": self._modalities ,
+                "voice": self.voice if self.voice else "Momo",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {
+                    "model": "gummy-realtime-v1"
+                },
+                "turn_detection": None if is_manual else {
+                    # TODO: 未来需要cover更多型号
+                    "type": "semantic_vad" if "3.5" in self._model_lower else "server_vad",
+                    "threshold": 0.55,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 600
+                },
+                "repetition_penalty": 1.2,
+                "temperature": 0.7,
+                # "enable_search": True,
+                # "search_options": {'enable_source': True}
+            }
+            # Qwen-Omni-Realtime 自 2026 起支持 tools（嵌套 function 形，
+            # 同 StepFun）。重要约束：tools 与 enable_search 互斥——
+            # 我们注册了自定义工具时强制 enable_search=False，避免
+            # session.update 被服务端拒绝。文档参见 Aliyun client-events
+            # 章节 "工具调用（tools）和联网搜索（enable_search）不兼容"。
+            if self.has_tools():
+                qwen_session["tools"] = self._tools_for_qwen()
+                qwen_session["enable_search"] = False
+            await self.update_session(qwen_session)
+        elif "gpt" in self._model_lower:
+            gpt_session = {
+                "type": "realtime",
+                "model": self.model,
+                "instructions": instructions,
+                "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
+                "audio": {
+                    "input": {
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                        "turn_detection": None if is_manual else {
+                            "type": "semantic_vad",
+                            "eagerness": "auto",
+                            "create_response": True,
+                            "interrupt_response": True
                         },
-                        "output": {
-                            "voice": self.voice if self.voice else "marin",
-                            "speed": 1.0
-                        }
+                    },
+                    "output": {
+                        "voice": self.voice if self.voice else "marin",
+                        "speed": 1.0
                     }
-                })
-            elif "step" in self._model_lower:
-                await self.update_session({
-                    "instructions": instructions,
-                    "modalities": ['text', 'audio'], # Step API只支持这一个模式
-                    "voice": self.voice if self.voice else "qingchunshaonv",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "turn_detection": {
-                        "type": "server_vad"
-                    },
-                    "tools": [
-                        {
-                            "type": "web_search",# 固定值
-                            "function": {
-                                "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
-                            }
-                        }
-                    ]
-                })
-            elif "free" in self._model_lower:
-                await self.update_session({
-                    "instructions": instructions,
-                    "modalities": ['text', 'audio'], # Step API只支持这一个模式
-                    "voice": self.voice if self.voice else "qingchunshaonv",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "turn_detection": {
-                        "type": "server_vad"
-                    },
-                    "tools": [
-                        {
-                            "type": "web_search",# 固定值
-                            "function": {
-                                "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
-                            }
-                        }
-                    ]
-                })
-            else:
-                raise ValueError(f"Invalid model: {self.model}")
-            self.instructions = instructions
+                }
+            }
+            if self.has_tools():
+                gpt_session["tools"] = self._tools_for_openai_realtime()
+                gpt_session["tool_choice"] = "auto"
+            await self.update_session(gpt_session)
+        elif "step" in self._model_lower:
+            step_session = {
+                "instructions": instructions,
+                "modalities": ['text', 'audio'], # Step API只支持这一个模式
+                "voice": self.voice if self.voice else "qingchunshaonv",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad"
+                },
+            }
+            # Always keep the built-in web_search; append custom tools
+            # (StepFun supports both type:"web_search" and type:"function"
+            # in the same array — see official docs).
+            step_tools: List[Dict[str, Any]] = [
+                {
+                    "type": "web_search",
+                    "function": {
+                        "description": "这个web_search用来搜索互联网的信息"
+                    }
+                }
+            ]
+            if self.has_tools():
+                step_tools.extend(self._tools_for_step())
+            step_session["tools"] = step_tools
+            await self.update_session(step_session)
+        elif "free" in self._model_lower:
+            # NOTE: lanlan.tech (China free) backs onto StepFun and
+            # supports the StepFun custom-function protocol — the
+            # server-side tool stripping the user mentioned will be
+            # lifted, after which our tools propagate naturally.
+            # lanlan.app (international free) backs onto Vertex AI
+            # Live; that path is currently TODO (no client→server
+            # tools propagation confirmed). Tools below match the
+            # StepFun shape and become a no-op on lanlan.app until
+            # the proxy supports them.
+            #
+            # MANUAL mode: both proxies receive ``turn_detection: null``
+            # via the StepFun-shape websocket session config. lanlan.tech
+            # (StepFun proxy) honours it natively; lanlan.app (Vertex
+            # Gemini proxy) translates the disabled-VAD intent on the
+            # server side, since the proxy already maps StepFun-shape
+            # client events to Vertex Live (see _has_server_vad gate
+            # at __init__ — lanlan.app+free is already treated as
+            # client-side VAD only).
+            free_session = {
+                "instructions": instructions,
+                "modalities": ['text', 'audio'],
+                "voice": self.voice if self.voice else "qingchunshaonv",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad"
+                },
+            }
+            free_tools: List[Dict[str, Any]] = [
+                {
+                    "type": "web_search",
+                    "function": {
+                        "description": "这个web_search用来搜索互联网的信息"
+                    }
+                }
+            ]
+            if self.has_tools():
+                free_tools.extend(self._tools_for_step())
+            free_session["tools"] = free_tools
+            await self.update_session(free_session)
         else:
-            raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+            raise ValueError(f"Invalid model: {self.model}")
+        self.instructions = instructions
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
@@ -650,12 +859,17 @@ class OmniRealtimeClient:
             # 创建 Gemini 客户端
             self._gemini_client = genai.Client(api_key=self.api_key, http_options={"api_version": "v1alpha"})
             
-            # 配置会话
+            # 配置会话。Gemini Live 接受多个 Tool 实例同时存在，
+            # 一个负责 google_search、一个负责自定义 function_declarations。
+            gemini_tools: List[Any] = [types.Tool(google_search=types.GoogleSearch())]
+            if self.has_tools():
+                gemini_tools.extend(self._tools_for_gemini_live())
+
             config = {
                 "response_modalities": ["AUDIO"],
                 "system_instruction": instructions,
                 "media_resolution": types.MediaResolution.MEDIA_RESOLUTION_LOW,
-                "tools": [types.Tool(google_search=types.GoogleSearch())],
+                "tools": gemini_tools,
                 "generation_config": {"temperature": 1.1},
                 "input_audio_transcription": {},
                 "output_audio_transcription": {},
@@ -665,6 +879,17 @@ class OmniRealtimeClient:
                     )
                 ),
             }
+
+            # MANUAL turn detection: disable Gemini's automatic activity
+            # detection so end-of-turn is signalled explicitly by the
+            # client (audio_stream_end / activity_end). SERVER_VAD path
+            # leaves automatic_activity_detection at SDK default (enabled).
+            if self.turn_detection_mode == TurnDetectionMode.MANUAL:
+                config["realtime_input_config"] = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    )
+                )
             
             # 建立 Live 连接 - connect() 返回 async context manager
             logger.info(f"Connecting to Gemini Live API with model: {self.model}")
@@ -692,7 +917,7 @@ class OmniRealtimeClient:
             raise
 
     # ── Frame-size helpers ──────────────────────────────────────────
-    _WS_FRAME_LIMIT = 250_000  # safe threshold below 256KB server cap
+    _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
 
     @staticmethod
     def _try_shrink_image_payload(event: dict, payload: str) -> Optional[str]:
@@ -813,7 +1038,7 @@ class OmniRealtimeClient:
                 # lower quality before dropping. PIL decode + JPEG re-encode
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
-                if len(payload) > 250000:
+                if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
@@ -847,6 +1072,19 @@ class OmniRealtimeClient:
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
+        # Mirror the chat-completion chokepoint: catch any unrendered
+        # {placeholder} before the system instruction (nested at provider-
+        # specific paths inside `config`) is shipped over the wire. See
+        # utils/llm_prompt_leak_check.py for rationale.
+        try:
+            from utils import llm_prompt_leak_check
+            llm_prompt_leak_check.check_dict_strings_for_leaks(
+                config, context="OmniRealtimeClient.update_session"
+            )
+        except AssertionError:
+            raise
+        except Exception:
+            pass
         event = {
             "type": "session.update",
             "session": config
@@ -953,7 +1191,7 @@ class OmniRealtimeClient:
         """Send audio data to Gemini Live API."""
         if not self._gemini_session:
             return
-        
+
         try:
             # 发送实时音频输入
             await self._gemini_session.send_realtime_input(
@@ -965,6 +1203,47 @@ class OmniRealtimeClient:
             if "closed" in str(e).lower():
                 self._fatal_error_occurred = True
 
+    async def signal_user_activity_end(self) -> None:
+        """Explicitly signal end-of-turn in MANUAL VAD mode.
+
+        With ``TurnDetectionMode.MANUAL`` the server-side VAD is
+        disabled, so the client owns turn boundaries and must emit a
+        provider-specific signal when the user stops speaking. Without
+        this, the model will never see a turn boundary and never
+        respond.
+
+        Per provider (MANUAL only — no-op in SERVER_VAD):
+        - Gemini Live: ``send_realtime_input(activity_end=ActivityEnd())``
+          (Google genai SDK ``LiveClientRealtimeInput`` docs:
+          "If automatic voice detection is disabled, the client must
+          send activity signals." ``audio_stream_end`` is NOT applicable
+          here — it's documented as "only when automatic activity
+          detection is enabled".)
+        - OpenAI / Qwen / GLM / Step / Free: ``input_audio_buffer.commit``
+          followed by ``response.create``.
+        """
+        if self.turn_detection_mode != TurnDetectionMode.MANUAL:
+            return
+        if self._fatal_error_occurred:
+            return
+        if self._is_gemini:
+            if not self._gemini_session:
+                return
+            if types is None:
+                logger.error("signal_user_activity_end: genai.types unavailable")
+                return
+            try:
+                await self._gemini_session.send_realtime_input(
+                    activity_end=types.ActivityEnd()
+                )
+            except Exception as e:
+                logger.error(f"Error sending activity_end to Gemini: {e}")
+                if "closed" in str(e).lower():
+                    self._fatal_error_occurred = True
+            return
+        await self.send_event({"type": "input_audio_buffer.commit"})
+        await self.send_event({"type": "response.create"})
+
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
         """Use VISION_MODEL to analyze image and return description."""
         try:
@@ -973,7 +1252,7 @@ class OmniRealtimeClient:
             
             description = await analyze_image_with_vision_model(
                 image_b64=image_b64,
-                max_tokens=500
+                max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
             
             if description:
@@ -1268,7 +1547,12 @@ class OmniRealtimeClient:
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
 
-    async def prompt_ephemeral(self, instruction: str = "", *, language: str = "zh") -> bool:
+    async def prompt_ephemeral(
+        self,
+        instruction: str = "",
+        *,
+        language: str = "zh",
+    ) -> bool:
         """Send a fire-and-forget audio nudge to trigger proactive AI speech.
 
         Injects a short WAV clip via ``input_audio_buffer.append`` so the
@@ -1479,6 +1763,80 @@ class OmniRealtimeClient:
             "type": "response.cancel"
         }
         await self.send_event(event)
+
+    # ------------------------------------------------------------------
+    # Tool calling — execution + result delivery
+    # ------------------------------------------------------------------
+
+    async def _execute_tool_call(self, call: ToolCall) -> ToolResult:
+        """Run the user-supplied ``on_tool_call`` callback and trap any
+        exception so we still return a structured ``ToolResult`` the
+        provider can ingest (model usually recovers from a tool error
+        gracefully)."""
+        if self.on_tool_call is None:
+            msg = "no on_tool_call handler bound"
+            return ToolResult(
+                call_id=call.call_id, name=call.name,
+                output={"error": msg}, is_error=True, error_message=msg,
+            )
+        try:
+            return await self.on_tool_call(call)
+        except Exception as e:
+            logger.exception("OmniRealtimeClient: on_tool_call '%s' raised", call.name)
+            return ToolResult(
+                call_id=call.call_id, name=call.name,
+                output={"error": f"{type(e).__name__}: {e}"},
+                is_error=True, error_message=str(e),
+            )
+
+    async def _send_tool_result_openai_realtime(self, result: ToolResult) -> None:
+        """OpenAI Realtime / GLM Realtime / StepFun / Qwen / Free —
+        send tool result via ``conversation.item.create`` of type
+        ``function_call_output``, then ``response.create``.
+
+        ⚠️ Provider 差异：
+        - OpenAI gpt / StepFun / Qwen / Free：``call_id`` 必传，
+          server 用它把结果绑回对应的 function_call。
+        - GLM：文档示例显示 function_call_output **只有 output 字段**，
+          且服务端的 ``function_call_arguments.done`` 也不带 call_id。
+          我们在 done 事件处合成的 ``glm_<rid>_<idx>`` 仅用于 registry
+          内部追踪，绝对不能回传给 server，否则容易被拒。
+        """
+        item: Dict[str, Any] = {
+            "type": "function_call_output",
+            "output": result.output_as_json_string(),
+        }
+        api = self._api_type.lower()
+        if api == 'glm':
+            # GLM 协议不接受 call_id。哪怕我们内部合成了，也不外传。
+            pass
+        elif result.call_id:
+            item["call_id"] = result.call_id
+        await self.send_event({
+            "type": "conversation.item.create",
+            "item": item,
+        })
+        await self.send_event({"type": "response.create"})
+
+    async def _send_tool_result_gemini(self, results: List[ToolResult]) -> None:
+        """Gemini Live SDK — batch all tool results into one
+        ``send_tool_response`` call (matches the SDK's expectation when
+        the model issues multiple parallel function calls)."""
+        if not self._gemini_session or not results:
+            return
+        if types is None:  # SDK unavailable — should never hit here
+            return
+        function_responses = []
+        for r in results:
+            payload = r.output if isinstance(r.output, dict) else {"result": r.output}
+            kw = {"name": r.name, "response": payload}
+            if r.call_id:
+                kw["id"] = r.call_id
+            function_responses.append(types.FunctionResponse(**kw))
+        try:
+            await self._gemini_session.send_tool_response(function_responses=function_responses)
+        except Exception as e:
+            logger.error("Gemini send_tool_response failed: %s", e)
     
     async def _check_repetition(self, response: str) -> bool:
         """
@@ -1586,7 +1944,83 @@ class OmniRealtimeClient:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+                # ── Tool calling events ────────────────────────────
+                # Three providers, three flavours of the same idea:
+                #   - OpenAI Realtime (gpt): the canonical event is the
+                #     output_item.done with item.type=="function_call";
+                #     response.done also carries it inside output[].
+                #     Arguments are streamed as
+                #     response.function_call_arguments.delta and finalized
+                #     in response.function_call_arguments.done.
+                #   - StepFun (step / lanlan.tech free): same pattern,
+                #     function_call_arguments.delta + .done with call_id.
+                #   - GLM (glm): only function_call_arguments.done is
+                #     emitted (no delta), and there is no call_id field —
+                #     we synthesize one from response_id+output_index.
+                # All three return results via conversation.item.create
+                # of type function_call_output + response.create, handled
+                # by ``_send_tool_result_openai_realtime``.
+                elif event_type == "response.function_call_arguments.delta":
+                    call_id = event.get("call_id") or ""
+                    if call_id:
+                        slot = self._inflight_tool_args.setdefault(call_id, {
+                            "name": event.get("name") or "",
+                            "arguments": "",
+                        })
+                        if event.get("name"):
+                            slot["name"] = event["name"]
+                        delta = event.get("delta") or ""
+                        if delta:
+                            slot["arguments"] += delta
+                elif event_type == "response.function_call_arguments.done":
+                    name = event.get("name") or ""
+                    raw_args = event.get("arguments") or ""
+                    call_id = event.get("call_id") or ""
+                    if not call_id:
+                        # GLM path: synthesize a stable call_id so we have
+                        # something to thread through the registry.
+                        rid = event.get("response_id") or ""
+                        idx = event.get("output_index", 0)
+                        call_id = f"glm_{rid}_{idx}" if rid else f"glm_call_{int(time.time()*1000)}"
+                    # Prefer accumulated delta args if delta path was used.
+                    accumulated = self._inflight_tool_args.pop(call_id, None)
+                    if accumulated and accumulated.get("arguments"):
+                        raw_args = accumulated["arguments"]
+                        if not name:
+                            name = accumulated.get("name") or name
+                    if not name:
+                        logger.warning(
+                            "function_call_arguments.done with no name (call_id=%s) — skipping",
+                            call_id,
+                        )
+                    elif self.on_tool_call is None:
+                        logger.warning(
+                            "function_call '%s' but no on_tool_call handler bound — replying with error",
+                            name,
+                        )
+                        result = ToolResult(
+                            call_id=call_id, name=name,
+                            output={"error": "no on_tool_call handler"},
+                            is_error=True, error_message="no on_tool_call handler",
+                        )
+                        self._fire_task(self._send_tool_result_openai_realtime(result))
+                    else:
+                        # Execute and reply asynchronously — don't block the
+                        # message loop. handle_messages stays responsive to
+                        # other events while the tool runs.
+                        async def _run_tool(_name=name, _args=raw_args, _cid=call_id):
+                            call = ToolCall(
+                                name=_name,
+                                arguments=parse_arguments_json(_args),
+                                call_id=_cid,
+                                raw_arguments=_args,
+                            )
+                            result = await self._execute_tool_call(call)
+                            await self._send_tool_result_openai_realtime(result)
+                        self._fire_task(_run_tool())
                 elif event_type == "response.done":
+                    self._response_done_total += 1
+                    self._last_response_done_time = time.time()
                     # 解析实时 API 返回的 token 用量
                     try:
                         resp_data = event.get("response", {})
@@ -1610,10 +2044,12 @@ class OmniRealtimeClient:
                     self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
+                        self._last_response_transcript = self._current_response_transcript
                         print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
+                        self._last_response_transcript = ""
                         print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
                     self._audio_delta_count = 0
                     # 确保 buffer 被清空
@@ -1624,6 +2060,8 @@ class OmniRealtimeClient:
                     if self.on_response_done:
                         await self.on_response_done()
                 elif event_type == "response.created":
+                    self._response_created_total += 1
+                    self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
@@ -1633,8 +2071,13 @@ class OmniRealtimeClient:
                     self._current_response_transcript = ""  # 重置当前回复转录
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
+                elif event_type == "input_audio_buffer.committed":
+                    self._input_audio_committed_total += 1
+                    self._last_input_audio_committed_time = time.time()
+                    logger.info("input_audio_buffer.committed observed (total=%d)", self._input_audio_committed_total)
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
+                    self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._audio_in_buffer = True
                     # 重置静默计时器
@@ -1653,6 +2096,7 @@ class OmniRealtimeClient:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
                 elif event_type == "input_audio_buffer.speech_stopped":
+                    self._speech_stopped_total += 1
                     logger.info("Speech ended")
                     if self.on_new_message:
                         await self.on_new_message()
@@ -1685,6 +2129,8 @@ class OmniRealtimeClient:
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
                         self._audio_delta_count += 1
+                        self._audio_delta_total += 1
+                        self._last_audio_delta_time = time.time()
                         if self._audio_delta_count == 1:
                             logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
@@ -1870,9 +2316,46 @@ class OmniRealtimeClient:
     async def _process_gemini_response(self, response) -> None:
         """Process a single Gemini response event."""
         try:
-            # 处理工具调用
+            # 处理工具调用 —— 将 function_calls 中每一个调用都派给
+            # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
+            # （Gemini Live 期望批量回应，而不是逐个）。
             if hasattr(response, 'tool_call') and response.tool_call:
-                logger.info(f"Gemini tool call: {response.tool_call}")
+                fcs = list(getattr(response.tool_call, 'function_calls', []) or [])
+                if fcs:
+                    if self.on_tool_call is None:
+                        logger.warning(
+                            "Gemini tool_call received but no on_tool_call handler — replying with error"
+                        )
+                        results = [
+                            ToolResult(
+                                call_id=getattr(fc, 'id', '') or '',
+                                name=getattr(fc, 'name', '') or '',
+                                output={"error": "no on_tool_call handler"},
+                                is_error=True, error_message="no on_tool_call handler",
+                            )
+                            for fc in fcs
+                        ]
+                    else:
+                        results = []
+                        for fc in fcs:
+                            args = dict(getattr(fc, 'args', None) or {})
+                            call = ToolCall(
+                                name=getattr(fc, 'name', '') or '',
+                                arguments=args,
+                                call_id=getattr(fc, 'id', '') or '',
+                                raw_arguments=json.dumps(args, ensure_ascii=False),
+                            )
+                            results.append(await self._execute_tool_call(call))
+                    # Fire-and-forget — let the message loop continue. The
+                    # SDK's ``send_tool_response`` is the only way to feed
+                    # results back to a Live session.
+                    self._fire_task(self._send_tool_result_gemini(results))
+                # Tool call cancellation (if present in this SDK build) is
+                # surfaced as ``response.tool_call_cancellation`` — currently
+                # not actioned because we run tools fire-and-forget; if a
+                # cancellation arrives mid-flight the result we eventually
+                # send back will be ignored by the model. Acceptable for
+                # now; revisit if cancel-rate becomes a problem.
             
             # 检查是否有服务器内容
             if response.server_content:
@@ -1918,7 +2401,7 @@ class OmniRealtimeClient:
                             self._gemini_user_transcript = ""  # 清空累积
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
-                        if not self._skip_until_next_response and self.on_new_message:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                     else:
                         logger.debug(
@@ -1934,7 +2417,7 @@ class OmniRealtimeClient:
                     if hasattr(output_trans, 'text') and output_trans.text:
                         text = output_trans.text
                         self._gemini_current_transcript += text
-                        if not self._skip_until_next_response and self.on_text_delta:
+                        if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
                             self._is_first_text_chunk = False
@@ -1949,7 +2432,7 @@ class OmniRealtimeClient:
                         # 处理音频
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
-                                if not self._skip_until_next_response and self.on_audio_delta:
+                                if not self._skip_until_next_response and not self._interrupted and self.on_audio_delta:
                                     self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
 

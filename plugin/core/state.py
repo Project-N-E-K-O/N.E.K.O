@@ -276,7 +276,8 @@ class GlobalState:
 
         self._user_context_lock = threading.Lock()
         self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
-        self._user_context_default_maxlen: int = 200
+        from config import PLUGIN_USER_CONTEXT_MAX_ITEMS
+        self._user_context_default_maxlen: int = PLUGIN_USER_CONTEXT_MAX_ITEMS
         self._user_context_ttl_seconds: float = 60.0 * 60.0
 
         self._message_plane_rpc_lock = threading.Lock()

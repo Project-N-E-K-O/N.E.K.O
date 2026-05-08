@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import WebSocket
-from loguru import logger
+from plugin.logging_config import logger
 
 from plugin.core.state import state
 from plugin.runs.manager import ExportListResponse, RunRecord, get_run, list_export_for_run

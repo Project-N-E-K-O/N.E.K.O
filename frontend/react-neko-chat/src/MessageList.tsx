@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import MessageBubble from './MessageBubble';
 import { i18n } from './i18n';
 import { type ChatMessage, type MessageAction } from './message-schema';
@@ -18,7 +18,7 @@ function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
   if (current.author !== previous.author) return false;
   if (current.role === 'system') return false;
   if (typeof current.createdAt === 'number' && typeof previous.createdAt === 'number') {
-    if (Math.abs(current.createdAt - previous.createdAt) > 5 * 60 * 1000) {
+    if (Math.abs(current.createdAt - previous.createdAt) > 30 * 1000) {
       return false;
     }
   }
@@ -41,25 +41,14 @@ export default function MessageList({
     [messages],
   );
 
-  const isStreaming = displayMessages.some(m => m.status === 'streaming');
-
-  const scrollToBottom = useCallback(() => {
+  // Always instant scroll: behavior:'smooth' is silently broken in our Electron
+  // host (window.scrollTo / element.scrollTo with behavior:'smooth' is a no-op),
+  // which left the chat stuck at scrollTop=0 on mount and after each new message.
+  useEffect(() => {
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
-
-    if (isStreaming) {
-      container.scrollTop = container.scrollHeight;
-    } else {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: 'smooth',
-      });
-    }
-  }, [isStreaming]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [displayMessages, scrollToBottom]);
+    container.scrollTop = container.scrollHeight;
+  }, [displayMessages]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -71,6 +60,10 @@ export default function MessageList({
       }
     });
 
+    // 同时观察容器自身：galgame 模式开关 / 选项面板展开收起时
+    // .message-list 的 clientHeight 会被外层压缩，没有这一条最后一条消息
+    // 在面板长高的瞬间会被推出视口而不会自动跟着滚下来。
+    observer.observe(container);
     for (const child of container.children) {
       observer.observe(child);
     }

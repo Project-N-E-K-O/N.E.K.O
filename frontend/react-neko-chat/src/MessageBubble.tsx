@@ -36,6 +36,10 @@ function getRowClassName(message: ChatMessage) {
   });
 }
 
+function isGuideMessage(message: ChatMessage) {
+  return typeof message.id === 'string' && message.id.startsWith('yui-guide-');
+}
+
 function getAvatarClassName(message: ChatMessage) {
   return clsx('avatar', {
     'avatar-user': message.role === 'user',
@@ -56,7 +60,13 @@ function MessageBlockView({
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
   if (block.type === 'text') {
-    return <SmartTextBlock text={block.text} isStreaming={isStreaming} />;
+    return (
+      <SmartTextBlock
+        text={block.text}
+        isStreaming={isStreaming}
+        disableStreamingReveal={isGuideMessage(message)}
+      />
+    );
   }
 
   if (block.type === 'image') {
@@ -130,7 +140,8 @@ export default function MessageBubble({
   const bubbleClassName = getBubbleClassName(message);
   const rowClassName = getRowClassName(message);
   const showAvatar = message.role !== 'system' && !isGroupedWithPrevious;
-  const showMeta = message.role !== 'system';
+  const showMeta = message.role !== 'system' && !isGroupedWithPrevious;
+  const showFailed = message.role !== 'system' && message.status === 'failed';
 
   if (message.role === 'system') {
     return (
@@ -138,6 +149,7 @@ export default function MessageBubble({
         className={rowClassName}
         data-message-id={message.id}
         data-message-role={message.role}
+        data-guide-message={isGuideMessage(message) ? 'true' : undefined}
         data-message-sort-key={message.sortKey ?? ''}
       >
         <div className="system-chip">
@@ -165,6 +177,7 @@ export default function MessageBubble({
       data-message-id={message.id}
       data-message-role={message.role}
       data-message-status={message.status || ''}
+      data-guide-message={isGuideMessage(message) ? 'true' : undefined}
       data-message-sort-key={message.sortKey ?? ''}
     >
       {showAvatar ? (
@@ -178,11 +191,11 @@ export default function MessageBubble({
       )}
 
       <div className="message-stack">
-        {showMeta ? (
+        {(showMeta || showFailed) ? (
           <div className="message-meta">
-            <span className="message-author">{message.author}</span>
-            <span className="message-time">{message.time}</span>
-            {message.status === 'failed' ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
+            {showMeta ? <span className="message-author">{message.author}</span> : null}
+            {showMeta ? <span className="message-time">{message.time}</span> : null}
+            {showFailed ? <span className="message-delivery message-delivery-failed">{failedStatusLabel}</span> : null}
           </div>
         ) : null}
         <div className={bubbleClassName}>

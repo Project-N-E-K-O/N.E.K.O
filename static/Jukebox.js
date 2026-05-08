@@ -3960,7 +3960,7 @@ window.Jukebox = {
 
     const onMouseDown = (e) => {
       // 忽略所有交互元素
-      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-footer, .sam-content, .sam-checkbox')) return;
+      if (e.target.closest('button, input, a, select, textarea, .sam-close-btn, .sam-tab, .sam-content, .sam-checkbox, .sam-click-add')) return;
 
       e.preventDefault();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -5412,7 +5412,7 @@ window.Jukebox = {
       try {
         const catgirlName = window.lanlan_config?.catgirl_name;
         if (catgirlName) {
-          const charRes = await fetch('/api/characters/');
+          const charRes = await fetch('/api/characters');
           if (charRes.ok) {
             const charData = await charRes.json();
             idleUrl = charData?.['猫娘']?.[catgirlName]?.mmd_idle_animation;

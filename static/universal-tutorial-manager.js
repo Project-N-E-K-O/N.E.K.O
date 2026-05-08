@@ -9,6 +9,9 @@
 const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
+const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
+const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
+const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -19,6 +22,10 @@ function getTutorialManualIntentKeyForPage(pageKey) {
 }
 
 function logTutorialPromptFlow(step, details = {}) {
+    // 默认关闭高频引导流程日志，避免 heartbeat 等调试信息刷屏。
+    if (localStorage.getItem('neko_tutorial_prompt_flow_debug') !== '1') {
+        return;
+    }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
 }
 
@@ -59,6 +66,19 @@ class UniversalTutorialManager {
         this._modelManagerTutorialDebounceTimer = null;
         this._modelManagerBootstrapFallbackTimer = null;
         this._modelManagerReceivedModeEvent = false;
+        this.yuiGuideDirector = null;
+        this._yuiGuideHandoffToken = null;
+        this._yuiGuideLastSceneId = null;
+        this._yuiGuideLifecycleActive = false;
+        this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
+        this._tutorialEndHandled = false;
+        this._tutorialAvatarOverride = null;
+        this._tutorialAvatarOverridePromise = null;
+        this._teardownPromise = null;
+        this._tutorialViewportPlacementResizeHandler = null;
+        this._tutorialViewportPlacementResizeTimer = null;
+        this._isDestroyed = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -93,6 +113,576 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    getYuiGuideRegistry() {
+        try {
+            if (typeof window.getYuiGuideStepsRegistry === 'function') {
+                return window.getYuiGuideStepsRegistry() || null;
+            }
+        } catch (error) {
+            console.error('[Tutorial] 获取 Yui Guide 注册表失败:', error);
+        }
+
+        return window.YuiGuideStepsRegistry || null;
+    }
+
+    isYuiGuideAvailable() {
+        return !!this.getYuiGuideRegistry();
+    }
+
+    getYuiGuideHandoffApi() {
+        return window.YuiGuidePageHandoff || null;
+    }
+
+    getYuiGuidePageKey(page = this.currentPage) {
+        const path = window.location.pathname || '';
+        const normalizedPage = typeof page === 'string' ? page : '';
+
+        if (normalizedPage === 'settings' && path.includes('api_key')) {
+            return 'api_key';
+        }
+
+        if (
+            normalizedPage === 'plugin_dashboard' ||
+            path.includes('/api/agent/user_plugin/dashboard') ||
+            path === '/ui' ||
+            path.startsWith('/ui/')
+        ) {
+            return 'plugin_dashboard';
+        }
+
+        return normalizedPage;
+    }
+
+    getYuiGuidePageOrder(page = this.currentPage) {
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || !registry.sceneOrder) {
+            return [];
+        }
+
+        const pageKey = this.getYuiGuidePageKey(page);
+        const pageOrder = Array.isArray(registry.sceneOrder[pageKey]) ? registry.sceneOrder[pageKey] : [];
+        return pageOrder.slice();
+    }
+
+    getPendingYuiGuideResumeScene(page = this.currentPage) {
+        const token = this._yuiGuideHandoffToken;
+        if (!token) {
+            return null;
+        }
+
+        const resumeScene = typeof token.resume_scene === 'string'
+            ? token.resume_scene.trim()
+            : '';
+        if (!resumeScene) {
+            return null;
+        }
+
+        const guideStep = this.getYuiGuideStepDefinition(resumeScene);
+        if (!guideStep) {
+            console.warn('[Tutorial] Yui Guide handoff resume_scene 未注册:', resumeScene);
+            return null;
+        }
+
+        const expectedPage = this.getYuiGuidePageKey(page);
+        if (guideStep.page && guideStep.page !== expectedPage) {
+            console.warn('[Tutorial] Yui Guide handoff resume_scene 页面不匹配:', resumeScene, guideStep.page, expectedPage);
+            return null;
+        }
+
+        return resumeScene;
+    }
+
+    applyYuiGuideResumeScene(validSteps) {
+        if (!Array.isArray(validSteps) || validSteps.length === 0) {
+            return validSteps;
+        }
+
+        const pageKey = this.getYuiGuidePageKey();
+        if (!pageKey || pageKey === 'home') {
+            return validSteps;
+        }
+
+        const resumeSceneId = this.getPendingYuiGuideResumeScene(pageKey);
+        if (!resumeSceneId) {
+            return validSteps;
+        }
+
+        const resumeIndex = validSteps.findIndex(stepConfig => (
+            this.getYuiGuideSceneIdForStep(stepConfig) === resumeSceneId
+        ));
+
+        if (resumeIndex < 0) {
+            console.warn('[Tutorial] 当前页面步骤中未找到 handoff resume_scene，保留原始顺序:', pageKey, resumeSceneId);
+            return validSteps;
+        }
+
+        if (resumeIndex === 0) {
+            return validSteps;
+        }
+
+        console.log('[Tutorial] 根据 handoff resume_scene 恢复教程步骤:', pageKey, resumeSceneId, resumeIndex);
+        return validSteps.slice(resumeIndex);
+    }
+
+    getYuiGuideHandoffExpectedPages() {
+        const pageKey = this.getYuiGuidePageKey();
+
+        if (pageKey === 'api_key') {
+            return ['api_key', 'settings'];
+        }
+
+        if (pageKey === 'memory_browser') {
+            return ['memory_browser'];
+        }
+
+        if (pageKey === 'steam_workshop') {
+            return ['steam_workshop'];
+        }
+
+        if (pageKey === 'plugin_dashboard') {
+            return ['plugin_dashboard'];
+        }
+
+        return [];
+    }
+
+    async consumePendingYuiGuideHandoffToken() {
+        if (this._yuiGuideHandoffToken) {
+            return this._yuiGuideHandoffToken;
+        }
+
+        const handoffApi = this.getYuiGuideHandoffApi();
+        if (!handoffApi || typeof handoffApi.consumeHandoffToken !== 'function') {
+            return null;
+        }
+
+        const expectedPages = this.getYuiGuideHandoffExpectedPages();
+        if (!Array.isArray(expectedPages) || expectedPages.length === 0) {
+            return null;
+        }
+
+        for (const expectedPage of expectedPages) {
+            try {
+                const token = await handoffApi.consumeHandoffToken(expectedPage);
+                if (token) {
+                    this._yuiGuideHandoffToken = token;
+                    console.log('[Tutorial] 已消费 Yui Guide handoff token:', expectedPage, token);
+                    return token;
+                }
+            } catch (error) {
+                console.error('[Tutorial] 消费 Yui Guide handoff token 失败:', expectedPage, error);
+            }
+        }
+
+        return null;
+    }
+
+    isYuiGuideEnabledForPage(page = this.currentPage) {
+        const pageKey = this.getYuiGuidePageKey(page);
+        const pageOrder = this.getYuiGuidePageOrder(pageKey);
+        if (pageOrder.length === 0) {
+            return false;
+        }
+
+        if (pageKey === 'home') {
+            return true;
+        }
+
+        if (pageKey === 'plugin_dashboard') {
+            return false;
+        }
+
+        if (!this._yuiGuideHandoffToken) {
+            return false;
+        }
+
+        return pageOrder.length > 0;
+    }
+
+    getYuiGuideMappedSceneIds(validSteps = this.cachedValidSteps) {
+        if (!Array.isArray(validSteps) || validSteps.length === 0) {
+            return [];
+        }
+
+        const mappedSceneIds = new Set();
+        validSteps.forEach(stepConfig => {
+            const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+            if (sceneId) {
+                mappedSceneIds.add(sceneId);
+            }
+        });
+
+        return Array.from(mappedSceneIds);
+    }
+
+    getYuiGuideStepDefinition(stepId) {
+        if (!stepId) {
+            return null;
+        }
+
+        const registry = this.getYuiGuideRegistry();
+        if (!registry || typeof registry.getStep !== 'function') {
+            return null;
+        }
+
+        return registry.getStep(stepId) || null;
+    }
+
+    getYuiGuidePreludeSceneIds(page = this.currentPage, validSteps = this.cachedValidSteps) {
+        const pageOrder = this.getYuiGuidePageOrder(page);
+        const introSceneIds = pageOrder.filter(stepId => (
+            typeof stepId === 'string' &&
+            stepId.startsWith('intro_')
+        ));
+
+        if (this.getYuiGuidePageKey(page) === 'home' && this.isYuiGuideEnabledForPage(page)) {
+            return introSceneIds;
+        }
+
+        const mappedSceneIds = new Set(this.getYuiGuideMappedSceneIds(validSteps));
+
+        return introSceneIds.filter(stepId => !mappedSceneIds.has(stepId));
+    }
+
+    getYuiGuideSceneIdForStep(stepConfig) {
+        if (!stepConfig || typeof stepConfig !== 'object') {
+            return null;
+        }
+
+        const sceneId = typeof stepConfig.yuiGuideSceneId === 'string'
+            ? stepConfig.yuiGuideSceneId.trim()
+            : '';
+
+        if (!sceneId) {
+            return null;
+        }
+
+        const registry = this.getYuiGuideRegistry();
+        if (!registry) {
+            return sceneId;
+        }
+
+        if (typeof registry.hasStep === 'function' && !registry.hasStep(sceneId)) {
+            console.warn(`[Tutorial] Yui Guide 场景未注册: ${sceneId}`);
+            return null;
+        }
+
+        const guideStep = typeof registry.getStep === 'function' ? registry.getStep(sceneId) : null;
+        const expectedPage = this.getYuiGuidePageKey();
+        if (guideStep && guideStep.page && guideStep.page !== expectedPage) {
+            console.warn(`[Tutorial] Yui Guide 场景页面不匹配: ${sceneId} -> ${guideStep.page} (expected ${expectedPage})`);
+        }
+
+        return sceneId;
+    }
+
+    ensureYuiGuideDirector() {
+        if (this.yuiGuideDirector) {
+            return this.yuiGuideDirector;
+        }
+
+        if (!this.isYuiGuideEnabledForPage()) {
+            return null;
+        }
+
+        if (typeof window.createYuiGuideDirector !== 'function') {
+            return null;
+        }
+
+        try {
+            let homeInteractionApi = null;
+            if (typeof window.getYuiGuideHomeInteractionApi === 'function') {
+                try {
+                    homeInteractionApi = window.getYuiGuideHomeInteractionApi() || null;
+                } catch (error) {
+                    console.warn('[Tutorial] 获取首页交互 API 失败，改用兜底实现:', error);
+                }
+            }
+            if (!homeInteractionApi) {
+                homeInteractionApi = window.YuiGuideHomeInteractionApi || window.YuiGuidePageHandoff || null;
+            }
+
+            const director = window.createYuiGuideDirector({
+                tutorialManager: this,
+                page: this.getYuiGuidePageKey(),
+                registry: this.getYuiGuideRegistry(),
+                homeInteractionApi: homeInteractionApi
+            });
+
+            if (director && typeof director === 'object') {
+                this.yuiGuideDirector = director;
+                return director;
+            }
+
+            console.warn('[Tutorial] createYuiGuideDirector 返回了无效对象');
+        } catch (error) {
+            console.error('[Tutorial] 创建 Yui Guide Director 失败:', error);
+        }
+
+        return null;
+    }
+
+    dispatchYuiGuideEvent(name, detail = {}) {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        if (typeof window.dispatchEvent !== 'function' || typeof CustomEvent === 'undefined') {
+            return;
+        }
+
+        const payload = Object.assign({
+            currentPage: this.currentPage,
+            yuiGuidePage: this.getYuiGuidePageKey(),
+            tutorialManager: this,
+            timestamp: Date.now()
+        }, detail);
+
+        window.dispatchEvent(new CustomEvent(`neko:yui-guide:${name}`, {
+            detail: payload
+        }));
+    }
+
+    buildYuiGuideStepContext(stepConfig, stepIndex, source = 'tutorial') {
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+
+        return {
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            source: source,
+            sceneId: sceneId,
+            stepIndex: stepIndex,
+            totalSteps: Array.isArray(this.cachedValidSteps) ? this.cachedValidSteps.length : 0,
+            driverStep: stepConfig || null,
+            guideStep: sceneId ? this.getYuiGuideStepDefinition(sceneId) : null
+        };
+    }
+
+    callYuiGuideDirector(methodName, ...args) {
+        const director = this.ensureYuiGuideDirector();
+        if (!director || typeof director[methodName] !== 'function') {
+            return;
+        }
+
+        try {
+            const result = director[methodName](...args);
+            if (result && typeof result.then === 'function') {
+                Promise.resolve(result).catch(error => {
+                    console.error(`[Tutorial] Yui Guide Director.${methodName} 执行失败:`, error);
+                });
+            }
+        } catch (error) {
+            console.error(`[Tutorial] Yui Guide Director.${methodName} 调用失败:`, error);
+        }
+    }
+
+    notifyYuiGuidePreludeStart(validSteps) {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        this._yuiGuideLifecycleActive = true;
+        this._yuiGuideLastSceneId = null;
+
+        const detail = {
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            validSteps: Array.isArray(validSteps) ? validSteps : [],
+            preludeSceneIds: this.getYuiGuidePreludeSceneIds(this.currentPage, validSteps)
+        };
+
+        this.dispatchYuiGuideEvent('prelude-start', detail);
+        this.callYuiGuideDirector('startPrelude');
+    }
+
+    notifyYuiGuideStepEnter(stepConfig, stepIndex, source = 'step-change') {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig);
+        if (!sceneId || this._yuiGuideLastSceneId === sceneId) {
+            return;
+        }
+
+        const context = this.buildYuiGuideStepContext(stepConfig, stepIndex, source);
+        this.dispatchYuiGuideEvent('step-enter', context);
+        this.callYuiGuideDirector('enterStep', sceneId, context);
+        this._yuiGuideLastSceneId = sceneId;
+    }
+
+    notifyYuiGuideStepLeave(stepConfig, stepIndex, source = 'step-change') {
+        if (!this.isYuiGuideEnabledForPage()) {
+            return;
+        }
+
+        const sceneId = this.getYuiGuideSceneIdForStep(stepConfig) || this._yuiGuideLastSceneId;
+        if (!sceneId || this._yuiGuideLastSceneId !== sceneId) {
+            return;
+        }
+
+        const detail = {
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            source: source,
+            sceneId: sceneId,
+            stepIndex: stepIndex,
+            driverStep: stepConfig || null,
+            guideStep: this.getYuiGuideStepDefinition(sceneId)
+        };
+
+        this.dispatchYuiGuideEvent('step-leave', detail);
+        this.callYuiGuideDirector('leaveStep', sceneId);
+        this._yuiGuideLastSceneId = null;
+    }
+
+    notifyYuiGuideTutorialEnd(reason = 'destroy') {
+        const normalizedReason = this.normalizeTutorialEndReason(reason);
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+
+        if (!this.isYuiGuideEnabledForPage()) {
+            this.yuiGuideDirector = null;
+            this._yuiGuideLastSceneId = null;
+            this._yuiGuideLifecycleActive = false;
+            return;
+        }
+
+        if (!this._yuiGuideLifecycleActive && !this._yuiGuideLastSceneId && !this.yuiGuideDirector) {
+            return;
+        }
+
+        this.dispatchYuiGuideEvent('tutorial-end', {
+            page: this.getYuiGuidePageKey(),
+            runtimePage: this.currentPage,
+            reason: normalizedReason,
+            rawReason: rawReason
+        });
+        this.callYuiGuideDirector('destroy');
+        this.yuiGuideDirector = null;
+        this._yuiGuideLastSceneId = null;
+        this._yuiGuideLifecycleActive = false;
+        if (this.getYuiGuidePageKey() !== 'home') {
+            this._yuiGuideHandoffToken = null;
+        }
+    }
+
+    normalizeTutorialEndRawReason(reason) {
+        const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
+        return normalized || 'destroy';
+    }
+
+    normalizeTutorialEndReason(reason) {
+        const normalized = this.normalizeTutorialEndRawReason(reason);
+
+        if (normalized === 'complete') {
+            return 'complete';
+        }
+
+        if (normalized === 'skip' || normalized === 'escape' || normalized === 'angry_exit') {
+            return 'skip';
+        }
+
+        return 'destroy';
+    }
+
+    setTutorialEndReason(reason) {
+        if (this._tutorialEndRawReason) {
+            return this._tutorialEndReason || 'destroy';
+        }
+
+        const rawReason = this.normalizeTutorialEndRawReason(reason);
+        this._tutorialEndRawReason = rawReason;
+        this._tutorialEndReason = this.normalizeTutorialEndReason(rawReason);
+        return this._tutorialEndReason;
+    }
+
+    resolveTutorialEndMeta(finalSteps = this.cachedValidSteps || []) {
+        if (this._tutorialEndReason || this._tutorialEndRawReason) {
+            return {
+                reason: this._tutorialEndReason || 'destroy',
+                rawReason: this._tutorialEndRawReason || this._tutorialEndReason || 'destroy'
+            };
+        }
+
+        if (Array.isArray(finalSteps) && finalSteps.length > 0 && this.currentStep >= finalSteps.length - 1) {
+            return {
+                reason: 'complete',
+                rawReason: 'complete'
+            };
+        }
+
+        return {
+            reason: 'destroy',
+            rawReason: 'destroy'
+        };
+    }
+
+    requestTutorialDestroy(reason = 'destroy') {
+        this.setTutorialEndReason(reason);
+
+        if (this.driver) {
+            this.driver.destroy();
+            return;
+        }
+
+        this.onTutorialEnd();
+    }
+
+    async destroy(reason = 'destroy') {
+        this.setTutorialEndReason(reason);
+        this._isDestroyed = true;
+
+        if (this.driver) {
+            try {
+                this.driver.destroy();
+            } catch (error) {
+                console.warn('[Tutorial] 销毁 driver 失败:', error);
+            }
+            this.driver = null;
+        }
+
+        this.teardownModelManagerListeners();
+        this.clearTutorialLive2dViewportPlacementWatcher();
+        this.clearNextButtonGuard();
+
+        if (this._refreshTimers) {
+            this._refreshTimers.forEach(t => clearTimeout(t));
+            this._refreshTimers = [];
+        }
+
+        if (this._teardownTutorialUI) {
+            await this._teardownTutorialUI();
+        }
+    }
+
+    broadcastYuiGuideTerminationRequest(endMeta = {}) {
+        const yuiGuidePageKey = this.isYuiGuideEnabledForPage()
+            ? this.getYuiGuidePageKey()
+            : '';
+        if (!yuiGuidePageKey || yuiGuidePageKey === 'home') {
+            return;
+        }
+
+        const rawReason = this.normalizeTutorialEndRawReason(
+            endMeta.rawReason || endMeta.reason || 'destroy'
+        );
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_request_termination',
+                    sourcePage: yuiGuidePageKey,
+                    targetPage: 'home',
+                    reason: rawReason,
+                    tutorialReason: rawReason,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
+            }
+        }
     }
 
     /**
@@ -198,6 +788,747 @@ class UniversalTutorialManager {
         }
 
         return 'live2d';
+    }
+
+    tutorialNonEmptyString(value) {
+        if (value === undefined || value === null) {
+            return '';
+        }
+        const normalized = String(value).trim();
+        const lowered = normalized.toLowerCase();
+        if (!normalized || lowered === 'undefined' || lowered === 'null') {
+            return '';
+        }
+        return normalized;
+    }
+
+    tutorialReservedAvatar(config) {
+        return (config && config._reserved && config._reserved.avatar) || {};
+    }
+
+    tutorialAvatarValue(config, path, legacyKeys = []) {
+        const avatar = this.tutorialReservedAvatar(config);
+        let current = avatar;
+        for (let index = 0; index < path.length; index += 1) {
+            if (!current || typeof current !== 'object') {
+                current = undefined;
+                break;
+            }
+            current = current[path[index]];
+        }
+        if (current !== undefined && current !== null) {
+            return current;
+        }
+        for (let index = 0; index < legacyKeys.length; index += 1) {
+            const legacyValue = config && config[legacyKeys[index]];
+            if (legacyValue !== undefined && legacyValue !== null) {
+                return legacyValue;
+            }
+        }
+        return undefined;
+    }
+
+    inferTutorialLive2dModelName(modelPath) {
+        const value = this.tutorialNonEmptyString(modelPath);
+        if (!value) {
+            return '';
+        }
+        const normalized = value.split('?')[0].split('#')[0].replace(/\\/g, '/');
+        const segments = normalized.split('/').filter(Boolean);
+        const filename = segments[segments.length - 1] || '';
+        if (/\.model3\.json$/i.test(filename)) {
+            return segments.length >= 2
+                ? decodeURIComponent(segments[segments.length - 2])
+                : decodeURIComponent(filename.replace(/\.model3\.json$/i, ''));
+        }
+        return value;
+    }
+
+    buildTutorialModelSavePayload(config) {
+        const rawModelType = this.tutorialNonEmptyString(
+            this.tutorialAvatarValue(config, ['model_type'], ['model_type'])
+        ) || 'live2d';
+        const modelType = rawModelType === 'vrm' ? 'live3d' : rawModelType;
+        const payload = {
+            model_type: modelType
+        };
+
+        if (modelType === 'live3d') {
+            const live3dSubType = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['live3d_sub_type'], ['live3d_sub_type'])
+            ).toLowerCase();
+            const vrmPath = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['vrm', 'model_path'], ['vrm'])
+            );
+            const mmdPath = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['mmd', 'model_path'], ['mmd'])
+            );
+            const useMmd = live3dSubType === 'mmd' || (!!mmdPath && !vrmPath);
+
+            if (useMmd) {
+                payload.mmd = mmdPath;
+                const mmdAnimation = this.tutorialAvatarValue(config, ['mmd', 'animation'], ['mmd_animation']);
+                const mmdIdleAnimation = this.tutorialAvatarValue(config, ['mmd', 'idle_animation'], ['mmd_idle_animation', 'mmd_idle_animations']);
+                if (mmdAnimation !== undefined) payload.mmd_animation = mmdAnimation || '';
+                if (mmdIdleAnimation !== undefined) payload.mmd_idle_animation = mmdIdleAnimation || [];
+            } else {
+                payload.vrm = vrmPath;
+                const vrmAnimation = this.tutorialAvatarValue(config, ['vrm', 'animation'], ['vrm_animation']);
+                const vrmIdleAnimation = this.tutorialAvatarValue(config, ['vrm', 'idle_animation'], ['idleAnimation', 'idleAnimations']);
+                if (vrmAnimation !== undefined) payload.vrm_animation = vrmAnimation || '';
+                if (vrmIdleAnimation !== undefined) payload.idle_animation = vrmIdleAnimation || [];
+            }
+            const itemId = this.tutorialNonEmptyString(
+                this.tutorialAvatarValue(config, ['asset_source_id'], ['item_id', 'live2d_item_id'])
+            );
+            if (itemId) {
+                payload.item_id = itemId;
+            }
+            return payload;
+        }
+
+        const live2dPath = this.tutorialAvatarValue(config, ['live2d', 'model_path'], ['live2d']);
+        payload.model_type = 'live2d';
+        payload.live2d = this.inferTutorialLive2dModelName(live2dPath) || TUTORIAL_YUI_LIVE2D_MODEL_NAME;
+
+        const itemId = this.tutorialNonEmptyString(
+            this.tutorialAvatarValue(config, ['asset_source_id'], ['item_id', 'live2d_item_id'])
+        );
+        if (itemId) {
+            payload.item_id = itemId;
+            payload.live2d_item_id = itemId;
+        }
+
+        const live2dIdleAnimation = this.tutorialAvatarValue(
+            config,
+            ['live2d', 'idle_animation'],
+            ['live2d_idle_animation']
+        );
+        if (live2dIdleAnimation !== undefined) {
+            payload.live2d_idle_animation = live2dIdleAnimation || '';
+        }
+
+        return payload;
+    }
+
+    async fetchTutorialCharacters() {
+        const response = await fetch('/api/characters', {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            throw new Error(`characters load failed: ${response.status}`);
+        }
+        return response.json();
+    }
+
+    async resolveCurrentTutorialCatgirlName() {
+        const configuredName = this.tutorialNonEmptyString(
+            window.lanlan_config && window.lanlan_config.lanlan_name
+        );
+        if (configuredName) {
+            return configuredName;
+        }
+
+        const response = await fetch('/api/config/page_config', {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            return '';
+        }
+        const data = await response.json();
+        return this.tutorialNonEmptyString(data && data.lanlan_name);
+    }
+
+    async saveTutorialModelPayload(lanlanName, payload) {
+        const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.success) {
+            throw new Error((result && result.error) || `model save failed: ${response.status}`);
+        }
+        return result;
+    }
+
+    buildTutorialTemporaryModelConfig(payload) {
+        const modelName = this.tutorialNonEmptyString(payload && payload.live2d) || TUTORIAL_YUI_LIVE2D_MODEL_NAME;
+        const modelPath = modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME
+            ? TUTORIAL_YUI_LIVE2D_MODEL_PATH
+            : `/live2d-models/${encodeURIComponent(modelName)}/${encodeURIComponent(modelName)}.model3.json`;
+
+        return {
+            success: true,
+            model_type: 'live2d',
+            live3d_sub_type: '',
+            model_path: modelPath,
+            lighting: window.lanlan_config && window.lanlan_config.lighting
+                ? Object.assign({}, window.lanlan_config.lighting)
+                : null
+        };
+    }
+
+    syncTutorialLanlanModelMode(payload) {
+        if (!window.lanlan_config || !payload) {
+            return;
+        }
+        window.lanlan_config.model_type = payload.model_type || 'live2d';
+        if (payload.model_type === 'live3d') {
+            window.lanlan_config.live3d_sub_type = payload.mmd ? 'mmd' : 'vrm';
+        } else {
+            window.lanlan_config.live3d_sub_type = '';
+        }
+    }
+
+    async loadTemporaryTutorialLive2dModel(payload) {
+        const tempConfig = this.buildTutorialTemporaryModelConfig(payload);
+        const modelPath = tempConfig.model_path;
+
+        if (!window.live2dManager && typeof window.Live2DManager === 'function') {
+            window.live2dManager = new window.Live2DManager();
+        }
+        if (!window.live2dManager) {
+            throw new Error('Live2DManager unavailable');
+        }
+
+        if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.renderer) {
+            await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+        }
+
+        const vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer) {
+            vrmContainer.style.display = 'none';
+            vrmContainer.classList.add('hidden');
+        }
+        const mmdContainer = document.getElementById('mmd-container');
+        if (mmdContainer) {
+            mmdContainer.style.display = 'none';
+            mmdContainer.classList.add('hidden');
+        }
+        if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+            window.vrmManager.pauseRendering();
+        }
+        if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+            window.mmdManager.pauseRendering();
+        }
+
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            live2dContainer.classList.remove('hidden');
+            live2dContainer.style.display = 'block';
+            live2dContainer.style.visibility = 'visible';
+            live2dContainer.style.removeProperty('pointer-events');
+        }
+
+        await window.live2dManager.loadModel(modelPath, {
+            isMobile: window.innerWidth <= 768,
+            suppressInitialIdle: true
+        });
+        await this.applyTutorialLive2dViewportPlacement();
+        if (window.LanLan1) {
+            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+        }
+        if (typeof window.showLive2d === 'function') {
+            window.showLive2d();
+        }
+    }
+
+    async reloadTutorialModel(lanlanName, payload, options = {}) {
+        const useTemporaryConfig = options && options.temporary === true;
+        if (typeof window.handleModelReload === 'function') {
+            const reloadOptions = {
+                suppressToast: true
+            };
+            if (useTemporaryConfig) {
+                reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);
+                reloadOptions.skipIdleRestore = true;
+            }
+            await window.handleModelReload(lanlanName, reloadOptions);
+            if (useTemporaryConfig) {
+                await this.applyTutorialLive2dViewportPlacement();
+            }
+            return;
+        }
+        if (useTemporaryConfig) {
+            await this.loadTemporaryTutorialLive2dModel(payload);
+            return;
+        }
+        this.syncTutorialLanlanModelMode(payload);
+        if (typeof window.showCurrentModel === 'function') {
+            await window.showCurrentModel();
+        }
+    }
+
+    setTutorialLive2dPreparing(preparing) {
+        if (typeof document === 'undefined' || !document.body) {
+            return;
+        }
+        document.body.classList.toggle('yui-guide-live2d-preparing', preparing === true);
+    }
+
+    revealTutorialLive2dPrepared() {
+        this.setTutorialLive2dPreparing(false);
+    }
+
+    getTutorialLive2dScreenBounds(manager, model) {
+        if (manager && typeof manager.getModelScreenBounds === 'function') {
+            const bounds = manager.getModelScreenBounds();
+            if (bounds) {
+                return bounds;
+            }
+        }
+
+        if (!model || typeof model.getBounds !== 'function') {
+            return null;
+        }
+
+        let rawBounds = null;
+        try {
+            rawBounds = model.getBounds();
+        } catch (error) {
+            console.warn('[Tutorial] 获取 YUI 模型边界失败:', error);
+            return null;
+        }
+
+        if (!rawBounds) {
+            return null;
+        }
+
+        const left = Number(rawBounds.left);
+        const right = Number(rawBounds.right);
+        const top = Number(rawBounds.top);
+        const bottom = Number(rawBounds.bottom);
+        const width = right - left;
+        const height = bottom - top;
+        if (
+            !Number.isFinite(left) || !Number.isFinite(right) ||
+            !Number.isFinite(top) || !Number.isFinite(bottom) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0
+        ) {
+            return null;
+        }
+
+        return {
+            left,
+            right,
+            top,
+            bottom,
+            width,
+            height,
+            centerX: left + width / 2,
+            centerY: top + height / 2
+        };
+    }
+
+    async waitForTutorialLive2dLayoutFrame(manager) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (manager && manager.pixi_app && manager.pixi_app.renderer && typeof manager.pixi_app.renderer.render === 'function') {
+            try {
+                manager.pixi_app.renderer.render(manager.pixi_app.stage);
+            } catch (_) {}
+        }
+    }
+
+    async applyTutorialLive2dViewportPlacement() {
+        const manager = window.live2dManager || null;
+        const model = manager && (typeof manager.getCurrentModel === 'function'
+            ? manager.getCurrentModel()
+            : manager.currentModel);
+        const app = manager && manager.pixi_app;
+        if (!manager || !model || !app || !app.renderer) {
+            return false;
+        }
+
+        const screen = app.renderer.screen || {};
+        const viewportWidth = Math.max(1, window.innerWidth || Number(screen.width) || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || Number(screen.height) || 1);
+        const marginX = Math.max(20, Math.min(48, viewportWidth * 0.035));
+        const marginTop = Math.max(18, Math.min(42, viewportHeight * 0.04));
+        const marginBottom = Math.max(28, Math.min(72, viewportHeight * 0.07));
+        const targetCenterXRatio = viewportWidth < 900 ? 0.56 : 0.63;
+        const targetCenterX = viewportWidth * targetCenterXRatio;
+        const targetCenterY = viewportHeight * (viewportHeight < 720 ? 0.5 : 0.52);
+        const horizontalFitWidth = Math.max(
+            1,
+            2 * Math.min(
+                targetCenterX - marginX,
+                viewportWidth - marginX - targetCenterX
+            )
+        );
+        const maxVisibleWidth = Math.min(viewportWidth - marginX * 2, horizontalFitWidth);
+        const maxVisibleHeight = viewportHeight - marginTop - marginBottom;
+
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        let bounds = this.getTutorialLive2dScreenBounds(manager, model);
+        if (!bounds) {
+            return false;
+        }
+
+        const currentScaleX = Math.abs(Number(model.scale && model.scale.x) || 1);
+        const currentScaleY = Math.abs(Number(model.scale && model.scale.y) || currentScaleX || 1);
+        const currentScale = Math.max(0.0001, Math.max(currentScaleX, currentScaleY));
+        const naturalWidth = bounds.width / currentScale;
+        const naturalHeight = bounds.height / currentScale;
+        if (
+            Number.isFinite(naturalWidth) && Number.isFinite(naturalHeight) &&
+            naturalWidth > 0 && naturalHeight > 0
+        ) {
+            const targetScale = Math.max(
+                0.005,
+                Math.min(
+                    maxVisibleWidth / naturalWidth,
+                    maxVisibleHeight / naturalHeight,
+                    0.5
+                )
+            );
+            model.scale.set(targetScale, targetScale);
+            await this.waitForTutorialLive2dLayoutFrame(manager);
+            bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+        }
+
+        const resolveSafeCenter = (rect) => {
+            const rectWidth = rect && Number.isFinite(rect.width) ? rect.width : 0;
+            const rectHeight = rect && Number.isFinite(rect.height) ? rect.height : 0;
+            const minCenterX = marginX + rectWidth / 2;
+            const maxCenterX = viewportWidth - marginX - rectWidth / 2;
+            const minCenterY = marginTop + rectHeight / 2;
+            const maxCenterY = viewportHeight - marginBottom - rectHeight / 2;
+            const safeCenterX = minCenterX <= maxCenterX
+                ? Math.max(minCenterX, Math.min(targetCenterX, maxCenterX))
+                : viewportWidth / 2;
+            const safeCenterY = minCenterY <= maxCenterY
+                ? Math.max(minCenterY, Math.min(targetCenterY, maxCenterY))
+                : viewportHeight / 2;
+            return {
+                x: safeCenterX,
+                y: safeCenterY
+            };
+        };
+
+        let safeCenter = resolveSafeCenter(bounds);
+        model.x += safeCenter.x - bounds.centerX;
+        model.y += safeCenter.y - bounds.centerY;
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+
+        const overflowX = Math.max(0, marginX - bounds.left, bounds.right - (viewportWidth - marginX));
+        const overflowY = Math.max(0, marginTop - bounds.top, bounds.bottom - (viewportHeight - marginBottom));
+        if ((overflowX > 0 || overflowY > 0) && bounds.width > 0 && bounds.height > 0) {
+            const fitRatio = Math.max(
+                0.005,
+                Math.min(
+                    1,
+                    (maxVisibleWidth / bounds.width) * 0.98,
+                    (maxVisibleHeight / bounds.height) * 0.98
+                )
+            );
+            if (fitRatio < 0.999) {
+                const nextScaleX = Math.max(0.005, Math.abs(model.scale.x) * fitRatio);
+                const nextScaleY = Math.max(0.005, Math.abs(model.scale.y) * fitRatio);
+                model.scale.set(nextScaleX, nextScaleY);
+                await this.waitForTutorialLive2dLayoutFrame(manager);
+                bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+                safeCenter = resolveSafeCenter(bounds);
+                model.x += safeCenter.x - bounds.centerX;
+                model.y += safeCenter.y - bounds.centerY;
+            }
+        }
+
+        await this.waitForTutorialLive2dLayoutFrame(manager);
+        bounds = this.getTutorialLive2dScreenBounds(manager, model) || bounds;
+        safeCenter = resolveSafeCenter(bounds);
+        model.x += safeCenter.x - bounds.centerX;
+        model.y += safeCenter.y - bounds.centerY;
+
+        this.ensureTutorialLive2dViewportPlacementWatcher();
+        console.log('[Tutorial] YUI 模型已按当前视口放置:', {
+            viewportWidth,
+            viewportHeight,
+            targetCenterX: Math.round(targetCenterX),
+            targetCenterY: Math.round(targetCenterY),
+            scaleX: model.scale && Number(model.scale.x).toFixed(4),
+            scaleY: model.scale && Number(model.scale.y).toFixed(4)
+        });
+        return true;
+    }
+
+    ensureTutorialLive2dViewportPlacementWatcher() {
+        if (this._tutorialViewportPlacementResizeHandler) {
+            return;
+        }
+
+        this._tutorialViewportPlacementResizeHandler = () => {
+            if (this._tutorialViewportPlacementResizeTimer) {
+                clearTimeout(this._tutorialViewportPlacementResizeTimer);
+            }
+            this._tutorialViewportPlacementResizeTimer = setTimeout(() => {
+                this._tutorialViewportPlacementResizeTimer = null;
+                if (!this._tutorialAvatarOverride || this._isDestroyed) {
+                    return;
+                }
+                this.applyTutorialLive2dViewportPlacement().catch(error => {
+                    console.warn('[Tutorial] resize 后重排 YUI 模型失败:', error);
+                });
+            }, 120);
+        };
+        window.addEventListener('resize', this._tutorialViewportPlacementResizeHandler);
+        window.addEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+    }
+
+    clearTutorialLive2dViewportPlacementWatcher() {
+        if (this._tutorialViewportPlacementResizeTimer) {
+            clearTimeout(this._tutorialViewportPlacementResizeTimer);
+            this._tutorialViewportPlacementResizeTimer = null;
+        }
+        if (!this._tutorialViewportPlacementResizeHandler) {
+            return;
+        }
+        window.removeEventListener('resize', this._tutorialViewportPlacementResizeHandler);
+        window.removeEventListener('electron-display-changed', this._tutorialViewportPlacementResizeHandler);
+        this._tutorialViewportPlacementResizeHandler = null;
+    }
+
+    beginTutorialAvatarOverride() {
+        if (this._tutorialAvatarOverridePromise) {
+            if (this._tutorialAvatarOverride && (this._tutorialAvatarOverride.restoring || this._tutorialAvatarOverride.restoreRequested)) {
+                return this._tutorialAvatarOverridePromise.then(() => this.beginTutorialAvatarOverride());
+            }
+            return this._tutorialAvatarOverridePromise;
+        }
+        if (this._tutorialAvatarOverride) {
+            return Promise.resolve();
+        }
+
+        const activePrefix = UniversalTutorialManager.detectModelPrefix();
+        this._tutorialAvatarOverride = {
+            activePrefix,
+            restoreRequested: false
+        };
+        const override = this._tutorialAvatarOverride;
+        const ensureOverrideActive = () => {
+            if (this._tutorialAvatarOverride !== override || override.cancelled) {
+                throw new Error('tutorial avatar override setup cancelled');
+            }
+        };
+        const setupDeadline = new Promise((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`tutorial avatar override setup timed out after ${TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS}ms`));
+            }, TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS);
+        });
+
+        const setupPromise = Promise.race([(async () => {
+            const currentName = await this.resolveCurrentTutorialCatgirlName();
+            ensureOverrideActive();
+            if (!currentName) {
+                throw new Error('current tutorial catgirl name unavailable');
+            }
+
+            const characters = await this.fetchTutorialCharacters();
+            ensureOverrideActive();
+            const catgirls = (characters && characters['猫娘']) || {};
+            const currentConfig = catgirls[currentName];
+            if (!currentConfig) {
+                throw new Error(`current catgirl config not found: ${currentName}`);
+            }
+
+            const snapshotPayload = this.buildTutorialModelSavePayload(currentConfig);
+            const tutorialModelPayload = {
+                model_type: 'live2d',
+                live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
+                live2d_idle_animation: ''
+            };
+            this._tutorialAvatarOverride.currentName = currentName;
+            this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
+
+            this.setTutorialLive2dPreparing(true);
+            await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
+            ensureOverrideActive();
+            await this.sleep(350);
+            ensureOverrideActive();
+            const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
+            ensureOverrideActive();
+            this.applyTutorialChatIdentityOverride({
+                active: true,
+                displayName: 'YUI',
+                avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
+                modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
+            });
+            console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
+        })(), setupDeadline]).catch(async (error) => {
+            override.cancelled = true;
+            this.revealTutorialLive2dPrepared();
+            try {
+                await Promise.resolve(this.applyTutorialChatIdentityOverride({ active: false }));
+            } catch (identityError) {
+                console.warn('[Tutorial] 清理临时聊天身份失败:', identityError);
+            }
+            if (this._tutorialAvatarOverride === override) {
+                if (this._tutorialAvatarOverridePromise === setupPromise) {
+                    this._tutorialAvatarOverridePromise = null;
+                }
+                await this.restoreTutorialAvatarOverride();
+            }
+            console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
+            throw error;
+        });
+
+        this._tutorialAvatarOverridePromise = setupPromise;
+        setupPromise.then(
+            () => null,
+            () => null
+        ).then(() => {
+            if (this._tutorialAvatarOverridePromise === setupPromise) {
+                this._tutorialAvatarOverridePromise = null;
+            }
+            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
+                this.restoreTutorialAvatarOverride().catch(error => {
+                    console.warn('[Tutorial] 延迟恢复新手教程头像失败:', error);
+                });
+            }
+        }).catch(error => {
+            console.warn('[Tutorial] 清理新手教程头像准备状态失败:', error);
+        });
+
+        return setupPromise;
+    }
+
+    restoreTutorialAvatarOverride() {
+        const override = this._tutorialAvatarOverride;
+        if (!override) {
+            return Promise.resolve();
+        }
+
+        if (this._tutorialAvatarOverridePromise) {
+            override.restoreRequested = true;
+            return this._tutorialAvatarOverridePromise.then(() => {
+                if (this._tutorialAvatarOverride === override && !override.restoring) {
+                    return this.restoreTutorialAvatarOverride();
+                }
+                return this._tutorialAvatarOverridePromise || Promise.resolve();
+            });
+        }
+
+        const currentName = override.currentName;
+        const snapshotPayload = override.snapshotPayload;
+        override.restoring = true;
+
+        const restorePromise = Promise.resolve().then(async () => {
+            try {
+                this.clearTutorialLive2dViewportPlacementWatcher();
+                this.revealTutorialLive2dPrepared();
+                this.applyTutorialChatIdentityOverride({ active: false });
+                if (!currentName) {
+                    return;
+                }
+
+                await this.reloadTutorialModel(currentName, snapshotPayload || {});
+                console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
+            } catch (error) {
+                console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
+                if (typeof window.showCurrentModel === 'function') {
+                    try {
+                        await window.showCurrentModel();
+                    } catch (_) {}
+                }
+            } finally {
+                this.clearTutorialLive2dViewportPlacementWatcher();
+                if (this._tutorialAvatarOverride === override) {
+                    this._tutorialAvatarOverride = null;
+                }
+                if (this._tutorialAvatarOverridePromise === restorePromise) {
+                    this._tutorialAvatarOverridePromise = null;
+                }
+            }
+        });
+
+        this._tutorialAvatarOverridePromise = restorePromise;
+        return restorePromise;
+    }
+
+    async captureTutorialChatAvatarPreview() {
+        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
+            return null;
+        }
+
+        try {
+            return await window.avatarPortrait.capture({
+                width: 320,
+                height: 320,
+                padding: 0.035,
+                shape: 'rounded',
+                radius: 40,
+                background: 'rgba(255, 255, 255, 0.96)',
+                includeDataUrl: true,
+                includeSourceDataUrl: false
+            });
+        } catch (error) {
+            console.warn('[Tutorial] 截取新手教程 YUI 头像失败:', error);
+            return null;
+        }
+    }
+
+    applyTutorialChatIdentityOverride(detail) {
+        const payload = detail || {};
+        if (window.appInterpage && typeof window.appInterpage.applyTutorialChatIdentityOverride === 'function') {
+            window.appInterpage.applyTutorialChatIdentityOverride(payload);
+        } else if (payload.active) {
+            const overrideDetail = {
+                active: true,
+                displayName: payload.displayName || 'YUI',
+                avatarDataUrl: payload.avatarDataUrl || '',
+                modelType: payload.modelType || ''
+            };
+            window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__ = {
+                active: true,
+                displayName: overrideDetail.displayName,
+                avatarDataUrl: overrideDetail.avatarDataUrl,
+                modelType: overrideDetail.modelType
+            };
+            window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ = overrideDetail.displayName;
+            if (window.appChatAvatar && typeof window.appChatAvatar.setTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.setTutorialAvatarOverride(overrideDetail.avatarDataUrl, overrideDetail.modelType);
+            } else {
+                window.__nekoPendingTutorialChatIdentity = overrideDetail;
+            }
+            window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+                detail: overrideDetail
+            }));
+        } else {
+            delete window.__NEKO_TUTORIAL_CHAT_IDENTITY_OVERRIDE__;
+            delete window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__;
+            if (window.appChatAvatar && typeof window.appChatAvatar.clearTutorialAvatarOverride === 'function') {
+                window.appChatAvatar.clearTutorialAvatarOverride();
+            } else {
+                window.__nekoPendingTutorialChatIdentity = { active: false };
+            }
+            window.dispatchEvent(new CustomEvent('neko:tutorial-chat-identity-changed', {
+                detail: { active: false }
+            }));
+        }
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage({
+                    action: 'tutorial_chat_identity_override',
+                    active: !!payload.active,
+                    displayName: payload.displayName || '',
+                    avatarDataUrl: payload.avatarDataUrl || '',
+                    modelType: payload.modelType || '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[Tutorial] 广播新手教程聊天身份覆盖失败:', error);
+            }
+        }
     }
 
     /**
@@ -359,7 +1690,9 @@ class UniversalTutorialManager {
             console.log('[Tutorial] driver.js 环境检测成功');
 
             // 检查是否需要自动启动引导
-            this.checkAndStartTutorial();
+            this.checkAndStartTutorial().catch(error => {
+                console.error('[Tutorial] checkAndStartTutorial failed:', error);
+            });
         } catch (error) {
             console.error('[Tutorial] driver.js 初始化失败:', error);
         }
@@ -485,15 +1818,27 @@ class UniversalTutorialManager {
     /**
      * 获取当前页面的存储键（模型管理页区分 Live2D / VRM / MMD）
      */
-    getStorageKey() {
-        let pageKey = this.currentPage;
-
-        if (this.currentPage === 'model_manager') {
-            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
-            pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
-            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
+    getYuiGuideVersionedPageKey(page = this.currentPage) {
+        if (page === 'home' && this.isYuiGuideEnabledForPage(page)) {
+            return 'home_yui_v1';
         }
 
+        return null;
+    }
+
+    getPreferredStoragePageKey(page = this.currentPage) {
+        if (page === 'model_manager') {
+            const mode = UniversalTutorialManager.getModelManagerDisplayMode();
+            const pageKey = UniversalTutorialManager.modelManagerModeToPageKey(mode);
+            console.log('[Tutorial] 模型管理页存储键，展示模式:', mode, '→', pageKey);
+            return pageKey;
+        }
+
+        return this.getYuiGuideVersionedPageKey(page) || page;
+    }
+
+    getStorageKey() {
+        const pageKey = this.getPreferredStoragePageKey(this.currentPage);
         return getTutorialStorageKeyForPage(pageKey);
     }
 
@@ -502,11 +1847,18 @@ class UniversalTutorialManager {
      */
     getStorageKeysForPage(page) {
         const targetPage = page || this.currentPage;
-        const pageKeys = targetPage === 'model_manager'
-            ? ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
-            : [targetPage];
+        if (targetPage === 'model_manager') {
+            return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
+                .map(getTutorialStorageKeyForPage);
+        }
 
-        return pageKeys.map(getTutorialStorageKeyForPage);
+        const preferredPageKey = this.getPreferredStoragePageKey(targetPage);
+        const pageKeys = [preferredPageKey];
+        if (preferredPageKey !== targetPage) {
+            pageKeys.push(targetPage);
+        }
+
+        return Array.from(new Set(pageKeys)).map(getTutorialStorageKeyForPage);
     }
 
     getManualStartIntentKey(page = null) {
@@ -524,7 +1876,6 @@ class UniversalTutorialManager {
 
     peekTutorialStartSource(page = null) {
         const targetPage = page || this.currentPage;
-
         if (this.pendingTutorialStartSource) {
             return this.pendingTutorialStartSource;
         }
@@ -671,9 +2022,16 @@ class UniversalTutorialManager {
     /**
      * 检查是否需要自动启动引导
      */
-    checkAndStartTutorial() {
+    async checkAndStartTutorial() {
         if (this.isTutorialRunning || window.isInTutorial) {
             console.log('[Tutorial] 引导进行中，跳过启动检查');
+            return;
+        }
+
+        const handoffToken = await this.consumePendingYuiGuideHandoffToken();
+        if (handoffToken) {
+            console.log('[Tutorial] 检测到跨页 handoff，强制恢复当前页面引导:', this.currentPage, handoffToken);
+            this.startTutorialWhenI18nReady(500);
             return;
         }
 
@@ -688,19 +2046,14 @@ class UniversalTutorialManager {
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
-                const requestedSource = this.peekTutorialStartSource('home');
-                if (requestedSource) {
-                    this.waitForFloatingButtons().then((found) => {
-                        if (!found) {
-                            console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
-                            return;
-                        }
-                        // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
-                        this.startTutorialWhenI18nReady(1500);
-                    });
-                } else {
-                    console.log('[Tutorial] 主页首次引导等待空闲提示或手动触发，不再立即自动启动');
-                }
+                this.waitForFloatingButtons().then((found) => {
+                    if (!found) {
+                        console.warn('[Tutorial] 浮动按钮始终未出现，跳过主页引导');
+                        return;
+                    }
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(1500);
+                });
             } else if (this.currentPage === 'chara_manager') {
                 // 对于角色管理页面，需要等待猫娘卡片加载
                 this.waitForCatgirlCards().then(async () => {
@@ -973,6 +2326,7 @@ class UniversalTutorialManager {
                     description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
                 },
                 action: 'click',
+                yuiGuideSceneId: 'takeover_settings_peek',
                 disableActiveInteraction: true
             },
             {
@@ -986,8 +2340,8 @@ class UniversalTutorialManager {
             {
                 element: `#${p}-toggle-proactive-vision`,
                 popover: {
-                    title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
-                    description: window.t ? window.t('tutorial.step14.desc', '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~') : '与语音会话中实时传输的屏幕分享不同，开启自主视觉后猫娘会时不时自己看一眼你的屏幕。间隔可在此调整~',
+                    title: window.t ? window.t('tutorial.step14.title', '🔒 隐私模式') : '🔒 隐私模式',
+                    description: window.t ? window.t('tutorial.step14.desc', '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~') : '关闭隐私模式后，猫娘会时不时自己看一眼你的屏幕，与语音会话中实时传输的屏幕分享不同。间隔可在此调整~',
                 },
                 disableActiveInteraction: true
             },
@@ -1005,6 +2359,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
                     description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
                 },
+                yuiGuideSceneId: 'handoff_api_key',
                 disableActiveInteraction: true
             },
             {
@@ -1013,14 +2368,7 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
                     description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
                 },
-                disableActiveInteraction: true
-            },
-            {
-                element: `#${p}-menu-steam-workshop`,
-                popover: {
-                    title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
-                    description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
-                },
+                yuiGuideSceneId: 'handoff_memory_browser',
                 disableActiveInteraction: true
             },
             {
@@ -1232,7 +2580,96 @@ class UniversalTutorialManager {
                 element: '#model-singleselect',
                 popover: {
                     title: this.t('tutorial.emotion_manager.step1.title', '🎭 选择模型'),
-                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。'),
+                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。'),
+                }
+            },
+            {
+                // element 复用容器（始终可见），避免 driver 因 .singleselect-options
+                // display:none 时 rect 为零、轮询等待 5s 超时跳过本步。
+                element: '#model-singleselect',
+                _isEmotionPicker: true,
+                popover: {
+                    title: this.t('tutorial.emotion_manager.step_pick.title', '👇 选择一个模型'),
+                    description: this.t('tutorial.emotion_manager.step_pick.desc', '从下拉列表中点击选择一个模型。选好模型后才能进入下一步。'),
+                },
+                onHighlighted: function () {
+                    const singleselect = document.querySelector('#model-singleselect');
+                    if (!singleselect) return;
+                    const header = singleselect.querySelector('.singleselect-header');
+                    const options = singleselect.querySelector('.singleselect-options');
+
+                    // 把列表面板从 absolute 改为 static，撑开容器 rect，
+                    // 这样 driver 基于 getBoundingClientRect 计算的高亮框会自动包住列表，
+                    // 且高度会随实际列表项数量自适应（max-height: 250px 内由内容决定）。
+                    if (options && options.dataset.tutorialFloated !== '1') {
+                        options.dataset.tutorialFloated = '1';
+                        options.dataset.tutorialPosOrig = options.style.position || '';
+                        options.dataset.tutorialTopOrig = options.style.top || '';
+                        options.dataset.tutorialLeftOrig = options.style.left || '';
+                        options.dataset.tutorialBottomOrig = options.style.bottom || '';
+                        options.dataset.tutorialMtOrig = options.style.marginTop || '';
+                        options.style.setProperty('position', 'static', 'important');
+                        options.style.setProperty('top', 'auto', 'important');
+                        options.style.setProperty('left', 'auto', 'important');
+                        options.style.setProperty('bottom', 'auto', 'important');
+                        options.style.setProperty('margin-top', '8px', 'important');
+                    }
+
+                    const ensureOpen = () => {
+                        if (!singleselect.classList.contains('active')) {
+                            singleselect.classList.add('active');
+                            if (header) header.setAttribute('aria-expanded', 'true');
+                        }
+                    };
+                    ensureOpen();
+
+                    // 用户点选项后下拉会被关闭：已选模型则跳到下一步；未选则重新展开（保持框住列表）。
+                    if (!singleselect._tutorialPickerObserver) {
+                        const observer = new MutationObserver(() => {
+                            const stepIdx = (this.driver && typeof this.driver.currentStep === 'number')
+                                ? this.driver.currentStep : -1;
+                            const steps = this.cachedValidSteps || this.getStepsForPage();
+                            const cur = steps[stepIdx];
+                            if (!cur || !cur._isEmotionPicker) return;
+                            if (singleselect.classList.contains('active')) return;
+
+                            if (this.hasEmotionManagerModelSelected()) {
+                                const nextIdx = steps.findIndex(s => s.element === '#emotion-config');
+                                if (nextIdx >= 0 && this.driver && typeof this.driver.showStep === 'function') {
+                                    // 把 timer 加入 _refreshTimers，教程销毁/重启时一并清理，
+                                    // 避免回调跑到已销毁的 driver 上（race）；
+                                    // 同时检查 window.isInTutorial，防止 200ms 内用户 Skip/Done 后还跳步
+                                    const advanceTimer = setTimeout(() => {
+                                        if (!window.isInTutorial) return;
+                                        if (!this.driver || typeof this.driver.showStep !== 'function') return;
+                                        const curIdx = typeof this.driver.currentStep === 'number'
+                                            ? this.driver.currentStep : -1;
+                                        if (curIdx === stepIdx) {
+                                            this.driver.showStep(nextIdx);
+                                        }
+                                    }, 200);
+                                    if (this._refreshTimers) this._refreshTimers.push(advanceTimer);
+                                }
+                            } else {
+                                ensureOpen();
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                }
+                            }
+                        });
+                        observer.observe(singleselect, { attributes: true, attributeFilter: ['class'] });
+                        singleselect._tutorialPickerObserver = observer;
+                    }
+
+                    // 多次 refresh 让高亮框跟上 options 撑开后的容器尺寸
+                    [60, 200, 450].forEach(delay => {
+                        const t = setTimeout(() => {
+                            if (this.driver && typeof this.driver.refresh === 'function') {
+                                this.driver.refresh();
+                            }
+                        }, delay);
+                        if (this._refreshTimers) this._refreshTimers.push(t);
+                    });
                 }
             },
             {
@@ -1242,7 +2679,10 @@ class UniversalTutorialManager {
                     description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。'),
                 },
                 // 避免在引导开始时强制显示（应在选择模型后显示）
-                skipAutoShow: true
+                skipAutoShow: true,
+                // 情感配置内容异步加载（拉取表情列表 + 渲染下拉），布局会持续重排，
+                // 使用 DYNAMIC_REFRESH_DELAYS 多次刷新让高亮框跟随尺寸变化
+                skipInitialCheck: true
             },
             {
                 element: '#reset-btn',
@@ -1250,7 +2690,9 @@ class UniversalTutorialManager {
                     title: this.t('tutorial.emotion_manager.step3.title', '🔄 重置配置'),
                     description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。'),
                 },
-                skipAutoShow: true
+                skipAutoShow: true,
+                // 按钮位置受 #emotion-config 内动态内容影响，需多次刷新跟上重排
+                skipInitialCheck: true
             }
         ];
     }
@@ -1296,7 +2738,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
                     description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
-                }
+                },
+                yuiGuideSceneId: 'api_key_intro'
             },
             {
                 element: '#apiKeyInput',
@@ -1355,7 +2798,22 @@ class UniversalTutorialManager {
      * Steam Workshop 页面引导步骤
      */
     getSteamWorkshopSteps() {
-        return [];
+        return [
+            {
+                element: '#workshop-tabs',
+                popover: {
+                    title: this.t('tutorial.steam_workshop.step1.title', '🧭 创意工坊分区'),
+                    description: this.t('tutorial.steam_workshop.step1.desc', '这里可以在订阅内容和角色卡之间切换，后续管理 Workshop 内容都会从这里展开。'),
+                }
+            },
+            {
+                element: '#subscriptions-list',
+                popover: {
+                    title: this.t('tutorial.steam_workshop.step2.title', '📦 订阅内容列表'),
+                    description: this.t('tutorial.steam_workshop.step2.desc', '这里会展示当前已订阅的内容，您可以刷新、筛选并继续管理创意工坊资源。'),
+                }
+            }
+        ];
     }
 
     /**
@@ -1368,7 +2826,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.memory_browser.step2.title', '🐱 猫娘记忆库'),
                     description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
-                }
+                },
+                yuiGuideSceneId: 'memory_browser_intro'
             },
             {
                 element: '#memory-chat-edit',
@@ -1420,6 +2879,43 @@ class UniversalTutorialManager {
             return !!live2dManager.getCurrentModel();
         }
         return false;
+    }
+
+    /**
+     * 收起情感配置页面挑选模型步骤所占用的下拉框，恢复 options 原定位与 active 类。
+     * 在离开 picker 步骤、教程结束时调用，确保不残留展开态/static 定位。
+     */
+    _restoreEmotionPickerDropdown() {
+        const singleselect = document.querySelector('#model-singleselect');
+        if (!singleselect) return;
+
+        if (singleselect._tutorialPickerObserver) {
+            singleselect._tutorialPickerObserver.disconnect();
+            singleselect._tutorialPickerObserver = null;
+        }
+
+        const options = singleselect.querySelector('.singleselect-options');
+        if (options && options.dataset.tutorialFloated === '1') {
+            const restore = (prop, dataKey) => {
+                const orig = options.dataset[dataKey] || '';
+                if (orig) {
+                    options.style.setProperty(prop, orig);
+                } else {
+                    options.style.removeProperty(prop);
+                }
+                delete options.dataset[dataKey];
+            };
+            restore('position', 'tutorialPosOrig');
+            restore('top', 'tutorialTopOrig');
+            restore('left', 'tutorialLeftOrig');
+            restore('bottom', 'tutorialBottomOrig');
+            restore('margin-top', 'tutorialMtOrig');
+            delete options.dataset.tutorialFloated;
+        }
+
+        singleselect.classList.remove('active', 'open-up', 'open-down');
+        const header = singleselect.querySelector('.singleselect-header');
+        if (header) header.setAttribute('aria-expanded', 'false');
     }
 
     /**
@@ -1758,6 +3254,23 @@ class UniversalTutorialManager {
                 delete element.dataset.tutorialDisabled;
             }
         });
+        // 兜底：扫描整个文档中残留的 data-tutorial-disabled 节点。
+        // 模型管理 MMD 教程结束后曾出现 #vrm-model-select-btn / #mmd-animation-select-btn
+        // 等按钮被 pointer-events:none 卡死的情况，根因是 await 期间集合被提前 clear，
+        // 后续被遗漏。这里独立做一遍 DOM 兜底清理。
+        // 优先从 tutorialInteractionStates 还原原始 inline 值，仅在没有保存态时
+        // 退化为清空，避免误把页面上原本就 pointer-events:none 的元素重新激活。
+        try {
+            document.querySelectorAll('[data-tutorial-disabled]').forEach(element => {
+                const state = this.tutorialInteractionStates.get(element);
+                element.style.pointerEvents = state?.pointerEvents || '';
+                element.style.cursor = state?.cursor || '';
+                element.style.userSelect = state?.userSelect || '';
+                delete element.dataset.tutorialDisabled;
+            });
+        } catch (error) {
+            console.warn('[Tutorial] 扫描残留 tutorial-disabled 元素失败:', error);
+        }
         this.tutorialInteractionStates.clear();
         this.tutorialControlledElements = new Set();
         this.tutorialMarkerDisplayCache = null;
@@ -1875,7 +3388,9 @@ class UniversalTutorialManager {
                 return true;
             });
 
-            if (validSteps.length === 0) {
+            const resumedSteps = this.applyYuiGuideResumeScene(validSteps);
+
+            if (resumedSteps.length === 0) {
                 console.warn('[Tutorial] 没有有效的引导步骤');
                 return;
             }
@@ -1893,10 +3408,10 @@ class UniversalTutorialManager {
 
             if (pagesNeedingFullscreen.includes(this.currentPage)) {
                 // 显示全屏提示
-                this.showFullscreenPrompt(validSteps);
+                this.showFullscreenPrompt(resumedSteps);
             } else {
                 // 直接启动引导，不显示全屏提示
-                this.startTutorialSteps(validSteps);
+                this.startTutorialSteps(resumedSteps);
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
@@ -2077,14 +3592,59 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        this._isDestroyed = false;
         // 预加载所有步骤中的图片，确保走到含图片的步骤时图片已在浏览器缓存中
         this._preloadStepImages(validSteps);
 
         // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
         this._lastOnHighlightedStepIndex = null;
+        this._tutorialEndHandled = false;
+        this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
 
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
+
+        const useYuiOnlyHomeFlow = (
+            this.currentPage === 'home'
+            && this.isYuiGuideEnabledForPage(this.currentPage)
+        );
+        const shouldOverrideYuiAvatar = useYuiOnlyHomeFlow;
+
+        let avatarReadyPromise = null;
+        if (shouldOverrideYuiAvatar) {
+            this._tutorialModelPrefix = 'live2d';
+            avatarReadyPromise = this.beginTutorialAvatarOverride();
+        } else {
+            avatarReadyPromise = this._tutorialAvatarOverridePromise;
+        }
+
+        if (useYuiOnlyHomeFlow) {
+            const startYuiOnlyHomeFlow = () => {
+                if (this._isDestroyed) {
+                    return;
+                }
+                window.isInTutorial = true;
+                this.currentStep = 0;
+                this.driver = null;
+                console.log('[Tutorial] 首页启用 Yui Guide，跳过旧版 driver 教程启动流程');
+                this.emitTutorialStarted();
+                this.notifyYuiGuidePreludeStart(validSteps);
+                this.showSkipButton();
+            };
+            if (avatarReadyPromise) {
+                avatarReadyPromise.then(
+                    startYuiOnlyHomeFlow,
+                    (error) => {
+                        console.warn('[Tutorial] YUI 头像准备失败，继续启动首页引导:', error);
+                        startYuiOnlyHomeFlow();
+                    }
+                );
+            } else {
+                startYuiOnlyHomeFlow();
+            }
+            return;
+        }
 
         // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
         this.recreateDriverWithI18n();
@@ -2115,18 +3675,27 @@ class UniversalTutorialManager {
             }
         }
 
-        // 将模型容器移到屏幕右边（在引导中）
-        const modelPrefix = UniversalTutorialManager.detectModelPrefix();
+        // 将模型容器放到屏幕中间偏右（在引导中）
+        const modelPrefix = this._tutorialModelPrefix || UniversalTutorialManager.detectModelPrefix();
         const modelContainer = document.getElementById(`${modelPrefix}-container`);
         if (modelContainer) {
             this.originalLive2dStyle = {
                 left: modelContainer.style.left,
+                top: modelContainer.style.top,
                 right: modelContainer.style.right,
+                bottom: modelContainer.style.bottom,
+                width: modelContainer.style.width,
+                height: modelContainer.style.height,
                 transform: modelContainer.style.transform
             };
-            modelContainer.style.left = 'auto';
-            modelContainer.style.right = '0';
-            console.log(`[Tutorial] 将模型容器移到屏幕右边 (${modelPrefix})`);
+            modelContainer.style.left = '55%';
+            modelContainer.style.top = '50%';
+            modelContainer.style.right = 'auto';
+            modelContainer.style.bottom = 'auto';
+            modelContainer.style.width = '100%';
+            modelContainer.style.height = '100%';
+            modelContainer.style.transform = 'translate(-50%, -50%) translateZ(0)';
+            console.log(`[Tutorial] 将模型容器放到屏幕中间偏右 (${modelPrefix})`);
         }
 
         // 立即强制显示浮动工具栏（引导开始时）
@@ -2191,7 +3760,25 @@ class UniversalTutorialManager {
         }, 500);
 
         // 监听事件
-        this.driver.on('destroy', () => this.onTutorialEnd());
+        // driver.on('destroy') 触发后，先做关键 UI 清理（移除跳过按钮 +
+        // 还原 pointer-events），再走完整的 onTutorialEnd 流程。
+        // 这两步独立 try/catch，确保即便 onTutorialEnd 任一环节抛错或被早返回，
+        // 也不会留下右上角残余按钮 / 模型列表锁死。
+        // (MMD/VRM 模型管理教程结束后跳过按钮残留 & 模型列表锁死的修复路径。)
+        this.driver.on('destroy', () => {
+            console.log('[Tutorial] driver destroy → 执行关键 UI 清理');
+            try {
+                this.hideSkipButton();
+            } catch (error) {
+                console.warn('[Tutorial] destroy 清理 hideSkipButton 失败:', error);
+            }
+            try {
+                this.restoreTutorialInteractionState();
+            } catch (error) {
+                console.warn('[Tutorial] destroy 清理 restoreTutorialInteractionState 失败:', error);
+            }
+            this.onTutorialEnd();
+        });
         this.driver.on('next', () => this.onStepChange().catch(err => {
             console.error('[Tutorial] 步骤切换失败:', err);
         }));
@@ -2199,6 +3786,7 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 步骤切换失败:', err);
         }));
 
+        this.notifyYuiGuidePreludeStart(validSteps);
         const tutorialStartPage = this.currentPage;
         const tutorialStartSource = this.currentTutorialStartSource;
         let startResult;
@@ -2210,6 +3798,10 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 启动引导步骤失败:', error);
             this.resetTutorialStartState();
             return;
+        }
+
+        if (validSteps.length > 0) {
+            this.notifyYuiGuideStepEnter(validSteps[0], 0, 'tutorial-start');
         }
 
         // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
@@ -2269,16 +3861,59 @@ class UniversalTutorialManager {
         // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
         btn.style.pointerEvents = 'auto';
         btn.style.position = 'fixed';
-        btn.style.zIndex = '100005';
+        btn.style.zIndex = '2147483647';
         btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
 
+        let skipHandled = false;
+        const handleSkipFailure = (error) => {
+            console.warn('[Tutorial] Yui Guide skip 失败，回退到 requestTutorialDestroy:', error);
+            skipHandled = false;
+            this.requestTutorialDestroy('skip');
+        };
+        const handleSkipRequest = (e) => {
+            if (skipHandled) {
+                return;
+            }
+            skipHandled = true;
+            btn.disabled = true;
+            btn.setAttribute('aria-disabled', 'true');
+            if (e && typeof e.preventDefault === 'function') {
+                e.preventDefault();
+            }
+            if (e && typeof e.stopImmediatePropagation === 'function') {
+                e.stopImmediatePropagation();
+            }
+            if (e && typeof e.stopPropagation === 'function') {
+                e.stopPropagation();
+            }
+            const director = this.isYuiGuideEnabledForPage(this.currentPage)
+                ? this.ensureYuiGuideDirector()
+                : null;
+            if (director && typeof director.skip === 'function') {
+                try {
+                    Promise.resolve(director.skip('skip', 'skip'))
+                        .then(() => {
+                            this.requestTutorialDestroy('skip');
+                        })
+                        .catch(handleSkipFailure);
+                } catch (error) {
+                    handleSkipFailure(error);
+                }
+                return;
+            }
+
+            this.requestTutorialDestroy('skip');
+        };
+
+        btn.addEventListener('pointerdown', handleSkipRequest);
+        btn.addEventListener('mousedown', handleSkipRequest);
+        btn.addEventListener('touchstart', handleSkipRequest, { passive: false });
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (this.driver) {
-                this.driver.destroy();
-            }
+            handleSkipRequest(e);
         });
         document.body.appendChild(btn);
+        this.setYuiGuideSkipBypassEnabled(true);
         console.log('[Tutorial] 跳过按钮已显示');
     }
 
@@ -2290,6 +3925,17 @@ class UniversalTutorialManager {
         if (existing) {
             existing.remove();
             console.log('[Tutorial] 跳过按钮已移除');
+        }
+        this.setYuiGuideSkipBypassEnabled(false);
+    }
+
+    setYuiGuideSkipBypassEnabled(enabled) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
+                detail: { enabled: !!enabled }
+            }));
+        } catch (error) {
+            console.warn('[Tutorial] 切换 Yui Guide skip bypass 失败:', error);
         }
     }
 
@@ -2775,14 +4421,27 @@ class UniversalTutorialManager {
                 this.currentStep = 0;
                 return;
             }
+            const steps = this.cachedValidSteps || this.getStepsForPage();
+            const previousStepIndex = this.currentStep;
+            const previousStepConfig = (previousStepIndex >= 0 && previousStepIndex < steps.length)
+                ? steps[previousStepIndex]
+                : null;
+
             this.currentStep = this.driver.currentStep || 0;
             console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
-            // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
-            // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
-            const steps = this.cachedValidSteps || this.getStepsForPage();
+            const previousSceneId = this.getYuiGuideSceneIdForStep(previousStepConfig);
             if (this.currentStep < steps.length) {
                 const currentStepConfig = steps[this.currentStep];
+                const currentSceneId = this.getYuiGuideSceneIdForStep(currentStepConfig);
+
+                if (previousSceneId && previousSceneId !== currentSceneId) {
+                    this.notifyYuiGuideStepLeave(previousStepConfig, previousStepIndex, 'step-change');
+                }
+
+                if (currentSceneId && currentSceneId !== previousSceneId) {
+                    this.notifyYuiGuideStepEnter(currentStepConfig, this.currentStep, 'step-change');
+                }
 
                 // 进入新步骤前，先清理上一阶段的"下一步"前置校验
                 this.clearNextButtonGuard();
@@ -2823,9 +4482,9 @@ class UniversalTutorialManager {
                 await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
 
 
-                // 情感配置页面：未选择模型时禁止进入下一步
+                // 情感配置页面：在"选择模型"挑选步骤上未选模型时禁止进入下一步
                 if (this.currentPage === 'emotion_manager' &&
-                    currentStepConfig.element === '#model-singleselect') {
+                    currentStepConfig._isEmotionPicker) {
                     const updateNextState = () => {
                         const hasModel = this.hasEmotionManagerModelSelected();
                         const hasSelectableModels = this.hasEmotionManagerSelectableModels();
@@ -2845,6 +4504,14 @@ class UniversalTutorialManager {
                     this.nextButtonGuardTimer = setInterval(updateNextState, 300);
                 }
 
+                // 离开"选择模型"挑选步骤时收起下拉框 + 恢复 options 原定位
+                if (this.currentPage === 'emotion_manager' &&
+                    previousStepConfig &&
+                    previousStepConfig._isEmotionPicker &&
+                    !currentStepConfig._isEmotionPicker) {
+                    this._restoreEmotionPickerDropdown();
+                }
+
                 // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
                 if (this.currentPage === 'model_manager' &&
                     currentStepConfig.element === '#emotion-config-btn' &&
@@ -2861,10 +4528,12 @@ class UniversalTutorialManager {
                 if (this.currentPage === 'emotion_manager' &&
                     currentStepConfig.element === '#emotion-config' &&
                     !this.hasEmotionManagerModelSelected()) {
-                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
-                    const targetIndex = steps.findIndex(step => step.element === '#model-singleselect');
-                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                        this.driver.showStep(targetIndex);
+                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回挑选模型步骤');
+                    const targetIndex = steps.findIndex(step => step._isEmotionPicker);
+                    const fallbackIndex = steps.findIndex(step => step.element === '#model-singleselect' && !step._isEmotionPicker);
+                    const goto = targetIndex >= 0 ? targetIndex : fallbackIndex;
+                    if (this.driver && typeof this.driver.showStep === 'function' && goto >= 0) {
+                        this.driver.showStep(goto);
                         return;
                     }
                 }
@@ -2994,6 +4663,21 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        if (this._tutorialEndHandled) {
+            return;
+        }
+
+        this._tutorialEndHandled = true;
+        const finalSteps = this.cachedValidSteps || [];
+        const finalStepIndex = this.currentStep;
+        const finalStepConfig = (finalStepIndex >= 0 && finalStepIndex < finalSteps.length)
+            ? finalSteps[finalStepIndex]
+            : null;
+        const endMeta = this.resolveTutorialEndMeta(finalSteps);
+
+        this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
+        this.broadcastYuiGuideTerminationRequest(endMeta);
+        this.notifyYuiGuideTutorialEnd(endMeta.rawReason);
         const completedSource = this.currentTutorialStartSource;
 
         this._teardownTutorialUI();
@@ -3015,7 +4699,9 @@ class UniversalTutorialManager {
         }));
         this.logPromptFlow('tutorial-completed', {
             page: this.currentPage,
-            source: completedSource
+            source: completedSource,
+            reason: endMeta.reason,
+            rawReason: endMeta.rawReason
         });
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
@@ -3026,6 +4712,28 @@ class UniversalTutorialManager {
      * 因此既能给正常结束（onTutorialEnd）复用，也能给启动失败的回退路径复用。
      */
     _teardownTutorialUI() {
+        // 关键 UI 清理：必须先于 _teardownPromise early-return 守卫执行，
+        // 且必须幂等。MMD 模型管理教程曾出现：用户走到末步点「完成」后
+        // 跳过按钮残留、模型列表按钮 pointer-events:none 卡死。
+        // 根因是 teardown 触发时 _teardownPromise 已被前一次未完成的链占用，
+        // early-return 直接跳过了 hideSkipButton / restoreTutorialInteractionState。
+        // 把这两个操作提到守卫之前，可在任何重复/并发调用下都保证用户能继续操作。
+        try {
+            this.hideSkipButton();
+        } catch (error) {
+            console.warn('[Tutorial] hideSkipButton 失败:', error);
+        }
+        try {
+            this.restoreTutorialInteractionState();
+        } catch (error) {
+            console.warn('[Tutorial] restoreTutorialInteractionState 失败:', error);
+        }
+
+        if (this._teardownPromise) {
+            return this._teardownPromise;
+        }
+        this._isDestroyed = true;
+        this.revealTutorialLive2dPrepared();
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -3034,10 +4742,9 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
+        this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
         this.currentTutorialStartSource = 'auto';
-
-        // 移除跳过按钮
-        this.hideSkipButton();
 
         // 清除刷新定时器
         if (this._refreshTimers) {
@@ -3074,6 +4781,11 @@ class UniversalTutorialManager {
             this.clearModelManagerTutorialRecheckTimer();
         }
 
+        // 情感配置页面：教程结束时收起模型下拉框 + 恢复 options 原定位
+        if (this.currentPage === 'emotion_manager') {
+            this._restoreEmotionPickerDropdown();
+        }
+
         // 清除全局引导标记
         window.isInTutorial = false;
 
@@ -3084,7 +4796,11 @@ class UniversalTutorialManager {
         const modelContainer = document.getElementById(`${endPrefix}-container`);
         if (modelContainer && this.originalLive2dStyle) {
             modelContainer.style.left = this.originalLive2dStyle.left;
+            modelContainer.style.top = this.originalLive2dStyle.top;
             modelContainer.style.right = this.originalLive2dStyle.right;
+            modelContainer.style.bottom = this.originalLive2dStyle.bottom;
+            modelContainer.style.width = this.originalLive2dStyle.width;
+            modelContainer.style.height = this.originalLive2dStyle.height;
             modelContainer.style.transform = this.originalLive2dStyle.transform;
             console.log(`[Tutorial] 恢复 ${endPrefix} 模型原始位置`);
         }
@@ -3160,6 +4876,19 @@ class UniversalTutorialManager {
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
         this.restoreTutorialInteractionState();
+        const teardownPromise = Promise.resolve()
+            .then(() => this.restoreTutorialAvatarOverride())
+            .catch(error => {
+                console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);
+            })
+            .finally(() => {
+                this._tutorialModelPrefix = null;
+                if (this._teardownPromise === teardownPromise) {
+                    this._teardownPromise = null;
+                }
+            });
+        this._teardownPromise = teardownPromise;
+        return teardownPromise;
     }
 
     /**
@@ -3375,7 +5104,7 @@ class UniversalTutorialManager {
      */ 
     resetAllTutorials() {
         TUTORIAL_PAGES.forEach(page => {
-            localStorage.removeItem(getTutorialStorageKeyForPage(page));
+            this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
         this.markTutorialManualStartIntent('home');
         console.log('[Tutorial] 已重置所有页面引导');
@@ -3391,7 +5120,6 @@ class UniversalTutorialManager {
             return;
         }
 
-        // 特殊处理模型管理页面
         this.getStorageKeysForPage(pageKey).forEach((storageKey) => {
             const oldVal = localStorage.getItem(storageKey);
             localStorage.removeItem(storageKey);
@@ -3425,10 +5153,9 @@ class UniversalTutorialManager {
             this.driver = null;
         }
 
-        // 清除当前页面的引导记录
-        const storageKey = this.getStorageKey();
-        localStorage.removeItem(storageKey);
-        console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage);
+        const storageKeys = this.getStorageKeysForPage(this.currentPage);
+        storageKeys.forEach(storageKey => localStorage.removeItem(storageKey));
+        console.log('[Tutorial] 已清除当前页面引导记录:', this.currentPage, storageKeys);
         this.pendingTutorialStartSource = 'manual';
 
         // 重新初始化并启动引导
@@ -3440,12 +5167,61 @@ class UniversalTutorialManager {
 
 // 创建全局实例
 window.universalTutorialManager = null;
+window.__universalTutorialManagerResizeRetryBound = false;
+
+async function destroyUniversalTutorialManagerInstance(reason = 'destroy') {
+    const manager = window.universalTutorialManager;
+    if (!manager) return;
+
+    if (typeof manager.destroy === 'function') {
+        await manager.destroy(reason);
+    } else {
+        if (manager.isTutorialRunning && typeof manager.onTutorialEnd === 'function') {
+            manager.onTutorialEnd();
+        } else if (typeof manager._teardownTutorialUI === 'function') {
+            await manager._teardownTutorialUI();
+        }
+        if (manager.driver && typeof manager.driver.destroy === 'function') {
+            manager.driver.destroy();
+        }
+        if (typeof manager.teardownModelManagerListeners === 'function') {
+            manager.teardownModelManagerListeners();
+        }
+    }
+    window.universalTutorialManager = null;
+}
+
+function bindUniversalTutorialManagerResizeRetry() {
+    if (window.__universalTutorialManagerResizeRetryBound) return;
+    window.__universalTutorialManagerResizeRetryBound = true;
+
+    window.addEventListener('resize', function retryUniversalTutorialManagerInit() {
+        if (window.innerWidth <= 768) return;
+        window.removeEventListener('resize', retryUniversalTutorialManagerInit);
+        window.__universalTutorialManagerResizeRetryBound = false;
+        if (window.__universalTutorialManagerInitialized) return;
+        initUniversalTutorialManager().then(function (initialized) {
+            if (initialized !== false) {
+                window.__universalTutorialManagerInitialized = true;
+            }
+        }).catch(function (error) {
+            console.error('[App] 通用引导管理器延迟初始化失败:', error);
+        });
+    });
+}
 
 /**
  * 初始化通用教程管理器
  * 应在 DOM 加载完成后调用
  */
-function initUniversalTutorialManager() {
+async function initUniversalTutorialManager() {
+    // 手机端不启用教程，避免引导遮罩、接管拖拽和移动端布局互相干扰。
+    if (window.innerWidth <= 768) {
+        bindUniversalTutorialManagerResizeRetry();
+        await destroyUniversalTutorialManagerInstance('mobile-disabled');
+        return false;
+    }
+
     // 检测当前页面类型
     const currentPageType = UniversalTutorialManager.detectPage();
 
@@ -3453,14 +5229,11 @@ function initUniversalTutorialManager() {
     if (window.universalTutorialManager) {
         if (window.universalTutorialManager.currentPage !== currentPageType) {
             console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
-            // 销毁旧的 driver 实例和清理状态
-            if (window.universalTutorialManager.isTutorialRunning) {
-                window.universalTutorialManager.onTutorialEnd();
+            try {
+                await destroyUniversalTutorialManagerInstance('page-changed');
+            } catch (error) {
+                console.warn('[Tutorial] 等待旧教程实例拆除失败，继续创建新实例:', error);
             }
-            if (window.universalTutorialManager.driver) {
-                window.universalTutorialManager.driver.destroy();
-            }
-            window.universalTutorialManager.teardownModelManagerListeners();
             // 创建新实例
             window.universalTutorialManager = new UniversalTutorialManager();
             console.log('[Tutorial] 通用教程管理器已重新初始化，页面:', currentPageType);
@@ -3472,6 +5245,7 @@ function initUniversalTutorialManager() {
         window.universalTutorialManager = new UniversalTutorialManager();
         console.log('[Tutorial] 通用教程管理器已初始化，页面:', currentPageType);
     }
+    return true;
 }
 
 /**
@@ -3499,6 +5273,37 @@ function resetTutorialForPage(pageKey) {
 
     if (pageKey === 'all') {
         resetAllTutorials();
+        return;
+    }
+
+    if (pageKey === 'current_personality') {
+        fetch('/api/characters/persona-reselect-current', {
+            method: 'POST',
+        }).then(async (response) => {
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = null;
+            }
+            if (!response.ok || !payload || payload.success !== true) {
+                const fallbackError = window.t
+                    ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
+                    : '触发当前角色性格重选失败，请稍后再试。';
+                alert(payload && payload.error ? payload.error : fallbackError);
+                return;
+            }
+
+            const successMessage = window.t
+                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的人格重选请求，请回到主页刷新后继续。')
+                : '已记录当前角色的人格重选请求，请回到主页刷新后继续。';
+            alert(successMessage);
+        }).catch(() => {
+            const fallbackError = window.t
+                ? window.t('memory.currentPersonalityResetFailed', '触发当前角色性格重选失败，请稍后再试。')
+                : '触发当前角色性格重选失败，请稍后再试。';
+            alert(fallbackError);
+        });
         return;
     }
 
@@ -3535,7 +5340,8 @@ function resetTutorialForPage(pageKey) {
         'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
         'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
         'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
-        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览'
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览',
+        'current_personality': window.t ? window.t('memory.tutorialPageCurrentPersonality', '当前角色性格') : '当前角色性格'
     };
     const pageName = pageNames[pageKey] || pageKey;
     // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导

@@ -72,7 +72,9 @@ export default {
     sdkVersion: 'SDK 版本',
     updateTime: '更新时间',
     noMetricsData: '暂无性能数据',
-    failedToLoadServerInfo: '无法加载服务器信息'
+    failedToLoadServerInfo: '无法加载服务器信息',
+    startTutorial: '教程引导',
+    tutorialHint: '第一次使用插件管理器？点这里让我带你快速认识一下。'
   },
   plugins: {
     title: '插件列表',
@@ -238,9 +240,20 @@ export default {
     },
     ui: {
       open: '打开界面',
+      title: '界面',
+      panel: '面板',
+      guide: '教程',
       loading: '加载插件界面中...',
       loadError: '加载插件界面失败',
-      noUI: '该插件没有自定义界面'
+      noUI: '该插件没有自定义界面',
+      hostedTsxPending: 'Hosted TSX 渲染即将支持',
+      markdownPending: 'Markdown 教程渲染即将支持',
+      autoPending: '自动生成面板即将支持',
+      surfaceUnavailable: 'Surface 暂不可用',
+      surfaceEntryMissing: '该 Surface 声明的入口文件不存在，请检查 plugin.toml 中的 entry 路径。',
+      surfaceWarnings: '插件 UI 声明存在需要处理的问题',
+      controlError: '插件界面控件错误',
+      hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
     }
   },
   metrics: {
@@ -406,5 +419,116 @@ export default {
   },
   app: {
     titleSuffix: 'N.E.K.O 插件管理'
+  },
+  tutorial: {
+    yuiGuide: {
+      buttons: {
+        skipChat: '暂时不聊天',
+        sayHello: '你好',
+      },
+      lines: {
+        introActivationHint: '点一下这里，我就能开始说话啦～',
+        introGreetingReply: '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。',
+        introBasic: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+        takeoverCaptureCursor: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
+        takeoverPluginPreviewHome: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
+        takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
+        takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
+        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        takeoverSettingsPeekDetailPart1: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
+        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
+        takeoverReturnControl: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
+        interruptResistLight1: '喂！不要拽我啦，还没轮到你的回合呢！',
+        interruptResistLight3: '等一下啦！还没结束呢，不要随便打断我啦！',
+        interruptAngryExit: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+        introPractice: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～',
+      },
+    }
+  },
+  yuiTutorial: {
+    title: '喵～欢迎来到插件管理面板！',
+    welcome: '这里就是管理所有插件的地方啦！你可以查看、启动、配置各种插件，让我变得更厉害哦～',
+    hint: '随便看看吧，看完了点下面的按钮告诉我～',
+    complete: '看完了喵～',
+    dismiss: '先不看',
+    keyboardSkipHint: '按 Enter 或空格进入下一步，每步开始后 0.5 秒生效。',
+    steps: {
+      start: {
+        title: '从这里开始',
+        body: '点这个按钮就可以随时重新播放插件管理器的教程，不会自动打扰你喵。'
+      },
+      stats: {
+        title: '插件总览',
+        body: '这里会显示插件总数、运行中、已停止和崩溃数量，让你一眼看出当前状态。'
+      },
+      metrics: {
+        title: '性能监控',
+        body: '这里展示插件服务整体的 CPU、内存、线程和活跃插件情况，排查问题时很有用。'
+      },
+      server: {
+        title: '服务器信息',
+        body: '这里可以看到 SDK 版本、插件数量和更新时间，用来确认当前插件服务是否正常。'
+      },
+      plugins: {
+        title: '插件列表入口',
+        body: '要启动、停止、配置插件，或者查看单个插件日志，就从左侧的插件管理进入。'
+      },
+      pluginWorkbench: {
+        title: '插件管理工作台',
+        body: '这里集中展示插件、适配器和扩展，是日常管理插件的主要页面。'
+      },
+      pluginFilters: {
+        title: '筛选和搜索',
+        body: '可以按名称、状态、类型或高级规则筛选插件，插件很多时会特别好用。'
+      },
+      pluginLayout: {
+        title: '视图布局',
+        body: '这里可以切换列表、单排、双排和紧凑布局，按你的屏幕空间调整显示方式。'
+      },
+      pluginContextMenu: {
+        title: '右键操作',
+        body: '对插件右键可以快速打开详情、配置、日志，也能执行启停、重载等常用操作。'
+      },
+      packageManager: {
+        title: '包管理侧栏',
+        body: '包管理会复用当前筛选和选择结果，用来打包、检查、校验或解包插件包。'
+      },
+      packageOperations: {
+        title: '包管理操作区',
+        body: '这里可以选择打包模式、检查插件包、解包或分析整合包；本指南不会自动执行危险操作。'
+      },
+      pluginDetail: {
+        title: '插件详情页',
+        body: '进入详情页后可以查看插件元信息、入口点、性能、配置和日志。'
+      },
+      pluginDetailActions: {
+        title: '详情页操作',
+        body: '右上角保留了针对当前插件的快捷操作，适合在确认详情后再启动、停止或重载。'
+      },
+      runs: {
+        title: '运行记录',
+        body: '运行记录会展示插件入口任务的执行历史和实时状态。'
+      },
+      runsList: {
+        title: '运行列表',
+        body: '左侧列表用于选择某次运行，刷新按钮可以重新同步最新记录。'
+      },
+      runsDetail: {
+        title: '运行详情',
+        body: '右侧会显示阶段、进度、错误和导出物；取消按钮只对可取消任务出现。'
+      },
+      logs: {
+        title: '服务器日志',
+        body: '服务器日志可以帮助你查看插件服务本身的输出和错误。'
+      },
+      logToolbar: {
+        title: '日志筛选工具',
+        body: '这里可以按级别、关键词和行数筛选日志，也可以控制是否自动滚动。'
+      },
+      logList: {
+        title: '日志列表',
+        body: '日志列表按时间展示来源、级别和消息，是排查插件问题的第一站。'
+      }
+    }
   }
 }

@@ -146,6 +146,14 @@ class VRMInteraction {
             return;
         }
 
+        const isYuiGuideDragLocked = () => {
+            const body = document.body;
+            return !!(body && (
+                body.classList.contains('yui-guide-home-driver-hidden')
+                || body.classList.contains('yui-taking-over')
+            ));
+        };
+
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
 
@@ -153,6 +161,7 @@ class VRMInteraction {
         this.mouseDownHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
+            if (isYuiGuideDragLocked()) return;
 
             // 如果正在回弹动画，优先取消，避免拖拽冲突
             if (this._snapAnimationFrameId) {
@@ -211,6 +220,17 @@ class VRMInteraction {
         // 2. 鼠标移动 (核心拖拽逻辑)
         this.dragHandler = (e) => {
             if (!this.manager._isModelReadyForInteraction) return;
+            if (isYuiGuideDragLocked()) {
+                if (this.isDragging) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.isDragging = false;
+                    this.dragMode = null;
+                    canvas.style.cursor = 'default';
+                    this._restoreButtonPointerEvents();
+                }
+                return;
+            }
             if (this.checkLocked()) {
                 if (this.isDragging) {
                     e.preventDefault();
