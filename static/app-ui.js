@@ -278,9 +278,14 @@
             border-radius: 16px;
             padding: 32px 28px 24px;
             width: 370px; max-width: 88vw;
+            max-height: min(82vh, 720px);
+            box-sizing: border-box;
             box-shadow: 0 12px 40px rgba(0,0,0,0.5);
             text-align: center;
             pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
             animation: pnBoxIn 0.3s ease;
         `;
 
@@ -300,15 +305,30 @@
         const icon = document.createElement('img');
         icon.src = '/static/icons/exclamation.png';
         icon.alt = '';
-        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
+        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
 
         const textDiv = document.createElement('div');
-        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;text-align:left;';
+        textDiv.style.cssText = [
+            'font-size:16px',
+            'font-weight:600',
+            'line-height:1.7',
+            'margin-bottom:22px',
+            'text-align:left',
+            'width:100%',
+            'min-height:0',
+            'flex:1 1 auto',
+            'max-height:min(54vh,420px)',
+            'overflow-y:auto',
+            'overflow-wrap:anywhere',
+            'padding-right:6px',
+            'box-sizing:border-box',
+        ].join(';');
         if (typeof window.renderMiniMarkdown === 'function') {
             textDiv.innerHTML = window.renderMiniMarkdown(displayText);
         } else {
             textDiv.textContent = displayText;
         }
+        btn.style.flexShrink = '0';
 
         box.appendChild(icon);
         box.appendChild(textDiv);
