@@ -86,7 +86,7 @@ from utils.voice_clone import (
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
-from utils.language_utils import normalize_language_code
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -179,6 +179,25 @@ def _build_persona_selection_payload(character_payload: dict) -> dict:
         "selected_at": str(override.get("selected_at") or "").strip(),
         "profile": dict(profile) if isinstance(profile, dict) else {},
     }
+
+
+def _normalize_persona_request_language(raw_language: object) -> str | None:
+    """归一化人格选择请求携带的界面语言，无效值保持 None 让下游使用现有兜底。"""
+    raw = str(raw_language or "").strip()
+    if not raw or not is_supported_language_code(raw):
+        return None
+    return normalize_language_code(raw, format="full")
+
+
+def _get_persona_request_language(request: Request) -> str | None:
+    """从查询参数或 Accept-Language 里提取人格预设语言。"""
+    language = request.query_params.get("language") or request.query_params.get("i18n_language")
+    if language:
+        return _normalize_persona_request_language(language)
+    accept_lang = request.headers.get("Accept-Language", "")
+    if accept_lang:
+        return _normalize_persona_request_language(accept_lang.split(",")[0].split(";")[0].strip())
+    return None
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -2034,10 +2053,10 @@ async def get_current_catgirl():
 
 
 @router.get('/persona-presets')
-async def list_persona_presets_route():
+async def list_persona_presets_route(request: Request):
     return _json_no_store_response({
         "success": True,
-        "presets": list_persona_presets(),
+        "presets": list_persona_presets(lang=_get_persona_request_language(request)),
     })
 
 
@@ -2132,10 +2151,14 @@ async def update_character_persona_selection(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
 
     selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    request_language = _normalize_persona_request_language(
+        (payload or {}).get("i18n_language") or (payload or {}).get("language")
+    )
     override_payload = build_persona_override_payload(
         preset_id,
         source=source,
         selected_at=selected_at,
+        lang=request_language,
     )
     if override_payload is None:
         return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)

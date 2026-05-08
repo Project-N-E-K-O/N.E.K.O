@@ -44,6 +44,29 @@
         return payload;
     }
 
+    function getCurrentLanguage() {
+        try {
+            if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                return window.i18next.language;
+            }
+            if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language) {
+                return window.i18n.language;
+            }
+            if (typeof localStorage !== 'undefined') {
+                const cached = localStorage.getItem('i18nextLng');
+                if (cached) {
+                    return cached;
+                }
+            }
+            if (typeof navigator !== 'undefined' && navigator.language) {
+                return navigator.language;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
     function ensureStyles() {
         if (document.getElementById(STYLE_ID)) {
             return;
@@ -373,7 +396,11 @@
         }
 
         async fetchPresets() {
-            const payload = await requestJson('/api/characters/persona-presets');
+            const language = getCurrentLanguage();
+            const url = language
+                ? `/api/characters/persona-presets?language=${encodeURIComponent(language)}`
+                : '/api/characters/persona-presets';
+            const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
         }
 
@@ -952,6 +979,7 @@
                             body: JSON.stringify({
                                 preset_id: selectedPresetId,
                                 source: openReason,
+                                i18n_language: getCurrentLanguage(),
                             }),
                         }
                     );

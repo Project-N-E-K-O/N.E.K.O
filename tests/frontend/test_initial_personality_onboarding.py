@@ -92,7 +92,7 @@ def _bootstrap_page(mock_page: Page) -> None:
                     });
                 }
 
-                if (requestUrl === '/api/characters/persona-presets') {
+                if (new URL(requestUrl, window.location.origin).pathname === '/api/characters/persona-presets') {
                     return new Response(JSON.stringify({
                         success: true,
                         presets: [{

@@ -43,8 +43,10 @@ def _make_config_manager(tmp_root: Path) -> ConfigManager:
 
 
 class _DummyRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, *, query_params=None, headers=None):
         self._payload = payload
+        self.query_params = query_params or {}
+        self.headers = headers or {}
 
     async def json(self):
         return self._payload
@@ -297,7 +299,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
 
             router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
 
-            presets_response = await router_module.list_persona_presets_route()
+            presets_response = await router_module.list_persona_presets_route(_DummyRequest({}))
             presets_body = _parse_json_response(presets_response)
             assert presets_body["success"] is True
             assert [preset["preset_id"] for preset in presets_body["presets"]] == [
@@ -306,10 +308,20 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 "elegant_butler",
             ]
 
+            ja_presets_response = await router_module.list_persona_presets_route(
+                _DummyRequest({}, query_params={"language": "ja-JP"}),
+            )
+            ja_presets_body = _parse_json_response(ja_presets_response)
+            assert "煮干しのご褒美" in ja_presets_body["presets"][0]["prompt_guidance"]
+
             current_name = config_manager.load_characters()["当前猫娘"]
             save_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "onboarding"}),
+                _DummyRequest({
+                    "preset_id": "classic_genki",
+                    "source": "onboarding",
+                    "i18n_language": "zh-CN",
+                }),
             )
             assert save_result["success"] is True
             assert save_result["selection"]["mode"] == "override"
@@ -317,6 +329,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
             assert override["preset_id"] == "classic_genki"
+            assert "小鱼干奖励喵" in override["prompt_guidance"]
 
             selection_response = await router_module.get_character_persona_selection(current_name)
             selection_body = _parse_json_response(selection_response)
