@@ -318,6 +318,7 @@
             font-size: 15px; font-weight: 600; cursor: pointer;
             pointer-events: auto;
             transition: background 0.15s;
+            flex-shrink: 0;
         `;
 
         const icon = document.createElement('img');
@@ -338,7 +339,7 @@
             'max-height:min(54vh,420px)',
             'overflow-y:auto',
             'overflow-wrap:anywhere',
-            'padding-right:6px',
+            'padding-right:12px',
             'box-sizing:border-box',
         ].join(';');
         if (typeof window.renderMiniMarkdown === 'function') {
@@ -346,7 +347,6 @@
         } else {
             textDiv.textContent = displayText;
         }
-        btn.style.flexShrink = '0';
 
         box.appendChild(icon);
         box.appendChild(textDiv);
