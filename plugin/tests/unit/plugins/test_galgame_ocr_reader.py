@@ -3490,7 +3490,8 @@ def test_ocr_reader_update_config_resets_auto_lang_detector_on_toggle(tmp_path: 
     config.rapidocr_auto_detect_lang = False
     manager.update_config(config)
 
-    assert detector.feed("\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694") is None
+    new_detector = manager._ocr_lang_detector
+    assert new_detector.feed("\uc720\ud0a4: \ub2e4\uc74c\uc5d0 \ub610 \ub9cc\ub098\uc694") is None
 
 
 def test_ocr_reader_interval_consume_does_not_lazy_start_foreground_monitor(

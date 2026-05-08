@@ -7900,6 +7900,7 @@ class OcrReaderManager:
                 )
                 result.warnings.append("ocr_reader ignored text that looks like the N.E.K.O plugin UI")
                 self._default_ocr_state.reset()
+                self._ocr_lang_detector.reset()
                 self._reset_aihong_menu_state()
                 if (
                     not legacy_geometryless_auto_target
@@ -8027,6 +8028,7 @@ class OcrReaderManager:
                                     capture_backend_kind=followup_extraction.capture_backend_kind,
                                 )
                                 self._default_ocr_state.reset()
+                                self._ocr_lang_detector.reset()
                                 self._reset_aihong_menu_state()
                                 result.warnings.append(
                                     "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -8136,6 +8138,7 @@ class OcrReaderManager:
                                         capture_backend_kind=menu_extraction.capture_backend_kind,
                                     )
                                     self._default_ocr_state.reset()
+                                    self._ocr_lang_detector.reset()
                                     self._reset_aihong_menu_state()
                                     result.warnings.append(
                                         "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -8223,6 +8226,7 @@ class OcrReaderManager:
                                 capture_backend_kind=followup_extraction.capture_backend_kind,
                             )
                             self._default_ocr_state.reset()
+                            self._ocr_lang_detector.reset()
                             self._reset_aihong_menu_state()
                             result.warnings.append(
                                 "ocr_reader ignored text that looks like the N.E.K.O plugin UI"
@@ -8261,6 +8265,7 @@ class OcrReaderManager:
             self._logger.warning("ocr_reader capture/OCR timed out: {}", exc)
             capture_error = True
             self._record_capture_error(now=now, error=exc)
+            self._ocr_lang_detector.reset()
             self._reset_aihong_menu_state()
             if int(self._writer.last_seq or 0) <= 1:
                 self._writer.discard_session()
@@ -8270,6 +8275,7 @@ class OcrReaderManager:
             self._logger.warning("ocr_reader capture/OCR failed: {}", exc)
             capture_error = True
             self._record_capture_error(now=now, error=exc)
+            self._ocr_lang_detector.reset()
             self._reset_aihong_menu_state()
             if int(self._writer.last_seq or 0) <= 1:
                 self._writer.discard_session()

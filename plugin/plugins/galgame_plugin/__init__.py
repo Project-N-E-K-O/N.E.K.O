@@ -2826,11 +2826,13 @@ class GalgamePlugin(NekoPluginBase):
                 lang_type,
             )
             return
+        self._cfg.rapidocr.rapidocr_lang_type = normalized
         self._cfg.rapidocr.rapidocr_auto_detect_last_lang = normalized
+        auto_detect_lang = bool(self._cfg.rapidocr.rapidocr_auto_detect_lang)
         try:
             self._config_service.persist_rapidocr_lang(
                 lang_type=normalized,
-                auto_detect_lang=True,
+                auto_detect_lang=auto_detect_lang,
                 auto_detect_last_lang=normalized,
             )
         except Exception as exc:
@@ -2841,6 +2843,7 @@ class GalgamePlugin(NekoPluginBase):
                 normalized,
                 exc,
             )
+        self._refresh_dependency_status()
         with self._state_lock:
             self._state.next_poll_at_monotonic = 0.0
             self._state_dirty = True

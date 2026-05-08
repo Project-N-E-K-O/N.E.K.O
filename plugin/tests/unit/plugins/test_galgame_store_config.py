@@ -58,6 +58,17 @@ def test_galgame_store_config_overrides_coerce_rapidocr_auto_detect_bool(tmp_pat
         assert loaded[STORE_RAPIDOCR_AUTO_DETECT_LANG] is expected
 
 
+def test_galgame_store_config_overrides_normalize_rapidocr_lang_values(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+
+    store.persist_config_override(STORE_RAPIDOCR_LANG_TYPE, " Japan ")
+    store.persist_config_override(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG, "KOREAN")
+
+    loaded = store.load_config_overrides()
+    assert loaded[STORE_RAPIDOCR_LANG_TYPE] == "japan"
+    assert loaded[STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG] == "korean"
+
+
 def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     for key, value in {

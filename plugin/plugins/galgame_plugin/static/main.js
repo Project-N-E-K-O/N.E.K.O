@@ -5262,7 +5262,7 @@ function renderRapidOcrLangBar(rapidocr) {
     return;
   }
 
-  const langType = rapidocr.lang_type || 'japan';
+  const langType = rapidocr.lang_type || 'ch';
   const autoDetect = rapidocr.auto_detect_lang !== false;
   const idMap = { ch: 'Ch', japan: 'Japan', korean: 'Korean', en: 'En' };
   Object.entries(idMap).forEach(([lang, suffix]) => {
@@ -5272,7 +5272,8 @@ function renderRapidOcrLangBar(rapidocr) {
     }
     btn.classList.toggle('active', langType === lang);
     btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
-    btn.disabled = autoDetect || rapidOcrLangRequestPending;
+    btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
+    btn.disabled = rapidOcrLangRequestPending;
   });
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');
@@ -5300,6 +5301,47 @@ function bindRapidOcrLangButtons() {
   Object.entries(idMap).forEach(([suffix, lang]) => {
     rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
   });
+
+  const group = document.querySelector('.rapidocr-lang-buttons');
+  if (group && !group.__galgameRapidOcrKeysBound) {
+    group.__galgameRapidOcrKeysBound = true;
+    group.addEventListener('keydown', (event) => {
+      const buttons = Array.from(group.querySelectorAll('.rapidocr-lang-btn'));
+      const enabledButtons = buttons.filter((button) => !button.disabled);
+      if (!enabledButtons.length) {
+        return;
+      }
+      const currentIndex = Math.max(0, enabledButtons.indexOf(document.activeElement));
+      let nextIndex = -1;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        nextIndex = (currentIndex - 1 + enabledButtons.length) % enabledButtons.length;
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        nextIndex = (currentIndex + 1) % enabledButtons.length;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = enabledButtons.length - 1;
+      } else if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.click();
+        }
+        return;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      const nextButton = enabledButtons[nextIndex];
+      buttons.forEach((button) => {
+        const selected = button === nextButton;
+        button.setAttribute('tabindex', selected ? '0' : '-1');
+        button.setAttribute('aria-checked', selected ? 'true' : 'false');
+        button.classList.toggle('active', selected);
+      });
+      nextButton.focus();
+      nextButton.click();
+    });
+  }
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');
   if (checkbox && !checkbox.__galgameRapidOcrAutoBound) {
