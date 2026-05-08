@@ -55,4 +55,4 @@ def handle(args: argparse.Namespace) -> int:
         return release_cmd.handle_release_check(args)
 
     args._command_label = "check"
-    return release_cmd.handle_doctor(args)
+    return release_cmd.handle_check(args)

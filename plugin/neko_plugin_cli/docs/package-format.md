@@ -36,7 +36,7 @@ Current commands:
 - `build`
 - `inspect`
 - `verify`
-- `unpack`
+- `install`
 - `analyze`
 - `init`
 - `init-repo`
@@ -50,7 +50,7 @@ uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli build qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin
-uv run python -m plugin.neko_plugin_cli.cli unpack qq_auto_reply.neko-plugin
+uv run python -m plugin.neko_plugin_cli.cli install qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```
 
@@ -300,8 +300,8 @@ Recommended pipeline for a single plugin:
 Current implementation notes:
 
 - single-plugin packing only accepts `package_type = "plugin"`
-- unpack verifies `metadata.toml` payload hash when metadata exists
-- unpack conflict handling currently supports `rename` and `fail`
+- install verifies `metadata.toml` payload hash when metadata exists
+- install conflict handling currently supports `rename` and `fail`
 
 Recommended pipeline for a bundle:
 

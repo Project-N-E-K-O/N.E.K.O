@@ -19,7 +19,7 @@ from .validate_cmd import validate_plugin_dir
 Issue = tuple[str, str]
 
 
-def handle_doctor(args: argparse.Namespace) -> int:
+def handle_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check")
     try:
         defaults = _defaults_from_args(args, defaults=args._defaults)

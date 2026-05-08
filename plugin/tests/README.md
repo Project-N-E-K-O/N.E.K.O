@@ -39,7 +39,7 @@ PLUGIN_E2E_BASE_URL=http://127.0.0.1:48911/ui uv run pytest -c plugin/tests/pyte
 ## Design Notes
 
 - Integration tests use `httpx.AsyncClient` with `ASGITransport`; no external server process is required.
-- `integration/test_neko_plugin_cli_workflow.py` uses fixture plugins under `fixtures/neko_plugin_cli/plugins/` to replay realistic build/inspect/verify/unpack flows without manual testing.
+- `integration/test_neko_plugin_cli_workflow.py` uses fixture plugins under `fixtures/neko_plugin_cli/plugins/` to replay realistic build/inspect/verify/install flows without manual testing.
 - Admin dependency is overridden in test app fixture to isolate business behavior from auth setup.
 - E2E tests are gated by `--run-plugin-e2e` to keep CI stable and fast by default.
 

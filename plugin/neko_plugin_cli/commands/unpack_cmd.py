@@ -1,4 +1,4 @@
-"""neko-plugin unpack — extract a package archive."""
+"""neko-plugin install — install a package archive into plugin roots."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from ._resolve import resolve_package_path
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("unpack", help="Unpack a package archive")
+    parser = subparsers.add_parser("install", help="Install a package archive")
     pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
     pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")

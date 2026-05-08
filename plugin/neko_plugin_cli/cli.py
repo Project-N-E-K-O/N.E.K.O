@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
               neko-plugin check -r <plugin>        Run the pre-release check used by CI
 
             Package/debug commands:
-              build, inspect, verify, unpack, analyze
+              build, inspect, verify, install, analyze
             """
         ),
     )

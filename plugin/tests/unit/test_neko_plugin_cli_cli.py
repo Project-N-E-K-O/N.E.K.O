@@ -65,7 +65,7 @@ def _tamper_package(package_path: Path, target_name: str) -> None:
             dst.writestr(info, data)
 
 
-def test_cli_build_inspect_verify_and_unpack(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_inspect_verify_and_install(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
@@ -84,9 +84,9 @@ def test_cli_build_inspect_verify_and_unpack(tmp_path: Path, capsys: pytest.Capt
     verify_exit = neko_plugin_cli.main(["verify", str(package_path)])
     assert verify_exit == 0
 
-    unpack_exit = neko_plugin_cli.main(
+    install_exit = neko_plugin_cli.main(
         [
-            "unpack",
+            "install",
             str(package_path),
             "--plugins-root",
             str(plugins_root),
@@ -96,7 +96,7 @@ def test_cli_build_inspect_verify_and_unpack(tmp_path: Path, capsys: pytest.Capt
             "fail",
         ]
     )
-    assert unpack_exit == 0
+    assert install_exit == 0
     assert (plugins_root / "cli_demo" / "plugin.toml").is_file()
     assert (profiles_root / "cli_demo" / "default.toml").is_file()
 
@@ -152,7 +152,7 @@ def test_cli_build_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "type=bundle" in captured.out
 
 
-def test_cli_check_is_doctor_alias_with_new_label(
+def test_cli_check_uses_new_label(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -178,7 +178,7 @@ def test_cli_check_release_uses_release_check_flow(
     assert "check --release blocked by validation errors" in captured.err
 
 
-@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate", "pack"])
+@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate", "pack", "unpack"])
 def test_cli_legacy_commands_are_removed(
     legacy_command: str,
     capsys: pytest.CaptureFixture[str],
