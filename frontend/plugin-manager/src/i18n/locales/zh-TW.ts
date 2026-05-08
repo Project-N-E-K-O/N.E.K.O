@@ -189,12 +189,12 @@ export default {
     batchNoReloadable: '選取的外掛中沒有執行中的',
     import: '匯入',
     importing: '匯入中…',
-    importSuccess: '已匯入 {name}，解包了 {count} 個外掛',
+    importSuccess: '已匯入 {name}，安裝了 {count} 個外掛',
     importFailed: '匯入失敗',
     export: '匯出',
     exportSuccess: '已匯出 {count} 個套件',
     exportFailed: '匯出失敗',
-    exportPackFailed: '打包失敗，無法匯出',
+    exportBuildFailed: '構建失敗，無法匯出',
     filterRuleGroups: {
       state: '狀態',
       type: '類型',
@@ -225,7 +225,7 @@ export default {
       runtime: '執行',
       plugin: '擴充功能'
     },
-    pack: '打包外掛',
+    build: '構建外掛',
     delete: '刪除外掛',
     disableExtension: '停用擴充功能',
     enableExtension: '啟用擴充功能',
@@ -355,12 +355,12 @@ export default {
     pluginStarted: '外掛啟動成功',
     pluginStopped: '外掛已停止',
     pluginReloaded: '外掛重新載入成功',
-    pluginPacked: '外掛已打包：{packageName}',
+    pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     startFailed: '啟動失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
-    packFailed: '打包外掛失敗',
+    buildFailed: '構建外掛失敗',
     deleteFailed: '刪除外掛失敗',
     pluginDisabled: '外掛已停用，請先啟用',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: '包管理側欄',
-        body: '包管理會復用目前篩選和選擇結果，用來打包、檢查、校驗或解包外掛包。'
+        body: '包管理會復用目前篩選和選擇結果，用來構建、檢查、校驗或安裝外掛包。'
       },
       packageOperations: {
         title: '包管理操作區',
-        body: '這裡可以選擇打包模式、檢查外掛包、解包或分析整合包；本指南不會自動執行危險操作。'
+        body: '這裡可以選擇構建模式、檢查外掛包、安裝或分析整合包；本指南不會自動執行危險操作。'
       },
       pluginDetail: {
         title: '外掛詳情頁',

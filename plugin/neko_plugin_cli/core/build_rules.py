@@ -25,8 +25,8 @@ _DEFAULT_EXCLUDE_SUFFIXES = {
 }
 
 
-class PackRuleSet(BaseModel):
-    """User-defined file selection rules loaded from `[tool.neko.pack]`."""
+class BuildRuleSet(BaseModel):
+    """User-defined file selection rules loaded from `[tool.neko.build]`."""
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
@@ -41,13 +41,13 @@ class PackRuleSet(BaseModel):
         if value is None:
             return []
         if not isinstance(value, list):
-            raise TypeError("pack rule value must be a list of strings")
+            raise TypeError("build rule value must be a list of strings")
 
         normalized: list[str] = []
         seen: set[str] = set()
         for item in value:
             if not isinstance(item, str):
-                raise TypeError("pack rule entries must be strings")
+                raise TypeError("build rule entries must be strings")
             pattern = item.strip()
             if not pattern or pattern in seen:
                 continue
@@ -56,28 +56,28 @@ class PackRuleSet(BaseModel):
         return normalized
 
 
-def load_pack_rules(pyproject_toml: dict[str, object] | None) -> PackRuleSet:
+def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
     # Missing config is treated as "no extra rules" so basic packaging keeps a
     # zero-config path.
     if not isinstance(pyproject_toml, dict):
-        return PackRuleSet()
+        return BuildRuleSet()
 
     tool_table = pyproject_toml.get("tool")
     if not isinstance(tool_table, dict):
-        return PackRuleSet()
+        return BuildRuleSet()
 
     neko_table = tool_table.get("neko")
     if not isinstance(neko_table, dict):
-        return PackRuleSet()
+        return BuildRuleSet()
 
-    pack_table = neko_table.get("pack")
-    if not isinstance(pack_table, dict):
-        return PackRuleSet()
+    build_table = neko_table.get("build")
+    if not isinstance(build_table, dict):
+        return BuildRuleSet()
 
-    return PackRuleSet.model_validate(pack_table)
+    return BuildRuleSet.model_validate(build_table)
 
 
-def should_skip_path(relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -> bool:
+def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) -> bool:
     # Matching always works on normalized archive-style relative paths so the
     # same rule semantics apply across platforms.
     path_str = relative_path.as_posix()

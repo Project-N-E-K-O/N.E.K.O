@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from plugin.neko_plugin_cli.public import pack_plugin
+from plugin.neko_plugin_cli.public import build_plugin
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
 
@@ -62,7 +62,7 @@ async def test_plugin_cli_inspect_and_verify_routes(
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "route_demo.neko-plugin"
-    pack_plugin(plugin_dir, package_path)
+    build_plugin(plugin_dir, package_path)
 
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
@@ -111,7 +111,7 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path, plugin_id="route_pkg_demo")
     package_path = tmp_path / "route_pkg_demo.neko-plugin"
-    pack_plugin(plugin_dir, package_path)
+    build_plugin(plugin_dir, package_path)
 
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
@@ -129,7 +129,7 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
 
 
 @pytest.mark.asyncio
-async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
+async def test_plugin_cli_build_bundle_route_uses_mode_payload(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -146,7 +146,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
-            "/plugin-cli/pack",
+            "/plugin-cli/build",
             json={
                 "mode": "bundle",
                 "plugins": ["route_bundle_one", "route_bundle_two"],
@@ -158,13 +158,13 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
         assert response.status_code == 200
         body = response.json()
         assert body["ok"] is True
-        assert body["packed_count"] == 1
-        assert body["packed"][0]["package_type"] == "bundle"
-        assert body["packed"][0]["plugin_ids"] == ["route_bundle_one", "route_bundle_two"]
+        assert body["built_count"] == 1
+        assert body["built"][0]["package_type"] == "bundle"
+        assert body["built"][0]["plugin_ids"] == ["route_bundle_one", "route_bundle_two"]
 
 
 @pytest.mark.asyncio
-async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
+async def test_plugin_cli_route_workflow_build_analyze_inspect_verify_and_install(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -179,8 +179,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -197,8 +197,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
         assert analyze_body["sdk_supported_analysis"]["current_sdk_supported_by_all"] is True
         assert analyze_body["common_dependencies"][0]["name"] == "shared-lib"
 
-        pack_response = await client.post(
-            "/plugin-cli/pack",
+        build_response = await client.post(
+            "/plugin-cli/build",
             json={
                 "mode": "bundle",
                 "plugins": [alpha_dir.name, beta_dir.name],
@@ -209,10 +209,10 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
                 "target_dir": str(target_dir),
             },
         )
-        assert pack_response.status_code == 200
-        pack_body = pack_response.json()
-        assert pack_body["ok"] is True
-        assert pack_body["packed_count"] == 1
+        assert build_response.status_code == 200
+        build_body = build_response.json()
+        assert build_body["ok"] is True
+        assert build_body["built_count"] == 1
 
         package_path = target_dir / "route_workflow_bundle.neko-bundle"
         assert package_path.is_file()
@@ -237,8 +237,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
         assert verify_body["ok"] is True
         assert verify_body["payload_hash_verified"] is True
 
-        unpack_response = await client.post(
-            "/plugin-cli/unpack",
+        install_response = await client.post(
+            "/plugin-cli/install",
             json={
                 "package": str(package_path),
                 "plugins_root": str(plugins_root),
@@ -246,26 +246,26 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
                 "on_conflict": "rename",
             },
         )
-        assert unpack_response.status_code == 200
-        unpack_body = unpack_response.json()
-        assert unpack_body["package_type"] == "bundle"
-        assert unpack_body["unpacked_plugin_count"] == 2
-        assert unpack_body["payload_hash_verified"] is True
+        assert install_response.status_code == 200
+        install_body = install_response.json()
+        assert install_body["package_type"] == "bundle"
+        assert install_body["installed_plugin_count"] == 2
+        assert install_body["payload_hash_verified"] is True
         assert (plugins_root / "bundle_alpha" / "plugin.toml").is_file()
         assert (plugins_root / "bundle_beta" / "plugin.toml").is_file()
         assert (profiles_root / "route_workflow_bundle" / "default.toml").is_file()
 
 
 @pytest.mark.asyncio
-async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
+async def test_plugin_cli_install_route_uses_default_roots_when_fields_omitted(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """省略 plugins_root/profiles_root 时，默认落盘到 _UNPACK_*_ROOT 下。"""
+    """省略 plugins_root/profiles_root 时，默认落盘到 _INSTALL_*_ROOT 下。"""
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     package_path = tmp_path / "simple_plugin.neko-plugin"
-    pack_plugin(plugin_dir, package_path)
+    build_plugin(plugin_dir, package_path)
 
     default_plugins_root = tmp_path / "default_user_plugins"
     default_profiles_root = tmp_path / "default_user_profiles"
@@ -273,13 +273,13 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", default_plugins_root)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", default_profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", default_plugins_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", default_profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
-            "/plugin-cli/unpack",
+            "/plugin-cli/install",
             json={"package": str(package_path), "on_conflict": "rename"},
         )
 
@@ -287,3 +287,47 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
         body = response.json()
         assert body["plugins_root"] == str(default_plugins_root.resolve())
         assert (default_plugins_root / "simple_plugin" / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_upload_and_install_route_returns_upload_and_install_shapes(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
+    package_path = tmp_path / "simple_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+
+    packages_root = tmp_path / "packages"
+    plugins_root = tmp_path / "uploaded_user_plugins"
+    profiles_root = tmp_path / "uploaded_user_profiles"
+
+    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
+
+    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", packages_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", profiles_root)
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/upload-and-install",
+            files={
+                "file": (
+                    "simple_plugin.neko-plugin",
+                    package_path.read_bytes(),
+                    "application/octet-stream",
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["upload"]["name"] == "simple_plugin.neko-plugin"
+        assert body["upload"]["path"].endswith("simple_plugin.neko-plugin")
+        assert "unpack" not in body
+        assert body["install"]["package_type"] == "plugin"
+        assert body["install"]["installed_plugin_count"] == 1
+        assert body["install"]["installed_plugins"][0]["target_plugin_id"] == "simple_plugin"
+        assert (plugins_root / "simple_plugin" / "plugin.toml").is_file()

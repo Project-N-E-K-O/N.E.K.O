@@ -53,7 +53,7 @@ def handle(args: argparse.Namespace) -> int:
             "    version of neko_plugin_cli that had cross-platform sorting issues\n"
             "  - the archive was modified or corrupted after packaging\n"
             "  - the plugin source changed but the package was not re-built\n"
-            "Try re-packing the plugin with the latest neko_plugin_cli.",
+            "Try re-building the plugin with the latest neko_plugin_cli.",
             file=sys.stderr,
         )
     return 1

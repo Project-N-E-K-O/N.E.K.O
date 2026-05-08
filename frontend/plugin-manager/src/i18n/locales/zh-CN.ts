@@ -189,12 +189,12 @@ export default {
     batchNoReloadable: '选中的插件中没有运行中的',
     import: '导入',
     importing: '导入中…',
-    importSuccess: '已导入 {name}，解包了 {count} 个插件',
+    importSuccess: '已导入 {name}，安装了 {count} 个插件',
     importFailed: '导入失败',
     export: '导出',
     exportSuccess: '已导出 {count} 个包',
     exportFailed: '导出失败',
-    exportPackFailed: '打包失败，无法导出',
+    exportBuildFailed: '构建失败，无法导出',
     filterRuleGroups: {
       state: '状态',
       type: '类型',
@@ -225,7 +225,7 @@ export default {
       runtime: '运行',
       plugin: '扩展功能'
     },
-    pack: '打包插件',
+    build: '构建插件',
     delete: '删除插件',
     disableExtension: '禁用扩展',
     enableExtension: '启用扩展',
@@ -355,12 +355,12 @@ export default {
     pluginStarted: '插件启动成功',
     pluginStopped: '插件已停止',
     pluginReloaded: '插件重载成功',
-    pluginPacked: '插件已打包：{packageName}',
+    pluginBuilt: '插件已构建：{packageName}',
     pluginDeleted: '插件已删除',
     startFailed: '启动失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
-    packFailed: '打包插件失败',
+    buildFailed: '构建插件失败',
     deleteFailed: '删除插件失败',
     pluginDisabled: '插件已禁用，请先启用',
     pluginLoadFailed: '插件加载失败，当前不可启动',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: '包管理侧栏',
-        body: '包管理会复用当前筛选和选择结果，用来打包、检查、校验或解包插件包。'
+        body: '包管理会复用当前筛选和选择结果，用来构建、检查、校验或安装插件包。'
       },
       packageOperations: {
         title: '包管理操作区',
-        body: '这里可以选择打包模式、检查插件包、解包或分析整合包；本指南不会自动执行危险操作。'
+        body: '这里可以选择构建模式、检查插件包、安装或分析整合包；本指南不会自动执行危险操作。'
       },
       pluginDetail: {
         title: '插件详情页',

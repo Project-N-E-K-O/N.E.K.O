@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ..core import unpack_package
+from ..core import install_package
 from ..paths import CliDefaults
 from ._completers import PACKAGE_FILE_COMPLETER
 from ._resolve import resolve_package_path
@@ -26,7 +26,7 @@ def handle(args: argparse.Namespace) -> int:
     package_path = resolve_package_path(args.package, defaults=defaults)
 
     try:
-        result = unpack_package(
+        result = install_package(
             package_path,
             plugins_root=args.plugins_root,
             profiles_root=args.profiles_root,
@@ -46,7 +46,7 @@ def handle(args: argparse.Namespace) -> int:
         print(f"  payload_hash={result.payload_hash}")
     if result.payload_hash_verified is not None:
         print(f"  payload_hash_verified={result.payload_hash_verified}")
-    for item in result.unpacked_plugins:
+    for item in result.installed_plugins:
         suffix = " (renamed)" if item.renamed else ""
         print(f"  plugin: {item.source_folder} -> {item.target_dir.name}{suffix}")
     if result.profile_dir is not None:

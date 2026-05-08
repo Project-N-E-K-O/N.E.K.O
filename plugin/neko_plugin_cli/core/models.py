@@ -142,7 +142,7 @@ class _BaseModel(BaseModel):
 
 @dataclass(slots=True)
 class PluginSource:
-    """Normalized plugin metadata used inside the pack/analyze pipeline."""
+    """Normalized plugin metadata used inside the build/analyze pipeline."""
 
     plugin_dir: Path
     plugin_toml_path: Path
@@ -237,7 +237,7 @@ class PayloadBuildResult:
     payload_dir: Path
     plugin_payload_dir: Path
     profiles_dir: Path
-    packaged_files: list[Path] = field(default_factory=list)
+    staged_files: list[Path] = field(default_factory=list)
     profile_files: list[Path] = field(default_factory=list)
     payload_hash: str = ""
 
@@ -246,21 +246,21 @@ class PayloadBuildResult:
         self.payload_dir = _normalize_path(self.payload_dir)
         self.plugin_payload_dir = _normalize_path(self.plugin_payload_dir)
         self.profiles_dir = _normalize_path(self.profiles_dir)
-        self.packaged_files = sorted(_normalize_path(item) for item in self.packaged_files)
+        self.staged_files = sorted(_normalize_path(item) for item in self.staged_files)
         self.profile_files = sorted(_normalize_path(item) for item in self.profile_files)
         self.payload_hash = _normalize_sha256(self.payload_hash)
 
     @property
-    def packaged_file_count(self) -> int:
-        return len(self.packaged_files)
+    def staged_file_count(self) -> int:
+        return len(self.staged_files)
 
     @property
     def profile_file_count(self) -> int:
         return len(self.profile_files)
 
 
-class PackResult(_BaseModel):
-    """Final result returned by the public `pack_plugin(...)` entrypoint."""
+class BuildResult(_BaseModel):
+    """Final result returned by the public `build_plugin(...)` entrypoint."""
 
     plugin_id: PluginIdValue
     package_type: PackageTypeValue = "plugin"
@@ -270,11 +270,11 @@ class PackResult(_BaseModel):
     package_path: ResolvedPath
     staging_dir: OptionalResolvedPath = None
     profile_files: ResolvedPathList = Field(default_factory=list)
-    packaged_files: ResolvedPathList = Field(default_factory=list)
+    staged_files: ResolvedPathList = Field(default_factory=list)
     payload_hash: PayloadHashValue
 
     @model_validator(mode="after")
-    def _validate_layout(self) -> PackResult:
+    def _validate_layout(self) -> BuildResult:
         if not self.package_path.is_file():
             raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
         if self.package_path.suffix not in _PACKAGE_SUFFIXES:
@@ -294,9 +294,9 @@ class PackResult(_BaseModel):
         for file_path in self.profile_files:
             if not file_path.is_file():
                 raise FileNotFoundError(f"profile file does not exist: {file_path}")
-        for file_path in self.packaged_files:
+        for file_path in self.staged_files:
             if not file_path.is_file():
-                raise FileNotFoundError(f"packaged file does not exist: {file_path}")
+                raise FileNotFoundError(f"staged file does not exist: {file_path}")
         return self
 
     @computed_field
@@ -306,8 +306,8 @@ class PackResult(_BaseModel):
 
     @computed_field
     @property
-    def packaged_file_count(self) -> int:
-        return len(self.packaged_files)
+    def staged_file_count(self) -> int:
+        return len(self.staged_files)
 
     @computed_field
     @property
@@ -345,7 +345,7 @@ class BundleSdkAnalysis(_BaseModel):
 
 
 class BundleAnalysisResult(_BaseModel):
-    """Pre-pack analysis result for bundle candidates."""
+    """Pre-build analysis result for bundle candidates."""
 
     plugin_ids: PluginIdList = Field(default_factory=list)
     shared_dependencies: list[SharedDependency] = Field(default_factory=list)
@@ -400,7 +400,7 @@ class PackageInspectResult(_BaseModel):
         return len(self.profile_names)
 
 
-class UnpackedPlugin(_BaseModel):
+class InstalledPlugin(_BaseModel):
     """Mapping between archived plugin folder and final extracted folder."""
 
     source_folder: NonEmptyText
@@ -409,15 +409,15 @@ class UnpackedPlugin(_BaseModel):
     renamed: bool = False
 
 
-class UnpackResult(_BaseModel):
-    """Result of extracting a package archive into runtime directories."""
+class InstallResult(_BaseModel):
+    """Result of installing a package archive into runtime directories."""
 
     package_path: ResolvedPath
     package_type: PackageTypeValue
     package_id: NonEmptyText
     plugins_root: ResolvedPath
     profiles_root: OptionalResolvedPath = None
-    unpacked_plugins: list[UnpackedPlugin] = Field(default_factory=list)
+    installed_plugins: list[InstalledPlugin] = Field(default_factory=list)
     profile_dir: OptionalResolvedPath = None
     metadata_found: bool = False
     payload_hash: OptionalPayloadHashValue = ""
@@ -425,7 +425,7 @@ class UnpackResult(_BaseModel):
     conflict_strategy: ConflictStrategyValue = "rename"
 
     @model_validator(mode="after")
-    def _validate_layout(self) -> UnpackResult:
+    def _validate_layout(self) -> InstallResult:
         if not self.package_path.is_file():
             raise FileNotFoundError(f"package_path does not exist: {self.package_path}")
         if not self.plugins_root.exists():
@@ -436,11 +436,11 @@ class UnpackResult(_BaseModel):
             raise NotADirectoryError(f"profiles_root is not a directory: {self.profiles_root}")
         if self.profile_dir is not None and self.profiles_root is not None:
             _ensure_within(self.profile_dir, self.profiles_root, field_name="profile_dir")
-        for item in self.unpacked_plugins:
-            _ensure_within(item.target_dir, self.plugins_root, field_name="unpacked plugin target_dir")
+        for item in self.installed_plugins:
+            _ensure_within(item.target_dir, self.plugins_root, field_name="installed plugin target_dir")
         return self
 
     @computed_field
     @property
-    def unpacked_plugin_count(self) -> int:
-        return len(self.unpacked_plugins)
+    def installed_plugin_count(self) -> int:
+        return len(self.installed_plugins)

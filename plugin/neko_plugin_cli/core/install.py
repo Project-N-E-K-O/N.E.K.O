@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import zipfile
 
-from .models import UnpackedPlugin, UnpackResult
+from .models import InstalledPlugin, InstallResult
 from .archive_utils import (
     collect_plugin_folders,
     compute_archive_payload_hash,
@@ -16,17 +16,17 @@ from .archive_utils import (
 )
 
 
-class PackageUnpacker:
+class PackageInstaller:
     """Extract packaged plugins into the runtime plugin directory safely."""
 
-    def unpack_package(
+    def install_package(
         self,
         package_path: str | Path,
         *,
         plugins_root: str | Path,
         profiles_root: str | Path,
         on_conflict: str = "rename",
-    ) -> UnpackResult:
+    ) -> InstallResult:
         package_path = Path(package_path).expanduser().resolve()
         plugins_root_path = Path(plugins_root).expanduser().resolve()
         profiles_root_path = Path(profiles_root).expanduser().resolve()
@@ -55,7 +55,7 @@ class PackageUnpacker:
                     f"This usually means the package was built on a different platform "
                     f"(e.g. Windows vs Linux) with an older version of neko_plugin_cli "
                     f"that had cross-platform sorting issues, or the archive was modified "
-                    f"after packaging. Try re-packing the plugin with the latest "
+                    f"after packaging. Try re-building the plugin with the latest "
                     f"neko_plugin_cli."
                 )
             folder_mapping = self.plan_plugin_targets(
@@ -71,14 +71,14 @@ class PackageUnpacker:
                 on_conflict=on_conflict,
             )
 
-        return UnpackResult(
+        return InstallResult(
             package_path=package_path,
             package_type=package_type,
             package_id=package_id,
             plugins_root=plugins_root_path,
             profiles_root=profiles_root_path,
-            unpacked_plugins=[
-                UnpackedPlugin(
+            installed_plugins=[
+                InstalledPlugin(
                     source_folder=source_folder,
                     target_plugin_id=target_dir.name,
                     target_dir=target_dir,
@@ -195,16 +195,16 @@ class PackageUnpacker:
         return normalized
 
 
-def unpack_package(
+def install_package(
     package_path: str | Path,
     *,
     plugins_root: str | Path,
     profiles_root: str | Path,
     on_conflict: str = "rename",
-) -> UnpackResult:
+) -> InstallResult:
     """Public convenience wrapper for archive extraction into runtime directories."""
 
-    return PackageUnpacker().unpack_package(
+    return PackageInstaller().install_package(
         package_path=package_path,
         plugins_root=plugins_root,
         profiles_root=profiles_root,

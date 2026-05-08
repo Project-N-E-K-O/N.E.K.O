@@ -8,9 +8,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import PackResult, PayloadBuildResult, PluginSource
+from .models import BuildResult, PayloadBuildResult, PluginSource
 from .normalize import normalize_archive_key, normalize_relative_posix
-from .pack_rules import PackRuleSet, load_pack_rules, should_skip_path
+from .build_rules import BuildRuleSet, load_build_rules, should_skip_path
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
@@ -33,8 +33,8 @@ def _validate_package_id(package_id: str, *, label: str = "package_id") -> str:
 
 
 @dataclass(slots=True)
-class PackPaths:
-    """Resolved staging layout for a pack operation."""
+class BuildPaths:
+    """Resolved staging layout for a build operation."""
 
     staging_root: Path
     payload_dir: Path
@@ -44,8 +44,8 @@ class PackPaths:
     metadata_path: Path
 
     @classmethod
-    def create(cls, *, package_id: str) -> PackPaths:
-        staging_root = Path(tempfile.mkdtemp(prefix=f"neko_pack_{package_id}_")).resolve()
+    def create(cls, *, package_id: str) -> BuildPaths:
+        staging_root = Path(tempfile.mkdtemp(prefix=f"neko_build_{package_id}_")).resolve()
         try:
             payload_dir = staging_root / "payload"
             plugins_dir = payload_dir / "plugins"
@@ -69,25 +69,25 @@ class PackPaths:
         )
 
 
-class PluginPacker:
+class PluginBuilder:
     """Service object that owns plugin and bundle packaging pipelines."""
 
-    def pack_plugin(
+    def build_plugin(
         self,
         plugin_dir: str | Path,
         out_file: str | Path | None = None,
         *,
         keep_staging: bool = False,
-    ) -> PackResult:
+    ) -> BuildResult:
         source = load_plugin_source(plugin_dir)
         if source.package_type != "plugin":
             raise ValueError(
-                f"single-plugin pack only supports package_type='plugin', "
+                f"single-plugin build only supports package_type='plugin', "
                 f"but '{source.plugin_id}' declares type='{source.package_type}' "
-                f"in its plugin.toml. Use pack_bundle() for non-plugin package types, "
+                f"in its plugin.toml. Use build_bundle() for non-plugin package types, "
                 f"or change [plugin].type to 'plugin' in plugin.toml."
             )
-        paths = PackPaths.create(package_id=source.plugin_id)
+        paths = BuildPaths.create(package_id=source.plugin_id)
         try:
             payload = self.build_single_payload(source, paths)
             self.write_manifest(
@@ -111,7 +111,7 @@ class PluginPacker:
                 else source.plugin_dir.parent / source.default_package_name
             )
             self.export_package(paths.staging_root, package_path)
-            return self.build_pack_result(
+            return self.build_result(
                 package_id=source.plugin_id,
                 package_type="plugin",
                 plugin_ids=[source.plugin_id],
@@ -126,7 +126,7 @@ class PluginPacker:
             if not keep_staging:
                 shutil.rmtree(paths.staging_root, ignore_errors=True)
 
-    def pack_bundle(
+    def build_bundle(
         self,
         plugin_dirs: list[str | Path],
         out_file: str | Path | None = None,
@@ -136,13 +136,13 @@ class PluginPacker:
         package_description: str | None = None,
         version: str = "0.1.0",
         keep_staging: bool = False,
-    ) -> PackResult:
+    ) -> BuildResult:
         sources = [load_plugin_source(item) for item in plugin_dirs]
         if len(sources) < 2:
             raise ValueError(
-                f"bundle pack requires at least two plugins, but only "
+                f"bundle build requires at least two plugins, but only "
                 f"{len(sources)} plugin(s) were provided. "
-                f"Use pack_plugin() for single-plugin packaging."
+                f"Use build_plugin() for single-plugin builds."
             )
 
         plugin_ids = [source.plugin_id for source in sources]
@@ -152,7 +152,7 @@ class PluginPacker:
                 seen[pid] = seen.get(pid, 0) + 1
             duplicates = [f"'{pid}' (x{count})" for pid, count in seen.items() if count > 1]
             raise ValueError(
-                f"bundle pack does not support duplicate plugin_ids. "
+                f"bundle build does not support duplicate plugin_ids. "
                 f"Duplicates found: {', '.join(duplicates)}. "
                 f"Each plugin in a bundle must have a unique [plugin].id in its plugin.toml."
             )
@@ -165,7 +165,7 @@ class PluginPacker:
         resolved_description = (package_description or f"Bundle package for {', '.join(plugin_ids)}").strip()
         resolved_version = version.strip() or "0.1.0"
 
-        paths = PackPaths.create(package_id=resolved_bundle_id)
+        paths = BuildPaths.create(package_id=resolved_bundle_id)
         try:
             payload = self.build_bundle_payload(sources, paths)
             self.write_manifest(
@@ -189,7 +189,7 @@ class PluginPacker:
                 else sources[0].plugin_dir.parent / f"{resolved_bundle_id}-{resolved_version}.neko-bundle"
             )
             self.export_package(paths.staging_root, package_path)
-            return self.build_pack_result(
+            return self.build_result(
                 package_id=resolved_bundle_id,
                 package_type="bundle",
                 plugin_ids=plugin_ids,
@@ -207,15 +207,15 @@ class PluginPacker:
     def build_single_payload(
         self,
         source: PluginSource,
-        paths: PackPaths,
+        paths: BuildPaths,
     ) -> PayloadBuildResult:
-        pack_rules = load_pack_rules(source.pyproject_toml)
+        build_rules = load_build_rules(source.pyproject_toml)
         plugin_payload_dir = paths.plugins_dir / source.plugin_id
         plugin_payload_dir.mkdir(parents=True, exist_ok=True)
-        packaged_files = self.copy_plugin_runtime_files(
+        staged_files = self.copy_plugin_runtime_files(
             source.plugin_dir,
             plugin_payload_dir,
-            rules=pack_rules,
+            rules=build_rules,
         )
         profile_files = write_default_profile(source, paths.profiles_dir)
         payload_hash = self.compute_payload_hash(paths.payload_dir)
@@ -225,7 +225,7 @@ class PluginPacker:
             payload_dir=paths.payload_dir,
             plugin_payload_dir=plugin_payload_dir,
             profiles_dir=paths.profiles_dir,
-            packaged_files=packaged_files,
+            staged_files=staged_files,
             profile_files=profile_files,
             payload_hash=payload_hash,
         )
@@ -233,18 +233,18 @@ class PluginPacker:
     def build_bundle_payload(
         self,
         sources: list[PluginSource],
-        paths: PackPaths,
+        paths: BuildPaths,
     ) -> PayloadBuildResult:
-        packaged_files: list[Path] = []
+        staged_files: list[Path] = []
         for source in sources:
             plugin_payload_dir = paths.plugins_dir / source.plugin_id
             plugin_payload_dir.mkdir(parents=True, exist_ok=True)
-            pack_rules = load_pack_rules(source.pyproject_toml)
-            packaged_files.extend(
+            build_rules = load_build_rules(source.pyproject_toml)
+            staged_files.extend(
                 self.copy_plugin_runtime_files(
                     source.plugin_dir,
                     plugin_payload_dir,
-                    rules=pack_rules,
+                    rules=build_rules,
                 )
             )
 
@@ -256,7 +256,7 @@ class PluginPacker:
             payload_dir=paths.payload_dir,
             plugin_payload_dir=paths.plugins_dir / sources[0].plugin_id,
             profiles_dir=paths.profiles_dir,
-            packaged_files=packaged_files,
+            staged_files=staged_files,
             profile_files=profile_files,
             payload_hash=payload_hash,
         )
@@ -266,7 +266,7 @@ class PluginPacker:
         source_dir: Path,
         destination_dir: Path,
         *,
-        rules: PackRuleSet,
+        rules: BuildRuleSet,
     ) -> list[Path]:
         copied: list[Path] = []
         for path in sorted(source_dir.rglob("*")):
@@ -282,7 +282,7 @@ class PluginPacker:
             copied.append(destination_path.resolve())
         return copied
 
-    def should_skip(self, relative_path: Path, *, is_dir: bool, rules: PackRuleSet) -> bool:
+    def should_skip(self, relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) -> bool:
         return should_skip_path(relative_path, is_dir=is_dir, rules=rules)
 
     def write_manifest(
@@ -293,7 +293,7 @@ class PluginPacker:
         package_name: str,
         version: str,
         package_description: str,
-        paths: PackPaths,
+        paths: BuildPaths,
     ) -> None:
         lines = [
             f'schema_version = "{_SCHEMA_VERSION}"',
@@ -319,7 +319,7 @@ class PluginPacker:
         payload_hash: str,
         source_kind: str,
         source_paths: list[Path],
-        paths: PackPaths,
+        paths: BuildPaths,
     ) -> None:
         safe_sources = []
         for item in source_paths:
@@ -380,7 +380,7 @@ class PluginPacker:
             digest.update(b"\0")
         return digest.hexdigest()
 
-    def build_pack_result(
+    def build_result(
         self,
         *,
         package_id: str,
@@ -390,10 +390,10 @@ class PluginPacker:
         version: str,
         payload: PayloadBuildResult,
         package_path: Path,
-        paths: PackPaths,
+        paths: BuildPaths,
         keep_staging: bool,
-    ) -> PackResult:
-        return PackResult(
+    ) -> BuildResult:
+        return BuildResult(
             plugin_id=package_id,
             package_type=package_type,
             plugin_ids=plugin_ids,
@@ -402,7 +402,7 @@ class PluginPacker:
             package_path=package_path,
             staging_dir=paths.staging_root if keep_staging else None,
             profile_files=payload.profile_files if keep_staging else [],
-            packaged_files=payload.packaged_files if keep_staging else [],
+            staged_files=payload.staged_files if keep_staging else [],
             payload_hash=payload.payload_hash,
         )
 
@@ -410,22 +410,22 @@ class PluginPacker:
         return "__".join(sorted(plugin_ids))
 
 
-def pack_plugin(
+def build_plugin(
     plugin_dir: str | Path,
     out_file: str | Path | None = None,
     *,
     keep_staging: bool = False,
-) -> PackResult:
-    """Public convenience wrapper for one-shot single-plugin packaging."""
+) -> BuildResult:
+    """Public convenience wrapper for one-shot single-plugin builds."""
 
-    return PluginPacker().pack_plugin(
+    return PluginBuilder().build_plugin(
         plugin_dir=plugin_dir,
         out_file=out_file,
         keep_staging=keep_staging,
     )
 
 
-def pack_bundle(
+def build_bundle(
     plugin_dirs: list[str | Path],
     out_file: str | Path | None = None,
     *,
@@ -434,10 +434,10 @@ def pack_bundle(
     package_description: str | None = None,
     version: str = "0.1.0",
     keep_staging: bool = False,
-) -> PackResult:
-    """Public convenience wrapper for one-shot multi-plugin bundle packaging."""
+) -> BuildResult:
+    """Public convenience wrapper for one-shot multi-plugin bundle builds."""
 
-    return PluginPacker().pack_bundle(
+    return PluginBuilder().build_bundle(
         plugin_dirs=plugin_dirs,
         out_file=out_file,
         bundle_id=bundle_id,

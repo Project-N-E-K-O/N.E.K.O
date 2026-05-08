@@ -120,6 +120,11 @@ backup/
 build*
 !build_frontend.bat
 !build_frontend.sh
+!plugin/neko_plugin_cli/commands/build_cmd.py
+!plugin/neko_plugin_cli/core/build.py
+!plugin/neko_plugin_cli/core/build_rules.py
+!plugin/neko_plugin_cli/public/build.py
+!plugin/neko_plugin_cli/public/build_rules.py
 metadata.package.json
 version_info.txt
 

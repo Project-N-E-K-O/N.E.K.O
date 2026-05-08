@@ -9,9 +9,9 @@ from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.public import (
     analyze_bundle_plugins,
     inspect_package,
-    pack_bundle,
-    pack_plugin,
-    unpack_package,
+    build_bundle,
+    build_plugin,
+    install_package,
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
@@ -21,12 +21,12 @@ from plugin.settings import (
 )
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-# 源仓库内置插件目录：用于 list/pack（只读扫描）。
+# 源仓库内置插件目录：用于 list/build（只读扫描）。
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
-# unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
-_UNPACK_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
-_UNPACK_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
-# pack/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
+# install（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
+_INSTALL_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
+_INSTALL_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
+# build/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
 # 必须落到用户可写的我的文档目录，否则 Nuitka 打包安装到 Program Files 后会失败。
 _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
@@ -54,7 +54,7 @@ class PluginCliService:
     async def list_local_packages(self) -> dict[str, object]:
         return await asyncio.to_thread(self._list_local_packages_sync)
 
-    async def pack(
+    async def build(
         self,
         *,
         mode: str = "selected",
@@ -69,7 +69,7 @@ class PluginCliService:
         version: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
-            self._pack_sync,
+            self._build_sync,
             mode=mode,
             plugin=plugin,
             plugins=plugins,
@@ -88,7 +88,7 @@ class PluginCliService:
     async def verify(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._verify_sync, package=package)
 
-    async def unpack(
+    async def install(
         self,
         *,
         package: str,
@@ -97,7 +97,7 @@ class PluginCliService:
         on_conflict: str = "rename",
     ) -> dict[str, object]:
         return await asyncio.to_thread(
-            self._unpack_sync,
+            self._install_sync,
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
@@ -122,28 +122,28 @@ class PluginCliService:
         """Save an uploaded package file to the target directory.
 
         Returns metadata about the saved file including its server-side path,
-        which can be passed to ``unpack`` or ``inspect``.
+        which can be passed to ``install`` or ``inspect``.
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
 
-    async def upload_and_unpack(
+    async def upload_and_install(
         self,
         *,
         filename: str,
         content: bytes,
         on_conflict: str = "rename",
     ) -> dict[str, object]:
-        """Upload a package file and immediately unpack it.
+        """Upload a package file and immediately install it.
 
-        Combines ``save_uploaded_package`` and ``unpack`` into a single operation
+        Combines ``save_uploaded_package`` and ``install`` into a single operation
         for convenience.
         """
         save_result = await self.save_uploaded_package(filename=filename, content=content)
         saved_path = str(save_result["path"])
-        unpack_result = await self.unpack(package=saved_path, on_conflict=on_conflict)
+        install_result = await self.install(package=saved_path, on_conflict=on_conflict)
         return {
             "upload": save_result,
-            "unpack": unpack_result,
+            "install": install_result,
         }
 
     def resolve_download_path(self, package: str) -> Path:
@@ -198,7 +198,7 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="list_packages") from exc
 
-    def _pack_sync(
+    def _build_sync(
         self,
         *,
         mode: str,
@@ -219,7 +219,7 @@ class PluginCliService:
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
             if out and mode != "bundle" and len(plugin_dirs) != 1:
-                raise ValueError("'out' can only be used when packing a single plugin")
+                raise ValueError("'out' can only be used when building a single plugin")
 
             if mode == "bundle":
                 resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
@@ -232,7 +232,7 @@ class PluginCliService:
                         field="out",
                     )
                 )
-                result = pack_bundle(
+                result = build_bundle(
                     plugin_dirs,
                     output_path,
                     bundle_id=resolved_bundle_id,
@@ -241,16 +241,16 @@ class PluginCliService:
                     version=version or "0.1.0",
                     keep_staging=keep_staging,
                 )
-                packed = [result.model_dump(mode="json")]
+                built = [result.model_dump(mode="json")]
                 return {
-                    "packed": packed,
-                    "packed_count": len(packed),
+                    "built": built,
+                    "built_count": len(built),
                     "failed": [],
                     "failed_count": 0,
                     "ok": True,
                 }
 
-            packed: list[dict[str, object]] = []
+            built: list[dict[str, object]] = []
             failed: list[dict[str, object]] = []
             for plugin_dir in plugin_dirs:
                 output_path = (
@@ -259,24 +259,24 @@ class PluginCliService:
                     else resolved_target_dir / f"{plugin_dir.name}.neko-plugin"
                 )
                 try:
-                    result = pack_plugin(
+                    result = build_plugin(
                         plugin_dir,
                         output_path,
                         keep_staging=keep_staging,
                     )
-                    packed.append(result.model_dump(mode="json"))
+                    built.append(result.model_dump(mode="json"))
                 except Exception as exc:
                     failed.append({"plugin": plugin_dir.name, "error": str(exc)})
 
             return {
-                "packed": packed,
-                "packed_count": len(packed),
+                "built": built,
+                "built_count": len(built),
                 "failed": failed,
                 "failed_count": len(failed),
                 "ok": not failed,
             }
         except Exception as exc:
-            raise self._domain_error_from_exception(exc, action="pack") from exc
+            raise self._domain_error_from_exception(exc, action="build") from exc
 
     def _inspect_sync(self, *, package: str) -> dict[str, object]:
         try:
@@ -296,7 +296,7 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="verify") from exc
 
-    def _unpack_sync(
+    def _install_sync(
         self,
         *,
         package: str,
@@ -306,16 +306,16 @@ class PluginCliService:
     ) -> dict[str, object]:
         try:
             plugins_root_path = (
-                _require_within(Path(plugins_root).expanduser().resolve(), _UNPACK_PLUGINS_ROOT, field="plugins_root")
+                _require_within(Path(plugins_root).expanduser().resolve(), _INSTALL_PLUGINS_ROOT, field="plugins_root")
                 if plugins_root
-                else _UNPACK_PLUGINS_ROOT
+                else _INSTALL_PLUGINS_ROOT
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), _UNPACK_PROFILES_ROOT, field="profiles_root")
+                _require_within(Path(profiles_root).expanduser().resolve(), _INSTALL_PROFILES_ROOT, field="profiles_root")
                 if profiles_root
-                else _UNPACK_PROFILES_ROOT
+                else _INSTALL_PROFILES_ROOT
             )
-            result = unpack_package(
+            result = install_package(
                 self._resolve_package_path(package),
                 plugins_root=plugins_root_path,
                 profiles_root=profiles_root_path,
@@ -323,7 +323,7 @@ class PluginCliService:
             )
             return result.model_dump(mode="json")
         except Exception as exc:
-            raise self._domain_error_from_exception(exc, action="unpack") from exc
+            raise self._domain_error_from_exception(exc, action="install") from exc
 
     def _analyze_sync(
         self,
@@ -420,7 +420,7 @@ class PluginCliService:
                 raise ValueError(f"Please provide plugins when mode={mode}")
             return [self._resolve_plugin_dir_candidate(item) for item in plugins]
 
-        raise ValueError("Unsupported pack mode")
+        raise ValueError("Unsupported build mode")
 
     def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()

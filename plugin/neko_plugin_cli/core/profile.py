@@ -9,7 +9,7 @@ from .toml_utils import dump_mapping, escape_string, toml_bare_or_quoted_key, to
 
 def write_default_profile(source: PluginSource, profiles_dir: Path) -> list[Path]:
     # Keep the first profile pass lightweight and deterministic so future
-    # bundle/profile features can extend it without changing pack flow shape.
+    # bundle/profile features can extend it without changing build flow shape.
     profile_path = profiles_dir / "default.toml"
     lines: list[str] = [
         'name = "default"',

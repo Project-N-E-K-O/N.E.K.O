@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-from ..core.models import PackResult, PayloadBuildResult, PluginSource
-from ..core.pack import PackPaths, PluginPacker, pack_bundle, pack_plugin
-from ..core.pack_rules import PackRuleSet, load_pack_rules, should_skip_path
+from ..core.models import BuildResult, PayloadBuildResult, PluginSource
+from ..core.build import BuildPaths, PluginBuilder, build_bundle, build_plugin
+from ..core.build_rules import BuildRuleSet, load_build_rules, should_skip_path
 from ..core.plugin_source import load_plugin_source
 from ..core.profile import write_bundle_profile, write_default_profile
 from ..core.toml_utils import escape_string
 
 __all__ = [
-    "PackPaths",
-    "PackResult",
-    "PackRuleSet",
+    "BuildPaths",
+    "BuildResult",
+    "BuildRuleSet",
     "PayloadBuildResult",
-    "PluginPacker",
+    "PluginBuilder",
     "PluginSource",
     "escape_string",
-    "load_pack_rules",
+    "load_build_rules",
     "load_plugin_source",
-    "pack_bundle",
-    "pack_plugin",
+    "build_bundle",
+    "build_plugin",
     "should_skip_path",
     "write_bundle_profile",
     "write_default_profile",

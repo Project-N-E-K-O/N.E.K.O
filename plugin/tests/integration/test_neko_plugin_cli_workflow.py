@@ -15,9 +15,9 @@ from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.public import (
     analyze_bundle_plugins,
     inspect_package,
-    pack_bundle,
-    pack_plugin,
-    unpack_package,
+    build_bundle,
+    build_plugin,
+    install_package,
 )
 
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
@@ -74,10 +74,10 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     plugin_dir = _copy_fixture_plugin(tmp_path, "plugin_with_rules")
     package_path = tmp_path / "plugin_with_rules.neko-plugin"
 
-    pack_result = pack_plugin(plugin_dir, package_path)
+    build_result = build_plugin(plugin_dir, package_path)
     inspect_result = inspect_package(package_path)
 
-    assert pack_result.plugin_id == "plugin_with_rules"
+    assert build_result.plugin_id == "plugin_with_rules"
     assert inspect_result.package_type == "plugin"
     assert inspect_result.package_name == "Plugin With Rules"
     assert inspect_result.payload_hash_verified is True
@@ -93,7 +93,7 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
         "id": "plugin_with_rules",
         "package_name": "Plugin With Rules",
         "version": "1.4.2",
-        "package_description": "Fixture plugin with realistic pack rules and runtime config.",
+        "package_description": "Fixture plugin with realistic build rules and runtime config.",
     }
     assert _metadata_snapshot(metadata) == {
         "payload": {
@@ -116,23 +116,23 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     assert "payload/plugins/plugin_with_rules/secret.txt" not in names
     assert "payload/plugins/plugin_with_rules/cache_dir/cache.txt" not in names
 
-    unpack_result = unpack_package(
+    install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
         profiles_root=tmp_path / "runtime_profiles",
         on_conflict="rename",
     )
 
-    unpacked_dir = unpack_result.unpacked_plugins[0].target_dir
-    assert (unpacked_dir / "plugin.toml").is_file()
-    assert (unpacked_dir / "main.py").is_file()
-    assert not (unpacked_dir / "debug.tmp").exists()
-    assert not (unpacked_dir / "secret.txt").exists()
-    assert (unpack_result.profile_dir / "default.toml").is_file()
+    installed_dir = install_result.installed_plugins[0].target_dir
+    assert (installed_dir / "plugin.toml").is_file()
+    assert (installed_dir / "main.py").is_file()
+    assert not (installed_dir / "debug.tmp").exists()
+    assert not (installed_dir / "secret.txt").exists()
+    assert (install_result.profile_dir / "default.toml").is_file()
 
 
 @pytest.mark.plugin_integration
-def test_public_bundle_workflow_covers_analysis_pack_and_install(tmp_path: Path) -> None:
+def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path) -> None:
     alpha_dir = _copy_fixture_plugin(tmp_path, "bundle_alpha")
     beta_dir = _copy_fixture_plugin(tmp_path, "bundle_beta")
     package_path = tmp_path / "fixture_bundle.neko-bundle"
@@ -149,7 +149,7 @@ def test_public_bundle_workflow_covers_analysis_pack_and_install(tmp_path: Path)
     assert "2.3.0" in analysis.sdk_supported_analysis.matching_versions
     assert analysis.sdk_supported_analysis.current_sdk_supported_by_all is True
 
-    pack_result = pack_bundle(
+    build_result = build_bundle(
         [alpha_dir, beta_dir],
         package_path,
         bundle_id="fixture_bundle",
@@ -161,8 +161,8 @@ def test_public_bundle_workflow_covers_analysis_pack_and_install(tmp_path: Path)
     manifest = _read_archive_toml(package_path, "manifest.toml")
     metadata = _read_archive_toml(package_path, "metadata.toml")
 
-    assert pack_result.package_type == "bundle"
-    assert pack_result.plugin_ids == ["bundle_alpha", "bundle_beta"]
+    assert build_result.package_type == "bundle"
+    assert build_result.plugin_ids == ["bundle_alpha", "bundle_beta"]
     assert inspect_result.package_type == "bundle"
     assert inspect_result.package_name == "Fixture Bundle"
     assert inspect_result.plugin_count == 2
@@ -187,18 +187,18 @@ def test_public_bundle_workflow_covers_analysis_pack_and_install(tmp_path: Path)
         },
     }
 
-    unpack_result = unpack_package(
+    install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
         profiles_root=tmp_path / "runtime_profiles",
         on_conflict="rename",
     )
 
-    unpacked_ids = [item.target_plugin_id for item in unpack_result.unpacked_plugins]
-    assert unpacked_ids == ["bundle_alpha", "bundle_beta"]
+    installed_ids = [item.target_plugin_id for item in install_result.installed_plugins]
+    assert installed_ids == ["bundle_alpha", "bundle_beta"]
     assert (tmp_path / "runtime_plugins" / "bundle_alpha" / "plugin.toml").is_file()
     assert (tmp_path / "runtime_plugins" / "bundle_beta" / "plugin.toml").is_file()
-    assert (unpack_result.profile_dir / "default.toml").is_file()
+    assert (install_result.profile_dir / "default.toml").is_file()
 
 
 @pytest.mark.plugin_integration

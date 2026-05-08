@@ -1,21 +1,21 @@
-"""Backward-compatible public surface for plugin packaging helpers."""
+"""Public surface for plugin package helpers."""
 
 from __future__ import annotations
 
 from ..core import (
-    PackResult,
+    BuildResult,
     analyze_bundle_plugins,
     inspect_package,
-    pack_bundle,
-    pack_plugin,
-    unpack_package,
+    build_bundle,
+    build_plugin,
+    install_package,
 )
 
 __all__ = [
-    "PackResult",
+    "BuildResult",
     "analyze_bundle_plugins",
     "inspect_package",
-    "pack_bundle",
-    "pack_plugin",
-    "unpack_package",
+    "build_bundle",
+    "build_plugin",
+    "install_package",
 ]

@@ -12,19 +12,19 @@ from ..core.archive_utils import (
     validate_plugin_layout,
     verify_payload_hash,
 )
-from ..core.models import UnpackedPlugin, UnpackResult
-from ..core.unpack import PackageUnpacker, unpack_package
+from ..core.models import InstalledPlugin, InstallResult
+from ..core.install import PackageInstaller, install_package
 
 __all__ = [
-    "PackageUnpacker",
-    "UnpackResult",
-    "UnpackedPlugin",
+    "PackageInstaller",
+    "InstallResult",
+    "InstalledPlugin",
     "collect_plugin_folders",
     "compute_archive_payload_hash",
     "read_manifest",
     "read_metadata",
     "safe_archive_path",
-    "unpack_package",
+    "install_package",
     "validate_package_type",
     "validate_plugin_layout",
     "verify_payload_hash",

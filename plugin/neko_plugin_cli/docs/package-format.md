@@ -54,6 +54,16 @@ uv run python -m plugin.neko_plugin_cli.cli install qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```
 
+## Backend API Response Surface
+
+The plugin manager backend exposes the same package workflow with explicit response models:
+
+- `POST /plugin-cli/build` returns `built`, `built_count`, `failed`, `failed_count`, and `ok`.
+- Each build result reports `package_path`, `package_type`, `plugin_ids`, `package_size_bytes`, `payload_hash`, and counts.
+- `staged_files` and `profile_files` are filesystem paths from the temporary staging directory. They are only populated when `keep_staging = true`; otherwise their counts are `0`.
+- `POST /plugin-cli/install` returns `installed_plugins` and `installed_plugin_count`.
+- `POST /plugin-cli/upload-and-install` returns `{ upload, install }`, where `install` uses the same shape as `/plugin-cli/install`.
+
 ## Archive Layout
 
 ```text
@@ -152,7 +162,7 @@ Profiles may define:
 - per-plugin runtime flags
 - per-plugin config values
 
-Current lightweight rule for single-plugin packing:
+Current lightweight rule for single-plugin builds:
 
 - `[plugin_runtime]` contributes runtime flags such as `auto_start`
 - the top-level table whose name equals the plugin id is migrated into the default profile as plugin config
@@ -299,7 +309,7 @@ Recommended pipeline for a single plugin:
 
 Current implementation notes:
 
-- single-plugin packing only accepts `package_type = "plugin"`
+- single-plugin builds only accept `package_type = "plugin"`
 - install verifies `metadata.toml` payload hash when metadata exists
 - install conflict handling currently supports `rename` and `fail`
 

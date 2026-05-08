@@ -189,12 +189,12 @@ export default {
     batchNoReloadable: 'No running plugins in selection',
     import: 'Import',
     importing: 'Importing…',
-    importSuccess: 'Imported {name}, unpacked {count} plugins',
+    importSuccess: 'Imported {name}, installed {count} plugins',
     importFailed: 'Import failed',
     export: 'Export',
     exportSuccess: 'Exported {count} packages',
     exportFailed: 'Export failed',
-    exportPackFailed: 'Packaging failed, unable to export',
+    exportBuildFailed: 'Build failed, unable to export',
     filterRuleGroups: {
       state: 'State',
       type: 'Type',
@@ -225,7 +225,7 @@ export default {
       runtime: 'Runtime',
       plugin: 'Plugin Extras'
     },
-    pack: 'Package Plugin',
+    build: 'Build Plugin',
     delete: 'Delete Plugin',
     disableExtension: 'Disable Extension',
     enableExtension: 'Enable Extension',
@@ -355,12 +355,12 @@ export default {
     pluginStarted: 'Plugin started successfully',
     pluginStopped: 'Plugin stopped',
     pluginReloaded: 'Plugin reloaded successfully',
-    pluginPacked: 'Plugin packaged: {packageName}',
+    pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
-    packFailed: 'Failed to package plugin',
+    buildFailed: 'Failed to build plugin',
     deleteFailed: 'Failed to delete plugin',
     pluginDisabled: 'Plugin is disabled. Please enable it first.',
     pluginLoadFailed: 'Plugin load failed and cannot be started.',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: 'Package Manager',
-        body: 'The package manager reuses your current filters and selections for packing, checking, verifying, and unpacking.'
+        body: 'The package manager reuses your current filters and selections for building, checking, verifying, and installing.'
       },
       packageOperations: {
         title: 'Package Operations',
-        body: 'Choose packaging modes, inspect packages, unpack, or analyze bundles here. The guide will not run dangerous actions.'
+        body: 'Choose build modes, inspect packages, install, or analyze bundles here. The guide will not run dangerous actions.'
       },
       pluginDetail: {
         title: 'Plugin Details',

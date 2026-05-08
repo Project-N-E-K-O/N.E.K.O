@@ -5,15 +5,15 @@ import {
   getPluginCliPackages,
   getPluginCliPlugins,
   inspectPluginPackage,
-  packPluginCli,
-  unpackPluginPackage,
+  buildPluginCli,
+  installPluginPackage,
   verifyPluginPackage,
   type PluginCliAnalyzeResponse,
   type PluginCliInspectResponse,
   type PluginCliLocalPackageItem,
-  type PluginCliPackMode,
-  type PluginCliPackRequest,
-  type PluginCliUnpackRequest,
+  type PluginCliBuildMode,
+  type PluginCliBuildRequest,
+  type PluginCliInstallRequest,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import {
@@ -24,9 +24,9 @@ import {
 } from '@/composables/usePluginWorkbench'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
-export type PackMode = PluginCliPackMode
+export type BuildMode = PluginCliBuildMode
 export type PluginGroupType = PluginWorkbenchGroupType
-export type PackageResultKind = '' | 'pack' | 'inspect' | 'verify' | 'unpack' | 'analyze'
+export type PackageResultKind = '' | 'build' | 'inspect' | 'verify' | 'install' | 'analyze'
 
 export type SelectablePlugin = PluginWorkbenchItem
 
@@ -45,8 +45,8 @@ export type PackageResultRecord = {
 export function usePackageManager() {
   const pluginStore = usePluginStore()
 
-  const activeTab = ref('pack')
-  const packMode = ref<PackMode>('selected')
+  const activeTab = ref('build')
+  const buildMode = ref<BuildMode>('selected')
   const localPluginIds = ref<string[]>([])
   const pluginsLoading = ref(false)
   const packagesLoading = ref(false)
@@ -54,10 +54,10 @@ export function usePackageManager() {
   const targetDir = ref('')
   const packageFilterType = ref<'all' | 'plugin' | 'bundle'>('all')
 
-  const packing = ref(false)
+  const building = ref(false)
   const inspecting = ref(false)
   const verifying = ref(false)
-  const unpacking = ref(false)
+  const installing = ref(false)
   const analyzing = ref(false)
 
   const resultKind = ref<PackageResultKind>('')
@@ -68,7 +68,7 @@ export function usePackageManager() {
   const resultHistory = ref<PackageResultRecord[]>([])
   const activeResultId = ref('')
 
-  const packForm = ref<PluginCliPackRequest>({
+  const buildForm = ref<PluginCliBuildRequest>({
     mode: 'selected',
     plugin: '',
     plugins: [],
@@ -82,7 +82,7 @@ export function usePackageManager() {
 
   const packageRef = ref({ package: '' })
 
-  const unpackForm = ref<PluginCliUnpackRequest>({
+  const installForm = ref<PluginCliInstallRequest>({
     package: '',
     plugins_root: '',
     profiles_root: '',
@@ -148,15 +148,15 @@ export function usePackageManager() {
     clearSelection,
   } = usePluginWorkbench(selectablePlugins)
 
-  const resolvedPackTargets = computed(() => {
-    if (packMode.value === 'all') {
+  const resolvedBuildTargets = computed(() => {
+    if (buildMode.value === 'all') {
       return selectablePlugins.value.map((plugin) => plugin.id)
     }
-    if (packMode.value === 'bundle') {
+    if (buildMode.value === 'bundle') {
       return selectedPluginIds.value
     }
-    if (packMode.value === 'single') {
-      return packForm.value.plugin ? [packForm.value.plugin] : []
+    if (buildMode.value === 'single') {
+      return buildForm.value.plugin ? [buildForm.value.plugin] : []
     }
     return selectedPluginIds.value
   })
@@ -181,29 +181,29 @@ export function usePackageManager() {
     return 'plugin'
   }
 
-  function createPrimaryPackResult(data: Record<string, any> | null, kind: PackageResultKind) {
-    if (!data || kind !== 'pack') return null
-    const packed = Array.isArray(data.packed) ? data.packed : []
-    if (packed.length !== 1) return null
-    return packed[0] as Record<string, any>
+  function createPrimaryBuildResult(data: Record<string, any> | null, kind: PackageResultKind) {
+    if (!data || kind !== 'build') return null
+    const built = Array.isArray(data.built) ? data.built : []
+    if (built.length !== 1) return null
+    return built[0] as Record<string, any>
   }
 
   function buildSummaryMetrics(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
     if (!data) return []
 
-    if (kind === 'pack') {
-      const primaryPacked = createPrimaryPackResult(data, kind)
+    if (kind === 'build') {
+      const primaryBuilt = createPrimaryBuildResult(data, kind)
       return [
         {
           label: '类型',
-          value: primaryPacked?.package_type === 'bundle' ? '整合包' : '插件包',
+          value: primaryBuilt?.package_type === 'bundle' ? '整合包' : '插件包',
         },
-        { label: '成功', value: String(data.packed_count ?? 0) },
+        { label: '成功', value: String(data.built_count ?? 0) },
         { label: '失败', value: String(data.failed_count ?? 0) },
         {
-          label: primaryPacked?.package_type === 'bundle' ? '包含插件' : '状态',
-          value: primaryPacked?.package_type === 'bundle'
-            ? String(primaryPacked?.plugin_ids?.length ?? 0)
+          label: primaryBuilt?.package_type === 'bundle' ? '包含插件' : '状态',
+          value: primaryBuilt?.package_type === 'bundle'
+            ? String(primaryBuilt?.plugin_ids?.length ?? 0)
             : data.ok ? '完成' : '部分失败',
         },
       ]
@@ -217,9 +217,9 @@ export function usePackageManager() {
       ]
     }
 
-    if (kind === 'unpack') {
+    if (kind === 'install') {
       return [
-        { label: '已处理插件', value: String(data.unpacked_plugin_count ?? 0) },
+        { label: '已处理插件', value: String(data.installed_plugin_count ?? 0) },
         { label: '冲突策略', value: String(data.conflict_strategy ?? '-') },
         { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
       ]
@@ -236,21 +236,21 @@ export function usePackageManager() {
   function buildSummaryHighlights(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
     if (!data) return []
 
-    if (kind === 'pack') {
-      const primaryPacked = createPrimaryPackResult(data, kind)
-      const firstPacked = data.packed?.[0]
-      const latestPacked = data.packed?.[data.packed?.length - 1]
-      if (primaryPacked?.package_type === 'bundle') {
+    if (kind === 'build') {
+      const primaryBuilt = createPrimaryBuildResult(data, kind)
+      const firstBuilt = data.built?.[0]
+      const latestBuilt = data.built?.[data.built?.length - 1]
+      if (primaryBuilt?.package_type === 'bundle') {
         return [
-          primaryPacked?.plugin_id ? { label: '整合包 ID', value: primaryPacked.plugin_id } : null,
-          primaryPacked?.package_name ? { label: '整合包名称', value: primaryPacked.package_name } : null,
-          primaryPacked?.version ? { label: '整合包版本', value: primaryPacked.version } : null,
-          latestPacked?.package_path ? { label: '输出路径', value: latestPacked.package_path } : null,
+          primaryBuilt?.plugin_id ? { label: '整合包 ID', value: primaryBuilt.plugin_id } : null,
+          primaryBuilt?.package_name ? { label: '整合包名称', value: primaryBuilt.package_name } : null,
+          primaryBuilt?.version ? { label: '整合包版本', value: primaryBuilt.version } : null,
+          latestBuilt?.package_path ? { label: '输出路径', value: latestBuilt.package_path } : null,
         ].filter(Boolean) as Array<{ label: string; value: string }>
       }
       return [
-        firstPacked?.plugin_id ? { label: '首个插件', value: firstPacked.plugin_id } : null,
-        latestPacked?.package_path ? { label: '最新包路径', value: latestPacked.package_path } : null,
+        firstBuilt?.plugin_id ? { label: '首个插件', value: firstBuilt.plugin_id } : null,
+        latestBuilt?.package_path ? { label: '最新包路径', value: latestBuilt.package_path } : null,
       ].filter(Boolean) as Array<{ label: string; value: string }>
     }
 
@@ -262,7 +262,7 @@ export function usePackageManager() {
       ].filter(Boolean) as Array<{ label: string; value: string }>
     }
 
-    if (kind === 'unpack') {
+    if (kind === 'install') {
       return [
         data.package_id ? { label: '包 ID', value: data.package_id } : null,
         data.plugins_root ? { label: '插件目录', value: data.plugins_root } : null,
@@ -288,12 +288,12 @@ export function usePackageManager() {
   function buildSummaryListItems(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
     if (!data) return []
 
-    if (kind === 'pack') {
-      const primaryPacked = createPrimaryPackResult(data, kind)
-      if (primaryPacked?.package_type === 'bundle') {
-        return (primaryPacked.plugin_ids ?? []).map((pluginId: string) => `plugin:${pluginId}`)
+    if (kind === 'build') {
+      const primaryBuilt = createPrimaryBuildResult(data, kind)
+      if (primaryBuilt?.package_type === 'bundle') {
+        return (primaryBuilt.plugin_ids ?? []).map((pluginId: string) => `plugin:${pluginId}`)
       }
-      return (data.packed ?? []).map((item: Record<string, any>) => `${item.plugin_id} -> ${item.package_path}`)
+      return (data.built ?? []).map((item: Record<string, any>) => `${item.plugin_id} -> ${item.package_path}`)
     }
 
     if (kind === 'inspect' || kind === 'verify') {
@@ -303,8 +303,8 @@ export function usePackageManager() {
       ]
     }
 
-    if (kind === 'unpack') {
-      return (data.unpacked_plugins ?? []).map((item: Record<string, any>) => {
+    if (kind === 'install') {
+      return (data.installed_plugins ?? []).map((item: Record<string, any>) => {
         const suffix = item.renamed ? ' (renamed)' : ''
         return `${item.target_plugin_id}${suffix}`
       })
@@ -316,10 +316,10 @@ export function usePackageManager() {
   function buildSummaryWarnings(kind: Exclude<PackageResultKind, ''>, data: Record<string, any> | null) {
     if (!data) return []
 
-    if (kind === 'pack') {
+    if (kind === 'build') {
       const warnings = (data.failed ?? []).map((item: Record<string, any>) => `${item.plugin}: ${item.error}`)
-      const primaryPacked = createPrimaryPackResult(data, kind)
-      if (primaryPacked?.package_type === 'bundle' && (primaryPacked.plugin_ids?.length ?? 0) < 2) {
+      const primaryBuilt = createPrimaryBuildResult(data, kind)
+      if (primaryBuilt?.package_type === 'bundle' && (primaryBuilt.plugin_ids?.length ?? 0) < 2) {
         warnings.push('整合包通常应至少包含两个插件')
       }
       return warnings
@@ -417,7 +417,7 @@ export function usePackageManager() {
 
   function applyPackageRef(packageValue: string) {
     packageRef.value.package = packageValue
-    unpackForm.value.package = packageValue
+    installForm.value.package = packageValue
   }
 
   function selectPackage(pkg: PluginCliLocalPackageItem) {
@@ -445,75 +445,75 @@ export function usePackageManager() {
     await handleVerify()
   }
 
-  function prepareUnpackPackage(pkg: PluginCliLocalPackageItem) {
+  function prepareInstallPackage(pkg: PluginCliLocalPackageItem) {
     selectPackage(pkg)
-    activeTab.value = 'unpack'
+    activeTab.value = 'install'
   }
 
-  async function handlePack() {
-    const targets = resolvedPackTargets.value
+  async function handleBuild() {
+    const targets = resolvedBuildTargets.value
     if (targets.length === 0) {
-      ElMessage.warning('请先选择要打包的插件')
+      ElMessage.warning('请先选择要构建的插件')
       return
     }
 
-    packing.value = true
+    building.value = true
     inspectResult.value = null
 
     try {
-      if (packMode.value === 'bundle') {
+      if (buildMode.value === 'bundle') {
         if (targets.length < 2) {
           ElMessage.warning('整合包至少需要选择两个插件')
           return
         }
-        const response = await packPluginCli({
+        const response = await buildPluginCli({
           mode: 'bundle',
           plugins: targets,
-          bundle_id: packForm.value.bundle_id?.trim() || undefined,
-          package_name: packForm.value.package_name?.trim() || undefined,
-          package_description: packForm.value.package_description?.trim() || undefined,
-          version: packForm.value.version?.trim() || undefined,
-          target_dir: packForm.value.target_dir || undefined,
-          keep_staging: !!packForm.value.keep_staging,
+          bundle_id: buildForm.value.bundle_id?.trim() || undefined,
+          package_name: buildForm.value.package_name?.trim() || undefined,
+          package_description: buildForm.value.package_description?.trim() || undefined,
+          version: buildForm.value.version?.trim() || undefined,
+          target_dir: buildForm.value.target_dir || undefined,
+          keep_staging: !!buildForm.value.keep_staging,
         })
-        setResult('pack', response)
+        setResult('build', response)
         await refreshPackageSources()
-        const latestPacked = response.packed[response.packed.length - 1]
-        if (latestPacked?.package_path) {
-          focusPackageResult(latestPacked.package_path)
+        const latestBuilt = response.built[response.built.length - 1]
+        if (latestBuilt?.package_path) {
+          focusPackageResult(latestBuilt.package_path)
         }
-        ElMessage.success('整合包打包完成')
+        ElMessage.success('整合包构建完成')
         return
       }
 
-      if (packMode.value === 'all') {
-        const response = await packPluginCli({
+      if (buildMode.value === 'all') {
+        const response = await buildPluginCli({
           mode: 'all',
-          target_dir: packForm.value.target_dir || undefined,
-          keep_staging: !!packForm.value.keep_staging,
+          target_dir: buildForm.value.target_dir || undefined,
+          keep_staging: !!buildForm.value.keep_staging,
         })
-        setResult('pack', response)
+        setResult('build', response)
         await refreshPackageSources()
-        const latestPacked = response.packed[response.packed.length - 1]
-        if (latestPacked?.package_path) {
-          focusPackageResult(latestPacked.package_path)
+        const latestBuilt = response.built[response.built.length - 1]
+        if (latestBuilt?.package_path) {
+          focusPackageResult(latestBuilt.package_path)
         }
-        ElMessage.success(`打包完成，成功 ${response.packed_count} 个`)
+        ElMessage.success(`构建完成，成功 ${response.built_count} 个`)
         return
       }
 
-      const packed: unknown[] = []
+      const built: unknown[] = []
       const failed: Array<{ plugin: string; error: string }> = []
 
       for (const pluginId of targets) {
         try {
-          const response = await packPluginCli({
+          const response = await buildPluginCli({
             mode: 'single',
             plugin: pluginId,
-            target_dir: packForm.value.target_dir || undefined,
-            keep_staging: !!packForm.value.keep_staging,
+            target_dir: buildForm.value.target_dir || undefined,
+            keep_staging: !!buildForm.value.keep_staging,
           })
-          packed.push(...response.packed)
+          built.push(...response.built)
           failed.push(...response.failed)
         } catch (error) {
           failed.push({ plugin: pluginId, error: error instanceof Error ? error.message : String(error) })
@@ -521,21 +521,21 @@ export function usePackageManager() {
       }
 
       const summary = {
-        packed,
-        packed_count: packed.length,
+        built,
+        built_count: built.length,
         failed,
         failed_count: failed.length,
         ok: failed.length === 0,
       }
-      setResult('pack', summary)
+      setResult('build', summary)
       await refreshPackageSources()
-      const latestPacked = packed[packed.length - 1] as { package_path?: string } | undefined
-      if (latestPacked?.package_path) {
-        focusPackageResult(latestPacked.package_path)
+      const latestBuilt = built[built.length - 1] as { package_path?: string } | undefined
+      if (latestBuilt?.package_path) {
+        focusPackageResult(latestBuilt.package_path)
       }
-      ElMessage.success(`打包完成，成功 ${packed.length} 个`)
+      ElMessage.success(`构建完成，成功 ${built.length} 个`)
     } finally {
-      packing.value = false
+      building.value = false
     }
   }
 
@@ -575,27 +575,27 @@ export function usePackageManager() {
     }
   }
 
-  async function handleUnpack() {
-    if (!unpackForm.value.package?.trim()) {
+  async function handleInstall() {
+    if (!installForm.value.package?.trim()) {
       ElMessage.warning('请先输入包路径')
       return
     }
-    unpacking.value = true
+    installing.value = true
     inspectResult.value = null
     try {
-      const response = await unpackPluginPackage({
-        package: unpackForm.value.package.trim(),
-        plugins_root: unpackForm.value.plugins_root?.trim() || undefined,
-        profiles_root: unpackForm.value.profiles_root?.trim() || undefined,
-        on_conflict: unpackForm.value.on_conflict || 'rename',
+      const response = await installPluginPackage({
+        package: installForm.value.package.trim(),
+        plugins_root: installForm.value.plugins_root?.trim() || undefined,
+        profiles_root: installForm.value.profiles_root?.trim() || undefined,
+        on_conflict: installForm.value.on_conflict || 'rename',
       })
-      setResult('unpack', response)
+      setResult('install', response)
       await refreshPluginSources()
-      ElMessage.success(`解包完成，处理了 ${response.unpacked_plugin_count} 个插件`)
+      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     } catch (error) {
-      ElMessage.error(`解包失败：${error instanceof Error ? error.message : String(error)}`)
+      ElMessage.error(`安装失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
-      unpacking.value = false
+      installing.value = false
     }
   }
 
@@ -623,19 +623,19 @@ export function usePackageManager() {
   watch(
     selectedPluginIds,
     (pluginIds) => {
-      if (packMode.value !== 'single') {
-        packForm.value.plugin = pluginIds[0] || ''
+      if (buildMode.value !== 'single') {
+        buildForm.value.plugin = pluginIds[0] || ''
       }
-      packForm.value.plugins = [...pluginIds]
+      buildForm.value.plugins = [...pluginIds]
       analyzeForm.value.plugins = [...pluginIds]
     },
     { immediate: true }
   )
 
-  watch(packMode, (mode) => {
-    packForm.value.mode = mode
+  watch(buildMode, (mode) => {
+    buildForm.value.mode = mode
     if (mode === 'single') {
-      packForm.value.plugin = selectedPluginIds.value[0] || ''
+      buildForm.value.plugin = selectedPluginIds.value[0] || ''
     }
   })
 
@@ -647,7 +647,7 @@ export function usePackageManager() {
   return {
     activeTab,
     layoutMode,
-    packMode,
+    buildMode,
     pluginFilter,
     useRegex,
     filterMode,
@@ -658,10 +658,10 @@ export function usePackageManager() {
     localPackages,
     targetDir,
     packageFilterType,
-    packing,
+    building,
     inspecting,
     verifying,
-    unpacking,
+    installing,
     analyzing,
     resultDialogVisible,
     resultHistory,
@@ -670,9 +670,9 @@ export function usePackageManager() {
     resultKind,
     resultText,
     inspectResult,
-    packForm,
+    buildForm,
     packageRef,
-    unpackForm,
+    installForm,
     analyzeForm,
     selectablePlugins,
     pluginCount,
@@ -682,7 +682,7 @@ export function usePackageManager() {
     filteredAdapters,
     filteredExtensions,
     selectedPluginIds,
-    resolvedPackTargets,
+    resolvedBuildTargets,
     filteredLocalPackages,
     setActiveResult,
     openResultDialog,
@@ -694,11 +694,11 @@ export function usePackageManager() {
     selectPackage,
     inspectSelectedPackage,
     verifySelectedPackage,
-    prepareUnpackPackage,
-    handlePack,
+    prepareInstallPackage,
+    handleBuild,
     handleInspect,
     handleVerify,
-    handleUnpack,
+    handleInstall,
     handleAnalyze,
   }
 }

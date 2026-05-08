@@ -7,7 +7,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from ..core import pack_bundle, pack_plugin
+from ..core import build_bundle, build_plugin
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dirs
@@ -55,7 +55,7 @@ def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
         else target_dir / f"{bundle_id}.neko-bundle"
     )
     try:
-        result = pack_bundle(
+        result = build_bundle(
             plugin_dirs,
             output_path,
             bundle_id=bundle_id,
@@ -74,7 +74,7 @@ def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
     print(f"  plugins={', '.join(result.plugin_ids)}")
     if result.staging_dir is not None:
         print(f"  staging_dir={result.staging_dir}")
-        print(f"  packaged_file_count={result.packaged_file_count}")
+        print(f"  staged_file_count={result.staged_file_count}")
         print(f"  profile_file_count={result.profile_file_count}")
     print("Completed: built=1, failed=0")
     return 0
@@ -90,7 +90,7 @@ def _build_auto_bundle_id(plugin_dirs: list[Path]) -> str:
 
 
 def _handle_single(args: argparse.Namespace, *, plugin_dirs: list[Path], target_dir: Path) -> int:
-    packed_count = 0
+    built_count = 0
     failed_count = 0
 
     for plugin_dir in plugin_dirs:
@@ -100,22 +100,22 @@ def _handle_single(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
             else target_dir / f"{plugin_dir.name}.neko-plugin"
         )
         try:
-            result = pack_plugin(plugin_dir, output_path, keep_staging=args.keep_staging)
+            result = build_plugin(plugin_dir, output_path, keep_staging=args.keep_staging)
         except Exception as exc:
             failed_count += 1
             print(f"[FAIL] {plugin_dir.name}: {exc}", file=sys.stderr)
             continue
 
-        packed_count += 1
+        built_count += 1
         print(f"[OK] {result.plugin_id} -> {result.package_path}")
         if result.staging_dir is not None:
             print(f"  staging_dir={result.staging_dir}")
-            print(f"  packaged_file_count={result.packaged_file_count}")
+            print(f"  staged_file_count={result.staged_file_count}")
             print(f"  profile_file_count={result.profile_file_count}")
 
     if failed_count:
-        print(f"Completed with failures: built={packed_count}, failed={failed_count}", file=sys.stderr)
+        print(f"Completed with failures: built={built_count}, failed={failed_count}", file=sys.stderr)
         return 1
 
-    print(f"Completed: built={packed_count}, failed=0")
+    print(f"Completed: built={built_count}, failed=0")
     return 0

@@ -31,7 +31,7 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
     "start",
     "stop",
     "reload",
-    "pack",
+    "build",
     "delete",
     "enable_extension",
     "disable_extension",

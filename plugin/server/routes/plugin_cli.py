@@ -15,7 +15,7 @@ logger = get_logger("server.routes.plugin_cli")
 service = PluginCliService()
 
 
-class PluginCliPackRequest(BaseModel):
+class PluginCliBuildRequest(BaseModel):
     mode: str = Field(default="selected", pattern="^(selected|single|bundle|all)$")
     plugin: str | None = None
     plugins: list[str] = Field(default_factory=list)
@@ -28,7 +28,7 @@ class PluginCliPackRequest(BaseModel):
     version: str | None = None
 
     @model_validator(mode="after")
-    def _validate_mode_payload(self) -> "PluginCliPackRequest":
+    def _validate_mode_payload(self) -> "PluginCliBuildRequest":
         if self.mode == "single" and not self.plugin:
             raise ValueError("plugin is required when mode=single")
         if self.mode in {"selected", "bundle"} and not self.plugins:
@@ -40,7 +40,7 @@ class PluginCliPackageRequest(BaseModel):
     package: str
 
 
-class PluginCliUnpackRequest(BaseModel):
+class PluginCliInstallRequest(BaseModel):
     package: str
     plugins_root: str | None = None
     profiles_root: str | None = None
@@ -52,7 +52,142 @@ class PluginCliAnalyzeRequest(BaseModel):
     current_sdk_version: str | None = None
 
 
-@router.get("/plugin-cli/plugins")
+class PluginCliPluginListResponse(BaseModel):
+    plugins: list[str]
+    count: int
+
+
+class PluginCliLocalPackageItem(BaseModel):
+    name: str
+    path: str
+    suffix: str
+    size_bytes: int
+    modified_at: str
+
+
+class PluginCliPackageListResponse(BaseModel):
+    packages: list[PluginCliLocalPackageItem]
+    count: int
+    target_dir: str
+
+
+class PluginCliBuildFailure(BaseModel):
+    plugin: str
+    error: str
+
+
+class PluginCliBuildResultResponse(BaseModel):
+    plugin_id: str
+    package_type: str
+    plugin_ids: list[str]
+    package_name: str = ""
+    version: str = ""
+    package_path: str
+    staging_dir: str | None = None
+    profile_files: list[str]
+    staged_files: list[str]
+    payload_hash: str
+    package_size_bytes: int
+    staged_file_count: int
+    profile_file_count: int
+    plugin_count: int
+
+
+class PluginCliBuildResponse(BaseModel):
+    built: list[PluginCliBuildResultResponse]
+    built_count: int
+    failed: list[PluginCliBuildFailure]
+    failed_count: int
+    ok: bool
+
+
+class PluginCliInspectedPluginResponse(BaseModel):
+    plugin_id: str
+    archive_path: str
+    has_plugin_toml: bool
+
+
+class PluginCliInspectResponse(BaseModel):
+    package_path: str
+    package_type: str
+    package_id: str
+    schema_version: str = ""
+    package_name: str = ""
+    package_description: str = ""
+    version: str = ""
+    metadata_found: bool
+    payload_hash: str = ""
+    payload_hash_verified: bool | None = None
+    plugins: list[PluginCliInspectedPluginResponse]
+    profile_names: list[str]
+    plugin_count: int
+    profile_count: int
+
+
+class PluginCliVerifyResponse(PluginCliInspectResponse):
+    ok: bool
+
+
+class PluginCliInstalledPluginResponse(BaseModel):
+    source_folder: str
+    target_plugin_id: str
+    target_dir: str
+    renamed: bool
+
+
+class PluginCliInstallResponse(BaseModel):
+    package_path: str
+    package_type: str
+    package_id: str
+    plugins_root: str
+    profiles_root: str | None = None
+    installed_plugins: list[PluginCliInstalledPluginResponse]
+    profile_dir: str | None = None
+    metadata_found: bool
+    payload_hash: str = ""
+    payload_hash_verified: bool | None = None
+    conflict_strategy: str
+    installed_plugin_count: int
+
+
+class PluginCliSharedDependencyResponse(BaseModel):
+    name: str
+    plugin_ids: list[str]
+    requirement_texts: dict[str, str]
+    plugin_count: int
+
+
+class PluginCliBundleSdkAnalysisResponse(BaseModel):
+    kind: str
+    plugin_specifiers: dict[str, str]
+    has_overlap: bool
+    matching_versions: list[str]
+    current_sdk_version: str = ""
+    current_sdk_supported_by_all: bool | None = None
+
+
+class PluginCliAnalyzeResponse(BaseModel):
+    plugin_ids: list[str]
+    shared_dependencies: list[PluginCliSharedDependencyResponse]
+    common_dependencies: list[PluginCliSharedDependencyResponse]
+    sdk_supported_analysis: PluginCliBundleSdkAnalysisResponse | None = None
+    sdk_recommended_analysis: PluginCliBundleSdkAnalysisResponse | None = None
+    plugin_count: int
+
+
+class PluginCliUploadResponse(BaseModel):
+    name: str
+    path: str
+    size_bytes: int
+    modified_at: str
+
+
+class PluginCliUploadAndInstallResponse(BaseModel):
+    upload: PluginCliUploadResponse
+    install: PluginCliInstallResponse
+
+
+@router.get("/plugin-cli/plugins", response_model=PluginCliPluginListResponse)
 async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
     try:
         return await service.list_local_plugins()
@@ -60,7 +195,7 @@ async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.get("/plugin-cli/packages")
+@router.get("/plugin-cli/packages", response_model=PluginCliPackageListResponse)
 async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
     try:
         return await service.list_local_packages()
@@ -68,13 +203,13 @@ async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/pack")
-async def plugin_cli_pack(
-    payload: PluginCliPackRequest,
+@router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
+async def plugin_cli_build(
+    payload: PluginCliBuildRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.pack(
+        return await service.build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
@@ -90,7 +225,7 @@ async def plugin_cli_pack(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/inspect")
+@router.post("/plugin-cli/inspect", response_model=PluginCliInspectResponse)
 async def plugin_cli_inspect(
     payload: PluginCliPackageRequest,
     _: str = require_admin,
@@ -101,7 +236,7 @@ async def plugin_cli_inspect(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/verify")
+@router.post("/plugin-cli/verify", response_model=PluginCliVerifyResponse)
 async def plugin_cli_verify(
     payload: PluginCliPackageRequest,
     _: str = require_admin,
@@ -112,13 +247,13 @@ async def plugin_cli_verify(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/unpack")
-async def plugin_cli_unpack(
-    payload: PluginCliUnpackRequest,
+@router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
+async def plugin_cli_install(
+    payload: PluginCliInstallRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.unpack(
+        return await service.install(
             package=payload.package,
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
@@ -128,7 +263,7 @@ async def plugin_cli_unpack(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/analyze")
+@router.post("/plugin-cli/analyze", response_model=PluginCliAnalyzeResponse)
 async def plugin_cli_analyze(
     payload: PluginCliAnalyzeRequest,
     _: str = require_admin,
@@ -145,7 +280,7 @@ async def plugin_cli_analyze(
 # ── Upload & Download ──────────────────────────────────────────────────
 
 
-@router.post("/plugin-cli/upload")
+@router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
 async def plugin_cli_upload(
     file: UploadFile = File(...),
     _: str = require_admin,
@@ -153,7 +288,7 @@ async def plugin_cli_upload(
     """Upload a plugin package file (.neko-plugin / .neko-bundle) to the server.
 
     The file is saved to the packages target directory and can subsequently be
-    passed to ``/plugin-cli/unpack`` or ``/plugin-cli/inspect``.
+    passed to ``/plugin-cli/install`` or ``/plugin-cli/inspect``.
     """
     try:
         content = await file.read()
@@ -168,19 +303,19 @@ async def plugin_cli_upload(
         raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 
-@router.post("/plugin-cli/upload-and-unpack")
-async def plugin_cli_upload_and_unpack(
+@router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
+async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Upload a plugin package and immediately unpack (install) it.
+    """Upload a plugin package and immediately install it.
 
-    Combines upload + unpack into a single request for convenience.
+    Combines upload + install into a single request for convenience.
     """
     try:
         content = await file.read()
-        return await service.upload_and_unpack(
+        return await service.upload_and_install(
             filename=file.filename or "unknown.neko-plugin",
             content=content,
             on_conflict=on_conflict,
@@ -188,8 +323,8 @@ async def plugin_cli_upload_and_unpack(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     except Exception:
-        logger.exception("Unexpected error during plugin package upload-and-unpack")
-        raise HTTPException(status_code=500, detail="Internal server error during upload-and-unpack")
+        logger.exception("Unexpected error during plugin package upload-and-install")
+        raise HTTPException(status_code=500, detail="Internal server error during upload-and-install")
 
 
 @router.get("/plugin-cli/download")

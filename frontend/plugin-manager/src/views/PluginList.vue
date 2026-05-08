@@ -357,7 +357,7 @@ import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
-import { uploadAndUnpackPlugin, packPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
@@ -830,7 +830,7 @@ const runningPlugins = computed(() => {
   return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running' && plugin.enabled !== false)
 })
 
-// ── Import (upload + unpack) ───────────────────────────────────────────
+// ── Import (upload + install) ─────────────────────────────────────────
 
 function triggerImportFile() {
   importFileInputRef.value?.click()
@@ -846,8 +846,8 @@ async function handleImportFileChange(event: Event) {
 
   importing.value = true
   try {
-    const result = await uploadAndUnpackPlugin(file)
-    const count = result.unpack.unpacked_plugin_count ?? 0
+    const result = await uploadAndInstallPlugin(file)
+    const count = result.install.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
     await handleRefresh()
   } catch (error: any) {
@@ -861,7 +861,7 @@ async function handleImportFileChange(event: Event) {
   }
 }
 
-// ── Export (pack + download) ──────────────────────────────────────────
+// ── Export (build + download) ─────────────────────────────────────────
 
 async function handleBatchExport() {
   const plugins = getSelectedPlugins()
@@ -872,26 +872,26 @@ async function handleBatchExport() {
 
   batchBusy.value = true
   try {
-    const result = await packPluginCli(
+    const result = await buildPluginCli(
       isSingle
         ? { mode: 'single', plugin: ids[0] }
         : { mode: 'bundle', plugins: ids },
     )
 
-    if (result.packed.length === 0) {
-      ElMessage.error(t('plugins.exportPackFailed'))
+    if (result.built.length === 0) {
+      ElMessage.error(t('plugins.exportBuildFailed'))
       return
     }
 
-    // Download each packed file using the full path returned by backend
-    for (const packed of result.packed) {
-      downloadPluginPackage(packed.package_path)
+    // Download each built file using the full path returned by backend
+    for (const built of result.built) {
+      downloadPluginPackage(built.package_path)
     }
 
     if (result.failed && result.failed.length > 0) {
-      ElMessage.warning(t('plugins.batchPartial', { success: result.packed.length, fail: result.failed.length }))
+      ElMessage.warning(t('plugins.batchPartial', { success: result.built.length, fail: result.failed.length }))
     } else {
-      ElMessage.success(t('plugins.exportSuccess', { count: result.packed.length }))
+      ElMessage.success(t('plugins.exportSuccess', { count: result.built.length }))
     }
   } catch (error: any) {
     console.error('Failed to export plugins:', error)

@@ -13,7 +13,7 @@ from ..core.models import (
     OptionalText,
     PackageInspectResult,
     PackageTypeValue,
-    PackResult,
+    BuildResult,
     PayloadBuildResult,
     PayloadHashValue,
     PluginIdList,
@@ -23,8 +23,8 @@ from ..core.models import (
     ResolvedPathList,
     SharedDependency,
     StringList,
-    UnpackedPlugin,
-    UnpackResult,
+    InstalledPlugin,
+    InstallResult,
 )
 
 __all__ = [
@@ -38,7 +38,7 @@ __all__ = [
     "OptionalText",
     "PackageInspectResult",
     "PackageTypeValue",
-    "PackResult",
+    "BuildResult",
     "PayloadBuildResult",
     "PayloadHashValue",
     "PluginIdList",
@@ -48,6 +48,6 @@ __all__ = [
     "ResolvedPathList",
     "SharedDependency",
     "StringList",
-    "UnpackedPlugin",
-    "UnpackResult",
+    "InstalledPlugin",
+    "InstallResult",
 ]
