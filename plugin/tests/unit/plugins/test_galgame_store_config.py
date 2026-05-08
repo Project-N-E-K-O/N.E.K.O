@@ -141,6 +141,8 @@ def test_galgame_store_reads_refresh_from_disk_after_first_load(tmp_path: Path) 
     first = GalgameStore(backing, _logger())
     second = GalgameStore(backing, _logger())
 
+    assert first.load_config_overrides().get(STORE_READER_MODE) is None
+
     second.persist_config_override(STORE_READER_MODE, "auto")
     assert first.load_config_overrides()[STORE_READER_MODE] == "auto"
 
