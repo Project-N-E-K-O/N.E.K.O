@@ -1570,10 +1570,7 @@ def _parse_web_screening_result(text: str) -> dict | None:
 
 def _phase1_text_is_pass(text: str) -> bool:
     """Return True when a Phase 1 section explicitly says PASS."""
-    for line in (text or '').splitlines():
-        if re.fullmatch(r'(?i)\[?\s*PASS\s*\]?', line.strip()):
-            return True
-    return False
+    return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
 
 
 def _parse_unified_phase1_result(text: str) -> dict:

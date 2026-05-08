@@ -53,6 +53,19 @@ keyword: pass template
     assert parsed["meme_pass"] is False
 
 
+def test_parse_unified_phase1_keyword_plus_pass_template_line_is_not_pass():
+    parsed = sr._parse_unified_phase1_result(
+        """
+[MUSIC]
+keyword: pass the dutchie
+[PASS]
+"""
+    )
+
+    assert parsed["music_keyword"] == "pass the dutchie"
+    assert parsed["music_pass"] is False
+
+
 def test_recent_proactive_prompt_has_strong_paired_boundaries():
     lanlan = "测试娘"
     snapshot = sr._proactive_chat_history.get(lanlan)
