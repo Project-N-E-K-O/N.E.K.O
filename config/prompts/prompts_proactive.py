@@ -3924,7 +3924,7 @@ Resposta:
         },
         "pt": {
             "accept": ["sim", "claro", "vamos", "vamos jogar", "boa", "quero jogar"],
-            "decline": ["não obrigado", "não", "passo", "agora não", "não quero", "melhor não", "ainda não"],
+            "decline": ["não obrigado", "passo", "agora não", "não agora", "não quero", "não posso", "melhor não", "ainda não"],
             "later": ["depois", "mais tarde", "daqui a pouco", "em um minuto", "depois disso"],
         },
     },
