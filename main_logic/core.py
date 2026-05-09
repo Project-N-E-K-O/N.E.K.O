@@ -185,7 +185,7 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.gemini_tts_voices import is_gemini_tts_voice
+from utils.gemini_tts_voices import is_gemini_tts_voice, normalize_gemini_tts_voice
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -2310,11 +2310,7 @@ class LLMSessionManager:
         # 后者按当前 tts_custom 配置过滤 bucket（AUDIO_API_KEY / __LOCAL_TTS__ /
         # ASSIST_API_KEY_QWEN 等），用户切了 key 之后旧 bucket 里历史保存的同名
         # clone 不会出现在视图里，会被漏判，绕回 Gemini 内置静默替换。
-        if (
-            self.core_api_type == 'gemini'
-            and is_gemini_tts_voice(self.voice_id)
-            and not self._config_manager.voice_id_exists_in_any_storage(self.voice_id)
-        ):
+        if self._is_gemini_native_voice_id():
             return False
         # 克隆音色始终走 custom 路径；
         # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
@@ -2630,6 +2626,15 @@ class LLMSessionManager:
             return False
         return voice_id in set(get_free_voices().values())
 
+    def _is_gemini_native_voice_id(self, voice_id: str | None = None) -> bool:
+        """判断 voice_id 是否应作为 Gemini Live 原生音色使用。"""
+        candidate = self.voice_id if voice_id is None else voice_id
+        return (
+            self.core_api_type == 'gemini'
+            and is_gemini_tts_voice(candidate)
+            and not self._config_manager.voice_id_exists_in_any_storage(candidate)
+        )
+
     def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
         return bool(
@@ -2650,16 +2655,20 @@ class LLMSessionManager:
         """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""
         return self.core_api_type == 'free' and is_livestream_active()
 
-    def _resolve_realtime_free_voice(self, realtime_config: dict):
-        """决定 OmniRealtimeClient free 路传给 server 的 voice。
+    def _resolve_realtime_voice(self, realtime_config: dict):
+        """决定 OmniRealtimeClient 传给 server/provider 的 voice。
 
         优先级：
-        1. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
+        1. Gemini 原生音色（Puck / 中文男 等）→ 规范化后传入 Gemini Live。
+        2. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
-        2. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
+        3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
            lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
         """
+        if self._is_gemini_native_voice_id():
+            voice_name, _ = normalize_gemini_tts_voice(self.voice_id)
+            return voice_name
         if self._is_livestream_active():
             ls_voice = get_livestream_config().get('voice_id', '')
             if ls_voice:
@@ -2670,6 +2679,10 @@ class LLMSessionManager:
                 and 'lanlan.tech' in base_url):
             return self.voice_id
         return None
+
+    def _resolve_realtime_free_voice(self, realtime_config: dict):
+        """Backward-compatible wrapper for older callers/tests."""
+        return self._resolve_realtime_voice(realtime_config)
 
     def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
         """将语音迁移通知推入缓冲池，委托模块级函数统一去重。"""
@@ -2908,6 +2921,10 @@ class LLMSessionManager:
             if input_mode == 'text':
                 # 文本模式总是需要 TTS（使用默认或自定义音色）
                 self.use_tts = True
+            elif self._is_gemini_native_voice_id():
+                # Gemini 原生音色直接传入 Gemini Live，不启动外部 TTS worker。
+                self.use_tts = False
+                logger.info(f"🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
                 # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
                 self.use_tts = False
@@ -3151,7 +3168,7 @@ class LLMSessionManager:
                         base_url=realtime_config.get('base_url', ''),
                         api_key=realtime_config['api_key'],
                         model=realtime_config['model'],
-                        voice=self._resolve_realtime_free_voice(realtime_config),
+                        voice=self._resolve_realtime_voice(realtime_config),
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
                         on_new_message=self.handle_new_message,
@@ -3568,7 +3585,7 @@ class LLMSessionManager:
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
-                    voice=self._resolve_realtime_free_voice(realtime_config),
+                    voice=self._resolve_realtime_voice(realtime_config),
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
