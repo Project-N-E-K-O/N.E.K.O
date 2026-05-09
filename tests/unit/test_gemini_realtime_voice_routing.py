@@ -6,7 +6,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
+import main_routers.characters_router as characters_router
 from main_logic.core import LLMSessionManager
+from utils.config_manager import ConfigManager
 from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
 
 
@@ -18,12 +20,37 @@ class _FakeConfigManager:
         return voice_id in self._stored_voice_ids
 
 
+class _FakeCharactersRouterConfigManager:
+    def __init__(self, realtime_api_type):
+        self._realtime_api_type = realtime_api_type
+
+    def get_voices_for_current_api(self):
+        return {}
+
+    async def aget_core_config(self):
+        return {"CORE_API_TYPE": "gemini"}
+
+    def is_gemini_realtime_api_active(self):
+        return self._realtime_api_type == "gemini"
+
+    async def aload_characters(self):
+        return {"猫娘": {}}
+
+
 def _make_mgr(voice_id, stored_voice_ids=()):
     mgr = object.__new__(LLMSessionManager)
     mgr.core_api_type = "gemini"
     mgr.voice_id = voice_id
     mgr._is_free_preset_voice = False
     mgr._config_manager = _FakeConfigManager(stored_voice_ids)
+    return mgr
+
+
+def _make_config_manager_with_realtime_api_type(realtime_api_type):
+    mgr = object.__new__(ConfigManager)
+    mgr.get_voices_for_current_api = lambda: {}
+    mgr.get_model_api_config = lambda model_type: {"api_type": realtime_api_type}
+    mgr.get_core_config = lambda: {"CORE_API_TYPE": "gemini"}
     return mgr
 
 
@@ -53,6 +80,36 @@ def test_gemini_alias_without_collision_uses_native_realtime_voice():
         == ("Puck", True)
     )
     assert LLMSessionManager._resolve_realtime_voice(mgr, {}) == "Puck"
+
+
+def test_validate_gemini_voice_uses_active_realtime_provider():
+    local_realtime_mgr = _make_config_manager_with_realtime_api_type("local")
+    gemini_realtime_mgr = _make_config_manager_with_realtime_api_type("gemini")
+
+    assert ConfigManager.validate_voice_id(local_realtime_mgr, "中文男") is False
+    assert ConfigManager.validate_voice_id(gemini_realtime_mgr, "中文男") is True
+
+
+@pytest.mark.asyncio
+async def test_voice_catalog_uses_active_realtime_provider(monkeypatch):
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager("local"),
+    )
+
+    local_result = await characters_router.get_voices()
+
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager("gemini"),
+    )
+
+    gemini_result = await characters_router.get_voices()
+
+    assert "native_voices" not in local_result
+    assert "native_voices" in gemini_result
 
 
 def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():

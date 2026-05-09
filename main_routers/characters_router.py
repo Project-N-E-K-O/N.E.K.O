@@ -2874,7 +2874,7 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
     core_config = await _config_manager.aget_core_config()
-    if core_config.get('CORE_API_TYPE') == 'gemini':
+    if _config_manager.is_gemini_realtime_api_active():
         result["native_voices"] = get_gemini_tts_voices()
 
     if core_config.get('IS_FREE_VERSION'):

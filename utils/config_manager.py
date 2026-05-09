@@ -2337,7 +2337,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        if self.get_core_config().get('CORE_API_TYPE') == 'gemini' and is_gemini_tts_voice(voice_id):
+        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
@@ -2362,7 +2362,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        if self.get_core_config().get('CORE_API_TYPE') == 'gemini' and is_gemini_tts_voice(voice_id):
+        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
             return True
 
         from utils.api_config_loader import get_free_voices
@@ -2371,6 +2371,14 @@ class ConfigManager:
             return True
 
         return False
+
+    def is_gemini_realtime_api_active(self) -> bool:
+        """Return True when the active realtime provider can accept Gemini native voices."""
+        try:
+            realtime_config = self.get_model_api_config('realtime')
+        except Exception:
+            return self.get_core_config().get('CORE_API_TYPE') == 'gemini'
+        return realtime_config.get('api_type') == 'gemini'
 
     def cleanup_invalid_voice_ids(self):
         """清理 characters.json 中无效的 voice_id。
