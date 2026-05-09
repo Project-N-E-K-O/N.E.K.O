@@ -41,6 +41,8 @@ import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
+from config.prompts_sys import _loc
+from config.prompts_voice import VOICE_PREVIEW_TEXTS
 from .shared_state import (
     get_config_manager,
     get_session_manager,
@@ -219,25 +221,13 @@ def _get_persona_payload_request_language(payload: object, request: Request) -> 
     return _get_persona_request_language(request)
 
 
-_VOICE_PREVIEW_TEXTS = {
-    "zh-CN": "喵喵喵～这里是林悠怡～很高兴见到你～",
-    "zh-TW": "喵喵喵～這裡是林悠怡～很高興見到你～",
-    "en": "Meow, meow, meow~ This is Lin Youyi. It's nice to meet you~",
-    "ja": "にゃんにゃんにゃん〜 林悠怡（リン・ユーイー）です。お会いできてうれしいです〜",
-    "ko": "냥냥냥~ 저는 린유이예요. 만나서 반가워요~",
-    "ru": "Мяу-мяу-мяу~ Это Линь Юуи. Очень рада знакомству~",
-    "es": "Miau, miau, miau~ Soy Lin Youyi. Me alegra conocerte~",
-    "pt": "Miau, miau, miau~ Eu sou Lin Youyi. Prazer em conhecer você~",
-}
-
-
 def _normalize_voice_preview_language(raw_language: object) -> str | None:
     """归一化语音试听语言，无效值返回 None 以便继续尝试其他来源。"""
     raw = str(raw_language or "").strip()
     if not raw or not is_supported_language_code(raw):
         return None
     normalized = normalize_language_code(raw, format="full")
-    if normalized in _VOICE_PREVIEW_TEXTS:
+    if normalized in VOICE_PREVIEW_TEXTS:
         return normalized
     return None
 
@@ -3123,7 +3113,7 @@ async def get_voice_preview(
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
         
         preview_language = _get_voice_preview_language(request, language, i18n_language)
-        text = _VOICE_PREVIEW_TEXTS[preview_language]
+        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
         if is_free_preset_voice:
             try:
                 audio_data = await _synthesize_free_voice_preview(
