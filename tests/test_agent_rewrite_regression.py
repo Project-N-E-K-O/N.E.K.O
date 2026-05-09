@@ -608,6 +608,29 @@ def test_character_card_manager_tutorial_uses_current_page_and_targets():
         assert obsolete not in wait_source
 
 
+def test_character_card_manager_tutorial_prepare_helpers_use_current_card_selectors():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    prepare_start = source.index("async prepareCharaManagerForTutorial()")
+    prepare_end = source.index("cleanupCharaManagerTutorialIds()", prepare_start)
+    prepare_source = source[prepare_start:prepare_end]
+    ensure_start = source.index("async _ensureCharaManagerExpanded()")
+    ensure_end = source.index("createHelpButton()", ensure_start)
+    ensure_source = source[ensure_start:ensure_end]
+    step_change_start = source.index("async onStepChange()")
+    step_change_end = source.index("onTutorialEnd()", step_change_start)
+    step_change_source = source[step_change_start:step_change_end]
+
+    for helper_source in (prepare_source, ensure_source):
+        assert ".chara-card-item" in helper_source
+        assert ".chara-list-item" in helper_source
+        assert ".catgirl-block" not in helper_source
+        assert ".catgirl-details" not in helper_source
+        assert ".catgirl-expand" not in helper_source
+
+    assert ".chara-card-item:first-child, .chara-list-item:first-child" in ensure_source
+    assert ".catgirl-block:first-child" not in step_change_source
+
+
 def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
     source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
