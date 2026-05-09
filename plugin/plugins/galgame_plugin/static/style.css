@@ -2416,7 +2416,7 @@ details.plugin-status-hub[open]:not(.panel-fullscreen) > .plugin-status-hub-summ
 }
 
 .plugin-status-section > .plugin-status-section-head::after {
-  content: "收起";
+  content: attr(data-label-collapse);
   flex: 0 0 auto;
   align-self: center;
   padding: 5px 10px;
@@ -2428,7 +2428,7 @@ details.plugin-status-hub[open]:not(.panel-fullscreen) > .plugin-status-hub-summ
 }
 
 .plugin-status-section:not([open]) > .plugin-status-section-head::after {
-  content: "展开";
+  content: attr(data-label-expand);
 }
 
 .plugin-status-section-head > div {

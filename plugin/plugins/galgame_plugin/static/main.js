@@ -7261,6 +7261,20 @@ function setPluginSettingsTab(name = 'recognition') {
   });
 }
 
+function syncPluginStatusSectionLabels() {
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    const summary = section.querySelector('.plugin-status-section-head');
+    if (!summary) {
+      return;
+    }
+    summary.setAttribute('data-label-collapse', collapseLabel);
+    summary.setAttribute('data-label-expand', expandLabel);
+    summary.setAttribute('aria-expanded', section.hasAttribute('open') ? 'true' : 'false');
+  });
+}
+
 function syncPluginStatusHubSummaryLabels() {
   const hub = document.querySelector('.plugin-status-hub');
   const summary = hub?.querySelector('.plugin-status-hub-summary');
@@ -7283,6 +7297,13 @@ function initPluginStatusHubSummaryLabels() {
     hub.setAttribute('data-summary-labels-ready', 'true');
     hub.addEventListener('toggle', syncPluginStatusHubSummaryLabels);
   }
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    if (section.getAttribute('data-summary-labels-ready') !== 'true') {
+      section.setAttribute('data-summary-labels-ready', 'true');
+      section.addEventListener('toggle', syncPluginStatusSectionLabels);
+    }
+  });
+  syncPluginStatusSectionLabels();
   syncPluginStatusHubSummaryLabels();
 }
 
@@ -7687,6 +7708,7 @@ window.addEventListener('focus', () => {
 });
 
 window.addEventListener('i18n-ready', () => {
+  syncPluginStatusSectionLabels();
   syncPluginStatusHubSummaryLabels();
   if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
     refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
@@ -7694,6 +7716,7 @@ window.addEventListener('i18n-ready', () => {
 });
 
 window.addEventListener('i18n-lang-changed', () => {
+  syncPluginStatusSectionLabels();
   syncPluginStatusHubSummaryLabels();
 });
 

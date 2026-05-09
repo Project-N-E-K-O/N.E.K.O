@@ -86,6 +86,7 @@ const error = ref('')
 const runtimeError = ref('')
 const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
+const warnedBlockedStaticUrls = new Set<string>()
 
 const frameStyle = computed(() => ({
   minHeight: props.height,
@@ -107,6 +108,15 @@ const surfaceUrl = computed(() => {
   const explicitUrl = props.surface.url || props.surface.ui_path
   if (explicitUrl) {
     if (props.surface.mode === 'static' && !isSameOriginUrl(explicitUrl)) {
+      const warningKey = `${props.pluginId}:${explicitUrl}`
+      if (!warnedBlockedStaticUrls.has(warningKey)) {
+        warnedBlockedStaticUrls.add(warningKey)
+        console.warn('[HostedSurfaceFrame] blocked cross-origin static surface URL', {
+          pluginId: props.pluginId,
+          explicitUrl,
+          surface: `${props.surface.kind}:${props.surface.id}`,
+        })
+      }
       return ''
     }
     return props.surface.mode === 'static'
