@@ -6050,12 +6050,24 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
-        await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
-        committed = await mgr.finish_proactive_delivery(
-            response_text,
-            expected_speech_id=proactive_sid,
-            action_note=action_note,
-        )
+        try:
+            await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
+            committed = await mgr.finish_proactive_delivery(
+                response_text,
+                expected_speech_id=proactive_sid,
+                action_note=action_note,
+            )
+        except Exception as exc:
+            logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            else:
+                logger.info("[%s] buffered delivery failed after user takeover; skip TTS cleanup", lanlan_name)
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "Phase 2 buffered delivery failed",
+            }))
         if not committed:
             # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：
             # 否则 _record_proactive_chat 会把未送达内容计入去重历史、topic usage
