@@ -18,6 +18,12 @@ describe('static plugin UI URL helpers', () => {
     )
   })
 
+  it('preserves hash routes when adding Galgame locale', () => {
+    expect(withGalgameStaticUiLocale('/plugin/galgame_plugin/ui/?_ui=abc#/route?panel=1', 'galgame_plugin', 'ja')).toBe(
+      '/plugin/galgame_plugin/ui/?_ui=abc&locale=ja#/route?panel=1',
+    )
+  })
+
   it('does not change non-Galgame static surface URLs', () => {
     expect(withGalgameStaticUiLocale('/plugin/demo/ui/?_ui=abc', 'demo', 'ja')).toBe('/plugin/demo/ui/?_ui=abc')
   })

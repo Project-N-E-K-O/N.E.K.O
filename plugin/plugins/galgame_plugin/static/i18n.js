@@ -6,6 +6,18 @@ const I18n = {
     return this._lang;
   },
 
+  _syncDocumentLang() {
+    if (document?.documentElement) {
+      document.documentElement.lang = this._lang || 'zh-CN';
+    }
+  },
+
+  setLang(locale) {
+    this._lang = String(locale || '').trim() || 'zh-CN';
+    this._syncDocumentLang();
+    window.dispatchEvent(new CustomEvent('i18n-lang-changed', { detail: { locale: this._lang } }));
+  },
+
   _localeCandidates(locale) {
     const raw = String(locale || '').trim() || 'zh-CN';
     const lower = raw.toLowerCase().replace('_', '-');
@@ -34,7 +46,8 @@ const I18n = {
   _queryLocale() {
     try {
       return new URLSearchParams(location.search).get('locale') || '';
-    } catch {
+    } catch (err) {
+      console.warn('Failed to read query locale', err);
       return '';
     }
   },
@@ -61,7 +74,8 @@ const I18n = {
       const value = String(localStorage.getItem('locale') || '').trim();
       if (!value) return '';
       return value === 'auto' ? this._browserLocale() : value;
-    } catch {
+    } catch (err) {
+      console.warn('Failed to read stored locale', err);
       return '';
     }
   },
@@ -71,18 +85,19 @@ const I18n = {
     const queryLocale = this._queryLocale();
     const storageLocale = this._storageLocale();
     if (queryLocale) {
-      this._lang = queryLocale;
+      this.setLang(queryLocale);
     } else if (storageLocale) {
-      this._lang = storageLocale;
+      this.setLang(storageLocale);
     } else {
       try {
         const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
         if (resp.ok) {
           const data = await resp.json();
-          this._lang = data.locale || 'zh-CN';
+          this.setLang(data.locale || 'zh-CN');
         }
-      } catch {
-        this._lang = 'zh-CN';
+      } catch (err) {
+        console.warn('Failed to resolve locale from ui-api', err);
+        this.setLang('zh-CN');
       }
     }
 
@@ -91,14 +106,16 @@ const I18n = {
         const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/ui/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
         if (resp.ok) {
           this._bundle = await resp.json();
-          this._lang = locale;
+          this.setLang(locale);
           return;
         }
-      } catch {
+      } catch (err) {
+        console.warn('Failed to load locale bundle', { locale, err });
         // Fallback below keeps the page usable.
       }
     }
     this._bundle = {};
+    this._syncDocumentLang();
   },
 
   t(key, fallback) {
@@ -141,6 +158,7 @@ window.I18n = I18n;
   const pluginId = match ? match[1] : 'galgame_plugin';
   I18n.init(pluginId).then(() => {
     I18n.scanDOM();
+    I18n._syncDocumentLang();
     window.dispatchEvent(new CustomEvent('i18n-ready', { detail: { locale: I18n.lang() } }));
   });
 })();

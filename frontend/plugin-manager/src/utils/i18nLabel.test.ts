@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolvePluginI18nMessage } from './i18nLabel'
+import { resolveLocalizedText, resolvePluginI18nMessage } from './i18nLabel'
 
 describe('resolvePluginI18nMessage', () => {
   it('uses plugin i18n messages for the current locale', () => {
@@ -31,5 +31,24 @@ describe('resolvePluginI18nMessage', () => {
     expect(resolvePluginI18nMessage(i18n, 'plugin.description', 'ja-JP', 'fallback')).toBe('説明')
     expect(resolvePluginI18nMessage(i18n, 'plugin.description', 'ko', 'fallback')).toBe('默认说明')
     expect(resolvePluginI18nMessage(i18n, 'plugin.name', 'ko', 'fallback')).toBe('fallback')
+  })
+})
+
+describe('resolveLocalizedText', () => {
+  it('uses exact locale matches and primary locale fallbacks', () => {
+    const text = {
+      'en-US': 'American English',
+      en: 'English',
+      ja: 'Japanese',
+    }
+
+    expect(resolveLocalizedText(text, 'en-US', 'fallback')).toBe('American English')
+    expect(resolveLocalizedText(text, 'en-GB', 'fallback')).toBe('English')
+    expect(resolveLocalizedText(text, 'ja-JP', 'fallback')).toBe('Japanese')
+  })
+
+  it('returns the provided fallback when no localized value exists', () => {
+    expect(resolveLocalizedText({}, 'fr-FR', 'fallback')).toBe('fallback')
+    expect(resolveLocalizedText(null, 'fr-FR', 'fallback')).toBe('fallback')
   })
 })

@@ -2284,7 +2284,7 @@ button[disabled] {
 }
 
 .plugin-status-hub > .plugin-status-hub-summary::after {
-  content: "隐藏";
+  content: attr(data-label-collapse);
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -2305,7 +2305,7 @@ button[disabled] {
 }
 
 .plugin-status-hub:not([open]) > .plugin-status-hub-summary::after {
-  content: "展开";
+  content: attr(data-label-expand);
   background: rgba(64, 197, 241, 0.12);
 }
 

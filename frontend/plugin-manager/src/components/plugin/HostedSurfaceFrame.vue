@@ -91,6 +91,14 @@ const frameStyle = computed(() => ({
   minHeight: props.height,
 }))
 
+function isSameOriginUrl(url: string) {
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin
+  } catch {
+    return false
+  }
+}
+
 const surfaceTitle = computed(() => {
   return props.surface.title || props.surface.id || props.pluginId
 })
@@ -98,6 +106,9 @@ const surfaceTitle = computed(() => {
 const surfaceUrl = computed(() => {
   const explicitUrl = props.surface.url || props.surface.ui_path
   if (explicitUrl) {
+    if (props.surface.mode === 'static' && !isSameOriginUrl(explicitUrl)) {
+      return ''
+    }
     return props.surface.mode === 'static'
       ? withGalgameStaticUiLocale(explicitUrl, props.pluginId, String(locale.value))
       : explicitUrl
@@ -109,6 +120,17 @@ const surfaceUrl = computed(() => {
     return withGalgameStaticUiLocale(`/plugin/${encodeURIComponent(props.pluginId)}/ui/`, props.pluginId, String(locale.value))
   }
   return ''
+})
+
+const hostedSurfaceOrigin = computed(() => {
+  if (props.surface.mode !== 'static' || !surfaceUrl.value) {
+    return ''
+  }
+  try {
+    return new URL(surfaceUrl.value, window.location.href).origin
+  } catch {
+    return ''
+  }
 })
 
 const placeholderTitle = computed(() => {
@@ -322,6 +344,7 @@ async function loadHostedTsx() {
 
 function handleMessage(event: MessageEvent) {
   if (event.source !== iframeRef.value?.contentWindow) return
+  if (props.surface.mode === 'static' && event.origin !== hostedSurfaceOrigin.value) return
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-error') {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
@@ -352,12 +375,13 @@ function handleMessage(event: MessageEvent) {
 async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
+  const targetOrigin = props.surface.mode === 'static' && hostedSurfaceOrigin.value ? hostedSurfaceOrigin.value : '*'
   const respond = (payload: Record<string, any>) => {
     iframeRef.value?.contentWindow?.postMessage({
       type: 'neko-hosted-surface-response',
       requestId,
       ...payload,
-    }, '*')
+    }, targetOrigin)
   }
   if (!requestId) return
   try {

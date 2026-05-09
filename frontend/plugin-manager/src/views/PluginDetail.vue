@@ -119,21 +119,21 @@
             </el-descriptions>
 
             <!-- 普通插件：显示绑定的 Extension 列表 -->
-            <div v-if="!isExtension && boundExtensions.length > 0" class="bound-extensions">
-              <h4 class="bound-extensions-title">{{ $t('plugins.boundExtensions') }} ({{ boundExtensions.length }})</h4>
+            <div v-if="!isExtension && localizedBoundExtensions.length > 0" class="bound-extensions">
+              <h4 class="bound-extensions-title">{{ $t('plugins.boundExtensions') }} ({{ localizedBoundExtensions.length }})</h4>
               <div class="bound-extensions-list">
                 <el-card
-                  v-for="ext in boundExtensions"
+                  v-for="ext in localizedBoundExtensions"
                   :key="ext.id"
                   shadow="hover"
                   class="bound-ext-card"
                   @click="goToPlugin(ext.id)"
                 >
                   <div class="bound-ext-info">
-                    <span class="bound-ext-name">{{ ext.name }}</span>
+                    <span class="bound-ext-name">{{ ext.localizedName }}</span>
                     <StatusIndicator :status="ext.status || 'pending'" />
                   </div>
-                  <p class="bound-ext-desc">{{ ext.description || $t('common.noData') }}</p>
+                  <p class="bound-ext-desc">{{ ext.localizedDescription }}</p>
                 </el-card>
               </div>
             </div>
@@ -260,6 +260,19 @@ const pluginTypeTagType = computed(() => {
 const boundExtensions = computed(() => {
   if (!plugin.value || isExtension.value) return []
   return pluginStore.getExtensionsForHost(pluginId.value)
+})
+
+const localizedBoundExtensions = computed(() => {
+  return boundExtensions.value.map((ext) => ({
+    ...ext,
+    localizedName: resolvePluginI18nMessage(ext.i18n, 'plugin.name', locale.value, ext.name),
+    localizedDescription: resolvePluginI18nMessage(
+      ext.i18n,
+      'plugin.description',
+      locale.value,
+      ext.description || t('common.noData'),
+    ),
+  }))
 })
 
 // 确保 status 始终是字符串类型

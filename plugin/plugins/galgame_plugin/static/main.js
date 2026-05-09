@@ -381,7 +381,8 @@ function readPluginSettingsCollapsed() {
 }
 
 function activePluginSettingsTabName() {
-  const activeTab = document.querySelector('[data-settings-tab].active');
+  const panel = document.getElementById('pluginSettingsPanel');
+  const activeTab = panel?.querySelector('[data-settings-tab].active');
   return activeTab ? activeTab.getAttribute('data-settings-tab') || 'recognition' : 'recognition';
 }
 
@@ -403,7 +404,8 @@ function applyPluginSettingsCollapsed(on) {
     tabs.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
   }
   if (collapsed) {
-    document.querySelectorAll('[data-settings-tab-panel]').forEach((tabPanel) => {
+    const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+    tabPanels.forEach((tabPanel) => {
       tabPanel.hidden = true;
       tabPanel.setAttribute('aria-hidden', 'true');
     });
@@ -7240,7 +7242,8 @@ function handleFirstRunActionClick(button, action) {
 }
 
 function setPluginSettingsTab(name = 'recognition') {
-  const tabs = Array.from(document.querySelectorAll('[data-settings-tab]'));
+  const panel = document.getElementById('pluginSettingsPanel');
+  const tabs = Array.from(panel?.querySelectorAll('[data-settings-tab]') || []);
   const requestedName = name || 'recognition';
   const activeName = tabs.some((tab) => tab.getAttribute('data-settings-tab') === requestedName)
     ? requestedName
@@ -7250,11 +7253,37 @@ function setPluginSettingsTab(name = 'recognition') {
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
-  document.querySelectorAll('[data-settings-tab-panel]').forEach((panel) => {
-    const active = panel.getAttribute('data-settings-tab-panel') === activeName;
-    panel.hidden = !active;
-    panel.setAttribute('aria-hidden', active ? 'false' : 'true');
+  const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+  tabPanels.forEach((tabPanel) => {
+    const active = tabPanel.getAttribute('data-settings-tab-panel') === activeName;
+    tabPanel.hidden = !active;
+    tabPanel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
+}
+
+function syncPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  const summary = hub?.querySelector('.plugin-status-hub-summary');
+  if (!hub || !summary) {
+    return;
+  }
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  const titleLabel = uiT('ui.plugin_status.title', '插件状态');
+  const isOpen = hub.hasAttribute('open');
+  summary.setAttribute('data-label-collapse', collapseLabel);
+  summary.setAttribute('data-label-expand', expandLabel);
+  summary.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  summary.setAttribute('aria-label', `${titleLabel} ${isOpen ? collapseLabel : expandLabel}`);
+}
+
+function initPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  if (hub && hub.getAttribute('data-summary-labels-ready') !== 'true') {
+    hub.setAttribute('data-summary-labels-ready', 'true');
+    hub.addEventListener('toggle', syncPluginStatusHubSummaryLabels);
+  }
+  syncPluginStatusHubSummaryLabels();
 }
 
 function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
@@ -7291,6 +7320,7 @@ async function initialize() {
   initOcrWindowCollapse();
   initPluginWindowCollapse();
   initPluginSettingsCollapse();
+  initPluginStatusHubSummaryLabels();
   updateSettingsDirtyHint();
 
   const progress = await fetchTutorialProgress();
@@ -7657,9 +7687,14 @@ window.addEventListener('focus', () => {
 });
 
 window.addEventListener('i18n-ready', () => {
+  syncPluginStatusHubSummaryLabels();
   if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
     refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
   }
+});
+
+window.addEventListener('i18n-lang-changed', () => {
+  syncPluginStatusHubSummaryLabels();
 });
 
 initialize();

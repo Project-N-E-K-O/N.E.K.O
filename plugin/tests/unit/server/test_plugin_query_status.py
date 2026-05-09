@@ -37,6 +37,7 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             "name": "Missing Plugin",
             "runtime_source_missing": True,
             "status": "source_missing",
+            "i18n": {"messages": {}},
             "entries": [],
             "list_actions": [],
         }
@@ -171,10 +172,13 @@ def test_build_plugin_list_includes_plugin_card_i18n(
             }
         },
     }
-    assert results[0]["entries"][0]["name"] == "ハンドラーを実行"
-    assert results[0]["entries"][0]["description"] == "ハンドラー由来エントリを実行する。"
-    assert results[0]["entries"][1]["name"] == "デモを実行"
-    assert results[0]["entries"][1]["description"] == "デモエントリを実行する。"
+    entries = results[0]["entries"]
+    handler_demo = next(entry for entry in entries if entry["id"] == "handler_demo")
+    demo_entry = next(entry for entry in entries if entry["id"] == "demo")
+    assert handler_demo["name"] == "ハンドラーを実行"
+    assert handler_demo["description"] == "ハンドラー由来エントリを実行する。"
+    assert demo_entry["name"] == "デモを実行"
+    assert demo_entry["description"] == "デモエントリを実行する。"
     assert results[0]["list_actions"][0]["label"] == "UI を開く"
     assert results[0]["list_actions"][0]["confirm_message"] == "開きますか?"
 

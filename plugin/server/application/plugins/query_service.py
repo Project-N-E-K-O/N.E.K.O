@@ -150,8 +150,7 @@ def _plugin_card_i18n_payload(
             if selected:
                 card_messages[locale] = selected
 
-    if card_messages:
-        config["messages"] = card_messages
+    config["messages"] = card_messages
     return config
 
 
