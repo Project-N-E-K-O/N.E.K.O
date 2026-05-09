@@ -6,9 +6,11 @@ import zipfile
 
 from plugin.core.python_dependencies import (
     collect_project_python_requirements,
+    find_missing_python_requirements_from_versions,
     split_host_provided_requirements,
 )
 
+from .dependencies import collect_dependency_manifest_python_requirements
 from .normalize import normalize_archive_key, validate_archive_entry_name
 
 try:
@@ -146,6 +148,12 @@ def validate_plugin_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) 
 
 def validate_dependency_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) -> None:
     file_names = set(archive.namelist())
+    dependency_manifest = read_dependency_manifest(archive)
+    manifest_requirements = collect_dependency_manifest_python_requirements(
+        dependency_manifest,
+        plugin_folders,
+    )
+
     for folder in plugin_folders:
         requirements_name = f"payload/plugins/{folder}/requirements.txt"
         if requirements_name in file_names:
@@ -157,7 +165,10 @@ def validate_dependency_layout(archive: zipfile.ZipFile, plugin_folders: list[st
 
         pyproject_name = f"payload/plugins/{folder}/pyproject.toml"
         pyproject_toml = read_archive_toml(archive, pyproject_name, required=False)
-        python_requirements = collect_project_python_requirements(pyproject_toml)
+        python_requirements = _merge_requirement_lists(
+            manifest_requirements.get(folder, []),
+            collect_project_python_requirements(pyproject_toml),
+        )
         external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
         if not external_requirements:
             continue
@@ -173,6 +184,93 @@ def validate_dependency_layout(archive: zipfile.ZipFile, plugin_folders: list[st
                 f"({', '.join(external_requirements)}) but the package does not contain "
                 "vendored dependency files under vendor/."
             )
+        vendor_versions = _collect_archive_vendor_distribution_versions(
+            archive,
+            vendor_prefix,
+            file_names,
+        )
+        missing_requirements = find_missing_python_requirements_from_versions(
+            external_requirements,
+            vendor_versions,
+        )
+        if missing_requirements:
+            raise ValueError(
+                f"plugin '{folder}' vendor/ does not satisfy Python runtime dependencies: "
+                f"{', '.join(missing_requirements)}"
+            )
+
+
+def _merge_requirement_lists(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            requirement = str(item or "").strip()
+            if not requirement:
+                continue
+            key = requirement.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(requirement)
+    return result
+
+
+def _collect_archive_vendor_distribution_versions(
+    archive: zipfile.ZipFile,
+    vendor_prefix: str,
+    file_names: set[str],
+) -> dict[str, str | None]:
+    installed: dict[str, str | None] = {}
+    archive_name = getattr(archive, "filename", None) or "<archive>"
+    for name in file_names:
+        if not name.startswith(vendor_prefix) or not name.endswith("/METADATA"):
+            continue
+        path = safe_archive_path(name)
+        if len(path.parts) < 6 or path.parts[-1] != "METADATA":
+            continue
+        if not path.parts[-2].endswith(".dist-info"):
+            continue
+
+        dist_name, dist_version = _parse_distribution_metadata(
+            archive.read(name),
+            source_name=name,
+            archive_name=archive_name,
+        )
+        if dist_name:
+            installed[dist_name] = dist_version
+    return installed
+
+
+def _parse_distribution_metadata(
+    raw: bytes,
+    *,
+    source_name: str,
+    archive_name: str,
+) -> tuple[str | None, str | None]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"'{source_name}' in '{archive_name}' is not valid UTF-8: {exc}"
+        ) from exc
+
+    dist_name: str | None = None
+    dist_version: str | None = None
+    for raw_line in text.splitlines():
+        if not raw_line or raw_line[0].isspace():
+            continue
+        key, separator, value = raw_line.partition(":")
+        if not separator:
+            continue
+        normalized_key = key.strip().lower()
+        if normalized_key == "name":
+            dist_name = value.strip() or None
+        elif normalized_key == "version":
+            dist_version = value.strip() or None
+        if dist_name is not None and dist_version is not None:
+            break
+    return dist_name, dist_version
 
 
 def compute_archive_payload_hash(archive: zipfile.ZipFile) -> str:

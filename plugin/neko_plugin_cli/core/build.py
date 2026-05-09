@@ -11,7 +11,11 @@ from pathlib import Path
 from .models import BuildResult, PayloadBuildResult, PluginSource
 from .normalize import normalize_archive_key, normalize_relative_posix
 from .build_rules import BuildRuleSet, load_build_rules, should_skip_path
-from .dependencies import validate_source_dependency_layout, write_dependency_manifest
+from .dependencies import (
+    validate_payload_dependency_layout,
+    validate_source_dependency_layout,
+    write_dependency_manifest,
+)
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
@@ -221,6 +225,7 @@ class PluginBuilder:
         )
         profile_files = write_default_profile(source, paths.profiles_dir)
         write_dependency_manifest([source], paths.payload_dir)
+        validate_payload_dependency_layout(paths.payload_dir, [source.plugin_id])
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(
@@ -255,6 +260,10 @@ class PluginBuilder:
 
         profile_files = write_bundle_profile(sources, paths.profiles_dir)
         write_dependency_manifest(sources, paths.payload_dir)
+        validate_payload_dependency_layout(
+            paths.payload_dir,
+            [source.plugin_id for source in sources],
+        )
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 import re
 
 from plugin.core.python_dependencies import (
@@ -10,7 +11,7 @@ from plugin.core.python_dependencies import (
 )
 
 from .models import PluginSource
-from .toml_utils import escape_string, render_toml_value, toml_bare_or_quoted_key
+from .toml_utils import escape_string, load_toml, render_toml_value, toml_bare_or_quoted_key
 
 _DEPENDENCY_SCHEMA_VERSION = "1.0"
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -143,6 +144,91 @@ def write_dependency_manifest(sources: list[PluginSource], payload_dir: Path) ->
     return manifest_path.resolve()
 
 
+def validate_payload_dependency_layout(payload_dir: Path, plugin_ids: Iterable[str]) -> None:
+    """Validate dependency rules against the actual staged package payload."""
+
+    payload_dir = Path(payload_dir)
+    plugin_id_list = [str(item) for item in plugin_ids]
+    dependency_manifest_path = payload_dir / "dependencies.toml"
+    dependency_manifest = load_toml(dependency_manifest_path) if dependency_manifest_path.is_file() else None
+    manifest_requirements = collect_dependency_manifest_python_requirements(
+        dependency_manifest,
+        plugin_id_list,
+        source_name=str(dependency_manifest_path),
+    )
+
+    for plugin_id in plugin_id_list:
+        plugin_dir = payload_dir / "plugins" / plugin_id
+        requirements_file = plugin_dir / "requirements.txt"
+        if requirements_file.exists():
+            raise ValueError(
+                f"plugin '{plugin_id}' package payload contains unsupported requirements.txt. "
+                "Python runtime dependencies must be declared in pyproject.toml "
+                "[project].dependencies and vendored under vendor/."
+            )
+
+        pyproject_path = plugin_dir / "pyproject.toml"
+        pyproject_toml = load_toml(pyproject_path) if pyproject_path.is_file() else None
+        python_requirements = _merge_requirement_lists(
+            manifest_requirements.get(plugin_id, []),
+            collect_project_python_requirements(pyproject_toml),
+        )
+
+        external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
+        if not external_requirements:
+            continue
+
+        vendor_dir = plugin_dir / "vendor"
+        if not vendor_dir.is_dir():
+            raise ValueError(
+                f"plugin '{plugin_id}' package payload declares Python runtime dependencies "
+                f"({', '.join(external_requirements)}) but vendor/ is missing."
+            )
+        if not any(path.is_file() for path in vendor_dir.rglob("*")):
+            raise ValueError(
+                f"plugin '{plugin_id}' package payload declares Python runtime dependencies "
+                f"({', '.join(external_requirements)}) but vendor/ does not contain any files."
+            )
+        missing_requirements = find_missing_python_requirements(
+            external_requirements,
+            search_paths=[vendor_dir],
+        )
+        if missing_requirements:
+            raise ValueError(
+                f"plugin '{plugin_id}' package payload vendor/ does not satisfy Python runtime dependencies: "
+                f"{', '.join(missing_requirements)}"
+            )
+
+
+def collect_dependency_manifest_python_requirements(
+    data: dict[str, object] | None,
+    plugin_ids: Iterable[str],
+    *,
+    source_name: str = "payload/dependencies.toml",
+) -> dict[str, list[str]]:
+    if data is None:
+        return {}
+
+    plugins_table = data.get("plugins")
+    if not isinstance(plugins_table, dict):
+        raise ValueError(f"{source_name} must contain a [plugins] table")
+
+    result: dict[str, list[str]] = {}
+    for plugin_id in plugin_ids:
+        raw_item = plugins_table.get(plugin_id)
+        if raw_item is None:
+            raise ValueError(f"{source_name} is missing dependency metadata for plugin '{plugin_id}'")
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"{source_name} [plugins.{plugin_id}] must be a TOML table")
+        result[plugin_id] = _read_manifest_string_list(
+            raw_item,
+            "python_requirements",
+            source_name=source_name,
+            plugin_id=plugin_id,
+        )
+    return result
+
+
 def _sanitize_dependency_entry(entry: dict[str, object]) -> dict[str, object]:
     allowed_keys = {
         "id",
@@ -163,4 +249,43 @@ def _sanitize_dependency_entry(entry: dict[str, object]) -> dict[str, object]:
             result[key] = value
         elif isinstance(value, list):
             result[key] = [str(item) for item in value if item is not None]
+    return result
+
+
+def _merge_requirement_lists(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            requirement = str(item or "").strip()
+            if not requirement:
+                continue
+            key = requirement.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(requirement)
+    return result
+
+
+def _read_manifest_string_list(
+    data: dict[str, object],
+    key: str,
+    *,
+    source_name: str,
+    plugin_id: str,
+) -> list[str]:
+    value = data.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{source_name} [plugins.{plugin_id}].{key} must be a list of strings")
+
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{source_name} [plugins.{plugin_id}].{key} entries must be strings")
+        stripped = item.strip()
+        if stripped:
+            result.append(stripped)
     return result

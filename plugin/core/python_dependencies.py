@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 import re
 
 try:
@@ -137,7 +137,6 @@ def find_missing_python_requirements(
     if not requirement_list:
         return []
 
-    installed: dict[str, Optional[str]] = {}
     try:
         if search_paths is None:
             distributions = importlib_metadata.distributions()
@@ -145,8 +144,13 @@ def find_missing_python_requirements(
             distributions = importlib_metadata.distributions(
                 path=[str(Path(item)) for item in search_paths]
             )
-        for dist in distributions:
-            version_text: Optional[str] = None
+    except Exception:
+        return find_missing_python_requirements_from_versions(requirement_list, {})
+
+    installed: dict[str, Optional[str]] = {}
+    for dist in distributions:
+        version_text: Optional[str] = None
+        try:
             dist_version = getattr(dist, "version", None)
             if isinstance(dist_version, str) and dist_version.strip():
                 version_text = dist_version.strip()
@@ -162,8 +166,25 @@ def find_missing_python_requirements(
             dist_attr_name = getattr(dist, "name", None)
             if isinstance(dist_attr_name, str) and dist_attr_name.strip():
                 installed.setdefault(canonicalize_distribution_name(dist_attr_name), version_text)
-    except Exception:
+        except Exception:
+            continue
+
+    return find_missing_python_requirements_from_versions(requirement_list, installed)
+
+
+def find_missing_python_requirements_from_versions(
+    requirements: Iterable[str],
+    installed_versions: Mapping[str, str | None],
+) -> list[str]:
+    requirement_list = [str(item or "").strip() for item in requirements if str(item or "").strip()]
+    if not requirement_list:
         return []
+
+    installed = {
+        canonicalize_distribution_name(name): (version.strip() if isinstance(version, str) and version.strip() else None)
+        for name, version in installed_versions.items()
+        if str(name or "").strip()
+    }
 
     missing: list[str] = []
     seen_missing: set[str] = set()
@@ -187,17 +208,18 @@ def find_missing_python_requirements(
 
         canon = canonicalize_distribution_name(req_name)
         installed_version = installed.get(canon)
-        if installed_version is not None and parsed_requirement is not None and Version is not None:
+        satisfied = canon in installed
+        if satisfied and parsed_requirement is not None and Version is not None:
             specifier = getattr(parsed_requirement, "specifier", None)
             if specifier:
-                try:
-                    if Version(installed_version) in specifier:
-                        continue
-                except Exception:
-                    pass
-            else:
-                continue
-        elif canon in installed:
+                satisfied = False
+                if installed_version is not None:
+                    try:
+                        satisfied = Version(installed_version) in specifier
+                    except Exception:
+                        satisfied = False
+
+        if satisfied:
             continue
 
         key = req.lower()

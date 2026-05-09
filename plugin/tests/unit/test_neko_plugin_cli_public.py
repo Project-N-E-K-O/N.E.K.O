@@ -109,6 +109,19 @@ def _rewrite_package_without_member(package_path: Path, member_name: str) -> Non
             dst.writestr(info, data)
 
 
+def _rewrite_package_without_prefixes(package_path: Path, prefixes: list[str]) -> None:
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(package_path) as src:
+        for info in src.infolist():
+            if any(info.filename.startswith(prefix) for prefix in prefixes):
+                continue
+            entries.append((info, src.read(info.filename)))
+
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for info, data in entries:
+            dst.writestr(info, data)
+
+
 def _rewrite_package_member(package_path: Path, member_name: str, content: str) -> None:
     entries: list[tuple[zipfile.ZipInfo, bytes]] = []
     with zipfile.ZipFile(package_path) as src:
@@ -192,6 +205,29 @@ def test_build_plugin_rejects_requirements_txt(tmp_path: Path) -> None:
         build_plugin(plugin_dir, tmp_path / "demo_plugin.neko-plugin")
 
 
+def test_build_plugin_rejects_include_rules_that_drop_vendor(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo-plugin"',
+                'version = "1.2.3"',
+                'dependencies = ["httpx>=0.27", "pydantic>=2.0"]',
+                "",
+                "[tool.neko.build]",
+                'include = ["plugin.toml", "pyproject.toml", "runtime.txt"]',
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="package payload declares Python runtime dependencies"):
+        build_plugin(plugin_dir, tmp_path / "demo_plugin.neko-plugin")
+
+
 def test_inspect_package_reports_metadata_and_profiles(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"
@@ -210,6 +246,22 @@ def test_inspect_package_reports_metadata_and_profiles(tmp_path: Path) -> None:
     assert result.plugins[0].plugin_id == "demo_plugin"
     assert result.dependencies is not None
     assert result.dependencies.plugins[0].python_requirements == ["httpx>=0.27", "pydantic>=2.0"]
+
+
+def test_inspect_package_uses_dependency_manifest_when_pyproject_is_missing(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_without_prefixes(
+        package_path,
+        [
+            "payload/plugins/demo_plugin/pyproject.toml",
+            "payload/plugins/demo_plugin/vendor/",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="vendor/"):
+        inspect_package(package_path)
 
 
 def test_install_package_supports_rename_and_fail_conflict_modes(tmp_path: Path) -> None:
@@ -253,6 +305,24 @@ def test_install_package_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
     _tamper_package(package_path, "payload/profiles/default.toml")
 
     with pytest.raises(ValueError, match="payload hash mismatch"):
+        install_package(
+            package_path,
+            plugins_root=tmp_path / "plugins",
+            profiles_root=tmp_path / "profiles",
+            on_conflict="rename",
+        )
+
+
+def test_install_package_rejects_vendor_missing_required_dist_metadata(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_without_member(
+        package_path,
+        "payload/plugins/demo_plugin/vendor/httpx-0.27.0.dist-info/METADATA",
+    )
+
+    with pytest.raises(ValueError, match="httpx>=0.27"):
         install_package(
             package_path,
             plugins_root=tmp_path / "plugins",
