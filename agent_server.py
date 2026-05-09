@@ -4462,7 +4462,9 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
             if gate.get("ready") is True:
                 adapter_refreshed = _try_refresh_computer_use_adapter(force=True)
-                if adapter_refreshed and Modules.computer_use is not None:
+                if not adapter_refreshed and Modules.computer_use is not None:
+                    logger.info("[Agent] ComputerUse adapter refresh failed; falling back to existing adapter")
+                if Modules.computer_use is not None:
                     _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
                     _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
                     asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))

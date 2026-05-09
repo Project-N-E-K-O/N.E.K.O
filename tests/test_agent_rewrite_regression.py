@@ -1368,7 +1368,9 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
     assert "adapter_refreshed = _try_refresh_computer_use_adapter(force=True)" in func_src
-    assert "if adapter_refreshed and Modules.computer_use is not None:" in func_src
+    assert "if not adapter_refreshed and Modules.computer_use is not None:" in func_src
+    assert "falling back to existing adapter" in func_src
+    assert "if Modules.computer_use is not None:" in func_src
     assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
