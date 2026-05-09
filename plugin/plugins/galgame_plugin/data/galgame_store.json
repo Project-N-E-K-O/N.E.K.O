@@ -1,55 +1,13 @@
 {
-  "dedupe_window": [
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:3d073005c589",
-      "normalized_text": "1-円 ゲームの終丁--Fh.++++++ ELT- 日++++ - Th.+!+++1 --+. - !"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:6b81de250ca8",
-      "normalized_text": "ゲームの終了 EK!T"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:5b92b3c67730",
-      "normalized_text": "鈷束游戎 EK!T"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:73e8c77e9228",
-      "normalized_text": "結束游戎 EK!T"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:8b2ecc667cfb",
-      "normalized_text": "結束游戎 Eズ!T"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:0bc3a880853d",
-      "normalized_text": "将臣 F......e? J"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:50743cbbd5f3",
-      "normalized_text": "将臣 F......pe? J"
-    },
-    {
-      "game_id": "ocr-3523177bc57a",
-      "line_id": "ocr:5a28c3dcd843",
-      "normalized_text": "モ-コ ++++!+!++L! 田Il+lT? ++++田所- ++++ +Ih.+++ -! H+++14」 1日 先生悠醒醒"
-    }
-  ],
-  "events_byte_offset": 800676,
-  "events_file_size": 800676,
-  "last_error": {
-    "kind": "warning",
-    "message": "memory_reader TextractorCLI.exe is invalid or missing",
-    "source": "bridge_reader",
-    "ts": ""
-  },
-  "last_seq": 2735,
+  "advance_speed": "medium",
+  "bound_game_id": "",
+  "dedupe_window": [],
+  "events_byte_offset": 3221766,
+  "events_file_size": 3221766,
+  "last_error": {},
+  "last_seq": 2579,
+  "llm_vision_enabled": false,
+  "llm_vision_max_image_px": 768,
   "memory_reader_target": {
     "create_time": 0.0,
     "detected_engine": "",
@@ -62,19 +20,25 @@
     "process_name": "",
     "selected_at": ""
   },
+  "mode": "companion",
+  "ocr_fast_loop_enabled": true,
+  "ocr_poll_interval_seconds": 0.5,
+  "ocr_trigger_mode": "interval",
   "ocr_window_target": {
-    "last_known_hwnd": 0,
-    "mode": "auto",
-    "normalized_title": "",
-    "pid": 0,
-    "process_name": "",
-    "selected_at": "",
-    "window_key": ""
+    "last_known_hwnd": 1117864,
+    "mode": "manual",
+    "normalized_title": "千恋＊万花",
+    "pid": 96124,
+    "process_name": "SenrenBanka.exe",
+    "selected_at": "2026-05-09T06:02:33Z",
+    "window_key": "ocrwin:789cc7f0a0f21e60"
   },
+  "push_notifications": true,
   "rapidocr.auto_detect_lang": false,
-  "rapidocr.auto_detect_last_lang": "japan",
-  "rapidocr.lang_type": "japan",
-  "session_id": "ocr-6f88ba88-ed81-4afd-ad9c-86739b5d448c",
+  "rapidocr.auto_detect_last_lang": "ch",
+  "rapidocr.lang_type": "ch",
+  "reader_mode": "auto",
+  "session_id": "ocr-6f29c6b3-7345-4a6b-bb24-2dc11edcf2a1",
   "tutorial_progress": {
     "completed": false,
     "completed_at": 0.0,

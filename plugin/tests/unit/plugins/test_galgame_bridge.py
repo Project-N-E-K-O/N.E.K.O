@@ -180,6 +180,54 @@ class _Ctx:
         return None
 
 
+@pytest.mark.asyncio
+async def test_install_progress_callback_uses_supported_run_update_fields() -> None:
+    class _ProgressPlugin:
+        logger = _Logger()
+
+        def __init__(self) -> None:
+            self.run_updates: list[dict[str, object]] = []
+
+        async def run_update(self, **kwargs):
+            if "status" in kwargs:
+                raise TypeError("unexpected status")
+            self.run_updates.append(dict(kwargs))
+            return {"ok": True}
+
+    plugin = _ProgressPlugin()
+    callback = GalgameBridgePlugin._resolve_install_progress_callback(plugin, "run-1")
+
+    await callback(
+        {
+            "phase": "downloading",
+            "message": "Downloading Textractor",
+            "progress": 0.25,
+            "downloaded_bytes": 10,
+            "total_bytes": 20,
+            "resume_from": 0,
+            "asset_name": "Textractor.zip",
+            "release_name": "v1",
+        }
+    )
+
+    assert plugin.run_updates == [
+        {
+            "run_id": "run-1",
+            "progress": 0.25,
+            "stage": "downloading",
+            "message": "Downloading Textractor",
+            "metrics": {
+                "phase": "downloading",
+                "downloaded_bytes": 10,
+                "total_bytes": 20,
+                "resume_from": 0,
+                "asset_name": "Textractor.zip",
+                "release_name": "v1",
+            },
+        }
+    ]
+
+
 def _session_state(
     *,
     speaker: str = "",
@@ -3474,6 +3522,56 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
         install_root / "TextractorCLI.exe"
     )
     assert captured_install_kwargs["textractor_proxy"] == "http://127.0.0.1:7890"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_install_textractor_entry_uses_ctx_run_id_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    install_root = tmp_path / "TextractorInstalled"
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            memory_reader={
+                "enabled": True,
+                "install_target_dir": str(install_root),
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+
+    observed: dict[str, object] = {}
+
+    async def _fake_install_textractor(**kwargs):
+        observed.update(kwargs)
+        return {
+            "installed": True,
+            "already_installed": False,
+            "detected_path": str(install_root / "TextractorCLI.exe"),
+            "target_dir": str(install_root),
+            "expected_executable_path": str(install_root / "TextractorCLI.exe"),
+            "install_supported": True,
+            "can_install": False,
+            "detail": "installed",
+            "summary": "Textractor install ok",
+            "release_name": "v1.0.0",
+            "asset_name": "Textractor-x64.zip",
+        }
+
+    monkeypatch.setattr(
+        "plugin.plugins.galgame_plugin.install_textractor",
+        _fake_install_textractor,
+    )
+
+    result = await plugin.galgame_install_textractor(_ctx={"run_id": "run-123"})
+
+    assert isinstance(result, Ok)
+    assert observed["task_id"] == "run-123"
 
 
 @pytest.mark.asyncio
