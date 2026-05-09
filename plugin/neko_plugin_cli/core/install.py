@@ -68,12 +68,21 @@ class PackageInstaller:
                 plugins_root_path,
                 on_conflict=on_conflict,
             )
+            # Preflight profile target before extracting anything so that
+            # on_conflict='fail' aborts without leaving partial installs.
+            profile_dir = self.preflight_profile_target(
+                archive,
+                profiles_root=profiles_root_path,
+                package_id=package_id,
+                on_conflict=on_conflict,
+            )
             self.extract_plugins(archive, folder_mapping)
             profile_dir = self.extract_profiles(
                 archive,
                 profiles_root=profiles_root_path,
                 package_id=package_id,
                 on_conflict=on_conflict,
+                preflighted_target=profile_dir,
             )
 
         return InstallResult(
@@ -132,6 +141,24 @@ class PackageInstaller:
             target_path = target_root.joinpath(*relative_parts)
             self.extract_member(archive, name, target_path)
 
+    def preflight_profile_target(
+        self,
+        archive: zipfile.ZipFile,
+        *,
+        profiles_root: Path,
+        package_id: str,
+        on_conflict: str,
+    ) -> Path | None:
+        """Check profile target feasibility without writing anything."""
+        profile_names = [
+            name for name in archive.namelist()
+            if len(safe_archive_path(name).parts) >= 3 and safe_archive_path(name).parts[:2] == ("payload", "profiles")
+        ]
+        if not profile_names:
+            return None
+        # This will raise FileExistsError early if on_conflict='fail' and target exists.
+        return self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
+
     def extract_profiles(
         self,
         archive: zipfile.ZipFile,
@@ -139,6 +166,7 @@ class PackageInstaller:
         profiles_root: Path,
         package_id: str,
         on_conflict: str,
+        preflighted_target: Path | None = None,
     ) -> Path | None:
         profile_names = [
             name for name in archive.namelist()
@@ -147,7 +175,7 @@ class PackageInstaller:
         if not profile_names:
             return None
 
-        target_dir = self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
+        target_dir = preflighted_target or self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
         for name in profile_names:
             path = safe_archive_path(name)
             relative_parts = path.parts[2:]

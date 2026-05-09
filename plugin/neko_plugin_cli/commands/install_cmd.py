@@ -23,7 +23,12 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    package_path = resolve_package_path(args.package, defaults=defaults)
+
+    try:
+        package_path = resolve_package_path(args.package, defaults=defaults)
+    except Exception as exc:
+        print(f"[FAIL] {args.package}: {exc}", file=sys.stderr)
+        return 1
 
     try:
         result = install_package(

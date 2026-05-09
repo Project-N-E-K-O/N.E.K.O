@@ -82,7 +82,9 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     # same rule semantics apply across platforms.
     path_str = relative_path.as_posix()
 
-    if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in relative_path.parts):
+    # Check directory components only (exclude the filename for files).
+    dir_parts = relative_path.parts if is_dir else relative_path.parts[:-1]
+    if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in dir_parts):
         return True
 
     if not is_dir:
