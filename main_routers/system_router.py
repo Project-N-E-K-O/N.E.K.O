@@ -1285,7 +1285,7 @@ _proactive_chat_totals_lock = asyncio.Lock()
 _proactive_chat_totals_loaded = False
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
-_PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
+_PROACTIVE_SIMILARITY_THRESHOLD = 0.90  # 保守硬拦截阈值：90% 以上重复直接放弃本轮
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
 _PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
 
@@ -5943,6 +5943,28 @@ async def proactive_chat(request: Request):
         # 完整原文通过 print 给开发者本地查看。
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+
+        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
+        if is_duplicate:
+            logger.info(
+                "[%s] proactive repeat guard blocked Phase 2 output (similarity=%.3f threshold=%.2f)",
+                lanlan_name, similarity_score, _PROACTIVE_SIMILARITY_THRESHOLD,
+            )
+            print(
+                f"[{lanlan_name}] 主动搭话重复度过高，已拦截 "
+                f"(similarity={similarity_score:.3f}, threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            else:
+                logger.info("[%s] repeat guard hit but user already took over; skip TTS cleanup", lanlan_name)
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "主动搭话重复度过高，已拦截",
+                "similarity": similarity_score,
+                "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
+            }))
 
         has_music_topic = 'music' in active_channels
 
