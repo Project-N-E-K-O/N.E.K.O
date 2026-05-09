@@ -4215,6 +4215,52 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
     assert persisted == ["korean"]
 
 
+def test_rapidocr_auto_lang_does_not_override_manual_disable_during_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    persisted: list[str] = []
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        rapidocr_lang_changed_callback=persisted.append,
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+
+    def _inspect_and_disable(**_kwargs):
+        manager._config.rapidocr_lang_type = "japan"
+        manager._config.rapidocr_auto_detect_lang = False
+        manager._config.rapidocr_auto_detect_last_lang = "japan"
+        return {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/ch/mobile",
+        }
+
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        _inspect_and_disable,
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\u96ea\u4e43: \u3053\u3093\u306b\u3061\u306f",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "japan"
+    assert manager._config.rapidocr_auto_detect_lang is False
+    assert manager._config.rapidocr_auto_detect_last_lang == "japan"
+    assert persisted == []
+
+
 def test_rapidocr_auto_lang_first_switch_not_blocked_by_startup_cooldown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4449,6 +4495,56 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
     assert status["detail"] == "installed"
     assert status["target_dir"] == str(legacy_target)
     assert status["detected_path"] == str(package_dir)
+
+
+def test_inspect_rapidocr_installation_uses_current_model_selection_over_legacy_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
+    package_dir = target / "runtime" / "site-packages" / "rapidocr_onnxruntime"
+    package_dir.mkdir(parents=True)
+    (target / "models").mkdir()
+    (target / "install_state.json").write_text(
+        json.dumps(
+            {
+                "selected_model": "PP-OCRv5/ch/mobile",
+                "lang_type": "ch",
+                "model_type": "mobile",
+                "ocr_version": "PP-OCRv5",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        galgame_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+    monkeypatch.setattr(
+        galgame_rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin=str(package_dir / "__init__.py")),
+    )
+    monkeypatch.setattr(
+        galgame_rapidocr_support,
+        "missing_rapidocr_model_files",
+        lambda **_kwargs: [],
+    )
+
+    status = galgame_rapidocr_support.inspect_rapidocr_installation(
+        install_target_dir_raw="",
+        lang_type="japan",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        platform_fn=lambda: True,
+    )
+
+    assert status["selected_model"] == "PP-OCRv5/japan/mobile"
+    assert status["lang_type"] == "japan"
+    assert status["model_type"] == "mobile"
+    assert status["ocr_version"] == "PP-OCRv5"
 
 
 def test_install_task_runtime_root_uses_app_docs_dir(

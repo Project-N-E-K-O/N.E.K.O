@@ -676,7 +676,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             memory_reader_obj.get("install_target_dir") or ""
         ).strip(),
         memory_reader_install_timeout_seconds=_coerce_float(
-            memory_reader_obj.get("install_timeout_seconds"), 300.0, minimum=1.0
+            memory_reader_obj.get("install_timeout_seconds"), 600.0, minimum=1.0
         ),
         memory_reader_auto_detect=bool(memory_reader_obj.get("auto_detect", True)),
         memory_reader_hook_codes=_coerce_string_list(

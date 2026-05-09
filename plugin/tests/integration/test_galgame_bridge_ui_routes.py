@@ -307,7 +307,7 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
         del client_host
         assert payload.plugin_id == "galgame_plugin"
         assert payload.entry_id == "galgame_install_textractor"
-        assert payload.args == {"force": True}
+        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 600.0}}
         return RunCreateResponse(run_id="run-textractor-1", status="queued")
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
@@ -338,7 +338,7 @@ async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seed
         del client_host
         assert payload.plugin_id == "galgame_plugin"
         assert payload.entry_id == "galgame_install_tesseract"
-        assert payload.args == {"force": True}
+        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 300.0}}
         return RunCreateResponse(run_id="run-tesseract-1", status="queued")
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)

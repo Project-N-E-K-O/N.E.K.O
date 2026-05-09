@@ -114,6 +114,12 @@ def test_build_config_keeps_memory_reader_engine_hooks(tmp_path) -> None:
     }
 
 
+def test_build_config_defaults_textractor_install_timeout_to_long_download_window() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert cfg.memory_reader_install_timeout_seconds == 600.0
+
+
 def test_build_config_defaults_ocr_trigger_mode_to_after_advance() -> None:
     cfg = galgame_service.build_config({})
 

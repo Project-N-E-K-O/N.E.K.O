@@ -5299,6 +5299,12 @@ class OcrReaderManager:
             except Exception:
                 pass
             return
+        if not bool(getattr(self._config, "rapidocr_auto_detect_lang", False)):
+            try:
+                self._logger.debug("rapidocr auto-lang skipped: auto_detect_disabled_before_apply")
+            except Exception:
+                pass
+            return
 
         self._config.rapidocr_lang_type = detected_lang
         self._config.rapidocr_auto_detect_last_lang = detected_lang
