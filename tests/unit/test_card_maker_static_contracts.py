@@ -27,6 +27,10 @@ def test_card_maker_locks_controls_until_model_loads_and_guards_save():
     assert "if (!isModelLoaded) {" in script
     assert "cardExport.modelStillLoading" in script
     assert "window.nekoBeforeWindowClose" in script
+    assert "MODEL_LOADING_CLOSE_FALLBACK_MS = 8000" in script
+    assert "return handled ? { handled: true } : undefined;" in script
+    assert "if (isModelLoading && !canCloseWhileLoading()) return false;" in script
+    assert "allowLoadingClose && isCloseControl" in script
 
 
 def test_window_controls_support_page_close_hook():

@@ -17,6 +17,10 @@
     let isModelLoaded = false;
     let isModelLoading = false;
     let primaryActionBusy = false;
+    const MODEL_LOADING_CLOSE_FALLBACK_MS = 8000;
+    let modelLoadingStartedAt = 0;
+    let allowCloseWhileLoading = false;
+    let loadingCloseFallbackTimer = null;
     let previewLoopId = null;     // requestAnimationFrame ID
     let lastPreviewTime = 0;      // 上次预览渲染时间戳
 
@@ -160,8 +164,8 @@
             closeCardMakerPage();
         });
         window.nekoBeforeWindowClose = async () => {
-            await closeCardMakerPage();
-            return { handled: true };
+            const handled = await closeCardMakerPage();
+            return handled ? { handled: true } : undefined;
         };
 
         // 标签页切换
@@ -246,7 +250,11 @@
     }
 
     async function closeCardMakerPage() {
-        if (isModelLoading) return;
+        if (isModelLoading && !canCloseWhileLoading()) return false;
+        if (isModelLoading) {
+            closeCardMakerWindow();
+            return true;
+        }
         try {
             await saveModelSaveFallbackDefaultCardFace('card-maker-close', {
                 maxWait: 1200,
@@ -255,10 +263,14 @@
             });
         } catch (error) {
             console.error('[CardMaker] 关闭前默认卡面兜底失败:', error);
-        } finally {
-            if (window.opener) { window.close(); }
-            else { window.history.back(); }
         }
+        closeCardMakerWindow();
+        return true;
+    }
+
+    function closeCardMakerWindow() {
+        if (window.opener) { window.close(); }
+        else { window.history.back(); }
     }
 
     function shouldSaveFallbackDefaultCardFace() {
@@ -1624,8 +1636,37 @@
         exportFullBtn.disabled = primaryActionBusy || isModelLoading || !isModelLoaded;
     }
 
+    function canCloseWhileLoading() {
+        if (!isModelLoading) return true;
+        if (allowCloseWhileLoading) return true;
+        return modelLoadingStartedAt > 0 &&
+            Date.now() - modelLoadingStartedAt >= MODEL_LOADING_CLOSE_FALLBACK_MS;
+    }
+
+    function scheduleLoadingCloseFallback() {
+        if (loadingCloseFallbackTimer) {
+            window.clearTimeout(loadingCloseFallbackTimer);
+        }
+        loadingCloseFallbackTimer = window.setTimeout(() => {
+            loadingCloseFallbackTimer = null;
+            if (!isModelLoading) return;
+            allowCloseWhileLoading = true;
+            updateCardMakerInteractivity(true);
+        }, MODEL_LOADING_CLOSE_FALLBACK_MS);
+    }
+
+    function clearLoadingCloseFallback() {
+        if (loadingCloseFallbackTimer) {
+            window.clearTimeout(loadingCloseFallbackTimer);
+            loadingCloseFallbackTimer = null;
+        }
+        modelLoadingStartedAt = 0;
+        allowCloseWhileLoading = false;
+    }
+
     function updateCardMakerInteractivity(locked) {
         const isLocked = !!locked;
+        const allowLoadingClose = isLocked && canCloseWhileLoading();
         document.body?.classList.toggle('card-maker-loading', isLocked);
 
         const controls = document.querySelectorAll(
@@ -1634,14 +1675,25 @@
         );
         controls.forEach(control => {
             if (control === exportFullBtn) return;
-            control.disabled = isLocked;
-            control.setAttribute('aria-disabled', isLocked ? 'true' : 'false');
+            const isCloseControl = control === backBtn ||
+                control.getAttribute('data-neko-window-control') === 'close';
+            const shouldDisable = isLocked && !(allowLoadingClose && isCloseControl);
+            control.disabled = shouldDisable;
+            control.setAttribute('aria-disabled', shouldDisable ? 'true' : 'false');
         });
         updatePrimaryActionAvailability();
     }
 
     function showLoading(show) {
-        isModelLoading = !!show;
+        const nextLoading = !!show;
+        if (nextLoading && !isModelLoading) {
+            modelLoadingStartedAt = Date.now();
+            allowCloseWhileLoading = false;
+            scheduleLoadingCloseFallback();
+        } else if (!nextLoading) {
+            clearLoadingCloseFallback();
+        }
+        isModelLoading = nextLoading;
         if (show) {
             loadingOverlay.classList.remove('hidden');
         } else {
