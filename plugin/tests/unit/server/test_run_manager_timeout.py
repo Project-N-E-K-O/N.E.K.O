@@ -19,6 +19,14 @@ def test_resolve_run_execution_timeout_falls_back_for_zero_ctx_timeout(
     assert manager._resolve_run_execution_timeout({"_ctx": {"entry_timeout": 0}}) == 300.0
 
 
+def test_resolve_run_execution_timeout_falls_back_for_null_ctx_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(manager, "RUN_EXECUTION_TIMEOUT", 300.0)
+
+    assert manager._resolve_run_execution_timeout({"_ctx": {"entry_timeout": None}}) == 300.0
+
+
 def test_resolve_run_execution_timeout_falls_back_for_invalid_ctx_timeout(
     monkeypatch,
 ) -> None:

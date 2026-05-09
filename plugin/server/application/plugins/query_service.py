@@ -163,10 +163,11 @@ def _resolve_plugin_display_fields(
     missing = "\0__missing_plugin_display_i18n__"
     name_fallback = plugin_info.get("name")
     description_fallback = plugin_info.get("description")
+    name_default = name_fallback if isinstance(name_fallback, str) and name_fallback else str(plugin_info.get("id") or "")
     plugin_info["name"] = plugin_i18n.t(
         "plugin.name",
         locale=locale,
-        default=name_fallback if isinstance(name_fallback, str) else str(plugin_info.get("id") or ""),
+        default=name_default,
     )
     description = plugin_i18n.t(
         "plugin.description",

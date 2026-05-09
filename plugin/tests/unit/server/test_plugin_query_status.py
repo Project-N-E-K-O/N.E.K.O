@@ -61,6 +61,23 @@ def test_resolve_plugin_display_fields_preserves_empty_description_without_trans
     assert plugin_info["description"] == ""
 
 
+def test_resolve_plugin_display_fields_uses_id_when_name_is_empty_without_translation() -> None:
+    plugin_info: dict[str, object] = {
+        "id": "empty_name_plugin",
+        "name": "",
+        "description": "Description",
+    }
+
+    query_module._resolve_plugin_display_fields(
+        plugin_info,
+        PluginI18n(),
+        locale="ja",
+    )
+
+    assert plugin_info["name"] == "empty_name_plugin"
+    assert plugin_info["description"] == "Description"
+
+
 def test_plugin_card_i18n_payload_keeps_only_plugin_display_keys() -> None:
     payload = query_module._plugin_card_i18n_payload(
         {"i18n": {"default_locale": "zh-CN", "locales_dir": "i18n"}},

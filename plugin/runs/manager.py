@@ -780,7 +780,7 @@ def _normalize_timeout_value(value: object) -> float | None | object:
     if value is _TIMEOUT_UNSET:
         return _TIMEOUT_UNSET
     if value is None:
-        return None
+        return _TIMEOUT_UNSET
     if isinstance(value, bool):
         return _TIMEOUT_UNSET
     try:

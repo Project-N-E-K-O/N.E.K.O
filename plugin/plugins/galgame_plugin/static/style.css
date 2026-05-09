@@ -960,7 +960,6 @@ h1 {
   z-index: 1;
   align-items: center;
   margin: 0;
-  height: var(--advanced-hub-head-height);
   min-height: var(--advanced-hub-head-height);
   padding: var(--advanced-hub-head-padding);
   border: 0;
@@ -1871,7 +1870,6 @@ button[disabled] {
   justify-content: space-between;
   gap: 16px;
   min-width: 0;
-  height: var(--advanced-hub-head-height);
   min-height: var(--advanced-hub-head-height);
   padding: var(--advanced-hub-head-padding);
   border-bottom: 1px solid rgba(31, 35, 41, 0.07);
@@ -2274,7 +2272,6 @@ button[disabled] {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  height: var(--advanced-hub-head-height);
   min-height: var(--advanced-hub-head-height);
   margin: 0;
   padding: var(--advanced-hub-head-padding);
