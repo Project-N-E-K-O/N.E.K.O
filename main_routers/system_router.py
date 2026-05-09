@@ -5803,7 +5803,8 @@ async def proactive_chat(request: Request):
             # （handle_new_message 或 text stream_text 入口）会 fire USER_INPUT，
             # 在 PHASE2 阶段 sticky 把 _preempted 翻到 True；同时 current_speech_id
             # 被轮换，proactive_sid != 新 sid 兜底覆盖竞态窗口。
-            # feed_tts_chunk 下面还有 lock 内 expected_speech_id 二次校验。
+            # TTS 不在流式阶段输出：先缓冲全文，等相似度/数据级硬拦截都通过后
+            # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
             if mgr.state.is_proactive_preempted(proactive_sid):
                 print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
                 aborted = True
@@ -5822,7 +5823,6 @@ async def proactive_chat(request: Request):
                 aborted = True
                 return True
             full_text += text
-            await mgr.feed_tts_chunk(text, expected_speech_id=proactive_sid)
             return False
         
         try:
@@ -6050,6 +6050,7 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
+        await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
         committed = await mgr.finish_proactive_delivery(
             response_text,
             expected_speech_id=proactive_sid,
