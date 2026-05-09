@@ -172,3 +172,38 @@ def test_get_provider_returns_none_for_falsy_key():
     assert get_provider(None) is None
     assert get_provider("") is None
     assert get_provider("__test_synth__") is _SYNTHETIC_PROVIDER
+
+
+def test_builtin_providers_auto_loaded_on_registry_import():
+    """Importing the registry alone (no explicit provider import) must give a
+    populated registry — otherwise cross-cutting code that runs before any
+    TTS/realtime client has loaded a provider would query an empty list and
+    silently fall through to external TTS routing.
+
+    Spawn a fresh subprocess so we observe a clean Python startup, not the
+    state already polluted by previous imports in this test session.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from utils.native_voice_registry import "
+                "list_providers, is_native_voice; "
+                "providers = list_providers(); "
+                "assert 'gemini' in providers, providers; "
+                "assert is_native_voice('Puck') is True; "
+                "print('OK')"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")),
+    )
+    assert result.returncode == 0, (
+        f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert result.stdout.strip() == "OK"

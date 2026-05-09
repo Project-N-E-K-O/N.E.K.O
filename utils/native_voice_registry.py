@@ -216,6 +216,32 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     return api_type if api_type in _PROVIDERS else None
 
 
+_BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
+    "utils.gemini_tts_voices",
+)
+
+
+def ensure_builtin_native_voice_providers_loaded() -> None:
+    """Force-import built-in provider adapters so their `register_provider`
+    side effects fire before any registry query.
+
+    Called once when this module is imported (see bottom of file). The reason
+    auto-bootstrap lives here, not in cross-cutting callers: a callsite that
+    runs before any TTS/realtime client has imported a provider module would
+    otherwise query an empty registry, and the failure mode (silent
+    fall-through to external TTS) is non-obvious.
+
+    To add a new built-in provider: write the adapter module (it must call
+    `register_provider(...)` at import time) and append its dotted name to
+    `_BUILTIN_PROVIDER_MODULES`. No edits in `config_manager` / `core` /
+    `characters_router` / `tts_client` are required for the metadata side.
+    """
+    import importlib
+
+    for module_name in _BUILTIN_PROVIDER_MODULES:
+        importlib.import_module(module_name)
+
+
 def get_native_tts_worker(
     core_api_type: str | None,
     cm: "ConfigManager",
@@ -240,3 +266,14 @@ def get_native_tts_worker(
         return None
     worker, api_key = resolver(cm)
     return worker, api_key, core_api_type
+
+
+# Auto-bootstrap on module import: any consumer of this registry gets a
+# populated provider list without each cross-cutting file having to remember a
+# `from utils import gemini_tts_voices  # noqa: F401` side-effect import.
+# Trades a one-line coupling (registry knows the dotted module names of its
+# built-in providers via `_BUILTIN_PROVIDER_MODULES`) for "no caller can forget
+# to bootstrap." Adapter modules import this registry to call
+# `register_provider`, so by the time we reach this line the registry's public
+# API is fully defined and the circular import resolves cleanly.
+ensure_builtin_native_voice_providers_loaded()
