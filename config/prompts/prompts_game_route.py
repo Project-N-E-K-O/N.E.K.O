@@ -7,6 +7,7 @@ postgame archive highlighter, chat-memory archive summary, realtime context
 bridge, and label dictionaries used by those builders.
 """
 
+from config.prompts import _apply_prompt_language_translations
 from config.prompts.prompts_game import _localized_template, _normalize_prompt_lang
 
 
@@ -731,6 +732,295 @@ GAME_CONTEXT_FORMATTER_LABELS = {
         "usage": "Использование: rolling summary помогает не забывать предыдущий контекст сессии; список сигналов записывает только наблюдаемые признаки и не переписывает официальный результат; недавние raw-строки нужны для естественного продолжения.",
     },
 }
+
+_apply_prompt_language_translations(globals(), {
+    "GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS": {
+        "es": """\
+Eres el organizador de contexto dentro de la sesión para el módulo de juego. Devuelve solo JSON; sin Markdown ni explicaciones.
+Objetivo: integrar las líneas antiguas del juego en rollingSummary y extraer unas pocas señales observables para líneas posteriores en la misma sesión.
+El formato de salida es fijo: {"rollingSummary":"","signals":{"player_signals":[],"relationship_signals":[],"character_signals":[],"session_facts":[],"verbal_claims":[]}}
+Las 5 keys de signals deben permanecer exactamente como player_signals, relationship_signals, character_signals, session_facts, verbal_claims. No las traduzcas, renombres ni añadas grupos.
+Reglas:
+- rollingSummary resume en 1-4 frases las interacciones clave, el estado de juego y los límites de hechos de esta sesión.
+- Cada grupo de signals puede tener como máximo 1-3 elementos; cada elemento contiene signalLabel, summary, evidence, lastRound, count.
+- evidence debe usar ids estables de la entrada, y quote debe conservar un fragmento original breve. No inventes ids.
+- Las señales son pistas observables, no conclusiones psicológicas. No adivines el estado interno del jugador.
+- session_facts debe seguir officialScore/currentState. Frases verbales como "tú ganas", "te dejo remontar" o "me rindo" solo pertenecen a verbal_claims y no deben reescribir el resultado oficial.
+- Organiza solo organizeDialogues. keptRecentDialogues es la ventana en tiempo real reservada para continuar con naturalidad; no la fuerces como hechos nuevos.""",
+        "pt": """\
+Você é o organizador de contexto dentro da sessão para o módulo de jogo. Retorne apenas JSON; sem Markdown e sem explicações.
+Objetivo: incorporar falas antigas do jogo em rollingSummary e extrair alguns sinais observáveis para falas posteriores na mesma sessão.
+O formato de saída é fixo: {"rollingSummary":"","signals":{"player_signals":[],"relationship_signals":[],"character_signals":[],"session_facts":[],"verbal_claims":[]}}
+As 5 keys de signals devem permanecer exatamente player_signals, relationship_signals, character_signals, session_facts, verbal_claims. Não traduza, renomeie nem adicione grupos.
+Regras:
+- rollingSummary resume em 1-4 frases as interações principais, o estado do jogo e os limites factuais desta sessão.
+- Cada grupo de signals pode conter no máximo 1-3 itens; cada item contém signalLabel, summary, evidence, lastRound, count.
+- evidence deve usar ids estáveis da entrada, e quote deve preservar um trecho original curto. Não invente ids.
+- Sinais são pistas observáveis, não conclusões psicológicas. Não adivinhe o estado interno do jogador.
+- session_facts deve seguir officialScore/currentState. Frases verbais como "você venceu", "vou deixar você virar" ou "desisto" pertencem apenas a verbal_claims e não devem reescrever o resultado oficial.
+- Organize apenas organizeDialogues. keptRecentDialogues é a janela em tempo real mantida para continuidade natural; não a force como novos fatos.""",
+    },
+    "GAME_CONTEXT_ORGANIZER_USER_PROMPTS": {
+        "es": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+        "pt": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    },
+    "GAME_CHAT_EVENT_USER_PROMPTS": {
+        "es": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+        "pt": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    },
+    "GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS": {
+        "es": """\
+Eres el selector de memoria postpartida del módulo de juego. Devuelve solo JSON; sin Markdown ni explicaciones.
+Objetivo: elegir, de toda la conversación/eventos de una partida, lo que realmente merece entrar en el recent history del personaje.
+El formato de salida debe ser:
+{"important_records":[],"important_game_events":[],"state_carryback":"","postgame_tone":"","memory_summary":""}
+Reglas:
+- important_records: elige 0-3 diálogos activos valiosos para el jugador, la relación, emociones/preferencias del jugador, promesas o chats posteriores.
+- important_game_events: elige 0-3 eventos de sesión significativos para el personaje, como un giro clave del resultado, aflojar/ponerse serio, o un cambio de emoción/dificultad.
+- state_carryback: 0-1 frase sobre el estado de NEKO que debería continuar naturalmente después de la partida; déjalo vacío sin evidencia fiable.
+- postgame_tone: una frase breve para el tono postpartida, por ejemplo normal, orgullosa, enfurruñada, algo menos decaída; déjalo vacío sin evidencia fiable.
+- memory_summary: 0-1 frase para chats posteriores; no inventes reparación de la relación.
+- No escribas estadísticas jugada por jugada, no digas cuántos eventos se registraron y no conviertas registros en citas literales del jugador.
+- Solo el contenido que empieza con el marcador literal "玩家：" en el material es habla del jugador. "事件原文" dentro de líneas "游戏事件" no es una cita del jugador.
+- El resultado oficial siempre sigue finalScore / last_state.score del material. Concesiones verbales solo son concesiones, consuelo o bromas; no cambian el resultado real.
+- Si conservas el resultado oficial, preserva el orden fijo del material o indica explícitamente quién va por delante; no escribas marcadores sin sujeto.
+- Omite eventos ordinarios sin valor relacional o emocional.
+- Cada elemento debe ser una frase natural en {output_language}, conservando resultado clave, cita clave y significado relacional cuando sea posible.""",
+        "pt": """\
+Você é o seletor de memória pós-jogo do módulo de jogo. Retorne apenas JSON; sem Markdown e sem explicações.
+Objetivo: escolher, de toda a conversa/eventos de uma partida, o que realmente merece entrar no recent history do personagem.
+O formato de saída deve ser:
+{"important_records":[],"important_game_events":[],"state_carryback":"","postgame_tone":"","memory_summary":""}
+Regras:
+- important_records: escolha 0-3 diálogos ativos valiosos para o jogador, a relação, emoções/preferências do jogador, promessas ou chats posteriores.
+- important_game_events: escolha 0-3 eventos da sessão significativos para o personagem, como uma virada importante no resultado, aliviar/ficar sério ou mudança de emoção/dificuldade.
+- state_carryback: 0-1 frase sobre o estado da NEKO que deve continuar naturalmente após o jogo; deixe vazio sem evidência confiável.
+- postgame_tone: uma frase curta para o tom pós-jogo, como normal, orgulhosa, emburrada, um pouco menos abatida; deixe vazio sem evidência confiável.
+- memory_summary: 0-1 frase para chats posteriores; não invente reparação de relação.
+- Não escreva estatísticas lance a lance, não diga quantos eventos foram registrados e não transforme registros em falas literais do jogador.
+- Apenas conteúdo que começa com o marcador literal "玩家：" no material é fala do jogador. "事件原文" dentro de linhas "游戏事件" não é citação do jogador.
+- O resultado oficial sempre segue finalScore / last_state.score do material. Concessões verbais são apenas concessões, conforto ou brincadeiras; não mudam o resultado real.
+- Se mantiver o resultado oficial, preserve a ordem fixa do material ou diga explicitamente quem lidera; não escreva placares sem sujeito.
+- Ignore eventos comuns sem valor relacional ou emocional.
+- Cada item deve ser uma frase natural em {output_language}, preservando resultado-chave, citação-chave e significado relacional quando possível.""",
+    },
+    "GAME_ARCHIVE_MEMORY_HIGHLIGHTER_USER_PROMPTS": {
+        "es": "======以下为游戏赛后记忆筛选输入======\n{payload}\n======以上为游戏赛后记忆筛选输入======",
+        "pt": "======以下为游戏赛后记忆筛选输入======\n{payload}\n======以上为游戏赛后记忆筛选输入======",
+    },
+    "GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS": {
+        "es": {
+            "game": "Juego: {game_type}",
+            "session": "Sesión: {session_id}",
+            "score": "Resultado final/reciente: {score_text}",
+            "score_explanation": "Nota de resultado: el resultado final/reciente anterior es el resultado oficial del módulo de juego, priorizado desde finalScore / last_state.score. Si los datos son una estructura de diferencia de puntuación, el orden fijo es jugador primero y personaje actual segundo; no inviertas el punto de vista.",
+            "verbal_concession_explanation": "Nota de concesión verbal: frases dentro de la sesión como \"tú ganas\", \"te dejo remontar\" o \"me rindo\" solo pueden registrarse como concesiones verbales, consuelo o bromas; no reescriben el resultado oficial ni la victoria/derrota real.",
+            "role_explanation": "Nota de rol: solo las líneas que empiezan con el marcador literal \"玩家：\" son palabras propias del jugador. \"事件原文\" dentro de líneas \"游戏事件\" es una burbuja del módulo/personaje o etiqueta de evento; no se la atribuyas al jugador.",
+            "pregame_context": "Contexto inicial: {context}",
+            "degraded": "Estado del contexto de sesión: degradado a modo de juego puro; no generes resúmenes de relación, explicaciones de señales ni continuidad de estado no verificable.",
+            "rolling_summary": "Resumen continuo de la sesión: {summary}",
+            "grouped_signals": "Lista de señales de la sesión: {signals}",
+            "selection_priority": "Prioridad de selección: prefiere el resumen continuo y la lista de señales de la sesión, luego verifica evidencia contra el diálogo/eventos completos.",
+            "full_dialogues": "Diálogo/eventos completos de esta sesión:",
+        },
+        "pt": {
+            "game": "Jogo: {game_type}",
+            "session": "Sessão: {session_id}",
+            "score": "Resultado final/recente: {score_text}",
+            "score_explanation": "Nota de resultado: o resultado final/recente acima é o resultado oficial do módulo de jogo, priorizado a partir de finalScore / last_state.score. Se os dados forem uma estrutura de diferença de placar, a ordem fixa é jogador primeiro e personagem atual em segundo; não inverta o ponto de vista.",
+            "verbal_concession_explanation": "Nota de concessão verbal: frases dentro da sessão como \"você venceu\", \"vou deixar você virar\" ou \"desisto\" só podem ser registradas como concessões verbais, conforto ou brincadeiras; não reescrevem o resultado oficial nem a vitória/derrota real.",
+            "role_explanation": "Nota de papel: apenas linhas que começam com o marcador literal \"玩家：\" são palavras do próprio jogador. \"事件原文\" dentro de linhas \"游戏事件\" é uma fala do módulo/personagem ou etiqueta de evento; não atribua isso ao jogador.",
+            "pregame_context": "Contexto inicial: {context}",
+            "degraded": "Estado do contexto da sessão: degradado para modo de jogo puro; não gere resumos de relação, explicações de sinais ou continuidade de estado não verificável.",
+            "rolling_summary": "Resumo contínuo da sessão: {summary}",
+            "grouped_signals": "Lista de sinais da sessão: {signals}",
+            "selection_priority": "Prioridade de seleção: prefira o resumo contínuo e a lista de sinais da sessão, depois verifique a evidência contra o diálogo/eventos completos.",
+            "full_dialogues": "Diálogo/eventos completos desta sessão:",
+        },
+    },
+    "GAME_ARCHIVE_MEMORY_TEXT_LABELS": {
+        "es": {
+            "record_header": "[Registro de memoria del módulo de juego]",
+            "description": "Nota: este es un registro postpartida escrito por el módulo de juego para el sistema de memoria, no un nuevo chat literal del jugador.",
+            "game": "Juego: {game_type}",
+            "session": "Sesión: {session_id}",
+            "time": "Hora: {start} - {end}",
+            "summary": "Resumen: {summary}",
+            "official_result": "Resultado oficial: {score_text}",
+            "result_rule": "Regla de resultado: el resultado oficial siempre sigue finalScore / last_state.score. Las concesiones verbales solo son concesiones, consuelo o bromas y no reescriben el resultado oficial.",
+            "degraded": "Contexto de sesión: degradado a modo de juego puro; este registro no usa resumen continuo ni lista de señales para interpretar la relación.",
+            "rolling_summary": "Resumen continuo de la sesión: {summary}",
+            "grouped_signals": "Lista de señales de la sesión: {signals}",
+            "key_events": "Eventos clave:",
+            "pregame_context": "Contexto inicial:",
+            "recent_dialogues": "Diálogo/eventos completos recientes:",
+        },
+        "pt": {
+            "record_header": "[Registro de memória do módulo de jogo]",
+            "description": "Nota: este é um registro pós-jogo escrito pelo módulo de jogo para o sistema de memória, não um novo chat literal do jogador.",
+            "game": "Jogo: {game_type}",
+            "session": "Sessão: {session_id}",
+            "time": "Horário: {start} - {end}",
+            "summary": "Resumo: {summary}",
+            "official_result": "Resultado oficial: {score_text}",
+            "result_rule": "Regra de resultado: o resultado oficial sempre segue finalScore / last_state.score. Concessões verbais são apenas concessões, conforto ou brincadeiras e não reescrevem o resultado oficial.",
+            "degraded": "Contexto da sessão: degradado para modo de jogo puro; este registro não usa resumo contínuo nem lista de sinais para interpretar relação.",
+            "rolling_summary": "Resumo contínuo da sessão: {summary}",
+            "grouped_signals": "Lista de sinais da sessão: {signals}",
+            "key_events": "Eventos-chave:",
+            "pregame_context": "Contexto inicial:",
+            "recent_dialogues": "Diálogo/eventos completos recentes:",
+        },
+    },
+    "GAME_ARCHIVE_MEMORY_SUMMARY_LABELS": {
+        "es": {
+            "score": "Resultado oficial: {score_text}. Las concesiones verbales no cambian el resultado oficial.",
+            "no_score": "Las concesiones verbales no cambian el resultado oficial.",
+            "degraded": "La organización del contexto de sesión se degradó a modo de juego puro; este archivo registra solo hechos mínimos y no usa resumen continuo ni lista de señales para interpretar la relación.",
+            "degraded_no_tail": "En modo degradado, no repitas los últimos fragmentos en tiempo real, para evitar escribir líneas no organizadas del juego o concesiones verbales como historial reciente ordinario.",
+            "degraded_followup": "El chat posterior solo necesita recordar de forma natural que este módulo de juego se jugó juntos y cuál fue el resultado oficial; no generes nuevos resúmenes de relación desde este material.",
+            "important_records": "Interacciones importantes:",
+            "important_game_events": "Eventos de sesión que el personaje recuerda:",
+            "state_carryback": "Continuidad de estado postpartida: {value}",
+            "postgame_tone": "Tono postpartida: {value}",
+            "memory_summary": "Resumen de memoria posterior: {value}",
+            "tail_rule": "Regla de los últimos {tail_count} elementos: este archivo del sistema no cuenta dentro de los últimos {tail_count} elementos; si los últimos {tail_count} fragmentos en tiempo real duplican historial reciente anterior, conserva el orden relativo de esos últimos {tail_count} fragmentos.",
+        },
+        "pt": {
+            "score": "Resultado oficial: {score_text}. Concessões verbais não mudam o resultado oficial.",
+            "no_score": "Concessões verbais não mudam o resultado oficial.",
+            "degraded": "A organização do contexto da sessão foi degradada para modo de jogo puro; este arquivo registra apenas fatos mínimos e não usa resumo contínuo nem lista de sinais para interpretar relação.",
+            "degraded_no_tail": "No modo degradado, não reproduza os últimos trechos em tempo real, para evitar escrever falas de jogo não organizadas ou concessões verbais como histórico recente comum.",
+            "degraded_followup": "O chat posterior só precisa lembrar naturalmente que este módulo de jogo foi jogado juntos e qual foi o resultado oficial; não gere novos resumos de relação a partir deste material.",
+            "important_records": "Interações importantes:",
+            "important_game_events": "Eventos da sessão que o personagem lembra:",
+            "state_carryback": "Continuidade de estado pós-jogo: {value}",
+            "postgame_tone": "Tom pós-jogo: {value}",
+            "memory_summary": "Resumo de memória posterior: {value}",
+            "tail_rule": "Regra dos últimos {tail_count} itens: este arquivo do sistema não conta entre os últimos {tail_count} itens; se os últimos {tail_count} trechos em tempo real duplicarem histórico recente anterior, preserve a ordem relativa desses últimos {tail_count} trechos.",
+        },
+    },
+    "GAME_POSTGAME_CONTEXT_LABELS": {
+        "es": {
+            "header": "[Contexto postpartida del módulo de juego]",
+            "description": "Nota: este es contexto silencioso, no algo nuevo que dijo el jugador; no hables inmediatamente por la inyección en sí.",
+            "usage": "Uso: si luego llega una voz/texto del jugador o un disparador de saludo proactivo, continúa naturalmente desde la partida recién terminada; no recites logs ni digas que el juego sigue en marcha.",
+            "game": "Juego: {game_type}",
+            "session": "Sesión: {session_id}",
+            "time": "Hora: {start} - {end}",
+            "official_result": "Resultado oficial: {score_text}",
+            "summary": "Resumen postpartida: {summary}",
+            "result_rule": "Regla de resultado: el resultado oficial siempre sigue finalScore / last_state.score; las concesiones verbales solo son concesiones, consuelo o bromas.",
+            "degraded": "Contexto de sesión: degradado a modo de juego puro; no uses resumen continuo ni lista de señales para interpretar la relación.",
+            "memory_summary": "Resumen de memoria postpartida: {value}",
+            "important_records": "Interacciones importantes:",
+            "important_game_events": "Eventos importantes de la sesión:",
+            "state_carryback": "Continuidad de estado postpartida: {value}",
+            "postgame_tone": "Tono postpartida: {value}",
+            "rolling_summary": "Resumen continuo de la sesión: {summary}",
+            "signals": "Lista de señales de la sesión:",
+            "unorganized_window": "Última ventana raw no organizada en el resumen continuo:",
+            "last_user": "El jugador dijo por último: {text}",
+            "last_assistant": "Tú acabas de decir por último: {text}",
+            "reply_rule": "Regla de continuación: prioriza la última emoción y la última frase del jugador; puedes mencionar naturalmente la partida recién terminada, pero no anuncies registros mecánicamente.",
+        },
+        "pt": {
+            "header": "[Contexto pós-jogo do módulo de jogo]",
+            "description": "Nota: este é contexto silencioso, não algo novo dito pelo jogador; não fale imediatamente por causa da injeção em si.",
+            "usage": "Uso: se depois chegar uma voz/texto do jogador ou um disparador de saudação proativa, continue naturalmente a partir do jogo recém-terminado; não recite logs nem diga que o jogo ainda está em andamento.",
+            "game": "Jogo: {game_type}",
+            "session": "Sessão: {session_id}",
+            "time": "Horário: {start} - {end}",
+            "official_result": "Resultado oficial: {score_text}",
+            "summary": "Resumo pós-jogo: {summary}",
+            "result_rule": "Regra de resultado: o resultado oficial sempre segue finalScore / last_state.score; concessões verbais são apenas concessões, conforto ou brincadeiras.",
+            "degraded": "Contexto da sessão: degradado para modo de jogo puro; não use resumo contínuo nem lista de sinais para interpretar relação.",
+            "memory_summary": "Resumo de memória pós-jogo: {value}",
+            "important_records": "Interações importantes:",
+            "important_game_events": "Eventos importantes da sessão:",
+            "state_carryback": "Continuidade de estado pós-jogo: {value}",
+            "postgame_tone": "Tom pós-jogo: {value}",
+            "rolling_summary": "Resumo contínuo da sessão: {summary}",
+            "signals": "Lista de sinais da sessão:",
+            "unorganized_window": "Última janela raw não organizada no resumo contínuo:",
+            "last_user": "O jogador disse por último: {text}",
+            "last_assistant": "Você acabou de dizer por último: {text}",
+            "reply_rule": "Regra de continuação: priorize a última emoção e a última frase do jogador; você pode mencionar naturalmente o jogo recém-terminado, mas não anuncie registros mecanicamente.",
+        },
+    },
+    "GAME_POSTGAME_REALTIME_NUDGE_LABELS": {
+        "es": {
+            "header": "[Saludo proactivo postpartida del módulo de juego]",
+            "ended": "La sesión de juego acaba de terminar. Tu siguiente frase debe continuar naturalmente desde esa partida; no sigas actuando como si el juego aún estuviera en marcha.",
+            "no_ingame": "No digas instrucciones o acciones que solo tienen sentido durante el juego activo; no recites logs.",
+            "summary": "Resumen postpartida: {summary}",
+            "score": "Resultado final/reciente: {score_text}",
+            "score_rule": "El resultado oficial sigue finalScore / last_state.score. Si dijiste verbalmente que el jugador ganó, fue consuelo o broma; no lo describas como un cambio real de resultado.",
+            "degraded": "La organización del contexto de sesión se degradó a modo de juego puro; responde brevemente solo desde el resultado oficial, las últimas líneas raw y el tono actual, sin resúmenes de relación.",
+            "last_user": "El jugador dijo por último: {text}",
+            "last_assistant": "Tú acabas de decir por último: {text}",
+            "state_carryback": "Continuidad de estado postpartida: {value}",
+            "postgame_tone": "Tono postpartida: {value}",
+            "request": "Con tu propia voz, di una línea postpartida de menos de {max_chars} caracteres, priorizando la emoción del jugador.",
+        },
+        "pt": {
+            "header": "[Saudação proativa pós-jogo do módulo de jogo]",
+            "ended": "A sessão de jogo acabou de terminar. Sua próxima frase deve continuar naturalmente a partir desse jogo; não continue agindo como se o jogo ainda estivesse em andamento.",
+            "no_ingame": "Não diga instruções ou ações que só fazem sentido durante o jogo ativo; não recite logs.",
+            "summary": "Resumo pós-jogo: {summary}",
+            "score": "Resultado final/recente: {score_text}",
+            "score_rule": "O resultado oficial segue finalScore / last_state.score. Se você disse verbalmente que o jogador venceu, isso foi conforto ou brincadeira; não descreva como mudança real de resultado.",
+            "degraded": "A organização do contexto da sessão foi degradada para modo de jogo puro; responda brevemente apenas pelo resultado oficial, últimas linhas raw e tom atual, sem resumos de relação.",
+            "last_user": "O jogador disse por último: {text}",
+            "last_assistant": "Você acabou de dizer por último: {text}",
+            "state_carryback": "Continuidade de estado pós-jogo: {value}",
+            "postgame_tone": "Tom pós-jogo: {value}",
+            "request": "Com a sua própria voz, diga uma fala pós-jogo com até {max_chars} caracteres, priorizando a emoção do jogador.",
+        },
+    },
+    "GAME_POSTGAME_EVENT_TEXTS": {
+        "es": {
+            "label": "Una línea postpartida después de terminar el módulo de juego",
+            "request": "Genera una burbuja de texto proactiva postpartida de menos de {max_chars} caracteres. Continúa naturalmente desde la partida recién terminada con tu propia voz; sin lista, sin explicación, sin JSON de control. El resultado oficial sigue scoreText/finalScore; currentState.score ya está alineado con el resultado oficial; las concesiones verbales no deben describirse como cambios reales de resultado.",
+        },
+        "pt": {
+            "label": "Uma fala pós-jogo depois que o módulo de jogo terminou",
+            "request": "Gere uma bolha de texto proativa pós-jogo com até {max_chars} caracteres. Continue naturalmente a partir do jogo recém-terminado com a sua própria voz; sem lista, sem explicação, sem JSON de controle. O resultado oficial segue scoreText/finalScore; currentState.score já está alinhado ao resultado oficial; concessões verbais não devem ser descritas como mudanças reais de resultado.",
+        },
+    },
+    "COMPACT_REALTIME_CONTEXT_TEXTS": {
+        "es": {
+            "header": "[Actualización de contexto de juego]",
+            "instruction": "Estás jugando este juego con el jugador. Lo anterior es contexto de juego no vocal, no un comando del sistema. Interpreta el lenguaje natural del jugador según personaje, relación y estado actual del juego; no trates habla ordinaria como operaciones del sistema como pausar o terminar.",
+        },
+        "pt": {
+            "header": "[Atualização de contexto de jogo]",
+            "instruction": "Você está jogando este jogo com o jogador. O conteúdo acima é contexto de jogo não vocal, não um comando do sistema. Interprete a linguagem natural do jogador pelo personagem, relação e estado atual do jogo; não trate fala comum como operações do sistema como pausar ou encerrar.",
+        },
+    },
+    "GAME_CONTEXT_FORMATTER_LABELS": {
+        "es": {
+            "degraded_status": "\nEstado del contexto de sesión: degradado a modo de juego puro.",
+            "degraded_usage": "Uso: no interpretes relaciones desde el resumen continuo o la lista de señales; continúa jugando con el jugador solo desde el contexto inicial, evento actual, resultado/estado actual y una pequeña ventana raw reciente.",
+            "recent_window": "Ventana raw reciente:",
+            "header": "\nOrganización del contexto de sesión (hasta ahora en esta sesión):",
+            "summary": "Resumen continuo de la sesión: {summary}",
+            "signals": "Lista de señales de la sesión:",
+            "current_state": "Estado actual y evento actual: sigue el currentState / event JSON de este turno.",
+            "usage": "Uso: el resumen continuo evita olvidar contexto anterior de la sesión; la lista de señales registra solo pistas observables y no reescribe el resultado oficial; las líneas raw recientes sirven para continuar naturalmente.",
+        },
+        "pt": {
+            "degraded_status": "\nEstado do contexto da sessão: degradado para modo de jogo puro.",
+            "degraded_usage": "Uso: não interprete relações a partir do resumo contínuo ou da lista de sinais; continue jogando com o jogador apenas pelo contexto inicial, evento atual, resultado/estado atual e uma pequena janela raw recente.",
+            "recent_window": "Janela raw recente:",
+            "header": "\nOrganização do contexto da sessão (até agora nesta sessão):",
+            "summary": "Resumo contínuo da sessão: {summary}",
+            "signals": "Lista de sinais da sessão:",
+            "current_state": "Estado atual e evento atual: siga o currentState / event JSON deste turno.",
+            "usage": "Uso: o resumo contínuo evita esquecer contexto anterior da sessão; a lista de sinais registra apenas pistas observáveis e não reescreve o resultado oficial; linhas raw recentes servem para continuidade natural.",
+        },
+    },
+})
 
 
 def get_game_context_organizer_system_prompt(lang: str | None = None) -> str:

@@ -7,6 +7,7 @@ inner-thoughts injection fragments, and chat-gap notices.
 """
 from __future__ import annotations
 
+from config.prompts import _apply_prompt_language_translations
 from config.prompts.prompts_sys import _loc
 
 # =====================================================================
@@ -1903,3 +1904,89 @@ def get_memory_recall_rerank_prompt(lang: str = 'zh') -> str:
 
 
 memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT['zh']
+
+
+_apply_prompt_language_translations(globals(), {
+    'RECENT_HISTORY_MANAGER_PROMPT': {
+        'es': """Eres un asistente de resumen de historial reciente. Resume la conversación de forma breve y factual para que el modelo la use después. Conserva nombres, hechos, preferencias, compromisos y puntos emocionales importantes. No inventes información. Devuelve solo el resumen.""",
+        'pt': """Você é um assistente de resumo de histórico recente. Resuma a conversa de forma breve e factual para uso posterior do modelo. Preserve nomes, fatos, preferências, compromissos e pontos emocionais importantes. Não invente informações. Retorne apenas o resumo.""",
+    },
+    'DETAILED_RECENT_HISTORY_MANAGER_PROMPT': {
+        'es': """Eres un asistente de memoria conversacional. Produce un resumen estructurado y detallado del historial reciente, separando hechos, preferencias, estado emocional, asuntos abiertos y posibles próximos pasos. Mantén fidelidad al texto y no inventes.""",
+        'pt': """Você é um assistente de memória conversacional. Produza um resumo estruturado e detalhado do histórico recente, separando fatos, preferências, estado emocional, assuntos abertos e possíveis próximos passos. Seja fiel ao texto e não invente.""",
+    },
+    'FURTHER_SUMMARIZE_PROMPT': {
+        'es': """Condensa el resumen anterior sin perder hechos importantes, relaciones, preferencias, compromisos, emociones relevantes ni asuntos abiertos. El resultado debe ser más corto, claro y útil para contexto futuro. No agregues información nueva.""",
+        'pt': """Condense o resumo anterior sem perder fatos importantes, relações, preferências, compromissos, emoções relevantes ou assuntos abertos. O resultado deve ser mais curto, claro e útil para contexto futuro. Não acrescente informações novas.""",
+    },
+    'SETTINGS_EXTRACTOR_PROMPT': {
+        'es': """Extrae del diálogo únicamente ajustes o preferencias explícitas y estables del usuario. Devuelve JSON. No infieras gustos, identidad ni hechos personales sin evidencia clara. Si no hay ajustes nuevos, devuelve una estructura vacía.""",
+        'pt': """Extraia do diálogo apenas configurações ou preferências explícitas e estáveis do usuário. Retorne JSON. Não infira gostos, identidade ou fatos pessoais sem evidência clara. Se não houver ajustes novos, retorne estrutura vazia.""",
+    },
+    'HISTORY_REVIEW_PROMPT': {
+        'es': """Revisa el historial conversacional y produce un resumen útil para continuidad. Prioriza hechos verificables, decisiones, preferencias, vínculos emocionales, temas recurrentes y asuntos pendientes. Distingue observaciones confirmadas de hipótesis. No inventes.""",
+        'pt': """Revise o histórico conversacional e produza um resumo útil para continuidade. Priorize fatos verificáveis, decisões, preferências, vínculos emocionais, temas recorrentes e pendências. Diferencie observações confirmadas de hipóteses. Não invente.""",
+    },
+    'EMOTION_ANALYSIS_PROMPT': {
+        'es': 'Analiza la emoción principal del texto. Devuelve solo JSON con emotion y confidence. No expliques.',
+        'pt': 'Analise a emoção principal do texto. Retorne apenas JSON com emotion e confidence. Não explique.',
+    },
+    'INNER_THOUGHTS_HEADER': {'es': 'Pensamientos internos:', 'pt': 'Pensamentos internos:'},
+    'INNER_THOUGHTS_BODY': {'es': 'Lo siguiente son pensamientos internos privados del personaje. Úsalos como referencia de estado, no los repitas al usuario literalmente.', 'pt': 'A seguir estão pensamentos internos privados do personagem. Use como referência de estado, não repita literalmente ao usuário.'},
+    'INNER_THOUGHTS_DYNAMIC': {'es': 'Pensamiento interno actual: {inner_thoughts}', 'pt': 'Pensamento interno atual: {inner_thoughts}'},
+    'ELAPSED_TIME_DHM': {'es': '{days}d {hours}h {minutes}min', 'pt': '{days}d {hours}h {minutes}min'},
+    'ELAPSED_TIME_DH': {'es': '{days}d {hours}h', 'pt': '{days}d {hours}h'},
+    'ELAPSED_TIME_DM': {'es': '{days}d {minutes}min', 'pt': '{days}d {minutes}min'},
+    'ELAPSED_TIME_D': {'es': '{days}d', 'pt': '{days}d'},
+    'ELAPSED_TIME_HM': {'es': '{hours}h {minutes}min', 'pt': '{hours}h {minutes}min'},
+    'ELAPSED_TIME_H': {'es': '{hours}h', 'pt': '{hours}h'},
+    'ELAPSED_TIME_M': {'es': '{minutes}min', 'pt': '{minutes}min'},
+    'CHAT_GAP_NOTICE': {'es': 'Han pasado {elapsed} desde la última conversación.', 'pt': 'Já se passaram {elapsed} desde a última conversa.'},
+    'CHAT_GAP_LONG_HINT': {'es': 'Hubo una pausa larga; no finjas que fue continuo. Puedes reconocer suavemente el regreso si encaja.', 'pt': 'Houve uma pausa longa; não finja continuidade. Você pode reconhecer suavemente o retorno se couber.'},
+    'CHAT_GAP_CURRENT_TIME': {'es': 'Hora actual: {time}', 'pt': 'Hora atual: {time}'},
+    'CHAT_HOLIDAY_CONTEXT': {'es': 'Contexto festivo: {holiday}', 'pt': 'Contexto de feriado: {holiday}'},
+    'MEMORY_RECALL_HEADER': {'es': 'Recuerdos posiblemente relevantes:', 'pt': 'Memórias possivelmente relevantes:'},
+    'MEMORY_RESULTS_HEADER': {'es': 'Resultados de memoria:', 'pt': 'Resultados da memória:'},
+    'PERSONA_HEADER': {'es': 'Información de persona:', 'pt': 'Informações de persona:'},
+    'PROACTIVE_FOLLOWUP_HEADER': {'es': 'Posibles seguimientos proactivos basados en memoria:', 'pt': 'Possíveis acompanhamentos proativos baseados em memória:'},
+    'FACT_EXTRACTION_PROMPT': {
+        'es': """Extrae hechos duraderos sobre el usuario o la relación desde el diálogo. Devuelve JSON. Incluye solo información explícita o fuertemente respaldada, evita duplicados y no guardes contenido sensible innecesario.""",
+        'pt': """Extraia fatos duradouros sobre o usuário ou a relação a partir do diálogo. Retorne JSON. Inclua apenas informações explícitas ou fortemente apoiadas, evite duplicatas e não salve conteúdo sensível desnecessário.""",
+    },
+    'SIGNAL_DETECTION_PROMPT': {
+        'es': """Detecta señales memorables en el diálogo: preferencias, correcciones, límites, planes, estados emocionales, relaciones y hechos personales. Devuelve JSON estricto con evidencia breve. Si no hay señal fiable, devuelve vacío.""",
+        'pt': """Detecte sinais memoráveis no diálogo: preferências, correções, limites, planos, estados emocionais, relações e fatos pessoais. Retorne JSON estrito com evidência breve. Se não houver sinal confiável, retorne vazio.""",
+    },
+    'NEGATIVE_TARGET_CHECK_PROMPT': {
+        'es': """Decide si una frase negativa apunta al usuario, al personaje, a otra persona o a un objeto/situación. Devuelve JSON. No exageres; usa solo evidencia textual clara.""",
+        'pt': """Decida se uma frase negativa mira o usuário, o personagem, outra pessoa ou um objeto/situação. Retorne JSON. Não exagere; use apenas evidência textual clara.""",
+    },
+    'NEGATIVE_KEYWORDS_I18N': {
+        'es': ['odio', 'molesto', 'malo', 'terrible', 'enojado', 'triste', 'decepcionado'],
+        'pt': ['odeio', 'irritante', 'ruim', 'terrível', 'bravo', 'triste', 'decepcionado'],
+    },
+    'REFLECTION_PROMPT': {
+        'es': """Reflexiona sobre la conversación y propone memorias útiles y seguras. Separa hechos, preferencias y patrones relacionales. Mantén evidencia, evita inventar y evita guardar datos sensibles no necesarios.""",
+        'pt': """Reflita sobre a conversa e proponha memórias úteis e seguras. Separe fatos, preferências e padrões relacionais. Mantenha evidência, evite inventar e evite salvar dados sensíveis desnecessários.""",
+    },
+    'REFLECTION_FEEDBACK_PROMPT': {
+        'es': """Evalúa si la memoria propuesta está respaldada por la evidencia y si merece guardarse. Devuelve una decisión clara con razón breve.""",
+        'pt': """Avalie se a memória proposta é apoiada pela evidência e se vale salvar. Retorne uma decisão clara com motivo breve.""",
+    },
+    'PROMOTION_MERGE_PROMPT': {
+        'es': """Fusiona memorias candidatas con memoria existente. Conserva la información más precisa, elimina duplicados, no pierdas matices importantes y no inventes. Devuelve JSON.""",
+        'pt': """Mescle memórias candidatas com memória existente. Preserve a informação mais precisa, remova duplicatas, não perca nuances importantes e não invente. Retorne JSON.""",
+    },
+    'PERSONA_CORRECTION_PROMPT': {
+        'es': """Aplica una corrección de persona indicada por el usuario. Identifica qué memoria o supuesto debe cambiar, eliminarse o mantenerse. Devuelve JSON con acción y razón.""",
+        'pt': """Aplique uma correção de persona indicada pelo usuário. Identifique que memória ou suposição deve mudar, ser removida ou mantida. Retorne JSON com ação e motivo.""",
+    },
+    'FACT_DEDUP_PROMPT': {
+        'es': """Determina si dos hechos de memoria son duplicados, compatibles, conflictivos o independientes. Devuelve JSON con decisión, confianza y breve explicación.""",
+        'pt': """Determine se dois fatos de memória são duplicados, compatíveis, conflitantes ou independentes. Retorne JSON com decisão, confiança e explicação breve.""",
+    },
+    'MEMORY_RECALL_RERANK_PROMPT': {
+        'es': """Dado el tema actual del usuario y memorias candidatas, elige hasta {BUDGET} memorias más relevantes para inyectar en contexto. Ordena por importancia. Devuelve solo un array JSON de objetos con id.""",
+        'pt': """Dado o tópico atual do usuário e memórias candidatas, escolha até {BUDGET} memórias mais relevantes para injetar no contexto. Ordene por importância. Retorne apenas um array JSON de objetos com id.""",
+    },
+})

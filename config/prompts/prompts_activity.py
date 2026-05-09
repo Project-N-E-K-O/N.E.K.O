@@ -44,6 +44,8 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 
 from __future__ import annotations
 
+from config.prompts import _apply_prompt_language_translations
+
 
 # ── Activity guess + soft scores (emotion-tier) ─────────────────────
 
@@ -868,3 +870,219 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
               '========Выше Уведомление========',
     },
 }
+
+
+_apply_prompt_language_translations(globals(), {
+    'ACTIVITY_GUESS_PROMPTS': {
+        'es': """Eres un analista de actividad del usuario. Con las señales del sistema y los fragmentos recientes de conversación, asigna puntuaciones suaves al estado actual de actividad del usuario y escribe una narración de una frase.
+
+======A continuación están las señales del sistema======
+{signals}
+======Fin de las señales del sistema======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======A continuación está la clasificación inicial del sistema de reglas======
+{rule_state}
+======Fin de la clasificación inicial del sistema de reglas======
+
+Devuelve JSON estricto (sin bloques markdown), con campos:
+- "scores": objeto que asigna nombre de estado a float 0.0-1.0 (puntuaciones independientes, sin normalización). Estados permitidos: {state_keys}
+- "guess": una frase breve que describa qué hace el usuario ahora, máximo ~40 palabras
+
+Da 0.0 a estados que no encajan; cerca de 1.0 a los que encajan muy bien. Varios estados pueden tener puntuación alta al mismo tiempo.
+
+Si discrepas de la clasificación de reglas, puntúa según las señales reales; la regla es solo referencia.
+
+Ejemplo:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master está programando en VS Code y a veces cambia a una app de chat para responder"}}""",
+        'pt': """Você é um analista de atividade do usuário. Com os sinais do sistema e trechos recentes da conversa, atribua pontuações suaves ao estado atual de atividade do usuário e escreva uma narrativa de uma frase.
+
+======Abaixo estão os sinais do sistema======
+{signals}
+======Acima estão os sinais do sistema======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======Abaixo está a classificação inicial do sistema de regras======
+{rule_state}
+======Acima está a classificação inicial do sistema de regras======
+
+Retorne JSON estrito (sem blocos markdown), com campos:
+- "scores": objeto que mapeia nome do estado para float 0.0-1.0 (pontuação independente, sem normalização). Estados permitidos: {state_keys}
+- "guess": uma frase curta descrevendo o que o usuário está fazendo agora, máximo ~40 palavras
+
+Dê 0.0 para estados que não combinam; perto de 1.0 para os que combinam muito. Vários estados podem ter pontuação alta ao mesmo tempo.
+
+Se discordar da classificação de regras, pontue com base nos sinais reais; a regra é apenas referência.
+
+Exemplo:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master está codando no VS Code e às vezes troca para um app de chat para responder"}}""",
+    },
+    'OPEN_THREADS_PROMPTS': {
+        'es': """Eres un asistente de revisión de conversación. Mira la conversación reciente e identifica temas "planteados pero no cerrados": promesas de la IA aún no cumplidas, pensamientos del usuario cortados a mitad, o una historia/sentimiento iniciado pero no terminado.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Devuelve JSON estricto (sin bloques markdown):
+{{"open_threads": ["frase breve 1"]}}
+
+**Por defecto devuelve un array vacío.** La mayoría de conversaciones cierran naturalmente; en ese caso devuelve exactamente `{{"open_threads": []}}`. Reporta solo si puedes señalar "X dejó Y colgado y la otra parte sigue esperando", máximo 3 entradas. Mejor subreportar que rellenar espacios.
+
+Cuenta como pendiente: una frase interrumpida que no se retomó; una historia o emoción detenida antes del cierre; dos necesidades paralelas donde la IA atendió solo una.
+No cuenta: cambios naturales de tema, cierres deliberados, comentarios casuales o temas antiguos de largo recorrido.""",
+        'pt': """Você é um assistente de revisão de conversa. Veja a conversa recente e identifique tópicos "levantados mas não fechados": promessas da IA ainda não cumpridas, pensamentos do usuário interrompidos, ou uma história/sentimento iniciado mas não concluído.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Retorne JSON estrito (sem blocos markdown):
+{{"open_threads": ["frase curta 1"]}}
+
+**Por padrão retorne um array vazio.** A maioria das conversas fecha naturalmente; nesse caso retorne exatamente `{{"open_threads": []}}`. Relate apenas se puder apontar "X deixou Y pendente e a outra parte ainda espera", no máximo 3 entradas. Prefira subnotificar a preencher espaços.
+
+Conta como pendente: uma frase interrompida que não voltou; uma história ou emoção parada antes do fechamento; duas necessidades paralelas em que a IA atendeu só uma.
+Não conta: mudança natural de assunto, fechamento deliberado, comentários casuais ou tópicos antigos de longo prazo.""",
+    },
+    'OS_DEGRADED_MARKER': {
+        'es': 'señales del SO degradadas',
+        'pt': 'sinais do SO degradados',
+    },
+    'ACTIVITY_STATE_LABELS': {
+        'es': {
+            'away': 'ausente', 'stale_returning': 'acaba de volver', 'voice_engaged': 'en voz',
+            'gaming': 'jugando', 'focused_work': 'trabajo enfocado', 'casual_browsing': 'navegación casual',
+            'chatting': 'chateando', 'transitioning': 'cambiando de ventana', 'idle': 'inactivo', 'private': 'privado',
+        },
+        'pt': {
+            'away': 'ausente', 'stale_returning': 'acabou de voltar', 'voice_engaged': 'em voz',
+            'gaming': 'jogando', 'focused_work': 'trabalho focado', 'casual_browsing': 'navegação casual',
+            'chatting': 'conversando', 'transitioning': 'trocando de janela', 'idle': 'ocioso', 'private': 'privado',
+        },
+    },
+    'ACTIVITY_TONE_HINTS': {
+        'es': {
+            'away': 'No supongas que el usuario está mirando la pantalla.',
+            'stale_returning': 'El usuario acaba de volver; puedes sonar ligero y atento.',
+            'voice_engaged': 'El usuario está en modo voz; responde de forma natural y breve.',
+            'gaming': 'El usuario parece estar jugando; evita interrupciones largas.',
+            'focused_work': 'El usuario está concentrado; si hablas, que sea breve y útil.',
+            'casual_browsing': 'El usuario navega de forma casual; un comentario ligero puede encajar.',
+            'chatting': 'El usuario está conversando; no invadas ni fuerces tema.',
+            'transitioning': 'El usuario cambia de contexto; mantén el tono flexible.',
+            'idle': 'No hay tarea clara; puedes ser suave y exploratorio.',
+            'private': 'La app es privada; no menciones contenido específico.',
+        },
+        'pt': {
+            'away': 'Não presuma que o usuário está olhando para a tela.',
+            'stale_returning': 'O usuário acabou de voltar; soe leve e atento.',
+            'voice_engaged': 'O usuário está em modo voz; responda de forma natural e breve.',
+            'gaming': 'O usuário parece estar jogando; evite interrupções longas.',
+            'focused_work': 'O usuário está concentrado; se falar, seja breve e útil.',
+            'casual_browsing': 'O usuário navega casualmente; um comentário leve pode caber.',
+            'chatting': 'O usuário está conversando; não invada nem force assunto.',
+            'transitioning': 'O usuário está mudando de contexto; mantenha o tom flexível.',
+            'idle': 'Não há tarefa clara; você pode ser suave e exploratório.',
+            'private': 'O app é privado; não mencione conteúdo específico.',
+        },
+    },
+    'ACTIVITY_PROPENSITY_DIRECTIVES': {
+        'es': {
+            'silent': 'No tomes la iniciativa ahora.',
+            'restricted_screen_only': 'Si hablas, que sea solo sobre la pantalla y en una frase ligera.',
+            'light_checkin': 'Puedes hacer un check-in breve y natural.',
+            'contextual_nudge': 'Puedes dar un pequeño empujón contextual si encaja.',
+            'proactive_ok': 'Puedes iniciar una conversación breve si hay un buen punto de entrada.',
+        },
+        'pt': {
+            'silent': 'Não tome iniciativa agora.',
+            'restricted_screen_only': 'Se falar, fale só sobre a tela e em uma frase leve.',
+            'light_checkin': 'Você pode fazer um check-in breve e natural.',
+            'contextual_nudge': 'Você pode dar um pequeno incentivo contextual se couber.',
+            'proactive_ok': 'Você pode iniciar uma conversa breve se houver uma boa abertura.',
+        },
+    },
+    'ACTIVITY_REASON_TEMPLATES': {
+        'es': {
+            'state_away': 'sin entrada del sistema por {idle_seconds}s',
+            'state_stale_returning': 'el usuario acaba de volver',
+            'state_voice_engaged': 'modo voz + habla reciente',
+            'state_gaming': 'juego en primer plano: {app}',
+            'state_focused_work': 'concentrado en {app} por {dwell_seconds}s',
+            'state_casual_browsing': 'navegación de entretenimiento: {app}',
+            'state_chatting': 'chat en primer plano: {app}',
+            'state_transitioning': 'cambios de ventana frecuentes recientemente',
+            'state_idle': 'en la PC sin tarea clara',
+            'state_private': 'app privada en primer plano — no clasificar/cachear',
+            'high_cpu': 'CPU promedio 30s {cpu_percent}%',
+            'high_gpu': 'uso de GPU {gpu_percent}%',
+            'gaming_by_gpu': 'GPU alta sostenida (posible juego no identificado)',
+        },
+        'pt': {
+            'state_away': 'sem entrada do sistema por {idle_seconds}s',
+            'state_stale_returning': 'o usuário acabou de voltar',
+            'state_voice_engaged': 'modo voz + fala recente',
+            'state_gaming': 'jogo em primeiro plano: {app}',
+            'state_focused_work': 'focado em {app} por {dwell_seconds}s',
+            'state_casual_browsing': 'navegação de entretenimento: {app}',
+            'state_chatting': 'chat em primeiro plano: {app}',
+            'state_transitioning': 'trocas de janela frequentes recentemente',
+            'state_idle': 'no PC sem tarefa clara',
+            'state_private': 'app privado em foco — não classificar/cachear',
+            'high_cpu': 'CPU média 30s {cpu_percent}%',
+            'high_gpu': 'uso de GPU {gpu_percent}%',
+            'gaming_by_gpu': 'GPU alta sustentada (possível jogo não identificado)',
+        },
+    },
+    'ACTIVITY_STATE_SECTION_LABELS': {
+        'es': {
+            'header': '======A continuación está Actividad======', 'footer': '======Fin de Actividad======',
+            'never': '-', 'seconds_ago_fmt': '{seconds:.0f}s', 'minutes_ago_fmt': '{minutes:.0f}min',
+            'hours_ago_fmt': '{hours:.0f}h', 'time_fmt': '{hour:02d}:00 {period}',
+            'period_morning': 'mañana', 'period_afternoon': 'tarde', 'period_evening': 'atardecer',
+            'period_night': 'noche', 'unfinished_thread_fmt': 'pendiente: "…{tail}" (hace {age}, seguimiento {used}/{cap})',
+            'activity_scores_label': 'puntuaciones', 'activity_guess_label': 'narrativa',
+            'open_threads_label': 'hilos abiertos', 'tone_label': 'tono',
+            'time_user_ai_fmt': '{time} | usuario hace {user} | IA hace {ai}',
+            'time_user_only_fmt': '{time} | usuario hace {user}', 'time_only_fmt': '{time}',
+        },
+        'pt': {
+            'header': '======Abaixo está Atividade======', 'footer': '======Acima está Atividade======',
+            'never': '-', 'seconds_ago_fmt': '{seconds:.0f}s', 'minutes_ago_fmt': '{minutes:.0f}min',
+            'hours_ago_fmt': '{hours:.0f}h', 'time_fmt': '{hour:02d}:00 {period}',
+            'period_morning': 'manhã', 'period_afternoon': 'tarde', 'period_evening': 'fim de tarde',
+            'period_night': 'noite', 'unfinished_thread_fmt': 'pendente: "…{tail}" ({age} atrás, seguido {used}/{cap})',
+            'activity_scores_label': 'pontuações', 'activity_guess_label': 'narrativa',
+            'open_threads_label': 'tópicos abertos', 'tone_label': 'tom',
+            'time_user_ai_fmt': '{time} | usuário {user} atrás | IA {ai} atrás',
+            'time_user_only_fmt': '{time} | usuário {user} atrás', 'time_only_fmt': '{time}',
+        },
+    },
+    'WORK_BREAK_SEED_HINTS': {
+        'es': ['beber agua', 'estirarse un poco', 'descansar los ojos', 'mover los hombros', 'relajarse un momento'],
+        'pt': ['beber um pouco de água', 'alongar um pouco', 'descansar os olhos', 'soltar os ombros', 'relaxar um instante'],
+    },
+    'WORK_BREAK_GENERIC_WORK_LABEL': {'es': 'su trabajo', 'pt': 'o trabalho'},
+    'WORK_BREAK_GENERIC_LEISURE_LABEL': {'es': 'otra cosa', 'pt': 'outra coisa'},
+    'WORK_BREAK_REMINDER_PROMPT': {
+        'es': '========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nAl ver a {master}, te preocupa un poco y quieres sugerirle {seed}.\nHabla con {master} a tu manera, de forma natural. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========',
+        'pt': '========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVendo {master}, você fica um pouco preocupado e quer sugerir {seed}.\nFale com {master} do seu jeito, naturalmente. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========',
+    },
+    'ANTI_SLACK_REMINDER_PROMPT': {
+        'es': '========Aviso de entorno abajo========\n{master} pasó {minutes} minutos concentrado en {prev_app} y luego cambió directo a {new_app}.\nSientes que {master} justo tomó ritmo y ya se está desviando; quieres traerlo de vuelta para terminar.\nBromea un poco con {master} a tu manera. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========',
+        'pt': '========Abaixo está o aviso de ambiente========\n{master} passou {minutes} minutos focado em {prev_app} e então mudou direto para {new_app}.\nVocê sente que {master} acabou de pegar ritmo e já está se desviando; quer puxá-lo de volta para terminar.\nProvoque {master} um pouco do seu jeito. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========',
+    },
+    'WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME': {
+        'soccer': {
+            'es': '========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de fútbol contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========',
+            'pt': '========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de futebol com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========',
+        },
+    },
+})
