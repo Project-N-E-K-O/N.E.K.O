@@ -514,5 +514,18 @@ SEARCH_KEYWORD_USER = {
 # =====================================================================
 # backward compat re-exports
 # =====================================================================
-from config.prompts.prompts_memory import *  # noqa: F401,F403
-from config.prompts.prompts_proactive import *  # noqa: F401,F403
+from config.prompts import prompts_memory as _prompts_memory
+from config.prompts import prompts_proactive as _prompts_proactive
+
+
+def _re_export_public(module):
+    names = getattr(module, "__all__", None)
+    if names is None:
+        names = [name for name in dir(module) if not name.startswith("_")]
+    for name in names:
+        globals()[name] = getattr(module, name)
+
+
+_re_export_public(_prompts_memory)
+_re_export_public(_prompts_proactive)
+del _re_export_public, _prompts_memory, _prompts_proactive

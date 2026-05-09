@@ -63,7 +63,7 @@ if not _in_venv:
 from utils.config_manager import get_config_manager
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 from config.prompts.prompts_sys import _loc
-from config.prompts.prompts_sys import SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT, CONTEXT_SUMMARY_READY
+from config.prompts.prompts_sys import SESSION_INIT_PROMPT, CONTEXT_SUMMARY_READY
 from config.prompts.prompts_memory import (
     PERSONA_HEADER,
     INNER_THOUGHTS_HEADER,
