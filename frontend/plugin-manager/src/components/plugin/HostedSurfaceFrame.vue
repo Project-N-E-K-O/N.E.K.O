@@ -59,7 +59,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
-import { withGalgameStaticUiLocale } from '@/components/plugin/staticUiUrl'
+import { withStaticUiLocale } from '@/components/plugin/staticUiUrl'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -120,14 +120,14 @@ const surfaceUrl = computed(() => {
       return ''
     }
     return props.surface.mode === 'static'
-      ? withGalgameStaticUiLocale(explicitUrl, props.pluginId, String(locale.value))
+      ? withStaticUiLocale(explicitUrl, String(locale.value))
       : explicitUrl
   }
   if (props.surface.mode === 'static') {
     // LEGACY_STATIC_UI_COMPAT:
     // Static surfaces currently use the old /plugin/{id}/ui/ route.
     // Later this URL should come from the unified surface metadata.
-    return withGalgameStaticUiLocale(`/plugin/${encodeURIComponent(props.pluginId)}/ui/`, props.pluginId, String(locale.value))
+    return withStaticUiLocale(`/plugin/${encodeURIComponent(props.pluginId)}/ui/`, String(locale.value))
   }
   return ''
 })
@@ -321,6 +321,7 @@ async function loadHostedTsx() {
     const response = await getPluginHostedSurfaceSource(props.pluginId, {
       kind: props.surface.kind,
       id: props.surface.id,
+      locale: String(locale.value),
     })
     if (loadId !== currentLoadId) return
     if (props.surface.mode === 'markdown') {
@@ -438,6 +439,18 @@ watch(
     loadHostedTsx()
   },
 )
+
+// Static panels are served as a real URL (no `srcdoc`), so locale changes
+// flow through `surfaceUrl` rebuilding with a new `?locale=...` query.
+// Bumping `iframeKey` on every URL diff forces Vue to remount the <iframe>
+// element instead of relying on the browser to honour an in-place src
+// rewrite — Chromium occasionally keeps the previous document around when
+// only the query changes, which leaves the panel stuck on the old locale.
+watch(surfaceUrl, (next, prev) => {
+  if (props.surface.mode !== 'static') return
+  if (!next || next === prev) return
+  iframeKey.value += 1
+})
 </script>
 
 <style scoped>

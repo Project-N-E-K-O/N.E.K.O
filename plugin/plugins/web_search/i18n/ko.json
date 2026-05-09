@@ -1,0 +1,4 @@
+{
+  "plugin.name": "웹 검색",
+  "plugin.description": "사용자 IP에 따라 검색 엔진을 자동으로 선택하는 온라인 검색입니다(중국 본토 Baidu, 그 외 DuckDuckGo). API 키가 필요 없습니다"
+}
