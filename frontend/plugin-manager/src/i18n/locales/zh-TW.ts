@@ -39,7 +39,27 @@ export default {
     serverLogs: '伺服器日誌',
     adapters: '適配器',
     adapterUI: '適配器介面',
-    packageManager: '包管理'
+    packageManager: '包管理',
+    market: '外掛市集'
+  },
+  market: {
+    title: '取得新外掛',
+    subtitle: '從外掛市集瀏覽與安裝外掛',
+    getNewPlugins: '取得新外掛',
+    searchPlaceholder: '搜尋外掛...',
+    notConfigured: '外掛市集未設定',
+    configHint: '請在環境變數中設定 NEKO_MARKET_URL',
+    noResults: '找不到外掛',
+    install: '安裝',
+    installed: '已安裝',
+    installing: '安裝中...',
+    installSuccess: '安裝工作已建立: {name}',
+    installFailed: '安裝失敗',
+    noDownloadUrl: '此外掛沒有可用的下載網址',
+    pairRequired: '需要配對 Bridge Token',
+    recommended: '推薦',
+    noDescription: '暫無說明',
+    unknownAuthor: '未知'
   },
   auth: {
     unauthorized: '未授權存取',

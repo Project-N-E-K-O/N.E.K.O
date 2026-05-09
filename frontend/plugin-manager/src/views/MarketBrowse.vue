@@ -7,16 +7,16 @@
             <div class="workbench-header__copy">
               <h2 class="workbench-header__title">
                 <el-icon><ShoppingCart /></el-icon>
-                {{ $t('market.title') || '获取新插件' }}
+                {{ t('market.title') }}
               </h2>
               <p class="workbench-header__subtitle" v-if="marketAvailable">
-                {{ $t('market.subtitle') || '从插件市场浏览和安装插件' }}
+                {{ t('market.subtitle') }}
               </p>
             </div>
             <div class="header-actions">
               <el-input
                 v-model="searchQuery"
-                :placeholder="$t('market.searchPlaceholder') || '搜索插件...'"
+                :placeholder="t('market.searchPlaceholder')"
                 clearable
                 class="market-search"
                 @keyup.enter="handleSearch"
@@ -32,7 +32,7 @@
                 @click="handleRefresh"
               >
                 <el-icon><Refresh /></el-icon>
-                <span>{{ $t('common.refresh') }}</span>
+                <span>{{ t('common.refresh') }}</span>
               </button>
             </div>
           </div>
@@ -41,12 +41,12 @@
         <!-- 未配置 Market -->
         <EmptyState
           v-if="!marketAvailable && !loading"
-          :description="$t('market.notConfigured') || '插件市场未配置'"
+          :description="t('market.notConfigured')"
         >
           <template #description>
-            <p>{{ $t('market.notConfigured') || '插件市场未配置' }}</p>
+            <p>{{ t('market.notConfigured') }}</p>
             <p class="market-empty__hint">
-              请在环境变量中设置 <code>NEKO_MARKET_URL</code>
+              {{ t('market.configHint') }}
             </p>
           </template>
         </EmptyState>
@@ -55,13 +55,13 @@
         <LoadingSpinner
           v-else-if="loading && plugins.length === 0"
           :loading="true"
-          :text="$t('common.loading')"
+          :text="t('common.loading')"
         />
 
         <!-- 无结果 -->
         <EmptyState
           v-else-if="plugins.length === 0"
-          :description="$t('market.noResults') || '没有找到插件'"
+          :description="t('market.noResults')"
         />
 
         <!-- 插件网格 -->
@@ -102,6 +102,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ShoppingCart, Search, Refresh } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
@@ -114,6 +115,7 @@ import {
 } from '@/api/market'
 import { usePluginStore } from '@/stores/plugin'
 
+const { t } = useI18n()
 const pluginStore = usePluginStore()
 
 const loading = ref(false)
@@ -125,7 +127,6 @@ const pageSize = 12
 const totalCount = ref(0)
 const installingId = ref<string | number | null>(null)
 
-// 从 pluginStore 获取已安装插件 ID（用于标记"已安装"状态）
 const installedIds = computed(() => {
   const ids = new Set<string>()
   for (const p of pluginStore.pluginsWithStatus) {
@@ -181,7 +182,7 @@ function handlePluginClick(plugin: MarketPlugin) {
 async function handleInstall(plugin: MarketPlugin) {
   const downloadUrl = plugin.download_url || plugin.github_repo
   if (!downloadUrl) {
-    ElMessage.warning('该插件没有可用的下载地址')
+    ElMessage.warning(t('market.noDownloadUrl'))
     return
   }
 
@@ -202,13 +203,12 @@ async function handleInstall(plugin: MarketPlugin) {
     })
 
     if (res.ok) {
-      ElMessage.success(`安装任务已创建: ${plugin.name}`)
-      // TODO: 轮询进度
+      ElMessage.success(t('market.installSuccess', { name: plugin.name }))
     } else if (res.status === 403) {
-      ElMessage.warning('需要配对 Bridge Token')
+      ElMessage.warning(t('market.pairRequired'))
     } else {
       const err = await res.json().catch(() => ({}))
-      ElMessage.error(err.detail || '安装失败')
+      ElMessage.error(err.detail || t('market.installFailed'))
     }
   } catch {
     window.open(downloadUrl, '_blank')
@@ -222,7 +222,6 @@ onMounted(async () => {
   if (marketAvailable.value) {
     loadPlugins()
   }
-  // 拉取已安装列表（用于状态标记）
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins()
   }
@@ -230,7 +229,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-/* 复用 PluginList 的 workbench 样式 */
 .market-workbench {
   --plugin-entry-radius: 16px;
   --radius-card: 16px;
@@ -340,12 +338,5 @@ onMounted(async () => {
   font-size: 13px;
   color: var(--el-text-color-secondary);
   margin-top: 8px;
-}
-
-.market-empty__hint code {
-  padding: 2px 6px;
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
-  font-family: monospace;
 }
 </style>

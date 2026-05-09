@@ -39,7 +39,27 @@ export default {
     serverLogs: 'Логи сервера',
     adapters: 'Адаптеры',
     adapterUI: 'Интерфейс адаптера',
-    packageManager: 'Менеджер пакетов'
+    packageManager: 'Менеджер пакетов',
+    market: 'Маркет плагинов'
+  },
+  market: {
+    title: 'Получить новые плагины',
+    subtitle: 'Просмотр и установка плагинов из маркета',
+    getNewPlugins: 'Получить новые плагины',
+    searchPlaceholder: 'Поиск плагинов...',
+    notConfigured: 'Маркет не настроен',
+    configHint: 'Установите переменную окружения NEKO_MARKET_URL',
+    noResults: 'Плагины не найдены',
+    install: 'Установить',
+    installed: 'Установлено',
+    installing: 'Установка...',
+    installSuccess: 'Задача установки создана: {name}',
+    installFailed: 'Ошибка установки',
+    noDownloadUrl: 'URL загрузки недоступен',
+    pairRequired: 'Требуется сопряжение Bridge Token',
+    recommended: 'Рекомендуется',
+    noDescription: 'Без описания',
+    unknownAuthor: 'Неизвестно'
   },
   auth: {
     unauthorized: 'Неавторизованный доступ',

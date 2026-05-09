@@ -39,7 +39,27 @@ export default {
     serverLogs: '服务器日志',
     adapters: '适配器',
     adapterUI: '适配器界面',
-    packageManager: '包管理'
+    packageManager: '包管理',
+    market: '插件市场'
+  },
+  market: {
+    title: '获取新插件',
+    subtitle: '从插件市场浏览和安装插件',
+    getNewPlugins: '获取新插件',
+    searchPlaceholder: '搜索插件...',
+    notConfigured: '插件市场未配置',
+    configHint: '请在环境变量中设置 NEKO_MARKET_URL',
+    noResults: '没有找到插件',
+    install: '安装',
+    installed: '已安装',
+    installing: '安装中...',
+    installSuccess: '安装任务已创建: {name}',
+    installFailed: '安装失败',
+    noDownloadUrl: '该插件没有可用的下载地址',
+    pairRequired: '需要配对 Bridge Token',
+    recommended: '推荐',
+    noDescription: '暂无描述',
+    unknownAuthor: '未知'
   },
   auth: {
     unauthorized: '未授权访问',

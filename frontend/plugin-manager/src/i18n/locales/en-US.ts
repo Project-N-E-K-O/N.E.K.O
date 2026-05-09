@@ -39,7 +39,27 @@ export default {
     serverLogs: 'Server Logs',
     adapters: 'Adapters',
     adapterUI: 'Adapter UI',
-    packageManager: 'Package Manager'
+    packageManager: 'Package Manager',
+    market: 'Plugin Market'
+  },
+  market: {
+    title: 'Get New Plugins',
+    subtitle: 'Browse and install plugins from the marketplace',
+    getNewPlugins: 'Get New Plugins',
+    searchPlaceholder: 'Search plugins...',
+    notConfigured: 'Plugin market not configured',
+    configHint: 'Set NEKO_MARKET_URL environment variable',
+    noResults: 'No plugins found',
+    install: 'Install',
+    installed: 'Installed',
+    installing: 'Installing...',
+    installSuccess: 'Install task created: {name}',
+    installFailed: 'Install failed',
+    noDownloadUrl: 'No download URL available',
+    pairRequired: 'Bridge Token pairing required',
+    recommended: 'Recommended',
+    noDescription: 'No description',
+    unknownAuthor: 'Unknown'
   },
   auth: {
     unauthorized: 'Unauthorized access',

@@ -39,7 +39,27 @@ export default {
     serverLogs: 'サーバーログ',
     adapters: 'アダプター',
     adapterUI: 'アダプターUI',
-    packageManager: 'パッケージ管理'
+    packageManager: 'パッケージ管理',
+    market: 'プラグインマーケット'
+  },
+  market: {
+    title: '新しいプラグインを取得',
+    subtitle: 'マーケットからプラグインを閲覧・インストール',
+    getNewPlugins: '新しいプラグインを取得',
+    searchPlaceholder: 'プラグインを検索...',
+    notConfigured: 'プラグインマーケットが未設定',
+    configHint: '環境変数 NEKO_MARKET_URL を設定してください',
+    noResults: 'プラグインが見つかりません',
+    install: 'インストール',
+    installed: 'インストール済み',
+    installing: 'インストール中...',
+    installSuccess: 'インストールタスクを作成: {name}',
+    installFailed: 'インストールに失敗しました',
+    noDownloadUrl: 'ダウンロードURLがありません',
+    pairRequired: 'Bridge Token のペアリングが必要です',
+    recommended: 'おすすめ',
+    noDescription: '説明なし',
+    unknownAuthor: '不明'
   },
   auth: {
     unauthorized: '未認証のアクセス',

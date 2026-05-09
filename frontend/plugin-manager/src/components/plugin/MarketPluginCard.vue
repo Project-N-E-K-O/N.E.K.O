@@ -8,22 +8,24 @@
       <div class="plugin-card-header">
         <div class="plugin-info">
           <el-tag v-if="plugin.is_recommended" size="small" type="warning" effect="plain" class="type-tag">
-            推荐
+            {{ t('market.recommended') }}
           </el-tag>
           <h3 class="plugin-name">{{ plugin.name }}</h3>
-          <el-tag v-if="installed" size="small" type="success">已安装</el-tag>
+          <el-tag v-if="installed" size="small" type="success">
+            {{ t('market.installed') }}
+          </el-tag>
         </div>
       </div>
     </template>
 
     <div class="plugin-card-body">
-      <p class="plugin-description">{{ plugin.description || '暂无描述' }}</p>
+      <p class="plugin-description">{{ plugin.description || t('market.noDescription') }}</p>
 
       <div class="plugin-meta">
         <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
         <span class="plugin-author">
           <el-icon><User /></el-icon>
-          {{ plugin.author?.name || '未知' }}
+          {{ plugin.author?.name || t('market.unknownAuthor') }}
         </span>
         <span class="plugin-downloads">
           <el-icon><Download /></el-icon>
@@ -39,7 +41,7 @@
           :disabled="installed"
           @click.stop="$emit('install')"
         >
-          {{ installed ? '已安装' : (installing ? '安装中...' : '安装') }}
+          {{ installed ? t('market.installed') : (installing ? t('market.installing') : t('market.install')) }}
         </el-button>
       </div>
     </div>
@@ -47,6 +49,7 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { User, Download } from '@element-plus/icons-vue'
 import type { MarketPlugin } from '@/api/market'
 
@@ -65,6 +68,8 @@ defineEmits<{
   click: []
   install: []
 }>()
+
+const { t } = useI18n()
 
 function formatCount(count: number): string {
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`

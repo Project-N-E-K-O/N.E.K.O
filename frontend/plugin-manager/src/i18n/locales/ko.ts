@@ -39,7 +39,27 @@ export default {
     serverLogs: '서버 로그',
     adapters: '어댑터',
     adapterUI: '어댑터 UI',
-    packageManager: '패키지 관리'
+    packageManager: '패키지 관리',
+    market: '플러그인 마켓'
+  },
+  market: {
+    title: '새 플러그인 받기',
+    subtitle: '마켓에서 플러그인을 탐색하고 설치',
+    getNewPlugins: '새 플러그인 받기',
+    searchPlaceholder: '플러그인 검색...',
+    notConfigured: '플러그인 마켓이 설정되지 않음',
+    configHint: '환경 변수 NEKO_MARKET_URL을 설정하세요',
+    noResults: '플러그인을 찾을 수 없습니다',
+    install: '설치',
+    installed: '설치됨',
+    installing: '설치 중...',
+    installSuccess: '설치 작업 생성: {name}',
+    installFailed: '설치 실패',
+    noDownloadUrl: '다운로드 URL을 사용할 수 없음',
+    pairRequired: 'Bridge Token 페어링이 필요합니다',
+    recommended: '추천',
+    noDescription: '설명 없음',
+    unknownAuthor: '알 수 없음'
   },
   auth: {
     unauthorized: '인증되지 않은 접근',

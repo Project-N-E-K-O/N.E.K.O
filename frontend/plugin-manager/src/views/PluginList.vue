@@ -224,7 +224,7 @@
           <div v-if="marketUrl" class="market-entry">
             <router-link to="/market" class="market-entry__link">
               <el-icon><ShoppingCart /></el-icon>
-              <span>{{ $t('market.getNewPlugins') || '获取新插件' }}</span>
+              <span>{{ t('market.getNewPlugins') }}</span>
               <el-icon class="market-entry__arrow"><ArrowRight /></el-icon>
             </router-link>
           </div>
