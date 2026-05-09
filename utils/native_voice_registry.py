@@ -96,14 +96,25 @@ class NativeVoiceProvider:
         voice_id: str | None,
         voice_id_exists: VoiceIdExists | None = None,
     ) -> tuple[str, bool]:
-        """Return (canonical_voice, use_native).
+        """Return (voice, use_native).
 
-        A user-cloned voice with the same raw or canonical voice id wins over
-        the built-in voice, so the caller keeps custom TTS routing intact.
+        When the input is not in this provider's catalog, the returned
+        `voice` is the caller's stripped input verbatim — symmetric with
+        the module-level `resolve_native_voice_for_routing` helper (which
+        returns the input as-is when no native provider matches the
+        `core_api_type`). That keeps the "use_native=False" contract
+        consistent: callers that inspect `voice` in the False branch see
+        the original id, not a fallback default they never asked for.
+
+        Collision branch behaves differently on purpose: when the input
+        canonicalizes to a voice the user has cloned, we return the
+        canonical name with use_native=False, so callers can route to that
+        clone by canonical id (e.g. user typed alias "中文男", clone is
+        stored as "Puck" — caller wants "Puck", not "中文男").
         """
         normalized_voice, recognized = self.normalize(voice_id)
         if not recognized:
-            return normalized_voice, False
+            return (voice_id or "").strip(), False
 
         if voice_id_exists is None:
             return normalized_voice, True

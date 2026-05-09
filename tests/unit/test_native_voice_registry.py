@@ -86,6 +86,25 @@ def test_resolve_for_routing_unknown_core_returns_no_native():
     assert voice == "Alpha"
 
 
+def test_resolve_for_routing_unrecognized_voice_preserves_original_input():
+    """provider 命中但 voice 不在 catalog 时返回原始输入（strip 后），
+    与 unknown-core 分支对偶；不能把用户输入悄悄替换成 default_voice，否则
+    将来 caller 想在 use_native=False 分支用返回值时会被误导喵。"""
+    voice, use_native = resolve_native_voice_for_routing(
+        "__test_synth__",
+        "  my_custom_clone  ",
+        None,
+    )
+    assert (voice, use_native) == ("my_custom_clone", False)
+
+
+def test_resolve_for_routing_empty_input_preserves_emptiness():
+    voice, use_native = resolve_native_voice_for_routing("__test_synth__", "", None)
+    assert (voice, use_native) == ("", False)
+    voice, use_native = resolve_native_voice_for_routing("__test_synth__", None, None)
+    assert (voice, use_native) == ("", False)
+
+
 def test_resolve_for_routing_collision_disables_native():
     """同名克隆 voice 应该把 native routing 让给 custom TTS。"""
     stored = {"alpha"}
