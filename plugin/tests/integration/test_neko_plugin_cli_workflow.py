@@ -22,12 +22,29 @@ from plugin.neko_plugin_cli.public import (
 
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
 
+_FIXTURE_VENDOR_DISTS = {
+    "plugin_with_rules": [("httpx", "0.27.0"), ("shared-lib", "1.0.0")],
+    "bundle_alpha": [("shared-lib", "2.0.0"), ("alpha-only", "0.1.0")],
+    "bundle_beta": [("shared-lib", "2.0.0"), ("beta-only", "0.5.0")],
+}
+
 
 def _copy_fixture_plugin(tmp_path: Path, fixture_name: str) -> Path:
     source = FIXTURE_PLUGINS_ROOT / fixture_name
     target = tmp_path / fixture_name
     shutil.copytree(source, target)
+    for name, version in _FIXTURE_VENDOR_DISTS.get(fixture_name, []):
+        _write_vendor_dist(target, name, version)
     return target
+
+
+def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
+    dist_dir = plugin_dir / "vendor" / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
 
 
 def _read_archive_toml(package_path: Path, member_name: str) -> dict[str, object]:

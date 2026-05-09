@@ -272,6 +272,28 @@ def _setup_logging_interception(logger: Any, project_root: Path) -> None:
         sys.path.insert(0, str(project_root))
 
 
+def _inject_plugin_vendor_path(config_path: Path, project_root: Path, logger: Any) -> None:
+    vendor_dir = config_path.parent / "vendor"
+    if not vendor_dir.is_dir():
+        return
+
+    vendor_text = str(vendor_dir.resolve())
+    if vendor_text in sys.path:
+        return
+
+    try:
+        project_index = sys.path.index(str(project_root))
+    except ValueError:
+        project_index = -1
+
+    # Keep the N.E.K.O project root ahead of vendored packages so the host SDK
+    # cannot be shadowed, while still keeping plugin dependencies out of the
+    # shared interpreter environment.
+    insert_at = project_index + 1 if project_index >= 0 else 0
+    sys.path.insert(insert_at, vendor_text)
+    logger.info("[Plugin Process] Added plugin vendor path to sys.path: {}", vendor_text)
+
+
 def _find_project_root(config_path: Path) -> Path:
     """
     从配置文件路径向上探测项目根目录。
@@ -503,6 +525,7 @@ def _plugin_process_runner(
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
             logger.info("[Plugin Process] Added project root to sys.path: {}", project_root)
+        _inject_plugin_vendor_path(config_path, project_root, logger)
         
         logger.info("[Plugin Process] Starting plugin '{}' from {}", plugin_id, entry_point)
         

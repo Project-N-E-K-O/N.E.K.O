@@ -20,7 +20,9 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _extract_entries_preview,
     _find_missing_python_requirements,
+    _has_unsupported_requirements_file,
     _parse_plugin_dependencies,
+    _plugin_vendor_search_paths,
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
@@ -574,19 +576,34 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
+            if _has_unsupported_requirements_file(config_path):
+                raise _to_domain_error(
+                    code="PLUGIN_PYTHON_DEPENDENCY_DECLARATION_UNSUPPORTED",
+                    message=(
+                        f"Plugin '{current_plugin_id}' uses requirements.txt, which is not supported. "
+                        "Declare Python runtime dependencies in pyproject.toml [project].dependencies "
+                        "and vendor them under vendor/."
+                    ),
+                    status_code=400,
+                    plugin_id=current_plugin_id,
+                    error_type="UnsupportedPythonDependencyDeclaration",
+                )
             python_requirements = _collect_plugin_python_requirements(
                 conf,
                 config_path,
                 logger,
                 current_plugin_id,
             )
-            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            unsatisfied_python_requirements = _find_missing_python_requirements(
+                python_requirements,
+                search_paths=_plugin_vendor_search_paths(config_path),
+            )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
                     code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
                     message=(
                         f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
-                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                        f"{unsatisfied_python_requirements}. Vendor compatible packages under the plugin's vendor/ directory."
                     ),
                     status_code=400,
                     plugin_id=current_plugin_id,
@@ -642,26 +659,35 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
-            module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(importlib.import_module, module_path)
-            cls_obj = getattr(module_obj, class_name)
-            if not isinstance(cls_obj, type):
-                raise _to_domain_error(
-                    code="INVALID_PLUGIN_CLASS",
-                    message=f"Plugin '{current_plugin_id}' entry class '{class_name}' is invalid",
-                    status_code=500,
-                    plugin_id=current_plugin_id,
-                    error_type="InvalidPluginClass",
+            if python_requirements:
+                entries_preview = await asyncio.to_thread(
+                    _extract_entries_preview,
+                    current_plugin_id,
+                    type("VendorIsolatedPluginStub", (), {}),
+                    conf,
+                    pdata,
                 )
+            else:
+                module_path, class_name = entry.split(":", 1)
+                module_obj = await asyncio.to_thread(importlib.import_module, module_path)
+                cls_obj = getattr(module_obj, class_name)
+                if not isinstance(cls_obj, type):
+                    raise _to_domain_error(
+                        code="INVALID_PLUGIN_CLASS",
+                        message=f"Plugin '{current_plugin_id}' entry class '{class_name}' is invalid",
+                        status_code=500,
+                        plugin_id=current_plugin_id,
+                        error_type="InvalidPluginClass",
+                    )
 
-            await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
-            entries_preview = await asyncio.to_thread(
-                _extract_entries_preview,
-                current_plugin_id,
-                cls_obj,
-                conf,
-                pdata,
-            )
+                await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
+                entries_preview = await asyncio.to_thread(
+                    _extract_entries_preview,
+                    current_plugin_id,
+                    cls_obj,
+                    conf,
+                    pdata,
+                )
             await asyncio.to_thread(
                 _set_plugin_runtime_metadata_sync,
                 current_plugin_id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import zipfile
 
 import pytest
@@ -59,6 +60,8 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:
         + "\n",
         encoding="utf-8",
     )
+    _write_vendor_dist(plugin_dir, "httpx", "0.27.0")
+    _write_vendor_dist(plugin_dir, "pydantic", "2.0.0")
 
     (plugin_dir / "__init__.py").write_text('PLUGIN_NAME = "demo"\n', encoding="utf-8")
     (plugin_dir / "runtime.txt").write_text("runtime\n", encoding="utf-8")
@@ -68,6 +71,15 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:
     (plugin_dir / "__pycache__").mkdir()
     (plugin_dir / "__pycache__" / "module.pyc").write_bytes(b"pyc")
     return plugin_dir
+
+
+def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
+    dist_dir = plugin_dir / "vendor" / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
 
 
 def _tamper_package(package_path: Path, target_name: str) -> None:
@@ -146,6 +158,8 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         names = set(archive.namelist())
         assert "payload/plugins/demo_plugin/plugin.toml" in names
         assert "payload/plugins/demo_plugin/runtime.txt" in names
+        assert "payload/plugins/demo_plugin/vendor/httpx-0.27.0.dist-info/METADATA" in names
+        assert "payload/dependencies.toml" in names
         assert "payload/plugins/demo_plugin/debug.tmp" not in names
         assert "payload/plugins/demo_plugin/cache_dir/cache.txt" not in names
         assert "payload/plugins/demo_plugin/__pycache__/module.pyc" not in names
@@ -156,6 +170,26 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         assert 'token = "secret-token"' in profile_text
         assert "retry = 3" in profile_text
         assert "extra_table" not in profile_text
+
+        dependency_text = archive.read("payload/dependencies.toml").decode("utf-8")
+        assert 'python_requirements = ["httpx>=0.27", "pydantic>=2.0"]' in dependency_text
+        assert 'vendor_path = "plugins/demo_plugin/vendor"' in dependency_text
+
+
+def test_build_plugin_rejects_pyproject_dependencies_without_vendor(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    shutil.rmtree(plugin_dir / "vendor")
+
+    with pytest.raises(ValueError, match="vendor/ is missing"):
+        build_plugin(plugin_dir, tmp_path / "demo_plugin.neko-plugin")
+
+
+def test_build_plugin_rejects_requirements_txt(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "requirements.txt").write_text("httpx>=0.27\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="requirements.txt is not supported"):
+        build_plugin(plugin_dir, tmp_path / "demo_plugin.neko-plugin")
 
 
 def test_inspect_package_reports_metadata_and_profiles(tmp_path: Path) -> None:
@@ -174,6 +208,8 @@ def test_inspect_package_reports_metadata_and_profiles(tmp_path: Path) -> None:
     assert result.plugin_count == 1
     assert result.profile_names == ["default.toml"]
     assert result.plugins[0].plugin_id == "demo_plugin"
+    assert result.dependencies is not None
+    assert result.dependencies.plugins[0].python_requirements == ["httpx>=0.27", "pydantic>=2.0"]
 
 
 def test_install_package_supports_rename_and_fail_conflict_modes(tmp_path: Path) -> None:

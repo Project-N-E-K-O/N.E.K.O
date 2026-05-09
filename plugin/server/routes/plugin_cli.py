@@ -107,6 +107,22 @@ class PluginCliInspectedPluginResponse(BaseModel):
     has_plugin_toml: bool
 
 
+class PluginCliDependencyPluginResponse(BaseModel):
+    plugin_id: str
+    python_requirements: list[str]
+    host_python_requirements: list[str]
+    plugin_dependencies: list[str]
+    advanced_plugin_dependencies: list[dict[str, object]]
+    vendor_path: str = ""
+    vendor_present: bool = False
+
+
+class PluginCliDependencySummaryResponse(BaseModel):
+    schema_version: str = ""
+    plugins: list[PluginCliDependencyPluginResponse]
+    plugin_count: int
+
+
 class PluginCliInspectResponse(BaseModel):
     package_path: str
     package_type: str
@@ -122,6 +138,7 @@ class PluginCliInspectResponse(BaseModel):
     profile_names: list[str]
     plugin_count: int
     profile_count: int
+    dependencies: PluginCliDependencySummaryResponse | None = None
 
 
 class PluginCliVerifyResponse(PluginCliInspectResponse):

@@ -4,6 +4,11 @@ import hashlib
 from pathlib import PurePosixPath
 import zipfile
 
+from plugin.core.python_dependencies import (
+    collect_project_python_requirements,
+    split_host_provided_requirements,
+)
+
 from .normalize import normalize_archive_key, validate_archive_entry_name
 
 try:
@@ -57,6 +62,10 @@ def read_manifest(archive: zipfile.ZipFile) -> dict[str, object]:
 
 def read_metadata(archive: zipfile.ZipFile) -> dict[str, object] | None:
     return read_archive_toml(archive, "metadata.toml", required=False)
+
+
+def read_dependency_manifest(archive: zipfile.ZipFile) -> dict[str, object] | None:
+    return read_archive_toml(archive, "payload/dependencies.toml", required=False)
 
 
 def safe_archive_path(name: str) -> PurePosixPath:
@@ -133,6 +142,37 @@ def validate_plugin_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) 
             f"{', '.join(missing)}. "
             f"Every plugin directory under payload/plugins/ must contain a plugin.toml file."
         )
+
+
+def validate_dependency_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) -> None:
+    file_names = set(archive.namelist())
+    for folder in plugin_folders:
+        requirements_name = f"payload/plugins/{folder}/requirements.txt"
+        if requirements_name in file_names:
+            raise ValueError(
+                f"plugin '{folder}' contains unsupported requirements.txt. "
+                "Python runtime dependencies must be declared in pyproject.toml "
+                "[project].dependencies and vendored under vendor/."
+            )
+
+        pyproject_name = f"payload/plugins/{folder}/pyproject.toml"
+        pyproject_toml = read_archive_toml(archive, pyproject_name, required=False)
+        python_requirements = collect_project_python_requirements(pyproject_toml)
+        external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
+        if not external_requirements:
+            continue
+
+        vendor_prefix = f"payload/plugins/{folder}/vendor/"
+        vendor_has_files = any(
+            name.startswith(vendor_prefix) and not name.endswith("/")
+            for name in file_names
+        )
+        if not vendor_has_files:
+            raise ValueError(
+                f"plugin '{folder}' declares Python runtime dependencies "
+                f"({', '.join(external_requirements)}) but the package does not contain "
+                "vendored dependency files under vendor/."
+            )
 
 
 def compute_archive_payload_hash(archive: zipfile.ZipFile) -> str:

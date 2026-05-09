@@ -72,10 +72,12 @@ package.neko-plugin / package.neko-bundle
 ├── metadata.toml
 ├── sign.toml              # optional
 └── payload/
+    ├── dependencies.toml
     ├── plugins/
     │   ├── <plugin_id>/
     │   │   ├── plugin.toml
     │   │   ├── pyproject.toml
+    │   │   ├── vendor/
     │   │   └── ...
     │   └── ...
     └── profiles/
@@ -136,9 +138,18 @@ Each plugin directory must contain:
 Recommended:
 
 - `pyproject.toml`
+- `vendor/` when `pyproject.toml [project].dependencies` declares runtime Python packages
 - plugin source files
 - static assets
 - runtime resources that belong to the distributed plugin
+
+Python dependency rules:
+
+- `[plugin].dependencies` in `plugin.toml` declares dependencies on other N.E.K.O plugins only.
+- Python runtime dependencies must be declared in `pyproject.toml [project].dependencies`.
+- `requirements.txt` is not supported for plugin packages.
+- Python runtime dependencies must not be installed into the shared N.E.K.O interpreter. Packages that need third-party libraries must vendor them under their own `vendor/` directory or use a future managed isolated dependency store.
+- Extension plugins currently cannot declare Python runtime dependencies because they run inside a host plugin process.
 
 Must not include:
 
@@ -167,6 +178,18 @@ Current lightweight rule for single-plugin builds:
 - `[plugin_runtime]` contributes runtime flags such as `auto_start`
 - the top-level table whose name equals the plugin id is migrated into the default profile as plugin config
 - other metadata tables stay in `plugin.toml`
+
+### `payload/dependencies.toml`
+
+Generated dependency summary. This file is included in the payload hash and is produced from each plugin's `plugin.toml` and `pyproject.toml`.
+
+Responsibilities:
+
+- list Python runtime requirements declared in `pyproject.toml [project].dependencies`
+- list host-provided Python requirements such as `N.E.K.O`
+- list simple plugin dependencies declared in `[plugin].dependencies`
+- list advanced plugin dependency tables declared as `[[plugin.dependency]]`
+- record whether `vendor/` was present at build time
 
 ## Package Type Rules
 

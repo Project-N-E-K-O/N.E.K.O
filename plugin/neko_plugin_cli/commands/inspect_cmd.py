@@ -46,6 +46,18 @@ def handle(args: argparse.Namespace) -> int:
         print(f"  payload_hash_verified={result.payload_hash_verified}")
     for item in result.plugins:
         print(f"  plugin: {item.plugin_id} -> {item.archive_path}")
+    if result.dependencies is not None:
+        for item in result.dependencies.plugins:
+            if item.python_requirements:
+                print(
+                    f"  python_dependency: {item.plugin_id} -> "
+                    f"{', '.join(item.python_requirements)}"
+                )
+            if item.plugin_dependencies:
+                print(
+                    f"  plugin_dependency: {item.plugin_id} -> "
+                    f"{', '.join(item.plugin_dependencies)}"
+                )
     for profile_name in result.profile_names:
         print(f"  profile: {profile_name}")
     return 0

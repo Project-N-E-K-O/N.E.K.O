@@ -7,6 +7,12 @@ import json
 import re
 from pathlib import Path
 
+from plugin.core.python_dependencies import (
+    collect_project_python_requirements,
+    find_missing_python_requirements,
+    split_host_provided_requirements,
+)
+
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -48,6 +54,8 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     _check_optional_file(plugin_dir / "README.md", "README.md", issues, strict=strict)
     _check_optional_file(plugin_dir / "tests" / "test_smoke.py", "tests/test_smoke.py", issues, strict=strict)
     _check_optional_file(plugin_dir / "pyproject.toml", "pyproject.toml", issues, strict=False)
+    _check_requirements_file(plugin_dir / "requirements.txt", issues)
+    _check_pyproject_dependency_layout(plugin_dir, source.pyproject_toml, source.package_type, issues)
 
     _check_json_file(plugin_dir / ".vscode" / "settings.json", ".vscode/settings.json", issues, strict=strict)
     _check_json_file(plugin_dir / ".vscode" / "tasks.json", ".vscode/tasks.json", issues, strict=strict)
@@ -109,7 +117,7 @@ def _check_plugin_toml_schema(
     _check_optional_string(plugin_table, "short_description", "[plugin].short_description", issues)
     _check_optional_bool(plugin_table, "passive", "[plugin].passive", issues)
     _check_string_list(plugin_table.get("keywords"), "[plugin].keywords", issues, required=False)
-    _check_string_list(plugin_table.get("dependencies"), "[plugin].dependencies", issues, required=False)
+    _check_plugin_dependency_id_list(plugin_table.get("dependencies"), "[plugin].dependencies", plugin_id, issues)
 
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
@@ -189,6 +197,33 @@ def _check_string_list(value: object, label: str, issues: list[tuple[str, str]],
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
             issues.append(("error", f"{label}[{index}] must be a non-empty string"))
+
+
+def _check_plugin_dependency_id_list(
+    value: object,
+    label: str,
+    plugin_id: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list):
+        issues.append(("error", f"{label} must be a list of plugin id strings"))
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            issues.append(("error", f"{label}[{index}] must be a non-empty plugin id"))
+            continue
+        dependency_id = item.strip()
+        if not re.fullmatch(r"^[A-Za-z0-9_-]+$", dependency_id):
+            issues.append((
+                "error",
+                f"{label}[{index}] must be a plugin id, got '{dependency_id}'. "
+                "Python packages belong in pyproject.toml [project].dependencies.",
+            ))
+            continue
+        if dependency_id == plugin_id:
+            issues.append(("error", f"{label}[{index}] must not reference the plugin itself"))
 
 
 def _check_optional_number(
@@ -645,6 +680,57 @@ def _check_optional_file(path: Path, label: str, issues: list[tuple[str, str]], 
     if path.is_file():
         return
     issues.append(("error" if strict else "warning", f"{label} is missing"))
+
+
+def _check_requirements_file(path: Path, issues: list[tuple[str, str]]) -> None:
+    if path.exists():
+        issues.append((
+            "error",
+            "requirements.txt is not supported; use pyproject.toml [project].dependencies "
+            "and vendor/ for Python runtime dependencies",
+        ))
+
+
+def _check_pyproject_dependency_layout(
+    plugin_dir: Path,
+    pyproject_toml: dict[str, object] | None,
+    package_type: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    python_requirements = collect_project_python_requirements(pyproject_toml)
+    external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
+    if not external_requirements:
+        return
+    if package_type == "extension":
+        issues.append((
+            "error",
+            "extension plugins cannot declare Python runtime dependencies because they run in a host process",
+        ))
+        return
+    vendor_dir = plugin_dir / "vendor"
+    if not vendor_dir.is_dir():
+        issues.append((
+            "error",
+            "pyproject.toml [project].dependencies declares Python runtime dependencies "
+            f"({', '.join(external_requirements)}), but vendor/ is missing",
+        ))
+    elif not any(path.is_file() for path in vendor_dir.rglob("*")):
+        issues.append((
+            "error",
+            "pyproject.toml [project].dependencies declares Python runtime dependencies "
+            f"({', '.join(external_requirements)}), but vendor/ does not contain any files",
+        ))
+    else:
+        missing_requirements = find_missing_python_requirements(
+            external_requirements,
+            search_paths=[vendor_dir],
+        )
+        if missing_requirements:
+            issues.append((
+                "error",
+                "vendor/ does not satisfy Python runtime dependencies: "
+                f"{', '.join(missing_requirements)}",
+            ))
 
 
 def _check_json_file(path: Path, label: str, issues: list[tuple[str, str]], *, strict: bool) -> None:

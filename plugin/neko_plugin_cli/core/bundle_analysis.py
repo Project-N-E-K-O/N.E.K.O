@@ -8,6 +8,11 @@ from packaging.requirements import Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version, InvalidVersion
 
+from plugin.core.python_dependencies import (
+    collect_project_python_requirements,
+    split_host_provided_requirements,
+)
+
 from .models import BundleAnalysisResult, BundleSdkAnalysis, PluginSource, SharedDependency
 from .plugin_source import load_plugin_source
 
@@ -51,7 +56,9 @@ def _analyze_shared_dependencies(
     by_name: dict[str, dict[str, str]] = defaultdict(dict)
 
     for source in sources:
-        for requirement_text in _read_project_dependencies(source.pyproject_toml):
+        python_requirements = collect_project_python_requirements(source.pyproject_toml)
+        external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
+        for requirement_text in external_requirements:
             normalized_name = _normalize_requirement_name(requirement_text)
             if not normalized_name:
                 continue
@@ -180,25 +187,6 @@ def _version_sort_key(version_text: str) -> Version:
         return Version(version_text)
     except InvalidVersion:
         return Version("0")
-
-
-def _read_project_dependencies(pyproject_toml: dict[str, object] | None) -> list[str]:
-    if not isinstance(pyproject_toml, dict):
-        return []
-
-    project_table = pyproject_toml.get("project")
-    if not isinstance(project_table, dict):
-        return []
-
-    raw_dependencies = project_table.get("dependencies")
-    if not isinstance(raw_dependencies, list):
-        return []
-
-    result: list[str] = []
-    for item in raw_dependencies:
-        if isinstance(item, str) and item.strip():
-            result.append(item.strip())
-    return result
 
 
 def _normalize_requirement_name(requirement_text: str) -> str:

@@ -367,6 +367,30 @@ class InspectedPackagePlugin(_BaseModel):
     has_plugin_toml: bool = True
 
 
+class PackageDependencyPlugin(_BaseModel):
+    """Dependency summary for one packaged plugin."""
+
+    plugin_id: PluginIdValue
+    python_requirements: StringList = Field(default_factory=list)
+    host_python_requirements: StringList = Field(default_factory=list)
+    plugin_dependencies: StringList = Field(default_factory=list)
+    advanced_plugin_dependencies: list[dict[str, object]] = Field(default_factory=list)
+    vendor_path: OptionalText = ""
+    vendor_present: bool = False
+
+
+class PackageDependencySummary(_BaseModel):
+    """Generated package dependency manifest summary."""
+
+    schema_version: OptionalText = ""
+    plugins: list[PackageDependencyPlugin] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def plugin_count(self) -> int:
+        return len(self.plugins)
+
+
 class PackageInspectResult(_BaseModel):
     """Read-only inspection summary for a package archive."""
 
@@ -382,6 +406,7 @@ class PackageInspectResult(_BaseModel):
     payload_hash_verified: bool | None = None
     plugins: list[InspectedPackagePlugin] = Field(default_factory=list)
     profile_names: StringList = Field(default_factory=list)
+    dependencies: PackageDependencySummary | None = None
 
     @model_validator(mode="after")
     def _validate_layout(self) -> PackageInspectResult:

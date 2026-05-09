@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import re
 
 
 from plugin.core.state import state
@@ -27,6 +28,8 @@ except ImportError:  # pragma: no cover
     InvalidVersion = Exception  # type: ignore
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
+
+_PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
     """解析版本规范字符串"""
@@ -170,7 +173,19 @@ def _check_single_plugin_version(
             except InvalidVersion:
                 logger.warning("Cannot parse dependency plugin '{}' version '{}'", dep_id, dep_version_str)
     
-    # 如果使用依赖配置，untested 是必须的
+    if (
+        dependency.id
+        and dependency.entry is None
+        and dependency.custom_event is None
+        and dependency.providers is None
+        and dependency.recommended is None
+        and dependency.supported is None
+        and dependency.untested is None
+        and dependency.conflicts is None
+    ):
+        return True, None
+
+    # 如果使用完整依赖配置，untested 是必须的
     if dependency.untested is None:
         return False, "Dependency configuration requires 'untested' field"
     
@@ -409,9 +424,10 @@ def _parse_plugin_dependencies(
     """
     解析插件依赖配置
     
-    支持两种格式：
-    1. [[plugin.dependency]] - 完整格式
-    2. [[plugin.dependency]] with conflicts = true - 简化格式
+    支持三种格式：
+    1. [plugin].dependencies = ["plugin_id"] - 插件 ID 简写
+    2. [[plugin.dependency]] - 完整格式
+    3. [[plugin.dependency]] with conflicts = true - 简化格式
     
     Args:
         conf: TOML 配置字典
@@ -422,9 +438,55 @@ def _parse_plugin_dependencies(
         依赖列表
     """
     dependencies: List[PluginDependency] = []
+
+    plugin_table = conf.get("plugin", {})
+    if not isinstance(plugin_table, dict):
+        return dependencies
+
+    simple_dependencies = plugin_table.get("dependencies")
+    if simple_dependencies is not None:
+        if not isinstance(simple_dependencies, list):
+            logger.warning(
+                "Plugin {}: [plugin].dependencies must be a list of plugin id strings; got {}",
+                plugin_id,
+                type(simple_dependencies).__name__,
+            )
+        else:
+            seen_simple: set[str] = set()
+            for item in simple_dependencies:
+                if not isinstance(item, str) or not item.strip():
+                    logger.warning(
+                        "Plugin {}: [plugin].dependencies entries must be non-empty strings; skipping {}",
+                        plugin_id,
+                        item,
+                    )
+                    continue
+                dep_id = item.strip()
+                if not _PLUGIN_ID_RE.fullmatch(dep_id):
+                    logger.warning(
+                        "Plugin {}: [plugin].dependencies entry '{}' is not a valid plugin id; "
+                        "Python packages must be declared in pyproject.toml [project].dependencies",
+                        plugin_id,
+                        dep_id,
+                    )
+                    continue
+                if dep_id == plugin_id:
+                    logger.warning("Plugin {}: ignoring self dependency in [plugin].dependencies", plugin_id)
+                    continue
+                if dep_id in seen_simple:
+                    continue
+                seen_simple.add(dep_id)
+                try:
+                    dependencies.append(PluginDependency(id=dep_id))
+                except Exception:
+                    logger.exception(
+                        "Plugin {}: failed to parse simple plugin dependency '{}'",
+                        plugin_id,
+                        dep_id,
+                    )
     
     # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表
-    dep_configs = conf.get("plugin", {}).get("dependency", [])
+    dep_configs = plugin_table.get("dependency", [])
     
     # 如果不是列表，转换为列表
     if not isinstance(dep_configs, list):

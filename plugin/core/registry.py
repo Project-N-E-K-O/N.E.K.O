@@ -6,7 +6,6 @@ import hashlib
 import importlib
 import inspect
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
@@ -28,15 +27,11 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-try:
-    from importlib import metadata as importlib_metadata
-except ImportError:  # pragma: no cover
-    import importlib_metadata  # type: ignore[no-redef]
-
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import get_runtime_override
+from plugin.core import python_dependencies
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
@@ -59,13 +54,11 @@ from plugin.core.dependency import (
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
-    from packaging.requirements import Requirement
 except ImportError:  # pragma: no cover
     Version = None  # type: ignore
     InvalidVersion = Exception  # type: ignore
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
-    Requirement = None  # type: ignore
 
 
 # SimpleEntryMeta 已删除，统一使用 sdk/events.py 中的 EventMeta
@@ -137,32 +130,6 @@ def _iter_plugin_and_router_event_members(cls: type) -> Iterable[tuple[str, Any,
 
 # _parse_specifier, _version_matches 已移动到 dependency.py
 
-_REQ_NAME_SPLIT_RE = re.compile(r"[<>=!~;\[\s]")
-
-
-def _canonicalize_dist_name(name: str) -> str:
-    """Canonicalize package/distribution names per PEP 503."""
-    return re.sub(r"[-_.]+", "-", name).lower().strip()
-
-
-def _parse_requirement_name(requirement: str) -> Optional[str]:
-    """Parse distribution name from requirement spec."""
-    text = str(requirement or "").strip()
-    if not text:
-        return None
-    if Requirement is not None:
-        try:
-            parsed = Requirement(text)
-            return str(parsed.name).strip() or None
-        except Exception:
-            logger.opt(exception=True).debug(
-                "Failed to parse requirement '{}' with packaging.Requirement; falling back to loose parser",
-                text,
-            )
-    # fallback parser for loose specs when packaging is unavailable
-    head = _REQ_NAME_SPLIT_RE.split(text, maxsplit=1)[0].strip()
-    return head or None
-
 
 def _collect_plugin_python_requirements(
     conf: Dict[str, Any],
@@ -170,139 +137,54 @@ def _collect_plugin_python_requirements(
     logger: Any,
     plugin_id: str,
 ) -> List[str]:
-    """Collect plugin Python dependencies from plugin.toml and requirements.txt."""
-    collected: List[str] = []
-    seen: set[str] = set()
+    """Collect Python runtime dependencies from pyproject.toml only."""
+    _ = conf
+    requirements_file = toml_path.parent / "requirements.txt"
+    if requirements_file.exists():
+        logger.error(
+            "Plugin {}: requirements.txt is not supported. "
+            "Declare Python runtime dependencies in pyproject.toml [project].dependencies "
+            "and vendor them under vendor/.",
+            plugin_id,
+        )
 
-    def _add_req(item: Any, source: str) -> None:
-        if not isinstance(item, str):
-            logger.warning(
-                "Plugin {}: python dependency in {} must be string, got {}; skipping",
-                plugin_id,
-                source,
-                type(item).__name__,
-            )
-            return
-        req_text = item.strip()
-        if not req_text or req_text.startswith("#"):
-            return
-        key = req_text.lower()
-        if key in seen:
-            return
-        seen.add(key)
-        collected.append(req_text)
-
-    plugin_section = conf.get("plugin")
-    if isinstance(plugin_section, dict):
-        deps = plugin_section.get("dependencies")
-        if deps is not None:
-            if not isinstance(deps, list):
-                logger.warning(
-                    "Plugin {}: [plugin].dependencies should be a list of strings; got {}",
-                    plugin_id,
-                    type(deps).__name__,
-                )
-            else:
-                for dep in deps:
-                    _add_req(dep, "[plugin].dependencies")
-
-    req_file = toml_path.parent / "requirements.txt"
-    if req_file.exists():
-        try:
-            for raw_line in req_file.read_text(encoding="utf-8").splitlines():
-                line = raw_line.split("#", 1)[0].strip()
-                if not line:
-                    continue
-                _add_req(line, "requirements.txt")
-        except OSError as exc:
-            logger.warning(
-                "Plugin {}: failed to read {}: {}",
-                plugin_id,
-                req_file,
-                exc,
-            )
-
-    return collected
-
-
-def _find_missing_python_requirements(requirements: List[str]) -> List[str]:
-    """Return unsatisfied requirement specs based on installed distributions."""
-    if not requirements:
-        return []
-
-    installed: dict[str, Optional[str]] = {}
     try:
-        for dist in importlib_metadata.distributions():
-            version_text: Optional[str] = None
-            dist_version = getattr(dist, "version", None)
-            if isinstance(dist_version, str) and dist_version.strip():
-                version_text = dist_version.strip()
-            else:
-                meta_version = dist.metadata.get("Version")
-                if isinstance(meta_version, str) and meta_version.strip():
-                    version_text = meta_version.strip()
-
-            dist_name = dist.metadata.get("Name")
-            if isinstance(dist_name, str) and dist_name.strip():
-                installed[_canonicalize_dist_name(dist_name)] = version_text
-
-            dist_attr_name = getattr(dist, "name", None)
-            if isinstance(dist_attr_name, str) and dist_attr_name.strip():
-                installed.setdefault(_canonicalize_dist_name(dist_attr_name), version_text)
-    except Exception as e:
-        logger.warning("Failed to enumerate installed distributions, "
-                        "dependency checks will be skipped: {}", e)
+        pyproject_toml = python_dependencies.load_pyproject_toml(toml_path.parent)
+    except Exception as exc:
+        logger.warning("Plugin {}: failed to read pyproject.toml: {}", plugin_id, exc)
         return []
 
-    missing: List[str] = []
-    seen_missing: set[str] = set()
-    for req in requirements:
-        req_text = str(req or "").strip()
-        if not req_text:
-            continue
+    requirements = python_dependencies.collect_project_python_requirements(pyproject_toml)
+    external_requirements, host_requirements = python_dependencies.split_host_provided_requirements(requirements)
+    if host_requirements:
+        logger.debug(
+            "Plugin {}: host-provided Python requirements are satisfied by N.E.K.O runtime: {}",
+            plugin_id,
+            host_requirements,
+        )
+    return external_requirements
 
-        parsed_requirement = None
-        req_name = None
-        if Requirement is not None:
-            try:
-                parsed_requirement = Requirement(req_text)
-                req_name = str(parsed_requirement.name).strip() or None
-                marker = getattr(parsed_requirement, "marker", None)
-                if marker is not None:
-                    try:
-                        if not bool(marker.evaluate()):
-                            continue
-                    except Exception:
-                        pass
-            except Exception:
-                parsed_requirement = None
 
-        if req_name is None:
-            req_name = _parse_requirement_name(req_text)
-        if not req_name:
-            continue
+def _plugin_vendor_search_paths(toml_path: Path) -> list[Path]:
+    vendor_dir = toml_path.parent / "vendor"
+    return [vendor_dir] if vendor_dir.is_dir() else []
 
-        canon = _canonicalize_dist_name(req_name)
-        installed_version = installed.get(canon)
-        if installed_version is not None and parsed_requirement is not None and Version is not None:
-            specifier = getattr(parsed_requirement, "specifier", None)
-            if specifier:
-                try:
-                    if Version(installed_version) in specifier:
-                        continue
-                except Exception:
-                    pass
-            else:
-                continue
-        elif canon in installed:
-            continue
 
-        missing_key = req_text.lower()
-        if missing_key in seen_missing:
-            continue
-        seen_missing.add(missing_key)
-        missing.append(req_text)
-    return missing
+def _has_unsupported_requirements_file(toml_path: Path) -> bool:
+    return (toml_path.parent / "requirements.txt").exists()
+
+
+def _find_missing_python_requirements(
+    requirements: List[str],
+    *,
+    search_paths: Iterable[Path | str] | None = None,
+) -> List[str]:
+    """Return unsatisfied requirement specs based on explicit search paths."""
+
+    return python_dependencies.find_missing_python_requirements(
+        requirements,
+        search_paths=search_paths,
+    )
 
 
 
@@ -1653,17 +1535,23 @@ def _load_adapter_plugin(
         _remove_scanned_metadata(pid)
         scanned_metadata_registered = False
 
-    try:
-        module_path, class_name = entry.split(":", 1)
-        mod = importlib.import_module(module_path)
-        cls = getattr(mod, class_name)
-        if isinstance(cls, type):
-            entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
-            scan_static_metadata(pid, cls, conf, pdata)
-            scanned_metadata_registered = True
-            scanned_class_name = cls.__name__
-    except Exception:
-        logger.debug("Adapter {}: failed to extract entries preview", pid, exc_info=True)
+    if ctx.python_requirements:
+        logger.debug(
+            "Adapter {}: skipping parent-process metadata import because Python dependencies are vendored",
+            pid,
+        )
+    else:
+        try:
+            module_path, class_name = entry.split(":", 1)
+            mod = importlib.import_module(module_path)
+            cls = getattr(mod, class_name)
+            if isinstance(cls, type):
+                entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
+                scan_static_metadata(pid, cls, conf, pdata)
+                scanned_metadata_registered = True
+                scanned_class_name = cls.__name__
+        except Exception:
+            logger.debug("Adapter {}: failed to extract entries preview", pid, exc_info=True)
     
     # 构建插件元数据
     plugin_meta = _build_plugin_meta(
@@ -1920,9 +1808,36 @@ def load_plugins_from_roots(
             continue
         # 根据插件类型分发加载逻辑
         plugin_type = pdata.get("type", "plugin")
+
+        if _has_unsupported_requirements_file(toml_path):
+            _register_failed_plugin(
+                ctx,
+                logger,
+                plugin_id=pid,
+                error_type="UnsupportedPythonDependencyDeclaration",
+                error_message=(
+                    "requirements.txt is not supported; declare Python runtime dependencies "
+                    "in pyproject.toml [project].dependencies and vendor them under vendor/."
+                ),
+                error_phase="python_requirements",
+            )
+            continue
         
         # extension 类型：不启动独立进程，只注册元数据
         if plugin_type == "extension":
+            if ctx.python_requirements:
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type="UnsupportedPythonDependencies",
+                    error_message=(
+                        "Extension plugins cannot declare Python runtime dependencies "
+                        "because they run inside their host plugin process."
+                    ),
+                    error_phase="python_requirements",
+                )
+                continue
             _load_extension_plugin(ctx, logger)
             continue
         
@@ -1966,12 +1881,15 @@ def load_plugins_from_roots(
             )
             continue
 
-        unsatisfied_python_requirements = _find_missing_python_requirements(ctx.python_requirements)
+        unsatisfied_python_requirements = _find_missing_python_requirements(
+            ctx.python_requirements,
+            search_paths=_plugin_vendor_search_paths(toml_path),
+        )
         if unsatisfied_python_requirements:
             logger.error(
                 "Plugin {}: unsatisfied Python dependencies: {}. "
-                "Please install them in current runtime environment "
-                "(declared in plugin.toml [plugin].dependencies and/or plugin requirements.txt).",
+                "Vendor them under the plugin's vendor/ directory "
+                "(declared in pyproject.toml [project].dependencies).",
                 pid,
                 unsatisfied_python_requirements,
             )
@@ -2027,44 +1945,51 @@ def load_plugins_from_roots(
             _load_adapter_plugin(ctx, logger, process_host_factory, plugin_id=pid)
             continue
 
-        module_path, class_name = entry.split(":", 1)
-        logger.debug("Plugin {}: importing {}:{}", pid, module_path, class_name)
-        try:
-            mod = importlib.import_module(module_path)
-            cls: Type[Any] = getattr(mod, class_name)
-        except (ImportError, ModuleNotFoundError) as e:
-            logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
-            _register_failed_plugin(
-                ctx,
-                logger,
-                plugin_id=pid,
-                error_type=type(e).__name__,
-                error_message=str(e),
-                error_phase="import_module",
+        if ctx.python_requirements:
+            logger.debug(
+                "Plugin {}: skipping parent-process import because Python dependencies are vendored",
+                pid,
             )
-            continue
-        except AttributeError as e:
-            logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
-            _register_failed_plugin(
-                ctx,
-                logger,
-                plugin_id=pid,
-                error_type="AttributeError",
-                error_message=f"Class '{class_name}' not found in module '{module_path}'",
-                error_phase="import_class",
-            )
-            continue
-        except Exception:
-            logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
-            _register_failed_plugin(
-                ctx,
-                logger,
-                plugin_id=pid,
-                error_type="UnexpectedImportError",
-                error_message=f"Unexpected error importing plugin class {entry}",
-                error_phase="import_module",
-            )
-            continue
+            cls = type("VendorIsolatedPluginStub", (), {})
+        else:
+            module_path, class_name = entry.split(":", 1)
+            logger.debug("Plugin {}: importing {}:{}", pid, module_path, class_name)
+            try:
+                mod = importlib.import_module(module_path)
+                cls: Type[Any] = getattr(mod, class_name)
+            except (ImportError, ModuleNotFoundError) as e:
+                logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    error_phase="import_module",
+                )
+                continue
+            except AttributeError as e:
+                logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type="AttributeError",
+                    error_message=f"Class '{class_name}' not found in module '{module_path}'",
+                    error_phase="import_class",
+                )
+                continue
+            except Exception:
+                logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
+                _register_failed_plugin(
+                    ctx,
+                    logger,
+                    plugin_id=pid,
+                    error_type="UnexpectedImportError",
+                    error_message=f"Unexpected error importing plugin class {entry}",
+                    error_phase="import_module",
+                )
+                continue
 
         host = None
         if enabled_val and auto_start_val:
@@ -2148,7 +2073,10 @@ def load_plugins_from_roots(
                 )
                 continue
 
-        scan_static_metadata(pid, cls, conf, pdata)
+        if ctx.python_requirements:
+            logger.debug("Plugin {}: static metadata scan skipped for vendored dependency isolation", pid)
+        else:
+            scan_static_metadata(pid, cls, conf, pdata)
 
         plugin_meta = _build_plugin_meta(
             pid, pdata,

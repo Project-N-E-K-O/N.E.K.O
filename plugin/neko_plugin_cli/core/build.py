@@ -11,6 +11,7 @@ from pathlib import Path
 from .models import BuildResult, PayloadBuildResult, PluginSource
 from .normalize import normalize_archive_key, normalize_relative_posix
 from .build_rules import BuildRuleSet, load_build_rules, should_skip_path
+from .dependencies import validate_source_dependency_layout, write_dependency_manifest
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
@@ -209,6 +210,7 @@ class PluginBuilder:
         source: PluginSource,
         paths: BuildPaths,
     ) -> PayloadBuildResult:
+        validate_source_dependency_layout(source)
         build_rules = load_build_rules(source.pyproject_toml)
         plugin_payload_dir = paths.plugins_dir / source.plugin_id
         plugin_payload_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +220,7 @@ class PluginBuilder:
             rules=build_rules,
         )
         profile_files = write_default_profile(source, paths.profiles_dir)
+        write_dependency_manifest([source], paths.payload_dir)
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(
@@ -235,6 +238,8 @@ class PluginBuilder:
         sources: list[PluginSource],
         paths: BuildPaths,
     ) -> PayloadBuildResult:
+        for source in sources:
+            validate_source_dependency_layout(source)
         staged_files: list[Path] = []
         for source in sources:
             plugin_payload_dir = paths.plugins_dir / source.plugin_id
@@ -249,6 +254,7 @@ class PluginBuilder:
             )
 
         profile_files = write_bundle_profile(sources, paths.profiles_dir)
+        write_dependency_manifest(sources, paths.payload_dir)
         payload_hash = self.compute_payload_hash(paths.payload_dir)
 
         return PayloadBuildResult(

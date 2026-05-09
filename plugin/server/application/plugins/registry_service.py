@@ -16,7 +16,9 @@ from plugin.core.registry import (
     _extract_entries_preview,
     _extract_plugin_ui_config,
     _find_missing_python_requirements,
+    _has_unsupported_requirements_file,
     _parse_single_plugin_config,
+    _plugin_vendor_search_paths,
     _prepare_plugin_import_roots,
     _resolve_plugin_id_conflict,
     register_plugin,
@@ -389,7 +391,20 @@ def _build_discovery_payload(
             if not satisfied:
                 dependency_errors.append(str(dep_error or "dependency check failed"))
                 break
-        if dependency_errors:
+        if _has_unsupported_requirements_file(ctx.toml_path):
+            error_type = "UnsupportedPythonDependencyDeclaration"
+            error_message = (
+                "requirements.txt is not supported; declare Python runtime dependencies "
+                "in pyproject.toml [project].dependencies and vendor them under vendor/."
+            )
+            error_phase = "python_requirements"
+            entries_preview = _extract_entries_preview(
+                plugin_id,
+                cls=type("FailedPluginStub", (), {}),
+                conf=ctx.conf,
+                pdata=ctx.pdata,
+            )
+        elif dependency_errors:
             error_type = "DependencyCheckFailed"
             error_message = dependency_errors[0]
             error_phase = "dependency_check"
@@ -400,7 +415,10 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(ctx.python_requirements)
+            missing_requirements = _find_missing_python_requirements(
+                ctx.python_requirements,
+                search_paths=_plugin_vendor_search_paths(ctx.toml_path),
+            )
             if missing_requirements:
                 error_type = "MissingPythonDependencies"
                 error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
@@ -408,6 +426,13 @@ def _build_discovery_payload(
                 entries_preview = _extract_entries_preview(
                     plugin_id,
                     cls=type("FailedPluginStub", (), {}),
+                    conf=ctx.conf,
+                    pdata=ctx.pdata,
+                )
+            elif ctx.python_requirements:
+                entries_preview = _extract_entries_preview(
+                    plugin_id,
+                    cls=type("VendorIsolatedPluginStub", (), {}),
                     conf=ctx.conf,
                     pdata=ctx.pdata,
                 )

@@ -103,6 +103,10 @@ venv/
 ENV/
 env.bak/
 
+# Plugin-local vendored dependencies are generated artifacts; packages include
+# them from the working tree, but the repo should not commit third-party wheels.
+plugin/plugins/*/vendor/
+
 # OS miscellany
 Thumbs.db
 ehthumbs.db
