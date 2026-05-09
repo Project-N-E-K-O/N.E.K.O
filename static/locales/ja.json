@@ -2426,6 +2426,7 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API が設定されていません",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui がインストールされていません",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use がインストールされていません",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use モジュールが読み込まれていません",
             "AGENT_NOT_INITIALIZED": "ネコクローの初期化に失敗",
             "AGENT_LLM_UNREACHABLE": "ネコクロー LLM に接続できません",
             "AGENT_MODEL_NOT_CONFIGURED": "ネコクローモデルが設定されていません",

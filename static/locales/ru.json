@@ -2426,6 +2426,7 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API не настроен",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui не установлен",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use не установлен",
+            "AGENT_BU_MODULE_NOT_LOADED": "модуль Browser Use не загружен",
             "AGENT_NOT_INITIALIZED": "Ошибка инициализации Лапки Неко",
             "AGENT_LLM_UNREACHABLE": "LLM Лапки Неко недоступен",
             "AGENT_MODEL_NOT_CONFIGURED": "Модель Лапки Неко не настроена",

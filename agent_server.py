@@ -842,7 +842,9 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             reason = "" if ok else "AGENT_LLM_UNREACHABLE"
             _set_capability("computer_use", ok, reason)
             bu = Modules.browser_use
-            if bu is not None:
+            if bu is None:
+                _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            else:
                 if not ok:
                     _set_capability("browser_use", False, reason)
                 elif not getattr(bu, "_ready_import", False):
@@ -4459,6 +4461,10 @@ async def agent_command(payload: Dict[str, Any]):
                 _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
                 _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))
+            else:
+                first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
+                _set_capability("computer_use", False, first_reason)
+                _set_capability("browser_use", False, first_reason)
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
