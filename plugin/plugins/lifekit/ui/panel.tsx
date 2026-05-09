@@ -100,7 +100,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
   useEffect(() => {
     configForm.setValues({
       default_city: String(config.default_city || ""),
-      timezone: String(config.timezone || "Asia/Shanghai"),
+      timezone: String(config.timezone || ""),
       forecast_days: String(config.forecast_days || 3),
       locale: String(config.locale || ""),
       force_locale: !!config.force_locale,

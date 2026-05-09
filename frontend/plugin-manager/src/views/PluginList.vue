@@ -879,7 +879,13 @@ async function handleBatchExport() {
     )
 
     if (result.built.length === 0) {
-      ElMessage.error(t('plugins.exportBuildFailed'))
+      const firstFailure = result.failed?.[0]
+      const detail = firstFailure?.error
+        ? firstFailure.plugin
+          ? `${firstFailure.plugin}: ${firstFailure.error}`
+          : firstFailure.error
+        : ''
+      ElMessage.error(detail ? `${t('plugins.exportBuildFailed')}: ${detail}` : t('plugins.exportBuildFailed'))
       return
     }
 

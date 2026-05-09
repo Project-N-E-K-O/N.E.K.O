@@ -8,6 +8,7 @@ import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
 from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.paths import CliDefaults
 
 pytestmark = pytest.mark.plugin_unit
@@ -152,6 +153,36 @@ def test_cli_build_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "type=bundle" in captured.out
 
 
+def test_cli_build_multiple_plugins_without_bundle_builds_individual_packages(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    first_plugin = _make_plugin_dir(tmp_path, plugin_id="multi_one")
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="multi_two")
+    target_dir = tmp_path / "target"
+
+    exit_code = neko_plugin_cli.main(["build", str(first_plugin), str(second_plugin), "-t", str(target_dir)])
+
+    assert exit_code == 0
+    assert (target_dir / "multi_one.neko-plugin").is_file()
+    assert (target_dir / "multi_two.neko-plugin").is_file()
+    assert not list(target_dir.glob("*.neko-bundle"))
+    captured = capsys.readouterr()
+    assert "Completed: built=2, failed=0" in captured.out
+
+
+def test_cli_build_out_does_not_create_unused_target_dir(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "cli_demo.neko-plugin"
+    unused_target = tmp_path / "unused-target"
+
+    exit_code = neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path), "-t", str(unused_target)])
+
+    assert exit_code == 0
+    assert package_path.is_file()
+    assert not unused_target.exists()
+
+
 def test_cli_check_uses_new_label(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -189,6 +220,29 @@ def test_cli_legacy_commands_are_removed(
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert f"invalid choice: '{legacy_command}'" in captured.err
+
+
+def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "bad_toml"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text("[plugin\n", encoding="utf-8")
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(level == "error" and "plugin.toml could not be read" in message for level, message in issues)
+
+
+def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / ".vscode").mkdir()
+    (plugin_dir / ".vscode" / "settings.json").write_bytes(b"\xff")
+    (plugin_dir / ".gitignore").write_bytes(b"\xff")
+
+    issues = validate_plugin_dir(plugin_dir, strict=False)
+    messages = [message for _level, message in issues]
+
+    assert any(".vscode/settings.json is not valid UTF-8" in message for message in messages)
+    assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
 def test_setup_repo_git_skips_when_inside_existing_repo(

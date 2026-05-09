@@ -67,7 +67,22 @@
   "trip": {
     "distance": "Distance",
     "recommended": "Recommended",
-    "no_destination": "Please specify a destination"
+    "no_destination": "Please specify a destination",
+    "mode": {
+      "transit": "🚇 Transit",
+      "walking": "🚶 Walking",
+      "bicycling": "🚲 Cycling",
+      "driving": "🚗 Driving"
+    },
+    "mode_advice": {
+      "walk_near": "🚶 Very close - walking is recommended",
+      "transit_rain": "🚇 Rain expected - transit is recommended",
+      "bike_mild": "🚲 Moderate distance and good weather - cycling works well",
+      "transit_default": "🚇 Transit is recommended"
+    },
+    "next_food": "food_recommend location={city} - destination food",
+    "next_nearby": "search_nearby location={city} - search near destination",
+    "next_currency": "currency_convert - currency conversion"
   },
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",

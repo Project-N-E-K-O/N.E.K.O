@@ -21,6 +21,7 @@ from plugin.sdk.plugin.base import (
 from plugin.sdk.plugin.decorators import plugin_entry
 from plugin.sdk.plugin.settings import PluginSettings, SettingsField, create_settings_safe, get_hot_fields
 from plugin.sdk.shared.constants import SDK_VERSION
+from plugin.sdk.shared.core.router import PluginRouter
 
 
 class _Ctx:
@@ -113,6 +114,15 @@ class _Router:
 
     def iter_handlers(self) -> dict[str, object]:
         return {entry_id: record.handler for entry_id, record in self._entries.items()}
+
+
+class _DecoratedRouter(PluginRouter):
+    def __init__(self) -> None:
+        super().__init__(name="decorated", prefix="pre_")
+
+    @plugin_entry(id="hello")
+    async def hello(self) -> str:
+        return "hello"
 
 
 class _DemoPlugin(NekoPluginBase):
@@ -295,6 +305,16 @@ def test_collect_entries_merges_method_entries_and_router_entries() -> None:
     assert callable(entries["hello"].handler)
     assert callable(entries["routed"].handler)
     assert "plain" not in entries
+
+
+def test_plugin_router_collects_decorated_methods_with_prefix() -> None:
+    router = _DecoratedRouter()
+
+    entries = router.collect_entries()
+
+    assert "pre_hello" in entries
+    assert entries["pre_hello"].meta.id == "pre_hello"
+    assert callable(entries["pre_hello"].handler)
 
 
 def test_enable_file_logging_sets_file_logger_attribute() -> None:

@@ -94,8 +94,6 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     if _matches_any(path_str, rules.exclude):
         return True
 
-    if any(part in rules.exclude_dirs for part in relative_path.parts):
-        return True
     if _matches_excluded_dir(relative_path, is_dir=is_dir, patterns=rules.exclude_dirs):
         return True
 

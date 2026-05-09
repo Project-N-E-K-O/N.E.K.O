@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import zipfile
 
 from .models import InstalledPlugin, InstallResult
@@ -14,6 +15,8 @@ from .archive_utils import (
     validate_plugin_layout,
     verify_payload_hash,
 )
+
+_SAFE_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class PackageInstaller:
@@ -37,7 +40,7 @@ class PackageInstaller:
         with zipfile.ZipFile(package_path) as archive:
             manifest = read_manifest(archive)
             package_type = self.require_string(manifest, "package_type")
-            package_id = self.require_string(manifest, "id")
+            package_id = self.validate_package_id(self.require_string(manifest, "id"))
             metadata = read_metadata(archive)
             plugin_folders = collect_plugin_folders(archive)
             validate_package_type(package_type, plugin_folders)
@@ -101,9 +104,15 @@ class PackageInstaller:
         on_conflict: str,
     ) -> dict[str, Path]:
         mapping: dict[str, Path] = {}
+        reserved_names: set[str] = set()
         for folder in plugin_folders:
-            target_dir = self.resolve_target_dir(plugins_root / folder, on_conflict=on_conflict)
+            target_dir = self.resolve_target_dir(
+                plugins_root / folder,
+                on_conflict=on_conflict,
+                reserved_names=reserved_names,
+            )
             mapping[folder] = target_dir
+            reserved_names.add(target_dir.name)
         return mapping
 
     def extract_plugins(self, archive: zipfile.ZipFile, folder_mapping: dict[str, Path]) -> None:
@@ -155,22 +164,29 @@ class PackageInstaller:
         with archive.open(info) as src, target_path.open("wb") as dst:
             dst.write(src.read())
 
-    def resolve_target_dir(self, desired: Path, *, on_conflict: str) -> Path:
+    def resolve_target_dir(
+        self,
+        desired: Path,
+        *,
+        on_conflict: str,
+        reserved_names: set[str] | None = None,
+    ) -> Path:
         if on_conflict == "fail":
-            if desired.exists():
+            if desired.exists() or (reserved_names is not None and desired.name in reserved_names):
                 raise FileExistsError(f"target already exists: {desired}")
             return desired.resolve()
         if on_conflict == "rename":
-            return self.resolve_unique_dir(desired)
+            return self.resolve_unique_dir(desired, reserved_names=reserved_names)
         raise ValueError(f"unsupported conflict strategy: {on_conflict}")
 
-    def resolve_unique_dir(self, desired: Path) -> Path:
-        if not desired.exists():
+    def resolve_unique_dir(self, desired: Path, *, reserved_names: set[str] | None = None) -> Path:
+        reserved_names = reserved_names or set()
+        if desired.name not in reserved_names and not desired.exists():
             return desired.resolve()
         counter = 1
         while True:
             candidate = desired.with_name(f"{desired.name}_{counter}")
-            if not candidate.exists():
+            if candidate.name not in reserved_names and not candidate.exists():
                 return candidate.resolve()
             counter += 1
 
@@ -183,6 +199,20 @@ class PackageInstaller:
                 f"The package manifest may be malformed or was created by an incompatible tool."
             )
         return value.strip()
+
+    def validate_package_id(self, package_id: str) -> str:
+        if (
+            package_id in {".", ".."}
+            or "/" in package_id
+            or "\\" in package_id
+            or not _SAFE_PACKAGE_ID_RE.fullmatch(package_id)
+        ):
+            raise ValueError(
+                "manifest.toml field 'id' must be a safe package id containing only "
+                "A-Z, a-z, 0-9, '.', '_' or '-'. Path separators and traversal segments "
+                f"are not allowed, got {package_id!r}."
+            )
+        return package_id
 
     def normalize_conflict_strategy(self, value: str) -> str:
         normalized = value.strip().lower()

@@ -97,6 +97,18 @@ def _rewrite_package_without_member(package_path: Path, member_name: str) -> Non
             dst.writestr(info, data)
 
 
+def _rewrite_package_member(package_path: Path, member_name: str, content: str) -> None:
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(package_path) as src:
+        for info in src.infolist():
+            data = content.encode("utf-8") if info.filename == member_name else src.read(info.filename)
+            entries.append((info, data))
+
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for info, data in entries:
+            dst.writestr(info, data)
+
+
 def test_build_rules_apply_include_and_exclude() -> None:
     rules = BuildRuleSet(
         include=["src/*.py", "plugin.toml"],
@@ -111,6 +123,11 @@ def test_build_rules_apply_include_and_exclude() -> None:
     assert should_skip_path(Path("cache_dir"), is_dir=True, rules=rules) is True
     assert should_skip_path(Path("secret.txt"), is_dir=False, rules=rules) is True
     assert should_skip_path(Path("README.md"), is_dir=False, rules=rules) is True
+
+    dir_rules = BuildRuleSet(exclude_dirs=["cache_dir"])
+    assert should_skip_path(Path("cache_dir"), is_dir=True, rules=dir_rules) is True
+    assert should_skip_path(Path("nested/cache_dir/data.txt"), is_dir=False, rules=dir_rules) is True
+    assert should_skip_path(Path("cache_dir"), is_dir=False, rules=dir_rules) is False
 
 
 def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:
@@ -208,6 +225,33 @@ def test_install_package_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_install_package_rejects_unsafe_profile_package_id(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_member(
+        package_path,
+        "manifest.toml",
+        "\n".join([
+            'schema_version = "1.0"',
+            'package_type = "plugin"',
+            'id = "../outside"',
+            'package_name = "Bad Package"',
+            'version = "1.0.0"',
+        ]) + "\n",
+    )
+
+    with pytest.raises(ValueError, match="manifest.toml field 'id'"):
+        install_package(
+            package_path,
+            plugins_root=tmp_path / "plugins",
+            profiles_root=tmp_path / "profiles",
+            on_conflict="rename",
+        )
+
+    assert not (tmp_path / "outside").exists()
+
+
 def test_build_plugin_keep_staging_preserves_artifact_paths(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"
@@ -290,6 +334,33 @@ def test_build_bundle_writes_multi_plugin_archive_and_installs(tmp_path: Path) -
     assert install_result.installed_plugin_count == 2
     assert (tmp_path / "plugins" / "bundle_one" / "plugin.toml").is_file()
     assert (tmp_path / "plugins" / "bundle_two" / "plugin.toml").is_file()
+
+
+def test_install_bundle_reserves_renamed_target_names(tmp_path: Path) -> None:
+    first_plugin = _make_plugin_dir(tmp_path, plugin_id="foo")
+    second_plugin = _make_plugin_dir(tmp_path, plugin_id="foo_1")
+    package_path = tmp_path / "reserved_names.neko-bundle"
+    build_bundle(
+        [first_plugin, second_plugin],
+        package_path,
+        bundle_id="reserved_names",
+        package_name="Reserved Names",
+        version="0.1.0",
+    )
+    plugins_root = tmp_path / "plugins"
+    (plugins_root / "foo").mkdir(parents=True)
+
+    install_result = install_package(
+        package_path,
+        plugins_root=plugins_root,
+        profiles_root=tmp_path / "profiles",
+        on_conflict="rename",
+    )
+
+    target_ids = [item.target_plugin_id for item in install_result.installed_plugins]
+    assert target_ids == ["foo_1", "foo_1_1"]
+    assert (plugins_root / "foo_1" / "plugin.toml").is_file()
+    assert (plugins_root / "foo_1_1" / "plugin.toml").is_file()
 
 
 def test_build_bundle_rejects_unsafe_bundle_id(tmp_path: Path) -> None:

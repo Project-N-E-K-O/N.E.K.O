@@ -85,6 +85,8 @@ class TripRouter(PluginRouter):
         # 两地天气
         origin_weather, _ = await plugin._get_weather_data(origin_loc)
         dest_weather, _ = await plugin._get_weather_data(dest_loc)
+        origin_city = _city_name(origin_loc, "origin")
+        dest_city = _city_name(dest_loc, "destination")
 
         # 构建路线摘要
         route_summaries: List[Dict[str, Any]] = []
@@ -93,7 +95,7 @@ class TripRouter(PluginRouter):
                 "mode": route.mode,
                 "distance": format_distance(route.distance_m),
                 "duration": format_duration(route.duration_s),
-                "summary": route.summary or _mode_label(route.mode),
+                "summary": route.summary or _mode_label(route.mode, i18n),
             }
             if route.cost:
                 entry["cost"] = route.cost
@@ -108,48 +110,77 @@ class TripRouter(PluginRouter):
         weather_tips = _build_weather_tips(origin_weather, dest_weather, origin_loc, dest_loc, i18n, plugin)
 
         # 出行方式建议
-        mode_advice = _build_mode_advice(dist_km, origin_weather, dest_weather)
+        mode_advice = _build_mode_advice(dist_km, origin_weather, dest_weather, i18n)
 
         # 总结
         summary_parts = [
-            f"{origin_loc['city']} → {dest_loc['city']}",
+            f"{origin_city} → {dest_city}",
             f"{i18n.t('trip.distance')}: {dist_km:.1f}km",
         ]
         if routing.routes:
             best = routing.routes[0]
-            summary_parts.append(f"{i18n.t('trip.recommended')}: {_mode_label(best.mode)} {format_duration(best.duration_s)}")
+            summary_parts.append(f"{i18n.t('trip.recommended')}: {_mode_label(best.mode, i18n)} {format_duration(best.duration_s)}")
         if mode_advice:
             summary_parts.append(mode_advice)
         summary_parts.extend(weather_tips)
 
         # 推送出行规划卡片到聊天框
-        card_lines = [f"📍 {origin_loc['city']} → {dest_loc['city']}  ({dist_km:.1f}km)"]
+        card_lines = [f"📍 {origin_city} → {dest_city}  ({dist_km:.1f}km)"]
         for r in route_summaries[:3]:
-            card_lines.append(f"{_mode_label(r['mode'])}  {r['distance']}  ⏱{r['duration']}")
+            card_lines.append(f"{_mode_label(r['mode'], i18n)}  {r['distance']}  ⏱{r['duration']}")
         if weather_tips:
             card_lines.append(" ".join(weather_tips))
         if mode_advice:
             card_lines.append(mode_advice)
         push_lifekit_content(plugin, [
-            {"type": "text", "text": f"🗺️ {origin_loc['city']} → {dest_loc['city']}"},
+            {"type": "text", "text": f"🗺️ {origin_city} → {dest_city}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
         return Ok({
-            "origin": origin_loc["city"],
-            "destination": dest_loc["city"],
+            "origin": origin_city,
+            "destination": dest_city,
             "distance_km": round(dist_km, 1),
             "summary": " | ".join(summary_parts),
             "routes": route_summaries,
             "weather_tips": weather_tips,
             "mode_advice": mode_advice,
             "provider": routing.provider,
-            "next_actions": [f"food_recommend location={dest_loc['city']} — 目的地美食", f"search_nearby location={dest_loc['city']} — 目的地附近搜索", "currency_convert — 汇率换算"],
+            "next_actions": _build_next_actions(dest_city, i18n),
         })
 
 
-def _mode_label(mode: str) -> str:
-    return {"transit": "🚇 公交/地铁", "walking": "🚶 步行", "bicycling": "🚲 骑行", "driving": "🚗 驾车"}.get(mode, mode)
+def _city_name(loc: Dict[str, Any], fallback: str) -> str:
+    for key in ("city", "label", "name", "address"):
+        value = loc.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+def _localized(i18n: Any, key: str, default: str, **kwargs: Any) -> str:
+    text = i18n.t(key, **kwargs)
+    if text == key:
+        try:
+            return default.format(**kwargs)
+        except (KeyError, IndexError):
+            return default
+    return text
+
+
+def _mode_label(mode: str, i18n: Any | None = None) -> str:
+    fallbacks = {"transit": "🚇 公交/地铁", "walking": "🚶 步行", "bicycling": "🚲 骑行", "driving": "🚗 驾车"}
+    if i18n is None:
+        return fallbacks.get(mode, mode)
+    return _localized(i18n, f"trip.mode.{mode}", fallbacks.get(mode, mode))
+
+
+def _build_next_actions(dest_city: str, i18n: Any) -> List[str]:
+    return [
+        _localized(i18n, "trip.next_food", "food_recommend location={city} - destination food", city=dest_city),
+        _localized(i18n, "trip.next_nearby", "search_nearby location={city} - search near destination", city=dest_city),
+        _localized(i18n, "trip.next_currency", "currency_convert - currency conversion"),
+    ]
 
 
 def _build_weather_tips(
@@ -158,11 +189,11 @@ def _build_weather_tips(
     i18n: Any, plugin: Any,
 ) -> List[str]:
     tips: List[str] = []
-    if not origin_data or not dest_data:
+    if not origin_data and not dest_data:
         return tips
 
-    o_cur = origin_data.get("current", {})
-    d_cur = dest_data.get("current", {})
+    o_cur = origin_data.get("current", {}) if isinstance(origin_data, dict) else {}
+    d_cur = dest_data.get("current", {}) if isinstance(dest_data, dict) else {}
     o_code = o_cur.get("weather_code", -1)
     d_code = d_cur.get("weather_code", -1)
     o_temp = o_cur.get("apparent_temperature")
@@ -170,33 +201,33 @@ def _build_weather_tips(
 
     # 任一地有雨 → 带伞
     if o_code in RAIN_CODES or d_code in RAIN_CODES:
-        tips.append("🌂 " + i18n.t("advice.rain"))
+        tips.append(i18n.t("advice.rain"))
 
     # 温差大 → 提醒
     if o_temp is not None and d_temp is not None:
         diff = abs(o_temp - d_temp)
         if diff >= 5:
-            tips.append(f"🌡️ {origin_loc['city']} {o_temp}°C → {dest_loc['city']} {d_temp}°C")
+            tips.append(f"🌡️ {_city_name(origin_loc, 'origin')} {o_temp}°C → {_city_name(dest_loc, 'destination')} {d_temp}°C")
 
     return tips
 
 
-def _build_mode_advice(dist_km: float, origin_data: Any, dest_data: Any) -> str:
+def _build_mode_advice(dist_km: float, origin_data: Any, dest_data: Any, i18n: Any) -> str:
     """根据距离和天气给出出行方式建议。"""
     has_rain = False
-    if origin_data:
+    if isinstance(origin_data, dict):
         code = origin_data.get("current", {}).get("weather_code", -1)
         if code in RAIN_CODES:
             has_rain = True
-    if dest_data:
+    if isinstance(dest_data, dict):
         code = dest_data.get("current", {}).get("weather_code", -1)
         if code in RAIN_CODES:
             has_rain = True
 
     if dist_km <= 1:
-        return "🚶 距离很近，建议步行" if not has_rain else "🚇 有雨，建议公交/地铁"
+        return _localized(i18n, "trip.mode_advice.transit_rain", "🚇 Rain expected - transit is recommended") if has_rain else _localized(i18n, "trip.mode_advice.walk_near", "🚶 Very close - walking is recommended")
     if dist_km <= 3 and not has_rain:
-        return "🚲 距离适中，天气好适合骑行"
+        return _localized(i18n, "trip.mode_advice.bike_mild", "🚲 Moderate distance and good weather - cycling works well")
     if dist_km <= 5:
-        return "🚇 建议公交/地铁" if not has_rain else "🚇 有雨，建议公交/地铁"
+        return _localized(i18n, "trip.mode_advice.transit_rain", "🚇 Rain expected - transit is recommended") if has_rain else _localized(i18n, "trip.mode_advice.transit_default", "🚇 Transit is recommended")
     return ""

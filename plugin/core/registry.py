@@ -98,6 +98,43 @@ def _extract_plugin_ui_config(conf: Dict[str, Any], *, plugin_id: str, logger: A
 plugin_entry_method_map: Dict[tuple, str] = {}
 
 
+def _unwrap_event_member(member: Any) -> Any:
+    return member.__func__ if isinstance(member, (staticmethod, classmethod)) else member
+
+
+def _iter_decorated_event_members(cls: type) -> Iterable[tuple[str, Any, Any]]:
+    """Yield static decorator metadata without instantiating plugin/router classes."""
+    for name, member in inspect.getmembers_static(cls):
+        if name.startswith("_"):
+            continue
+        target = _unwrap_event_member(member)
+        if not callable(target):
+            continue
+        event_meta = getattr(target, EVENT_META_ATTR, None)
+        if event_meta is None and hasattr(target, "__wrapped__"):
+            event_meta = getattr(target.__wrapped__, EVENT_META_ATTR, None)
+        if event_meta is None:
+            continue
+        yield name, target, event_meta
+
+
+def _iter_declared_router_classes(cls: type) -> Iterable[type]:
+    routers = getattr(cls, "__routers__", None)
+    if not isinstance(routers, (list, tuple, set)):
+        return
+    for router_cls in routers:
+        if inspect.isclass(router_cls):
+            yield router_cls
+
+
+def _iter_plugin_and_router_event_members(cls: type) -> Iterable[tuple[str, Any, Any, bool]]:
+    for name, target, event_meta in _iter_decorated_event_members(cls):
+        yield name, target, event_meta, False
+    for router_cls in _iter_declared_router_classes(cls):
+        for name, target, event_meta in _iter_decorated_event_members(router_cls):
+            yield name, target, event_meta, True
+
+
 # _parse_specifier, _version_matches 已移动到 dependency.py
 
 _REQ_NAME_SPLIT_RE = re.compile(r"[<>=!~;\[\s]")
@@ -573,24 +610,19 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     """
     # 使用模块级 logger
     handlers_updated = False
-    for name, member in inspect.getmembers(cls):
-        event_meta = getattr(member, EVENT_META_ATTR, None)
-        if event_meta is None and hasattr(member, "__wrapped__"):
-            event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
-
-        if event_meta:
-            etype = getattr(event_meta, "event_type", None) or "plugin_entry"
-            eid = getattr(event_meta, "id", name)
-            handler_obj = EventHandler(meta=event_meta, handler=member)
-            with state.acquire_event_handlers_write_lock():
-                if etype == "plugin_entry":
-                    state.event_handlers[f"{pid}.{eid}"] = handler_obj
-                    state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
-                else:
-                    state.event_handlers[f"{pid}:{etype}:{eid}"] = handler_obj
-            handlers_updated = True
+    for name, target, event_meta, from_router in _iter_plugin_and_router_event_members(cls):
+        etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+        eid = getattr(event_meta, "id", name)
+        handler_obj = EventHandler(meta=event_meta, handler=target)
+        with state.acquire_event_handlers_write_lock():
             if etype == "plugin_entry":
-                plugin_entry_method_map[(pid, str(eid))] = name
+                state.event_handlers[f"{pid}.{eid}"] = handler_obj
+                state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
+            else:
+                state.event_handlers[f"{pid}:{etype}:{eid}"] = handler_obj
+        handlers_updated = True
+        if etype == "plugin_entry" and not from_router:
+            plugin_entry_method_map[(pid, str(eid))] = name
     if handlers_updated:
         state.invalidate_snapshot_cache("handlers")
 
@@ -751,54 +783,51 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             out.append(field_name)
         return out
 
+    def _append_event_meta(name: str, event_meta: Any) -> None:
+        etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+        if etype != "plugin_entry":
+            return
+
+        eid = str(getattr(event_meta, "id", None) or name)
+        if not eid or eid in seen:
+            return
+        seen.add(eid)
+
+        input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+        name_obj = getattr(event_meta, "name", None)
+        description_obj = getattr(event_meta, "description", None)
+        return_message_obj = getattr(event_meta, "return_message", None)
+        if name_obj is None:
+            name_obj = ""
+        if description_obj is None:
+            description_obj = ""
+        if return_message_obj is None:
+            return_message_obj = ""
+        entry_preview: Dict[str, Any] = {
+            "id": eid,
+            "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+            "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
+            "event_key": f"{pid}.{eid}",
+            "input_schema": input_schema,
+            "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
+            "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
+            "kind": str(getattr(event_meta, "kind", "action") or "action"),
+            "auto_start": bool(getattr(event_meta, "auto_start", False)),
+            "timeout": getattr(event_meta, "timeout", None),
+            "model_validate": bool(getattr(event_meta, "model_validate", True)),
+            "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+            "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+            "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+        }
+        meta_dict = getattr(event_meta, "metadata", None)
+        if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+            entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+        results.append(entry_preview)
+
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
     try:
-        for name, member in inspect.getmembers(cls):
-            event_meta = getattr(member, EVENT_META_ATTR, None)
-            if event_meta is None and hasattr(member, "__wrapped__"):
-                event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
-
-            if not event_meta:
-                continue
-            etype = getattr(event_meta, "event_type", None) or "plugin_entry"
-            if etype != "plugin_entry":
-                continue
-
-            eid = str(getattr(event_meta, "id", None) or name)
-            if not eid or eid in seen:
-                continue
-            seen.add(eid)
-
-            input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
-            name_obj = getattr(event_meta, "name", None)
-            description_obj = getattr(event_meta, "description", None)
-            return_message_obj = getattr(event_meta, "return_message", None)
-            if name_obj is None:
-                name_obj = ""
-            if description_obj is None:
-                description_obj = ""
-            if return_message_obj is None:
-                return_message_obj = ""
-            entry_preview: Dict[str, Any] = {
-                    "id": eid,
-                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
-                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
-                    "event_key": f"{pid}.{eid}",
-                    "input_schema": input_schema,
-                    "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
-                    "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
-                    "kind": str(getattr(event_meta, "kind", "action") or "action"),
-                    "auto_start": bool(getattr(event_meta, "auto_start", False)),
-                    "timeout": getattr(event_meta, "timeout", None),
-                    "model_validate": bool(getattr(event_meta, "model_validate", True)),
-                    "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
-                    "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
-                    "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
-                }
-            meta_dict = getattr(event_meta, "metadata", None)
-            if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
-                entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
-            results.append(entry_preview)
+        for name, _target, event_meta, _from_router in _iter_plugin_and_router_event_members(cls):
+            _append_event_meta(name, event_meta)
     except Exception:
         # Best-effort: preview must never break plugin listing.
         pass

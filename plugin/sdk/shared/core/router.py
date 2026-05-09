@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import inspect
 from typing import Any, Awaitable, Mapping, Protocol
 
+from plugin.sdk.shared.constants import EVENT_META_ATTR
 from plugin.sdk.shared.models import Err, Ok, Result
 from plugin.sdk.shared.models.exceptions import EntryConflictError, PluginRouterError, RouterErrorLike
 from .events import EventHandler, EventMeta
@@ -136,10 +138,26 @@ class PluginRouter:
             plugin.report_status(status)
 
     def collect_entries(self) -> Mapping[str, EventHandler]:
-        return {
+        entries = {
             entry_id: EventHandler(meta=record.meta, handler=record.handler)
             for entry_id, record in self._entries.items()
         }
+        for attr_name, class_value in inspect.getmembers_static(type(self)):
+            if attr_name.startswith("_"):
+                continue
+            target = class_value.__func__ if isinstance(class_value, (staticmethod, classmethod)) else class_value
+            if not callable(target):
+                continue
+            meta = getattr(target, EVENT_META_ATTR, None)
+            if not isinstance(meta, EventMeta) or not meta.id:
+                continue
+            handler = getattr(self, attr_name, None)
+            if not callable(handler):
+                continue
+            entry_id = self._resolve_entry_id(str(meta.id))
+            entry_meta = replace(meta, id=entry_id) if entry_id != meta.id else meta
+            entries.setdefault(entry_id, EventHandler(meta=entry_meta, handler=handler))
+        return entries
 
     def on_mount(self) -> None:
         return None

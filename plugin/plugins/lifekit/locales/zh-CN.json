@@ -67,7 +67,22 @@
   "trip": {
     "distance": "直线距离",
     "recommended": "推荐",
-    "no_destination": "请指定目的地"
+    "no_destination": "请指定目的地",
+    "mode": {
+      "transit": "🚇 公交/地铁",
+      "walking": "🚶 步行",
+      "bicycling": "🚲 骑行",
+      "driving": "🚗 驾车"
+    },
+    "mode_advice": {
+      "walk_near": "🚶 距离很近，建议步行",
+      "transit_rain": "🚇 有雨，建议公交/地铁",
+      "bike_mild": "🚲 距离适中，天气好适合骑行",
+      "transit_default": "🚇 建议公交/地铁"
+    },
+    "next_food": "food_recommend location={city} - 目的地美食",
+    "next_nearby": "search_nearby location={city} - 目的地附近搜索",
+    "next_currency": "currency_convert - 汇率换算"
   },
   "nearby": {
     "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",

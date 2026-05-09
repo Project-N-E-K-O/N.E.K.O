@@ -67,7 +67,22 @@
   "trip": {
     "distance": "直線距離",
     "recommended": "推薦",
-    "no_destination": "請指定目的地"
+    "no_destination": "請指定目的地",
+    "mode": {
+      "transit": "🚇 公車/捷運",
+      "walking": "🚶 步行",
+      "bicycling": "🚲 騎行",
+      "driving": "🚗 駕車"
+    },
+    "mode_advice": {
+      "walk_near": "🚶 距離很近，建議步行",
+      "transit_rain": "🚇 有雨，建議公車/捷運",
+      "bike_mild": "🚲 距離適中，天氣好適合騎行",
+      "transit_default": "🚇 建議公車/捷運"
+    },
+    "next_food": "food_recommend location={city} - 目的地美食",
+    "next_nearby": "search_nearby location={city} - 目的地附近搜尋",
+    "next_currency": "currency_convert - 匯率換算"
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",

@@ -626,7 +626,7 @@ class PluginContext:
     ) -> Dict[str, Any]:
         """Push an image export, choosing inline binary or URL transport."""
         meta = dict(metadata or {})
-        meta.setdefault("media_type", "image")
+        meta["media_type"] = "image"
 
         if image_data is not None and image_url is not None:
             raise ValueError("export_push_image requires either image_data or image_url, not both")
@@ -742,7 +742,7 @@ class PluginContext:
         if isinstance(run_att, dict):
             per_run = run_att.get(current_run_id)
             if isinstance(per_run, list):
-                return list(per_run)
+                return [dict(item) for item in per_run if isinstance(item, dict)]
         return []
 
     def get_user_language(self) -> str:

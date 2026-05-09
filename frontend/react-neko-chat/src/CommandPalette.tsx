@@ -586,9 +586,18 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
 
   // Measure body height after render for smooth animation
   useEffect(() => {
-    if (expanded && bodyRef.current) {
-      setBodyHeight(bodyRef.current.scrollHeight);
+    if (!expanded) {
+      setBodyHeight(0);
+      return;
     }
+    const body = bodyRef.current;
+    if (!body) return;
+    const measure = () => setBodyHeight(body.scrollHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    return () => observer.disconnect();
   }, [expanded, items.length]);
 
   return (

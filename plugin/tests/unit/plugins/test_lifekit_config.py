@@ -7,6 +7,7 @@ from plugin.plugins.lifekit import LifeKitPlugin
 from plugin.plugins.lifekit._i18n import LRUCache
 from plugin.plugins.lifekit.routers import hourly as hourly_router
 from plugin.plugins.lifekit.routers.hourly import _safe_idx
+from plugin.plugins.lifekit.routers.trip import _build_mode_advice, _build_next_actions, _build_weather_tips, _mode_label
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -33,6 +34,29 @@ async def test_weather_data_uses_auto_timezone_for_blank_config(monkeypatch: pyt
 
 def test_hourly_safe_idx_rejects_negative_index() -> None:
     assert _safe_idx({"temperature": [1, 2, 3]}, "temperature", -1) is None
+
+
+def test_trip_helpers_localize_visible_text_and_handle_partial_weather() -> None:
+    i18n = lifekit.I18n(lifekit._LOCALES_DIR)
+    i18n.set_locale("en")
+
+    tips = _build_weather_tips(
+        {"current": {"weather_code": 61}},
+        None,
+        {"label": "Home", "lat": 1, "lon": 2},
+        {"address": "Office", "lat": 3, "lon": 4},
+        i18n,
+        object(),
+    )
+
+    assert tips == ["🌂 Rain expected — bring an umbrella"]
+    assert _mode_label("transit", i18n) == "🚇 Transit"
+    assert _build_mode_advice(0.5, {"current": {"weather_code": 61}}, None, i18n) == "🚇 Rain expected - transit is recommended"
+    assert _build_next_actions("Tokyo", i18n) == [
+        "food_recommend location=Tokyo - destination food",
+        "search_nearby location=Tokyo - search near destination",
+        "currency_convert - currency conversion",
+    ]
 
 
 @pytest.mark.asyncio

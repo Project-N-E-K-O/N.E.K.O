@@ -33,15 +33,22 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    plugin_dirs = resolve_plugin_dirs(plugin_names=args.plugins, pack_all=args.all, defaults=defaults)
-    target_dir = Path(args.target_dir).expanduser().resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.out and not (args.bundle or len(plugin_dirs) == 1):
+    if args.out and not args.bundle and (args.all or len(args.plugins) != 1):
         print("[FAIL] --out requires a single plugin or --bundle mode", file=sys.stderr)
         return 1
 
-    if args.bundle or len(plugin_dirs) > 1:
+    try:
+        plugin_dirs = resolve_plugin_dirs(plugin_names=args.plugins, pack_all=args.all, defaults=defaults)
+    except Exception as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+
+    target_dir = Path(args.target_dir).expanduser().resolve()
+    if not args.out:
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.bundle:
         return _handle_bundle(args, plugin_dirs=plugin_dirs, target_dir=target_dir)
 
     return _handle_single(args, plugin_dirs=plugin_dirs, target_dir=target_dir)

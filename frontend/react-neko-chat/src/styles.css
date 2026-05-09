@@ -2310,6 +2310,22 @@ svg {
   font: inherit;
 }
 
+.cp-search:focus-visible,
+.cp-search-clear:focus-visible,
+.cp-ctx-trigger:focus-visible,
+.cp-empty-clear:focus-visible,
+.cp-tab:focus-visible,
+.cp-plugin-card-header:focus-visible,
+.cp-row-clickable:focus-visible,
+.cp-num-btn:focus-visible,
+.cp-toggle:focus-visible,
+.cp-param-cancel:focus-visible,
+.cp-param-submit:focus-visible {
+  outline: 2px solid rgba(64, 166, 232, 0.72);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(64, 166, 232, 0.14);
+}
+
 .cp-search-clear {
   width: 24px;
   height: 24px;
@@ -2799,6 +2815,24 @@ svg {
   color: #e8eaed;
 }
 
+[data-theme="dark"] .cp-num-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #dce5f4;
+}
+
+[data-theme="dark"] .cp-toggle {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+[data-theme="dark"] .cp-toggle.is-on {
+  background: linear-gradient(135deg, #31a86b, #43c98b);
+}
+
+[data-theme="dark"] .cp-toggle-thumb {
+  background: #f7fbff;
+}
+
 [data-theme="dark"] .cp-row-label,
 [data-theme="dark"] .cp-ctx-item,
 [data-theme="dark"] .cp-plugin-card-header {
@@ -2843,7 +2877,8 @@ svg {
   .cp-panel,
   .cp-stagger,
   .cp-card-item-stagger,
-  .cp-page-transition {
+  .cp-page-transition,
+  .cp-spinner {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;

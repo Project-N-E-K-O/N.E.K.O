@@ -42,7 +42,35 @@ def test_get_attachments_requires_active_run() -> None:
 
     assert ctx.get_attachments() == []
     with ctx._run_scope("run-1"):
-        assert ctx.get_attachments() == [{"type": "image_url", "url": "current"}]
+        attachments = ctx.get_attachments()
+        assert attachments == [{"type": "image_url", "url": "current"}]
+        attachments[0]["url"] = "mutated"
+        assert Instance._run_attachments["run-1"][0]["url"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_export_push_image_forces_image_media_type() -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=Path("plugin.toml"),
+        logger=None,  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_export_push_async(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"ok": True}
+
+    ctx._export_push_async = fake_export_push_async  # type: ignore[method-assign]
+
+    result = await ctx._export_push_image_async(
+        image_url="https://example.test/image.png",
+        metadata={"media_type": "video", "source": "test"},
+    )
+
+    assert result == {"ok": True}
+    assert captured["metadata"] == {"media_type": "image", "source": "test"}
 
 
 @pytest.mark.asyncio

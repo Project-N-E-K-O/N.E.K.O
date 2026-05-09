@@ -13,6 +13,7 @@ import {
   type PluginCliLocalPackageItem,
   type PluginCliBuildMode,
   type PluginCliBuildRequest,
+  type PluginCliBuildResponse,
   type PluginCliInstallRequest,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
@@ -450,6 +451,23 @@ export function usePackageManager() {
     activeTab.value = 'install'
   }
 
+  function buildErrorMessage(error: unknown): string {
+    const detail = (error as any)?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    if (error instanceof Error) return error.message
+    return String(error)
+  }
+
+  function failedBuildResponse(plugin: string, error: unknown): PluginCliBuildResponse {
+    return {
+      built: [],
+      built_count: 0,
+      failed: [{ plugin, error: buildErrorMessage(error) }],
+      failed_count: 1,
+      ok: false,
+    }
+  }
+
   async function handleBuild() {
     const targets = resolvedBuildTargets.value
     if (targets.length === 0) {
@@ -466,43 +484,65 @@ export function usePackageManager() {
           ElMessage.warning('整合包至少需要选择两个插件')
           return
         }
-        const response = await buildPluginCli({
-          mode: 'bundle',
-          plugins: targets,
-          bundle_id: buildForm.value.bundle_id?.trim() || undefined,
-          package_name: buildForm.value.package_name?.trim() || undefined,
-          package_description: buildForm.value.package_description?.trim() || undefined,
-          version: buildForm.value.version?.trim() || undefined,
-          target_dir: buildForm.value.target_dir || undefined,
-          keep_staging: !!buildForm.value.keep_staging,
-        })
+        let response: PluginCliBuildResponse
+        try {
+          response = await buildPluginCli({
+            mode: 'bundle',
+            plugins: targets,
+            bundle_id: buildForm.value.bundle_id?.trim() || undefined,
+            package_name: buildForm.value.package_name?.trim() || undefined,
+            package_description: buildForm.value.package_description?.trim() || undefined,
+            version: buildForm.value.version?.trim() || undefined,
+            target_dir: buildForm.value.target_dir || undefined,
+            keep_staging: !!buildForm.value.keep_staging,
+          })
+        } catch (error) {
+          response = failedBuildResponse(targets.join(', '), error)
+          setResult('build', response)
+          ElMessage.error(`整合包构建失败：${buildErrorMessage(error)}`)
+          return
+        }
         setResult('build', response)
         await refreshPackageSources()
         const latestBuilt = response.built[response.built.length - 1]
         if (latestBuilt?.package_path) {
           focusPackageResult(latestBuilt.package_path)
         }
-        ElMessage.success('整合包构建完成')
+        ElMessage[response.ok ? 'success' : 'warning'](
+          response.ok ? '整合包构建完成' : `整合包构建失败 ${response.failed_count} 个`,
+        )
         return
       }
 
       if (buildMode.value === 'all') {
-        const response = await buildPluginCli({
-          mode: 'all',
-          target_dir: buildForm.value.target_dir || undefined,
-          keep_staging: !!buildForm.value.keep_staging,
-        })
+        let response: PluginCliBuildResponse
+        try {
+          response = await buildPluginCli({
+            mode: 'all',
+            target_dir: buildForm.value.target_dir || undefined,
+            keep_staging: !!buildForm.value.keep_staging,
+          })
+        } catch (error) {
+          response = failedBuildResponse('all', error)
+          setResult('build', response)
+          ElMessage.error(`构建失败：${buildErrorMessage(error)}`)
+          return
+        }
         setResult('build', response)
         await refreshPackageSources()
         const latestBuilt = response.built[response.built.length - 1]
         if (latestBuilt?.package_path) {
           focusPackageResult(latestBuilt.package_path)
         }
-        ElMessage.success(`构建完成，成功 ${response.built_count} 个`)
+        ElMessage[response.failed_count > 0 ? 'warning' : 'success'](
+          response.failed_count > 0
+            ? `构建完成，成功 ${response.built_count} 个，失败 ${response.failed_count} 个`
+            : `构建完成，成功 ${response.built_count} 个`,
+        )
         return
       }
 
-      const built: unknown[] = []
+      const built: PluginCliBuildResponse['built'] = []
       const failed: Array<{ plugin: string; error: string }> = []
 
       for (const pluginId of targets) {
@@ -516,11 +556,11 @@ export function usePackageManager() {
           built.push(...response.built)
           failed.push(...response.failed)
         } catch (error) {
-          failed.push({ plugin: pluginId, error: error instanceof Error ? error.message : String(error) })
+          failed.push({ plugin: pluginId, error: buildErrorMessage(error) })
         }
       }
 
-      const summary = {
+      const summary: PluginCliBuildResponse = {
         built,
         built_count: built.length,
         failed,
@@ -533,7 +573,9 @@ export function usePackageManager() {
       if (latestBuilt?.package_path) {
         focusPackageResult(latestBuilt.package_path)
       }
-      ElMessage.success(`构建完成，成功 ${built.length} 个`)
+      ElMessage[failed.length > 0 ? 'warning' : 'success'](
+        failed.length > 0 ? `构建完成，成功 ${built.length} 个，失败 ${failed.length} 个` : `构建完成，成功 ${built.length} 个`,
+      )
     } finally {
       building.value = false
     }

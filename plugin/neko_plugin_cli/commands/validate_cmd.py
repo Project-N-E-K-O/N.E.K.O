@@ -17,7 +17,11 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         source = load_plugin_source(plugin_dir)
     except Exception:
         plugin_toml_path = plugin_dir / "plugin.toml"
-        config = load_toml(plugin_toml_path)
+        try:
+            config = load_toml(plugin_toml_path)
+        except Exception as exc:
+            issues.append(("error", f"plugin.toml could not be read: {exc}"))
+            return issues
         plugin_table = config.get("plugin") if isinstance(config, dict) else {}
         plugin_id = plugin_table.get("id") if isinstance(plugin_table, dict) else plugin_dir.name
         plugin_id = plugin_id if isinstance(plugin_id, str) and plugin_id.strip() else plugin_dir.name
@@ -648,7 +652,12 @@ def _check_json_file(path: Path, label: str, issues: list[tuple[str, str]], *, s
         issues.append(("error" if strict else "warning", f"{label} is missing"))
         return
     try:
-        json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        issues.append(("error" if strict else "warning", f"{label} is not valid UTF-8: {exc}"))
+        return
+    try:
+        json.loads(text)
     except json.JSONDecodeError as exc:
         issues.append(("error", f"{label} is invalid JSON: {exc}"))
 
@@ -658,7 +667,11 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
         issues.append(("error" if strict else "warning", ".gitignore is missing"))
         return
 
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        issues.append(("error" if strict else "warning", f".gitignore is not valid UTF-8: {exc}"))
+        return
     required_patterns = ["__pycache__/", ".pytest_cache/", "store.db"]
     for pattern in required_patterns:
         if not re.search(rf"(^|\n){re.escape(pattern)}($|\n)", text):
