@@ -349,7 +349,7 @@ export default {
         version: 'Версия',
         schemaVersion: 'Schema',
         hashCheck: 'Проверка Hash',
-        profiles: 'Profiles',
+        profiles: 'Профили',
         packageTypes: {
           bundle: 'Bundle',
           plugin: 'Пакет плагина',
@@ -372,7 +372,7 @@ export default {
         },
         inspect: {
           pluginCount: 'Число плагинов',
-          profileCount: 'Profiles',
+          profileCount: 'Профили',
           hash: 'Hash',
         },
         unpack: {
@@ -403,7 +403,7 @@ export default {
         unpack: {
           packageId: 'ID пакета',
           pluginsRoot: 'Каталог плагинов',
-          profilesRoot: 'Каталог Profiles',
+          profilesRoot: 'Каталог профилей',
         },
         analyze: {
           currentSdk: 'Поддержка текущего SDK',

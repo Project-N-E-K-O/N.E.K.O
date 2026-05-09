@@ -171,10 +171,12 @@ def _resolve_plugin_display_fields(
     description = plugin_i18n.t(
         "plugin.description",
         locale=locale,
-        default=description_fallback if isinstance(description_fallback, str) else missing,
+        default=description_fallback if isinstance(description_fallback, str) and description_fallback else missing,
     )
     if description != missing:
         plugin_info["description"] = description
+    elif isinstance(description_fallback, str):
+        plugin_info["description"] = description_fallback
 
 
 def _build_entries_from_handlers(

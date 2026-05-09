@@ -347,12 +347,12 @@ export default {
         packageId: 'パッケージ ID',
         packageType: '種類',
         version: 'バージョン',
-        schemaVersion: 'Schema',
-        hashCheck: 'Hash 検証',
-        profiles: 'Profiles',
+        schemaVersion: 'スキーマバージョン',
+        hashCheck: 'ハッシュ検証',
+        profiles: 'プロファイル',
         packageTypes: {
-          bundle: 'Bundle',
-          plugin: 'Plugin パッケージ',
+          bundle: 'バンドル',
+          plugin: 'プラグインパッケージ',
         },
         hashStatus: {
           notChecked: '未確認',
@@ -372,13 +372,13 @@ export default {
         },
         inspect: {
           pluginCount: 'プラグイン数',
-          profileCount: 'Profiles',
-          hash: 'Hash',
+          profileCount: 'プロファイル数',
+          hash: 'ハッシュ',
         },
         unpack: {
           processedPlugins: '処理済みプラグイン',
           conflictStrategy: '競合方針',
-          hash: 'Hash',
+          hash: 'ハッシュ',
         },
         analyze: {
           pluginCount: 'プラグイン数',
@@ -388,9 +388,9 @@ export default {
       },
       highlights: {
         pack: {
-          bundlePluginId: 'Bundle ID',
-          bundleName: 'Bundle 名',
-          bundleVersion: 'Bundle バージョン',
+          bundlePluginId: 'バンドルID',
+          bundleName: 'バンドル名',
+          bundleVersion: 'バンドルバージョン',
           outputPath: '出力パス',
           firstPlugin: '最初のプラグイン',
           latestPackagePath: '最新パッケージパス',
@@ -403,7 +403,7 @@ export default {
         unpack: {
           packageId: 'パッケージ ID',
           pluginsRoot: 'プラグインディレクトリ',
-          profilesRoot: 'Profiles ディレクトリ',
+          profilesRoot: 'プロファイルディレクトリ',
         },
         analyze: {
           currentSdk: '現在の SDK 対応',
@@ -419,9 +419,9 @@ export default {
         arrow: '->',
       },
       warnings: {
-        bundleNeedsTwoPlugins: 'Bundle には通常 2 つ以上のプラグインが必要です',
-        verifyFailed: 'パッケージは hash 検証に失敗しました。直接導入しないでください。',
-        inspectHashFailed: '現在のパッケージ hash 検証に失敗し、内容が変更されている可能性があります。',
+        bundleNeedsTwoPlugins: 'バンドルには通常 2 つ以上のプラグインが必要です',
+        verifyFailed: 'パッケージはハッシュ検証に失敗しました。直接導入しないでください。',
+        inspectHashFailed: '現在のパッケージのハッシュ検証に失敗し、内容が変更されている可能性があります。',
         analyzeSdkMismatch: '現在の SDK バージョンはすべてのプラグインで共通対応ではありません。',
         analyzeSharedDependencies: '{count} 個の共有依存を検出しました。バンドル時はバージョン制約を確認してください。',
       },

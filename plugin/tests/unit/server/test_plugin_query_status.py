@@ -44,6 +44,23 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
     ]
 
 
+def test_resolve_plugin_display_fields_preserves_empty_description_without_translation() -> None:
+    plugin_info: dict[str, object] = {
+        "id": "empty_description_plugin",
+        "name": "Empty Description Plugin",
+        "description": "",
+    }
+
+    query_module._resolve_plugin_display_fields(
+        plugin_info,
+        PluginI18n({"ja": {"plugin.name": "空の説明プラグイン"}}),
+        locale="ja",
+    )
+
+    assert plugin_info["name"] == "空の説明プラグイン"
+    assert plugin_info["description"] == ""
+
+
 def test_plugin_card_i18n_payload_keeps_only_plugin_display_keys() -> None:
     payload = query_module._plugin_card_i18n_payload(
         {"i18n": {"default_locale": "zh-CN", "locales_dir": "i18n"}},

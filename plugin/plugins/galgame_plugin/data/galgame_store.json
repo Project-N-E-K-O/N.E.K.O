@@ -1,14 +1,55 @@
 {
-  "dedupe_window": [],
-  "events_byte_offset": 7061791,
-  "events_file_size": 7061791,
+  "dedupe_window": [
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:3d073005c589",
+      "normalized_text": "1-円 ゲームの終丁--Fh.++++++ ELT- 日++++ - Th.+!+++1 --+. - !"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:6b81de250ca8",
+      "normalized_text": "ゲームの終了 EK!T"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:5b92b3c67730",
+      "normalized_text": "鈷束游戎 EK!T"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:73e8c77e9228",
+      "normalized_text": "結束游戎 EK!T"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:8b2ecc667cfb",
+      "normalized_text": "結束游戎 Eズ!T"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:0bc3a880853d",
+      "normalized_text": "将臣 F......e? J"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:50743cbbd5f3",
+      "normalized_text": "将臣 F......pe? J"
+    },
+    {
+      "game_id": "ocr-3523177bc57a",
+      "line_id": "ocr:5a28c3dcd843",
+      "normalized_text": "モ-コ ++++!+!++L! 田Il+lT? ++++田所- ++++ +Ih.+++ -! H+++14」 1日 先生悠醒醒"
+    }
+  ],
+  "events_byte_offset": 800676,
+  "events_file_size": 800676,
   "last_error": {
     "kind": "warning",
     "message": "memory_reader TextractorCLI.exe is invalid or missing",
     "source": "bridge_reader",
     "ts": ""
   },
-  "last_seq": 19827,
+  "last_seq": 2735,
   "memory_reader_target": {
     "create_time": 0.0,
     "detected_engine": "",
@@ -30,11 +71,14 @@
     "selected_at": "",
     "window_key": ""
   },
-  "session_id": "ocr-7cd54ccb-b123-42b1-8b01-14d7d52b1fb7",
+  "rapidocr.auto_detect_lang": false,
+  "rapidocr.auto_detect_last_lang": "japan",
+  "rapidocr.lang_type": "japan",
+  "session_id": "ocr-6f88ba88-ed81-4afd-ad9c-86739b5d448c",
   "tutorial_progress": {
     "completed": false,
     "completed_at": 0.0,
-    "last_step_index": 2,
+    "last_step_index": 3,
     "skipped": false,
     "started_at": 0.0
   }
