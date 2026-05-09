@@ -7,6 +7,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager
+from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
 
 
 class _FakeConfigManager:
@@ -27,15 +28,30 @@ def _make_mgr(voice_id, stored_voice_ids=()):
 
 
 def test_gemini_alias_checks_canonical_voice_collision():
-    mgr = _make_mgr("中文男", stored_voice_ids={"Puck"})
+    config_manager = _FakeConfigManager(stored_voice_ids={"Puck"})
 
-    assert LLMSessionManager._is_gemini_native_voice_id(mgr) is False
+    assert (
+        resolve_gemini_native_voice_for_routing(
+            "gemini",
+            "中文男",
+            config_manager.voice_id_exists_in_any_storage,
+        )
+        == ("Puck", False)
+    )
 
 
 def test_gemini_alias_without_collision_uses_native_realtime_voice():
     mgr = _make_mgr("中文男")
+    config_manager = _FakeConfigManager()
 
-    assert LLMSessionManager._is_gemini_native_voice_id(mgr) is True
+    assert (
+        resolve_gemini_native_voice_for_routing(
+            "gemini",
+            "中文男",
+            config_manager.voice_id_exists_in_any_storage,
+        )
+        == ("Puck", True)
+    )
     assert LLMSessionManager._resolve_realtime_voice(mgr, {}) == "Puck"
 
 

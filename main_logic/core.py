@@ -185,7 +185,7 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.gemini_tts_voices import normalize_gemini_tts_voice
+from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -2313,14 +2313,12 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        # Gemini 原生声线短路前必须排除"用户已克隆的同名自定义音色"——
-        # 例如用户保存了名为 Puck 的克隆音色，应优先走 custom 路径，
-        # 否则会被静默换成 Gemini 内置 Puck，丢失用户上传的音色喵。
-        # 碰撞检测看完整 voice_storage 而不是 get_voices_for_current_api 视图：
-        # 后者按当前 tts_custom 配置过滤 bucket（AUDIO_API_KEY / __LOCAL_TTS__ /
-        # ASSIST_API_KEY_QWEN 等），用户切了 key 之后旧 bucket 里历史保存的同名
-        # clone 不会出现在视图里，会被漏判，绕回 Gemini 内置静默替换。
-        if self._is_gemini_native_voice_id():
+        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
+            self._config_manager.voice_id_exists_in_any_storage,
+        )
+        if uses_provider_native_voice:
             return False
         # 克隆音色始终走 custom 路径；
         # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
@@ -2636,20 +2634,6 @@ class LLMSessionManager:
             return False
         return voice_id in set(get_free_voices().values())
 
-    def _is_gemini_native_voice_id(self, voice_id: str | None = None) -> bool:
-        """判断 voice_id 是否应作为 Gemini Live 原生音色使用。"""
-        candidate = self.voice_id if voice_id is None else voice_id
-        normalized_voice, recognized = normalize_gemini_tts_voice(candidate)
-        return (
-            self.core_api_type == 'gemini'
-            and recognized
-            and not any(
-                self._config_manager.voice_id_exists_in_any_storage(v)
-                for v in {candidate, normalized_voice}
-                if v
-            )
-        )
-
     def _resolve_session_use_tts(
         self,
         input_mode: str,
@@ -2667,7 +2651,12 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        if self._is_gemini_native_voice_id():
+        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
+            self._config_manager.voice_id_exists_in_any_storage,
+        )
+        if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
         if (
@@ -2714,8 +2703,12 @@ class LLMSessionManager:
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
            lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
         """
-        if self._is_gemini_native_voice_id():
-            voice_name, _ = normalize_gemini_tts_voice(self.voice_id)
+        voice_name, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
+            self._config_manager.voice_id_exists_in_any_storage,
+        )
+        if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
             ls_voice = get_livestream_config().get('voice_id', '')

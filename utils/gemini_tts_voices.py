@@ -1,5 +1,7 @@
 """Gemini TTS voice catalog shared by validation, UI, and synthesis."""
 
+from collections.abc import Callable
+
 GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 GEMINI_TTS_DEFAULT_VOICE = "Leda"
 GEMINI_TTS_DEFAULT_MALE_VOICE = "Puck"
@@ -81,6 +83,32 @@ def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
 def is_gemini_tts_voice(voice_id: str | None) -> bool:
     """Return True when the voice is a Gemini TTS voice or supported alias."""
     return normalize_gemini_tts_voice(voice_id)[1]
+
+
+def resolve_gemini_native_voice_for_routing(
+    core_api_type: str | None,
+    voice_id: str | None,
+    voice_id_exists: Callable[[str], bool] | None = None,
+) -> tuple[str, bool]:
+    """Return the Gemini Live voice and whether it should use native routing.
+
+    A user-cloned voice with the same raw or canonical voice id wins over the
+    Gemini built-in voice, so the caller can keep custom TTS routing intact.
+    """
+    normalized_voice, recognized = normalize_gemini_tts_voice(voice_id)
+    if core_api_type != "gemini" or not recognized:
+        return normalized_voice, False
+
+    if voice_id_exists is None:
+        return normalized_voice, True
+
+    candidates = {voice_id, normalized_voice}
+    has_custom_collision = any(
+        voice_id_exists(candidate)
+        for candidate in candidates
+        if candidate
+    )
+    return normalized_voice, not has_custom_collision
 
 
 def get_gemini_tts_voices() -> dict[str, dict[str, str | bool]]:
