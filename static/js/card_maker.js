@@ -76,14 +76,13 @@
     let pendingFallbackDefaultSave = false;
     let fallbackDefaultListenersRegistered = false;
 
-    updateCardMakerInteractivity(true);
-
     initModelSaveFallbackDefaultCardFace();
 
     // ====== 初始化 ======
     document.addEventListener('DOMContentLoaded', async () => {
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
+        showLoading(true);
 
         // 设置标题和按钮（maker 模式与导出模式使用不同文案）
         const titleEl = document.querySelector('.page-title-bar h2');
@@ -964,9 +963,6 @@
         try {
             resetComposition();
             clearAllStickers();
-            primaryActionBusy = true;
-            updatePrimaryActionAvailability();
-            exportFullBtn.textContent = t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
             await waitForCondition(() => isModelLoaded, 10000, '模型加载');
             await new Promise(resolve => setTimeout(resolve, 300));
             await doSaveCardFace({
@@ -976,8 +972,6 @@
             });
         } catch (e) {
             console.error('[CardMaker] 自动生成默认卡面失败:', e);
-            primaryActionBusy = false;
-            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败');
         }
     }

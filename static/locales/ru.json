@@ -3722,7 +3722,7 @@
         "savingCardFace": "Сохранение...",
         "autoSavingDefaultCardFace": "Создание обложки по умолчанию...",
         "autoSaveDefaultCardFaceFailed": "Не удалось создать обложку по умолчанию",
-        "modelStillLoading": "Модель все еще загружается. Сохраните после завершения загрузки.",
+        "modelStillLoading": "Модель всё ещё загружается. Сохраните после завершения загрузки.",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
         "saveCardFacePartialSuccess": "PNG сохранён, но запись метаданных не удалась: {{error}}",

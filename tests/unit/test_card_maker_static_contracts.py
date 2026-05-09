@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -19,7 +20,7 @@ def test_new_character_auto_card_maker_enables_default_face_fallback_only_for_au
 def test_card_maker_locks_controls_until_model_loads_and_guards_save():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
 
-    assert "updateCardMakerInteractivity(true);" in script
+    assert "showLoading(true);" in script
     assert "updateCardMakerInteractivity(show);" in script
     assert "'.page-title-bar button, [data-neko-window-control]'" in script
     assert "exportFullBtn.disabled = primaryActionBusy || isModelLoading || !isModelLoaded;" in script
@@ -41,8 +42,9 @@ def test_window_controls_support_page_close_hook():
 def test_card_maker_model_loading_message_exists_in_all_locales():
     missing = []
     for locale_path in sorted(LOCALE_DIR.glob("*.json")):
-        payload = locale_path.read_text(encoding="utf-8")
-        if '"modelStillLoading"' not in payload:
+        payload = json.loads(locale_path.read_text(encoding="utf-8"))
+        card_export = payload.get("cardExport")
+        if not isinstance(card_export, dict) or "modelStillLoading" not in card_export:
             missing.append(locale_path.name)
 
-    assert missing == []
+    assert missing == [], f"Missing cardExport.modelStillLoading in locale files: {', '.join(missing)}"
