@@ -167,6 +167,8 @@ function pluginItemClass(pluginId: string) {
   gap: 16px;
   align-items: stretch;
   position: relative;
+  /* 子项（列宽/gap）随容器宽度连续变化时参与过渡 */
+  transition: grid-template-columns 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .plugin-grid--list,
@@ -174,12 +176,14 @@ function pluginItemClass(pluginId: string) {
   grid-template-columns: 1fr;
 }
 
+/* 用 auto-fill minmax 让卡片宽度随容器连续变化；
+   仅在容器穿过 min 临界点时列数跳变，不依赖 media query 断点 */
 .plugin-grid--double {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
 }
 
 .plugin-grid--compact {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
 }
 
 .plugin-item {
@@ -385,25 +389,6 @@ function pluginItemClass(pluginId: string) {
   transform: translateY(6px);
 }
 
-@media (max-width: 1280px) {
-  .plugin-grid--compact {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1180px) {
-  .plugin-grid--compact {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 900px) {
-  .plugin-grid--double,
-  .plugin-grid--compact {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .grid-item-enter-active,
   .grid-item-leave-active,
@@ -412,6 +397,10 @@ function pluginItemClass(pluginId: string) {
   .count-fade-leave-active {
     transition-duration: 0.01ms;
     transition-delay: 0ms;
+  }
+
+  .plugin-grid {
+    transition: none;
   }
 }
 </style>
