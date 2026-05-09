@@ -43,15 +43,21 @@
 <script setup lang="ts">
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
+import { watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
+import { restartActivePluginDashboardTutorial } from '@/yui-guide-runtime'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const connectionStore = useConnectionStore()
 
 function closeWindow() {
   window.close()
 }
+
+watch(locale, () => {
+  restartActivePluginDashboardTutorial()
+})
 </script>
 
 <style scoped>

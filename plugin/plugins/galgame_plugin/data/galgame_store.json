@@ -1,0 +1,41 @@
+{
+  "dedupe_window": [],
+  "events_byte_offset": 570,
+  "events_file_size": 570,
+  "last_error": {
+    "kind": "warning",
+    "message": "memory_reader TextractorCLI.exe is invalid or missing; ocr_reader rapidocr returned empty text (confidence filtering may have discarded all tokens)",
+    "source": "bridge_reader",
+    "ts": ""
+  },
+  "last_seq": 1,
+  "memory_reader_target": {
+    "create_time": 0.0,
+    "detected_engine": "",
+    "detection_reason": "",
+    "engine": "",
+    "exe_path": "",
+    "mode": "auto",
+    "pid": 0,
+    "process_key": "",
+    "process_name": "",
+    "selected_at": ""
+  },
+  "ocr_window_target": {
+    "last_known_hwnd": 0,
+    "mode": "auto",
+    "normalized_title": "",
+    "pid": 0,
+    "process_name": "",
+    "selected_at": "",
+    "window_key": ""
+  },
+  "session_id": "ocr-e190357e-dd45-426d-9c86-03e71905ceb9",
+  "tutorial_progress": {
+    "completed": false,
+    "completed_at": 0.0,
+    "last_step_index": 0,
+    "skipped": false,
+    "started_at": 0.0
+  }
+}
