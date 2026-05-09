@@ -55,13 +55,13 @@ Si necesitas llamar directamente a las interfaces del plugin, estos son los punt
 
 ## 4. Preguntas frecuentes (FAQ)
 
-**Q: ¿Por qué aparece el mensaje «No has iniciado sesión»?**  
+**Q: ¿Por qué aparece el mensaje «No has iniciado sesión»?**
 A: Abre primero el plugin Mijia en el panel de plugins de NEKO, pulsa «Iniciar sesión con código QR» y completa la autorización.
 
-**Q: ¿Por qué el dispositivo está sin conexión pero el plugin lo muestra como conectado?**  
+**Q: ¿Por qué el dispositivo está sin conexión pero el plugin lo muestra como conectado?**
 A: El plugin muestra el estado en la nube, que puede sufrir cierto retraso. Comprueba que el dispositivo realmente esté encendido y conectado a la Mijia App.
 
-**Q: ¿Qué dispositivos son compatibles?**  
+**Q: ¿Qué dispositivos son compatibles?**
 A: En teoría, todos los dispositivos de la plataforma IoT de Mijia. Cualquier dispositivo que se pueda controlar en la Mijia App también se puede controlar con este plugin.
 
 ---

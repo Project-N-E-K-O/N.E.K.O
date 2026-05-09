@@ -55,13 +55,13 @@ Se precisar chamar diretamente as interfaces do plugin, estes são os pontos de 
 
 ## 4. Perguntas frequentes (FAQ)
 
-**Q: Por que aparece a mensagem «Não está logado»?**  
+**Q: Por que aparece a mensagem «Não está logado»?**
 A: Abra primeiro o plugin Mijia no painel de plugins do NEKO, toque em «Entrar com QR Code» e conclua a autorização.
 
-**Q: Por que o dispositivo está offline, mas o plugin o mostra como online?**  
+**Q: Por que o dispositivo está offline, mas o plugin o mostra como online?**
 A: O plugin exibe o estado na nuvem, que pode ter algum atraso. Verifique se o dispositivo está realmente ligado à energia e conectado ao Mijia App.
 
-**Q: Quais dispositivos são suportados?**  
+**Q: Quais dispositivos são suportados?**
 A: Em tese, todos os dispositivos da plataforma IoT do Mijia. Qualquer dispositivo que possa ser controlado pelo Mijia App também é suportado por este plugin.
 
 ---

@@ -55,13 +55,13 @@ If you need to call the plugin interface directly, here are the core entry point
 
 ## 4. Frequently asked questions (FAQ)
 
-**Q: Why does it say "Not logged in"?**  
+**Q: Why does it say "Not logged in"?**
 A: First open the Mijia plugin in the NEKO plugin panel, tap "Scan QR to log in" and complete the authorization.
 
-**Q: Why is my device offline but the plugin shows it online?**  
+**Q: Why is my device offline but the plugin shows it online?**
 A: The plugin shows the cloud state, which may be delayed. Please check that the device is actually powered on and connected to the Mijia App.
 
-**Q: Which devices are supported?**  
+**Q: Which devices are supported?**
 A: In theory all devices on the Mijia IoT platform are supported. Any device that can be controlled in the Mijia App is supported by this plugin.
 
 ---
