@@ -836,7 +836,20 @@ class TokenTracker:
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
-            batch_id = hashlib.sha256(payload_json.encode()).hexdigest()[:32]
+            # batch_id 用于 server seen_batches 幂等去重，必须在"同一份重试数据"
+            # 上稳定。device_id_legacy 依赖 uuid.getnode()，在多网卡机器上枚举
+            # 顺序不保证，重试期间可能漂；如果把它纳入 batch_id 计算，原本应该
+            # 被 dedupe 的重发会变成新 batch 被累加，daily_aggregates 双倍计数。
+            # 因此 batch_id 只覆盖核心幂等字段，签名仍覆盖完整 payload。
+            batch_core = {
+                "device_id": payload["device_id"],
+                "app_version": payload["app_version"],
+                "daily_stats": payload["daily_stats"],
+                "recent_records": payload["recent_records"],
+            }
+            batch_id = hashlib.sha256(
+                json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest()[:32]
             submission = {
                 "timestamp": ts,
                 "signature": sig,
