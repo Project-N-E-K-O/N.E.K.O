@@ -3277,6 +3277,7 @@ class UniversalTutorialManager {
 
     blockTutorialScrollEvent(event) {
         if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
         if (event && typeof event.preventDefault === 'function') {
             event.preventDefault();
         }
@@ -3303,6 +3304,7 @@ class UniversalTutorialManager {
 
     blockTutorialPointerEvent(event) {
         if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
         if (this.isTutorialControlEventTarget(event && event.target)) return;
         if (event && typeof event.preventDefault === 'function') {
             event.preventDefault();

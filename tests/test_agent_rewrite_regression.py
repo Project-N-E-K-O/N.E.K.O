@@ -629,6 +629,7 @@ def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
     for expected in (
         "blockTutorialPointerEvent(event)",
         "isTutorialControlEventTarget(target)",
+        "if (this.currentPage !== 'chara_manager') return;",
         "target.closest('.driver-popover, #neko-tutorial-skip-btn')",
         "event.stopImmediatePropagation();",
         "window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
@@ -641,6 +642,19 @@ def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
         "window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
     ):
         assert expected in source
+
+
+def test_universal_tutorial_manager_limits_input_blockers_to_chara_manager_page():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    scroll_start = source.index("blockTutorialScrollEvent(event)")
+    scroll_end = source.index("blockTutorialScroll()", scroll_start)
+    scroll_source = source[scroll_start:scroll_end]
+    pointer_start = source.index("blockTutorialPointerEvent(event)")
+    pointer_end = source.index("blockTutorialPointerEvents()", pointer_start)
+    pointer_source = source[pointer_start:pointer_end]
+
+    assert "if (this.currentPage !== 'chara_manager') return;" in scroll_source
+    assert "if (this.currentPage !== 'chara_manager') return;" in pointer_source
 
 
 def test_character_card_manager_master_profile_arrow_uses_bubble_style():
