@@ -43,7 +43,7 @@ def _feed_chunks(stripper, chunks):
         # 书名号豁免：标题内容应进入 TTS
         ("看《三体》了吗", "看《三体》了吗"),
         # 直角引号 / 双重直角引号
-        ("「话语」与『内容』", "与"),
+        ("「话语」与『内容』", "与『内容』"),
         # 角括号
         ("〈引用〉文本", "文本"),
         # 龟甲括号
@@ -83,6 +83,13 @@ def test_bracket_book_title_marks_passthrough_across_chunks():
     s = TtsBracketStripper()
     out = _feed_chunks(s, ["看《三", "体》了吗"])
     assert out == "看《三体》了吗"
+
+
+def test_bracket_japanese_book_title_marks_passthrough():
+    """日文书名号 ``『』`` 里的内容应进入 TTS，不应被整段剥掉。"""
+    s = TtsBracketStripper()
+    out = _feed_chunks(s, ["读『吾", "輩は猫である』"])
+    assert out == "读『吾輩は猫である』"
 
 
 def test_bracket_open_only_chunk():
