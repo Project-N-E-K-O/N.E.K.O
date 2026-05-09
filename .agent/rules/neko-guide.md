@@ -80,6 +80,32 @@ CI 守门：
 
 检测方法：在 `main_routers/` 等跨模块代码里 `grep -nE "足球|比分|射门|乌龙|抢断|进球"`，结果应该全部落在带 module 名的函数（`_*_soccer_*`）或 module-specific 路径里。
 
+## 架构：core API native voice 走 native_voice_registry
+
+每个 core API 自带的 native TTS voice catalog（Gemini Puck/Leda、未来的 OpenAI/Qwen native voices 等）必须通过 `utils/native_voice_registry.py` 注册和查询。**禁止**在 cross-cutting 文件里新增 `if core_api_type == 'X'` 分支——这是 PR #1262 把 4 处 Gemini 专属分支抽成 registry 的直接动机，再加分支等于把 refactor 撤回。
+
+加新 native voice provider 只动 3 处：
+
+1. **新建 adapter `utils/<provider>_tts_voices.py`**：定义 catalog（canonical voice → gender）、aliases（casefolded 用户输入 → canonical）、default_voice / default_male_voice，构造 `NativeVoiceProvider(key=..., catalog=..., ...)` 并 `register_provider(...)`。`key` 必须等于 codebase 已有的 `core_api_type` / realtime `api_type` 字符串（'gemini' / 'qwen' / ...），registry 按这个 key 路由。可选保留 `normalize_<provider>_tts_voice` / `is_<provider>_tts_voice` thin wrapper 给该 provider 自己的 wire-format 路径用。
+2. **`utils/native_voice_registry.py` 的 `_BUILTIN_PROVIDER_MODULES` tuple 加一行**：写新 adapter 模块的 dotted 名。registry 在自己 import 末尾自举把这些 provider 加载进来，cross-cutting 文件不需要 side-effect import。
+3. **`main_logic/tts_client.py` 注册 worker resolver**：定义 `<provider>_tts_worker(...)` 后，写一个 `_resolve_<provider>_native_tts_worker(cm)` 返回 `(worker, api_key)`，调用 `register_tts_worker_resolver('<key>', _resolve_<provider>_native_tts_worker)`。两阶段注册：metadata 在轻量 adapter 里注册，worker callable（带 httpx/soxr 等重依赖）在 tts_client 里注册，避免循环 import。
+
+不该动的 cross-cutting 文件：
+
+- `utils/config_manager.py` 的 `validate_voice_id` / `validate_voice_id_for_api_key`：用 `get_active_realtime_native_provider(self) + is_native_voice(voice_id, provider)`，自动认识新 provider
+- `main_routers/characters_router.py` 的 `get_voices` endpoint：用 `get_active_realtime_native_provider + get_native_voice_catalog_for_ui`
+- `main_logic/core.py` 的 `_has_custom_tts` / `_resolve_session_use_tts` / `_resolve_realtime_voice` 三处：用 `resolve_native_voice_for_routing(core_api_type, voice_id, voice_id_exists)`，generic
+- `main_logic/tts_client.py` 的 `get_tts_worker` dispatcher：用 `get_native_tts_worker(core_api_type, cm, voice_id)` 短路
+
+wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_worker` 调 `normalize_gemini_tts_voice`）和该 provider 的 realtime client 内部（如 `omni_realtime_client.py:869` 调 `normalize_gemini_tts_voice` 拼 `speech_config`）继续直接调 provider 的 normalize 函数 OK——那些代码本来就 provider-bound，绕 registry 是 purity for purity's sake。
+
+理由：
+1. 把"加 native voice provider"的 cost 从"改 5 个文件 + 4 处 if-branch"降到"加 3 处（全是新增，不改既有逻辑）"。
+2. cross-cutting 文件不再随 provider 数量膨胀，符合"core 层必须是 general 接口"的代码风格规则。
+3. registry 自举（`_BUILTIN_PROVIDER_MODULES` + 模块尾部 `ensure_builtin_native_voice_providers_loaded()`）保证任何 import registry 的代码都看到 populated 表，cross-cutting caller 不可能漏 bootstrap 触发空 registry 静默 fall-through 到外部 TTS。
+
+检测方法：在 `utils/config_manager.py` / `main_routers/characters_router.py` / `main_logic/core.py` / `main_logic/tts_client.py` 里 grep `core_api_type ==` 或 `api_type ==`，结果不应该出现 native voice provider 的 key（'gemini' / 'qwen' / ...）作为 RHS——除非是注册 worker resolver 那行（tts_client 注册时写字面量是必须的）。
+
 ## 架构：单进程 + 事件循环零阻塞
 
 `main_server` / `memory_server` / `agent_server` 三子系统已合并进同一个 FastAPI 进程，共享事件循环。任何会阻塞事件循环超过数十毫秒的调用都会把另外两个子系统也拖慢，因此在 async 路径（`async def` 函数、FastAPI 路由、`asyncio.create_task` 后台任务、WebSocket handler）里禁止以下操作：
