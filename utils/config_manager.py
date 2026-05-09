@@ -33,6 +33,7 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
+from utils.gemini_tts_voices import is_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 
@@ -2240,6 +2241,30 @@ class ConfigManager:
         voice_storage[api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
+        """voice_id 是否出现在 voice_storage.json 的任意 bucket 下。
+
+        比 get_voices_for_current_api() 的视图更宽：后者按当前 tts_custom 配置
+        筛选 bucket（AUDIO_API_KEY / __LOCAL_TTS__ / 当前 ASSIST_API_KEY_QWEN
+        等），配置切换后曾在旧 bucket 保存过的克隆音色不会出现在视图里。
+        碰撞检测场景（"用户曾经显式克隆过这个 voice_id 吗"）必须看完整存储，
+        不能只看当前视图，否则同名 voice 会被静默切到内置 provider 上。
+        """
+        if not voice_id:
+            return False
+        voice_storage = self.load_voice_storage()
+        if not isinstance(voice_storage, dict):
+            return False
+        voice_id_key = voice_id.casefold()
+        for bucket in voice_storage.values():
+            if isinstance(bucket, dict) and any(
+                isinstance(stored_voice_id, str)
+                and stored_voice_id.casefold() == voice_id_key
+                for stored_voice_id in bucket
+            ):
+                return True
+        return False
+
     def find_voice_by_audio_md5(self, api_key: str, audio_md5: str, ref_language: str | None = None):
         """在指定 API Key 下按参考音频 MD5（及可选 ref_language）查找已有音色。
 
@@ -2317,6 +2342,9 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
+        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
+            return True
+
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
@@ -2339,12 +2367,23 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
+        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
+            return True
+
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
             return True
 
         return False
+
+    def is_gemini_realtime_api_active(self) -> bool:
+        """Return True when the active realtime provider can accept Gemini native voices."""
+        try:
+            realtime_config = self.get_model_api_config('realtime')
+        except Exception:
+            return self.get_core_config().get('CORE_API_TYPE') == 'gemini'
+        return realtime_config.get('api_type') == 'gemini'
 
     def cleanup_invalid_voice_ids(self):
         """清理 characters.json 中无效的 voice_id。

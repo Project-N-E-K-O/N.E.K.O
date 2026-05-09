@@ -80,7 +80,7 @@ def _normalize_ui_locale(locale: str) -> str:
     return "zh-CN"
 
 
-def _get_install_kind_spec(kind: str) -> dict[str, str]:
+def _get_install_kind_spec(kind: str) -> dict[str, Any]:
     normalized = str(kind or "").strip().lower()
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
@@ -93,18 +93,21 @@ def _get_install_kind_spec(kind: str) -> dict[str, str]:
             "entry_id": "galgame_install_textractor",
             "label": "Textractor",
             "queued_message": "Textractor install queued",
+            "entry_timeout": 600.0,
         },
         "tesseract": {
             "kind": "tesseract",
             "entry_id": "galgame_install_tesseract",
             "label": "Tesseract",
             "queued_message": "Tesseract install queued",
+            "entry_timeout": 300.0,
         },
         "rapidocr_models": {
             "kind": "rapidocr_models",
             "entry_id": "galgame_download_rapidocr_models",
             "label": "RapidOCR Models",
             "queued_message": "RapidOCR model download queued",
+            "entry_timeout": 600.0,
         },
     }
     spec = mapping.get(normalized)
@@ -307,11 +310,15 @@ async def _start_install_task(
     spec = _get_install_kind_spec(kind)
     try:
         client_host = request.client.host if request.client is not None else None
+        args: dict[str, object] = {"force": bool(payload.force)}
+        entry_timeout = spec.get("entry_timeout")
+        if isinstance(entry_timeout, (int, float)) and not isinstance(entry_timeout, bool):
+            args["_ctx"] = {"entry_timeout": float(entry_timeout)}
         created = await run_service.create_run(
             RunCreateRequest(
                 plugin_id=plugin_id,
                 entry_id=spec["entry_id"],
-                args={"force": bool(payload.force)},
+                args=args,
             ),
             client_host=client_host,
         )

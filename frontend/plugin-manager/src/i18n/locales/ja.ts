@@ -326,6 +326,107 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: 'キャンセルリクエストを送信しました'
   },
+  packageManager: {
+    resultDialog: {
+      title: 'パッケージ結果ログ',
+      subtitle: '最新 {count} 件の実行結果を保持します',
+      empty: 'パッケージ操作の結果はここに表示されます',
+      viewDetails: '詳細を見る',
+      detailTitle: '結果詳細',
+      summaryTitle: '概要',
+      notesTitle: '注意',
+      rawJsonTitle: '生の結果 JSON',
+      kinds: {
+        pack: 'パック',
+        inspect: '検査',
+        verify: '検証',
+        unpack: '展開',
+        analyze: '分析',
+      },
+      inspect: {
+        packageId: 'パッケージ ID',
+        packageType: '種類',
+        version: 'バージョン',
+        schemaVersion: 'スキーマバージョン',
+        hashCheck: 'ハッシュ検証',
+        profiles: 'プロファイル',
+        packageTypes: {
+          bundle: 'バンドル',
+          plugin: 'プラグインパッケージ',
+        },
+        hashStatus: {
+          notChecked: '未確認',
+          passed: '合格',
+          failed: '失敗',
+        },
+      },
+      metrics: {
+        pack: {
+          type: '種類',
+          succeeded: '成功',
+          failed: '失敗',
+          containsPlugins: '含まれるプラグイン',
+          status: '状態',
+          complete: '完了',
+          partialFailed: '一部失敗',
+        },
+        inspect: {
+          pluginCount: 'プラグイン数',
+          profileCount: 'プロファイル数',
+          hash: 'ハッシュ',
+        },
+        unpack: {
+          processedPlugins: '処理済みプラグイン',
+          conflictStrategy: '競合方針',
+          hash: 'ハッシュ',
+        },
+        analyze: {
+          pluginCount: 'プラグイン数',
+          commonDependencies: '共通依存',
+          sharedDependencies: '共有依存',
+        },
+      },
+      highlights: {
+        pack: {
+          bundlePluginId: 'バンドルID',
+          bundleName: 'バンドル名',
+          bundleVersion: 'バンドルバージョン',
+          outputPath: '出力パス',
+          firstPlugin: '最初のプラグイン',
+          latestPackagePath: '最新パッケージパス',
+        },
+        inspect: {
+          packageId: 'パッケージ ID',
+          packageType: 'パッケージ種類',
+          version: 'バージョン',
+        },
+        unpack: {
+          packageId: 'パッケージ ID',
+          pluginsRoot: 'プラグインディレクトリ',
+          profilesRoot: 'プロファイルディレクトリ',
+        },
+        analyze: {
+          currentSdk: '現在の SDK 対応',
+          supported: '対応済み',
+          unsupported: '完全非対応',
+          matchingVersions: '推奨組み合わせ',
+        },
+      },
+      list: {
+        pluginPrefix: 'plugin:',
+        profilePrefix: 'profile:',
+        renamedSuffix: '(リネーム済み)',
+        arrow: '->',
+      },
+      warnings: {
+        bundleNeedsTwoPlugins: 'バンドルには通常 2 つ以上のプラグインが必要です',
+        verifyFailed: 'パッケージはハッシュ検証に失敗しました。直接導入しないでください。',
+        inspectHashFailed: '現在のパッケージのハッシュ検証に失敗し、内容が変更されている可能性があります。',
+        analyzeSdkMismatch: '現在の SDK バージョンはすべてのプラグインで共通対応ではありません。',
+        analyzeSharedDependencies: '{count} 個の共有依存を検出しました。バンドル時はバージョン制約を確認してください。',
+      },
+    },
+  },
   status: {
     running: '実行中',
     stopped: '停止',
@@ -455,79 +556,79 @@ export default {
     steps: {
       start: {
         title: 'ここから開始',
-        body: 'このボタンでいつでもプラグイン管理の案内をもう一度見られるよ。勝手には出てこないにゃ。'
+        body: 'このボタンでいつでもガイドを再生できます。再生中に言語を切り替えると、新しい言語に追従します。'
       },
       stats: {
         title: 'プラグイン概要',
-        body: '合計、実行中、停止中、クラッシュしたプラグイン数をここで一目で確認できるよ。'
+        body: '合計、実行中、停止中、クラッシュしたプラグイン数を一覧できます。'
       },
       metrics: {
         title: 'パフォーマンス監視',
-        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数など、サービス全体の状態を確認できるよ。'
+        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数を確認できます。galgame OCR や Agent が重いときに見ます。'
       },
       server: {
         title: 'サーバー情報',
-        body: 'SDK バージョン、プラグイン数、更新時間を見て、サービスが正常か確認できるよ。'
+        body: 'SDK バージョン、プラグイン数、更新時間を確認して、サービスの状態を把握できます。'
       },
       plugins: {
         title: 'プラグイン一覧',
-        body: '起動、停止、設定、ログ確認は左側のプラグイン管理から入ってね。'
+        body: '起動、停止、設定、ログ確認、galgame_plugin の UI とガイド表示は左側のプラグイン管理から行えます。'
       },
       pluginWorkbench: {
         title: 'プラグイン管理ワークベンチ',
-        body: 'ここではプラグイン、アダプター、拡張をまとめて確認できるよ。'
+        body: '通常のプラグイン、アダプター、拡張をまとめて管理する場所です。'
       },
       pluginFilters: {
         title: '検索とフィルター',
-        body: '名前、状態、種類、詳細ルールでプラグインを絞り込めるよ。'
+        body: '名前、状態、種類、詳細ルールで素早く絞り込めます。'
       },
       pluginLayout: {
         title: '表示レイアウト',
-        body: 'リスト、1列、2列、コンパクト表示を画面に合わせて切り替えられるよ。'
+        body: 'リスト、1列、2列、コンパクト表示を画面に合わせて切り替えられます。'
       },
       pluginContextMenu: {
         title: '右クリック操作',
-        body: '右クリックで詳細、設定、ログを開いたり、起動・停止・再読み込みができるよ。'
+        body: '右クリックで詳細、設定、ログ、UI、ガイドを開いたり、起動・停止・再読み込みを実行できます。'
       },
       packageManager: {
         title: 'パッケージ管理',
-        body: '現在の絞り込みや選択を使って、パッケージ化、検査、検証、展開ができるよ。'
+        body: '現在の絞り込みと選択を使って、単体パッケージや bundle を作成し、ローカルパッケージも扱えます。'
       },
       packageOperations: {
         title: 'パッケージ操作',
-        body: 'ここでパッケージ化モード、検査、展開、統合パック分析を選べるよ。このガイドは危険な操作を自動実行しないよ。'
+        body: '選択プラグインのパック、単体 / 全件パック、bundle 作成、検査、検証、展開、依存分析を行えます。'
       },
       pluginDetail: {
         title: 'プラグイン詳細',
-        body: '詳細ページではメタ情報、エントリー、性能、設定、ログを確認できるよ。'
+        body: '詳細ページでは UI、ガイド、基本情報、エントリー、性能、設定、ログを確認できます。'
       },
       pluginDetailActions: {
         title: '詳細ページの操作',
-        body: '右上の操作は現在のプラグインに対するショートカットだよ。'
+        body: '右上の操作は現在のプラグインに対するショートカットです。'
       },
       runs: {
         title: '実行記録',
-        body: '実行記録ではプラグインタスクの履歴と現在状態を確認できるよ。'
+        body: '実行記録ではプラグインのタスク履歴とライブ状態を確認できます。'
       },
       runsList: {
         title: '実行リスト',
-        body: '左側で実行を選択し、更新ボタンで最新の記録を同期できるよ。'
+        body: '左側で実行を選択し、更新ボタンで最新の記録を同期できます。'
       },
       runsDetail: {
         title: '実行詳細',
-        body: '右側には段階、進捗、エラー、エクスポート内容が表示されるよ。'
+        body: '右側には段階、進捗、エラー、エクスポート内容が表示されます。'
       },
       logs: {
         title: 'サーバーログ',
-        body: 'サーバーログではプラグインサービス自体の出力やエラーを確認できるよ。'
+        body: 'サーバーログではプラグインサービス自体の出力やエラーを確認できます。'
       },
       logToolbar: {
         title: 'ログフィルター',
-        body: 'レベル、キーワード、行数で絞り込み、自動スクロールも切り替えられるよ。'
+        body: 'レベル、キーワード、行数で絞り込み、自動スクロールも切り替えられます。'
       },
       logList: {
         title: 'ログ一覧',
-        body: '時刻、発生元、レベル、メッセージを見て問題の原因を探せるよ。'
+        body: '時刻、発生元、レベル、メッセージを見て問題の原因を探せます。'
       }
     }
   }

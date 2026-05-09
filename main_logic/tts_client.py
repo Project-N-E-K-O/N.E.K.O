@@ -18,6 +18,11 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.gemini_tts_voices import (
+    GEMINI_TTS_MODEL,
+    is_gemini_tts_voice,
+    normalize_gemini_tts_voice,
+)
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -2140,13 +2145,18 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """Gemini TTS worker — 按句切分合成，httpx 异步直连。"""
     import httpx
 
-    if not voice_id:
-        voice_id = "Leda"
+    requested_voice_id = (voice_id or "").strip()
+    voice_id, voice_recognized = normalize_gemini_tts_voice(voice_id)
+    if requested_voice_id and not voice_recognized:
+        logger.warning(
+            "Gemini TTS voice '%s' is not in the supported catalog; falling back to '%s'",
+            requested_voice_id,
+            voice_id,
+        )
 
-    MODEL = "gemini-2.5-flash-preview-tts"
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent?key={audio_api_key}"
+        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
     )
     TTS_TIMEOUT = 12
     MAX_RETRIES = 3
@@ -2161,7 +2171,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}",
                 params={"key": audio_api_key},
                 timeout=10,
             )
@@ -2883,6 +2893,21 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
 
+    # core=gemini + 选了 Gemini 原生声线 (Puck/Leda/中文男 等) 时优先走 Gemini，
+    # 不能被 has_custom_voice=False 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 ——
+    # _has_custom_tts 已经判断 voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，
+    # 是用户显式选择的 Gemini 原生路径，应当尊重该选择喵。
+    # 同时显式返回 CORE_API_KEY：当 ENABLE_CUSTOM_API + TTS_MODEL_URL 配了的时候，
+    # 调用方 fallback 的 get_model_api_config('tts_default') 会返回自定义 TTS 的 key
+    # (config_manager.py 自定义分支)，会拿 GSV/local TTS key 去打 Gemini，必失败。
+    if (
+        not has_custom_voice
+        and core_api_type == 'gemini'
+        and is_gemini_tts_voice(voice_id)
+    ):
+        core_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        return gemini_tts_worker, core_api_key, 'gemini'
+
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
@@ -2900,6 +2925,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    # 注：core.py 的 _has_custom_tts 对 core_api_type=='gemini' + Gemini voice 短路返回 False，
+    # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
+    # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):

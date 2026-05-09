@@ -1526,6 +1526,48 @@ async def test_install_textractor_downloads_and_extracts_latest_release_zip(
 
 
 @pytest.mark.asyncio
+async def test_install_textractor_records_preflight_state_before_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_root = tmp_path / "TextractorInstalled"
+    recorded: list[dict[str, object]] = []
+
+    def _record_state(task_id: str, **changes: object) -> dict[str, object]:
+        del task_id
+        recorded.append(dict(changes))
+        return dict(changes)
+
+    monkeypatch.setattr("plugin.plugins.galgame_plugin.textractor_support.update_install_task_state", _record_state)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json={"name": "Textractor v1.0.0", "assets": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    try:
+        with pytest.raises(RuntimeError, match="no Textractor zip assets"):
+            await install_textractor(
+                logger=_Logger(),
+                configured_path="",
+                install_target_dir_raw=str(install_root),
+                release_api_url="https://example.test/latest",
+                timeout_seconds=5.0,
+                force=True,
+                task_id="run-1",
+                platform_fn=lambda: True,
+                client_factory=lambda: client,
+            )
+    finally:
+        await client.aclose()
+
+    assert recorded
+    assert recorded[0]["status"] == "running"
+    assert recorded[0]["phase"] == "preflight"
+    assert recorded[0]["message"] == "Checking Textractor installation"
+
+
+@pytest.mark.asyncio
 async def test_download_file_resumes_with_http_range(tmp_path: Path) -> None:
     destination = tmp_path / "Textractor.zip"
     original = b"abcdefghij"

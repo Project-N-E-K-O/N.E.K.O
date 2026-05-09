@@ -326,6 +326,107 @@ export default {
     cancelConfirmMessage: 'ID de ejecución: {runId}',
     cancelSuccess: 'Cancelación solicitada'
   },
+  packageManager: {
+    resultDialog: {
+      title: 'Registro de resultados de paquetes',
+      subtitle: 'Conserva los últimos {count} resultados',
+      empty: 'Aquí aparecerán los resultados de las operaciones de paquetes',
+      viewDetails: 'Ver detalles',
+      detailTitle: 'Detalles del resultado',
+      summaryTitle: 'Resumen',
+      notesTitle: 'Notas',
+      rawJsonTitle: 'JSON bruto del resultado',
+      kinds: {
+        pack: 'Empaquetar',
+        inspect: 'Inspeccionar',
+        verify: 'Verificar',
+        unpack: 'Desempaquetar',
+        analyze: 'Analizar',
+      },
+      inspect: {
+        packageId: 'ID del paquete',
+        packageType: 'Tipo',
+        version: 'Versión',
+        schemaVersion: 'Schema',
+        hashCheck: 'Verificación hash',
+        profiles: 'Perfiles',
+        packageTypes: {
+          bundle: 'Bundle',
+          plugin: 'Paquete de plugin',
+        },
+        hashStatus: {
+          notChecked: 'Sin comprobar',
+          passed: 'Aprobado',
+          failed: 'Falló',
+        },
+      },
+      metrics: {
+        pack: {
+          type: 'Tipo',
+          succeeded: 'Correctos',
+          failed: 'Fallidos',
+          containsPlugins: 'Contiene plugins',
+          status: 'Estado',
+          complete: 'Completado',
+          partialFailed: 'Falló parcialmente',
+        },
+        inspect: {
+          pluginCount: 'Cantidad de plugins',
+          profileCount: 'Perfiles',
+          hash: 'Hash',
+        },
+        unpack: {
+          processedPlugins: 'Plugins procesados',
+          conflictStrategy: 'Estrategia de conflicto',
+          hash: 'Hash',
+        },
+        analyze: {
+          pluginCount: 'Cantidad de plugins',
+          commonDependencies: 'Dependencias comunes',
+          sharedDependencies: 'Dependencias compartidas',
+        },
+      },
+      highlights: {
+        pack: {
+          bundlePluginId: 'ID del bundle',
+          bundleName: 'Nombre del bundle',
+          bundleVersion: 'Versión del bundle',
+          outputPath: 'Ruta de salida',
+          firstPlugin: 'Primer plugin',
+          latestPackagePath: 'Ruta del paquete más reciente',
+        },
+        inspect: {
+          packageId: 'ID del paquete',
+          packageType: 'Tipo de paquete',
+          version: 'Versión',
+        },
+        unpack: {
+          packageId: 'ID del paquete',
+          pluginsRoot: 'Directorio de plugins',
+          profilesRoot: 'Directorio de perfiles',
+        },
+        analyze: {
+          currentSdk: 'Compatibilidad SDK actual',
+          supported: 'compatible',
+          unsupported: 'no totalmente compatible',
+          matchingVersions: 'Combinaciones recomendadas',
+        },
+      },
+      list: {
+        pluginPrefix: 'plugin:',
+        profilePrefix: 'perfil:',
+        renamedSuffix: '(renombrado)',
+        arrow: '->',
+      },
+      warnings: {
+        bundleNeedsTwoPlugins: 'Un bundle suele incluir al menos dos plugins',
+        verifyFailed: 'El paquete no pasó la verificación hash. No lo importes directamente.',
+        inspectHashFailed: 'La verificación hash del paquete falló y el contenido pudo haber cambiado.',
+        analyzeSdkMismatch: 'La versión actual del SDK no es compatible con todos los plugins a la vez.',
+        analyzeSharedDependencies: 'Se detectaron {count} dependencias compartidas. Revisa bien las restricciones de versión.',
+      },
+    },
+  },
   status: {
     running: 'En ejecución',
     stopped: 'Detenido',
@@ -455,79 +556,79 @@ export default {
     steps: {
       start: {
         title: 'Empieza aquí',
-        body: 'Usa este botón cuando quieras repetir el tutorial del gestor de plugins. No apareceré sola, nya.'
+        body: 'Usa este botón para repetir la guía cuando quieras. Si cambias el idioma mientras corre, la guía se actualiza.'
       },
       stats: {
         title: 'Resumen de plugins',
-        body: 'Estas tarjetas muestran plugins totales, en ejecución, detenidos y con fallos para ver el estado de un vistazo.'
+        body: 'Estas tarjetas muestran el total, los que están en ejecución, detenidos y con fallos.'
       },
       metrics: {
         title: 'Monitor de rendimiento',
-        body: 'Esta zona muestra CPU, memoria, hilos y plugins activos del servicio de plugins.'
+        body: 'Aquí ves CPU, memoria, hilos y plugins activos. Útil para revisar galgame OCR o Agent si van lentos.'
       },
       server: {
         title: 'Información del servidor',
-        body: 'Aquí puedes revisar la versión del SDK, el número de plugins y la hora de actualización para confirmar que todo va bien.'
+        body: 'Aquí puedes revisar la versión del SDK, el número de plugins y la hora de actualización.'
       },
       plugins: {
         title: 'Lista de plugins',
-        body: 'Entra en Plugins a la izquierda para iniciar, detener, configurar plugins o revisar sus logs.'
+        body: 'Entra en Plugins a la izquierda para iniciar, detener, configurar plugins o abrir la UI y la guía de galgame_plugin.'
       },
       pluginWorkbench: {
         title: 'Área de plugins',
-        body: 'Aquí se reúnen plugins, adaptadores y extensiones para la gestión diaria.'
+        body: 'Aquí se agrupan plugins normales, adaptadores y extensiones.'
       },
       pluginFilters: {
         title: 'Búsqueda y filtros',
-        body: 'Filtra por nombre, estado, tipo o reglas avanzadas cuando la lista crece.'
+        body: 'Filtra por nombre, estado, tipo o reglas avanzadas.'
       },
       pluginLayout: {
         title: 'Diseño de vista',
-        body: 'Cambia entre lista, una columna, dos columnas y vista compacta según tu pantalla.'
+        body: 'Cambia entre lista, una columna, dos columnas y vista compacta. Con muchos plugins, dos columnas o compacta reducen el desplazamiento.'
       },
       pluginContextMenu: {
         title: 'Acciones con clic derecho',
-        body: 'Haz clic derecho en un plugin para abrir detalles, configuración, logs o acciones comunes.'
+        body: 'Haz clic derecho para abrir detalles, configuración, logs, UI o guía, y para ejecutar acciones rápidas.'
       },
       packageManager: {
         title: 'Gestor de paquetes',
-        body: 'El gestor reutiliza tus filtros y selección para empaquetar, inspeccionar, verificar o descomprimir.'
+        body: 'El gestor reutiliza tus filtros y selección para crear paquetes de un plugin o bundles, y también para manejar paquetes locales.'
       },
       packageOperations: {
         title: 'Operaciones de paquete',
-        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. La guía no ejecuta acciones peligrosas.'
+        body: 'Empaqueta plugins seleccionados, individuales o todos; crea bundles; inspecciona y verifica paquetes; descomprime o analiza dependencias.'
       },
       pluginDetail: {
         title: 'Detalles del plugin',
-        body: 'La página de detalle muestra metadatos, entradas, métricas, configuración y logs.'
+        body: 'La página de detalle muestra la UI, la guía, la información básica, entradas, métricas, configuración y logs.'
       },
       pluginDetailActions: {
         title: 'Acciones del detalle',
-        body: 'Las acciones superiores se aplican al plugin actual después de revisar sus detalles.'
+        body: 'Las acciones superiores se aplican al plugin actual. Para galgame_plugin, primero confirma que está en ejecución.'
       },
       runs: {
         title: 'Ejecuciones',
-        body: 'Las ejecuciones muestran historial y estado en vivo de tareas de plugins.'
+        body: 'Las ejecuciones muestran el historial y el estado en vivo de tareas del plugin.'
       },
       runsList: {
         title: 'Lista de ejecuciones',
-        body: 'Selecciona una ejecución a la izquierda o actualiza para sincronizar registros recientes.'
+        body: 'Selecciona una ejecución a la izquierda o actualiza para sincronizar los registros más recientes.'
       },
       runsDetail: {
         title: 'Detalle de ejecución',
-        body: 'El panel muestra fase, progreso, errores y exportaciones; cancelar solo aparece si se puede cancelar.'
+        body: 'El panel muestra fase, progreso, errores y exportaciones; cancelar solo aparece en tareas cancelables.'
       },
       logs: {
         title: 'Logs del servidor',
-        body: 'Los logs del servidor ayudan a revisar salida y errores del servicio de plugins.'
+        body: 'Los logs del servidor ayudan a revisar la salida y los errores del servicio de plugins.'
       },
       logToolbar: {
         title: 'Filtros de logs',
-        body: 'Filtra por nivel, palabra clave y líneas, o cambia el desplazamiento automático.'
+        body: 'Filtra por nivel, palabra clave y líneas, o activa y desactiva el auto-scroll.'
       },
       logList: {
         title: 'Lista de logs',
-        body: 'Los logs muestran hora, origen, nivel y mensaje para depurar problemas de plugins.'
+        body: 'Los logs muestran hora, origen, nivel y mensaje para depurar problemas de plugins, OCR, Memory Reader o paquetes.'
       }
     }
   }

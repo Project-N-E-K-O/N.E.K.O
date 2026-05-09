@@ -2610,7 +2610,7 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -2630,6 +2630,122 @@ let currentCharacterCardId = null;
 
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
+
+function getCharacterCardDescriptionFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return window.t ? window.t('steam.noDescription') : '暂无描述';
+    }
+    if (data['description']) return data['description'];
+    if (data['描述']) return data['描述'];
+    if (data['角色卡描述']) return data['角色卡描述'];
+    return window.t ? window.t('steam.noDescription') : '暂无描述';
+}
+
+function getCharacterCardTagsFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return [];
+    }
+    return Array.isArray(data['关键词']) ? data['关键词'] : [];
+}
+
+function buildCharacterCardEntry(name, data, id) {
+    return {
+        id: id,
+        name: name,
+        description: getCharacterCardDescriptionFromData(data),
+        tags: getCharacterCardTagsFromData(data),
+        rawData: data || {},
+        originalName: name
+    };
+}
+
+function findCharacterCardIndexByName(name) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    return cards.findIndex(card => String(card?.originalName || card?.name || '') === String(name));
+}
+
+function getNextCharacterCardId() {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    let maxId = 0;
+    cards.forEach(card => {
+        const numericId = Number(card && card.id);
+        if (Number.isFinite(numericId)) {
+            maxId = Math.max(maxId, numericId);
+        }
+    });
+    return maxId + 1;
+}
+
+function buildLocalCatgirlRawData(catgirlName, submittedData) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const previousRawData = existingIdx >= 0 && cards[existingIdx]?.rawData && typeof cards[existingIdx].rawData === 'object'
+        ? cards[existingIdx].rawData
+        : {};
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const nextRawData = {};
+
+    // 通用编辑接口会保留系统字段，但会用本次提交的普通字段整体替换旧普通字段。
+    Object.keys(previousRawData).forEach(key => {
+        if (allReservedFields.includes(key)) {
+            nextRawData[key] = previousRawData[key];
+        }
+    });
+    Object.entries(submittedData || {}).forEach(([key, value]) => {
+        if (!key || key === '档案名' || allReservedFields.includes(key)) {
+            return;
+        }
+        if (value !== null && value !== undefined && String(value).trim() !== '') {
+            nextRawData[key] = value;
+        }
+    });
+    return nextRawData;
+}
+
+function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const merged = {};
+
+    // 本轮刚保存的普通字段优先；重新拉取的数据只用于补回模型、音色等保留字段。
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (!allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(freshRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    return merged;
+}
+
+function syncCharacterCardCache(catgirlName, rawData) {
+    if (!catgirlName) return;
+    if (!Array.isArray(window.characterCards)) {
+        window.characterCards = [];
+    }
+
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const existingCard = existingIdx >= 0 ? window.characterCards[existingIdx] : null;
+    const cardId = existingCard?.id ?? getNextCharacterCardId();
+    const updatedCard = buildCharacterCardEntry(catgirlName, rawData || {}, cardId);
+
+    if (existingIdx >= 0) {
+        window.characterCards[existingIdx] = updatedCard;
+    } else {
+        window.characterCards.push(updatedCard);
+    }
+    globalCharacterCards = window.characterCards || [];
+
+    refreshCharacterCardSelectOptions();
+    renderCharaCardsView();
+}
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
     const eventual = Promise.resolve(scanPromise)
@@ -2816,31 +2932,7 @@ async function loadCharacterCards() {
     // 只处理猫娘数据，忽略其他角色类型（包括主人）
     const catgirls = characterData['猫娘'] || {};
     for (const [name, data] of Object.entries(catgirls)) {
-        // 兼容实际的数据结构 - 使用可用字段创建角色卡
-        // 只从description或角色卡描述字段获取描述信息
-        let description = window.t ? window.t('steam.noDescription') : '暂无描述';
-        if (data['description']) {
-            description = data['description'];
-        } else if (data['描述']) {
-            description = data['描述'];
-        } else if (data['角色卡描述']) {
-            description = data['角色卡描述'];
-        }
-
-        // 只从关键词字段获取标签信息，不自动生成标签
-        let tags = [];
-        if (data['关键词'] && Array.isArray(data['关键词']) && data['关键词'].length > 0) {
-            tags = data['关键词'];
-        }
-
-        window.characterCards.push({
-            id: idCounter++,
-            name: name,
-            description: description,
-            tags: tags,
-            rawData: data,  // 保存原始数据，方便详情页使用
-            originalName: name  // 保存原始键名
-        });
+        window.characterCards.push(buildCharacterCardEntry(name, data, idCounter++));
     }
 
     // 从character_cards文件夹加载角色卡
@@ -5499,6 +5591,57 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
                 selectEl.appendChild(freeGroup);
             }
+
+            // Gemini 原生音色（仅在 CORE_API_TYPE=gemini 时由后端注入）
+            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                const renderedVoiceIds = new Set();
+                Object.keys(data.voices || {}).forEach(function (id) {
+                    renderedVoiceIds.add(String(id).toLowerCase());
+                });
+                if (data.free_voices) {
+                    Object.values(data.free_voices).forEach(function (id) {
+                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                    });
+                }
+                const nativeEntries = Object.entries(data.native_voices)
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
+                if (nativeEntries.length > 0) {
+                    const nativeGroup = document.createElement('optgroup');
+                    const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';
+                    nativeGroup.label = '── ' + nativeLabel + ' ──';
+                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.title = voiceId;
+                        if (voiceId === currentVoiceId) option.selected = true;
+                        nativeGroup.appendChild(option);
+                    });
+                    selectEl.appendChild(nativeGroup);
+                }
+
+                // 保底：currentVoiceId 是 Gemini 别名（"中文男"、"male" 等）或本轮 catalog 没暴露
+                // 该 ID 时，下拉里没有匹配项 select 会回到首项；下次保存表单会被误判为
+                // "已清空"走 unregister_voice 分支，把用户保存的音色丢掉。这里仿 GSV 兜底，
+                // 给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+                if (currentVoiceId
+                    && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                    const fallbackGroup = document.createElement('optgroup');
+                    const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+                    fallbackGroup.label = '── ' + fallbackLabel + ' ──';
+                    fallbackGroup.dataset.geminiFallbackGroup = 'true';
+                    const fallbackOption = document.createElement('option');
+                    fallbackOption.value = currentVoiceId;
+                    fallbackOption.textContent = currentVoiceId + ' (?)';
+                    fallbackOption.title = currentVoiceId;
+                    fallbackOption.selected = true;
+                    fallbackGroup.appendChild(fallbackOption);
+                    selectEl.appendChild(fallbackGroup);
+                }
+            }
         }
 
         // 加载 GPT-SoVITS 声音列表
@@ -5662,6 +5805,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return;
         }
+        const localRawData = buildLocalCatgirlRawData(data['档案名'], data);
+        let savedRawDataForCache = localRawData;
+        syncCharacterCardCache(data['档案名'], localRawData);
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -5754,7 +5900,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const catgirlName = data['档案名'];
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
-                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerParams = new URLSearchParams({
+                    name: catgirlName,
+                    mode: 'maker',
+                    fallback_default_on_close: '1'
+                });
+                const makerUrl = `/card_maker?${makerParams.toString()}`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
                     CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
@@ -5777,14 +5928,19 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
-                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
-                }
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
+                    ? freshData['猫娘'][data['档案名']]
+                    : {};
+                savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
+                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
             }
         }
         await loadCharacterCards();
+        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
     } catch (error) {
         console.error('保存猫娘失败:', error);
         const errorMessage = error.message || String(error);
@@ -9324,6 +9480,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
+            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data));
             storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             const sentFields = new Set(Object.keys(data));

@@ -1070,7 +1070,8 @@ async function loadVoices() {
         }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
-            (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
+            (!data.free_voices || Object.keys(data.free_voices).length === 0) &&
+            (!data.native_voices || Object.keys(data.native_voices).length === 0)) {
             const noVoicesText = window.t ? window.t('voice.noVoices') : '暂无已注册音色';
             container.textContent = '';
             const emptyDiv = document.createElement('div');
@@ -1251,6 +1252,74 @@ async function loadVoices() {
 
                 container.appendChild(item);
             });
+        }
+
+        // 渲染 Gemini 原生音色（CORE_API_TYPE=gemini 时由后端注入）
+        // 去重范围：自定义注册音色 + 免费预设音色 ID，避免冲突时列表里重复条目和多重选中态。
+        // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+        if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+            const renderedVoiceIds = new Set(voicesArray.map((v) => String(v.voiceId).toLowerCase()));
+            if (data.free_voices) {
+                Object.values(data.free_voices).forEach((id) => {
+                    if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                });
+            }
+            const nativeEntries = Object.entries(data.native_voices)
+                .filter(([voiceId]) => !renderedVoiceIds.has(String(voiceId).toLowerCase()));
+            if (nativeEntries.length > 0) {
+                const hasPriorContent = voicesArray.length > 0
+                    || (data.free_voices && Object.keys(data.free_voices).length > 0);
+                if (hasPriorContent) {
+                    const divider = document.createElement('div');
+                    divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
+                    const nativeLabel = window.t ? window.t('voice.geminiNativeLabel') : 'Gemini 原生音色';
+                    divider.textContent = '── ' + nativeLabel + ' ──';
+                    container.appendChild(divider);
+                }
+
+                nativeEntries.forEach(([voiceId, voiceData]) => {
+                    const item = document.createElement('div');
+                    item.className = 'voice-list-item';
+                    item.dataset.voiceId = voiceId;
+                    item.style.opacity = '0.85';
+                    item.tabIndex = 0;
+                    item.setAttribute('role', 'button');
+                    markSelectedVoiceItem(item, voiceId === currentVoiceId);
+
+                    const infoDiv = document.createElement('div');
+                    infoDiv.className = 'voice-info';
+
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'voice-name';
+                    const displayName = (voiceData && voiceData.prefix) || voiceId;
+                    nameDiv.textContent = displayName;
+                    const badge = document.createElement('span');
+                    badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(140,120,220,0.25); color: #b8a4ff;';
+                    badge.textContent = window.t ? window.t('voice.geminiNativeBadge') : '原生';
+                    nameDiv.appendChild(badge);
+                    infoDiv.appendChild(nameDiv);
+
+                    const idDiv = document.createElement('div');
+                    idDiv.className = 'voice-id';
+                    idDiv.textContent = `ID: ${voiceId}`;
+                    infoDiv.appendChild(idDiv);
+
+                    item.appendChild(infoDiv);
+                    item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                    item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                    item.addEventListener('keydown', (event) => {
+                        if (event.target !== item) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                        }
+                    });
+
+                    // Gemini 原生音色：不支持预览和删除，但支持点击应用
+
+                    container.appendChild(item);
+                });
+            }
         }
 
     } catch (error) {

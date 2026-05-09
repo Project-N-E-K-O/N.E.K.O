@@ -74,10 +74,10 @@
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
-      "correction_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus-2026-04-02",
       "emotion_model": "qwen3.6-flash-2026-04-16",
-      "vision_model": "qwen3.6-plus",
-      "agent_model": "qwen3.6-plus"
+      "vision_model": "qwen3.6-plus-2026-04-02",
+      "agent_model": "qwen3.6-plus-2026-04-02"
     },
     "qwen_intl": {
       "key": "qwen_intl",
@@ -180,11 +180,11 @@
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-seed-2-0-lite-260215",
-      "summary_model": "doubao-seed-2-0-lite-260215",
-      "correction_model": "doubao-seed-2-0-lite-260215",
-      "emotion_model": "doubao-seed-2-0-mini-260215",
-      "vision_model": "doubao-seed-2-0-lite-260215",
+      "conversation_model": "doubao-seed-2-0-lite-260428",
+      "summary_model": "doubao-seed-2-0-lite-260428",
+      "correction_model": "doubao-seed-2-0-lite-260428",
+      "emotion_model": "doubao-seed-2-0-mini-260428",
+      "vision_model": "doubao-seed-2-0-lite-260428",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {

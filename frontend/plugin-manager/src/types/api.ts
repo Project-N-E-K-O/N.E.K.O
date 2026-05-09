@@ -136,7 +136,12 @@ export interface PluginMeta {
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
   host_plugin_id?: string
-  i18n?: Record<string, any>
+  i18n?: {
+    default_locale?: string
+    locales_dir?: string
+    messages?: Record<string, Record<string, string>>
+    [key: string]: any
+  }
   status?: string
   list_actions?: PluginListAction[]
 }
