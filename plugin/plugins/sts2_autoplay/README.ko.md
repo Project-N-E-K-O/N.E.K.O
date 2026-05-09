@@ -8,7 +8,7 @@
 
 Git Clone 사용:
 ```text
-git clone https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+git clone https://github.com/CharTyr/STS2-Agent.git
 ```
 
 ### 게임 Mod 설치

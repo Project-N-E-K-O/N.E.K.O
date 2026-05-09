@@ -1,4 +1,4 @@
 {
   "plugin.name": "Slay the Spire 2 Co-pilot",
-  "plugin.description": "Connect to a local Slay the Spire agent server, read the board state, and run auto-play, single-step actions, card-play hints, natural-language commands, neko soft guidance, status reports, and live commentary. Mainly supports the base-game characters"
+  "plugin.description": "Connect to a local Slay the Spire 2 agent server, read the board state, and run auto-play, single-step actions, card-play hints, natural-language commands, neko soft guidance, status reports, and live commentary. Mainly supports the base-game characters"
 }

@@ -22,7 +22,7 @@ The top card shows the plugin's runtime status in real time:
 
 Click the "Bilibili Account" section to open the sign-in panel:
 
-- **QR code sign-in** (recommended): Click "QR Sign-in" → scan the QR code with the Bilibili App → wait for automatic confirmation
+- **QR Code sign-in** (recommended): Click "QR Sign-in" → scan the QR Code with the Bilibili App → wait for automatic confirmation
 - **Check credentials**: View current sign-in status, username, UID, and expiration
 - **Reload credentials**: Manually refresh the sign-in state
 - **Clear sign-in**: Delete locally encrypted credentials and sign out
@@ -148,7 +148,7 @@ Once enabled, danmaku are aggregated and sent to a designated LLM that generates
 
 | Question | Solution |
 |----------|----------|
-| QR sign-in fails | Make sure the App is signed in; the QR code is valid for 2 minutes — refresh and scan again |
+| QR sign-in fails | Make sure the App is signed in; the QR Code is valid for 2 minutes — refresh and scan again |
 | Danmaku listener has no response | Check the room ID, network, and whether the account is signed in |
 | AI does not reply to danmaku | Confirm the push interval is set, the background LLM is enabled, and API settings are correct |
 | Sending danmaku fails | Make sure you're signed in and have permission to send danmaku in this live room (some rooms restrict by account level) |

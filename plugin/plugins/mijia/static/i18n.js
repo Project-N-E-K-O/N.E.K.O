@@ -8,7 +8,7 @@ const I18n = {
 
   _localeCandidates(locale) {
     const raw = String(locale || '').trim() || 'zh-CN';
-    const lower = raw.toLowerCase().replace('_', '-');
+    const lower = raw.toLowerCase().replace(/_/g, '-');
     const candidates = [];
     const add = (value) => {
       if (value && !candidates.includes(value)) {
@@ -56,7 +56,16 @@ const I18n = {
   },
 
   async init(pluginId) {
-    const encodedPluginId = encodeURIComponent(pluginId || 'bilibili_danmaku');
+    // Empty pluginId means the bootstrap regex couldn't extract one from the
+    // current URL; bail out instead of fetching another plugin's bundles.
+    // The page stays usable because t() returns each element's existing
+    // textContent as fallback.
+    const cleanPluginId = String(pluginId || '').trim();
+    if (!cleanPluginId) {
+      this._bundle = {};
+      return;
+    }
+    const encodedPluginId = encodeURIComponent(cleanPluginId);
 
     const queryLocale = this._queryLocale();
     const storageLocale = this._storageLocale();
@@ -128,8 +137,14 @@ const I18n = {
 window.I18n = I18n;
 
 (function bootstrapI18n() {
-  const match = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
-  const pluginId = match ? match[1] : 'bilibili_danmaku';
+  // Backend registers both `/plugin/{id}/ui` and `/plugin/{id}/ui/`, so the
+  // regex must accept either a trailing slash or end-of-path. If pathname
+  // somehow doesn't match (e.g. opened from an unexpected route), don't
+  // hard-code another plugin's id — leave it empty so I18n.init falls back
+  // to the encoded empty string and silently skips bundle fetches instead
+  // of pulling translations from the wrong plugin.
+  const match = location.pathname.match(/\/plugin\/([^/]+)\/ui(?:\/|$)/);
+  const pluginId = match ? match[1] : '';
   I18n.init(pluginId).then(() => {
     I18n.scanDOM();
     window.dispatchEvent(new CustomEvent('i18n-ready', { detail: { locale: I18n.lang() } }));

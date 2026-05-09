@@ -8,7 +8,7 @@
 
 Git Clone を使用：
 ```text
-git clone https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+git clone https://github.com/CharTyr/STS2-Agent.git
 ```
 
 ### ゲーム Mod のインストール
@@ -199,7 +199,7 @@ my_strategy
 
 - `command`：必須、ユーザーの原文。例：`今ターンどう打つ？`、`1 枚カードを出して`、`先に防御して`、`ちょっと一時停止`。
 - `scope`：オプション、デフォルト `auto`。可能な値：`auto`、`status`、`advice`、`one_card`、`one_action`、`autoplay`、`control`、`guidance`、`review`、`question`、`chat`。
-- `confirm`：オプション、デフォルト `false`。継続的お任せなど高リスク操作の確認に使用。
+- `confirm`：オプション、デフォルト `false`。継続的な「お任せ」などの高リスク操作の確認に使用します。
 
 返り値には `intent`、`action`、`executed`、`needs_confirmation`、`summary`、および基底の `result` が含まれます。
 
