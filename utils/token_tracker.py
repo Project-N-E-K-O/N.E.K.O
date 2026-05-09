@@ -221,6 +221,35 @@ def _get_app_version_from_changelog() -> str:
         return "unknown"
 
 
+_MACHINE_ID_PLACEHOLDERS = {
+    # systemd 在 first-boot 前的占位
+    "uninitialized",
+    # 全零/全 F：VM 镜像克隆未重置、sysprep 异常、虚拟主板默认值的常见非真实 ID
+    "00000000000000000000000000000000",
+    "ffffffffffffffffffffffffffffffff",
+    "00000000-0000-0000-0000-000000000000",
+    "ffffffff-ffff-ffff-ffff-ffffffffffff",
+}
+
+
+def _is_valid_machine_id(value: Optional[str]) -> bool:
+    """合理性校验 OS 机器 ID，防止占位值或镜像克隆未重置的非真实 ID 把多台
+    机器折叠到同一个 device_id。
+
+    要求去掉 GUID 分隔符后正好 32 位十六进制，且不在已知占位符黑名单里。
+    校验失败时调用方应 fallback 到 legacy 算法，而不是把无效值当指纹用。
+    """
+    if not value:
+        return False
+    normalized = value.strip().lower()
+    if normalized in _MACHINE_ID_PLACEHOLDERS:
+        return False
+    hex_only = normalized.replace("-", "")
+    if len(hex_only) != 32:
+        return False
+    return all(c in "0123456789abcdef" for c in hex_only)
+
+
 def _read_os_machine_id() -> Optional[str]:
     """读取操作系统级稳定机器标识。
 
@@ -230,7 +259,11 @@ def _read_os_machine_id() -> Optional[str]:
 
     这些 ID 由系统安装时生成，绑定到主板/系统而非网络配置，不会因为
     网卡变化（VPN / Docker / 外接 NIC）或安装路径变化（Steam 库迁移、
-    源码版 / 打包版切换）漂移。读取失败返回 None，调用方需 fallback。
+    源码版 / 打包版切换）漂移。
+
+    每个来源的返回值都会过 _is_valid_machine_id 合理性校验，避免占位值
+    （systemd `uninitialized`、全零/全 F GUID）被当成有效指纹。读取失败
+    或校验不通过返回 None，调用方需 fallback 到 legacy 算法。
     """
     import sys
 
@@ -248,8 +281,9 @@ def _read_os_machine_id() -> Optional[str]:
                     value, _ = winreg.QueryValueEx(key, "MachineGuid")
                 finally:
                     winreg.CloseKey(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+                candidate = value.strip() if isinstance(value, str) else None
+                if _is_valid_machine_id(candidate):
+                    return candidate
             except OSError:
                 return None
 
@@ -267,8 +301,10 @@ def _read_os_machine_id() -> Optional[str]:
                 return None
             if out.returncode == 0:
                 m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out.stdout)
-                if m and m.group(1).strip():
-                    return m.group(1).strip()
+                if m:
+                    candidate = m.group(1).strip()
+                    if _is_valid_machine_id(candidate):
+                        return candidate
 
         else:
             for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
@@ -277,7 +313,7 @@ def _read_os_machine_id() -> Optional[str]:
                         value = f.read().strip()
                 except (FileNotFoundError, PermissionError, OSError):
                     continue
-                if value:
+                if _is_valid_machine_id(value):
                     return value
     except Exception:
         return None
