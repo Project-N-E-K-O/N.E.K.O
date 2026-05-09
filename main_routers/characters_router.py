@@ -65,7 +65,10 @@ from utils.config_manager import (
     set_reserved,
     strip_generated_persona_selection_prompt,
 )
-from utils.gemini_tts_voices import get_gemini_tts_voices
+from utils.native_voice_registry import (
+    get_active_realtime_native_provider,
+    get_native_voice_catalog_for_ui,
+)
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.initial_personality_state import (
@@ -3053,8 +3056,9 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
     core_config = await _config_manager.aget_core_config()
-    if _config_manager.is_gemini_realtime_api_active():
-        result["native_voices"] = get_gemini_tts_voices()
+    active_native_provider = get_active_realtime_native_provider(_config_manager)
+    if active_native_provider:
+        result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
 
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')

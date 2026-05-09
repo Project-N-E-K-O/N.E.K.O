@@ -233,7 +233,8 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
+import utils.gemini_tts_voices  # noqa: F401  — registers Gemini provider into native_voice_registry
+from utils.native_voice_registry import resolve_native_voice_for_routing
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -2531,7 +2532,7 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
@@ -2869,13 +2870,13 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
         )
         if uses_provider_native_voice:
-            logger.info(f"{log_prefix}🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
+            logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
         if (
             self._is_free_preset_voice
@@ -2914,14 +2915,15 @@ class LLMSessionManager:
         """决定 OmniRealtimeClient 传给 server/provider 的 voice。
 
         优先级：
-        1. Gemini 原生音色（Puck / 中文男 等）→ 规范化后传入 Gemini Live。
+        1. core_api_type 注册了 native voice provider，且 voice_id 命中其 catalog
+           （Gemini Puck / 中文男 等）→ 规范化后由 provider client 直接消费。
         2. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
            lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,

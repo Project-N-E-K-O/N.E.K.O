@@ -8,13 +8,14 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.gemini_tts_voices import (
+    GEMINI_PROVIDER,
     GEMINI_TTS_DEFAULT_MALE_VOICE,
     GEMINI_TTS_DEFAULT_VOICE,
     GEMINI_TTS_VOICE_GENDERS,
-    get_gemini_tts_voices,
     is_gemini_tts_voice,
     normalize_gemini_tts_voice,
 )
+from utils.native_voice_registry import get_native_voice_catalog_for_ui
 
 
 @pytest.mark.parametrize(
@@ -92,8 +93,9 @@ def test_is_gemini_tts_voice_matches_recognized():
     assert is_gemini_tts_voice("   ") is False
 
 
-def test_get_gemini_tts_voices_shape():
-    voices = get_gemini_tts_voices()
+def test_gemini_voice_catalog_for_ui_shape():
+    voices = get_native_voice_catalog_for_ui("gemini")
+    assert voices is not None
     assert set(voices.keys()) == set(GEMINI_TTS_VOICE_GENDERS.keys())
     for voice_name, meta in voices.items():
         assert meta["provider"] == "gemini"
@@ -101,6 +103,13 @@ def test_get_gemini_tts_voices_shape():
         assert meta["gender"] == GEMINI_TTS_VOICE_GENDERS[voice_name]
         assert voice_name in meta["prefix"]
         assert meta["gender"] in meta["prefix"]
+
+
+def test_gemini_provider_registered_with_expected_metadata():
+    assert GEMINI_PROVIDER.key == "gemini"
+    assert GEMINI_PROVIDER.default_voice == GEMINI_TTS_DEFAULT_VOICE
+    assert GEMINI_PROVIDER.default_male_voice == GEMINI_TTS_DEFAULT_MALE_VOICE
+    assert GEMINI_PROVIDER.catalog_prefix == "Gemini"
 
 
 def test_default_voices_are_in_catalog():

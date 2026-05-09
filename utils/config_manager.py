@@ -33,8 +33,12 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
-from utils.gemini_tts_voices import is_gemini_tts_voice
+import utils.gemini_tts_voices  # noqa: F401  — registers Gemini provider into native_voice_registry
 from utils.logger_config import get_module_logger
+from utils.native_voice_registry import (
+    get_active_realtime_native_provider,
+    is_native_voice,
+)
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
@@ -2342,7 +2346,8 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
+        active_native_provider = get_active_realtime_native_provider(self)
+        if active_native_provider and is_native_voice(voice_id, active_native_provider):
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
@@ -2367,7 +2372,8 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        if self.is_gemini_realtime_api_active() and is_gemini_tts_voice(voice_id):
+        active_native_provider = get_active_realtime_native_provider(self)
+        if active_native_provider and is_native_voice(voice_id, active_native_provider):
             return True
 
         from utils.api_config_loader import get_free_voices
@@ -2376,14 +2382,6 @@ class ConfigManager:
             return True
 
         return False
-
-    def is_gemini_realtime_api_active(self) -> bool:
-        """Return True when the active realtime provider can accept Gemini native voices."""
-        try:
-            realtime_config = self.get_model_api_config('realtime')
-        except Exception:
-            return self.get_core_config().get('CORE_API_TYPE') == 'gemini'
-        return realtime_config.get('api_type') == 'gemini'
 
     def cleanup_invalid_voice_ids(self):
         """清理 characters.json 中无效的 voice_id。

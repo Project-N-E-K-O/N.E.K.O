@@ -20,10 +20,13 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
-    is_gemini_tts_voice,
     normalize_gemini_tts_voice,
 )
 from utils.logger_config import get_module_logger
+from utils.native_voice_registry import (
+    get_native_tts_worker,
+    register_tts_worker_resolver,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -2237,6 +2240,18 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
 
+def _resolve_gemini_native_tts_worker(cm):
+    """Native voice registry resolver for Gemini's TTS worker.
+
+    Gemini's native voices are billed against CORE_API_KEY (the same key the
+    realtime/LLM endpoint uses), not the optional custom TTS api_key.
+    """
+    return gemini_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+
+
+register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
+
+
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """OpenAI TTS worker — 按句切分合成，流式接收音频。"""
     try:
@@ -2893,20 +2908,17 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
 
-    # core=gemini + 选了 Gemini 原生声线 (Puck/Leda/中文男 等) 时优先走 Gemini，
-    # 不能被 has_custom_voice=False 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 ——
-    # _has_custom_tts 已经判断 voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，
-    # 是用户显式选择的 Gemini 原生路径，应当尊重该选择喵。
-    # 同时显式返回 CORE_API_KEY：当 ENABLE_CUSTOM_API + TTS_MODEL_URL 配了的时候，
-    # 调用方 fallback 的 get_model_api_config('tts_default') 会返回自定义 TTS 的 key
-    # (config_manager.py 自定义分支)，会拿 GSV/local TTS key 去打 Gemini，必失败。
-    if (
-        not has_custom_voice
-        and core_api_type == 'gemini'
-        and is_gemini_tts_voice(voice_id)
-    ):
-        core_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
-        return gemini_tts_worker, core_api_key, 'gemini'
+    # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
+    # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
+    # 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 —— _has_custom_tts 已经判断
+    # voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，是用户显式选择的
+    # 原生路径，应当尊重该选择喵。api_key 由 provider 注册的 resolver 提供
+    # (Gemini 用 CORE_API_KEY；若 fallback 到 get_model_api_config('tts_default')
+    # 会拿到自定义 TTS 的 key，鉴权必失败)。
+    if not has_custom_voice:
+        native = get_native_tts_worker(core_api_type, cm, voice_id)
+        if native is not None:
+            return native
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')

@@ -1,9 +1,19 @@
-"""Gemini TTS voice catalog shared by validation, UI, and synthesis.
+"""Gemini TTS adapter: catalog metadata + thin wrappers for wire-format paths.
+
+The cross-cutting decision logic (catalog membership, routing, UI catalog,
+realtime active-provider lookup, worker dispatch) lives in
+`utils.native_voice_registry`. This module just wires Gemini into that
+registry and keeps a couple of short aliases for code that's already
+Gemini-bound by virtue of speaking Gemini's wire format (the
+`gemini_tts_worker` HTTP call and the Gemini Live `speech_config` setup).
 
 Voice list reference: https://ai.google.dev/gemini-api/docs/speech-generation
 """
 
-from collections.abc import Callable
+from utils.native_voice_registry import (
+    NativeVoiceProvider,
+    register_provider,
+)
 
 GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 GEMINI_TTS_DEFAULT_VOICE = "Leda"
@@ -42,11 +52,7 @@ GEMINI_TTS_VOICE_GENDERS: dict[str, str] = {
     "Zubenelgenubi": "Male",
 }
 
-_GEMINI_TTS_VOICE_LOOKUP = {
-    voice_name.casefold(): voice_name for voice_name in GEMINI_TTS_VOICE_GENDERS
-}
-
-_GEMINI_TTS_VOICE_ALIASES = {
+_GEMINI_TTS_VOICE_ALIASES: dict[str, str] = {
     "male": GEMINI_TTS_DEFAULT_MALE_VOICE,
     "man": GEMINI_TTS_DEFAULT_MALE_VOICE,
     "masculine": GEMINI_TTS_DEFAULT_MALE_VOICE,
@@ -61,67 +67,23 @@ _GEMINI_TTS_VOICE_ALIASES = {
     "中文女": GEMINI_TTS_DEFAULT_VOICE,
 }
 
+GEMINI_PROVIDER = NativeVoiceProvider(
+    key="gemini",
+    catalog=GEMINI_TTS_VOICE_GENDERS,
+    aliases=_GEMINI_TTS_VOICE_ALIASES,
+    default_voice=GEMINI_TTS_DEFAULT_VOICE,
+    default_male_voice=GEMINI_TTS_DEFAULT_MALE_VOICE,
+    catalog_prefix="Gemini",
+)
+
+register_provider(GEMINI_PROVIDER)
+
 
 def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
-    """Return a supported Gemini voice and whether the input was recognized.
-
-    Empty / whitespace input is treated as unrecognized so callers can tell
-    "user explicitly chose a Gemini voice" apart from "we picked the default".
-    """
-    normalized = (voice_id or "").strip()
-    if not normalized:
-        return GEMINI_TTS_DEFAULT_VOICE, False
-
-    exact_match = _GEMINI_TTS_VOICE_LOOKUP.get(normalized.casefold())
-    if exact_match:
-        return exact_match, True
-
-    alias_match = _GEMINI_TTS_VOICE_ALIASES.get(normalized.casefold())
-    if alias_match:
-        return alias_match, True
-
-    return GEMINI_TTS_DEFAULT_VOICE, False
+    """Wire-format helper for Gemini-bound code paths (gemini_tts_worker,
+    omni_realtime_client). Cross-cutting code should go through the registry."""
+    return GEMINI_PROVIDER.normalize(voice_id)
 
 
 def is_gemini_tts_voice(voice_id: str | None) -> bool:
-    """Return True when the voice is a Gemini TTS voice or supported alias."""
-    return normalize_gemini_tts_voice(voice_id)[1]
-
-
-def resolve_gemini_native_voice_for_routing(
-    core_api_type: str | None,
-    voice_id: str | None,
-    voice_id_exists: Callable[[str], bool] | None = None,
-) -> tuple[str, bool]:
-    """Return the Gemini Live voice and whether it should use native routing.
-
-    A user-cloned voice with the same raw or canonical voice id wins over the
-    Gemini built-in voice, so the caller can keep custom TTS routing intact.
-    """
-    normalized_voice, recognized = normalize_gemini_tts_voice(voice_id)
-    if core_api_type != "gemini" or not recognized:
-        return normalized_voice, False
-
-    if voice_id_exists is None:
-        return normalized_voice, True
-
-    candidates = {voice_id, normalized_voice}
-    has_custom_collision = any(
-        voice_id_exists(candidate)
-        for candidate in candidates
-        if candidate
-    )
-    return normalized_voice, not has_custom_collision
-
-
-def get_gemini_tts_voices() -> dict[str, dict[str, str | bool]]:
-    """Return Gemini voices in the shape expected by the character UI."""
-    return {
-        voice_name: {
-            "prefix": f"Gemini {voice_name} ({gender})",
-            "provider": "gemini",
-            "gender": gender,
-            "builtin": True,
-        }
-        for voice_name, gender in GEMINI_TTS_VOICE_GENDERS.items()
-    }
+    return GEMINI_PROVIDER.is_voice(voice_id)
