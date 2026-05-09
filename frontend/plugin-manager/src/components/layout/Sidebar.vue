@@ -45,20 +45,39 @@
           </button>
         </router-link>
       </template>
+
+      <!-- Plugin Market 外部链接 -->
+      <template v-if="marketUrl">
+        <div class="nav-divider" />
+        <a
+          :href="marketUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="nav-item nav-item--external"
+          data-yui-guide-id="sidebar-market"
+        >
+          <el-icon class="nav-item__icon"><ShoppingCart /></el-icon>
+          <span class="nav-item__label">{{ t('nav.market') || '插件市场' }}</span>
+          <svg class="nav-item__external-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M4 1H11V8M11 1L1 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+      </template>
     </div>
   </nav>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
-import { Odometer, Box, VideoPlay, Monitor, Link } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, ShoppingCart } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
+const marketUrl = ref('')
 
 const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
 
@@ -74,9 +93,21 @@ function isRouteActive(path: string): boolean {
   return route.path.startsWith(path)
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins()
+  }
+  // 从后端获取 Market URL
+  try {
+    const res = await fetch('/market/status')
+    if (res.ok) {
+      const data = await res.json()
+      if (data.market_url) {
+        marketUrl.value = data.market_url
+      }
+    }
+  } catch {
+    // 静默失败，Market 链接不显示
   }
 })
 </script>
@@ -194,5 +225,21 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.nav-item--external {
+  text-decoration: none;
+  color: var(--el-text-color-regular);
+}
+
+.nav-item--external:hover {
+  background: color-mix(in srgb, var(--el-color-success) 6%, transparent);
+  color: var(--el-color-success);
+}
+
+.nav-item__external-icon {
+  margin-left: auto;
+  opacity: 0.5;
+  flex-shrink: 0;
 }
 </style>

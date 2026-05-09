@@ -26,6 +26,7 @@ from plugin.server.routes import (
     health_router,
     llm_tools_router,
     logs_router,
+    market_bridge_router,
     messages_router,
     metrics_router,
     plugin_cli_router,
@@ -100,6 +101,16 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # via the user_plugin_enabled flag — do NOT auto-start here.
     if not _EMBEDDED_BY_AGENT:
         await lifecycle_startup()
+
+    # 写入 bridge token 文件，供 Market 前端和 URI handler 使用
+    try:
+        from plugin.server.routes.market_bridge import write_bridge_token_file
+        from pathlib import Path
+        _bridge_dir = Path.home() / ".neko"
+        write_bridge_token_file(_bridge_dir)
+    except Exception as exc:
+        logger.warning("Failed to write bridge token file: {}", exc)
+
     try:
         yield
     finally:
@@ -122,6 +133,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
 def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAPI:
     app = FastAPI(title=title, lifespan=plugin_server_lifespan)
 
+    # Market 域名通过 settings 配置，支持自部署
+    from plugin.settings import MARKET_ORIGINS as _market_origins
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -129,6 +143,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
             "http://127.0.0.1:5173",
             "http://localhost:48911",
             "http://127.0.0.1:48911",
+            *_market_origins,
         ],
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=True,
@@ -187,4 +202,5 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    app.include_router(market_bridge_router)
     return app

@@ -165,9 +165,14 @@ def _collect_plugin_python_requirements(
     return external_requirements
 
 
-def _plugin_vendor_search_paths(toml_path: Path) -> list[Path]:
+def _plugin_vendor_search_paths(toml_path: Path) -> list[Path] | None:
+    """Return vendor search paths for a plugin.
+
+    Returns a list with the vendor directory if it exists, or None to indicate
+    that the host interpreter environment should be used as fallback.
+    """
     vendor_dir = toml_path.parent / "vendor"
-    return [vendor_dir] if vendor_dir.is_dir() else []
+    return [vendor_dir] if vendor_dir.is_dir() else None
 
 
 def _has_unsupported_requirements_file(toml_path: Path) -> bool:
