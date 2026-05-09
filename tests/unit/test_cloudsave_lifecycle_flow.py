@@ -20,7 +20,7 @@ def _role_state_from_session_managers(session_managers: dict) -> dict:
     shutdown-time behavior construct RoleState stubs here (with live
     Queue/Lock so any adapter access does not explode).
     """
-    from main_server import RoleState, _SyncMessageQueue
+    from app.main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
             sync_message_queue=_SyncMessageQueue(),
@@ -303,7 +303,7 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
-    import main_server
+    from app import main_server
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/N.E.K.O"),
@@ -398,7 +398,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_snapshot():
-    import main_server
+    from app import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
 
@@ -422,7 +422,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_startup_does_not_mark_normal_when_character_init_fails():
-    import main_server
+    from app import main_server
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/neko"),
@@ -450,7 +450,7 @@ async def test_main_server_startup_does_not_mark_normal_when_character_init_fail
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_startup_aborts_when_root_mode_persist_fails():
-    import main_server
+    from app import main_server
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/neko"),
@@ -531,7 +531,7 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_startup_stays_limited_when_storage_barrier_is_blocking():
-    import main_server
+    from app import main_server
     from main_routers import shared_state
 
     sentinel_templates = object()
@@ -551,7 +551,7 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
 
 @pytest.mark.unit
 def test_main_server_limited_mode_middleware_blocks_runtime_routes():
-    import main_server
+    from app import main_server
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", False), \
          patch.object(main_server, "_runtime_startup_init_completed", False), \
@@ -574,7 +574,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_release_storage_startup_barrier_restores_memory_limited_mode_when_main_init_fails():
-    import main_server
+    from app import main_server
 
     init_error = RuntimeError("main init failed")
     with patch.object(main_server, "_request_memory_server_continue_startup", AsyncMock(return_value=None)) as mock_continue, \
@@ -596,7 +596,7 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
 @pytest.mark.asyncio
 async def test_memory_server_continue_startup_preserves_409_blocking_payload():
     import httpx
-    import main_server
+    from app import main_server
 
     payload = {
         "ok": False,
@@ -623,7 +623,7 @@ async def test_memory_server_continue_startup_preserves_409_blocking_payload():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_memory_server_startup_stays_limited_when_storage_barrier_is_blocking():
-    import memory_server
+    from app import memory_server
 
     with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
@@ -636,7 +636,7 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_memory_server_continue_startup_refuses_active_storage_barrier():
-    import memory_server
+    from app import memory_server
 
     with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="migration_pending")), \
@@ -652,7 +652,7 @@ async def test_memory_server_continue_startup_refuses_active_storage_barrier():
 
 @pytest.mark.unit
 def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
-    import memory_server
+    from app import memory_server
 
     with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
@@ -668,7 +668,7 @@ def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
 
 @pytest.mark.unit
 def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_completes():
-    import memory_server
+    from app import memory_server
 
     with patch.object(memory_server, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server, "_memory_runtime_init_completed", False), \
@@ -685,7 +685,7 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
 
 @pytest.mark.unit
 def test_memory_server_block_startup_endpoint_restores_limited_mode():
-    import memory_server
+    from app import memory_server
 
     with patch.object(memory_server, "_memory_runtime_init_completed", True), \
          patch.object(memory_server, "_memory_storage_blocked_after_init", False), \
@@ -711,7 +711,7 @@ def test_memory_server_block_startup_endpoint_restores_limited_mode():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
-    import main_server
+    from app import main_server
 
     calls = []
     workshop_module = SimpleNamespace(
@@ -733,8 +733,8 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
     主 loop 上的 asyncio.Task 后，没有 ThreadEvent 可以 reset。函数保留是为了
     避免改动文件内众多调用点，本测试只验证它仍可调用且不会抛异常。
     """
-    import main_server
-    from main_server import _SyncMessageQueue
+    from app import main_server
+    from app.main_server import _SyncMessageQueue
 
     role_state = {
         "小满": main_server.RoleState(
@@ -752,7 +752,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing_snapshot():
-    import main_server
+    from app import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
     run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "uploaded"})
@@ -787,7 +787,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_continues_when_memory_release_returns_false():
-    import main_server
+    from app import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
@@ -819,7 +819,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdown():
-    import main_server
+    from app import main_server
 
     server = SimpleNamespace(should_exit=False)
     start_config = {
@@ -842,7 +842,7 @@ async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdo
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_upload_when_deferred():
-    import main_server
+    from app import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
     call_order = []

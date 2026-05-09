@@ -395,7 +395,7 @@ def test_spawn_restarted_launcher_clears_main_server_init_marker_from_relaunch_e
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_syncs_memory_server_after_startup_import():
-    import main_server
+    from app import main_server
 
     with patch(
         "main_routers.characters_router.notify_memory_server_reload",
@@ -409,7 +409,7 @@ async def test_main_server_syncs_memory_server_after_startup_import():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_skips_memory_reload_when_startup_import_did_not_run():
-    import main_server
+    from app import main_server
 
     with patch(
         "main_routers.characters_router.notify_memory_server_reload",
@@ -423,7 +423,7 @@ async def test_main_server_skips_memory_reload_when_startup_import_did_not_run()
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_requests_local_server_shutdown_in_multi_process_mode(monkeypatch):
-    import main_server
+    from app import main_server
 
     shutdown_mock = AsyncMock()
     start_config = {
@@ -447,7 +447,7 @@ async def test_main_server_requests_local_server_shutdown_in_multi_process_mode(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_uses_runtime_shutdown_bridge_when_available(monkeypatch):
-    import main_server
+    from app import main_server
 
     callback_calls = []
 

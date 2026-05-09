@@ -17,7 +17,7 @@ from main_routers.shared_state import init_shared_state
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
     """See tests/unit/test_character_memory_regression.py for rationale."""
-    from main_server import RoleState, _SyncMessageQueue
+    from app.main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
             sync_message_queue=_SyncMessageQueue(),

@@ -5,6 +5,9 @@ mcp_server/servers.json
 tests/api_keys.json
 tests/test_inputs/
 
+# scripts/check_i18n.py 偶尔会被人 redirect 到这里，别再次入库
+/i18n_check_output.txt
+
 # 忽略日志文件
 *.log
 /logs/

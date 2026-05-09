@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 import mimetypes
 import json
 mimetypes.add_type("application/javascript", ".js")
@@ -630,7 +632,7 @@ async def _start_embedded_user_plugin_server() -> None:
     if Modules.user_plugin_http_server is not None:
         return
 
-    _plugin_package_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin")
+    _plugin_package_root = os.path.join(_repo_root, "plugin")
     if _plugin_package_root not in sys.path:
         sys.path.insert(1, _plugin_package_root)
 

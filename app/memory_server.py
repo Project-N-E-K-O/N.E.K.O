@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 from memory import (
     CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory,
     FactStore, PersonaManager, ReflectionEngine,

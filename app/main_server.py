@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Make the repo root importable when this module is run as a script
+# (python app/main_server.py). Under launcher.py the path is already set
+# up; the insert below is then a no-op.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
@@ -35,7 +40,9 @@ def _get_app_root():
         else:
             return os.path.dirname(sys.executable)
     else:
-        return os.path.dirname(os.path.abspath(__file__))
+        # Source mode: this file lives at <repo>/app/main_server.py, so the
+        # app root is two dirname() calls up.
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 仅在 Windows 上调整 DLL 搜索路径
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
