@@ -50,3 +50,34 @@ def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():
         is False
     )
 
+
+def test_custom_tts_config_requires_gptsovits_enabled():
+    mgr = _make_mgr("")
+    realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": True,
+                "TTS_MODEL_URL": "http://localhost:9880",
+                "GPTSOVITS_ENABLED": False,
+            },
+        )
+        is False
+    )
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            realtime_config,
+            {
+                "ENABLE_CUSTOM_API": True,
+                "TTS_MODEL_URL": "http://localhost:9880",
+                "GPTSOVITS_ENABLED": True,
+            },
+        )
+        is True
+    )

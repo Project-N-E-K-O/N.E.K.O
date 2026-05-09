@@ -2654,6 +2654,7 @@ class LLMSessionManager:
         has_custom_tts_config = (
             core_config_snapshot.get('ENABLE_CUSTOM_API')
             and core_config_snapshot.get('TTS_MODEL_URL')
+            and core_config_snapshot.get('GPTSOVITS_ENABLED')
         )
 
         if input_mode == 'text':
