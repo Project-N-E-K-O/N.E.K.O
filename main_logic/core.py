@@ -233,7 +233,7 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-import utils.gemini_tts_voices  # noqa: F401  — registers Gemini provider into native_voice_registry
+from utils import gemini_tts_voices  # noqa: F401  — import for side effect: registers Gemini provider into native_voice_registry
 from utils.native_voice_registry import resolve_native_voice_for_routing
 from utils.api_config_loader import (
     get_free_voices,

@@ -33,7 +33,7 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
-import utils.gemini_tts_voices  # noqa: F401  — registers Gemini provider into native_voice_registry
+from utils import gemini_tts_voices  # noqa: F401  — import for side effect: registers Gemini provider into native_voice_registry
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     get_active_realtime_native_provider,
