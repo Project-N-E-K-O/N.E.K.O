@@ -4970,6 +4970,166 @@ margin-top: 10px;
     outline: none;
 }
 
+.catgirl-panel-right .field-row select.voice-native-select {
+    display: none !important;
+}
+
+.catgirl-panel-right .voice-custom-select {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+}
+
+.catgirl-panel-right .voice-select-header {
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 32px 4px 12px;
+    border: none;
+    border-radius: 48px;
+    background: transparent;
+    color: #40C5F1;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    cursor: pointer;
+    position: relative;
+    box-sizing: border-box;
+    user-select: none;
+}
+
+.catgirl-panel-right .voice-select-header::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s ease;
+    pointer-events: none;
+}
+
+.catgirl-panel-right .voice-custom-select.active .voice-select-header::after {
+    transform: translateY(-50%) rotate(180deg);
+}
+
+.catgirl-panel-right .voice-custom-select.open-down .voice-select-header::after {
+    transform: translateY(-50%) rotate(0deg);
+}
+
+.catgirl-panel-right .voice-select-selected {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.catgirl-panel-right .voice-select-options {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: -2px;
+    width: calc(100% + 4px);
+    max-height: 250px;
+    overflow-y: auto;
+    display: none;
+    padding: 6px;
+    background: #fff;
+    border: 2px solid #b3e5fc;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 3000;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+.catgirl-panel-right .voice-custom-select.active .voice-select-options {
+    display: block;
+}
+
+.catgirl-panel-right .voice-custom-select.open-up .voice-select-options {
+    top: auto;
+    bottom: calc(100% + 8px);
+}
+
+.catgirl-panel-right .voice-select-options.has-scrollbar {
+    border-radius: 12px 0 0 12px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar {
+    width: 8px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+.catgirl-panel-right .voice-select-option,
+.catgirl-panel-right .voice-select-group-label {
+    min-height: 34px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.35;
+    box-sizing: border-box;
+}
+
+.catgirl-panel-right .voice-select-option {
+    color: #257da5;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: background 0.2s ease, color 0.2s ease;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.catgirl-panel-right .voice-select-option:hover,
+.catgirl-panel-right .voice-select-option:focus {
+    background: #e0f7ff;
+    color: #1686c2;
+    outline: none;
+}
+
+.catgirl-panel-right .voice-select-option.selected {
+    background: #e0f7ff;
+    color: #0d77ad;
+    font-weight: 700;
+}
+
+.catgirl-panel-right .voice-select-option.disabled {
+    color: #9fb9c5;
+    cursor: default;
+}
+
+.catgirl-panel-right .voice-select-group-label {
+    color: #40C5F1;
+    font-weight: 700;
+    cursor: default;
+    opacity: 0.85;
+}
+
+.catgirl-panel-right .field-row:has(.voice-custom-select.active) {
+    border-color: #40C5F1;
+}
+
 .catgirl-panel-right .field-row:focus-within {
     border-color: #40C5F1;
 }
