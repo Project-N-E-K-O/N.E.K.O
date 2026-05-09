@@ -400,7 +400,14 @@
             render('command');
             try {
                 const cmdResult = await sendCommand('set_agent_enabled', { enabled });
-                if (enabled && cmdResult && cmdResult.is_free_version && window.showAlert) {
+                const isFreeVersion = !!(
+                    cmdResult && (
+                        cmdResult.is_free_version ||
+                        (cmdResult.agent_api_gate && cmdResult.agent_api_gate.is_free_version) ||
+                        (cmdResult.snapshot && cmdResult.snapshot.gate && cmdResult.snapshot.gate.is_free_version)
+                    )
+                );
+                if (enabled && isFreeVersion && window.showAlert) {
                     const msg = window.t
                         ? window.t('agent.status.freeModelWarning')
                         : '由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。';

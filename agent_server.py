@@ -4450,9 +4450,15 @@ async def agent_command(payload: Dict[str, Any]):
     lanlan_name = (payload or {}).get("lanlan_name")
     if command == "set_agent_enabled":
         enabled = bool((payload or {}).get("enabled"))
+        gate = _check_agent_api_gate()
         if enabled:
             Modules.analyzer_enabled = True
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
+            if gate.get("ready") is True:
+                _try_refresh_computer_use_adapter(force=True)
+                _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
+                _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
+                asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
@@ -4470,7 +4476,13 @@ async def agent_command(payload: Dict[str, Any]):
         await _emit_agent_status_update(lanlan_name=lanlan_name)
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s total_ms=%s", request_id, command, total_ms)
-        return {"success": True, "request_id": request_id, "timing": {"agent_total_ms": total_ms}}
+        return {
+            "success": True,
+            "request_id": request_id,
+            "is_free_version": bool(gate.get("is_free_version")),
+            "agent_api_gate": gate,
+            "timing": {"agent_total_ms": total_ms},
+        }
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))

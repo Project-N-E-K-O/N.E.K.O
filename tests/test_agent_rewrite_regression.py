@@ -1354,6 +1354,34 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
     assert expected_reason in reasons
 
 
+def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "agent_command":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+
+    assert 'command == "set_agent_enabled"' in func_src
+    assert "gate = _check_agent_api_gate()" in func_src
+    assert '_try_refresh_computer_use_adapter(force=True)' in func_src
+    assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
+    assert '"is_free_version": bool(gate.get("is_free_version"))' in func_src
+    assert '"agent_api_gate": gate' in func_src
+
+
+def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+
+    assert "const isFreeVersion" in source
+    assert "cmdResult.is_free_version" in source
+    assert "cmdResult.agent_api_gate && cmdResult.agent_api_gate.is_free_version" in source
+    assert "window.showAlert(msg, title)" in source
+
+
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {
