@@ -805,8 +805,8 @@ Regras:
 - Cada item deve ser uma frase natural em {output_language}, preservando resultado-chave, citação-chave e significado relacional quando possível.""",
     },
     "GAME_ARCHIVE_MEMORY_HIGHLIGHTER_USER_PROMPTS": {
-        "es": "======以下为游戏赛后记忆筛选输入======\n{payload}\n======以上为游戏赛后记忆筛选输入======",
-        "pt": "======以下为游戏赛后记忆筛选输入======\n{payload}\n======以上为游戏赛后记忆筛选输入======",
+        "es": "Selecciona los puntos clave de memoria postpartida a partir del material siguiente.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+        "pt": "Selecione os destaques de memória pós-jogo a partir do material abaixo.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
     },
     "GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS": {
         "es": {

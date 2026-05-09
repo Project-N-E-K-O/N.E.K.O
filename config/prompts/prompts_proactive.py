@@ -2018,6 +2018,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': {'screen': '画面の内容', 'web': 'ウェブ話題', 'music': '音楽のおすすめ', 'meme': 'ミーム'},
         'ko': {'screen': '화면 내용', 'web': '웹 화제', 'music': '음악 추천', 'meme': '밈'},
         'ru': {'screen': 'содержимое экрана', 'web': 'веб-темы', 'music': 'музыкальные рекомендации', 'meme': 'мем'},
+        'es': {'screen': 'contenido de pantalla', 'web': 'temas web', 'music': 'recomendaciones musicales', 'meme': 'meme'},
+        'pt': {'screen': 'conteúdo da tela', 'web': 'temas da web', 'music': 'recomendações musicais', 'meme': 'meme'},
     }
 
     _combine_template = {
@@ -2026,6 +2028,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': '- {materials}を組み合わせて話しかけることができます',
         'ko': '- {materials}을(를) 결합하여 말을 걸 수 있습니다',
         'ru': '- Вы можете комбинировать {materials} для разговора',
+        'es': '- Puedes combinar {materials} como material de conversación',
+        'pt': '- Você pode combinar {materials} como material de conversa',
     }
 
     _skip_if_boring = {
@@ -2034,6 +2038,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': '。ただし最近似た内容を話した場合や興味がない場合はパスしてください',
         'ko': '. 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
         'ru': '. Пропустите, если недавно обсуждали подобное или вам неинтересно',
+        'es': '. Omite si hablaste recientemente de algo similar o no te interesa',
+        'pt': '. Pule se vocês falaram recentemente de algo parecido ou se você não tiver interesse',
     }
 
     _none_instruction = {
@@ -2042,6 +2048,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': '- 会話の流れや現在の状況に基づいて自然に話しかけることができますが、最近似た内容を話した場合や特に言うことがない場合はパスしてください',
         'ko': '- 대화 흐름과 현재 상태를 바탕으로 자연스럽게 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 특별히 할 말이 없다면 패스하세요',
         'ru': '- Вы можете естественно начать разговор, опираясь на историю чата и текущее состояние, но пропустите, если недавно обсуждали подобное или нечего сказать',
+        'es': '- Puedes iniciar una conversación natural según el historial y el estado actual, pero omite si hablaron recientemente de algo similar o no tienes nada que decir',
+        'pt': '- Você pode iniciar uma conversa naturalmente com base no histórico e no estado atual, mas pule se vocês falaram recentemente de algo parecido ou se não houver nada a dizer',
     }
 
     # ── 动态拼接 source_instruction ────────────────────────────────
@@ -2100,6 +2108,18 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'MUSIC': '[MUSIC] = порекомендовать музыку (запуск воспроизведения)',
             'MEME':  '[MEME]  = сопроводить мемом (отправка картинки)',
         },
+        'es': {
+            'CHAT':  '[CHAT]  = chat solo de texto (sin enlace/reproducción/imagen)',
+            'WEB':   '[WEB]   = compartir enlace externo (muestra tarjeta)',
+            'MUSIC': '[MUSIC] = recomendar música (activa reproducción)',
+            'MEME':  '[MEME]  = acompañar con meme (envía imagen)',
+        },
+        'pt': {
+            'CHAT':  '[CHAT]  = chat só de texto (sem link/reprodução/imagem)',
+            'WEB':   '[WEB]   = compartilhar link externo (mostra cartão)',
+            'MUSIC': '[MUSIC] = recomendar música (aciona reprodução)',
+            'MEME':  '[MEME]  = acompanhar com meme (envia imagem)',
+        },
     }
 
     _of_header = {
@@ -2108,6 +2128,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': '出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：',
         'ko': '출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:',
         'ru': 'Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:',
+        'es': 'Formato de salida (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):',
+        'pt': 'Formato de saída (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):',
     }
 
     _of_example = {
@@ -2141,6 +2163,18 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'MUSIC': 'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?',
             'MEME':  'Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.',
         },
+        'es': {
+            'CHAT':  'Ejemplo:\n[CHAT]\n¿Estás viendo eso? Parece bastante interesante...',
+            'WEB':   'Ejemplo:\n[WEB]\nOye, encontré un tema bastante interesante...',
+            'MUSIC': 'Ejemplo:\n[MUSIC]\nEsta canción encaja muy bien con el ambiente de ahora. ¿Quieres probar?',
+            'MEME':  'Ejemplo:\n[MEME]\nTe veo ocupadísimo, así que vengo a animarte desde el lado.',
+        },
+        'pt': {
+            'CHAT':  'Exemplo:\n[CHAT]\nVocê está vendo isso? Parece bem interessante...',
+            'WEB':   'Exemplo:\n[WEB]\nEi, apareceu um assunto bem interessante...',
+            'MUSIC': 'Exemplo:\n[MUSIC]\nEssa música combina muito com o clima de agora. Quer ouvir?',
+            'MEME':  'Exemplo:\n[MEME]\nVocê parece tão ocupado; estou aqui torcendo por você.',
+        },
     }
 
     _of_none = {
@@ -2149,6 +2183,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'ja': '話すことがなければ [PASS] と返してください。\nそれ以外は直接メッセージを出力（ソースタグ不要）。',
         'ko': '질문하거나 대화할 게 없으면 [PASS]로 답변.\n아니면 메시지만 직접 출력 (소스 태그 불필요).',
         'ru': 'Если нечего уместно сказать, ответьте [PASS].\nИначе просто выведите своё сообщение без тега источника.',
+        'es': 'Si no hay nada adecuado que mencionar, responde [PASS].\nSi no, escribe directamente tu mensaje (sin tag de fuente).',
+        'pt': 'Se não houver nada adequado para mencionar, responda [PASS].\nCaso contrário, escreva diretamente sua mensagem (sem tag de fonte).',
     }
 
     # 确定哪些"有副作用"的 tag 可用

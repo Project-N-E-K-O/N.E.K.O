@@ -1908,24 +1908,130 @@ memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT['zh']
 
 _apply_prompt_language_translations(globals(), {
     'RECENT_HISTORY_MANAGER_PROMPT': {
-        'es': """Eres un asistente de resumen de historial reciente. Resume la conversación de forma breve y factual para que el modelo la use después. Conserva nombres, hechos, preferencias, compromisos y puntos emocionales importantes. No inventes información. Devuelve solo el resumen.""",
-        'pt': """Você é um assistente de resumo de histórico recente. Resuma a conversa de forma breve e factual para uso posterior do modelo. Preserve nomes, fatos, preferências, compromissos e pontos emocionais importantes. Não invente informações. Retorne apenas o resumo.""",
+        'es': """Resume la siguiente conversación para producir un resumen conciso pero informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+El resumen debe conservar información clave, hechos importantes y puntos principales sin ser engañoso ni ambiguo. Evita repetir en exceso las mismas palabras; usa pronombres o referencias contextuales después de la primera mención. Si una parte posterior corrige un hecho anterior, conserva el recorrido "al principio X, luego corregido a Y".
+
+Devuelve un diccionario JSON con la clave "summary" y un valor de tipo string.""",
+        'pt': """Resuma a conversa abaixo para produzir um resumo conciso, mas informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+O resumo deve preservar informações-chave, fatos importantes e pontos principais sem ser enganoso nem ambíguo. Evite repetir demais as mesmas palavras; use pronomes ou referências contextuais depois da primeira menção. Se uma parte posterior corrigir um fato anterior, preserve o percurso "primeiro X, depois corrigido para Y".
+
+Retorne um dicionário JSON com a chave "summary" e um valor string.""",
     },
     'DETAILED_RECENT_HISTORY_MANAGER_PROMPT': {
-        'es': """Eres un asistente de memoria conversacional. Produce un resumen estructurado y detallado del historial reciente, separando hechos, preferencias, estado emocional, asuntos abiertos y posibles próximos pasos. Mantén fidelidad al texto y no inventes.""",
-        'pt': """Você é um assistente de memória conversacional. Produza um resumo estruturado e detalhado do histórico recente, separando fatos, preferências, estado emocional, assuntos abertos e possíveis próximos passos. Seja fiel ao texto e não invente.""",
+        'es': """Resume la siguiente conversación para producir un resumen conciso pero informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+Conserva tanta información válida y clara como sea posible: hechos, preferencias, compromisos, estado emocional, asuntos abiertos y posibles próximos pasos. Evita repetición excesiva y no inventes. Si una parte posterior corrige un hecho anterior, conserva ese recorrido.
+
+Devuelve un diccionario JSON con la clave "summary" y un valor de tipo string.""",
+        'pt': """Resuma a conversa abaixo para produzir um resumo conciso, mas informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+Preserve o máximo possível de informação válida e clara: fatos, preferências, compromissos, estado emocional, assuntos abertos e possíveis próximos passos. Evite repetição excessiva e não invente. Se uma parte posterior corrigir um fato anterior, preserve esse percurso.
+
+Retorne um dicionário JSON com a chave "summary" e um valor string.""",
     },
     'FURTHER_SUMMARIZE_PROMPT': {
-        'es': """Condensa el resumen anterior sin perder hechos importantes, relaciones, preferencias, compromisos, emociones relevantes ni asuntos abiertos. El resultado debe ser más corto, claro y útil para contexto futuro. No agregues información nueva.""",
-        'pt': """Condense o resumo anterior sem perder fatos importantes, relações, preferências, compromissos, emoções relevantes ou assuntos abertos. O resultado deve ser mais curto, claro e útil para contexto futuro. Não acrescente informações novas.""",
+        'es': """Resume el siguiente contenido para producir un resumen conciso pero informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+El resumen debe conservar información clave, hechos importantes y puntos principales sin ser engañoso ni ambiguo. No debe superar 700 palabras. Si hay discusiones antiguas ya cerradas o sustituidas por un tema/tarea nuevo, reduce sus detalles y conserva solo la conclusión o una mención breve. No borres las correcciones factuales.
+
+Devuelve un diccionario JSON con la clave "summary" y un valor de tipo string.""",
+        'pt': """Resuma o conteúdo abaixo para produzir um resumo conciso, mas informativo:
+
+======以下为对话======
+%s
+======以上为对话======
+
+O resumo deve preservar informações-chave, fatos importantes e pontos principais sem ser enganoso nem ambíguo. Não deve passar de 700 palavras. Se houver discussões antigas já encerradas ou substituídas por um novo tema/tarefa, reduza seus detalhes e mantenha apenas a conclusão ou uma menção breve. Não apague correções factuais.
+
+Retorne um dicionário JSON com a chave "summary" e um valor string.""",
     },
     'SETTINGS_EXTRACTOR_PROMPT': {
-        'es': """Extrae del diálogo únicamente ajustes o preferencias explícitas y estables del usuario. Devuelve JSON. No infieras gustos, identidad ni hechos personales sin evidencia clara. Si no hay ajustes nuevos, devuelve una estructura vacía.""",
-        'pt': """Extraia do diálogo apenas configurações ou preferências explícitas e estáveis do usuário. Retorne JSON. Não infira gostos, identidade ou fatos pessoais sem evidência clara. Se não houver ajustes novos, retorne estrutura vazia.""",
+        'es': """Extrae información personal importante sobre {LANLAN_NAME} y {MASTER_NAME} desde la siguiente conversación. Es para una nota personal y futuro roleplay. Devuelve en formato JSON:
+{{
+    "{LANLAN_NAME}": {{"atributo1": "valor", "atributo2": "valor", "otra_info": "..."}},
+    "{MASTER_NAME}": {{"atributo1": "valor", "atributo2": "valor", "otra_info": "..."}}
+}}
+
+======以下为对话======
+%s
+======以上为对话======
+
+Ahora extrae información personal importante sobre {LANLAN_NAME} y {MASTER_NAME}. Añade solo información importante y precisa. Si no hay información apta, devuelve un diccionario vacío ({{}}).""",
+        'pt': """Extraia informações pessoais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo. Isto é para uma nota pessoal e roleplay futuro. Retorne em formato JSON:
+{{
+    "{LANLAN_NAME}": {{"atributo1": "valor", "atributo2": "valor", "outra_info": "..."}},
+    "{MASTER_NAME}": {{"atributo1": "valor", "atributo2": "valor", "outra_info": "..."}}
+}}
+
+======以下为对话======
+%s
+======以上为对话======
+
+Agora extraia informações pessoais importantes sobre {LANLAN_NAME} e {MASTER_NAME}. Adicione apenas informações importantes e precisas. Se não houver informação qualificada, retorne um dicionário vazio ({{}}).""",
     },
     'HISTORY_REVIEW_PROMPT': {
-        'es': """Revisa el historial conversacional y produce un resumen útil para continuidad. Prioriza hechos verificables, decisiones, preferencias, vínculos emocionales, temas recurrentes y asuntos pendientes. Distingue observaciones confirmadas de hipótesis. No inventes.""",
-        'pt': """Revise o histórico conversacional e produza um resumo útil para continuidade. Priorize fatos verificáveis, decisões, preferências, vínculos emocionais, temas recorrentes e pendências. Diferencie observações confirmadas de hipóteses. Não invente.""",
+        'es': """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona y errores de rol. Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
+
+======以下为对话历史======
+%s
+======以上为对话历史======
+
+Devuelve el historial corregido en formato JSON:
+{
+    "explanation": "Breve descripción de los problemas encontrados y correcciones realizadas",
+    "corrected_dialogue": [
+        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Contenido corregido del mensaje"},
+        ...
+    ]
+}
+
+Notas:
+- El diálogo debe ser conversacional, natural y en personaje.
+- Conserva la información central y el contenido importante.
+- Asegura lógica clara y coherente.
+- Elimina redundancia, repetición y contradicciones evidentes.""",
+        'pt': """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa e erros de papel. Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
+
+======以下为对话历史======
+%s
+======以上为对话历史======
+
+Retorne o histórico corrigido em formato JSON:
+{
+    "explanation": "Breve descrição dos problemas encontrados e correções feitas",
+    "corrected_dialogue": [
+        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Conteúdo corrigido da mensagem"},
+        ...
+    ]
+}
+
+Notas:
+- O diálogo deve ser conversacional, natural e no personagem.
+- Preserve informações centrais e conteúdo importante.
+- Garanta lógica clara e coerente.
+- Remova redundância, repetição e contradições evidentes.""",
     },
     'EMOTION_ANALYSIS_PROMPT': {
         'es': 'Analiza la emoción principal del texto. Devuelve solo JSON con emotion y confidence. No expliques.',
@@ -1933,17 +2039,17 @@ _apply_prompt_language_translations(globals(), {
     },
     'INNER_THOUGHTS_HEADER': {'es': 'Pensamientos internos:', 'pt': 'Pensamentos internos:'},
     'INNER_THOUGHTS_BODY': {'es': 'Lo siguiente son pensamientos internos privados del personaje. Úsalos como referencia de estado, no los repitas al usuario literalmente.', 'pt': 'A seguir estão pensamentos internos privados do personagem. Use como referência de estado, não repita literalmente ao usuário.'},
-    'INNER_THOUGHTS_DYNAMIC': {'es': 'Pensamiento interno actual: {inner_thoughts}', 'pt': 'Pensamento interno atual: {inner_thoughts}'},
-    'ELAPSED_TIME_DHM': {'es': '{days}d {hours}h {minutes}min', 'pt': '{days}d {hours}h {minutes}min'},
-    'ELAPSED_TIME_DH': {'es': '{days}d {hours}h', 'pt': '{days}d {hours}h'},
-    'ELAPSED_TIME_DM': {'es': '{days}d {minutes}min', 'pt': '{days}d {minutes}min'},
-    'ELAPSED_TIME_D': {'es': '{days}d', 'pt': '{days}d'},
-    'ELAPSED_TIME_HM': {'es': '{hours}h {minutes}min', 'pt': '{hours}h {minutes}min'},
-    'ELAPSED_TIME_H': {'es': '{hours}h', 'pt': '{hours}h'},
-    'ELAPSED_TIME_M': {'es': '{minutes}min', 'pt': '{minutes}min'},
+    'INNER_THOUGHTS_DYNAMIC': {'es': 'La hora actual es {time}. Antes de iniciar la conversación, {name} repasa mentalmente los acontecimientos recientes.\n', 'pt': 'A hora atual é {time}. Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n'},
+    'ELAPSED_TIME_DHM': {'es': '{d} días, {h} horas y {m} minutos', 'pt': '{d} dias, {h} horas e {m} minutos'},
+    'ELAPSED_TIME_DH': {'es': '{d} días y {h} horas', 'pt': '{d} dias e {h} horas'},
+    'ELAPSED_TIME_DM': {'es': '{d} días y {m} minutos', 'pt': '{d} dias e {m} minutos'},
+    'ELAPSED_TIME_D': {'es': '{d} días', 'pt': '{d} dias'},
+    'ELAPSED_TIME_HM': {'es': '{h} horas y {m} minutos', 'pt': '{h} horas e {m} minutos'},
+    'ELAPSED_TIME_H': {'es': '{h} horas', 'pt': '{h} horas'},
+    'ELAPSED_TIME_M': {'es': '{m} minutos', 'pt': '{m} minutos'},
     'CHAT_GAP_NOTICE': {'es': 'Han pasado {elapsed} desde la última conversación.', 'pt': 'Já se passaram {elapsed} desde a última conversa.'},
     'CHAT_GAP_LONG_HINT': {'es': 'Hubo una pausa larga; no finjas que fue continuo. Puedes reconocer suavemente el regreso si encaja.', 'pt': 'Houve uma pausa longa; não finja continuidade. Você pode reconhecer suavemente o retorno se couber.'},
-    'CHAT_GAP_CURRENT_TIME': {'es': 'Hora actual: {time}', 'pt': 'Hora atual: {time}'},
+    'CHAT_GAP_CURRENT_TIME': {'es': 'La hora actual es {now}.', 'pt': 'A hora atual é {now}.'},
     'CHAT_HOLIDAY_CONTEXT': {'es': 'Contexto festivo: {holiday}', 'pt': 'Contexto de feriado: {holiday}'},
     'MEMORY_RECALL_HEADER': {'es': 'Recuerdos posiblemente relevantes:', 'pt': 'Memórias possivelmente relevantes:'},
     'MEMORY_RESULTS_HEADER': {'es': 'Resultados de memoria:', 'pt': 'Resultados da memória:'},
@@ -1962,8 +2068,8 @@ _apply_prompt_language_translations(globals(), {
         'pt': """Decida se uma frase negativa mira o usuário, o personagem, outra pessoa ou um objeto/situação. Retorne JSON. Não exagere; use apenas evidência textual clara.""",
     },
     'NEGATIVE_KEYWORDS_I18N': {
-        'es': ['odio', 'molesto', 'malo', 'terrible', 'enojado', 'triste', 'decepcionado'],
-        'pt': ['odeio', 'irritante', 'ruim', 'terrível', 'bravo', 'triste', 'decepcionado'],
+        'es': ['no hables', 'no quiero hablar', 'no quiero hablar de eso', 'cambia de tema', 'hablemos de otra cosa', 'déjalo', 'basta', 'no lo menciones', 'no sigas'],
+        'pt': ['não fale', 'não quero falar', 'não quero falar disso', 'mude de assunto', 'vamos falar de outra coisa', 'deixa pra lá', 'chega', 'não mencione isso', 'não continue'],
     },
     'REFLECTION_PROMPT': {
         'es': """Reflexiona sobre la conversación y propone memorias útiles y seguras. Separa hechos, preferencias y patrones relacionales. Mantén evidencia, evita inventar y evita guardar datos sensibles no necesarios.""",
