@@ -774,30 +774,30 @@ html #chat-container {
 }
 
 [data-theme="dark"] .catgirl-panel-right .voice-select-options {
-  background: #252525;
-  border-color: #3a5a6e;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
+  background: #252525 !important;
+  border-color: #3a5a6e !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e !important;
 }
 
 [data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  background: #1e1e1e !important;
 }
 
 [data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb {
-  background: rgba(74, 163, 223, 0.55);
+  background: rgba(74, 163, 223, 0.55) !important;
 }
 
 [data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb:hover {
-  background: rgba(74, 163, 223, 0.8);
+  background: rgba(74, 163, 223, 0.8) !important;
 }
 
 [data-theme="dark"] .catgirl-panel-right .voice-select-option {
   color: #e0e0e0;
 }
 
-[data-theme="dark"] .catgirl-panel-right .voice-select-option:hover,
-[data-theme="dark"] .catgirl-panel-right .voice-select-option:focus {
+[data-theme="dark"] .catgirl-panel-right .voice-select-option:not(.disabled):hover,
+[data-theme="dark"] .catgirl-panel-right .voice-select-option:not(.disabled):focus {
   background: rgba(74, 163, 223, 0.18);
   color: #f5fbff;
 }

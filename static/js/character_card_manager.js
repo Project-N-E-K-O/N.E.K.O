@@ -5501,6 +5501,16 @@ function _panelCreateVoiceSelectUi(selectEl) {
         });
     }
 
+    function setOptionTabbability(isTabbable) {
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            if (item.classList.contains('disabled')) {
+                item.setAttribute('tabindex', '-1');
+                return;
+            }
+            item.setAttribute('tabindex', isTabbable ? '0' : '-1');
+        });
+    }
+
     function applyDropdownDirection() {
         const maxHeight = 250;
         const gap = 8;
@@ -5528,9 +5538,14 @@ function _panelCreateVoiceSelectUi(selectEl) {
         updateScrollbarState();
     }
 
-    function closeDropdown() {
+    function closeDropdown(restoreFocus = false) {
+        const wasActive = container.classList.contains('active');
         container.classList.remove('active', 'open-up', 'open-down');
         header.setAttribute('aria-expanded', 'false');
+        setOptionTabbability(false);
+        if (restoreFocus && wasActive && header.isConnected) {
+            header.focus();
+        }
     }
 
     function openDropdown() {
@@ -5539,10 +5554,14 @@ function _panelCreateVoiceSelectUi(selectEl) {
             activeSelect.classList.remove('active', 'open-up', 'open-down');
             const activeHeader = activeSelect.querySelector('.voice-select-header');
             if (activeHeader) activeHeader.setAttribute('aria-expanded', 'false');
+            activeSelect.querySelectorAll('.voice-select-option:not(.disabled)').forEach(item => {
+                item.setAttribute('tabindex', '-1');
+            });
         });
 
         container.classList.add('active');
         header.setAttribute('aria-expanded', 'true');
+        setOptionTabbability(true);
         applyDropdownDirection();
 
         const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
@@ -5572,12 +5591,12 @@ function _panelCreateVoiceSelectUi(selectEl) {
 
     function selectOptionValue(value) {
         if (selectEl.value === value) {
-            closeDropdown();
+            closeDropdown(true);
             return;
         }
         selectEl.value = value;
         selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-        closeDropdown();
+        closeDropdown(true);
     }
 
     function focusItemByOffset(currentItem, offset) {
@@ -5594,7 +5613,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
         const item = document.createElement('div');
         item.className = 'voice-select-option';
         item.setAttribute('role', 'option');
-        item.setAttribute('tabindex', option.disabled ? '-1' : '0');
+        item.setAttribute('tabindex', '-1');
         item.dataset.value = option.value;
         item.textContent = option.textContent || option.value;
         item.title = option.title || item.textContent;
@@ -5616,8 +5635,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
                     focusItemByOffset(item, -1);
                 } else if (event.key === 'Escape') {
                     event.preventDefault();
-                    closeDropdown();
-                    header.focus();
+                    closeDropdown(true);
                 }
             });
         }
@@ -5642,6 +5660,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
             }
         });
         syncSelectionState();
+        setOptionTabbability(container.classList.contains('active'));
         updateScrollbarState();
     }
 
@@ -5652,8 +5671,8 @@ function _panelCreateVoiceSelectUi(selectEl) {
     }
 
     function handleDocumentKeydown(event) {
-        if (event.key === 'Escape') {
-            closeDropdown();
+        if (event.key === 'Escape' && container.classList.contains('active')) {
+            closeDropdown(true);
         }
     }
 

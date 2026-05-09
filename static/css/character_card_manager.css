@@ -5101,8 +5101,8 @@ margin-top: 10px;
     white-space: nowrap;
 }
 
-.catgirl-panel-right .voice-select-option:hover,
-.catgirl-panel-right .voice-select-option:focus {
+.catgirl-panel-right .voice-select-option:not(.disabled):hover,
+.catgirl-panel-right .voice-select-option:not(.disabled):focus {
     background: #e0f7ff;
     color: #1686c2;
     outline: none;
