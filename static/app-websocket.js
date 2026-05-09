@@ -19,10 +19,17 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 280;
+    const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
+    const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _musicPlayUrlCoordChannel = null;
+    let _musicPlayUrlCoordChannelReady = false;
+    let _musicPlayUrlClaims = Object.create(null);
+    const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -36,6 +43,162 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function getMusicPlayUrlCoordChannel() {
+        if (_musicPlayUrlCoordChannelReady) {
+            return _musicPlayUrlCoordChannel;
+        }
+        _musicPlayUrlCoordChannelReady = true;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                _musicPlayUrlCoordChannel = new BroadcastChannel(MUSIC_PLAY_URL_COORD_CHANNEL_NAME);
+                _musicPlayUrlCoordChannel.onmessage = function (event) {
+                    var data = event && event.data;
+                    if (!data || typeof data !== 'object') return;
+                    if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
+                    if (data.type !== 'music_play_url_claim' || !data.key) return;
+                    _musicPlayUrlClaims[data.key] = Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS;
+                };
+                window.addEventListener('beforeunload', function () {
+                    try {
+                        if (_musicPlayUrlCoordChannel) {
+                            _musicPlayUrlCoordChannel.close();
+                            _musicPlayUrlCoordChannel = null;
+                        }
+                    } catch (_) { /* 忽略 */ }
+                });
+            }
+        } catch (_) {
+            _musicPlayUrlCoordChannel = null;
+        }
+        return _musicPlayUrlCoordChannel;
+    }
+
+    function pruneMusicPlayUrlClaims() {
+        var now = Date.now();
+        Object.keys(_musicPlayUrlClaims).forEach(function (key) {
+            if (!_musicPlayUrlClaims[key] || _musicPlayUrlClaims[key] <= now) {
+                delete _musicPlayUrlClaims[key];
+            }
+        });
+    }
+
+    function getMusicPlayUrlClaimKey(response) {
+        if (!response || !response.url) return '';
+        return [
+            String(response.url || '').trim(),
+            String(response.name || '').trim(),
+            String(response.artist || '').trim()
+        ].join('\n');
+    }
+
+    function hasMusicPlayUrlClaim(key) {
+        if (!key) return false;
+        pruneMusicPlayUrlClaims();
+        return !!_musicPlayUrlClaims[key];
+    }
+
+    function claimMusicPlayUrl(key) {
+        if (!key) return;
+        pruneMusicPlayUrlClaims();
+        _musicPlayUrlClaims[key] = Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS;
+        var channel = getMusicPlayUrlCoordChannel();
+        if (!channel) return;
+        try {
+            channel.postMessage({
+                type: 'music_play_url_claim',
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                ts: Date.now()
+            });
+        } catch (_) { /* 忽略 */ }
+    }
+
+    function isStandaloneChatPageForMusic() {
+        var pathname = (window.location && window.location.pathname) || '';
+        return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    function hasLocalMusicOwnerOrPending() {
+        try {
+            if (typeof window.getMusicPlayerInstance === 'function' && window.getMusicPlayerInstance()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPending === 'function' && window.isMusicPending()) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function hasRemoteMusicLeaderHint() {
+        try {
+            if (typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            var musicBar = document.getElementById('music-player-bar');
+            if (musicBar && musicBar.dataset && musicBar.dataset.mirror === 'true') {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function dispatchMusicPlayUrlResponse(response, reason) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return;
+        }
+        var key = getMusicPlayUrlClaimKey(response);
+        claimMusicPlayUrl(key);
+        console.log('[Music] Received direct play command from backend:', response.url);
+        window.dispatchMusicPlay({
+            name: response.name || 'Plugin Music',
+            artist: response.artist || 'External',
+            url: response.url,
+            cover: response.cover || undefined
+        }, {
+            source: 'music_play_url',
+            reason: reason || 'websocket'
+        });
+    }
+
+    function handleMusicPlayUrlResponse(response) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return;
+        }
+
+        var key = getMusicPlayUrlClaimKey(response);
+        getMusicPlayUrlCoordChannel();
+
+        // chat.html 是独立聊天窗口时默认作为从窗口，给主窗口一个很短的
+        // 抢占窗口；若主窗口不存在或没有接管播放，再由 chat.html 兜底。
+        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
+            setTimeout(function () {
+                if (!hasLocalMusicOwnerOrPending() && (hasRemoteMusicLeaderHint() || hasMusicPlayUrlClaim(key))) {
+                    console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+                    return;
+                }
+                dispatchMusicPlayUrlResponse(response, 'chat-fallback');
+            }, MUSIC_PLAY_URL_FOLLOWER_GRACE_MS);
+            return;
+        }
+
+        if (!hasLocalMusicOwnerOrPending() && (hasRemoteMusicLeaderHint() || hasMusicPlayUrlClaim(key))) {
+            console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+            return;
+        }
+
+        dispatchMusicPlayUrlResponse(response, 'websocket');
+    }
 
     function isHomeTutorialLockedForGreeting() {
         try {
@@ -2072,14 +2235,7 @@
 
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
-                    if (response.url && typeof window.dispatchMusicPlay === 'function') {
-                        console.log('[Music] Received direct play command from backend:', response.url);
-                        window.dispatchMusicPlay({
-                            name: response.name || 'Plugin Music',
-                            artist: response.artist || 'External',
-                            url: response.url
-                        });
-                    }
+                    handleMusicPlayUrlResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
