@@ -250,17 +250,16 @@ def _get_voice_preview_language(request: Request, language: object = None, i18n_
 
 
 def _is_free_preset_voice_id(voice_id: object) -> bool:
-    """判断是否为免费预设音色，兼容配置映射缺失时的 voice-tone 前缀。"""
+    """判断是否为运行时免费预设音色。"""
     normalized = str(voice_id or "").strip()
     if not normalized:
         return False
     try:
         from utils.api_config_loader import get_free_voices
-        if normalized in set((get_free_voices() or {}).values()):
-            return True
+        free_voice_ids = set((get_free_voices() or {}).values())
     except Exception:
-        pass
-    return normalized.startswith("voice-tone-")
+        return False
+    return normalized in free_voice_ids
 
 
 def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
