@@ -73,7 +73,8 @@ class TripRouter(PluginRouter):
 
         # 路线规划
         svc = RoutingService(plugin._cfg)
-        modes = [mode] if mode else None
+        normalized_mode = mode.strip().lower() if mode else ""
+        modes = [normalized_mode] if normalized_mode else None
         routing = await svc.plan(
             origin_loc["lat"], origin_loc["lon"],
             dest_loc["lat"], dest_loc["lon"],
@@ -97,7 +98,7 @@ class TripRouter(PluginRouter):
                 "duration": format_duration(route.duration_s),
                 "summary": route.summary or _mode_label(route.mode, i18n),
             }
-            if route.cost:
+            if route.cost is not None and route.cost != "":
                 entry["cost"] = route.cost
             if route.steps:
                 entry["steps"] = [

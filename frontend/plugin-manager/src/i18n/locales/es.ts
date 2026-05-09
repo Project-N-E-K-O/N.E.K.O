@@ -189,7 +189,7 @@ export default {
     batchNoReloadable: 'No hay plugins en ejecución en la selección',
     import: 'Importar',
     importing: 'Importando…',
-    importSuccess: 'Se importó {name}, se desempaquetaron {count} plugins',
+    importSuccess: 'Se importó {name}, se instalaron {count} plugins',
     importFailed: 'Error al importar',
     export: 'Exportar',
     exportSuccess: 'Se exportaron {count} paquetes',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: 'Gestor de paquetes',
-        body: 'El gestor reutiliza tus filtros y selección para empaquetar, inspeccionar, verificar o descomprimir.'
+        body: 'El gestor reutiliza tus filtros y selección para construir, inspeccionar, verificar o instalar.'
       },
       packageOperations: {
         title: 'Operaciones de paquete',
-        body: 'Elige modos de empaquetado, inspecciona paquetes, descomprime o analiza bundles. La guía no ejecuta acciones peligrosas.'
+        body: 'Elige modos de construcción, inspecciona paquetes, instala o analiza bundles. La guía no ejecuta acciones peligrosas.'
       },
       pluginDetail: {
         title: 'Detalles del plugin',

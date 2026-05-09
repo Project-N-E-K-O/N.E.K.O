@@ -189,7 +189,7 @@ export default {
     batchNoReloadable: '선택 항목 중 실행 중인 플러그인이 없습니다',
     import: '가져오기',
     importing: '가져오는 중…',
-    importSuccess: '{name}을(를) 가져와 {count}개의 플러그인을 풀었습니다',
+    importSuccess: '{name}을(를) 가져와 {count}개의 플러그인을 설치했습니다',
     importFailed: '가져오기에 실패했습니다',
     export: '내보내기',
     exportSuccess: '{count}개의 패키지를 내보냈습니다',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: '패키지 관리',
-        body: '현재 필터와 선택을 재사용해서 패키징, 검사, 검증, 압축 해제를 할 수 있어.'
+        body: '현재 필터와 선택을 재사용해서 빌드, 검사, 검증, 설치를 할 수 있어.'
       },
       packageOperations: {
         title: '패키지 작업',
-        body: '패키징 모드, 패키지 검사, 압축 해제, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.'
+        body: '빌드 모드, 패키지 검사, 설치, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.'
       },
       pluginDetail: {
         title: '플러그인 상세',

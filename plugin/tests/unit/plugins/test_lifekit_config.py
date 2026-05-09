@@ -4,10 +4,12 @@ import pytest
 
 from plugin.plugins import lifekit
 from plugin.plugins.lifekit import LifeKitPlugin
+from plugin.plugins.lifekit._routing import Route, RoutingResult
 from plugin.plugins.lifekit._i18n import LRUCache
 from plugin.plugins.lifekit.routers import hourly as hourly_router
+from plugin.plugins.lifekit.routers import trip as trip_router
 from plugin.plugins.lifekit.routers.hourly import _safe_idx
-from plugin.plugins.lifekit.routers.trip import _build_mode_advice, _build_next_actions, _build_weather_tips, _mode_label
+from plugin.plugins.lifekit.routers.trip import TripRouter, _build_mode_advice, _build_next_actions, _build_weather_tips, _mode_label
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -57,6 +59,49 @@ def test_trip_helpers_localize_visible_text_and_handle_partial_weather() -> None
         "search_nearby location=Tokyo - search near destination",
         "currency_convert - currency conversion",
     ]
+
+
+@pytest.mark.asyncio
+async def test_trip_advice_normalizes_mode_and_preserves_zero_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    class MainPlugin:
+        _cfg: dict[str, object] = {}
+        _i18n = lifekit.I18n(lifekit._LOCALES_DIR)
+
+        def _resolve_locale(self) -> None:
+            self._i18n.set_locale("en")
+
+        async def _resolve_location(self, city: str | None):
+            name = city or "Home"
+            return {"city": name, "lat": 31.2, "lon": 121.4}, ""
+
+        async def _get_weather_data(self, loc: dict[str, object]):
+            return None, ""
+
+    captured: dict[str, object] = {}
+
+    class RoutingService:
+        def __init__(self, cfg: dict[str, object]) -> None:
+            captured["cfg"] = cfg
+
+        async def plan(self, *args: object, **kwargs: object) -> RoutingResult:
+            captured["modes"] = kwargs.get("modes")
+            return RoutingResult(
+                origin_name="Home",
+                destination_name="Office",
+                routes=[Route(mode="driving", distance_m=1200, duration_s=300, cost=0)],  # type: ignore[arg-type]
+                provider="fake",
+            )
+
+    monkeypatch.setattr(trip_router, "RoutingService", RoutingService)
+    monkeypatch.setattr(trip_router, "push_lifekit_content", lambda *_: None)
+    router = TripRouter()
+    router._bind(MainPlugin())
+
+    result = await router.trip_advice(destination="Office", origin="Home", mode=" DRIVING ")
+
+    assert result.is_ok()
+    assert captured["modes"] == ["driving"]
+    assert result.value["routes"][0]["cost"] == 0
 
 
 @pytest.mark.asyncio

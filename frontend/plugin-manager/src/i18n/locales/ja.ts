@@ -189,7 +189,7 @@ export default {
     batchNoReloadable: '選択中に実行中のプラグインがありません',
     import: 'インポート',
     importing: 'インポート中…',
-    importSuccess: '{name} をインポートし、{count} 個のプラグインを展開しました',
+    importSuccess: '{name} をインポートし、{count} 個のプラグインをインストールしました',
     importFailed: 'インポートに失敗しました',
     export: 'エクスポート',
     exportSuccess: '{count} 個のパッケージをエクスポートしました',
@@ -491,11 +491,11 @@ export default {
       },
       packageManager: {
         title: 'パッケージ管理',
-        body: '現在の絞り込みや選択を使って、パッケージ化、検査、検証、展開ができるよ。'
+        body: '現在の絞り込みや選択を使って、ビルド、検査、検証、インストールができるよ。'
       },
       packageOperations: {
         title: 'パッケージ操作',
-        body: 'ここでパッケージ化モード、検査、展開、統合パック分析を選べるよ。このガイドは危険な操作を自動実行しないよ。'
+        body: 'ここでビルドモード、検査、インストール、統合パック分析を選べるよ。このガイドは危険な操作を自動実行しないよ。'
       },
       pluginDetail: {
         title: 'プラグイン詳細',
