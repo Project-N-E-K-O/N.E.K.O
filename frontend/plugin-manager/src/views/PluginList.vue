@@ -1,7 +1,10 @@
 <template>
   <div
     class="plugin-workbench"
-    :class="{ 'plugin-workbench--package-open': packagePanelVisible }"
+    :class="{
+      'plugin-workbench--package-open': packagePanelVisible,
+      'plugin-workbench--market-open': marketPanelVisible,
+    }"
     data-yui-guide-id="plugin-list-workbench"
   >
     <section class="plugin-workbench__main" data-yui-guide-id="plugin-list-main">
@@ -9,6 +12,23 @@
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
+              <button
+                v-if="marketUrl"
+                class="market-trigger"
+                :class="{ 'market-trigger--active': marketPanelVisible }"
+                type="button"
+                data-yui-guide-id="plugin-list-market-toggle"
+                :title="marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')"
+                @click="toggleMarketPanel"
+              >
+                <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
+                <span class="market-trigger__label">
+                  {{ marketPanelVisible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
+                </span>
+                <el-icon class="market-trigger__arrow">
+                  <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
+                </el-icon>
+              </button>
               <el-button
                 class="multi-select-trigger"
                 :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
@@ -219,25 +239,26 @@
             @item-contextmenu="handlePluginContextMenu"
             @toggle-selection="togglePluginSelection"
           />
-
-          <!-- 获取新插件入口 -->
-          <div v-if="marketUrl" class="market-entry">
-            <router-link to="/market" class="market-entry__link">
-              <el-icon><ShoppingCart /></el-icon>
-              <span>{{ t('market.getNewPlugins') }}</span>
-              <el-icon class="market-entry__arrow"><ArrowRight /></el-icon>
-            </router-link>
-          </div>
         </template>
       </el-card>
     </section>
 
     <aside
       class="plugin-workbench__side"
-      :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
+      :class="{ 'plugin-workbench__side--visible': packagePanelVisible || marketPanelVisible }"
       data-yui-guide-id="plugin-list-package-panel"
     >
-      <PackageManagerPanel v-if="packagePanelVisible" embedded @close="closePackagePanel" />
+      <PackageManagerPanel
+        v-if="packagePanelVisible"
+        embedded
+        @close="closePackagePanel"
+      />
+      <MarketPanel
+        v-else-if="marketPanelVisible"
+        embedded
+        :active="marketPanelVisible"
+        @close="closeMarketPanel"
+      />
     </aside>
 
     <!-- Floating multi-select action bar -->
@@ -355,7 +376,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -363,6 +384,7 @@ import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
+import MarketPanel from '@/components/plugin/MarketPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
@@ -387,6 +409,7 @@ const batchBusy = ref(false)
 const importing = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 const packagePanelVisible = ref(false)
+const marketPanelVisible = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -689,15 +712,28 @@ function toggleMultiSelectMode() {
 }
 
 function togglePackagePanel() {
-  packagePanelVisible.value = !packagePanelVisible.value
+  const next = !packagePanelVisible.value
+  packagePanelVisible.value = next
+  if (next) marketPanelVisible.value = false
 }
 
 function openPackagePanel() {
   packagePanelVisible.value = true
+  marketPanelVisible.value = false
 }
 
 function closePackagePanel() {
   packagePanelVisible.value = false
+}
+
+function toggleMarketPanel() {
+  const next = !marketPanelVisible.value
+  marketPanelVisible.value = next
+  if (next) packagePanelVisible.value = false
+}
+
+function closeMarketPanel() {
+  marketPanelVisible.value = false
 }
 
 function closePluginContextMenu() {
@@ -1082,6 +1118,7 @@ watch(
     const shouldOpen = tab === 'packages'
     if (packagePanelVisible.value !== shouldOpen) {
       packagePanelVisible.value = shouldOpen
+      if (shouldOpen) marketPanelVisible.value = false
     }
   },
   { immediate: true },
@@ -1191,6 +1228,65 @@ onUnmounted(() => {
   align-items: center;
   min-width: 0;
   flex: 1 1 auto;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── Market quick-access trigger (top-left) ── */
+.market-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  border-radius: var(--radius-control);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--el-color-primary) 10%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-primary) 2%, transparent) 100%
+  );
+  color: var(--el-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease,
+    background-color 0.22s ease;
+}
+
+.market-trigger:hover {
+  transform: translateY(-1px);
+  border-color: var(--el-color-primary);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 18%, transparent);
+}
+
+.market-trigger--active {
+  background: var(--el-color-primary);
+  color: #fff;
+  border-color: var(--el-color-primary);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 22%, transparent);
+}
+
+.market-trigger__icon {
+  font-size: 16px;
+}
+
+.market-trigger__arrow {
+  font-size: 14px;
+  opacity: 0.75;
+  transition: transform 0.22s ease;
+}
+
+.market-trigger:hover .market-trigger__arrow {
+  transform: translateX(2px);
+}
+
+.market-trigger--active .market-trigger__arrow {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 /* ── Multi-select trigger button (top) ── */
@@ -2033,42 +2129,5 @@ onUnmounted(() => {
   .fab-action {
     padding: 8px 10px;
   }
-}
-
-/* ── Market Entry (获取新插件) ────────────── */
-.market-entry {
-  margin-top: 20px;
-  padding: 0 4px;
-}
-.market-entry__link {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 20px;
-  border: 1px dashed var(--el-border-color);
-  border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--el-color-primary) 3%, transparent);
-  color: var(--el-color-primary);
-  font-size: 14px;
-  font-weight: 500;
-  text-decoration: none;
-  transition: all 0.2s ease;
-  cursor: pointer;
-}
-.market-entry__link:hover {
-  border-style: solid;
-  border-color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--el-color-primary) 15%, transparent);
-}
-.market-entry__arrow {
-  margin-left: auto;
-  opacity: 0.6;
-  transition: transform 0.2s ease;
-}
-.market-entry__link:hover .market-entry__arrow {
-  transform: translateX(3px);
-  opacity: 1;
 }
 </style>

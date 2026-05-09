@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
@@ -83,7 +83,10 @@ class MarketStatusResponse(BaseModel):
 class MarketInstallRequest(BaseModel):
     """从 Market 触发安装的请求。"""
     package_url: str = Field(..., description="插件包下载 URL")
-    package_sha256: str = Field(..., pattern=r"^[0-9a-fA-F]{64}$", description="包文件 SHA256")
+    package_sha256: str | None = Field(
+        default=None,
+        description="包文件 SHA256（可选）。为空或全 0 时跳过校验（仅用于 Market 尚未生成 hash 的场景）。",
+    )
     payload_hash: str | None = Field(None, description="可选的 payload hash 二次校验")
     plugin_id: str | None = Field(None, description="Market 侧的插件标识")
     version: str | None = Field(None, description="版本号")
@@ -126,6 +129,12 @@ class MarketTokenExchangeRequest(BaseModel):
 class MarketTokenExchangeResponse(BaseModel):
     bridge_token: str
     expires_in: int | None = None  # None = 不过期（直到重启）
+
+
+class MarketBridgeTokenResponse(BaseModel):
+    """供同源前端（plugin-manager UI）直接获取 bridge token。"""
+    bridge_token: str
+    port: int = 48911
 
 
 # ─── 端点 ──────────────────────────────────────────────────────────
@@ -247,6 +256,21 @@ async def market_token_exchange(payload: MarketTokenExchangeRequest):
     return MarketTokenExchangeResponse(bridge_token=_BRIDGE_TOKEN)
 
 
+@router.get("/bridge-token", response_model=MarketBridgeTokenResponse)
+async def market_bridge_token(request: Request):
+    """供同源前端（plugin-manager UI）获取 bridge token。
+
+    plugin-manager UI 由同一个 FastAPI 进程托管，跟 /market/* 同源，所以
+    不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
+    被外部网页拿到 token。
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
+
+    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=48911)
+
+
 # ─── 内部实现 ──────────────────────────────────────────────────────
 
 
@@ -268,20 +292,34 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
 
         content = await _download_package(payload.package_url, task)
 
-        # 2. 校验 SHA256
-        task["status"] = "verifying"
-        task["progress"] = 0.7
-        task["message"] = "正在校验文件完整性..."
+        # 2. 校验 SHA256（可选）
+        expected_hash = (payload.package_sha256 or "").strip().lower()
+        skip_hash_check = (
+            not expected_hash
+            or expected_hash == "0" * 64
+            or len(expected_hash) != 64
+            or not all(c in "0123456789abcdef" for c in expected_hash)
+        )
 
-        actual_hash = hashlib.sha256(content).hexdigest().lower()
-        expected_hash = payload.package_sha256.lower()
-
-        if actual_hash != expected_hash:
-            raise ValueError(
-                f"SHA256 校验失败\n"
-                f"  期望: {expected_hash}\n"
-                f"  实际: {actual_hash}"
+        if skip_hash_check:
+            logger.warning(
+                "Market install skipping SHA256 verification for {} "
+                "(no hash provided by Market)",
+                payload.plugin_id or payload.package_url,
             )
+            task["message"] = "跳过 SHA256 校验（Market 未提供）"
+        else:
+            task["status"] = "verifying"
+            task["progress"] = 0.7
+            task["message"] = "正在校验文件完整性..."
+
+            actual_hash = hashlib.sha256(content).hexdigest().lower()
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"SHA256 校验失败\n"
+                    f"  期望: {expected_hash}\n"
+                    f"  实际: {actual_hash}"
+                )
 
         # 3. 安装
         task["status"] = "installing"
