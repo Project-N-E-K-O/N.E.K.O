@@ -2426,6 +2426,7 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安裝",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安裝",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模組未載入",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模組未載入",
             "AGENT_NOT_INITIALIZED": "貓爪初始化失敗",
             "AGENT_LLM_UNREACHABLE": "貓爪 LLM 連接失敗",

@@ -2426,6 +2426,7 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API do agente não configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui não instalado",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso do navegador não instalado",
+            "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use não carregado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use não carregado",
             "AGENT_NOT_INITIALIZED": "Falha na inicialização do NekoClaw",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM inacessível",

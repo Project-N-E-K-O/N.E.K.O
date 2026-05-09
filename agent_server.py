@@ -806,6 +806,10 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     async with _llm_check_lock:
         adapter = Modules.computer_use
         if adapter is None:
+            _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+            _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+            _bump_state_revision()
+            await _emit_agent_status_update()
             return
 
         def _probe():
@@ -4457,10 +4461,14 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.analyzer_enabled = True
             Modules.analyzer_profile = (payload or {}).get("profile", {}) or {}
             if gate.get("ready") is True:
-                _try_refresh_computer_use_adapter(force=True)
-                _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
-                _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
-                asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))
+                adapter_refreshed = _try_refresh_computer_use_adapter(force=True)
+                if adapter_refreshed and Modules.computer_use is not None:
+                    _set_capability("computer_use", False, "AGENT_PRECHECK_PENDING")
+                    _set_capability("browser_use", False, "AGENT_PRECHECK_PENDING")
+                    asyncio.ensure_future(_fire_agent_llm_connectivity_check(queue=True))
+                else:
+                    _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
+                    _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)

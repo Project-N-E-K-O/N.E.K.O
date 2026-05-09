@@ -1367,8 +1367,11 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
-    assert '_try_refresh_computer_use_adapter(force=True)' in func_src
+    assert "adapter_refreshed = _try_refresh_computer_use_adapter(force=True)" in func_src
+    assert "if adapter_refreshed and Modules.computer_use is not None:" in func_src
     assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
+    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src
     assert '_set_capability("computer_use", False, first_reason)' in func_src
     assert '_set_capability("browser_use", False, first_reason)' in func_src
@@ -1387,6 +1390,10 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
     assert func is not None
     func_src = ast.get_source_segment(source, func) or ""
 
+    assert "adapter = Modules.computer_use" in func_src
+    assert "if adapter is None:" in func_src
+    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert "bu = Modules.browser_use" in func_src
     assert "if bu is None:" in func_src
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
