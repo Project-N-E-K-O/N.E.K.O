@@ -129,11 +129,11 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert "RapidOCR" in response.text
     assert "依赖安装" in response.text
     assert "DXcam" in response.text
-    assert "一键安装 Tesseract" in response.text
-    assert 'data-install-tab="rapidocr"' in response.text
-    assert 'data-install-tab="dxcam"' in response.text
-    assert 'data-install-tab="tesseract"' in response.text
     assert "Textractor" in response.text
+    assert 'id="rapidocrCard"' in response.text
+    assert 'id="dxcamCard"' in response.text
+    assert 'id="tesseractCard"' in response.text
+    assert 'id="textractorCard"' in response.text
     assert "OCR 截图校准" in response.text
     assert 'id="primaryDiagnosisPanel"' in response.text
     assert 'id="firstRunGuide"' in response.text

@@ -677,66 +677,17 @@ def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
     )
 
 
-def _pick_directory_via_tkinter(*, start_path: str) -> str:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前环境暂不支持系统目录选择，请手动输入路径。",
-        ) from exc
-
-    root = None
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-            root.lift()
-            root.focus_force()
-        except Exception:
-            pass
-        root.update_idletasks()
-        selected_root = filedialog.askdirectory(
-            parent=root,
-            initialdir=start_path or None,
-            title="请选择存储位置目录",
-            mustexist=False,
-        )
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {exc}",
-        ) from exc
-    finally:
-        if root is not None:
-            try:
-                root.destroy()
-            except Exception:
-                pass
-
-    if not selected_root:
-        raise _DirectoryPickerCancelled()
-    return str(selected_root)
-
-
 def _pick_storage_location_directory(*, start_path: str) -> str:
+    # 项目策略：不带 Tk/Tcl。每个平台只信任其原生桥（osascript / PowerShell /
+    # zenity-kdialog-yad），原生桥失败就直接 _DirectoryPickerUnavailable，让前端
+    # 提示用户手填路径——而不是落到 tkinter 兜底（Nuitka 不带 tk-inter 时
+    # tk.Tk() 抛 SystemExit 拖死后端）。检查由 scripts/check_no_tkinter.py 守门。
     normalized_start_path = _normalize_directory_picker_start_path(start_path)
     if sys.platform == "darwin":
-        try:
-            return _pick_directory_via_osascript(start_path=normalized_start_path)
-        except _DirectoryPickerUnavailable:
-            return _pick_directory_via_tkinter(start_path=normalized_start_path)
+        return _pick_directory_via_osascript(start_path=normalized_start_path)
     if sys.platform == "win32":
-        try:
-            return _pick_directory_via_powershell(start_path=normalized_start_path)
-        except _DirectoryPickerUnavailable:
-            return _pick_directory_via_tkinter(start_path=normalized_start_path)
-    try:
-        return _pick_directory_via_linux_dialog(start_path=normalized_start_path)
-    except _DirectoryPickerUnavailable:
-        return _pick_directory_via_tkinter(start_path=normalized_start_path)
+        return _pick_directory_via_powershell(start_path=normalized_start_path)
+    return _pick_directory_via_linux_dialog(start_path=normalized_start_path)
 
 
 def _open_path_in_file_manager(path: Path | str) -> None:

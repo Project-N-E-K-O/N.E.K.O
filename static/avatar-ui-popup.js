@@ -336,7 +336,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -1977,6 +1977,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
     toggleItem.setAttribute('aria-label', toggle.label);
+    if (toggle.tooltipKey) {
+        const tooltipText = window.t ? window.t(toggle.tooltipKey) : '';
+        if (tooltipText) toggleItem.title = tooltipText;
+        toggleItem.setAttribute('data-i18n-title', toggle.tooltipKey);
+    }
     Object.assign(toggleItem.style, {
         padding: '8px 12px'
     });

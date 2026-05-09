@@ -68,9 +68,11 @@ class VRMOrientationDetector {
      * 检测并处理模型朝向
      * @param {Object} vrm - VRM模型实例
      * @param {Object} savedRotation - 已保存的旋转信息（如果有）
+     * @param {Object} options - 额外选项
+     * @param {Object} options.defaultRotation - 加载管线已确定的版本默认旋转
      * @returns {Object} 返回处理后的旋转信息 {x, y, z}
      */
-    static detectAndFixOrientation(vrm, savedRotation = null) {
+    static detectAndFixOrientation(vrm, savedRotation = null, options = {}) {
         // 仅当所有旋转分量都有效时才使用保存的旋转值（全有或全无策略）
         if (savedRotation && 
             Number.isFinite(savedRotation.x) && 
@@ -80,6 +82,18 @@ class VRMOrientationDetector {
                 x: savedRotation.x,
                 y: savedRotation.y,
                 z: savedRotation.z
+            };
+        }
+
+        const defaultRotation = options?.defaultRotation;
+        if (defaultRotation &&
+            Number.isFinite(defaultRotation.x) &&
+            Number.isFinite(defaultRotation.y) &&
+            Number.isFinite(defaultRotation.z)) {
+            return {
+                x: defaultRotation.x,
+                y: defaultRotation.y,
+                z: defaultRotation.z
             };
         }
 

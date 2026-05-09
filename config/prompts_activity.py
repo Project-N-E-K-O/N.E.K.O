@@ -715,3 +715,156 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         'time_only_fmt': '{time}',
     },
 }
+
+
+# ── Break-reminder seeds + prompt templates ─────────────────────────
+#
+# Two reminder paths emitted by the activity tracker (see
+# main_logic/activity/tracker.py). Both bypass Phase 1 entirely and
+# render via a minimal Phase 2 (only character_prompt + the env-notice
+# block below) so the model can focus on the single nudge instead of
+# juggling sources.
+#
+# Why a seed list for water-break but not anti-slack:
+#   * Water-break covers genuinely different actions ("drink water",
+#     "stretch", "rest eyes", ...) — the seed names *what* to suggest.
+#     Picked at delivery time so consecutive deliveries vary.
+#   * Anti-slack is one behaviour ("get back to work") — variation
+#     comes from {prev_app}/{new_app}/{minutes} + the AI's persona.
+#     A seed list of synonyms would just be tone-painting, which the
+#     model already does on its own.
+
+WORK_BREAK_SEED_HINTS: dict[str, list[str]] = {
+    'zh': ['喝口水', '活动一下', '休息下眼睛', '伸个懒腰', '放松一下'],
+    'en': ['drink some water', 'stretch a bit', 'rest their eyes', 'roll their shoulders', 'unwind for a sec'],
+    'ja': ['水を一口飲む', '少し体を動かす', '目を休める', '伸びをする', 'ちょっと一息つく'],
+    'ko': ['물 한 모금 마시기', '잠깐 몸 풀기', '눈을 좀 쉬게 하기', '기지개 켜기', '잠깐 한숨 돌리기'],
+    'ru': ['выпить воды', 'размять тело', 'дать глазам отдохнуть', 'потянуться', 'перевести дух'],
+}
+
+
+# Fallback label when an active window has no canonical name (rare —
+# usually only the GPU-fallback gaming branch and bare-desktop foregrounds
+# hit this). Used to fill ``{app}`` / ``{prev_app}`` / ``{new_app}`` in
+# the templates below so the slot doesn't render as ``?`` or empty.
+WORK_BREAK_GENERIC_WORK_LABEL: dict[str, str] = {
+    'zh': '手头上的活',
+    'en': 'their work',
+    'ja': '今の作業',
+    'ko': '하던 일',
+    'ru': 'своими делами',
+}
+
+WORK_BREAK_GENERIC_LEISURE_LABEL: dict[str, str] = {
+    'zh': '别的事情',
+    'en': 'something else',
+    'ja': 'ほかのこと',
+    'ko': '다른 것',
+    'ru': 'что-то другое',
+}
+
+
+# Water-break (regular drink/stretch nudge) Phase 2 system prompt.
+# Placeholders: {master} {app} {minutes} {seed}
+# Style modeled on GREETING_PROMPT_SHORT — set the scene, name the
+# motivation, hand the AI personality the wheel. Same ========以下是
+# 环境提示======== / Below is Environment Notice / 以下は環境通知 /
+# 아래는 환경 알림 / Ниже Уведомление delimiters as the greeting set,
+# kept below/above paired per the prompt-delimiter convention.
+WORK_BREAK_REMINDER_PROMPT: dict[str, str] = {
+    'zh': '========以下是环境提示========\n'
+          '{master}已经在{app}专注工作{minutes}分钟了。\n'
+          '你看着{master}有点心疼，想提醒{master}{seed}。\n'
+          '用符合你性格的方式自然搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Below is Environment Notice========\n'
+          '{master} has been focused on {app} for {minutes} minutes.\n'
+          'Watching {master}, you feel a little worried and want to suggest {master} {seed}.\n'
+          'Talk to {master} in your own way, naturally. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
+          '{master}は{app}に{minutes}分間ずっと集中している。\n'
+          '少し心配になって、{master}に{seed}よう勧めたい気持ち。\n'
+          '自分らしいやり方で自然に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
+          '{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n'
+          '바라보다 보니 조금 걱정돼서, {master}에게 {seed} 권하고 싶다.\n'
+          '너다운 방식으로 자연스럽게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
+          '{master} уже {minutes} минут сосредоточенно работает в {app}.\n'
+          'Глядя на {master}, ты немного беспокоишься и хочешь предложить {master} {seed}.\n'
+          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Выше Уведомление========',
+}
+
+
+# Anti-slack (just-left-focused-work) Phase 2 system prompt.
+# Placeholders: {master} {prev_app} {new_app} {minutes}
+# No seed slot — single behaviour, variation comes from app names +
+# minute count + AI persona. Same delimiter convention as the water-
+# break template above.
+ANTI_SLACK_REMINDER_PROMPT: dict[str, str] = {
+    'zh': '========以下是环境提示========\n'
+          '{master}刚才在{prev_app}专注工作{minutes}分钟，转头就切去了{new_app}。\n'
+          '你觉得{master}才进入状态就开始溜号，想拦一下，让{master}回去继续干完。\n'
+          '用符合你性格的方式半带玩笑提醒一下吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+          '========以上是环境提示========',
+    'en': '========Below is Environment Notice========\n'
+          '{master} just spent {minutes} minutes focused on {prev_app}, then switched straight to {new_app}.\n'
+          'You feel {master} just hit their stride and is already drifting off — you want to pull {master} back to finish up.\n'
+          'Tease {master} a bit in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+          '========Above is Environment Notice========',
+    'ja': '========以下は環境通知========\n'
+          '{master}はさっきまで{prev_app}で{minutes}分間集中していたのに、急に{new_app}に切り替えた。\n'
+          'やっと調子が出てきたところでサボろうとしているように見えて、引き戻して続きをやらせたい気持ち。\n'
+          '自分らしいやり方でちょっと冗談めかして突っ込んで。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+          '========以上は環境通知========',
+    'ko': '========아래는 환경 알림========\n'
+          '{master}가 방금 {prev_app}에서 {minutes}분 동안 집중하고 있었는데 갑자기 {new_app}로 옮겼다.\n'
+          '이제 막 흐름을 탔는데 벌써 딴짓하려는 것 같아서, 끌어다가 마무리하게 하고 싶다.\n'
+          '너다운 방식으로 살짝 장난치듯 잡아끌어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+          '========위는 환경 알림========',
+    'ru': '========Ниже Уведомление========\n'
+          '{master} только что сосредоточенно работал в {prev_app} {minutes} минут — и тут же переключился на {new_app}.\n'
+          'Тебе кажется, {master} только-только вошёл в ритм и уже отлынивает; хочется вернуть его и не дать бросить начатое.\n'
+          'Поддразни {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+          '========Выше Уведомление========',
+}
+
+
+# Water-break + game-invite combo prompt (50% branch).
+# Mirrors MINI_GAME_INVITE_LINES_BY_GAME shape: per game_type → per
+# locale. Adding a new game_type is a single-pass extension matching
+# the existing mini-game invite structure.
+# Placeholders: {master} {app} {minutes}
+WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
+    'soccer': {
+        'zh': '========以下是环境提示========\n'
+              '{master}已经在{app}专注工作{minutes}分钟了。\n'
+              '你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局足球小游戏放松一下。\n'
+              '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起玩一局"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+              '========以上是环境提示========',
+        'en': '========Below is Environment Notice========\n'
+              '{master} has been focused on {app} for {minutes} minutes.\n'
+              'You want {master} to take a break — and you want to invite {master} to play a quick round of the soccer mini-game with you to unwind.\n'
+              'Talk to {master} in your own way, naturally — show that you care AND make the invite to play together clear. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
+              '========Above is Environment Notice========',
+        'ja': '========以下は環境通知========\n'
+              '{master}は{app}に{minutes}分間ずっと集中している。\n'
+              '少し休ませてあげたくて、ついでにサッカーのミニゲームを一緒にやろうって誘いたい気持ち。\n'
+              '自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒に一局やろう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
+              '========以上は環境通知========',
+        'ko': '========아래는 환경 알림========\n'
+              '{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n'
+              '잠깐 쉬게 하고 싶고, 겸사겸사 같이 축구 미니게임 한 판 하자고 권하고 싶다.\n'
+              '너다운 방식으로 자연스럽게 말을 걸어 — 걱정하는 마음을 보이면서 "같이 한 판 하자"는 초대도 분명히 담아. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+              '========위는 환경 알림========',
+        'ru': '========Ниже Уведомление========\n'
+              '{master} уже {minutes} минут сосредоточенно работает в {app}.\n'
+              'Хочется дать {master} отдохнуть — и заодно позвать его сыграть одну партию в мини-футбол, чтобы развеяться.\n'
+              'Заговори с {master} так, как тебе свойственно — пусть {master} почувствует заботу, и обязательно прозвучит приглашение «сыграем разок». Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
+              '========Выше Уведомление========',
+    },
+}

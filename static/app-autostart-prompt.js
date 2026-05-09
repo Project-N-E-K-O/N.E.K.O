@@ -488,6 +488,27 @@
             });
             if (data && data.should_prompt) {
                 try {
+                    // Gate: 等存档迁移/位置选择 + 初始人设走完再弹自启动提示。
+                    // 心跳间隔 15min，绝大多数情况下 onboarding 早已 settled，此处 await 立即过；
+                    // 拆分 race：超时只兜底"bootstrap 卡死"，overlay 显示中就无限等不超时。
+                    const AUTOSTART_GATE_FALLBACK_MS = 15000;
+                    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+                        await window.waitForStorageLocationStartupBarrier();
+                    }
+                    const onboarding = window.CharacterPersonalityOnboarding;
+                    if (onboarding && typeof onboarding.whenSettled === 'function') {
+                        const settled = await Promise.race([
+                            onboarding.whenSettled().then(() => true),
+                            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
+                        ]);
+                        if (!settled) {
+                            const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+                                || onboarding.pendingResumeAfterTutorial;
+                            if (overlayActive) {
+                                await onboarding.whenSettled();
+                            }
+                        }
+                    }
                     await maybeShowPrompt(data.prompt_token);
                 } catch (error) {
                     console.warn('[AutostartPrompt] prompt display failed:', error);

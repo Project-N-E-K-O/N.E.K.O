@@ -20,7 +20,6 @@ from plugin.plugins.galgame_plugin.install_tasks import (
     load_latest_install_task_state,
     update_install_task_state,
 )
-from plugin.sdk.shared.storage import PluginStore
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
@@ -548,13 +547,10 @@ def _tutorial_store() -> GalgameStore:
     if _tutorial_store_instance is not None:
         return _tutorial_store_instance
     plugin_dir = Path(__file__).resolve().parent
-    plugin_store = PluginStore(
-        plugin_id="galgame_plugin",
-        plugin_dir=plugin_dir,
-        logger=logger,
-        enabled=True,
+    _tutorial_store_instance = GalgameStore(
+        plugin_dir / "data" / "galgame_store.json",
+        logger,
     )
-    _tutorial_store_instance = GalgameStore(plugin_store, logger)
     return _tutorial_store_instance
 
 

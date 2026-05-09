@@ -1081,11 +1081,16 @@ svg {
 
 .composer-panel {
   display: grid;
+  /* 显式 1 列、min 边为 0：阻断 grid item 默认 min-width: auto 把内部
+     nowrap 文本的 min-content 一路向上撑宽（galgame 选项过长时会让整个
+     panel 抗拒收缩，进而被 chat-window overflow: hidden 截断）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding: 6px;
   position: relative;
   z-index: 15;
   background: rgba(255, 255, 255, 0.91);
+  min-width: 0;
 }
 
 /* Hide empty music-player-mount so it doesn't occupy a grid row */
@@ -1140,12 +1145,16 @@ svg {
 /* ===== 输入框统一容器 ===== */
 .composer {
   display: block;
+  /* 作为 .composer-panel 的 grid item，显式 min-width: 0
+     让窗口收缩时跟随 panel 一起收，而不被自身 min-content 卡住。 */
+  min-width: 0;
 }
 
 .composer-input-shell {
   display: flex;
   flex-direction: column;
   min-height: 98px;
+  min-width: 0;
   padding: 0 16px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.91);
@@ -1679,6 +1688,8 @@ svg {
   flex-direction: column;
   gap: 4px;
   margin: 4px 0 2px;
+  /* 让选项列在窄窗口下能跟随 input-shell 收缩，而不被内部 nowrap 文本顶宽。 */
+  min-width: 0;
 }
 
 .composer-galgame-option {
@@ -1686,6 +1697,9 @@ svg {
   align-items: center;
   gap: 8px;
   width: 100%;
+  /* 关键：默认 min-width: auto 会让长文本沿 flex 链向上传染，把整个输入壳撑宽；
+     置 0 后按钮严格遵循 width:100%，长文本走下面的 ellipsis 路径。 */
+  min-width: 0;
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid rgba(127, 144, 170, 0.22);
@@ -1722,6 +1736,9 @@ svg {
 
 .composer-galgame-option-text {
   flex: 1 1 auto;
+  /* min-width: 0 是 ellipsis 在 flex row 里真正生效的前置条件，
+     否则 flex item 默认 min-width:auto = 内容固有宽度，永远不会被裁。 */
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

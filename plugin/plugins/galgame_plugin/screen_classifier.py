@@ -6,6 +6,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .ocr_chrome_noise import (
+    TEMPERATURE_STATUS_BOTTOM_MIN_RATIO,
+    TEMPERATURE_STATUS_LEFT_MAX_RATIO,
+    WINDOW_TITLE_TOP_MAX_RATIO,
+    looks_like_temperature_status_line,
+    looks_like_window_title_line,
+)
 from .models import (
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
@@ -265,12 +272,23 @@ def classify_screen_from_ocr(
     )
     lines = _merged_ocr_lines(regions)
     ui_elements = _merged_screen_ui_elements(regions, lines=lines)
+    ui_elements, filtered_count = _filter_chrome_noise_ui_elements(
+        ui_elements,
+        window_title=str((template_context or {}).get("window_title") or ""),
+    )
+    if filtered_count > 0:
+        lines = _dedupe_preserve_order(
+            _clean_line(str(element.get("text") or ""))
+            for element in ui_elements
+            if _clean_line(str(element.get("text") or ""))
+        )
     visual = dict(visual_features or {})
     layout = _layout_features(ui_elements)
     debug: dict[str, Any] = {
         "sources": [region.source for region in regions if region.source],
         "line_count": len(lines),
         "ui_element_count": len(ui_elements),
+        "chrome_filtered_count": filtered_count,
         "visual": _bounded_debug_value(visual),
         "layout": layout,
         "reason": "",
@@ -679,6 +697,40 @@ def _ocr_lines(ocr_text: str, *, boxes: Iterable[Any] | None) -> list[str]:
         return _dedupe_preserve_order(lines)
     box_lines = [_clean_line(_box_text(box)) for box in list(boxes or [])]
     return _dedupe_preserve_order(line for line in box_lines if line)
+
+
+def _filter_chrome_noise_ui_elements(
+    elements: list[dict[str, Any]],
+    *,
+    window_title: str,
+) -> tuple[list[dict[str, Any]], int]:
+    filtered: list[dict[str, Any]] = []
+    removed = 0
+    for element in elements:
+        text = _clean_line(str(element.get("text") or ""))
+        bounds = element.get("normalized_bounds")
+        if not isinstance(bounds, dict):
+            filtered.append(element)
+            continue
+        try:
+            top = float(bounds.get("top"))
+            bottom = float(bounds.get("bottom"))
+            left = float(bounds.get("left"))
+        except (TypeError, ValueError):
+            filtered.append(element)
+            continue
+        if top <= WINDOW_TITLE_TOP_MAX_RATIO and looks_like_window_title_line(text, window_title):
+            removed += 1
+            continue
+        if (
+            bottom >= TEMPERATURE_STATUS_BOTTOM_MIN_RATIO
+            and left <= TEMPERATURE_STATUS_LEFT_MAX_RATIO
+            and looks_like_temperature_status_line(text)
+        ):
+            removed += 1
+            continue
+        filtered.append(element)
+    return filtered, removed
 
 
 def _screen_ui_elements(

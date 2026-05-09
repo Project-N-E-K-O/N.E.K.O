@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -10,6 +11,10 @@ Page = playwright_sync_api.Page
 expect = playwright_sync_api.expect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def new_url_pathname(raw_url: str) -> str:
+    return urlparse(str(raw_url)).path
 
 
 def _bootstrap_page(mock_page: Page) -> None:
@@ -92,7 +97,7 @@ def _bootstrap_page(mock_page: Page) -> None:
                     });
                 }
 
-                if (requestUrl === '/api/characters/persona-presets') {
+                if (new URL(requestUrl, window.location.origin).pathname === '/api/characters/persona-presets') {
                     return new Response(JSON.stringify({
                         success: true,
                         presets: [{
@@ -827,7 +832,14 @@ def test_onboarding_skip_persists_state_and_closes_overlay(mock_page: Page):
 @pytest.mark.frontend
 def test_onboarding_confirm_dispatches_character_update_event(mock_page: Page):
     _bootstrap_page(mock_page)
-    mock_page.evaluate("() => { window.universalTutorialManager.isTutorialRunning = false; }")
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.i18next = { language: 'zh-CN' };
+        }
+        """
+    )
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
 
     mock_page.evaluate(
@@ -853,12 +865,23 @@ def test_onboarding_confirm_dispatches_character_update_event(mock_page: Page):
     }
 
     request_log = mock_page.evaluate("() => window.__requestLog")
-    assert sum(
-        1
+    preset_entries = [
+        entry
+        for entry in request_log
+        if new_url_pathname(entry["url"]) == "/api/characters/persona-presets"
+    ]
+    assert preset_entries
+    preset_language = parse_qs(urlparse(preset_entries[-1]["url"]).query).get("language", [""])[0]
+    assert preset_language == "zh-CN"
+
+    put_entries = [
+        entry
         for entry in request_log
         if entry["url"] == "/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection"
         and entry["method"] == "PUT"
-    ) == 1
+    ]
+    assert len(put_entries) == 1
+    assert put_entries[0]["body"]["i18n_language"] == preset_language
     assert not any(
         entry["url"] == "/api/characters/persona-onboarding-state"
         and entry["method"] == "POST"

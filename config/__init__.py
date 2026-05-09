@@ -906,7 +906,7 @@ RECENT_HISTORY_MAX_ITEMS = 10
 - 互动：和 RECENT_COMPRESS_THRESHOLD_ITEMS 配对——压缩后保留 N 条 +
   Stage-1 summary 1 条 = N+1 条进入下次压缩计数。"""
 
-RECENT_COMPRESS_THRESHOLD_ITEMS = 15
+RECENT_COMPRESS_THRESHOLD_ITEMS = 20
 """触发 LLM 压缩的条数阈值。
 - 用途：当某 lanlan 的 user_histories 累积到 > 此值时调一次
   compress_history。
