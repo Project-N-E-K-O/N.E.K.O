@@ -362,7 +362,7 @@
         "folderSelectedPartial": "フォルダ「{{name}}」が選択されました。ブラウザのセキュリティ制限のため、完全なパスを手動で入力してください",
         "folderSelectionCancelled": "フォルダ選択がキャンセルされました",
         "folderSelectionError": "フォルダの選択に失敗しました",
-        "importModel": "モデルをインポート",
+        "importModel": "モデル取込",
         "selectImage": "画像を選択",
         "modelImporting": "モデルをインポート中...",
         "modelImportSuccess": "モデルのインポートに成功しました",
@@ -1162,7 +1162,7 @@
         "savePersistent": "常時表情を保存",
         "persistentHint": "常時表情は常に有効になります。",
         "backToMain": "メインに戻る",
-        "importModel": "モデルをインポート",
+        "importModel": "モデル取込",
         "motionPreview": "モーションプレビュー",
         "expressionPreview": "表情プレビュー",
         "play": "再生",
@@ -1251,7 +1251,7 @@
             "speed": "速度:"
         },
         "mmdModel": {
-            "selectModel": "MMDモデルを選択",
+            "selectModel": "MMDモデル",
             "deleteModel": "インポート済みMMDモデルを削除",
             "deleteModelTitle": "インポート済みMMDモデルを削除",
             "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "選択を削除"
         },
         "mmdAnimation": {
-            "selectAnimation": "VMDアニメーションを選択",
+            "selectAnimation": "VMD選択",
             "noAnimation": "アニメーションなし",
             "play": "再生",
-            "uploadAnimation": "VMDアニメーションをインポート",
+            "uploadAnimation": "VMD取込",
             "deleteAnimation": "VMDアニメーションを削除",
             "deleteAnimationTitle": "インポート済みVMDアニメーションを削除",
             "deleteAnimationWarning": "以下はすべてのインポート済みユーザーVMDアニメーションファイルです。削除するアニメーションを選択してください。",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "エラー: {{error}}",
         "parameterEditor": {
-            "title": "フェイスエディタ",
+            "title": "顔編集",
             "backToMain": "← L2D設定に戻る",
             "backToL2DManager": "戻る",
             "selectModel": "モデル選択",

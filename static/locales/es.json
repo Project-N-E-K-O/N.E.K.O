@@ -1153,7 +1153,7 @@
             "select": "Seleccionar",
             "defaultClickAnim": "Animación de clic predeterminada"
         },
-        "emotionConfig": "Configuración de emociones",
+        "emotionConfig": "Config. emociones",
         "saveSettings": "Guardar configuración",
         "persistentExpression": "Expresión persistente (solo expresión):",
         "pleaseLoadModel": "Por favor cargue un modelo",
@@ -1161,7 +1161,7 @@
         "delete": "Borrar",
         "savePersistent": "Guardar expresión persistente",
         "persistentHint": "Las expresiones persistentes siempre estarán activas.",
-        "backToMain": "Volver a principal",
+        "backToMain": "Inicio",
         "importModel": "Importar modelo",
         "motionPreview": "Vista previa de movimiento",
         "expressionPreview": "Vista previa de expresión",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "Salir de pantalla completa",
         "modelType": "Tipo de modelo",
         "selectLive2DModel": "Seleccione el modelo Live2D",
-        "selectVRMModel": "Seleccione el modelo VRM",
+        "selectVRMModel": "Modelo VRM",
         "selectVRMFile": "Seleccionar archivo VRM",
         "vrmModelListLoaded": "La lista de modelos VRM se cargó correctamente",
         "noVRMModelsFound": "No se encontraron modelos VRM disponibles",
@@ -1251,7 +1251,7 @@
             "speed": "Velocidad:"
         },
         "mmdModel": {
-            "selectModel": "Seleccione modelo MMD",
+            "selectModel": "Modelo MMD",
             "deleteModel": "Eliminar modelos MMD importados",
             "deleteModelTitle": "Eliminar modelos MMD importados",
             "deleteWarning": "A continuación se muestran todos los modelos de MMD de usuario importados. Seleccione los modelos para eliminar (la carpeta del modelo y las texturas se eliminarán juntas).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "Eliminar seleccionado"
         },
         "mmdAnimation": {
-            "selectAnimation": "Seleccione Animación VMD",
+            "selectAnimation": "Animación VMD",
             "noAnimation": "Sin animación",
             "play": "Jugar",
-            "uploadAnimation": "Importar animación VMD",
+            "uploadAnimation": "Importar VMD",
             "deleteAnimation": "Eliminar animación VMD",
             "deleteAnimationTitle": "Eliminar animaciones VMD importadas",
             "deleteAnimationWarning": "A continuación se muestran todos los archivos de animación VMD de usuario importados. Seleccione animaciones para eliminar.",

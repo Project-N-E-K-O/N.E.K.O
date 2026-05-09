@@ -1161,7 +1161,7 @@
         "delete": "Удалить",
         "savePersistent": "Сохранить постоянное выражение",
         "persistentHint": "Постоянные выражения всегда активны.",
-        "backToMain": "Вернуться на главную",
+        "backToMain": "На главную",
         "importModel": "Импорт модели",
         "motionPreview": "Предпросмотр анимации",
         "expressionPreview": "Предпросмотр выражений",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "Выйти из полноэкранного режима",
         "modelType": "Тип модели",
         "selectLive2DModel": "Выбрать модель Live2D",
-        "selectVRMModel": "Выбрать модель VRM",
+        "selectVRMModel": "Модель VRM",
         "selectVRMFile": "Выбрать файл VRM",
         "vrmModelListLoaded": "Список моделей VRM загружен успешно",
         "noVRMModelsFound": "Доступные модели VRM не найдены",
@@ -1251,7 +1251,7 @@
             "speed": "Скорость:"
         },
         "mmdModel": {
-            "selectModel": "Выбрать MMD модель",
+            "selectModel": "Модель MMD",
             "deleteModel": "Удалить импортированные MMD модели",
             "deleteModelTitle": "Удалить импортированные MMD модели",
             "deleteWarning": "Ниже перечислены все импортированные пользовательские MMD модели. Выберите модели для удаления (папка модели и текстуры будут удалены).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "Удалить выбранные"
         },
         "mmdAnimation": {
-            "selectAnimation": "Выбрать VMD анимацию",
+            "selectAnimation": "VMD анимация",
             "noAnimation": "Без анимации",
             "play": "Воспроизвести",
-            "uploadAnimation": "Импортировать VMD анимацию",
+            "uploadAnimation": "Импорт VMD",
             "deleteAnimation": "Удалить VMD анимацию",
             "deleteAnimationTitle": "Удалить импортированные VMD анимации",
             "deleteAnimationWarning": "Ниже перечислены все импортированные пользовательские файлы VMD анимации. Выберите анимации для удаления.",

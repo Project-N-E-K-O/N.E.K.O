@@ -1251,7 +1251,7 @@
             "speed": "Speed:"
         },
         "mmdModel": {
-            "selectModel": "Select MMD Model",
+            "selectModel": "MMD Model",
             "deleteModel": "Delete Imported MMD Models",
             "deleteModelTitle": "Delete Imported MMD Models",
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {
-            "selectAnimation": "Select VMD Animation",
+            "selectAnimation": "VMD Animation",
             "noAnimation": "No Animation",
             "play": "Play",
-            "uploadAnimation": "Import VMD Animation",
+            "uploadAnimation": "Import VMD",
             "deleteAnimation": "Delete VMD Animation",
             "deleteAnimationTitle": "Delete Imported VMD Animations",
             "deleteAnimationWarning": "Below are all imported user VMD animation files. Select animations to delete.",
