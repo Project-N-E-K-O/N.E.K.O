@@ -415,7 +415,7 @@ def test_character_card_manager_renders_and_opens_cards_when_model_scan_never_re
                     });
                 }
 
-                if (url.endsWith('/api/characters/')) {
+                if (url.endsWith('/api/characters/') || url.endsWith('/api/characters')) {
                     return new Response(JSON.stringify({
                         '主人': {},
                         '当前猫娘': '模拟猫娘',

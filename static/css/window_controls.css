@@ -69,6 +69,15 @@
     opacity: 0.9;
 }
 
+.neko-window-control-btn:disabled,
+.neko-window-controls .close-btn:disabled,
+.neko-window-controls .close-page-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    transform: none;
+    pointer-events: none;
+}
+
 .neko-window-minimize-icon {
     display: block;
     width: 16px;

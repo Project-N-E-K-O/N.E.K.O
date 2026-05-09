@@ -525,6 +525,15 @@ body {
 .btn-primary:active { transform: translateY(1px) scale(0.98); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
+#control-panel button:disabled,
+#control-panel input:disabled,
+#control-panel select:disabled,
+#control-panel textarea:disabled,
+.page-title-bar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
 .btn-secondary {
     background: rgba(64, 197, 241, 0.12);
     color: #40C5F1;

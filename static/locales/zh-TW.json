@@ -3679,7 +3679,7 @@
     },
     "cardExport": {
         "title": "卡面製作",
-        "loadingModel": "正在載入模型...",
+        "loadingModel": "正在載入模型，載入完成後才能儲存或關閉",
         "selectCharacter": "選擇角色",
         "selectCharacterHint": "-- 請選擇角色 --",
         "loading": "載入中...",
@@ -3722,6 +3722,7 @@
         "savingCardFace": "儲存中...",
         "autoSavingDefaultCardFace": "正在生成預設卡面...",
         "autoSaveDefaultCardFaceFailed": "預設卡面生成失敗",
+        "modelStillLoading": "模型仍在載入，請載入完成後再儲存",
         "saveCardFaceSuccess": "儲存成功！",
         "saveCardFaceFailed": "儲存失敗: {{error}}",
         "saveCardFacePartialSuccess": "PNG 已儲存，但中繼資料寫入失敗: {{error}}",

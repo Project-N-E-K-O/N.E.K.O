@@ -5754,7 +5754,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const catgirlName = data['档案名'];
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
-                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerParams = new URLSearchParams({
+                    name: catgirlName,
+                    mode: 'maker',
+                    fallback_default_on_close: '1'
+                });
+                const makerUrl = `/card_maker?${makerParams.toString()}`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
                     CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,

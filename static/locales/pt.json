@@ -3679,7 +3679,7 @@
     },
     "cardExport": {
         "title": "Exportação de cartão de personagem",
-        "loadingModel": "Carregando modelo...",
+        "loadingModel": "Carregando modelo. Você poderá salvar ou fechar quando o carregamento terminar.",
         "selectCharacter": "Selecione o personagem",
         "selectCharacterHint": "-- Selecione um personagem --",
         "loading": "Carregando...",
@@ -3722,6 +3722,7 @@
         "savingCardFace": "Salvando...",
         "autoSavingDefaultCardFace": "Gerando rosto padrão do cartão...",
         "autoSaveDefaultCardFaceFailed": "Falha ao gerar o rosto padrão do cartão",
+        "modelStillLoading": "O modelo ainda está carregando. Salve depois que o carregamento terminar.",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: {{error}}",
         "saveCardFacePartialSuccess": "PNG salvo, mas a escrita de metadados falhou: {{error}}",

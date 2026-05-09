@@ -3679,7 +3679,7 @@
     },
     "cardExport": {
         "title": "카드 이미지 메이커",
-        "loadingModel": "모델 로딩 중...",
+        "loadingModel": "모델을 불러오는 중입니다. 로드가 끝난 뒤 저장하거나 닫을 수 있습니다.",
         "selectCharacter": "캐릭터 선택",
         "selectCharacterHint": "-- 캐릭터를 선택하세요 --",
         "loading": "로딩 중...",
@@ -3722,6 +3722,7 @@
         "savingCardFace": "저장 중...",
         "autoSavingDefaultCardFace": "기본 카드 이미지를 생성 중...",
         "autoSaveDefaultCardFaceFailed": "기본 카드 이미지 생성 실패",
+        "modelStillLoading": "모델을 아직 불러오는 중입니다. 로드가 끝난 뒤 저장해 주세요.",
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: {{error}}",
         "saveCardFacePartialSuccess": "PNG는 저장되었지만 메타데이터 쓰기에 실패했습니다: {{error}}",

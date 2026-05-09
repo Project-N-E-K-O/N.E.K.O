@@ -15,6 +15,8 @@
     let currentCharaName = '';
     let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd'
     let isModelLoaded = false;
+    let isModelLoading = false;
+    let primaryActionBusy = false;
     let previewLoopId = null;     // requestAnimationFrame ID
     let lastPreviewTime = 0;      // 上次预览渲染时间戳
 
@@ -74,6 +76,8 @@
     let pendingFallbackDefaultSave = false;
     let fallbackDefaultListenersRegistered = false;
 
+    updateCardMakerInteractivity(true);
+
     initModelSaveFallbackDefaultCardFace();
 
     // ====== 初始化 ======
@@ -120,6 +124,8 @@
                 pendingFallbackDefaultSave = false;
                 await doAutoSaveDefaultCardFace();
             }
+        } else {
+            showLoading(false);
         }
     });
 
@@ -154,6 +160,10 @@
         backBtn.addEventListener('click', () => {
             closeCardMakerPage();
         });
+        window.nekoBeforeWindowClose = async () => {
+            await closeCardMakerPage();
+            return { handled: true };
+        };
 
         // 标签页切换
         document.querySelectorAll('.panel-tab').forEach(tab => {
@@ -237,6 +247,7 @@
     }
 
     async function closeCardMakerPage() {
+        if (isModelLoading) return;
         try {
             await saveModelSaveFallbackDefaultCardFace('card-maker-close', {
                 maxWait: 1200,
@@ -411,6 +422,7 @@
         currentCharaName = name;
         cardName.textContent = name;
 
+        isModelLoaded = false;
         showLoading(true);
         resetComposition();
 
@@ -445,6 +457,7 @@
         } catch (e) {
             console.error('[CardExport] 加载角色模型失败:', e);
             showLoading(false);
+            updatePrimaryActionAvailability();
         }
     }
 
@@ -484,6 +497,7 @@
         } catch (e) {
             console.error('[CardExport] 模型加载异常:', e);
             showLoading(false);
+            updatePrimaryActionAvailability();
         }
     }
 
@@ -823,11 +837,16 @@
     // ====== 导出 ======
     async function doExport(type) {
         if (!currentCharaName) return;
+        if (!isModelLoaded) {
+            alert(t('cardExport.modelStillLoading', '模型仍在加载，请稍后再保存'));
+            return;
+        }
 
         try {
             let response;
 
-            exportFullBtn.disabled = true;
+            primaryActionBusy = true;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exporting', '导出中...');
 
             // 用调整后的构图参数渲染最终立绘
@@ -849,7 +868,8 @@
                 );
             }
 
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exportFull', '导出角色卡');
 
             if (!response.ok) {
@@ -863,7 +883,8 @@
         } catch (e) {
             console.error('[CardExport] 导出失败:', e);
             alert(t('cardExport.exportError', '导出失败: ') + e.message);
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exportFull', '导出角色卡');
         }
     }
@@ -871,9 +892,17 @@
     // ====== 保存卡面（maker 模式专用） ======
     async function doSaveCardFace(options = {}) {
         if (!currentCharaName) return;
+        if (!isModelLoaded) {
+            const message = t('cardExport.modelStillLoading', '模型仍在加载，请稍后再保存');
+            if (!options.silent) {
+                alert(message);
+            }
+            throw new Error(message);
+        }
 
         try {
-            exportFullBtn.disabled = true;
+            primaryActionBusy = true;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = options.statusText || t('cardExport.savingCardFace', '保存中...');
 
             const cardBlob = await renderFullCard(options.renderOptions || {});
@@ -897,7 +926,8 @@
             const respJson = await response.json().catch(() => ({}));
             if (respJson.partial_success) {
                 exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
-                exportFullBtn.disabled = false;
+                primaryActionBusy = false;
+                updatePrimaryActionAvailability();
                 cardFaceSaved = true;
                 notifyCardFaceUpdated(currentCharaName);
                 return { status: 'partial', error: respJson.error || '' };
@@ -913,7 +943,8 @@
                 return saveResult;
             }
             setTimeout(() => {
-                exportFullBtn.disabled = false;
+                primaryActionBusy = false;
+                updatePrimaryActionAvailability();
                 exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             }, 1500);
             return saveResult;
@@ -922,7 +953,8 @@
             if (!options.silent) {
                 alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
             }
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             throw e;
         }
@@ -932,7 +964,8 @@
         try {
             resetComposition();
             clearAllStickers();
-            exportFullBtn.disabled = true;
+            primaryActionBusy = true;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
             await waitForCondition(() => isModelLoaded, 10000, '模型加载');
             await new Promise(resolve => setTimeout(resolve, 300));
@@ -943,7 +976,8 @@
             });
         } catch (e) {
             console.error('[CardMaker] 自动生成默认卡面失败:', e);
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败');
         }
     }
@@ -1591,12 +1625,35 @@
         return Math.min(max, Math.max(min, v));
     }
 
+    function updatePrimaryActionAvailability() {
+        if (!exportFullBtn) return;
+        exportFullBtn.disabled = primaryActionBusy || isModelLoading || !isModelLoaded;
+    }
+
+    function updateCardMakerInteractivity(locked) {
+        const isLocked = !!locked;
+        document.body?.classList.toggle('card-maker-loading', isLocked);
+
+        const controls = document.querySelectorAll(
+            '#control-panel button, #control-panel input, #control-panel select, #control-panel textarea, ' +
+            '.page-title-bar button, [data-neko-window-control]'
+        );
+        controls.forEach(control => {
+            if (control === exportFullBtn) return;
+            control.disabled = isLocked;
+            control.setAttribute('aria-disabled', isLocked ? 'true' : 'false');
+        });
+        updatePrimaryActionAvailability();
+    }
+
     function showLoading(show) {
+        isModelLoading = !!show;
         if (show) {
             loadingOverlay.classList.remove('hidden');
         } else {
             loadingOverlay.classList.add('hidden');
         }
+        updateCardMakerInteractivity(show);
     }
 
     function resetComposition() {

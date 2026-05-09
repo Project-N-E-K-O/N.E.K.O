@@ -3679,7 +3679,7 @@
     },
     "cardExport": {
         "title": "Card Face Maker",
-        "loadingModel": "Loading model...",
+        "loadingModel": "Loading model. You can save or close after loading finishes.",
         "selectCharacter": "Select Character",
         "selectCharacterHint": "-- Select a character --",
         "loading": "Loading...",
@@ -3722,6 +3722,7 @@
         "savingCardFace": "Saving...",
         "autoSavingDefaultCardFace": "Generating default card face...",
         "autoSaveDefaultCardFaceFailed": "Failed to generate default card face",
+        "modelStillLoading": "The model is still loading. Please save after it finishes loading.",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
         "saveCardFacePartialSuccess": "PNG saved, but metadata write failed: {{error}}",
