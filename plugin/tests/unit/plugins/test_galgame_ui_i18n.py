@@ -73,9 +73,9 @@ def test_galgame_ui_i18n_script_prefers_query_locale_with_api_fallback() -> None
     assert "const queryLocale = this._queryLocale();" in script
     assert "const storageLocale = this._storageLocale();" in script
     assert "if (queryLocale) {" in script
-    assert "this._lang = queryLocale;" in script
+    assert "this.setLang(queryLocale);" in script
     assert "else if (storageLocale) {" in script
-    assert "this._lang = storageLocale;" in script
+    assert "this.setLang(storageLocale);" in script
     assert "localStorage.getItem('locale')" in script
     assert "value === 'auto' ? this._browserLocale() : value" in script
     assert "else {" in script
