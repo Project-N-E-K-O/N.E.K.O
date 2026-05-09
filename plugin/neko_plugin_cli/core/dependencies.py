@@ -111,6 +111,11 @@ def collect_advanced_plugin_dependencies(plugin_toml: dict[str, object]) -> list
 
 
 def write_dependency_manifest(sources: list[PluginSource], payload_dir: Path) -> Path:
+    """Write payload/dependencies.toml into the staging directory.
+
+    This is an internal build artifact consumed only during install-time
+    validation.  Plugin developers never interact with this file directly.
+    """
     manifest_path = payload_dir / "dependencies.toml"
     lines: list[str] = [
         f'schema_version = "{_DEPENDENCY_SCHEMA_VERSION}"',
@@ -145,7 +150,12 @@ def write_dependency_manifest(sources: list[PluginSource], payload_dir: Path) ->
 
 
 def validate_payload_dependency_layout(payload_dir: Path, plugin_ids: Iterable[str]) -> None:
-    """Validate dependency rules against the actual staged package payload."""
+    """Validate dependency rules against the actual staged package payload.
+
+    Uses the auto-generated dependencies.toml (if present) merged with each
+    plugin's pyproject.toml to verify vendored packages satisfy all declared
+    requirements.  This runs at build time and install time only.
+    """
 
     payload_dir = Path(payload_dir)
     plugin_id_list = [str(item) for item in plugin_ids]
