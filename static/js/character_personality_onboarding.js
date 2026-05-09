@@ -44,6 +44,29 @@
         return payload;
     }
 
+    function getCurrentLanguage() {
+        try {
+            if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                return window.i18next.language;
+            }
+            if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language) {
+                return window.i18n.language;
+            }
+            if (typeof localStorage !== 'undefined') {
+                const cached = localStorage.getItem('i18nextLng');
+                if (cached) {
+                    return cached;
+                }
+            }
+            if (typeof navigator !== 'undefined' && navigator.language) {
+                return navigator.language;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
     function ensureStyles() {
         if (document.getElementById(STYLE_ID)) {
             return;
@@ -86,10 +109,35 @@
             this.restoreBodyPointerEventsNeeded = false;
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
+            this.currentLanguage = '';
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
+            // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
+            // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
+            this._tutorialFlowAborted = false;
+            // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
+            // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
+            let settledResolveFn = null;
+            this._settledPromise = new Promise((resolve) => { settledResolveFn = resolve; });
+            this._settledResolve = () => {
+                if (settledResolveFn) {
+                    const fn = settledResolveFn;
+                    settledResolveFn = null;
+                    fn();
+                }
+            };
             this.bindTutorialLifecycleEvents();
+        }
+
+        markSettled() {
+            if (typeof this._settledResolve === 'function') {
+                this._settledResolve();
+            }
+        }
+
+        whenSettled() {
+            return this._settledPromise || Promise.resolve();
         }
 
         async bootstrap() {
@@ -97,19 +145,42 @@
                 return;
             }
             this.bootstrapStarted = true;
-            await this.waitForStartupBarrier();
-            await this.waitForTutorialFlowToSettle();
-            if (await this.openIfManualReselectPending()) {
-                return;
+            // tutorial flow settle 有超时兜底：fetchTutorialPromptState() 持续 fail 时
+            // waitForTutorialFlowToSettle 会无限轮询，需要超时让 finally 能跑到。
+            const TUTORIAL_FLOW_TIMEOUT_MS = 15000;
+            try {
+                await this.waitForStartupBarrier();
+                const tutorialSettled = await Promise.race([
+                    this.waitForTutorialFlowToSettle().then(() => true),
+                    new Promise((resolve) => {
+                        window.setTimeout(() => resolve(false), TUTORIAL_FLOW_TIMEOUT_MS);
+                    }),
+                ]);
+                if (!tutorialSettled) {
+                    this._tutorialFlowAborted = true;
+                    console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
+                }
+                if (await this.openIfManualReselectPending()) {
+                    return;
+                }
+                await this.openIfPending();
+            } catch (error) {
+                console.warn('[CharacterPersonalityOnboarding] bootstrap failed:', error);
+            } finally {
+                // 没显示 overlay（不需要 onboarding / 抛错 fallthrough）→ 立即 settle；
+                // 显示 overlay 时由 confirm/skip 各自 markSettled。
+                if (!this.overlay || this.overlay.hidden) {
+                    this.markSettled();
+                }
             }
-            await this.openIfPending();
         }
 
         async openFromSettings(characterName) {
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             this.ensureOverlay();
             this.renderStageOne();
             this.showOverlay();
@@ -238,6 +309,9 @@
             await this.waitForTutorialCompletion();
 
             while (true) {
+                if (this._tutorialFlowAborted) {
+                    return;
+                }
                 if (window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning) {
                     await this.waitForTutorialCompletion();
                     continue;
@@ -289,7 +363,8 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
             }
@@ -308,7 +383,8 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
             }
@@ -323,8 +399,12 @@
             return String(payload.current_catgirl || '').trim();
         }
 
-        async fetchPresets() {
-            const payload = await requestJson('/api/characters/persona-presets');
+        async fetchPresets(language) {
+            const requestLanguage = String(language || '').trim();
+            const url = requestLanguage
+                ? `/api/characters/persona-presets?language=${encodeURIComponent(requestLanguage)}`
+                : '/api/characters/persona-presets';
+            const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
         }
 
@@ -711,7 +791,7 @@
                 );
                 card.appendChild(quote);
 
-                card.addEventListener('click', () => this.renderStageTwo(preset));
+                card.addEventListener('click', () => this.renderStageTwo(preset, this.currentLanguage));
                 grid.appendChild(card);
             });
 
@@ -735,6 +815,7 @@
                         body: JSON.stringify({ status: 'skipped' }),
                     });
                 }
+                this.markSettled();
                 this.hideOverlay();
             });
             actions.appendChild(skipButton);
@@ -744,11 +825,12 @@
             stageTwo.hidden = true;
         }
 
-        renderStageTwo(preset) {
+        renderStageTwo(preset, language) {
             if (!this.overlay || !preset) {
                 return;
             }
 
+            const requestLanguage = String(language || '').trim();
             this.selectedPresetId = preset.preset_id;
 
             const stageOne = this.overlay.querySelector('.character-personality-stage-one');
@@ -902,6 +984,7 @@
                             body: JSON.stringify({
                                 preset_id: selectedPresetId,
                                 source: openReason,
+                                i18n_language: requestLanguage,
                             }),
                         }
                     );
@@ -911,6 +994,7 @@
                             presetId: selectedPresetId,
                         },
                     }));
+                    this.markSettled();
                     this.hideOverlay();
                 } catch (error) {
                     confirmButton.disabled = false;

@@ -28,8 +28,14 @@ global settings. The activity sub-dict lives there:
         "unfinished_thread_window_seconds": 300,
         "unfinished_thread_max_followups": 2,
         "gaming_gpu_threshold_percent": 60,
-        "gaming_gpu_max_idle_seconds": 60
+        "gaming_gpu_max_idle_seconds": 60,
+        "work_break_minutes": 30,
+        "work_break_pending_window_seconds": 300,
+        "anti_slack_min_focus_minutes": 5,
+        "anti_slack_cooldown_minutes": 15,
+        "anti_slack_pending_window_seconds": 300
       },
+      "work_break_game_invite_probability": 0.5,
       "user_app_overrides": {
         "MyCompanyApp.exe": {"category": "work", "subcategory": "office", "canonical": "MyCompanyApp"},
         "OurGameLauncher.exe": {"category": "gaming", "subcategory": "game"}
@@ -75,6 +81,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -164,6 +171,13 @@ class ActivityPreferences:
     # Skip probability overrides. Keys are intensity-only ('competitive')
     # or intensity_genre ('immersive_horror'); values in [0, 1].
     skip_probability_overrides: dict[str, float] = field(default_factory=dict)
+
+    # Probability that a fired water-break reminder pivots into a "rest +
+    # mini-game invite" branch instead of the regular drink/stretch nudge.
+    # Lives outside ``thresholds`` because 0 is a meaningful value here
+    # ("disable the game-invite branch entirely") and ``_parse_thresholds``
+    # rejects non-positive numbers. None == use code default (0.5).
+    work_break_game_invite_probability: float | None = None
 
 
 # ── Module-level cache ────────────────────────────────────────────────
@@ -344,7 +358,41 @@ def _parse_activity_section(section: dict) -> ActivityPreferences:
         skip_probability_overrides=_parse_skip_overrides(
             section.get('skip_probability_overrides'),
         ),
+        work_break_game_invite_probability=_parse_unit_probability(
+            section.get('work_break_game_invite_probability'),
+        ),
     )
+
+
+def _parse_unit_probability(raw: Any) -> float | None:
+    """Probability value in [0, 1]. None / non-numeric / out-of-range → None.
+
+    Distinct from ``_parse_thresholds`` because 0 is a meaningful value
+    (disabled), so the >0 invariant doesn't apply. Returns None when the
+    user didn't supply this key, signalling "fall through to the code
+    default" rather than "disabled".
+
+    Out-of-range (``< 0`` / ``> 1``) is rejected, NOT clamped: a typo
+    like ``2`` or ``-1`` should fall through to the default (0.5) rather
+    than silently flip to "always invite" (1.0) or "never invite" (0.0).
+    Same fail-soft contract the rest of this module uses for invalid
+    user input. Codex P2 review: PR #1226.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    # NaN/Inf would slip past the range checks below (NaN comparisons are
+    # always False; +Inf > 1 catches it but -Inf < 0 also does, leaving
+    # NaN as the real concern). Reject them up front. CodeRabbit Minor: PR #1226.
+    if not math.isfinite(value):
+        return None
+    if value < 0.0 or value > 1.0:
+        return None
+    return value
 
 
 def _parse_thresholds(raw: Any) -> dict[str, float]:

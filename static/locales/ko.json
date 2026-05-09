@@ -810,7 +810,12 @@
         "volumeHintDetecting": "마이크 입력 감지 중...",
         "volumeHintNoSound": "소리가 감지되지 않습니다. 마이크를 확인하세요.",
         "volumeHintLow": "볼륨이 낮습니다. 게인을 높여보세요.",
+        "volumeHintHigh": "볼륨이 높습니다. 게인을 낮추는 것을 권장합니다.",
         "volumeHintOk": "마이크가 제대로 작동함",
+        "volumeClipping": "클리핑",
+        "volumeHintClipping": "마이크 게인이 너무 높아 오디오가 클리핑되고 있습니다. AI가 잘못 인식할 수 있으니 게인을 낮춰주세요.",
+        "volumeWaiting": "대기 중",
+        "volumeHintWaiting": "마이크가 입력을 대기 중입니다. 말씀해 주세요.",
         "noiseReduction": "노이즈 리덕션",
         "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
     },

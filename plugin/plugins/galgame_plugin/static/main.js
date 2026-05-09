@@ -12,6 +12,7 @@ const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
 const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
+const INSTALL_COMPLETED_REFRESH_GRACE_SECONDS = 15;
 const FLASH_AUTO_HIDE_MS = 4000;
 const SETTINGS_AUTOSAVE_DELAY_MS = 700;
 const PLUGIN_RUN_TIMEOUT_MS = 120000;
@@ -170,6 +171,8 @@ const installRuntime = {
   textractor: createInstallRuntimeState(),
   rapidocr_models: createInstallRuntimeState(),
 };
+let rapidOcrLangRequestPending = false;
+let rapidOcrLangQueuedPayload = null;
 
 function readCurrentLineZoom() {
   const raw = parseInt(storageGet(CL_ZOOM_KEY), 10);
@@ -750,10 +753,6 @@ let modeSaveRequestId = 0;
 let settingsAutosaveTimer = null;
 let flashTimer = null;
 let flashToken = 0;
-let ocrScreenTemplatesUndoValue = '';
-let ocrRegionSnapshot = null;
-let ocrRegionSelection = null;
-let ocrRegionDragStart = null;
 
 function fetchWithTutorialTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -1294,7 +1293,7 @@ function buildPrimaryDiagnosis(status = {}) {
     && textValue(backgroundStatus.trigger_mode || status.ocr_reader_trigger_mode) === 'interval'
     && runtime.target_is_foreground === false
   );
-  const { observedText, stableText, effectiveText } = getCurrentLineTexts(status);
+  const { rawText, observedText, stableText, effectiveText } = getCurrentLineTexts(status);
   const observedKey = compactLineText(observedText);
   const stableKey = compactLineText(stableText);
   const hasEffectiveWindow = Boolean(textValue(runtime.effective_window_key));
@@ -1472,6 +1471,64 @@ function buildPrimaryDiagnosis(status = {}) {
       actions: [
         diagnosisAction('select_ocr_window'),
         diagnosisAction('refresh_ocr_windows'),
+      ],
+    });
+  }
+
+  if (
+    rawText.length > 400
+    && hasOcrRuntimeSignal
+    && textValue(status.active_data_source) === 'ocr_reader'
+  ) {
+    return diagnose({
+      severity: 'warning',
+      title: uiT('ui.diag.ocr_text_too_long.title', 'OCR 识别文本过长'),
+      body: uiTf(
+        'ui.diag.ocr_text_too_long.body',
+        '当前识别到 {length} 字，远超正常对白长度。截图区域可能包含了非对白内容，建议锁定正确窗口并校准对白区域。',
+        { length: String(rawText.length) },
+      ),
+      actions: [
+        diagnosisAction('select_ocr_window'),
+        diagnosisAction('recalibrate_ocr'),
+      ],
+    });
+  }
+
+  const lastPollDuration = Number(runtime.last_poll_duration_seconds || 0);
+  if (
+    lastPollDuration > 5.0
+    && hasOcrRuntimeSignal
+    && textValue(status.active_data_source) === 'ocr_reader'
+  ) {
+    const saLatency = Number(runtime.screen_awareness_model_last_latency_seconds || 0);
+    if (saLatency > 3.0) {
+      const body = uiTf('ui.diag.ocr_poll_too_slow.body_with_sa',
+        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。画面感知模型延迟也较高（{saLatency}s），建议锁定窗口并校准对白区域，也可尝试降低画面感知频率或关闭全帧 OCR。',
+        { seconds: lastPollDuration.toFixed(1), saLatency: saLatency.toFixed(1) });
+      return diagnose({
+        severity: 'warning',
+        title: uiT('ui.diag.ocr_poll_too_slow.title', 'OCR 识别耗时过长'),
+        body,
+        actions: [
+          diagnosisAction('select_ocr_window'),
+          diagnosisAction('recalibrate_ocr'),
+          diagnosisAction('capture_backend'),
+        ],
+      });
+    }
+    return diagnose({
+      severity: 'warning',
+      title: uiT('ui.diag.ocr_poll_too_slow.title', 'OCR 识别耗时过长'),
+      body: uiTf(
+        'ui.diag.ocr_poll_too_slow.body',
+        '最近一次 OCR 轮询耗时 {seconds}s，远超正常水平。通常是因为截图区域过大或截图方式不匹配，建议锁定窗口并校准对白区域，也可尝试切换截图方式。',
+        { seconds: lastPollDuration.toFixed(1) },
+      ),
+      actions: [
+        diagnosisAction('select_ocr_window'),
+        diagnosisAction('recalibrate_ocr'),
+        diagnosisAction('capture_backend'),
       ],
     });
   }
@@ -1769,7 +1826,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models',
         '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
           size: sizeMb,
         },
@@ -1782,7 +1839,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models_manual',
         '所选语言模型 ({lang} + {version}) 未下载。当前环境不能自动下载，请按下方 RapidOCR 横幅说明手动放置模型后再刷新状态。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
         },
       );
@@ -2462,10 +2519,23 @@ function dependencySummaryItem(kind, status = {}) {
       && taskState?.state === 'installed'
       && hasMissingRapidOcrModelFiles(rapidocr);
     if (taskState && rapidocrModelsStillMissing && !taskCompletedButModelsMissing) {
+      const displayTaskState = kind === 'rapidocr' && taskState.state === 'running'
+        ? {
+            ...taskState,
+            labelText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
+            needsAttention: false,
+          }
+        : kind === 'rapidocr' && taskState.state === 'failed' && shouldOfferRapidOcrModelsDownload(rapidocr)
+          ? {
+              ...taskState,
+              labelText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
+              needsAttention: true,
+            }
+          : taskState;
       return {
         kind,
         label: kind === 'rapidocr' ? 'RapidOCR' : getInstallConfig(taskKind).label,
-        ...taskState,
+        ...displayTaskState,
       };
     }
   }
@@ -3108,6 +3178,21 @@ function isInstallTaskTerminal(state) {
   return Boolean(state) && INSTALL_TERMINAL_STATUSES.has(String(state.status || ''));
 }
 
+function installTaskUpdatedAtSeconds(state) {
+  return Number((state || {}).completed_at || (state || {}).updated_at || (state || {}).finished_at || 0);
+}
+
+function isRecentLocalCompletedInstallTask(state) {
+  if (!state || String(state.status || '') !== 'completed' || state.__restored) {
+    return false;
+  }
+  const updatedAt = installTaskUpdatedAtSeconds(state);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return false;
+  }
+  return ((Date.now() / 1000) - updatedAt) <= INSTALL_COMPLETED_REFRESH_GRACE_SECONDS;
+}
+
 function shouldOfferRapidOcrModelsDownload(rapidocr = {}) {
   return Boolean(
     rapidocr.detail === 'missing_model_files'
@@ -3418,26 +3503,6 @@ function setInputValueIfIdle(node, value) {
   node.value = value;
 }
 
-function formatScreenTemplatesForInput(templates) {
-  const value = Array.isArray(templates) ? templates : [];
-  return JSON.stringify(value, null, 2);
-}
-
-function renderOcrScreenTemplates(status) {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input || document.activeElement === input) {
-    return;
-  }
-  input.value = formatScreenTemplatesForInput(status.ocr_screen_templates || []);
-}
-
-function setOcrScreenTemplatesUndoAvailable(available) {
-  const button = document.getElementById('ocrScreenTemplatesUndoBtn');
-  if (button) {
-    button.disabled = !available;
-  }
-}
-
 function profileValueForInputs(runtimeProfile) {
   const merged = {
     ...DEFAULT_CAPTURE_PROFILE,
@@ -3521,7 +3586,7 @@ function renderInstallTaskState(kind) {
 }
 
 function applyRapidOcrModelsGate(rapidocr = {}) {
-  const { card, button } = getInstallNodes('rapidocr_models');
+  const { card, statusText, percentText, messageText, detailText, progressBar, button } = getInstallNodes('rapidocr_models');
   const runtime = installRuntime.rapidocr_models;
   let state = runtime.state;
   const config = getInstallConfig('rapidocr_models');
@@ -3536,11 +3601,26 @@ function applyRapidOcrModelsGate(rapidocr = {}) {
     state = null;
   }
   const running = Boolean(state && !isInstallTaskTerminal(state));
-  const waitingRefresh = Boolean(state && state.status === 'completed' && missingModels && !installed);
+  const waitingRefresh = Boolean(isRecentLocalCompletedInstallTask(state) && missingModels && !installed);
   const retryableFailure = Boolean(state && state.status === 'failed' && downloadable);
+  const showCard = Boolean(state && (running || waitingRefresh || retryableFailure));
+  const waitingRefreshText = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
 
   if (card) {
-    card.hidden = !(state && (running || waitingRefresh || retryableFailure));
+    card.hidden = !showCard;
+  }
+  if (waitingRefresh) {
+    if (statusText) statusText.textContent = `${formatInstallPhase(state.phase)} · completed`;
+    if (percentText) percentText.textContent = '100%';
+    if (messageText) messageText.textContent = state.message || waitingRefreshText;
+    if (detailText) detailText.textContent = '';
+    if (progressBar) progressBar.style.width = '100%';
+  } else if (!showCard) {
+    if (statusText) statusText.textContent = uiT('ui.install.waiting_task', '等待安装任务');
+    if (percentText) percentText.textContent = '0%';
+    if (messageText) messageText.textContent = '';
+    if (detailText) detailText.textContent = '';
+    if (progressBar) progressBar.style.width = '0%';
   }
   if (!button) {
     return;
@@ -3551,7 +3631,7 @@ function applyRapidOcrModelsGate(rapidocr = {}) {
   if (running) {
     button.textContent = config.runningText;
   } else if (waitingRefresh) {
-    button.textContent = uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
+    button.textContent = waitingRefreshText;
   } else if (retryableFailure) {
     button.textContent = config.retryText;
   } else {
@@ -3840,7 +3920,8 @@ async function restoreInstallState(kind) {
     return;
   }
 
-  applyInstallTaskState(kind, restoredState, { allowRefresh: false, showTerminalFlash: false });
+  const restoredStateForApply = { ...restoredState, __restored: true };
+  applyInstallTaskState(kind, restoredStateForApply, { allowRefresh: false, showTerminalFlash: false });
   if (restoredTaskId && !isInstallTaskTerminal(restoredState)) {
     connectInstallStream(kind, restoredTaskId);
   }
@@ -4187,7 +4268,6 @@ function renderStatus(status) {
     { label: 'screen_classify_keywords', value: JSON.stringify(status.screen_debug?.keyword_hits || {}) },
     { label: 'llm_vision_enabled', value: String(Boolean(status.llm_vision_enabled)) },
     { label: 'llm_vision_max_image_px', value: String(status.llm_vision_max_image_px || 0) },
-    { label: 'ocr_screen_template_count', value: String(status.ocr_screen_template_count || 0) },
     { label: 'vision_snapshot_available', value: String(Boolean(ocrRuntime.vision_snapshot_available)) },
     { label: 'vision_snapshot_captured_at', value: ocrRuntime.vision_snapshot_captured_at || '' },
     { label: 'vision_snapshot_byte_size', value: String(ocrRuntime.vision_snapshot_byte_size || 0) },
@@ -4226,7 +4306,6 @@ function renderStatus(status) {
   renderTextractor(status);
   renderMemoryReaderTargetStatus(status);
   renderOcrWindowTargetStatus(status);
-  renderOcrScreenTemplates(status);
   renderOcrProfile(status);
   renderGameBinding(status);
 }
@@ -5068,7 +5147,7 @@ function renderRapidOcr(status) {
   const canDownloadModels = rapidocrModelsMissing && Boolean(rapidocr.can_download_models);
   const config = getInstallConfig('rapidocr_models');
   const lastStatus = modelState && modelState.status;
-  const waitingRefresh = lastStatus === 'completed' && rapidocrModelsMissing;
+  const waitingRefresh = Boolean(isRecentLocalCompletedInstallTask(modelState) && rapidocrModelsMissing);
   const modelBusy = getInstallState('rapidocr_models').inProgress || waitingRefresh;
   const buttons = [
     `<button id="rapidocrUseBtn" class="secondary" ${(!rapidocrUsable || selectedBackend === 'rapidocr') ? 'disabled' : ''}>${escapeHtml(selectedBackend === 'rapidocr' ? uiT('ui.install.rapidocr.using', '正在使用 RapidOCR') : uiT('ui.install.rapidocr.use', '使用 RapidOCR'))}</button>`,
@@ -5163,9 +5242,114 @@ function renderRapidOcr(status) {
   meta.textContent = metaText;
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
+  applyRapidOcrModelsGate(rapidocr);
+  renderRapidOcrLangBar(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
+  bindRapidOcrLangButtons();
+}
+
+function renderRapidOcrLangBar(rapidocr) {
+  const bar = document.getElementById('rapidocrLangBar');
+  if (!bar) {
+    return;
+  }
+  const usable = isRapidOcrUsable(rapidocr) || hasMissingRapidOcrModelFiles(rapidocr);
+  bar.hidden = !usable;
+  if (!usable) {
+    setRapidOcrLangControlsDisabled(true);
+    return;
+  }
+
+  const langType = rapidocr.lang_type || 'ch';
+  const autoDetect = rapidocr.auto_detect_lang !== false;
+  const idMap = { ch: 'Ch', japan: 'Japan', korean: 'Korean', en: 'En' };
+  Object.entries(idMap).forEach(([lang, suffix]) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (!btn) {
+      return;
+    }
+    btn.classList.toggle('active', langType === lang);
+    btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
+    btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
+    btn.disabled = rapidOcrLangRequestPending;
+  });
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.checked = autoDetect;
+    checkbox.disabled = rapidOcrLangRequestPending;
+  }
+}
+
+function setRapidOcrLangControlsDisabled(disabled) {
+  ['Ch', 'Japan', 'Korean', 'En'].forEach((suffix) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (btn) {
+      btn.disabled = Boolean(disabled);
+    }
+  });
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.disabled = Boolean(disabled);
+  }
+}
+
+function bindRapidOcrLangButtons() {
+  const idMap = { Ch: 'ch', Japan: 'japan', Korean: 'korean', En: 'en' };
+  Object.entries(idMap).forEach(([suffix, lang]) => {
+    rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
+  });
+
+  const group = document.querySelector('.rapidocr-lang-buttons');
+  if (group && !group.__galgameRapidOcrKeysBound) {
+    group.__galgameRapidOcrKeysBound = true;
+    group.addEventListener('keydown', (event) => {
+      const buttons = Array.from(group.querySelectorAll('.rapidocr-lang-btn'));
+      const enabledButtons = buttons.filter((button) => !button.disabled);
+      if (!enabledButtons.length) {
+        return;
+      }
+      const currentIndex = Math.max(0, enabledButtons.indexOf(document.activeElement));
+      let nextIndex = -1;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        nextIndex = (currentIndex - 1 + enabledButtons.length) % enabledButtons.length;
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        nextIndex = (currentIndex + 1) % enabledButtons.length;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = enabledButtons.length - 1;
+      } else if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.click();
+        }
+        return;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      const nextButton = enabledButtons[nextIndex];
+      buttons.forEach((button) => {
+        const selected = button === nextButton;
+        button.setAttribute('tabindex', selected ? '0' : '-1');
+        button.setAttribute('aria-checked', selected ? 'true' : 'false');
+        button.classList.toggle('active', selected);
+      });
+      nextButton.focus();
+      nextButton.click();
+    });
+  }
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox && !checkbox.__galgameRapidOcrAutoBound) {
+    checkbox.__galgameRapidOcrAutoBound = true;
+    checkbox.addEventListener('change', () => {
+      setRapidOcrLang({ auto_detect_lang: checkbox.checked });
+    });
+  }
 }
 
 function renderDxcam(status) {
@@ -5350,7 +5534,23 @@ function renderTextractor(status) {
   } else if (installState && installState.status === 'failed') {
     cardStatus = 'error';
     chipText = uiT('ui.install.status.failed', '安装失败');
-    descText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const errorText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const failedPhase = installState.failed_phase || '';
+    let phaseHint = '';
+    if (failedPhase === 'fetch_release') {
+      phaseHint = uiT('ui.install.textractor.failed_fetch_release_hint', '无法连接 GitHub 服务。请检查网络/GitHub 可达性，或在 plugin.toml 的 [memory_reader] 中配置 textractor_proxy 代理地址。这通常不是插件安装逻辑损坏。');
+    } else if (failedPhase === 'downloading') {
+      phaseHint = uiT('ui.install.textractor.failed_downloading_hint', 'Textractor 下载中断、HTTP 请求失败或文件校验失败。请确认网络稳定后重试。');
+    } else if (failedPhase === 'extracting') {
+      phaseHint = uiT('ui.install.textractor.failed_extracting_hint', 'Textractor 安装包解压或安装后验证失败。建议按下面的路径手动安装。');
+    }
+    const expectedPath = textractor.expected_executable_path || 'TextractorCLI.exe';
+    const manualGuide = uiTf(
+      'ui.install.textractor.manual_install_guide',
+      '手动安装：从 https://github.com/Artikash/Textractor/releases 下载最新 zip，解压后确保 TextractorCLI.exe 位于 {path}，然后刷新状态。',
+      { path: expectedPath },
+    );
+    descText = [errorText, phaseHint, manualGuide].filter(Boolean).join('\n');
   } else if (installState && installState.status === 'completed' && !installed) {
     cardStatus = 'neutral';
     chipText = uiT('ui.install.status.completed', '已完成');
@@ -5659,21 +5859,38 @@ function renderAgentStatus(payload) {
       ${item.error ? `<p>${escapeHtml(item.error)}</p>` : ''}
     </article>
   `);
+
+  const panelSummary = document.getElementById('agentPanelSummary');
+  if (panelSummary) {
+    const mode = latestStatus?.mode || 'companion';
+    const modeText = modeLabel(mode, mode);
+    const inbound = payload.inbound_queue_size || 0;
+    const outbound = payload.outbound_queue_size || 0;
+    panelSummary.textContent = `${modeText} | in=${inbound} out=${outbound}`;
+  }
 }
 
 function renderAgentStatusGrid(rows, summaryRows) {
   const container = document.getElementById('agentStatusGrid');
   const debugWasOpen = Boolean(container?.querySelector('.status-debug-panel')?.open);
   renderPreservingScroll(container, () => {
+    const visibleRows = Array.isArray(rows) ? rows : [];
+    const visibleSummaryRows = Array.isArray(summaryRows) ? summaryRows : [];
+    if (!visibleRows.length) {
+      container.className = 'data-grid scroll-region empty-state';
+      container.textContent = uiT('ui.agent.empty_status', 'Agent 正在整理小本本，等第一次状态刷新。');
+      return;
+    }
+    container.className = 'data-grid scroll-region';
     container.innerHTML = `
-      ${renderDataRows(rows)}
+      ${renderDataRows(visibleRows)}
       <details class="status-debug-panel"${debugWasOpen ? ' open' : ''}>
         <summary>
           <span>${escapeHtml(uiT('ui.agent.summary_debug', 'Summary 调试'))}</span>
-          <small>${escapeHtml(uiTf('ui.agent.summary_debug_count', '{count} 项内部状态', { count: summaryRows.length }))}</small>
+          <small>${escapeHtml(uiTf('ui.agent.summary_debug_count', '{count} 项内部状态', { count: visibleSummaryRows.length }))}</small>
         </summary>
         <dl class="data-grid">
-          ${renderDataRows(summaryRows)}
+          ${renderDataRows(visibleSummaryRows)}
         </dl>
       </details>
     `;
@@ -5723,7 +5940,7 @@ function renderSuggest(payload) {
             <h3>${escapeHtml(item.text || '')}</h3>
             <p>${escapeHtml(item.reason || '')}</p>
           </article>
-        `).join('') : `<div class="empty-inline">${escapeHtml(payload.diagnostic || 'No suggestion yet')}</div>`}
+        `).join('') : `<div class="empty-inline agent-suggest-empty"><span class="agent-suggest-empty-face" aria-hidden="true">(=^..^=)</span><span>${escapeHtml(payload.diagnostic || uiT('ui.agent.empty_suggest', '还没有建议，等画面出现选项再轻轻递上来。'))}</span></div>`}
       </div>
     `;
   });
@@ -6228,6 +6445,41 @@ async function setOcrBackendSelection({ backendSelection = null, captureBackend 
   }
 }
 
+async function setRapidOcrLang(payload = {}) {
+  if (rapidOcrLangRequestPending) {
+    rapidOcrLangQueuedPayload = { ...payload };
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    return;
+  }
+  rapidOcrLangRequestPending = true;
+  setRapidOcrLangControlsDisabled(true);
+  let saved = false;
+  try {
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    const result = await callPlugin('galgame_set_rapidocr_lang', payload);
+    saved = true;
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(result.summary || uiT('ui.flash.rapidocr_lang_saved', 'RapidOCR 识别语言已保存'), 'success');
+    }
+  } catch (error) {
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(error instanceof Error ? error.message : String(error), 'error');
+    }
+  } finally {
+    rapidOcrLangRequestPending = false;
+    const nextPayload = rapidOcrLangQueuedPayload;
+    rapidOcrLangQueuedPayload = null;
+    if (nextPayload) {
+      setRapidOcrLang(nextPayload);
+    } else {
+      setRapidOcrLangControlsDisabled(false);
+    }
+    if (saved && !nextPayload) {
+      await refreshAll({ preserveFlash: true, forceInsights: true });
+    }
+  }
+}
+
 function clearSettingsAutosaveTimer() {
   if (settingsAutosaveTimer) {
     clearTimeout(settingsAutosaveTimer);
@@ -6339,297 +6591,6 @@ async function saveMode({ auto = false } = {}) {
   }
 }
 
-async function saveOcrScreenTemplates() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    setFlash(uiT('ui.flash.screen_templates_saving', '正在保存屏幕模板...'), 'info');
-    const payload = await callPlugin('galgame_set_ocr_screen_templates', {
-      screen_templates: templates,
-    });
-    input.value = formatScreenTemplatesForInput(payload.screen_templates || []);
-    setFlash(payload.summary || uiT('ui.flash.screen_templates_saved', '屏幕模板已保存'), 'success');
-    await refreshAll({ preserveFlash: true, forceRefresh: true });
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function readOcrScreenTemplatesInput() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  let templates;
-  try {
-    templates = JSON.parse(input?.value || '[]');
-  } catch (error) {
-    throw new Error(error instanceof Error
-      ? `${uiT('ui.error.template_json_parse_failed', '模板 JSON 解析失败')}：${error.message}`
-      : uiT('ui.error.template_json_parse_failed_sentence', '模板 JSON 解析失败。'));
-  }
-  if (!Array.isArray(templates)) {
-    throw new Error(uiT('ui.error.template_json_must_be_array', '模板 JSON 必须是数组。'));
-  }
-  return templates;
-}
-
-async function buildOcrScreenTemplateDraft() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const payload = await callPlugin('galgame_build_ocr_screen_template_draft', {});
-    if (!payload.template || typeof payload.template !== 'object') {
-      throw new Error(uiT('ui.error.no_template_draft_returned', '插件未返回可用模板草稿。'));
-    }
-    ocrScreenTemplatesUndoValue = input.value;
-    setOcrScreenTemplatesUndoAvailable(true);
-    templates.push(payload.template);
-    input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || uiT('ui.flash.screen_template_draft_created', '已生成屏幕模板草稿，可编辑后保存。'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-async function validateOcrScreenTemplates() {
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const payload = await callPlugin('galgame_validate_ocr_screen_templates', {
-      screen_templates: templates,
-    });
-    const classification = payload.classification || {};
-    const screenType = classification.screen_type || 'default';
-    const confidence = Number(classification.screen_confidence || 0).toFixed(2);
-    setFlash(payload.summary || `${uiT('ui.flash.template_validation_result', '模板验证结果')}: ${screenType} (${confidence})`, 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function undoOcrScreenTemplateDraft() {
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  if (!input || !ocrScreenTemplatesUndoValue) {
-    return;
-  }
-  input.value = ocrScreenTemplatesUndoValue;
-  ocrScreenTemplatesUndoValue = '';
-  setOcrScreenTemplatesUndoAvailable(false);
-  setFlash(uiT('ui.flash.screen_template_draft_undone', '已撤销上一次模板草稿。'), 'info');
-}
-
-function getOcrRegionNodes() {
-  return {
-    editor: document.getElementById('ocrRegionEditor'),
-    image: document.getElementById('ocrRegionImage'),
-    box: document.getElementById('ocrRegionSelectionBox'),
-    empty: document.getElementById('ocrRegionEmpty'),
-    hint: document.getElementById('ocrRegionHint'),
-    stage: document.getElementById('ocrRegionStageSelect'),
-  };
-}
-
-function clampRegionValue(value) {
-  return Math.max(0, Math.min(1, Number(value) || 0));
-}
-
-function normalizeOcrRegion(region) {
-  const left = clampRegionValue(Math.min(region.left, region.right));
-  const right = clampRegionValue(Math.max(region.left, region.right));
-  const top = clampRegionValue(Math.min(region.top, region.bottom));
-  const bottom = clampRegionValue(Math.max(region.top, region.bottom));
-  return { left, top, right, bottom };
-}
-
-function ocrRegionFromPointer(event) {
-  const { image } = getOcrRegionNodes();
-  if (!image || image.hidden) {
-    return null;
-  }
-  const imageRect = image.getBoundingClientRect();
-  if (!imageRect.width || !imageRect.height) {
-    return null;
-  }
-  return {
-    left: clampRegionValue((event.clientX - imageRect.left) / imageRect.width),
-    top: clampRegionValue((event.clientY - imageRect.top) / imageRect.height),
-  };
-}
-
-function renderOcrRegionSelection() {
-  const { editor, image, box, hint } = getOcrRegionNodes();
-  if (!editor || !image || !box) {
-    return;
-  }
-  if (!ocrRegionSelection) {
-    box.hidden = true;
-    if (hint) {
-      hint.textContent = ocrRegionSnapshot
-        ? uiT('ui.screen_templates.drag_region_hint', '在截图上拖拽框选区域。')
-        : uiT('ui.screen_templates.region_hint', '加载最近 OCR 屏幕感知截图后，拖拽框选区域。');
-    }
-    return;
-  }
-  const region = normalizeOcrRegion(ocrRegionSelection);
-  const editorRect = editor.getBoundingClientRect();
-  const imageRect = image.getBoundingClientRect();
-  const leftPx = imageRect.left - editorRect.left + region.left * imageRect.width;
-  const topPx = imageRect.top - editorRect.top + region.top * imageRect.height;
-  const widthPx = Math.max(1, (region.right - region.left) * imageRect.width);
-  const heightPx = Math.max(1, (region.bottom - region.top) * imageRect.height);
-  box.hidden = false;
-  box.style.left = `${leftPx}px`;
-  box.style.top = `${topPx}px`;
-  box.style.width = `${widthPx}px`;
-  box.style.height = `${heightPx}px`;
-  if (hint) {
-    hint.textContent = `${uiT('ui.screen_templates.region_label', '区域')}: left=${region.left.toFixed(3)}, top=${region.top.toFixed(3)}, right=${region.right.toFixed(3)}, bottom=${region.bottom.toFixed(3)}`;
-  }
-}
-
-async function loadOcrRegionSnapshot() {
-  const { image, empty, hint } = getOcrRegionNodes();
-  try {
-    const payload = await callPlugin('galgame_get_ocr_screen_awareness_snapshot', {});
-    const snapshot = payload.snapshot || {};
-    const imageBase64 = snapshot.vision_image_base64 || '';
-    if (!imageBase64) {
-      throw new Error(uiT('ui.error.no_ocr_snapshot', '当前没有可用截图。请先开启 Vision，并等待 OCR 完成一次全画面感知。'));
-    }
-    ocrRegionSnapshot = snapshot;
-    ocrRegionSelection = null;
-    if (image) {
-      image.hidden = false;
-      image.src = imageBase64;
-      image.onload = () => renderOcrRegionSelection();
-    }
-    if (empty) {
-      empty.hidden = true;
-    }
-    if (hint) {
-      hint.textContent = payload.summary || uiT('ui.screen_templates.snapshot_loaded_hint', '截图已加载，可拖拽框选区域。');
-    }
-    renderOcrRegionSelection();
-    setFlash(payload.summary || uiT('ui.flash.ocr_snapshot_loaded', 'OCR 屏幕感知截图已加载'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-async function buildOcrRegionTemplateDraft() {
-  if (!ocrRegionSelection) {
-    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
-    return;
-  }
-  const input = document.getElementById('ocrScreenTemplatesInput');
-  const { stage } = getOcrRegionNodes();
-  if (!input) {
-    return;
-  }
-  try {
-    const templates = readOcrScreenTemplatesInput();
-    const selectedStage = stage?.value || 'dialogue_stage';
-    const payload = await callPlugin('galgame_build_ocr_screen_template_draft', {
-      stage: selectedStage,
-      region: {
-        role: selectedStage,
-        ...normalizeOcrRegion(ocrRegionSelection),
-      },
-    });
-    ocrScreenTemplatesUndoValue = input.value;
-    setOcrScreenTemplatesUndoAvailable(true);
-    templates.push(payload.template);
-    input.value = formatScreenTemplatesForInput(templates);
-    setFlash(payload.summary || uiT('ui.flash.region_template_draft_created', '已根据框选区域生成模板草稿。'), 'success');
-  } catch (error) {
-    setFlash(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-function applyOcrRegionToCaptureProfileForm() {
-  if (!ocrRegionSelection) {
-    setFlash(uiT('ui.flash.select_region_first', '请先在截图上框选区域。'), 'error');
-    return;
-  }
-  const region = normalizeOcrRegion(ocrRegionSelection);
-  const { stage } = getOcrRegionNodes();
-  const profileStage = document.getElementById('ocrProfileStageSelect');
-  const leftInput = document.getElementById('ocrProfileLeftInput');
-  const rightInput = document.getElementById('ocrProfileRightInput');
-  const topInput = document.getElementById('ocrProfileTopInput');
-  const bottomInput = document.getElementById('ocrProfileBottomInput');
-  if (profileStage && stage?.value) {
-    profileStage.value = stage.value;
-  }
-  if (leftInput) {
-    leftInput.value = region.left.toFixed(2);
-  }
-  if (rightInput) {
-    rightInput.value = Math.max(0, 1 - region.right).toFixed(2);
-  }
-  if (topInput) {
-    topInput.value = region.top.toFixed(2);
-  }
-  if (bottomInput) {
-    bottomInput.value = Math.max(0, 1 - region.bottom).toFixed(2);
-  }
-  setFlash(uiT('ui.flash.region_applied_to_profile', '已将框选区域套用到 OCR 截图校准表单，确认后可保存。'), 'success');
-}
-
-function startOcrRegionDrag(event) {
-  if (event.button !== undefined && event.button !== 0) {
-    return;
-  }
-  const point = ocrRegionFromPointer(event);
-  if (!point) {
-    return;
-  }
-  ocrRegionDragStart = point;
-  ocrRegionSelection = {
-    left: point.left,
-    top: point.top,
-    right: point.left,
-    bottom: point.top,
-  };
-  event.currentTarget.setPointerCapture?.(event.pointerId);
-  renderOcrRegionSelection();
-}
-
-function moveOcrRegionDrag(event) {
-  if (!ocrRegionDragStart) {
-    return;
-  }
-  const point = ocrRegionFromPointer(event);
-  if (!point) {
-    return;
-  }
-  ocrRegionSelection = normalizeOcrRegion({
-    left: ocrRegionDragStart.left,
-    top: ocrRegionDragStart.top,
-    right: point.left,
-    bottom: point.top,
-  });
-  renderOcrRegionSelection();
-}
-
-function finishOcrRegionDrag(event) {
-  if (!ocrRegionDragStart) {
-    return;
-  }
-  event.currentTarget.releasePointerCapture?.(event.pointerId);
-  ocrRegionDragStart = null;
-  const region = ocrRegionSelection ? normalizeOcrRegion(ocrRegionSelection) : null;
-  if (!region || (region.right - region.left) * (region.bottom - region.top) < 0.0025) {
-    ocrRegionSelection = null;
-  } else {
-    ocrRegionSelection = region;
-  }
-  renderOcrRegionSelection();
-}
-
 async function bindGame(gameId = '') {
   const normalized = String(gameId || '').trim();
   try {
@@ -6682,7 +6643,7 @@ async function resumeAgentFromButton() {
 }
 
 async function askAgent(action) {
-  const prompt = document.getElementById('agentPromptInput').value.trim();
+  const prompt = document.getElementById('agentPromptInput')?.value.trim() || '';
   if (!prompt) {
     setFlash(uiT('ui.flash.agent_prompt_required', '请输入要发送给 Agent 的文本'), 'error');
     return;
@@ -7341,27 +7302,6 @@ document.getElementById('resetTutorialBtn')?.addEventListener('click', (event) =
 document.getElementById('saveModeBtn').addEventListener('click', () => {
   withButtonPending('saveModeBtn', uiT('ui.pending.saving', '保存中...'), saveMode).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('ocrScreenTemplatesSaveBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesSaveBtn', uiT('ui.pending.saving', '保存中...'), saveOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesDraftBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesDraftBtn', uiT('ui.pending.generating', '生成中...'), buildOcrScreenTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesValidateBtn').addEventListener('click', () => {
-  withButtonPending('ocrScreenTemplatesValidateBtn', uiT('ui.pending.validating', '验证中...'), validateOcrScreenTemplates).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrScreenTemplatesUndoBtn').addEventListener('click', undoOcrScreenTemplateDraft);
-document.getElementById('ocrRegionSnapshotBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionSnapshotBtn', uiT('ui.pending.loading', '加载中...'), loadOcrRegionSnapshot).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrRegionTemplateBtn').addEventListener('click', () => {
-  withButtonPending('ocrRegionTemplateBtn', uiT('ui.pending.generating', '生成中...'), buildOcrRegionTemplateDraft).catch((error) => { console.error('[galgame] async action failed', error); });
-});
-document.getElementById('ocrRegionCaptureBtn').addEventListener('click', applyOcrRegionToCaptureProfileForm);
-document.getElementById('ocrRegionEditor').addEventListener('pointerdown', startOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointermove', moveOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointerup', finishOcrRegionDrag);
-document.getElementById('ocrRegionEditor').addEventListener('pointercancel', finishOcrRegionDrag);
 SETTINGS_CONTROL_IDS.forEach((id) => {
   const node = document.getElementById(id);
   if (!node) {
@@ -7388,10 +7328,28 @@ document.getElementById('standbyOnBtn').addEventListener('click', () => {
 document.getElementById('standbyOffBtn').addEventListener('click', () => {
   withButtonPending('standbyOffBtn', uiT('ui.pending.processing', '处理中...'), resumeAgentFromButton).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('queryContextBtn').addEventListener('click', () => {
+document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) => {
+  const target = eventElement(event.target);
+  const tab = target ? target.closest('[data-agent-tab]') : null;
+  if (!tab) {
+    return;
+  }
+  const name = tab.getAttribute('data-agent-tab') || '';
+  document.querySelectorAll('.agent-tab').forEach((item) => {
+    const active = item === tab;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-agent-tab-panel]').forEach((panel) => {
+    const active = panel.getAttribute('data-agent-tab-panel') === name;
+    panel.hidden = !active;
+    panel.setAttribute('aria-hidden', active ? 'false' : 'true');
+  });
+});
+document.getElementById('queryContextBtn')?.addEventListener('click', () => {
   withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
-document.getElementById('sendMessageBtn').addEventListener('click', () => {
+document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
 });
 document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () => {

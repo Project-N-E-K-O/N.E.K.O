@@ -675,11 +675,6 @@ details[open]:not(.panel-fullscreen) > :not(summary) {
   font-weight: 700;
 }
 
-.agent-grid {
-  margin-top: 12px;
-  grid-template-columns: 1.5fr auto auto;
-}
-
 .settings-subpanel {
   margin-top: 14px;
   padding-top: 14px;
@@ -745,22 +740,6 @@ details[open]:not(.panel-fullscreen) > :not(summary) {
 
 .binding-chip.active .binding-chip-detail {
   color: rgba(255, 255, 255, 0.78);
-}
-
-.agent-debug-tools {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
-
-.agent-debug-tools summary {
-  cursor: pointer;
-  color: var(--brand-strong);
-  font-weight: 700;
-}
-
-.agent-debug-tools[open] > summary {
-  background: var(--paper);
 }
 
 .agent-user-notice {
@@ -1422,6 +1401,51 @@ details.panel-scroll-wide[open] {
   max-height: none !important;
 }
 
+.agent-panel-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-tab {
+  margin-bottom: -1px;
+  padding: 7px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.agent-tab:hover {
+  color: var(--ink);
+  transform: none;
+}
+
+.agent-tab.active {
+  border-bottom-color: var(--brand-strong);
+  color: var(--brand-strong);
+}
+
+.agent-panel-body:not([hidden]) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-panel-body:not([hidden]) > .scroll-region,
+.agent-panel-body:not([hidden]) > .data-grid.scroll-region {
+  flex: 1 1 auto;
+  max-height: none !important;
+}
+
 .scroll-region::-webkit-scrollbar,
 .reply-text-scroll::-webkit-scrollbar {
   width: 10px;
@@ -1656,6 +1680,21 @@ details.panel-scroll-wide[open] {
   border: 1px dashed var(--line);
   border-radius: 18px;
   color: var(--muted);
+}
+
+.agent-suggest-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-suggest-empty-face {
+  flex: 0 0 auto;
+  color: var(--brand-strong);
+  font-size: 24px;
+  line-height: 1;
+  opacity: 0.65;
+  user-select: none;
 }
 
 .list-card {
@@ -2270,7 +2309,6 @@ body:not(.onboarding-active) #onboardingView {
   }
 
   .control-grid,
-  .agent-grid,
   .dashboard-grid,
   .dashboard-section-grid,
   .dashboard-section-grid-three,
@@ -2504,6 +2542,45 @@ body:not(.onboarding-active) #onboardingView {
   max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.rapidocr-lang-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rapidocr-lang-label,
+.rapidocr-auto-detect-toggle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rapidocr-lang-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rapidocr-lang-btn {
+  min-width: 34px;
+  padding: 5px 8px;
+}
+
+.rapidocr-lang-btn.active {
+  border-color: var(--brand);
+  background: rgba(14, 138, 124, 0.12);
+  color: var(--brand-strong);
+}
+
+.rapidocr-auto-detect-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .install-card .install-task-card {

@@ -278,28 +278,36 @@ window.addEventListener('load', async () => {
     }, 1000);
 
     // 拉取待弹重要通知 + 版本更新日志（chat 独立窗口跳过）
-    setTimeout(async () => {
+    // 同一个 modal 队列；按 changelog（背景）→ pending notices（行动召唤）顺序入队。
+    // 启动 gate：先等存档迁移/位置选择 + tutorial/初始人设走完，最多 15s 兜底防 hang。
+    (async () => {
         if (_isChatPage) return;
         if (typeof window.showProminentNotice !== 'function') return;
+
+        const NOTICE_GATE_FALLBACK_MS = 15000;
         try {
-            // 1) 常规 prominent notices
-            const r = await fetch('/api/pending-notices');
-            const data = await r.json();
-            const notices = Array.isArray(data) ? data : (data.notices || []);
-            const cursor = (data && typeof data.cursor === 'number') ? data.cursor : 0;
-            if (notices.length > 0) {
-                // 先全部入队（不 await），让 UI 能感知队列长度以显示"下一个"按钮
-                const promises = notices.filter(Boolean).map(n => window.showProminentNotice(n));
-                await Promise.all(promises);
-                await fetch('/api/pending-notices/ack', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cursor }),
-                }).catch(() => { });
+            if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+                await window.waitForStorageLocationStartupBarrier();
+            }
+            const onboarding = window.CharacterPersonalityOnboarding;
+            if (onboarding && typeof onboarding.whenSettled === 'function') {
+                // 超时只兜底"bootstrap 内部卡死"：whenSettled 没 resolve 且 overlay 也没显示。
+                // 一旦 overlay 显示出来（用户在主动选择），就继续无限等 whenSettled——用户慢慢看 preset 是正常 UX，不该被超时强行放行。
+                const settled = await Promise.race([
+                    onboarding.whenSettled().then(() => true),
+                    new Promise((resolve) => setTimeout(() => resolve(false), NOTICE_GATE_FALLBACK_MS)),
+                ]);
+                if (!settled) {
+                    const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+                        || onboarding.pendingResumeAfterTutorial;
+                    if (overlayActive) {
+                        await onboarding.whenSettled();
+                    }
+                }
             }
         } catch (_) { }
 
-        // 2) 版本更新日志
+        // 1) 版本更新日志（先讲背景）
         try {
             const lastVer = localStorage.getItem('neko_last_notified_version') || '';
             const lang = (window.i18next && window.i18next.language) || '';
@@ -326,7 +334,25 @@ window.addEventListener('load', async () => {
                 }
             }
         } catch (_) { }
-    }, 2000);
+
+        // 2) 常规 prominent notices（行动召唤）
+        try {
+            const r = await fetch('/api/pending-notices');
+            const data = await r.json();
+            const notices = Array.isArray(data) ? data : (data.notices || []);
+            const cursor = (data && typeof data.cursor === 'number') ? data.cursor : 0;
+            if (notices.length > 0) {
+                // 先全部入队（不 await），让 UI 能感知队列长度以显示"下一个"按钮
+                const promises = notices.filter(Boolean).map(n => window.showProminentNotice(n));
+                await Promise.all(promises);
+                await fetch('/api/pending-notices/ack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cursor }),
+                }).catch(() => { });
+            }
+        } catch (_) { }
+    })();
 });
 
 // 监听 voice_id 更新和 VRM 表情预览消息

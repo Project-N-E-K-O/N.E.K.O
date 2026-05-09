@@ -4,6 +4,10 @@ from utils.language_utils import (
     TTS_LANG_DETECT_MIN_CHARS,
     detect_tts_language_hint,
 )
+from main_logic.tts_client import (
+    _build_step_tts_create_data,
+    _get_tts_language_code,
+)
 
 
 class TestDetectTtsLanguageHint:
@@ -71,21 +75,16 @@ class TestQwenConfigMessageBuilder:
 class TestStepTtsCreateBuilder:
     """类似地，覆盖 step_realtime_tts_worker 的 _build_tts_create_data 分支逻辑。"""
 
-    def _build(self, *, voice_id: str, session_id: str, lang_hint, is_lanlan_app: bool, fallback_lang_code: str = "zh-CN"):
-        data = {
-            "session_id": session_id,
-            "voice_id": voice_id,
-            "response_format": "wav",
-            "sample_rate": 24000,
-        }
-        if is_lanlan_app:
-            data["voice_id"] = "Leda"
-            data["language_code"] = "ja-JP" if lang_hint == "ja" else fallback_lang_code
-        else:
-            # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label
-            if lang_hint == "ja":
-                data["voice_label"] = {"language": "日语"}
-        return data
+    def _build(self, *, voice_id: str, session_id: str, lang_hint, is_lanlan_app: bool):
+        return _build_step_tts_create_data(session_id, voice_id, lang_hint, is_lanlan_app)
+
+    def test_tts_language_code_uses_global_language(self, monkeypatch):
+        monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "en-US")
+        assert _get_tts_language_code() == "en-US"
+
+    def test_tts_language_code_preserves_traditional_chinese(self, monkeypatch):
+        monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-TW")
+        assert _get_tts_language_code() == "cmn-tw"
 
     def test_lanlan_tech_ja_adds_voice_label(self):
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
@@ -102,19 +101,20 @@ class TestStepTtsCreateBuilder:
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
         assert data["voice_label"] == {"language": "日语"}
 
-    def test_lanlan_app_ja_uses_ja_jp_language_code(self):
+    def test_lanlan_app_ja_uses_ja_jp_language_code(self, monkeypatch):
+        monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "en-US")
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=True)
         assert data["language_code"] == "ja-JP"
         # lanlan.app 会强制 Leda 音色
         assert data["voice_id"] == "Leda"
         assert "voice_label" not in data
 
-    def test_lanlan_app_no_hint_uses_fallback_language_code(self):
+    def test_lanlan_app_no_hint_uses_global_language_code(self, monkeypatch):
+        monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ko-KR")
         data = self._build(
             voice_id="v1",
             session_id="s1",
             lang_hint=None,
             is_lanlan_app=True,
-            fallback_lang_code="zh-CN",
         )
-        assert data["language_code"] == "zh-CN"
+        assert data["language_code"] == "ko-KR"

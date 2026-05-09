@@ -810,7 +810,12 @@
         "volumeHintDetecting": "マイク入力を検出中...",
         "volumeHintNoSound": "音声が検出されません。マイクを確認してください",
         "volumeHintLow": "音量が低いです。ゲインを上げてみてください",
+        "volumeHintHigh": "音量が高めです。ゲインを下げることをおすすめします",
         "volumeHintOk": "マイクは正常に動作しています",
+        "volumeClipping": "クリッピング",
+        "volumeHintClipping": "マイクのゲインが高すぎ、音声がクリッピングしています。AI が誤認識する可能性があるため、ゲインを下げてください",
+        "volumeWaiting": "待機中",
+        "volumeHintWaiting": "マイクが入力を待っています、話してください",
         "noiseReduction": "ノイズリダクション",
         "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
     },

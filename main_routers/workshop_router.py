@@ -81,6 +81,15 @@ WORKSHOP_CARD_FACE_PADDING = 48
 WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02
 WORKSHOP_CARD_FACE_MARKER_KEY = 'neko_workshop_card_face'
 WORKSHOP_CARD_FACE_MARKER_VALUE = 'steam_preview_v1'
+WORKSHOP_STANDARD_PREVIEW_STEMS = ('preview', 'thumbnail', 'icon', 'header')
+WORKSHOP_STANDARD_PREVIEW_EXTENSIONS = ('.jpg', '.png', '.jpeg', '.webp')
+WORKSHOP_PREVIEW_IMAGE_NAMES = tuple(
+    f'{stem}{ext}'
+    for stem in WORKSHOP_STANDARD_PREVIEW_STEMS
+    for ext in WORKSHOP_STANDARD_PREVIEW_EXTENSIONS
+)
+WORKSHOP_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+WORKSHOP_MODEL_TEXTURE_DIR_NAMES = {'texture', 'textures'}
 
 
 async def cancel_background_tasks(*, timeout: float = 5.0) -> None:
@@ -642,17 +651,187 @@ def get_folder_size(folder_path):
     return total_size
 
 
-def find_preview_image_in_folder(folder_path):
-    """在文件夹中查找预览图片，只查找指定的8个图片名称"""
-    preview_image_names = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 
-                         'icon.jpg', 'icon.png', 'header.jpg', 'header.png']
-    
-    for image_name in preview_image_names:
+def _collect_workshop_character_name_hints(folder_path: str) -> set[str]:
+    hints: set[str] = set()
+    try:
+        for root, _dirs, filenames in os.walk(folder_path):
+            for filename in filenames:
+                if not filename.endswith('.chara.json'):
+                    continue
+                stem = filename[:-11].strip()
+                if stem:
+                    hints.add(stem)
+                chara_path = os.path.join(root, filename)
+                try:
+                    with open(chara_path, 'r', encoding='utf-8') as f:
+                        chara_data = json.load(f)
+                    if isinstance(chara_data, dict):
+                        chara_name = str(chara_data.get('档案名') or chara_data.get('name') or '').strip()
+                        if chara_name:
+                            hints.add(chara_name)
+                except Exception:
+                    continue
+    except Exception:
+        return hints
+    return hints
+
+
+def _collect_workshop_model_image_references(folder_path: str) -> set[str]:
+    references: set[str] = set()
+
+    def _walk_json_values(value, base_dir: str) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                _walk_json_values(item, base_dir)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _walk_json_values(item, base_dir)
+            return
+        if not isinstance(value, str):
+            return
+
+        normalized = value.replace('\\', '/').strip()
+        if not normalized:
+            return
+        ext = os.path.splitext(normalized)[1].lower()
+        if ext not in WORKSHOP_IMAGE_EXTENSIONS:
+            return
+        references.add(os.path.realpath(os.path.join(base_dir, normalized)))
+
+    try:
+        for root, _dirs, filenames in os.walk(folder_path):
+            for filename in filenames:
+                lower_name = filename.lower()
+                if not (
+                    lower_name.endswith('.model3.json')
+                    or lower_name == 'model.json'
+                    or lower_name.endswith('.model.json')
+                ):
+                    continue
+                model_path = os.path.join(root, filename)
+                try:
+                    with open(model_path, 'r', encoding='utf-8') as f:
+                        model_data = json.load(f)
+                    _walk_json_values(model_data, root)
+                except Exception:
+                    continue
+    except Exception:
+        return references
+    return references
+
+
+def _score_workshop_preview_candidate(
+    image_path: str,
+    folder_path: str,
+    character_name_hints: set[str],
+    model_image_references: set[str],
+) -> int:
+    rel_path = os.path.relpath(image_path, folder_path)
+    path_parts = Path(rel_path).parts
+    lower_name = os.path.basename(image_path).lower()
+    stem = os.path.splitext(os.path.basename(image_path))[0].strip()
+    depth = max(0, len(path_parts) - 1)
+    score = 0
+
+    if lower_name in WORKSHOP_PREVIEW_IMAGE_NAMES:
+        score += 120
+    if depth == 0:
+        score += 80
+    else:
+        score -= min(depth * 12, 48)
+
+    if any(part.startswith('.') for part in path_parts):
+        score -= 80
+    if any(part.lower() in WORKSHOP_MODEL_TEXTURE_DIR_NAMES for part in path_parts[:-1]):
+        score -= 120
+    if os.path.realpath(image_path) in model_image_references:
+        score -= 120
+
+    if stem:
+        for hint in character_name_hints:
+            if stem == hint:
+                score += 100
+                break
+            if stem in hint or hint in stem:
+                score += 40
+                break
+
+    try:
+        file_size = os.path.getsize(image_path)
+        if file_size <= 0:
+            score -= 200
+        elif file_size >= 8 * 1024:
+            score += 8
+    except OSError:
+        score -= 200
+
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(image_path) as img:
+            width, height = img.size
+        if width < 128 or height < 128:
+            score -= 80
+        else:
+            score += 12
+    except Exception:
+        score -= 160
+
+    return score
+
+
+def find_preview_image_in_folder(
+    folder_path,
+    character_name: str | None = None,
+    character_file_stem: str | None = None,
+):
+    """在 Workshop 内容目录中查找最适合作为预览/卡面的图片。"""
+    for image_name in WORKSHOP_PREVIEW_IMAGE_NAMES:
         image_path = os.path.join(folder_path, image_name)
         if os.path.exists(image_path) and os.path.isfile(image_path):
             return image_path
-    
-    return None
+
+    if character_name or character_file_stem:
+        character_name_hints = {
+            hint
+            for hint in (str(character_name or '').strip(), str(character_file_stem or '').strip())
+            if hint
+        }
+    else:
+        character_name_hints = _collect_workshop_character_name_hints(folder_path)
+    model_image_references = _collect_workshop_model_image_references(folder_path)
+    candidates: list[tuple[int, int, str]] = []
+
+    try:
+        for root, dirs, filenames in os.walk(folder_path):
+            dirs[:] = [dirname for dirname in dirs if not dirname.startswith('.')]
+            for filename in filenames:
+                if filename.startswith('.'):
+                    continue
+                ext = os.path.splitext(filename)[1].lower()
+                if ext not in WORKSHOP_IMAGE_EXTENSIONS:
+                    continue
+                image_path = os.path.join(root, filename)
+                if not os.path.isfile(image_path):
+                    continue
+                score = _score_workshop_preview_candidate(
+                    image_path,
+                    folder_path,
+                    character_name_hints,
+                    model_image_references,
+                )
+                depth = max(0, len(Path(os.path.relpath(image_path, folder_path)).parts) - 1)
+                candidates.append((score, -depth, image_path))
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+
+    best_score, _depth_score, best_path = max(candidates, key=lambda item: (item[0], item[1], item[2]))
+    if best_score <= 0:
+        return None
+    return best_path
 
 
 def _build_workshop_card_face_meta(item: dict) -> dict:
@@ -4112,6 +4291,8 @@ async def sync_workshop_character_cards() -> dict:
             deleted_character_names = _load_deleted_character_names(config_mgr)
             
             need_save = False
+            pending_added_catgirls = {}
+            pending_card_face_writes = {}
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
@@ -4120,7 +4301,6 @@ async def sync_workshop_character_cards() -> dict:
                     continue
                 
                 item_id = item.get('publishedFileId', '')
-                preview_image_path = find_preview_image_in_folder(installed_folder)
                 
                 # 3. 扫描 .chara.json 文件（递归遍历子目录）
                 try:
@@ -4150,10 +4330,26 @@ async def sync_workshop_character_cards() -> dict:
                                     item_id,
                                 )
                                 continue
+                            chara_file_stem = Path(chara_file_path).name[:-11]
+                            preview_image_path = find_preview_image_in_folder(
+                                installed_folder,
+                                chara_name,
+                                chara_file_stem,
+                            )
                             
                             # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
                             # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
                             if chara_name in characters['猫娘']:
+                                if chara_name in pending_added_catgirls:
+                                    # 同一次扫描内的重复同名卡仍处于待合并状态，不能按已存在角色补写封面；
+                                    # 最终是否导入要等保存前用最新版 characters.json 再判定。
+                                    skipped_count += 1
+                                    logger.info(
+                                        "sync_workshop_character_cards: 跳过重复待添加角色 '%s'（物品 %s）",
+                                        chara_name,
+                                        item_id,
+                                    )
+                                    continue
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 if _is_matching_workshop_character(existing_data, item_id):
                                     try:
@@ -4272,50 +4468,14 @@ async def sync_workshop_character_cards() -> dict:
                                     set_reserved(catgirl_data, 'avatar', 'mmd', 'model_path', subscriber_model_ref)
                             
                             characters['猫娘'][chara_name] = catgirl_data
+                            pending_added_catgirls[chara_name] = catgirl_data
+                            pending_card_face_writes[chara_name] = {
+                                'preview_image_path': preview_image_path,
+                                'item': item,
+                            }
                             need_save = True
                             added_count += 1
-                            logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
-
-                            # 同步生成本地卡面和 sidecar，前端封面只认 card_faces/{name}.png
-                            try:
-                                blocked_result = _abort_if_write_fence_active(
-                                    f"sync_workshop_character_cards: 生成角色卡封面前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
-                                )
-                                if blocked_result is not None:
-                                    return blocked_result
-                                face_created = await asyncio.to_thread(
-                                    _ensure_workshop_card_face_from_preview,
-                                    config_mgr,
-                                    chara_name,
-                                    preview_image_path,
-                                    item,
-                                )
-                                if face_created:
-                                    logger.info(
-                                        "sync_workshop_character_cards: 已生成角色卡封面 '%s' (来自物品 %s)",
-                                        chara_name,
-                                        item_id,
-                                    )
-                                elif item:
-                                    blocked_result = _abort_if_write_fence_active(
-                                        f"sync_workshop_character_cards: 补写角色卡封面元数据前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
-                                    )
-                                    if blocked_result is not None:
-                                        return blocked_result
-                                    await asyncio.to_thread(
-                                        _ensure_workshop_card_face_meta,
-                                        config_mgr,
-                                        chara_name,
-                                        item,
-                                    )
-                            except Exception as face_meta_err:
-                                error_count += 1
-                                logger.warning(
-                                    "sync_workshop_character_cards: 补写角色卡封面或元数据失败 %s (物品 %s): %s",
-                                    chara_name,
-                                    item_id,
-                                    face_meta_err,
-                                )
+                            logger.info(f"sync_workshop_character_cards: 发现待添加角色卡 '{chara_name}' (来自物品 {item_id})")
                             
                         except Exception as e:
                             logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
@@ -4333,13 +4493,115 @@ async def sync_workshop_character_cards() -> dict:
                 if blocked_result is not None:
                     return blocked_result
 
-                try:
-                    await config_mgr.asave_characters(characters)
-                except MaintenanceModeError:
-                    logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
-                    return _write_fence_blocked_result()
+                characters_to_save = characters
+                actually_added_names = []
+                if pending_added_catgirls:
+                    # 启动期工坊同步是后台任务：扫描可能很慢，期间用户可能已经修改了角色卡
+                    # 或完成初始人格选择。保存前必须重新读取最新配置，只把本轮新增角色合入，
+                    # 避免用扫描前的旧快照整包覆盖用户刚写入的字段。
+                    latest_characters = await config_mgr.aload_characters()
+                    if not isinstance(latest_characters, dict):
+                        logger.warning(
+                            "sync_workshop_character_cards: 保存前检测到 characters.json 根对象结构无效（%s），取消本轮同步保存",
+                            type(latest_characters).__name__,
+                        )
+                        added_count = 0
+                        error_count += 1
+                        return {
+                            "added": added_count,
+                            "backfilled_faces": backfilled_face_count,
+                            "skipped": skipped_count,
+                            "errors": error_count,
+                        }
+                    latest_catgirls = latest_characters.get('猫娘')
+                    if not isinstance(latest_catgirls, dict):
+                        logger.warning(
+                            "sync_workshop_character_cards: 保存前检测到 characters.json 猫娘字段结构无效（%s），取消本轮同步保存",
+                            type(latest_catgirls).__name__,
+                        )
+                        added_count = 0
+                        error_count += 1
+                        return {
+                            "added": added_count,
+                            "backfilled_faces": backfilled_face_count,
+                            "skipped": skipped_count,
+                            "errors": error_count,
+                        }
 
-                logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+                    latest_deleted_character_names = _load_deleted_character_names(config_mgr)
+                    actually_added_count = 0
+                    skipped_due_to_race_count = 0
+                    for pending_name, pending_payload in pending_added_catgirls.items():
+                        if pending_name in latest_deleted_character_names or pending_name in latest_catgirls:
+                            skipped_due_to_race_count += 1
+                            continue
+                        latest_catgirls[pending_name] = pending_payload
+                        actually_added_count += 1
+                        actually_added_names.append(pending_name)
+
+                    added_count = actually_added_count
+                    skipped_count += skipped_due_to_race_count
+                    if actually_added_count <= 0:
+                        need_save = False
+                    else:
+                        if not latest_characters.get('当前猫娘') and latest_catgirls:
+                            latest_characters['当前猫娘'] = next(iter(latest_catgirls), '')
+                        characters_to_save = latest_characters
+
+                if need_save:
+                    try:
+                        await config_mgr.asave_characters(characters_to_save)
+                    except MaintenanceModeError:
+                        logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
+                        return _write_fence_blocked_result()
+
+                    logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+
+                    for added_name in actually_added_names:
+                        write_info = pending_card_face_writes.get(added_name) or {}
+                        write_item = write_info.get('item') if isinstance(write_info, dict) else None
+                        write_item_id = write_item.get('publishedFileId', '') if isinstance(write_item, dict) else ''
+                        if is_write_fence_active(config_mgr):
+                            logger.info(
+                                "sync_workshop_character_cards: 角色已保存，但维护态写围栏已开启，跳过角色卡封面生成（角色 %s）",
+                                added_name,
+                            )
+                            continue
+                        try:
+                            face_created = await asyncio.to_thread(
+                                _ensure_workshop_card_face_from_preview,
+                                config_mgr,
+                                added_name,
+                                write_info.get('preview_image_path') if isinstance(write_info, dict) else None,
+                                write_item,
+                            )
+                            if face_created:
+                                logger.info(
+                                    "sync_workshop_character_cards: 已生成角色卡封面 '%s' (来自物品 %s)",
+                                    added_name,
+                                    write_item_id,
+                                )
+                            elif write_item:
+                                if is_write_fence_active(config_mgr):
+                                    logger.info(
+                                        "sync_workshop_character_cards: 角色已保存，但维护态写围栏已开启，跳过角色卡封面元数据补写（角色 %s）",
+                                        added_name,
+                                    )
+                                    continue
+                                await asyncio.to_thread(
+                                    _ensure_workshop_card_face_meta,
+                                    config_mgr,
+                                    added_name,
+                                    write_item,
+                                )
+                        except Exception as face_meta_err:
+                            error_count += 1
+                            logger.warning(
+                                "sync_workshop_character_cards: 补写角色卡封面或元数据失败 %s (物品 %s): %s",
+                                added_name,
+                                write_item_id,
+                                face_meta_err,
+                            )
                 
                 try:
                     initialize_character_data = get_initialize_character_data()

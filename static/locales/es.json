@@ -810,7 +810,12 @@
         "volumeHintDetecting": "Detectando entrada de micrófono...",
         "volumeHintNoSound": "No se detecta sonido, revisa el micrófono",
         "volumeHintLow": "El volumen es bajo, intente aumentar la ganancia.",
+        "volumeHintHigh": "El volumen es alto, considere reducir la ganancia",
         "volumeHintOk": "Micrófono funcionando correctamente",
+        "volumeClipping": "Saturación",
+        "volumeHintClipping": "La ganancia del micrófono es muy alta, el audio se está saturando — la IA puede tener errores de reconocimiento, baje la ganancia",
+        "volumeWaiting": "En espera",
+        "volumeHintWaiting": "El micrófono está escuchando, puede hablar",
         "noiseReduction": "Reducción de ruido",
         "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara"
     },

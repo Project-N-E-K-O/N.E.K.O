@@ -963,19 +963,17 @@ def test_storage_location_pick_directory_reports_cancelled_selection(tmp_path):
 
 
 @pytest.mark.unit
-def test_storage_location_pick_directory_uses_windows_native_picker_first(tmp_path):
+def test_storage_location_pick_directory_uses_windows_native_picker(tmp_path):
     with patch.object(storage_location_router_module.sys, "platform", "win32"):
         with patch.object(
             storage_location_router_module,
             "_pick_directory_via_powershell",
             return_value=str((tmp_path / "picked-win").resolve()),
         ) as powershell_picker:
-            with patch.object(storage_location_router_module, "_pick_directory_via_tkinter") as tkinter_picker:
-                selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
+            selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
 
     assert selected_root == str((tmp_path / "picked-win").resolve())
     powershell_picker.assert_called_once()
-    tkinter_picker.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1016,7 +1014,8 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 
 
 @pytest.mark.unit
-def test_storage_location_pick_directory_falls_back_to_tkinter_when_linux_native_dialog_unavailable(tmp_path):
+def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
+    """Linux native dialog 不可用时直接 raise，不再有 tkinter 兜底（项目策略：不带 tk）。"""
     with patch.object(storage_location_router_module.sys, "platform", "linux"):
         with patch.object(
             storage_location_router_module,
@@ -1026,16 +1025,10 @@ def test_storage_location_pick_directory_falls_back_to_tkinter_when_linux_native
                 "native picker unavailable",
             ),
         ) as linux_picker:
-            with patch.object(
-                storage_location_router_module,
-                "_pick_directory_via_tkinter",
-                return_value=str((tmp_path / "picked-linux").resolve()),
-            ) as tkinter_picker:
-                selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
+            with pytest.raises(storage_location_router_module._DirectoryPickerUnavailable):
+                storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
 
-    assert selected_root == str((tmp_path / "picked-linux").resolve())
     linux_picker.assert_called_once()
-    tkinter_picker.assert_called_once()
 
 
 @pytest.mark.unit
