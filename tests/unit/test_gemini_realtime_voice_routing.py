@@ -1,6 +1,8 @@
 import os
 import sys
 
+import pytest
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -81,3 +83,26 @@ def test_custom_tts_config_requires_gptsovits_enabled():
         )
         is True
     )
+
+
+@pytest.mark.asyncio
+async def test_hot_swap_to_external_tts_starts_pipeline(monkeypatch):
+    mgr = _make_mgr("")
+    mgr.use_tts = False
+    mgr.pending_use_tts = True
+    called = False
+
+    async def fake_ensure_tts_pipeline_alive(self):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        LLMSessionManager,
+        "ensure_tts_pipeline_alive",
+        fake_ensure_tts_pipeline_alive,
+    )
+
+    await LLMSessionManager._apply_pending_tts_route_after_swap(mgr)
+
+    assert mgr.use_tts is True
+    assert called is True

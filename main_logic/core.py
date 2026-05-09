@@ -926,6 +926,14 @@ class LLMSessionManager:
         if self.tts_handler_task is None or self.tts_handler_task.done():
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
 
+    async def _apply_pending_tts_route_after_swap(self) -> None:
+        """Apply pending TTS route and reconcile worker state after hot-swap."""
+        if self.pending_use_tts is None:
+            return
+        self.use_tts = self.pending_use_tts
+        if self.use_tts:
+            await self.ensure_tts_pipeline_alive()
+
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
         if self._takeover_active:
@@ -4893,8 +4901,7 @@ class LLMSessionManager:
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
             self.session = new_session
-            if self.pending_use_tts is not None:
-                self.use_tts = self.pending_use_tts
+            await self._apply_pending_tts_route_after_swap()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
