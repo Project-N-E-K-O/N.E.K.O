@@ -7,6 +7,19 @@
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
+    <aside
+      class="plugin-workbench__side plugin-workbench__side--market"
+      :class="{ 'plugin-workbench__side--visible': marketPanelVisible }"
+      data-yui-guide-id="plugin-list-market-panel"
+    >
+      <MarketPanel
+        v-if="marketPanelVisible"
+        embedded
+        :active="marketPanelVisible"
+        @close="closeMarketPanel"
+      />
+    </aside>
+
     <section class="plugin-workbench__main" data-yui-guide-id="plugin-list-main">
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
@@ -244,20 +257,14 @@
     </section>
 
     <aside
-      class="plugin-workbench__side"
-      :class="{ 'plugin-workbench__side--visible': packagePanelVisible || marketPanelVisible }"
+      class="plugin-workbench__side plugin-workbench__side--package"
+      :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
       data-yui-guide-id="plugin-list-package-panel"
     >
       <PackageManagerPanel
         v-if="packagePanelVisible"
         embedded
         @close="closePackagePanel"
-      />
-      <MarketPanel
-        v-else-if="marketPanelVisible"
-        embedded
-        :active="marketPanelVisible"
-        @close="closeMarketPanel"
       />
     </aside>
 
@@ -1169,7 +1176,7 @@ onUnmounted(() => {
 <style scoped>
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
-  --package-panel-width: clamp(420px, 42vw, 620px);
+  --package-panel-width: clamp(320px, 42vw, 620px);
   /* ── Unified radius system ── */
   --radius-card: 16px;       /* large containers: card, dropdown */
   --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
@@ -1185,6 +1192,7 @@ onUnmounted(() => {
 .plugin-workbench__main {
   flex: 1 1 auto;
   min-width: 0;
+  contain: layout paint;
 }
 
 .plugin-workbench__side {
@@ -1196,11 +1204,26 @@ onUnmounted(() => {
   pointer-events: none;
   transform: translateX(28px) scale(0.985);
   transform-origin: right center;
+  will-change: flex-basis, max-width, transform, opacity;
+  contain: layout paint style;
   transition:
     flex-basis 0.32s cubic-bezier(0.22, 1, 0.36, 1),
     max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.26s ease,
     transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 固定内部内容宽度，保证转场时网格不重排 */
+.plugin-workbench__side > * {
+  width: var(--package-panel-width);
+  min-width: var(--package-panel-width);
+  max-width: var(--package-panel-width);
+  height: 100%;
+}
+
+.plugin-workbench__side--market {
+  transform: translateX(-28px) scale(0.985);
+  transform-origin: left center;
 }
 
 .plugin-workbench__side--visible {
@@ -1214,20 +1237,22 @@ onUnmounted(() => {
 
 .plugin-list-card {
   border-radius: var(--radius-card);
+  contain: layout paint;
 }
 
 .workbench-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: flex-start;
-  gap: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .workbench-header__copy {
   display: flex;
   align-items: center;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -1668,6 +1693,7 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -2059,30 +2085,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1280px) {
-  .plugin-workbench {
-    flex-direction: column;
-  }
-
-  .workbench-header {
-    grid-template-columns: 1fr;
-  }
-
-  .plugin-workbench__side,
-  .plugin-workbench__side--visible {
-    max-width: 100%;
-    min-width: 0;
-    flex-basis: auto;
-    transform: translateY(16px) scale(0.99);
-  }
-
-  .plugin-workbench__side--visible {
-    transform: translateY(0) scale(1);
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-
   .floating-select-bar__inner {
     flex-wrap: wrap;
     justify-content: center;
