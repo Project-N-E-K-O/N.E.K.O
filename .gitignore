@@ -124,9 +124,9 @@ metadata.package.json
 version_info.txt
 
 # 复原Steam
-!steam_api64.dll
-!steam_api64.lib
-!SteamworksPy64.dll
+!steamworks/steam_api64.dll
+!steamworks/steam_api64.lib
+!steamworks/SteamworksPy64.dll
 
 start_servers.bat
 start.sh

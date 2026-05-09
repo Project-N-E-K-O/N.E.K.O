@@ -170,26 +170,26 @@ add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 
-# 添加 Steam 相关的 DLL 和库文件（必须放在根目录）
+# 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）
 # macOS 上使用 dylib，Windows 上使用 dll
 if sys.platform == 'darwin':
     # macOS (Apple Silicon) 使用 .dylib
-    libsteam_api = os.path.join(PROJECT_ROOT, 'libsteam_api.dylib')
-    libSteamworksPy = os.path.join(PROJECT_ROOT, 'SteamworksPy.dylib')
+    libsteam_api = os.path.join(PROJECT_ROOT, 'steamworks', 'libsteam_api.dylib')
+    libSteamworksPy = os.path.join(PROJECT_ROOT, 'steamworks', 'SteamworksPy.dylib')
     if os.path.exists(libsteam_api):
         binaries.append((libsteam_api, '.'))
     if os.path.exists(libSteamworksPy):
         binaries.append((libSteamworksPy, '.'))
 elif sys.platform == 'win32':
     # Windows 使用 .dll
-    steam_api_dll = os.path.join(PROJECT_ROOT, 'steam_api64.dll')
-    steamworks_dll = os.path.join(PROJECT_ROOT, 'SteamworksPy64.dll')
+    steam_api_dll = os.path.join(PROJECT_ROOT, 'steamworks', 'steam_api64.dll')
+    steamworks_dll = os.path.join(PROJECT_ROOT, 'steamworks', 'SteamworksPy64.dll')
     if os.path.exists(steam_api_dll):
         binaries.append((steam_api_dll, '.'))
     if os.path.exists(steamworks_dll):
         binaries.append((steamworks_dll, '.'))
     # 添加 steam_api64.lib（如果存在，供编译时使用）
-    steam_lib = os.path.join(PROJECT_ROOT, 'steam_api64.lib')
+    steam_lib = os.path.join(PROJECT_ROOT, 'steamworks', 'steam_api64.lib')
     if os.path.exists(steam_lib):
         binaries.append((steam_lib, '.'))
 
