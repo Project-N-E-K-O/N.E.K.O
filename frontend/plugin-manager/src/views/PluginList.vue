@@ -2,25 +2,34 @@
   <div
     class="plugin-workbench"
     :class="{
-      'plugin-workbench--package-open': packagePanelVisible,
       'plugin-workbench--market-open': marketPanelVisible,
+      'plugin-workbench--package-open': packagePanelVisible,
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
     <aside
-      class="plugin-workbench__side plugin-workbench__side--market"
-      :class="{ 'plugin-workbench__side--visible': marketPanelVisible }"
-      data-yui-guide-id="plugin-list-market-panel"
+      class="plugin-workbench__rail plugin-workbench__rail--market"
+      :aria-hidden="!marketPanelVisible"
+      :inert="!marketPanelVisible"
     >
-      <MarketPanel
-        v-if="marketPanelVisible"
-        embedded
-        :active="marketPanelVisible"
-        @close="closeMarketPanel"
-      />
+      <div class="plugin-workbench__rail-inner">
+        <MarketPanel
+          v-if="marketPanelEverOpened"
+          v-show="marketPanelVisible"
+          embedded
+          :active="marketPanelVisible"
+          @close="closeMarketPanel"
+        />
+      </div>
     </aside>
 
-    <section class="plugin-workbench__main" data-yui-guide-id="plugin-list-main">
+    <section
+      class="plugin-workbench__main"
+      data-yui-guide-id="plugin-list-main"
+      v-motion
+      :initial="{ opacity: 0, y: 16, filter: 'blur(4px)' }"
+      :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 360, type: 'spring', stiffness: 240, damping: 24 } }"
+    >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
           <div class="workbench-header">
@@ -237,35 +246,44 @@
         <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
 
         <template v-else>
-          <PluginGridSection
-            v-for="section in pluginSections"
+          <div
+            v-for="(section, si) in pluginSections"
             :key="section.key"
-            :title="section.title"
-            :icon="section.icon"
-            :items="section.items"
-            :layout-mode="layoutMode"
-            :multi-select-enabled="multiSelectEnabled"
-            :selected-plugin-ids="selectedPluginIds"
-            :show-metrics="showMetrics"
-            :variant="section.variant"
-            @item-click="handlePluginPrimaryAction"
-            @item-contextmenu="handlePluginContextMenu"
-            @toggle-selection="togglePluginSelection"
-          />
+            v-motion
+            :initial="{ opacity: 0, y: 20 }"
+            :enter="{ opacity: 1, y: 0, transition: { delay: 120 + si * 80, duration: 420, type: 'spring', stiffness: 220, damping: 22 } }"
+          >
+            <PluginGridSection
+              :title="section.title"
+              :icon="section.icon"
+              :items="section.items"
+              :layout-mode="layoutMode"
+              :multi-select-enabled="multiSelectEnabled"
+              :selected-plugin-ids="selectedPluginIds"
+              :show-metrics="showMetrics"
+              :variant="section.variant"
+              @item-click="handlePluginPrimaryAction"
+              @item-contextmenu="handlePluginContextMenu"
+              @toggle-selection="togglePluginSelection"
+            />
+          </div>
         </template>
       </el-card>
     </section>
 
     <aside
-      class="plugin-workbench__side plugin-workbench__side--package"
-      :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
-      data-yui-guide-id="plugin-list-package-panel"
+      class="plugin-workbench__rail plugin-workbench__rail--package"
+      :aria-hidden="!packagePanelVisible"
+      :inert="!packagePanelVisible"
     >
-      <PackageManagerPanel
-        v-if="packagePanelVisible"
-        embedded
-        @close="closePackagePanel"
-      />
+      <div class="plugin-workbench__rail-inner">
+        <PackageManagerPanel
+          v-if="packagePanelEverOpened"
+          v-show="packagePanelVisible"
+          embedded
+          @close="closePackagePanel"
+        />
+      </div>
     </aside>
 
     <!-- Floating multi-select action bar -->
@@ -416,7 +434,9 @@ const batchBusy = ref(false)
 const importing = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 const packagePanelVisible = ref(false)
+const packagePanelEverOpened = ref(false)
 const marketPanelVisible = ref(false)
+const marketPanelEverOpened = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -721,11 +741,15 @@ function toggleMultiSelectMode() {
 function togglePackagePanel() {
   const next = !packagePanelVisible.value
   packagePanelVisible.value = next
-  if (next) marketPanelVisible.value = false
+  if (next) {
+    packagePanelEverOpened.value = true
+    marketPanelVisible.value = false
+  }
 }
 
 function openPackagePanel() {
   packagePanelVisible.value = true
+  packagePanelEverOpened.value = true
   marketPanelVisible.value = false
 }
 
@@ -736,7 +760,10 @@ function closePackagePanel() {
 function toggleMarketPanel() {
   const next = !marketPanelVisible.value
   marketPanelVisible.value = next
-  if (next) packagePanelVisible.value = false
+  if (next) {
+    marketPanelEverOpened.value = true
+    packagePanelVisible.value = false
+  }
 }
 
 function closeMarketPanel() {
@@ -1125,7 +1152,10 @@ watch(
     const shouldOpen = tab === 'packages'
     if (packagePanelVisible.value !== shouldOpen) {
       packagePanelVisible.value = shouldOpen
-      if (shouldOpen) marketPanelVisible.value = false
+      if (shouldOpen) {
+        packagePanelEverOpened.value = true
+        marketPanelVisible.value = false
+      }
     }
   },
   { immediate: true },
@@ -1176,68 +1206,85 @@ onUnmounted(() => {
 <style scoped>
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
-  --package-panel-width: clamp(320px, 42vw, 620px);
+  --drawer-width: clamp(320px, 42vw, 620px);
+  --drawer-duration: 320ms;
+  --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
   /* ── Unified radius system ── */
   --radius-card: 16px;       /* large containers: card, dropdown */
   --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
   --radius-control: 10px;    /* buttons, inputs, interactive controls */
-  --radius-chip: 8px;        /* small chips, tags, badges */
+  --radius-chip: 8px;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 20px;
   min-width: 0;
   padding-bottom: 80px; /* space for floating bar */
 }
 
 .plugin-workbench__main {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
-  contain: layout paint;
 }
 
-.plugin-workbench__side {
+.plugin-workbench__rail {
   flex: 0 0 0;
+  width: 0;
   min-width: 0;
-  max-width: 0;
-  opacity: 0;
+  align-self: stretch;
+  position: relative;
   overflow: hidden;
-  pointer-events: none;
-  transform: translateX(28px) scale(0.985);
-  transform-origin: right center;
-  will-change: flex-basis, max-width, transform, opacity;
-  contain: layout paint style;
+  contain: layout paint size;
   transition:
-    flex-basis 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.26s ease,
-    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    flex-basis var(--drawer-duration) var(--drawer-ease),
+    width var(--drawer-duration) var(--drawer-ease),
+    margin var(--drawer-duration) var(--drawer-ease);
+  margin: 0;
 }
 
-/* 固定内部内容宽度，保证转场时网格不重排 */
-.plugin-workbench__side > * {
-  width: var(--package-panel-width);
-  min-width: var(--package-panel-width);
-  max-width: var(--package-panel-width);
+/* 收起时取消它那一侧的 gap，避免主列表多出一条空白 */
+.plugin-workbench__rail--market { margin-right: -20px; }
+.plugin-workbench__rail--package { margin-left: -20px; }
+
+.plugin-workbench--market-open .plugin-workbench__rail--market,
+.plugin-workbench--package-open .plugin-workbench__rail--package {
+  flex-basis: var(--drawer-width);
+  width: var(--drawer-width);
+  margin: 0;
+}
+
+/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入 */
+.plugin-workbench__rail-inner {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--drawer-width);
+  max-width: 100%;
+  transition: transform var(--drawer-duration) var(--drawer-ease);
+  will-change: transform;
+}
+
+.plugin-workbench__rail--market .plugin-workbench__rail-inner {
+  left: 0;
+  transform: translate3d(-100%, 0, 0);
+}
+
+.plugin-workbench__rail--package .plugin-workbench__rail-inner {
+  right: 0;
+  transform: translate3d(100%, 0, 0);
+}
+
+.plugin-workbench--market-open .plugin-workbench__rail--market .plugin-workbench__rail-inner,
+.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner {
+  transform: translate3d(0, 0, 0);
+}
+
+.plugin-workbench__rail-inner > * {
+  width: 100%;
   height: 100%;
-}
-
-.plugin-workbench__side--market {
-  transform: translateX(-28px) scale(0.985);
-  transform-origin: left center;
-}
-
-.plugin-workbench__side--visible {
-  flex-basis: var(--package-panel-width);
-  max-width: var(--package-panel-width);
-  opacity: 1;
-  overflow: visible;
-  pointer-events: auto;
-  transform: translateX(0) scale(1);
 }
 
 .plugin-list-card {
   border-radius: var(--radius-card);
-  contain: layout paint;
 }
 
 .workbench-header {
