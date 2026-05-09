@@ -219,6 +219,15 @@
             @item-contextmenu="handlePluginContextMenu"
             @toggle-selection="togglePluginSelection"
           />
+
+          <!-- 获取新插件入口 -->
+          <div v-if="marketUrl" class="market-entry">
+            <router-link to="/market" class="market-entry__link">
+              <el-icon><ShoppingCart /></el-icon>
+              <span>{{ $t('market.getNewPlugins') || '获取新插件' }}</span>
+              <el-icon class="market-entry__arrow"><ArrowRight /></el-icon>
+            </router-link>
+          </div>
         </template>
       </el-card>
     </section>
@@ -346,7 +355,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -386,6 +395,7 @@ const dangerDialogVisible = ref(false)
 const dangerDialogLoading = ref(false)
 const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
 const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
+const marketUrl = ref('')
 
 // confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
 // 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
@@ -1096,6 +1106,18 @@ watch(packagePanelVisible, (visible) => {
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   await handleRefresh()
+  // 获取 Market URL（用于显示"获取新插件"入口）
+  try {
+    const res = await fetch('/market/status')
+    if (res.ok) {
+      const data = await res.json()
+      if (data.market_url) {
+        marketUrl.value = data.market_url
+      }
+    }
+  } catch {
+    // 静默失败
+  }
 })
 
 onUnmounted(() => {
@@ -2011,5 +2033,42 @@ onUnmounted(() => {
   .fab-action {
     padding: 8px 10px;
   }
+}
+
+/* ── Market Entry (获取新插件) ────────────── */
+.market-entry {
+  margin-top: 20px;
+  padding: 0 4px;
+}
+.market-entry__link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--el-color-primary) 3%, transparent);
+  color: var(--el-color-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.market-entry__link:hover {
+  border-style: solid;
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--el-color-primary) 15%, transparent);
+}
+.market-entry__arrow {
+  margin-left: auto;
+  opacity: 0.6;
+  transition: transform 0.2s ease;
+}
+.market-entry__link:hover .market-entry__arrow {
+  transform: translateX(3px);
+  opacity: 1;
 }
 </style>

@@ -1,118 +1,120 @@
 <template>
-  <div class="market-browse">
-    <el-card class="market-card">
-      <template #header>
-        <div class="market-header">
-          <div class="market-header__title">
-            <el-icon><ShoppingCart /></el-icon>
-            <span>{{ $t('market.title') || '获取新插件' }}</span>
+  <div class="plugin-workbench market-workbench">
+    <section class="plugin-workbench__main">
+      <el-card class="plugin-list-card">
+        <template #header>
+          <div class="workbench-header">
+            <div class="workbench-header__copy">
+              <h2 class="workbench-header__title">
+                <el-icon><ShoppingCart /></el-icon>
+                {{ $t('market.title') || '获取新插件' }}
+              </h2>
+              <p class="workbench-header__subtitle" v-if="marketAvailable">
+                {{ $t('market.subtitle') || '从插件市场浏览和安装插件' }}
+              </p>
+            </div>
+            <div class="header-actions">
+              <el-input
+                v-model="searchQuery"
+                :placeholder="$t('market.searchPlaceholder') || '搜索插件...'"
+                clearable
+                class="market-search"
+                @keyup.enter="handleSearch"
+                @clear="handleSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <button
+                class="header-btn header-btn--primary"
+                :disabled="loading"
+                @click="handleRefresh"
+              >
+                <el-icon><Refresh /></el-icon>
+                <span>{{ $t('common.refresh') }}</span>
+              </button>
+            </div>
           </div>
-          <div class="market-header__actions">
-            <el-input
-              v-model="searchQuery"
-              :placeholder="$t('market.searchPlaceholder') || '搜索插件...'"
-              clearable
-              class="market-search"
-              @keyup.enter="handleSearch"
-              @clear="handleSearch"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-            <el-button :loading="loading" @click="handleRefresh">
-              <el-icon><Refresh /></el-icon>
-            </el-button>
-          </div>
-        </div>
-      </template>
+        </template>
 
-      <!-- 未配置 Market -->
-      <div v-if="!marketAvailable && !loading" class="market-empty">
-        <el-empty :description="$t('market.notConfigured') || '插件市场未配置'">
-          <template #image>
-            <el-icon :size="64" color="#909399"><ShoppingCart /></el-icon>
-          </template>
-          <p class="market-empty__hint">
-            {{ $t('market.configHint') || '请在环境变量中设置 NEKO_MARKET_URL 以启用插件市场' }}
-          </p>
-        </el-empty>
-      </div>
-
-      <!-- 加载中 -->
-      <div v-else-if="loading && plugins.length === 0" class="market-loading">
-        <el-skeleton :rows="5" animated />
-      </div>
-
-      <!-- 插件列表 -->
-      <div v-else class="market-grid">
-        <div
-          v-for="plugin in plugins"
-          :key="plugin.id"
-          class="market-plugin-card"
-          @click="handlePluginClick(plugin)"
+        <!-- 未配置 Market -->
+        <EmptyState
+          v-if="!marketAvailable && !loading"
+          :description="$t('market.notConfigured') || '插件市场未配置'"
         >
-          <div class="market-plugin-card__header">
-            <span class="market-plugin-card__name">{{ plugin.name }}</span>
-            <el-tag v-if="plugin.is_recommended" type="warning" size="small">推荐</el-tag>
-          </div>
-          <p class="market-plugin-card__desc">{{ plugin.description }}</p>
-          <div class="market-plugin-card__meta">
-            <span class="meta-item">
-              <el-icon><User /></el-icon>
-              {{ plugin.author?.name || '未知' }}
-            </span>
-            <span class="meta-item">
-              <el-icon><Download /></el-icon>
-              {{ plugin.downloads || 0 }}
-            </span>
-            <span class="meta-item meta-item--version">v{{ plugin.version }}</span>
-          </div>
-          <div class="market-plugin-card__actions">
-            <el-button
-              type="primary"
-              size="small"
-              :loading="installingId === plugin.id"
-              :disabled="installedIds.has(String(plugin.id))"
-              @click.stop="handleInstall(plugin)"
-            >
-              {{ installedIds.has(String(plugin.id)) ? '已安装' : '安装' }}
-            </el-button>
-          </div>
-        </div>
+          <template #description>
+            <p>{{ $t('market.notConfigured') || '插件市场未配置' }}</p>
+            <p class="market-empty__hint">
+              请在环境变量中设置 <code>NEKO_MARKET_URL</code>
+            </p>
+          </template>
+        </EmptyState>
+
+        <!-- 加载中 -->
+        <LoadingSpinner
+          v-else-if="loading && plugins.length === 0"
+          :loading="true"
+          :text="$t('common.loading')"
+        />
 
         <!-- 无结果 -->
-        <div v-if="!loading && plugins.length === 0" class="market-empty">
-          <el-empty :description="$t('market.noResults') || '没有找到插件'" />
-        </div>
-      </div>
-
-      <!-- 分页 -->
-      <div v-if="totalPages > 1" class="market-pagination">
-        <el-pagination
-          v-model:current-page="currentPage"
-          :page-size="pageSize"
-          :total="totalCount"
-          layout="prev, pager, next"
-          @current-change="handlePageChange"
+        <EmptyState
+          v-else-if="plugins.length === 0"
+          :description="$t('market.noResults') || '没有找到插件'"
         />
-      </div>
-    </el-card>
+
+        <!-- 插件网格 -->
+        <template v-else>
+          <div class="plugin-grid-section">
+            <div class="plugin-grid">
+              <div
+                v-for="plugin in plugins"
+                :key="plugin.id"
+                class="plugin-item"
+              >
+                <MarketPluginCard
+                  :plugin="plugin"
+                  :installed="installedIds.has(String(plugin.id))"
+                  :installing="installingId === plugin.id"
+                  @click="handlePluginClick(plugin)"
+                  @install="handleInstall(plugin)"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- 分页 -->
+          <div v-if="totalPages > 1" class="market-pagination">
+            <el-pagination
+              v-model:current-page="currentPage"
+              :page-size="pageSize"
+              :total="totalCount"
+              layout="prev, pager, next, total"
+              @current-change="handlePageChange"
+            />
+          </div>
+        </template>
+      </el-card>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ShoppingCart, Search, Refresh, User, Download } from '@element-plus/icons-vue'
+import { ShoppingCart, Search, Refresh } from '@element-plus/icons-vue'
+import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import {
   fetchMarketPlugins,
   isMarketAvailable,
   type MarketPlugin,
 } from '@/api/market'
+import { usePluginStore } from '@/stores/plugin'
 
-const router = useRouter()
+const pluginStore = usePluginStore()
 
 const loading = ref(false)
 const marketAvailable = ref(false)
@@ -122,7 +124,15 @@ const currentPage = ref(1)
 const pageSize = 12
 const totalCount = ref(0)
 const installingId = ref<string | number | null>(null)
-const installedIds = ref<Set<string>>(new Set())
+
+// 从 pluginStore 获取已安装插件 ID（用于标记"已安装"状态）
+const installedIds = computed(() => {
+  const ids = new Set<string>()
+  for (const p of pluginStore.pluginsWithStatus) {
+    ids.add(String(p.id))
+  }
+  return ids
+})
 
 const totalPages = computed(() => Math.ceil(totalCount.value / pageSize))
 
@@ -163,8 +173,6 @@ function handlePageChange(page: number) {
 }
 
 function handlePluginClick(plugin: MarketPlugin) {
-  // 可以跳转到详情或打开弹窗
-  // 暂时用外部链接
   if (plugin.github_repo) {
     window.open(plugin.github_repo, '_blank')
   }
@@ -180,13 +188,13 @@ async function handleInstall(plugin: MarketPlugin) {
   installingId.value = plugin.id
 
   try {
-    // 调用本地 /market/install 端点
-    const res = await fetch('/market/install?' + new URLSearchParams({ token: getBridgeToken() }), {
+    const token = localStorage.getItem('neko_bridge_token') || ''
+    const res = await fetch(`/market/install?token=${token}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         package_url: downloadUrl,
-        package_sha256: '0'.repeat(64), // TODO: 从 version 数据获取
+        package_sha256: '0'.repeat(64), // TODO: 从 version 获取真实 hash
         plugin_id: String(plugin.id),
         version: plugin.version,
         on_conflict: 'rename',
@@ -194,27 +202,19 @@ async function handleInstall(plugin: MarketPlugin) {
     })
 
     if (res.ok) {
-      const data = await res.json()
       ElMessage.success(`安装任务已创建: ${plugin.name}`)
-      installedIds.value.add(String(plugin.id))
       // TODO: 轮询进度
     } else if (res.status === 403) {
-      ElMessage.warning('需要先配对 Bridge Token')
+      ElMessage.warning('需要配对 Bridge Token')
     } else {
       const err = await res.json().catch(() => ({}))
       ElMessage.error(err.detail || '安装失败')
     }
   } catch {
-    // Fallback: 打开下载链接
     window.open(downloadUrl, '_blank')
   } finally {
     installingId.value = null
   }
-}
-
-function getBridgeToken(): string {
-  // 从 localStorage 或 bridge.json 获取
-  return localStorage.getItem('neko_bridge_token') || ''
 }
 
 onMounted(async () => {
@@ -222,131 +222,118 @@ onMounted(async () => {
   if (marketAvailable.value) {
     loadPlugins()
   }
+  // 拉取已安装列表（用于状态标记）
+  if (pluginStore.pluginsWithStatus.length === 0) {
+    pluginStore.fetchPlugins()
+  }
 })
 </script>
 
 <style scoped>
-.market-browse {
-  padding: 0;
+/* 复用 PluginList 的 workbench 样式 */
+.market-workbench {
+  --plugin-entry-radius: 16px;
+  --radius-card: 16px;
+  --radius-panel: 14px;
+  --radius-control: 10px;
 }
 
-.market-card {
-  border-radius: 16px;
-  border: 1px solid var(--el-border-color-lighter);
+.plugin-workbench__main {
+  width: 100%;
 }
 
-.market-header {
+.plugin-list-card {
+  border-radius: var(--radius-card);
+}
+
+.workbench-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
   flex-wrap: wrap;
-  gap: 12px;
 }
 
-.market-header__title {
+.workbench-header__title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 16px;
+  margin: 0;
+  font-size: 18px;
   font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
-.market-header__actions {
+.workbench-header__subtitle {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .market-search {
   width: 240px;
 }
 
-.market-grid {
+.header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--radius-control);
+  background: var(--el-bg-color);
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.header-btn:hover:not(:disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+
+.header-btn--primary {
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  color: #fff;
+}
+
+.header-btn--primary:hover:not(:disabled) {
+  background: var(--el-color-primary-light-3);
+  color: #fff;
+}
+
+.header-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plugin-grid-section {
+  margin-top: 8px;
+}
+
+.plugin-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
 }
 
-.market-plugin-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 12px;
-  padding: 16px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.market-plugin-card:hover {
-  border-color: var(--el-color-primary-light-5);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-  transform: translateY(-1px);
-}
-
-.market-plugin-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.market-plugin-card__name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.market-plugin-card__desc {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin: 0;
-  flex: 1;
-}
-
-.market-plugin-card__meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.meta-item {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.meta-item--version {
-  margin-left: auto;
-  font-family: monospace;
-  color: var(--el-text-color-placeholder);
-}
-
-.market-plugin-card__actions {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 4px;
+.plugin-item {
+  min-width: 0;
 }
 
 .market-pagination {
   display: flex;
   justify-content: center;
-  padding-top: 20px;
-}
-
-.market-empty {
-  padding: 40px 0;
-  text-align: center;
+  padding-top: 24px;
 }
 
 .market-empty__hint {
@@ -355,7 +342,10 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
-.market-loading {
-  padding: 20px 0;
+.market-empty__hint code {
+  padding: 2px 6px;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  font-family: monospace;
 }
 </style>

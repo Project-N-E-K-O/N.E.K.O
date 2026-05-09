@@ -45,37 +45,20 @@
           </button>
         </router-link>
       </template>
-
-      <!-- Plugin Market 入口 -->
-      <template v-if="marketUrl">
-        <div class="nav-divider" />
-        <router-link to="/market" custom v-slot="{ isActive, navigate }">
-          <button
-            class="nav-item"
-            :class="{ 'nav-item--active': isActive }"
-            data-yui-guide-id="sidebar-market"
-            @click="navigate"
-          >
-            <el-icon class="nav-item__icon"><ShoppingCart /></el-icon>
-            <span class="nav-item__label">{{ t('nav.market') || '获取新插件' }}</span>
-          </button>
-        </router-link>
-      </template>
     </div>
   </nav>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
-import { Odometer, Box, VideoPlay, Monitor, Link, ShoppingCart } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
-const marketUrl = ref('')
 
 const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
 
@@ -91,21 +74,9 @@ function isRouteActive(path: string): boolean {
   return route.path.startsWith(path)
 }
 
-onMounted(async () => {
+onMounted(() => {
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins()
-  }
-  // 从后端获取 Market URL
-  try {
-    const res = await fetch('/market/status')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.market_url) {
-        marketUrl.value = data.market_url
-      }
-    }
-  } catch {
-    // 静默失败，Market 链接不显示
   }
 })
 </script>
