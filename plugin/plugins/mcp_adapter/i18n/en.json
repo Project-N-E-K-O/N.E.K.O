@@ -1,4 +1,6 @@
 {
+  "plugin.name": "MCP Adapter",
+  "plugin.description": "MCP (Model Context Protocol) router: connect to MCP servers and publish their tools as N.E.K.O plugin entries",
   "panel.subtitle": "Manage MCP Server connections, discover tools, and publish external capabilities as N.E.K.O plugin entries.",
   "panel.errors.addServerUnavailable": "The add_server action is unavailable",
   "panel.errors.addServerFormUnavailable": "The current context does not expose add_server, so the generated form cannot be used.",

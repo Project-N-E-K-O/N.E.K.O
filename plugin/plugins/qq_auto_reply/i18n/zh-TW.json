@@ -1,0 +1,4 @@
+{
+  "plugin.name": "QQ 自動回覆",
+  "plugin.description": "讀取 QQ 訊息並依權限自動回覆。透過 OneBot 協議連接 QQ，支援多級權限管理與 AI 對話"
+}

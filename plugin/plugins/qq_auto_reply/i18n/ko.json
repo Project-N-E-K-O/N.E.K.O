@@ -1,0 +1,4 @@
+{
+  "plugin.name": "QQ 자동 응답",
+  "plugin.description": "QQ 메시지를 읽어 권한에 따라 자동으로 응답합니다. OneBot 프로토콜로 QQ에 연결하며 다단계 권한 관리와 AI 대화를 지원합니다"
+}
