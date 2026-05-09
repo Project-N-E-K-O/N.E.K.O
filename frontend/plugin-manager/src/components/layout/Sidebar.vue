@@ -46,22 +46,20 @@
         </router-link>
       </template>
 
-      <!-- Plugin Market 外部链接 -->
+      <!-- Plugin Market 入口 -->
       <template v-if="marketUrl">
         <div class="nav-divider" />
-        <a
-          :href="marketUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="nav-item nav-item--external"
-          data-yui-guide-id="sidebar-market"
-        >
-          <el-icon class="nav-item__icon"><ShoppingCart /></el-icon>
-          <span class="nav-item__label">{{ t('nav.market') || '插件市场' }}</span>
-          <svg class="nav-item__external-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M4 1H11V8M11 1L1 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </a>
+        <router-link to="/market" custom v-slot="{ isActive, navigate }">
+          <button
+            class="nav-item"
+            :class="{ 'nav-item--active': isActive }"
+            data-yui-guide-id="sidebar-market"
+            @click="navigate"
+          >
+            <el-icon class="nav-item__icon"><ShoppingCart /></el-icon>
+            <span class="nav-item__label">{{ t('nav.market') || '获取新插件' }}</span>
+          </button>
+        </router-link>
       </template>
     </div>
   </nav>
@@ -225,21 +223,5 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.nav-item--external {
-  text-decoration: none;
-  color: var(--el-text-color-regular);
-}
-
-.nav-item--external:hover {
-  background: color-mix(in srgb, var(--el-color-success) 6%, transparent);
-  color: var(--el-color-success);
-}
-
-.nav-item__external-icon {
-  margin-left: auto;
-  opacity: 0.5;
-  flex-shrink: 0;
 }
 </style>

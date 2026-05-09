@@ -35,6 +35,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'market',
+        name: 'MarketBrowse',
+        component: () => import('@/views/MarketBrowse.vue'),
+        meta: {
+          titleKey: 'nav.market'
+        }
+      },
+      {
         path: 'logs',
         redirect: '/logs/_server'
       },
