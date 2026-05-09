@@ -5505,14 +5505,17 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
             // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
             if (data.native_voices && Object.keys(data.native_voices).length > 0) {
-                const renderedVoiceIds = new Set(data.voices ? Object.keys(data.voices) : []);
+                const renderedVoiceIds = new Set();
+                Object.keys(data.voices || {}).forEach(function (id) {
+                    renderedVoiceIds.add(String(id).toLowerCase());
+                });
                 if (data.free_voices) {
                     Object.values(data.free_voices).forEach(function (id) {
-                        if (id) renderedVoiceIds.add(String(id));
+                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
                     });
                 }
                 const nativeEntries = Object.entries(data.native_voices)
-                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(voiceId); });
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
                     const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';

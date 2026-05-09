@@ -1258,14 +1258,14 @@ async function loadVoices() {
         // 去重范围：自定义注册音色 + 免费预设音色 ID，避免冲突时列表里重复条目和多重选中态。
         // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
         if (data.native_voices && Object.keys(data.native_voices).length > 0) {
-            const renderedVoiceIds = new Set(voicesArray.map((v) => v.voiceId));
+            const renderedVoiceIds = new Set(voicesArray.map((v) => String(v.voiceId).toLowerCase()));
             if (data.free_voices) {
                 Object.values(data.free_voices).forEach((id) => {
-                    if (id) renderedVoiceIds.add(String(id));
+                    if (id) renderedVoiceIds.add(String(id).toLowerCase());
                 });
             }
             const nativeEntries = Object.entries(data.native_voices)
-                .filter(([voiceId]) => !renderedVoiceIds.has(voiceId));
+                .filter(([voiceId]) => !renderedVoiceIds.has(String(voiceId).toLowerCase()));
             if (nativeEntries.length > 0) {
                 const hasPriorContent = voicesArray.length > 0
                     || (data.free_voices && Object.keys(data.free_voices).length > 0);
