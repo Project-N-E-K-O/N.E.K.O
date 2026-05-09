@@ -1,4 +1,7 @@
-"""Gemini TTS voice catalog shared by validation, UI, and synthesis."""
+"""Gemini TTS voice catalog shared by validation, UI, and synthesis.
+
+Voice list reference: https://ai.google.dev/gemini-api/docs/speech-generation
+"""
 
 from collections.abc import Callable
 

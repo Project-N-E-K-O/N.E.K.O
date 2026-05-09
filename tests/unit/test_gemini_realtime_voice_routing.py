@@ -17,7 +17,10 @@ class _FakeConfigManager:
         self._stored_voice_ids = set(stored_voice_ids)
 
     def voice_id_exists_in_any_storage(self, voice_id):
-        return voice_id in self._stored_voice_ids
+        return voice_id.casefold() in {
+            stored_voice_id.casefold()
+            for stored_voice_id in self._stored_voice_ids
+        }
 
 
 class _FakeCharactersRouterConfigManager:
@@ -56,6 +59,19 @@ def _make_config_manager_with_realtime_api_type(realtime_api_type):
 
 def test_gemini_alias_checks_canonical_voice_collision():
     config_manager = _FakeConfigManager(stored_voice_ids={"Puck"})
+
+    assert (
+        resolve_gemini_native_voice_for_routing(
+            "gemini",
+            "中文男",
+            config_manager.voice_id_exists_in_any_storage,
+        )
+        == ("Puck", False)
+    )
+
+
+def test_gemini_alias_checks_canonical_voice_collision_case_insensitively():
+    config_manager = _FakeConfigManager(stored_voice_ids={"puck"})
 
     assert (
         resolve_gemini_native_voice_for_routing(

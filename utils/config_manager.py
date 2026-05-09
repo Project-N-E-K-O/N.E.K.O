@@ -2255,8 +2255,13 @@ class ConfigManager:
         voice_storage = self.load_voice_storage()
         if not isinstance(voice_storage, dict):
             return False
+        voice_id_key = voice_id.casefold()
         for bucket in voice_storage.values():
-            if isinstance(bucket, dict) and voice_id in bucket:
+            if isinstance(bucket, dict) and any(
+                isinstance(stored_voice_id, str)
+                and stored_voice_id.casefold() == voice_id_key
+                for stored_voice_id in bucket
+            ):
                 return True
         return False
 
