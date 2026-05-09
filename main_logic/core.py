@@ -185,7 +185,7 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.gemini_tts_voices import is_gemini_tts_voice, normalize_gemini_tts_voice
+from utils.gemini_tts_voices import normalize_gemini_tts_voice
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -450,6 +450,7 @@ class LLMSessionManager:
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None
+        self.pending_use_tts = None
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None
         # 热切换相关变量
@@ -2270,6 +2271,7 @@ class LLMSessionManager:
             self.final_swap_task = None
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
+        self.pending_use_tts = None
 
         if clear_main_cache:
             self.message_cache_for_new_session = []
@@ -2629,11 +2631,48 @@ class LLMSessionManager:
     def _is_gemini_native_voice_id(self, voice_id: str | None = None) -> bool:
         """判断 voice_id 是否应作为 Gemini Live 原生音色使用。"""
         candidate = self.voice_id if voice_id is None else voice_id
+        normalized_voice, recognized = normalize_gemini_tts_voice(candidate)
         return (
             self.core_api_type == 'gemini'
-            and is_gemini_tts_voice(candidate)
-            and not self._config_manager.voice_id_exists_in_any_storage(candidate)
+            and recognized
+            and not any(
+                self._config_manager.voice_id_exists_in_any_storage(v)
+                for v in {candidate, normalized_voice}
+                if v
+            )
         )
+
+    def _resolve_session_use_tts(
+        self,
+        input_mode: str,
+        realtime_config: dict,
+        core_config_snapshot: dict,
+        *,
+        log_prefix: str = "",
+    ) -> bool:
+        """Resolve whether this session should use the external TTS pipeline."""
+        has_custom_tts_config = (
+            core_config_snapshot.get('ENABLE_CUSTOM_API')
+            and core_config_snapshot.get('TTS_MODEL_URL')
+        )
+
+        if input_mode == 'text':
+            return True
+        if self._is_gemini_native_voice_id():
+            logger.info(f"{log_prefix}🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
+            return False
+        if (
+            self._is_free_preset_voice
+            and self.core_api_type == 'free'
+            and 'lanlan.tech' in realtime_config.get('base_url', '')
+        ):
+            logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
+            return False
+        if self.voice_id or has_custom_tts_config:
+            if has_custom_tts_config and not self.voice_id:
+                logger.info(f"{log_prefix}🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
+            return True
+        return False
 
     def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
@@ -2911,32 +2950,11 @@ class LLMSessionManager:
                 self.session_ready = False
                 # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
         
-            # 根据 input_mode 设置 use_tts
-            # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）—— 复用顶部 snapshot
-            has_custom_tts_config = (
-                core_config_snapshot.get('ENABLE_CUSTOM_API') and
-                core_config_snapshot.get('TTS_MODEL_URL')
+            self.use_tts = self._resolve_session_use_tts(
+                input_mode,
+                realtime_config,
+                core_config_snapshot,
             )
-        
-            if input_mode == 'text':
-                # 文本模式总是需要 TTS（使用默认或自定义音色）
-                self.use_tts = True
-            elif self._is_gemini_native_voice_id():
-                # Gemini 原生音色直接传入 Gemini Live，不启动外部 TTS worker。
-                self.use_tts = False
-                logger.info(f"🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
-            elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
-                # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
-                self.use_tts = False
-                logger.info(f"🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
-            elif self.voice_id or has_custom_tts_config:
-                # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
-                self.use_tts = True
-                if has_custom_tts_config and not self.voice_id:
-                    logger.info("🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
-            else:
-                # 语音模式下无自定义音色且无自定义TTS配置，使用 realtime API 原生语音
-                self.use_tts = False
         
             async with self.lock:
                 if self.is_active:
@@ -3545,6 +3563,13 @@ class LLMSessionManager:
             
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
+
+            self.pending_use_tts = self._resolve_session_use_tts(
+                self.input_mode,
+                realtime_config,
+                core_config_snapshot,
+                log_prefix="热切换准备: ",
+            )
             
             # 根据input_mode创建对应类型的pending session
             # 复用 main session 的 ToolRegistry 状态（registry 是 manager 级，
@@ -3625,7 +3650,7 @@ class LLMSessionManager:
             initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
-            await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)
+            await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
 
             # 同主 session 路径：热切换的 pending_session 也要在 connect 后
             # 补一次 sync，覆盖 connect 期间发生的 register/unregister race。
@@ -4867,6 +4892,8 @@ class LLMSessionManager:
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
             self.session = new_session
+            if self.pending_use_tts is not None:
+                self.use_tts = self.pending_use_tts
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
