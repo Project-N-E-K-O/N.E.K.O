@@ -1,9 +1,28 @@
 const I18n = {
   _bundle: {},
   _lang: 'zh-CN',
+  // True once init() has resolved (regardless of fetch success). Pages must
+  // gate their first dynamic render on this — `_lang` is initialized to
+  // 'zh-CN' synchronously at script-load time, so checking only `_lang`
+  // races: it's truthy before the bundle fetch finishes and would let
+  // initial calls render Chinese fallbacks under non-default locales.
+  _ready: false,
 
   lang() {
     return this._lang;
+  },
+
+  ready() {
+    return this._ready;
+  },
+
+  whenReady(fn) {
+    if (typeof fn !== 'function') return;
+    if (this._ready) {
+      fn();
+    } else {
+      window.addEventListener('i18n-ready', () => fn(), { once: true });
+    }
   },
 
   _localeCandidates(locale) {
@@ -63,6 +82,7 @@ const I18n = {
     const cleanPluginId = String(pluginId || '').trim();
     if (!cleanPluginId) {
       this._bundle = {};
+      this._ready = true;
       return;
     }
     const encodedPluginId = encodeURIComponent(cleanPluginId);
@@ -85,19 +105,25 @@ const I18n = {
       }
     }
 
-    for (const locale of this._localeCandidates(this._lang)) {
-      try {
-        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/${encodeURIComponent(locale)}.json`);
-        if (resp.ok) {
-          this._bundle = await resp.json();
-          this._lang = locale;
-          return;
+    try {
+      for (const locale of this._localeCandidates(this._lang)) {
+        try {
+          const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/${encodeURIComponent(locale)}.json`);
+          if (resp.ok) {
+            this._bundle = await resp.json();
+            this._lang = locale;
+            return;
+          }
+        } catch {
+          // fallback keeps page usable
         }
-      } catch {
-        // fallback keeps page usable
       }
+      this._bundle = {};
+    } finally {
+      // Always flip ready, even if every candidate fetch failed — pages still
+      // need to render with their data-i18n fallbacks rather than hang.
+      this._ready = true;
     }
-    this._bundle = {};
   },
 
   t(key, fallback) {

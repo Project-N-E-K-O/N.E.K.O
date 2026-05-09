@@ -641,11 +641,18 @@
         document.getElementById('controlInput').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.isComposing) sendControlCommand();
         });
-        // i18n 加载完成后再 loadStatus，避免错误消息在中文 fallback 下显示
-        if (window.I18n && I18n._lang) {
-            loadStatus();
+        // First loadStatus() must wait for the locale bundle: I18n._lang is
+        // initialized to 'zh-CN' synchronously at script-load time, so the
+        // old `I18n._lang` check passed before the async fetch finished and
+        // status / device / scene text rendered with Chinese fallbacks under
+        // non-default locales. I18n.whenReady gates on the actual ready
+        // flag, runs synchronously if the bundle already arrived, otherwise
+        // queues on the `i18n-ready` event — covers both DOM ↔ fetch races.
+        if (window.I18n?.whenReady) {
+            I18n.whenReady(() => loadStatus());
         } else {
-            window.addEventListener('i18n-ready', () => loadStatus(), { once: true });
+            // i18n.js failed to load — best-effort render with fallbacks.
+            loadStatus();
         }
     });
 </script>

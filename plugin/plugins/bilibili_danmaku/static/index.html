@@ -2076,7 +2076,8 @@
 
   // ---------- 背景LLM 配置结束 ----------
 
-  document.addEventListener('DOMContentLoaded', async () => {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Slider preview wiring is locale-independent — fine to run immediately.
     document.getElementById('intervalSlider').addEventListener('input', e => {
       document.getElementById('intervalDisplay').textContent = e.target.value + 's';
     });
@@ -2090,14 +2091,28 @@
       document.getElementById('bgLlmMaxSamplesDisplay').textContent = e.target.value;
     });
 
-    loadBgLLMConfig();
-
-    const status = await refreshStatus();
-    addSystemMsg(I18n.t('console.ready', '控制台已就绪'));
-    if (status?.listening || status?.connecting) {
-      resumePolling();
+    // The first dynamic render must wait for the locale bundle, otherwise
+    // console / status / bgLLM config text renders with the Chinese fallbacks
+    // under non-default locales and is never re-translated. `I18n.whenReady`
+    // runs the callback synchronously if the bundle already arrived, or
+    // queues it on the `i18n-ready` event otherwise — covers either race
+    // between this DOMContentLoaded handler and i18n.js's async init().
+    const runFirstRender = async () => {
+      loadBgLLMConfig();
+      const status = await refreshStatus();
+      addSystemMsg(I18n.t('console.ready', '控制台已就绪'));
+      if (status?.listening || status?.connecting) {
+        resumePolling();
+      } else {
+        pausePolling();
+      }
+    };
+    if (window.I18n?.whenReady) {
+      I18n.whenReady(runFirstRender);
     } else {
-      pausePolling();
+      // i18n.js failed to load — render with hard-coded fallbacks so the
+      // page is at least usable.
+      runFirstRender();
     }
   });
 </script>
