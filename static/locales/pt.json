@@ -1153,7 +1153,7 @@
             "select": "Selecione",
             "defaultClickAnim": "Animação de clique padrão"
         },
-        "emotionConfig": "Config. emoção",
+        "emotionConfig": "Emoções",
         "saveSettings": "Salvar configurações",
         "persistentExpression": "Expressão Persistente (somente expressão):",
         "pleaseLoadModel": "Carregue um modelo",
@@ -1162,7 +1162,7 @@
         "savePersistent": "Salvar expressão persistente",
         "persistentHint": "Expressões persistentes estarão sempre ativas.",
         "backToMain": "Principal",
-        "importModel": "Importar modelo",
+        "importModel": "Importar",
         "motionPreview": "Pré-visualização de movimento",
         "expressionPreview": "Pré-visualização da Expressão",
         "play": "Jogar",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "Erro: {{error}}",
         "parameterEditor": {
-            "title": "Editor de rosto",
+            "title": "Editar rosto",
             "backToMain": "← Voltar para Configurações L2D",
             "backToL2DManager": "Voltar",
             "selectModel": "Selecione o modelo",

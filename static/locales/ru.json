@@ -1153,7 +1153,7 @@
             "select": "Выбрать",
             "defaultClickAnim": "Анимация клика по умолчанию"
         },
-        "emotionConfig": "Настройка эмоций",
+        "emotionConfig": "Эмоции",
         "saveSettings": "Сохранить настройки",
         "persistentExpression": "Постоянное выражение (только выражение):",
         "pleaseLoadModel": "Загрузите модель",
@@ -1162,7 +1162,7 @@
         "savePersistent": "Сохранить постоянное выражение",
         "persistentHint": "Постоянные выражения всегда активны.",
         "backToMain": "На главную",
-        "importModel": "Импорт модели",
+        "importModel": "Импорт",
         "motionPreview": "Предпросмотр анимации",
         "expressionPreview": "Предпросмотр выражений",
         "play": "Воспроизвести",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "Ошибка: {{error}}",
         "parameterEditor": {
-            "title": "Редактор лица",
+            "title": "Ред. лица",
             "backToMain": "← Назад к настройкам L2D",
             "backToL2DManager": "Назад",
             "selectModel": "Выбрать модель",

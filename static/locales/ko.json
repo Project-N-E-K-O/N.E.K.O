@@ -1153,7 +1153,7 @@
             "select": "선택",
             "defaultClickAnim": "기본 클릭 애니메이션"
         },
-        "emotionConfig": "감정 구성",
+        "emotionConfig": "감정",
         "saveSettings": "설정 저장",
         "persistentExpression": "영구 표현식(표현식만 해당):",
         "pleaseLoadModel": "모델을 로드하세요.",
@@ -1162,7 +1162,7 @@
         "savePersistent": "지속 표현식 저장",
         "persistentHint": "영구 표현식은 항상 활성화됩니다.",
         "backToMain": "홈으로",
-        "importModel": "모델 가져오기",
+        "importModel": "가져오기",
         "motionPreview": "모션 미리보기",
         "expressionPreview": "표현식 미리보기",
         "play": "플레이",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
         "selectLive2DModel": "Live2D 모델 선택",
-        "selectVRMModel": "VRM 모델 선택",
+        "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
         "vrmModelListLoaded": "VRM 모델 목록이 성공적으로 로드되었습니다.",
         "noVRMModelsFound": "사용 가능한 VRM 모델을 찾을 수 없습니다.",
@@ -1251,7 +1251,7 @@
             "speed": "속도:"
         },
         "mmdModel": {
-            "selectModel": "MMD 모델 선택",
+            "selectModel": "MMD 모델",
             "deleteModel": "가져온 MMD 모델 삭제",
             "deleteModelTitle": "가져온 MMD 모델 삭제",
             "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "오류: {{error}}",
         "parameterEditor": {
-            "title": "얼굴 편집기",
+            "title": "얼굴 편집",
             "backToMain": "← L2D 설정으로 돌아가기",
             "backToL2DManager": "뒤로",
             "selectModel": "모델 선택",
