@@ -2,10 +2,10 @@
   "advance_speed": "medium",
   "bound_game_id": "",
   "dedupe_window": [],
-  "events_byte_offset": 3221766,
-  "events_file_size": 3221766,
+  "events_byte_offset": 0,
+  "events_file_size": 0,
   "last_error": {},
-  "last_seq": 2579,
+  "last_seq": 0,
   "llm_vision_enabled": false,
   "llm_vision_max_image_px": 768,
   "memory_reader_target": {
@@ -25,24 +25,24 @@
   "ocr_poll_interval_seconds": 0.5,
   "ocr_trigger_mode": "interval",
   "ocr_window_target": {
-    "last_known_hwnd": 1117864,
-    "mode": "manual",
-    "normalized_title": "千恋＊万花",
-    "pid": 96124,
-    "process_name": "SenrenBanka.exe",
-    "selected_at": "2026-05-09T06:02:33Z",
-    "window_key": "ocrwin:789cc7f0a0f21e60"
+    "last_known_hwnd": 0,
+    "mode": "auto",
+    "normalized_title": "",
+    "pid": 0,
+    "process_name": "",
+    "selected_at": "",
+    "window_key": ""
   },
   "push_notifications": true,
   "rapidocr.auto_detect_lang": false,
   "rapidocr.auto_detect_last_lang": "ch",
   "rapidocr.lang_type": "ch",
-  "reader_mode": "auto",
-  "session_id": "ocr-6f29c6b3-7345-4a6b-bb24-2dc11edcf2a1",
+  "reader_mode": "memory_reader",
+  "session_id": "",
   "tutorial_progress": {
     "completed": false,
     "completed_at": 0.0,
-    "last_step_index": 3,
+    "last_step_index": 0,
     "skipped": false,
     "started_at": 0.0
   }

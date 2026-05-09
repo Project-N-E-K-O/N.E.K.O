@@ -781,11 +781,13 @@ def _normalize_timeout_value(value: object) -> float | None | object:
         return _TIMEOUT_UNSET
     if value is None:
         return None
+    if isinstance(value, bool):
+        return _TIMEOUT_UNSET
     try:
         timeout = float(value)
     except (TypeError, ValueError):
         return _TIMEOUT_UNSET
-    return timeout if timeout > 0 else None
+    return timeout if timeout > 0 else _TIMEOUT_UNSET
 
 
 def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
