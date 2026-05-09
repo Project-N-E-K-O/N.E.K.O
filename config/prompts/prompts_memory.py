@@ -7,7 +7,7 @@ inner-thoughts injection fragments, and chat-gap notices.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 
 # =====================================================================
 # ======= Conversation summarization =================================

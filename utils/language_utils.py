@@ -1061,7 +1061,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # 复用emotion模型配置
         emotion_config = config_manager.get_model_api_config('emotion')
         
-        from config.prompts_sys import (
+        from config.prompts.prompts_sys import (
             _loc, TRANSLATION_WATERMARK_START, TRANSLATION_WATERMARK_END,
             TRANSLATION_INSTRUCTION, TRANSLATION_REQUIREMENTS, TRANSLATION_LANG_NAMES,
         )

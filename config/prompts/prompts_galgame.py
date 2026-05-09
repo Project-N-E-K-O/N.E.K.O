@@ -6,7 +6,7 @@ payload of style-typed candidates the user can click to send.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 
 
 # {lanlan_name} = catgirl display name; {master_name} = chat partner display name.

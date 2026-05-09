@@ -523,8 +523,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agent 子系统
 ├── 📁 config/                   # ⚙️ 配置管理模块 
 │   ├── api_providers.json       # API服务商配置
-│   ├── prompts_chara.py         # 角色提示词
-│   └── prompts_sys.py           # 系统提示词
+│   └── 📁 prompts/              # 角色、系统和功能提示词
+│       ├── prompts_chara.py     # 角色提示词
+│       └── prompts_sys.py       # 系统提示词
 ├── 📁 main_logic/               # 🔧 核心逻辑模块
 │   ├── core.py                  # 核心对话模块
 │   ├── cross_server.py          # 跨服务器通信

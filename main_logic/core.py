@@ -49,7 +49,7 @@ from config import (
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
 )
-from config.prompts_sys import (
+from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
@@ -218,14 +218,14 @@ def _build_callback_instruction(
             # the joined output is clean.
             parts.append(header.rstrip())
     return "\n\n".join(parts)
-from config.prompts_avatar_interaction import (
+from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
 # Historical imports kept here (commented) for easy rollback:
 # from config import USER_PLUGIN_SERVER_PORT
-# from config.prompts_sys import (
+# from config.prompts.prompts_sys import (
 #     SESSION_INIT_PROMPT_AGENT_DYNAMIC,
 #     AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
 #     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
@@ -4273,7 +4273,7 @@ class LLMSessionManager:
         "本轮实际放了什么歌 / 分享了什么内容 / 来源在哪"作为元数据留给 LLM 下
         一轮看到，避免用户反问"刚才放的什么"时 AI 完全不知道——只记得自己说
         了什么，不记得自己做了什么。构造逻辑见
-        ``config.prompts_proactive.build_proactive_action_note``。
+        ``config.prompts.prompts_proactive.build_proactive_action_note``。
 
         返回 True 表示真正落库，False 表示因 sid 变化被跳过。调用方据此短路
         下游副作用（_record_proactive_chat / topic usage / surfaced reflection 等），
@@ -4723,7 +4723,7 @@ class LLMSessionManager:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
+        from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
         from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
@@ -4840,7 +4840,7 @@ class LLMSessionManager:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     async def trigger_new_character_greeting(self) -> None:
-        from config.prompts_proactive import get_new_character_greeting_prompt
+        from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending
 
         config_manager = get_config_manager()

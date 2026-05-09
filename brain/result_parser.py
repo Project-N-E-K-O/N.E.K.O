@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Sequence
 
-from config.prompts_sys import (
+from config.prompts.prompts_sys import (
     _loc,
     RESULT_PARSER_ERROR_CODES,
     RESULT_PARSER_ERROR_SUBSTRINGS,

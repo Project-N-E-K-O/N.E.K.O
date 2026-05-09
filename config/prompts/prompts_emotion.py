@@ -3,7 +3,7 @@ Emotion-analysis prompt templates used by runtime expression / reaction systems.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 
 
 OUTWARD_EMOTION_ANALYSIS_PROMPT = {

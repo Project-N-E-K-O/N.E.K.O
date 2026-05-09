@@ -22,8 +22,9 @@ N.E.K.O/
 ├── config/                     # 配置
 │   ├── __init__.py             # 常量、默认值、端口定义
 │   ├── api_providers.json      # API 提供商配置
-│   ├── prompts_sys.py          # 系统提示词（情绪、主动聊天）
-│   └── prompts_chara.py        # 角色系统提示词
+│   └── prompts/                # 角色、系统和功能提示词
+│       ├── prompts_sys.py      # 系统提示词（情绪、主动聊天）
+│       └── prompts_chara.py    # 角色系统提示词
 │
 ├── main_logic/                 # 核心业务逻辑
 │   ├── core.py                 # LLMSessionManager（中央会话处理器）
@@ -76,7 +77,7 @@ N.E.K.O/
 │   ├── theme-manager.js        # 深色/浅色模式
 │   ├── css/                    # 样式表
 │   ├── js/                     # 功能模块 JS
-│   ├── locales/                # 国际化 JSON 文件（en、zh-CN、zh-TW、ja、ko）
+│   ├── locales/                # 国际化 JSON 文件（en、zh-CN、zh-TW、ja、ko、ru、es、pt）
 │   └── live2d-ui-*.js          # Live2D UI 组件
 │
 ├── templates/                  # Jinja2 HTML 模板

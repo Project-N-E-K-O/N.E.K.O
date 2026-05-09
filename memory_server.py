@@ -41,8 +41,8 @@ from config import (
     USER_KEYWORD_REBUT_DELTA,
     USER_REBUT_DELTA,
 )
-from config.prompts_sys import _loc
-from config.prompts_memory import (
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_memory import (
     INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
     CHAT_HOLIDAY_CONTEXT,

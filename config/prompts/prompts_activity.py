@@ -1,6 +1,6 @@
 """Multi-language prompts and labels for the activity tracker.
 
-Lives under ``config/prompts_*`` per the project's i18n convention —
+Lives under ``config/prompts/prompts_*`` per the project's i18n convention —
 **all** multi-language strings must live here, not in regular code, so
 that adding a new language is a single-file pass over ``config/`` and
 nothing slips through. The prompt-hygiene linter

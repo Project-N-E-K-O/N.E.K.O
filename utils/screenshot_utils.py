@@ -174,7 +174,7 @@ async def analyze_image_with_vision_model(
         else:
             logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
-        from config.prompts_sys import (
+        from config.prompts.prompts_sys import (
             _loc, VISION_WATERMARK,
             VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
             VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
@@ -309,7 +309,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 # Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
 # ============================================================================
 
-from config.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
+from config.prompts.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
 
 # Lazy-loaded CJK font cache
 _avatar_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}

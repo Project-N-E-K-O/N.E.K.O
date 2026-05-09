@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Prompt templates for the game routing layer (module-agnostic).
 
-Soccer-specific prompt fragments stay in config/prompts_game.py. This file
+Soccer-specific prompt fragments stay in config/prompts/prompts_game.py. This file
 holds prompts reused by any game route: the in-session context organizer,
 postgame archive highlighter, chat-memory archive summary, realtime context
 bridge, and label dictionaries used by those builders.
 """
 
-from config.prompts_game import _localized_template, _normalize_prompt_lang
+from config.prompts.prompts_game import _localized_template, _normalize_prompt_lang
 
 
 GAME_CONTEXT_SIGNAL_GROUP_KEYS = (

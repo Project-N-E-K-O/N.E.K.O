@@ -368,7 +368,7 @@ async def test_high_contention_mixed_mutations_stay_consistent(tmp_path):
 
     async def timed_run():
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
-             patch("config.prompts_memory.get_reflection_prompt",
+             patch("config.prompts.prompts_memory.get_reflection_prompt",
                    lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"):
             return await asyncio.wait_for(

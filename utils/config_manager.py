@@ -23,7 +23,7 @@ from config import (
     DEFAULT_CONFIG_DATA,
     RESERVED_FIELD_SCHEMA,
 )
-from config.prompts_chara import get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,

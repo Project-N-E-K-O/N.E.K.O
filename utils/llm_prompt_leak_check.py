@@ -2,7 +2,7 @@
 
 Bug class this guards against
 -----------------------------
-Prompt templates in ``config/prompts_*.py`` use Python ``str.format()`` style
+Prompt templates in ``config/prompts/prompts_*.py`` use Python ``str.format()`` style
 placeholders like ``{master}`` / ``{window}``. The producer side embeds the
 placeholder; the consumer side is responsible for calling ``.format(...)`` to
 expand it. When a consumer forgets — e.g. ``sf = _loc(SOME_TEMPLATE, lang)``
@@ -11,7 +11,7 @@ message — the literal ``{master}`` characters reach the LLM, which is at best
 confusing and at worst leaks framework internals into the model output.
 
 Real-world case that motivated this module: PR #1075. ``SCREEN_SECTION_FOOTER``
-in ``config/prompts_proactive.py`` was given a ``{master}`` placeholder so it
+in ``config/prompts/prompts_proactive.py`` was given a ``{master}`` placeholder so it
 mirrored the corresponding header. The header was rendered with ``.format()``;
 the footer's consumer in ``main_routers/system_router.py`` used ``_loc()``
 without ``.format()``. The literal ``{master}`` shipped to the LLM. Caught only

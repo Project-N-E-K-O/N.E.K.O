@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.prompts_galgame import (
+from config.prompts.prompts_galgame import (
     GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
     GALGAME_DEFAULT_MASTER_PLACEHOLDER,
     get_galgame_fallback_options,
@@ -28,7 +28,7 @@ from config.prompts_galgame import (
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
 )
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from utils.language_utils import detect_language, normalize_language_code
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm

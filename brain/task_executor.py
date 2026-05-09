@@ -28,7 +28,7 @@ from config import (
     TASK_DETAIL_MAX_TOKENS,
 )
 from utils.llm_client import create_chat_llm, ChatOpenAI
-from config.prompts_agent import (
+from config.prompts.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
     CHANNEL_DESC_QWENPAW,
     CHANNEL_DESC_OPENFANG,
@@ -37,7 +37,7 @@ from config.prompts_agent import (
     USER_PLUGIN_SYSTEM_PROMPT,
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager

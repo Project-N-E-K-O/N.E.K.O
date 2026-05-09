@@ -41,8 +41,8 @@ import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
-from config.prompts_sys import _loc
-from config.prompts_voice import VOICE_PREVIEW_TEXTS
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from .shared_state import (
     get_config_manager,
     get_session_manager,

@@ -514,5 +514,5 @@ SEARCH_KEYWORD_USER = {
 # =====================================================================
 # backward compat re-exports
 # =====================================================================
-from config.prompts_memory import *  # noqa: F401,F403
-from config.prompts_proactive import *  # noqa: F401,F403
+from config.prompts.prompts_memory import *  # noqa: F401,F403
+from config.prompts.prompts_proactive import *  # noqa: F401,F403

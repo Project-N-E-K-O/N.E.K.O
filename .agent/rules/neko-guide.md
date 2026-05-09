@@ -6,8 +6,8 @@ trigger: always_on
 
 ## 基本规则
 
-- 使用 i18n 支持国际化，目前支持 en.json、ja.json、ko.json、zh-CN.json、zh-TW.json、ru.json 六种。每次改 i18n 字符串时必须同步更新全部 6 个 locale 文件，只改部分会被打回。
-- **后端 Python 多语言字符串一律落在 `config/prompts_*.py`**：无论是平铺 `dict[str, str]` 还是嵌套 `dict[str, dict[K, str]]`，凡键里出现 `'zh' / 'en' / 'ja' / 'ko' / 'ru'` 的语言映射，都必须放在 `config/prompts_*` 下。`scripts/check_prompt_hygiene.py` 只抓平铺结构，但规范是"加新语言时一次扫 `config/` 即可补全"——嵌套 dict 即使 lint 没抓也算技术债，需自觉搬迁。新增后端模块若有翻译需求，直接在 `config/prompts_<topic>.py` 加新模块或复用已有模块（如 `prompts_activity.py`、`prompts_proactive.py`、`prompts_memory.py`）。
+- 使用 i18n 支持国际化，目前支持 en.json、ja.json、ko.json、zh-CN.json、zh-TW.json、ru.json、es.json、pt.json 八种。每次改 i18n 字符串时必须同步更新全部 8 个 locale 文件，只改部分会被打回。
+- **后端 Python 多语言字符串一律落在 `config/prompts/prompts_*.py`**：无论是平铺 `dict[str, str]` 还是嵌套 `dict[str, dict[K, str]]`，凡键里出现 `'zh' / 'en' / 'ja' / 'ko' / 'ru'` 的语言映射，都必须放在 `config/prompts/prompts_*` 下。`scripts/check_prompt_hygiene.py` 只抓平铺结构，但规范是"加新语言时一次扫 `config/` 即可补全"——嵌套 dict 即使 lint 没抓也算技术债，需自觉搬迁。新增后端模块若有翻译需求，直接在 `config/prompts/prompts_<topic>.py` 加新模块或复用已有模块（如 `prompts_activity.py`、`prompts_proactive.py`、`prompts_memory.py`）。
 - 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（<3.13），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
@@ -57,13 +57,13 @@ CI 守门：
 
 ## 架构：跨模块 prompt 不能写死特定游戏 / 功能
 
-系统级 / 跨模块的 LLM prompt（archive label、history review、postgame realtime context、memory highlight selector、context organizer 等）只能用通用层概念，**不能**出现"足球""比分""射门""乌龙""抢断""进球""防守"等特定游戏术语。具体游戏术语只能出现在 module-bound 的 helper 内（函数名带 module 名的，如 `_format_soccer_pregame_context_for_prompt`、`_build_soccer_balance_hint`），或者 `config/prompts_game.py` 里 `SOCCER_*_PROMPT` 这种 specific-by-design 的常量里。
+系统级 / 跨模块的 LLM prompt（archive label、history review、postgame realtime context、memory highlight selector、context organizer 等）只能用通用层概念，**不能**出现"足球""比分""射门""乌龙""抢断""进球""防守"等特定游戏术语。具体游戏术语只能出现在 module-bound 的 helper 内（函数名带 module 名的，如 `_format_soccer_pregame_context_for_prompt`、`_build_soccer_balance_hint`），或者 `config/prompts/prompts_game.py` 里 `SOCCER_*_PROMPT` 这种 specific-by-design 的常量里。
 
 边界判定：
 - **prompt 指令**：`_build_game_archive_memory_text` / `_build_postgame_realtime_context_text` / `_select_game_archive_memory_highlights` / `_run_game_context_organizer_ai` 这种函数名是 generic（没有 module 名）的，里面所有字符串都必须 module-agnostic。
 - **module-bound prompt**：函数名 `_*_soccer_*` 或 `prompts_game.py` 里的 `SOCCER_*_PROMPT`，用 `if game_type == "soccer":` gate 进入，里面提足球/比分天然合理。
 - **data 不算 prompt**：score 数值、`_GAME_EVENT_MEMORY_LABELS` 这种 event-kind→中文 label 表、`game_type: "soccer"` 字段值——是数据不是指令，不受此规则约束。
-- **写入侧也要查**：写进 ordinary memory 的字符串会被后续 `HISTORY_REVIEW_PROMPT` 读到，等同于 prompt，必须 generic；不要靠 review prompt 兜底（`config/prompts_memory.py` 里的"游戏模块归档"豁免规则是兜底，不是借口）。
+- **写入侧也要查**：写进 ordinary memory 的字符串会被后续 `HISTORY_REVIEW_PROMPT` 读到，等同于 prompt，必须 generic；不要靠 review prompt 兜底（`config/prompts/prompts_memory.py` 里的"游戏模块归档"豁免规则是兜底，不是借口）。
 
 理由：
 1. 跨模块 prompt 会反复进入 review LLM 视野，review LLM 不知道当前是哪个游戏；硬编码具体游戏名会让其他游戏的 archive 在 review 阶段被错判。

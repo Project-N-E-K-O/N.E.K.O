@@ -49,20 +49,20 @@ def _install_factstore(tmpdir: str):
 
 
 def test_negative_keywords_hit():
-    from config.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_memory import scan_negative_keywords
     assert scan_negative_keywords("这个话题别再说了", "zh") is True
     assert scan_negative_keywords("换个话题吧", "zh") is True
     assert scan_negative_keywords("今天天气不错", "zh") is False
 
 
 def test_negative_keywords_fallback_unknown_lang():
-    from config.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_memory import scan_negative_keywords
     # Unknown lang → fall back to zh
     assert scan_negative_keywords("别提了", "xyz") is True
 
 
 def test_negative_keywords_english():
-    from config.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_memory import scan_negative_keywords
     assert scan_negative_keywords("please stop talking about this", "en") is True
     assert scan_negative_keywords("the weather is nice", "en") is False
 

@@ -261,8 +261,9 @@ hiddenimports += [
     # config 子模块
     'config',
     'config.api',
-    'config.prompts_sys',
-    'config.prompts_chara',
+    'config.prompts',
+    'config.prompts.prompts_sys',
+    'config.prompts.prompts_chara',
     
     # brain 子模块
     'brain',

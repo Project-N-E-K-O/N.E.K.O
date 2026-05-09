@@ -750,7 +750,7 @@ class BiliDMPlugin(NekoPluginBase):
         user_title: str,
     ) -> str:
         """构建 AI 会话系统提示词"""
-        from config.prompts_sys import SESSION_INIT_PROMPT
+        from config.prompts.prompts_sys import SESSION_INIT_PROMPT
         from utils.language_utils import get_global_language
 
         try:
@@ -785,7 +785,7 @@ class BiliDMPlugin(NekoPluginBase):
                     if response.is_success:
                         memory_context = response.text.strip()
                         if memory_context:
-                            from config.prompts_sys import CONTEXT_SUMMARY_READY
+                            from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY
                             context_ready_template = CONTEXT_SUMMARY_READY.get(
                                 short_language,
                                 CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),

@@ -7,7 +7,7 @@ getter functions, and proactive-related injection fragments.
 """
 from __future__ import annotations
 
-from config.prompts_sys import _loc, get_avatar_annotation_ignore_hint
+from config.prompts.prompts_sys import _loc, get_avatar_annotation_ignore_hint
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 

@@ -134,7 +134,7 @@ async def test_synth_with_same_facts_does_not_duplicate_reflection(tmp_path):
             aclose = _fake_aclose
 
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
-             patch("config.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"):
             # 首次 synth
             first = await re.synthesize_reflections("小天")
@@ -204,7 +204,7 @@ async def test_synth_different_fact_set_produces_different_id(tmp_path):
                 return None
 
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
-             patch("config.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"):
             # 第一批：f1-f5
             _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(5)])
@@ -292,7 +292,7 @@ async def test_synth_concurrent_dedup_returns_empty(tmp_path):
             await original_asave(name, refs)
 
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
-             patch("config.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"), \
              patch.object(re, "aload_reflections", side_effect=mock_aload), \
              patch.object(re, "asave_reflections", side_effect=mock_asave):

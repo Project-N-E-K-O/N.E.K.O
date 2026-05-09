@@ -247,7 +247,7 @@ def test_pr1075_regression_smoke():
         "en": "(End of screen info, {master})",
     }
 
-    def _loc(d: dict, lang: str) -> str:  # mimics config.prompts_sys._loc
+    def _loc(d: dict, lang: str) -> str:  # mimics config.prompts.prompts_sys._loc
         return d.get(lang, d.get("en", d.get("zh", "")))
 
     sf = _loc(SCREEN_SECTION_FOOTER, "en")  # bug: forgot .format(master=name)

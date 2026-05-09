@@ -650,7 +650,7 @@ async def test_aretrieve_hard_filter_zero_returns_empty():
 def test_memory_recall_rerank_prompt_has_all_five_locales_with_placeholders():
     """All five locales rendered + every placeholder substituted —
     same contract test as fact_dedup.test_fact_dedup_prompt..."""
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         MEMORY_RECALL_RERANK_PROMPT,
         get_memory_recall_rerank_prompt,
     )
