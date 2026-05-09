@@ -881,18 +881,19 @@ start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
     
-    local services=("memory_server.py" "main_server.py" "agent_server.py")
-    
+    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py
+    local services=("app/memory_server.py" "app/main_server.py" "app/agent_server.py")
+
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "main_server.py" ]] || [[ "$service" == "memory_server.py" ]]; then
+            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server.py" ]]; then
                 return 1
             fi
             continue
         fi
-        
+
         echo "   Starting $service..."
         # 启动服务并记录PID
         python "$service" &

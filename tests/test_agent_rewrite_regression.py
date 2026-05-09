@@ -76,7 +76,7 @@ def test_core_config_uses_agent_model_only():
 
 
 def test_agent_server_legacy_endpoints_removed():
-    paths = _route_paths_from_decorators("agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server.py", "app")
     assert "/process" not in paths
     assert "/plan" not in paths
     assert "/analyze_and_plan" not in paths
@@ -221,7 +221,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server.py", "app")
     for expected in {
         "/health",
         "/agent/flags",
@@ -830,7 +830,7 @@ def test_task_executor_format_messages_mentions_image_attachments():
 
 
 def test_plugin_terminal_status_defaults_and_run_data_overrides():
-    from agent_server import _plugin_terminal_status
+    from app.agent_server import _plugin_terminal_status
 
     # Default: success → completed, fail → failed.
     assert _plugin_terminal_status(True, None) == "completed"
@@ -1137,7 +1137,7 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1386,7 +1386,7 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
 
 
 def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1409,7 +1409,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
 
 
 def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1500,7 +1500,7 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
 
 
 def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -1527,7 +1527,7 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
 
 def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -2022,7 +2022,7 @@ async def test_zmq_agent_to_main_push_pull(monkeypatch):
 
 def test_emit_main_event_sends_via_bridge():
     """_emit_main_event calls agent_bridge.emit_to_main when bridge is available."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -2036,7 +2036,7 @@ def test_emit_main_event_sends_via_bridge():
 
 def test_emit_main_event_no_http_fallback():
     """_emit_main_event must NOT contain any httpx or HTTP fallback code."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -2055,7 +2055,7 @@ def test_emit_main_event_no_http_fallback():
 
 def test_on_session_event_dispatches_ack_and_analyze():
     """_on_session_event creates tasks for ack emission and background analysis."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):

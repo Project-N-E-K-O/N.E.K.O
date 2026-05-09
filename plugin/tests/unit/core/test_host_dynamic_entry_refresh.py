@@ -15,7 +15,7 @@ async def test_host_rebuilds_entry_map_for_dynamic_entry(tmp_path) -> None:
 
     host = PluginProcessHost(
         plugin_id="dynamic_fixture",
-        entry_point="plugin_test_dynamic_entry_fixture:DynamicEntryFixturePlugin",
+        entry_point="tests.fixtures.plugin_test_dynamic_entry_fixture:DynamicEntryFixturePlugin",
         config_path=config_path,
     )
 
@@ -34,7 +34,7 @@ async def test_host_prefers_dynamic_entry_timeout_metadata(tmp_path) -> None:
 
     host = PluginProcessHost(
         plugin_id="dynamic_fixture_timeout",
-        entry_point="plugin_test_dynamic_entry_fixture:DynamicEntryFixturePlugin",
+        entry_point="tests.fixtures.plugin_test_dynamic_entry_fixture:DynamicEntryFixturePlugin",
         config_path=config_path,
     )
 

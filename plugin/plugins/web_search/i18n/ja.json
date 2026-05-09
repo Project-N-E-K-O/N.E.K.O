@@ -1,0 +1,4 @@
+{
+  "plugin.name": "ウェブ検索",
+  "plugin.description": "オンライン検索。ユーザーの IP に応じて検索エンジンを自動選択（中国本土は Baidu、それ以外は DuckDuckGo）。API キー不要"
+}

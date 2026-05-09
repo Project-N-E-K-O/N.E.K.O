@@ -252,12 +252,13 @@ hiddenimports += [
     'requests',
     'cachetools',
     
-    # 项目主模块
-    'main_server',
-    'memory_server',
-    'agent_server',
-    'monitor',
-    
+    # 项目主模块（统一在 app/ 子包下）
+    'app',
+    'app.main_server',
+    'app.memory_server',
+    'app.agent_server',
+    'app.monitor',
+
     # config 子模块
     'config',
     'config.api',

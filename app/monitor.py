@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
@@ -24,18 +26,24 @@ logger, log_config = setup_logging(service_name="Monitor", log_level=logging.INF
 
 # 获取资源路径（支持打包后的环境）
 def get_resource_path(relative_path):
-    """获取资源的绝对路径，支持开发环境和打包后的环境"""
+    """获取资源的绝对路径，支持开发环境和打包后的环境.
+
+    monitor.py 现在位于 ``<repo>/app/monitor.py``，因此源码 / Nuitka 场景
+    的资源根都需要 ``dirname(dirname(__file__))`` 才能回到项目根 (static/
+    templates/ 等放在那里)。PyInstaller 把所有资源解压到 ``sys._MEIPASS``
+    顶层，路径不变。
+    """
     if getattr(sys, 'frozen', False):
         # 打包后的环境
         if hasattr(sys, '_MEIPASS'):
             # PyInstaller
             base_path = sys._MEIPASS
         else:
-            # Nuitka
-            base_path = os.path.dirname(os.path.abspath(__file__))
+            # Nuitka standalone：app/ 是子包，资源在父目录
+            base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     else:
-        # 开发环境
-        base_path = os.path.dirname(os.path.abspath(__file__))
+        # 开发环境：app/monitor.py 的祖父目录就是项目根
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
 templates = Jinja2Templates(directory=get_resource_path(""))

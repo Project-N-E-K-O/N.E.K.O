@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft 게임 에이전트",
+  "plugin.description": "로컬 Minecraft Agent(WebSocket)와 연결해 AI가 minecraft_task 도구로 명령을 내리고 실시간으로 게임 화면을 해설할 수 있도록 합니다"
+}

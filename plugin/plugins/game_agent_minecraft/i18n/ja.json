@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft ゲームエージェント",
+  "plugin.description": "ローカルの Minecraft Agent（WebSocket）と接続し、minecraft_task ツール経由で AI が指令を出しながらリアルタイムで実況できるようにします"
+}

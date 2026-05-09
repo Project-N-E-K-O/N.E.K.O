@@ -73,7 +73,7 @@ datas += [
 ]
 
 a = Analysis(
-    [os.path.join(PROJECT_ROOT, 'monitor.py')],  # 使用绝对路径
+    [os.path.join(PROJECT_ROOT, 'app', 'monitor.py')],  # 使用绝对路径
     pathex=[PROJECT_ROOT],
     binaries=binaries,
     datas=datas,
@@ -91,9 +91,9 @@ a = Analysis(
         'brain',
         'memory',
         'main_logic',
-        'agent_server',
-        'memory_server',
-        'main_server',
+        'app.agent_server',
+        'app.memory_server',
+        'app.main_server',
         'main_routers',
         'plugin',
         # 排除大型科学计算库（如果不需要）

@@ -19,10 +19,23 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
+    const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
+    const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
+    const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
+    const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
+    const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _musicPlayUrlCoordChannel = null;
+    let _musicPlayUrlCoordChannelReady = false;
+    let _musicPlayUrlClaims = Object.create(null);
+    let _musicPlayUrlClaimCleanupTimer = 0;
+    let _musicPlayUrlCoordBeforeUnloadBound = false;
+    let _musicPlayUrlBroadcastUnavailableWarned = false;
+    const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -36,6 +49,375 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function handleMusicPlayUrlCoordMessage(data) {
+        if (!data || typeof data !== 'object') return;
+        if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
+        if (data.type === 'music_play_url_claim' && data.key && data.sender) {
+            _musicPlayUrlClaims[data.key] = {
+                sender: data.sender,
+                expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
+            };
+        } else if (data.type === 'music_play_url_claim_release' && data.key && data.sender) {
+            var claim = getValidMusicPlayUrlClaim(data.key);
+            if (claim && claim.sender === data.sender) {
+                delete _musicPlayUrlClaims[data.key];
+            }
+        }
+    }
+
+    function startMusicPlayUrlClaimCleanup() {
+        if (_musicPlayUrlClaimCleanupTimer) return;
+        _musicPlayUrlClaimCleanupTimer = setInterval(pruneMusicPlayUrlClaims, MUSIC_PLAY_URL_CLAIM_CLEANUP_MS);
+    }
+
+    function bindMusicPlayUrlCoordCleanup() {
+        if (_musicPlayUrlCoordBeforeUnloadBound) return;
+        _musicPlayUrlCoordBeforeUnloadBound = true;
+        window.addEventListener('beforeunload', function () {
+            if (_musicPlayUrlClaimCleanupTimer) {
+                clearInterval(_musicPlayUrlClaimCleanupTimer);
+                _musicPlayUrlClaimCleanupTimer = 0;
+            }
+            releaseOwnedMusicPlayUrlClaims();
+            try {
+                if (_musicPlayUrlCoordChannel && typeof _musicPlayUrlCoordChannel.close === 'function') {
+                    _musicPlayUrlCoordChannel.close();
+                    _musicPlayUrlCoordChannel = null;
+                }
+            } catch (error) {
+                console.warn('[Music] music_play_url 协调通道关闭失败:', error, {
+                    channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        });
+    }
+
+    function createMusicPlayUrlStorageCoord() {
+        if (typeof window.addEventListener !== 'function' || typeof localStorage === 'undefined') {
+            throw new Error('localStorage coordination unavailable');
+        }
+        var storageListener = function (event) {
+            if (!event || event.key !== MUSIC_PLAY_URL_COORD_STORAGE_KEY || !event.newValue) return;
+            try {
+                handleMusicPlayUrlCoordMessage(JSON.parse(event.newValue));
+            } catch (error) {
+                console.warn('[Music] music_play_url localStorage 协调消息解析失败:', error, {
+                    channelId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        };
+        window.addEventListener('storage', storageListener);
+        return {
+            _nekoCoordType: 'localStorage',
+            _nekoCoordId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+            postMessage: function (payload) {
+                var serialized = JSON.stringify(Object.assign({
+                    storageNonce: Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+                }, payload || {}));
+                localStorage.setItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY, serialized);
+                setTimeout(function () {
+                    try {
+                        if (localStorage.getItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY) === serialized) {
+                            localStorage.removeItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY);
+                        }
+                    } catch (_) { /* 忽略 */ }
+                }, 0);
+            },
+            close: function () {
+                window.removeEventListener('storage', storageListener);
+            }
+        };
+    }
+
+    function activateMusicPlayUrlCoordChannel(channel) {
+        _musicPlayUrlCoordChannel = channel;
+        _musicPlayUrlCoordChannelReady = true;
+        bindMusicPlayUrlCoordCleanup();
+        startMusicPlayUrlClaimCleanup();
+        return _musicPlayUrlCoordChannel;
+    }
+
+    function getMusicPlayUrlCoordChannel() {
+        if (_musicPlayUrlCoordChannelReady) {
+            return _musicPlayUrlCoordChannel;
+        }
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                var channel = new BroadcastChannel(MUSIC_PLAY_URL_COORD_CHANNEL_NAME);
+                channel._nekoCoordType = 'BroadcastChannel';
+                channel._nekoCoordId = MUSIC_PLAY_URL_COORD_CHANNEL_NAME;
+                channel.onmessage = function (event) {
+                    handleMusicPlayUrlCoordMessage(event && event.data);
+                };
+                return activateMusicPlayUrlCoordChannel(channel);
+            }
+            if (!_musicPlayUrlBroadcastUnavailableWarned) {
+                _musicPlayUrlBroadcastUnavailableWarned = true;
+                console.warn('[Music] music_play_url BroadcastChannel 不可用，使用 localStorage 后备通道', {
+                    channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        } catch (error) {
+            console.warn('[Music] music_play_url BroadcastChannel 初始化失败，使用 localStorage 后备通道:', error, {
+                channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                sender: MUSIC_PLAY_URL_SENDER_ID
+            });
+        }
+
+        try {
+            return activateMusicPlayUrlCoordChannel(createMusicPlayUrlStorageCoord());
+        } catch (error) {
+            console.warn('[Music] music_play_url localStorage 后备通道初始化失败:', error, {
+                channelId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+                sender: MUSIC_PLAY_URL_SENDER_ID
+            });
+            _musicPlayUrlCoordChannel = null;
+            return null;
+        }
+    }
+
+    function pruneMusicPlayUrlClaims() {
+        var now = Date.now();
+        Object.keys(_musicPlayUrlClaims).forEach(function (key) {
+            var claim = _musicPlayUrlClaims[key];
+            var expires = claim && typeof claim === 'object' ? claim.expires : claim;
+            if (!claim || !expires || expires <= now) {
+                delete _musicPlayUrlClaims[key];
+            }
+        });
+    }
+
+    function getMusicPlayUrlClaimKey(response) {
+        if (!response || !response.url) return '';
+        return JSON.stringify([
+            String(response.url || '').trim(),
+            String(response.name || '').trim(),
+            String(response.artist || '').trim()
+        ]);
+    }
+
+    function hasMusicPlayUrlClaim(key) {
+        if (!key) return false;
+        return !!getValidMusicPlayUrlClaim(key);
+    }
+
+    function getValidMusicPlayUrlClaim(key) {
+        if (!key) return null;
+        pruneMusicPlayUrlClaims();
+        var claim = _musicPlayUrlClaims[key];
+        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.expires) {
+            if (claim) delete _musicPlayUrlClaims[key];
+            return null;
+        }
+        if (claim.expires <= Date.now()) {
+            delete _musicPlayUrlClaims[key];
+            return null;
+        }
+        return claim;
+    }
+
+    function claimMusicPlayUrl(key) {
+        if (!key) return;
+        pruneMusicPlayUrlClaims();
+        _musicPlayUrlClaims[key] = {
+            sender: MUSIC_PLAY_URL_SENDER_ID,
+            expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
+        };
+        var channel = getMusicPlayUrlCoordChannel();
+        if (!channel) return;
+        var timestamp = Date.now();
+        try {
+            channel.postMessage({
+                type: 'music_play_url_claim',
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                ts: timestamp
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url claim 广播失败:', error, {
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                timestamp: timestamp,
+                channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                channelType: channel._nekoCoordType || 'unknown'
+            });
+        }
+    }
+
+    function releaseOwnedMusicPlayUrlClaims() {
+        var channel = _musicPlayUrlCoordChannel;
+        var keys = Object.keys(_musicPlayUrlClaims).filter(function (key) {
+            var claim = getValidMusicPlayUrlClaim(key);
+            return claim && claim.sender === MUSIC_PLAY_URL_SENDER_ID;
+        });
+        keys.forEach(function (key) {
+            delete _musicPlayUrlClaims[key];
+            if (!channel || typeof channel.postMessage !== 'function') return;
+            var timestamp = Date.now();
+            try {
+                channel.postMessage({
+                    type: 'music_play_url_claim_release',
+                    key: key,
+                    sender: MUSIC_PLAY_URL_SENDER_ID,
+                    ts: timestamp
+                });
+            } catch (error) {
+                console.warn('[Music] music_play_url claim 释放广播失败:', error, {
+                    key: key,
+                    sender: MUSIC_PLAY_URL_SENDER_ID,
+                    timestamp: timestamp,
+                    channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    channelType: channel._nekoCoordType || 'unknown'
+                });
+            }
+        });
+    }
+
+    function isStandaloneChatPageForMusic() {
+        var pathname = (window.location && window.location.pathname) || '';
+        return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    function hasLocalMusicOwnerOrPending() {
+        try {
+            if (typeof window.getMusicPlayerInstance === 'function' && window.getMusicPlayerInstance()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPending === 'function' && window.isMusicPending()) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function hasRemoteMusicLeaderHint() {
+        try {
+            if (typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            var musicBar = document.getElementById('music-player-bar');
+            if (musicBar && musicBar.dataset && musicBar.dataset.mirror === 'true') {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function getMusicPlayUrlFollowerGraceMs() {
+        var configured = NaN;
+        try {
+            if (window.NEKO_MUSIC_PLAY_URL_FOLLOWER_GRACE_MS !== undefined) {
+                configured = Number(window.NEKO_MUSIC_PLAY_URL_FOLLOWER_GRACE_MS);
+            } else if (typeof localStorage !== 'undefined') {
+                configured = Number(localStorage.getItem('neko_music_play_url_follower_grace_ms'));
+            }
+        } catch (_) {
+            configured = NaN;
+        }
+        if (Number.isFinite(configured) && configured >= 100 && configured <= 3000) {
+            return configured;
+        }
+        return MUSIC_PLAY_URL_FOLLOWER_GRACE_MS;
+    }
+
+    function shouldSkipMusicPlayUrlForOtherWindow(key) {
+        return !hasLocalMusicOwnerOrPending() && (hasRemoteMusicLeaderHint() || hasMusicPlayUrlClaim(key));
+    }
+
+    async function dispatchMusicPlayUrlResponse(response, reason) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return false;
+        }
+        var key = getMusicPlayUrlClaimKey(response);
+        var track = {
+            name: response.name || 'Plugin Music',
+            artist: response.artist || 'External',
+            url: response.url,
+            cover: response.cover || undefined
+        };
+        var dispatchResult;
+        try {
+            dispatchResult = await window.dispatchMusicPlay(track, {
+                source: 'music_play_url',
+                reason: reason || 'websocket'
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url 播放派发失败，未发布跨窗口 claim:', error, {
+                key: key,
+                url: response.url,
+                reason: reason || 'websocket'
+            });
+            return false;
+        }
+        if (dispatchResult === true) {
+            claimMusicPlayUrl(key);
+            console.log('[Music] Received direct play command from backend:', response.url);
+            return true;
+        }
+        if (dispatchResult === 'queued') {
+            console.log('[Music] music_play_url 播放派发仍在等待接口就绪，暂不发布跨窗口 claim:', {
+                key: key,
+                url: response.url,
+                reason: reason || 'websocket'
+            });
+            return false;
+        }
+        console.warn('[Music] music_play_url 播放派发被拒绝，未发布跨窗口 claim:', {
+            key: key,
+            url: response.url,
+            reason: reason || 'websocket',
+            result: dispatchResult
+        });
+        return false;
+    }
+
+    function handleMusicPlayUrlResponse(response) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return;
+        }
+
+        var key = getMusicPlayUrlClaimKey(response);
+        getMusicPlayUrlCoordChannel();
+
+        // chat.html 是独立聊天窗口时默认作为从窗口，给主窗口一个很短的
+        // 抢占窗口；若主窗口不存在或没有接管播放，再由 chat.html 兜底。
+        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
+            setTimeout(function () {
+                if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+                    console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+                    return;
+                }
+                setTimeout(function () {
+                    if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+                        console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+                        return;
+                    }
+                    dispatchMusicPlayUrlResponse(response, 'chat-fallback');
+                }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
+            }, getMusicPlayUrlFollowerGraceMs());
+            return;
+        }
+
+        if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+            console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+            return;
+        }
+
+        dispatchMusicPlayUrlResponse(response, 'websocket');
+    }
 
     function isHomeTutorialLockedForGreeting() {
         try {
@@ -2072,14 +2454,7 @@
 
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
-                    if (response.url && typeof window.dispatchMusicPlay === 'function') {
-                        console.log('[Music] Received direct play command from backend:', response.url);
-                        window.dispatchMusicPlay({
-                            name: response.name || 'Plugin Music',
-                            artist: response.artist || 'External',
-                            url: response.url
-                        });
-                    }
+                    handleMusicPlayUrlResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
