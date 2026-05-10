@@ -241,22 +241,17 @@ class MijiaPlugin(NekoPluginBase):
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 if not current_user_id or cache_user_id == current_user_id:
                     devices = cached.get('devices', [])
-                    if not devices:
-                        self.logger.info("设备缓存为空，自动刷新")
-                    elif not any(d.get('room_name') for d in devices):
-                        self.logger.info("设备缓存中所有设备均无 room_name，自动刷新")
-                    else:
-                        room_names = set(d.get('room_name', '') for d in devices)
-                        self.logger.info(f"设备缓存有效: {len(devices)} 个设备, 房间: {room_names}")
+                    if devices:
+                        self.logger.info(f"设备缓存有效: {len(devices)} 个设备")
                         return devices
+                    self.logger.info("设备缓存为空，自动刷新")
             except Exception:
                 pass
         self.logger.info("从 API 刷新设备缓存")
         result = await self.list_devices(refresh=True)
         if result.is_ok():
             fresh_devices = result.value.get('devices', [])
-            room_names = set(d.get('room_name', '') for d in fresh_devices)
-            self.logger.info(f"API 刷新完成: {len(fresh_devices)} 个设备, 房间: {room_names}")
+            self.logger.info(f"API 刷新完成: {len(fresh_devices)} 个设备")
             return fresh_devices
         self.logger.info("API 刷新设备列表失败")
         return []
