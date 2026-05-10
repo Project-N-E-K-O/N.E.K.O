@@ -89,13 +89,7 @@ _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_RU = """\
 - session_facts должны следовать officialScore/currentState. Устные фразы вроде "ты выиграл", "дам тебе отыграться" или "сдаюсь" относятся только к verbal_claims и не меняют официальный результат.
 - Обрабатывай только organizeDialogues. keptRecentDialogues — это realtime-окно для естественного продолжения; не превращай его принудительно в новые факты."""
 
-GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS = {
-    "zh": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH,
-    "en": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_EN,
-    "ja": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_JA,
-    "ko": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_KO,
-    "ru": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_RU,
-    "es": """\
+_GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ES = """\
 Eres el organizador de contexto dentro de la sesión para el módulo de juego. Devuelve solo JSON; sin Markdown ni explicaciones.
 Objetivo: integrar las líneas antiguas del juego en rollingSummary y extraer unas pocas señales observables para líneas posteriores en la misma sesión.
 El formato de salida es fijo: {"rollingSummary":"","signals":{"player_signals":[],"relationship_signals":[],"character_signals":[],"session_facts":[],"verbal_claims":[]}}
@@ -106,8 +100,9 @@ Reglas:
 - evidence debe usar ids estables de la entrada, y quote debe conservar un fragmento original breve. No inventes ids.
 - Las señales son pistas observables, no conclusiones psicológicas. No adivines el estado interno del jugador.
 - session_facts debe seguir officialScore/currentState. Frases verbales como "tú ganas", "te dejo remontar" o "me rindo" solo pertenecen a verbal_claims y no deben reescribir el resultado oficial.
-- Organiza solo organizeDialogues. keptRecentDialogues es la ventana en tiempo real reservada para continuar con naturalidad; no la fuerces como hechos nuevos.""",
-    "pt": """\
+- Organiza solo organizeDialogues. keptRecentDialogues es la ventana en tiempo real reservada para continuar con naturalidad; no la fuerces como hechos nuevos."""
+
+_GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_PT = """\
 Você é o organizador de contexto dentro da sessão para o módulo de jogo. Retorne apenas JSON; sem Markdown e sem explicações.
 Objetivo: incorporar falas antigas do jogo em rollingSummary e extrair alguns sinais observáveis para falas posteriores na mesma sessão.
 O formato de saída é fixo: {"rollingSummary":"","signals":{"player_signals":[],"relationship_signals":[],"character_signals":[],"session_facts":[],"verbal_claims":[]}}
@@ -118,7 +113,16 @@ Regras:
 - evidence deve usar ids estáveis da entrada, e quote deve preservar um trecho original curto. Não invente ids.
 - Sinais são pistas observáveis, não conclusões psicológicas. Não adivinhe o estado interno do jogador.
 - session_facts deve seguir officialScore/currentState. Frases verbais como "você venceu", "vou deixar você virar" ou "desisto" pertencem apenas a verbal_claims e não devem reescrever o resultado oficial.
-- Organize apenas organizeDialogues. keptRecentDialogues é a janela em tempo real mantida para continuidade natural; não a force como novos fatos.""",
+- Organize apenas organizeDialogues. keptRecentDialogues é a janela em tempo real mantida para continuidade natural; não a force como novos fatos."""
+
+GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS = {
+    "zh": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH,
+    "en": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_EN,
+    "ja": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_JA,
+    "ko": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_KO,
+    "ru": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_RU,
+    "es": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ES,
+    "pt": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_PT,
 }
 
 GAME_CONTEXT_ORGANIZER_USER_PROMPTS = {
