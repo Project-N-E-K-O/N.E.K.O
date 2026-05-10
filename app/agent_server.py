@@ -322,11 +322,14 @@ class AgentTaskTracker:
             if not _task_desc_matches_blacklist(desc, record.get("desc", "")):
                 continue
 
+            trigger_fp = record.get("trigger_user_fingerprint")
             has_later_user_turn = False
             if latest_user_ts is not None:
-                has_later_user_turn = latest_user_ts > cancelled_at
+                if trigger_fp and latest_user_fingerprint == trigger_fp:
+                    has_later_user_turn = False
+                else:
+                    has_later_user_turn = latest_user_ts > cancelled_at
             else:
-                trigger_fp = record.get("trigger_user_fingerprint")
                 if not trigger_fp:
                     # Async cancellation paths can add a second cancelled
                     # record without trigger metadata. In timestamp-less
