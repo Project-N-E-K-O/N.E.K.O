@@ -14,6 +14,8 @@
         suppressChange: false,
         inited: false,
         masterOpSeq: 0,
+        snapshotGeneration: 0,
+        expectedCharacter: '',
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
@@ -64,6 +66,21 @@
             ? window.appState.lanlan_name
             : '';
         return String(fromConfig || fromAppState || '').trim();
+    };
+    const expectedCharacterName = () => String(state.expectedCharacter || currentLanlanName() || '').trim();
+    const makeSnapshotToken = () => ({
+        generation: state.snapshotGeneration,
+        expectedCharacter: expectedCharacterName(),
+    });
+    const isSnapshotTokenCurrent = (token) => {
+        if (!token) return true;
+        if (token.generation !== undefined && token.generation !== state.snapshotGeneration) return false;
+        const expected = expectedCharacterName();
+        const tokenCharacter = String(token.expectedCharacter || '').trim();
+        if (expected && tokenCharacter && tokenCharacter !== expected) return false;
+        const sourceCharacter = String(token.sourceCharacter || '').trim();
+        if (expected && sourceCharacter && sourceCharacter !== expected) return false;
+        return true;
     };
     const setGlobalBusy = (busy, statusText) => {
         state.globalBusy = !!busy;
@@ -167,8 +184,9 @@
     }
 
     async function fetchSnapshot() {
+        const token = makeSnapshotToken();
         const snapshot = await fetchSnapshotRaw();
-        applySnapshot(snapshot, 'http');
+        applySnapshot(snapshot, 'http', token);
         return snapshot;
     }
 
@@ -226,8 +244,9 @@
         render(reason || 'agent-off-local');
     }
 
-    function applySnapshot(snapshot, source = 'ws') {
+    function applySnapshot(snapshot, source = 'ws', token) {
         if (!snapshot || typeof snapshot !== 'object') return;
+        if (!isSnapshotTokenCurrent(token)) return;
         const rev = Number(snapshot.revision ?? -1);
         if (Number.isFinite(rev) && rev <= state.revision) return;
 
@@ -485,7 +504,7 @@
                     const ts = performance.now();
                     await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_master', ms: Number((performance.now() - ts).toFixed(2)) });
-                    if (enabled) {
+                    if (opSeq === state.masterOpSeq && enabled) {
                         const openclawTs = performance.now();
                         await refreshOpenClawAvailability();
                         console.log('[AgentUIv2Timing]', { phase: 'refresh_openclaw_after_master', ms: Number((performance.now() - openclawTs).toFixed(2)) });
@@ -523,16 +542,19 @@
                         return;
                     }
                     const value = !!e.target.checked;
+                    const opToken = makeSnapshotToken();
                     state.pending.add(key);
                     state.optimistic[key] = value;
                     setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
                     render('command');
                     try {
                         await sendCommand('set_flag', { key, value });
+                        if (!isSnapshotTokenCurrent(opToken)) return;
                         const ts = performance.now();
                         await fetchSnapshot().catch(() => { });
                         console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
                     } catch (err) {
+                        if (!isSnapshotTokenCurrent(opToken)) return;
                         state.pending.delete(key);
                         state.optimistic = {};
                         setGlobalBusy(false);
@@ -544,6 +566,7 @@
                     } finally {
                         clearProcessing(cbs);
                     }
+                    if (!isSnapshotTokenCurrent(opToken)) return;
                     state.pending.delete(key);
                     state.optimistic = {};
                     setGlobalBusy(false);
@@ -561,6 +584,7 @@
             bindChangeOnce(cb, 'flag:openclaw_enabled', async (e) => {
                 if (state.suppressChange) { clearProcessing(openclaw); return; }
                 const value = !!e.target.checked;
+                const opToken = makeSnapshotToken();
                 const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
                 state.pending.add('openclaw_enabled');
                 state.optimistic['openclaw_enabled'] = value;
@@ -568,8 +592,10 @@
                 render('command');
                 try {
                     await sendCommand('set_flag', { key: 'openclaw_enabled', value });
+                    if (!isSnapshotTokenCurrent(opToken)) return;
                     await fetchSnapshot().catch(() => {});
                 } catch (err) {
+                    if (!isSnapshotTokenCurrent(opToken)) return;
                     state.pending.delete('openclaw_enabled');
                     state.optimistic = {};
                     setGlobalBusy(false);
@@ -581,6 +607,7 @@
                 } finally {
                     clearProcessing(openclaw);
                 }
+                if (!isSnapshotTokenCurrent(opToken)) return;
                 state.pending.delete('openclaw_enabled');
                 state.optimistic = {};
                 setGlobalBusy(false);
@@ -607,25 +634,29 @@
         });
     }
 
-    window.applyAgentStatusSnapshotToUI = (snapshot) => {
-        applySnapshot(snapshot, 'ws');
+    window.applyAgentStatusSnapshotToUI = (snapshot, meta) => {
+        applySnapshot(snapshot, 'ws', meta);
     };
+    window.isAgentStatusSnapshotCurrent = (meta) => isSnapshotTokenCurrent(meta);
 
     window.resetAgentUiForCharacterSwitch = async function resetAgentUiForCharacterSwitch() {
-        const resetMasterSeq = state.masterOpSeq;
+        const resetMasterSeq = ++state.masterOpSeq;
+        state.snapshotGeneration += 1;
+        state.expectedCharacter = currentLanlanName();
+        const resetToken = makeSnapshotToken();
         applyLocalAgentOff('character-switch-local');
         try {
             const snapshot = await fetchSnapshotRaw();
             // 用户已经手动打开猫爪时，不允许切换后的慢刷新覆盖乐观开关状态。
-            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
-                applySnapshot(snapshot, 'character-switch-refresh');
+            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
+                applySnapshot(snapshot, 'character-switch-refresh', resetToken);
             }
         } catch (e) {
-            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
+            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
                 render('character-switch-refresh-failed');
             }
         }
-        if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
+        if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
             await refreshOpenClawAvailability().catch(() => {});
         }
     };
