@@ -39,7 +39,10 @@ from main_logic.tool_calling import (
 )
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
-from plugin.core.state import state as _plugin_state
+from main_logic.agent_event_bus import (
+    dispatch_text_user_message,
+    dispatch_user_utterance,
+)
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
     MEMORY_SERVER_PORT,
@@ -1478,13 +1481,11 @@ class LLMSessionManager:
         for bucket in dict.fromkeys(("default", self.lanlan_name)):
             if not isinstance(bucket, str) or not bucket:
                 continue
-            try:
-                _plugin_state.add_user_context_event(bucket, event)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] publish_user_utterance failed (bucket=%s): %s",
-                    self.lanlan_name, bucket, exc,
-                )
+            # dispatch_user_utterance fans out to every sink (plugin runtime
+            # registers ``plugin.core.state.add_user_context_event`` at app
+            # startup via app/runtime_bindings.py). Per-sink errors are
+            # swallowed inside the dispatcher.
+            dispatch_user_utterance(bucket, event)
 
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
@@ -5407,18 +5408,14 @@ class LLMSessionManager:
                     # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
                     # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
                     # 推一条 mini_game_launch WS 让前端 window.open 游戏。
-                    try:
-                        from main_routers.system_router import _maybe_apply_mini_game_invite_keyword
-                        _kw_outcome = _maybe_apply_mini_game_invite_keyword(
-                            self.lanlan_name,
-                            data if isinstance(data, str) else '',
-                        )
-                    except Exception as _kw_err:
-                        logger.debug(
-                            f"[{self.lanlan_name}] mini-game invite keyword "
-                            f"matcher hook failed: {_kw_err}",
-                        )
-                        _kw_outcome = None
+                    # main_routers' keyword matcher is registered as a hook
+                    # on the bus (see app/runtime_bindings.py). Dispatcher
+                    # swallows per-hook errors; if no hook is bound (e.g.
+                    # entrypoint without main_routers), result is None.
+                    _kw_outcome = dispatch_text_user_message(
+                        self.lanlan_name,
+                        data if isinstance(data, str) else '',
+                    )
                     # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
                     # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
                     # 不让按钮挂着——codex P2 指出，原版只对 accept 推，

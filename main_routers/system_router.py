@@ -6702,3 +6702,35 @@ async def get_personal_dynamics(request: Request):
             "error": "服务器内部错误",
             "detail": str(e)
         }, status_code=500)
+
+
+# Self-register the mini-game-invite keyword matcher with main_logic's
+# event bus. Same rationale as plugin/core/state.py: ``main_logic.core``
+# previously imported this function directly (a layering inversion);
+# after the inversion was removed, the only way this hook gets attached
+# is via ``register_text_user_message_hook``. Registering at module import
+# time keeps the path alive for any context that loads system_router
+# directly (testbench, ad-hoc scripts) without going through
+# ``app/runtime_bindings.py``. ``register_text_user_message_hook`` dedupes
+# on identity, so the explicit wiring in ``app/runtime_bindings.py`` is a
+# no-op once we've fired here.
+try:
+    from main_logic.agent_event_bus import register_text_user_message_hook as _register_text_hook
+    _register_text_hook(_maybe_apply_mini_game_invite_keyword)
+except Exception as _exc:
+    # Same discriminator pattern as plugin/core/state.py: only
+    # ``ModuleNotFoundError`` whose missing module IS one of the top-level
+    # targets here is a legit partial-env case (and even that is rare —
+    # main_logic should always be importable when system_router loads).
+    # A transitive failure or a register_* regression must be logged so
+    # the silent dispatcher no-op doesn't hide a real bug. Codex P2 catch.
+    _expected_absent = {"main_logic", "main_logic.agent_event_bus"}
+    _is_expected_absent = (
+        isinstance(_exc, ModuleNotFoundError)
+        and getattr(_exc, "name", None) in _expected_absent
+    )
+    if not _is_expected_absent:
+        logger.warning(
+            "system_router: failed to self-register text_user_message_hook",
+            exc_info=True,
+        )

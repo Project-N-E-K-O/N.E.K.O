@@ -270,7 +270,7 @@ class ProactiveBridge:
         # plugins still emit when they hand-craft content.  Best-effort.
         if text:
             try:
-                from brain.result_parser import parse_push_message_content
+                from utils.result_parser import parse_push_message_content
 
                 text = parse_push_message_content(text)
             except Exception as e:

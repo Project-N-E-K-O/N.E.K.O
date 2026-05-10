@@ -8,6 +8,15 @@ _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
+# Wire DI bindings (config._runtime resolvers ← utils.language_utils /
+# utils.tokenize). Under launcher this is also done by app/__init__.py's
+# side effect when ``from app import main_server`` runs; under direct
+# script invocation (``python app/main_server.py``) Python does NOT execute
+# the package __init__, so an explicit call is required. The function is
+# idempotent — the second call is a no-op.
+from app.runtime_bindings import install_runtime_bindings as _install_runtime_bindings
+_install_runtime_bindings()
+
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
 import multiprocessing
