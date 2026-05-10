@@ -19,6 +19,7 @@
         busyTimer: null,
         openclawReady: null,
         openclawReason: '',
+        globalEventsBound: false,
     };
     
     // 暴露状态供 app.js 等外部脚本使用乐观更新检测
@@ -54,6 +55,15 @@
     const setStatus = (msg) => {
         const { status } = el();
         status.forEach(s => { if (s) s.textContent = msg || ''; });
+    };
+    const currentLanlanName = () => {
+        const fromConfig = window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string'
+            ? window.lanlan_config.lanlan_name
+            : '';
+        const fromAppState = window.appState && typeof window.appState.lanlan_name === 'string'
+            ? window.appState.lanlan_name
+            : '';
+        return String(fromConfig || fromAppState || '').trim();
     };
     const setGlobalBusy = (busy, statusText) => {
         state.globalBusy = !!busy;
@@ -148,22 +158,32 @@
         }
     }
 
-    async function fetchSnapshot() {
+    async function fetchSnapshotRaw() {
         const r = await fetch('/api/agent/state');
         if (!r.ok) throw new Error(`state status ${r.status}`);
         const j = await r.json();
         if (!j || j.success !== true || !j.snapshot) throw new Error('invalid state payload');
-        applySnapshot(j.snapshot, 'http');
         return j.snapshot;
+    }
+
+    async function fetchSnapshot() {
+        const snapshot = await fetchSnapshotRaw();
+        applySnapshot(snapshot, 'http');
+        return snapshot;
     }
 
     async function sendCommand(command, payload) {
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const t0 = performance.now();
+        const body = { request_id: requestId, command, ...(payload || {}) };
+        if (!body.lanlan_name) {
+            const lanlanName = currentLanlanName();
+            if (lanlanName) body.lanlan_name = lanlanName;
+        }
         const r = await fetch('/api/agent/command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request_id: requestId, command, ...(payload || {}) }),
+            body: JSON.stringify(body),
         });
         if (!r.ok) throw new Error(`command status ${r.status}`);
         const j = await r.json();
@@ -171,6 +191,39 @@
         const roundtrip = Number((performance.now() - t0).toFixed(2));
         console.log('[AgentUIv2Timing]', { requestId, command, roundtrip_ms: roundtrip, timing: j.timing || {} });
         return j;
+    }
+
+    function applyLocalAgentOff(reason) {
+        const base = state.snapshot && typeof state.snapshot === 'object' ? state.snapshot : {};
+        const snapshot = {
+            ...base,
+            server_online: base.server_online !== false,
+            analyzer_enabled: false,
+            flags: {
+                agent_enabled: false,
+                computer_use_enabled: false,
+                browser_use_enabled: false,
+                user_plugin_enabled: false,
+                openclaw_enabled: false,
+                openfang_enabled: false,
+            },
+            active_tasks: [],
+            notification: null,
+            updated_at: new Date().toISOString(),
+        };
+        state.pending.clear();
+        state.optimistic = {};
+        state.openclawReady = null;
+        state.openclawReason = '';
+        setGlobalBusy(false);
+        state.snapshot = snapshot;
+        // 本地快照只用于立即收起 UI，下一次权威快照必须能覆盖它。
+        state.revision = -1;
+        window._agentStatusSnapshot = snapshot;
+        if (typeof window.stopAgentTaskPolling === 'function') {
+            window.stopAgentTaskPolling();
+        }
+        render(reason || 'agent-off-local');
     }
 
     function applySnapshot(snapshot, source = 'ws') {
@@ -378,6 +431,18 @@
     function bindEvents() {
         const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
+        const bindChangeOnce = (cb, key, handler) => {
+            if (!cb) return;
+            if (!cb.__agentUiV2BoundKeys) {
+                Object.defineProperty(cb, '__agentUiV2BoundKeys', {
+                    value: {},
+                    configurable: true,
+                });
+            }
+            if (cb.__agentUiV2BoundKeys[key]) return;
+            cb.__agentUiV2BoundKeys[key] = true;
+            cb.addEventListener('change', handler);
+        };
         const clearProcessing = (cbs) => {
             (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
                 if (!cb) return;
@@ -447,12 +512,12 @@
                 render('command');
             }
         };
-        master.forEach(m => m.addEventListener('change', onMasterChange));
+        master.forEach(m => bindChangeOnce(m, 'master', onMasterChange));
 
         const bindFlag = (cbs, key) => {
             if (!cbs || !cbs.length) return;
             cbs.forEach(cb => {
-                cb.addEventListener('change', async (e) => {
+                bindChangeOnce(cb, `flag:${key}`, async (e) => {
                     if (state.suppressChange) {
                         clearProcessing(cbs);
                         return;
@@ -493,7 +558,7 @@
         bindFlag(openfang, 'openfang_enabled');
 
         openclaw.forEach(cb => {
-            cb.addEventListener('change', async (e) => {
+            bindChangeOnce(cb, 'flag:openclaw_enabled', async (e) => {
                 if (state.suppressChange) { clearProcessing(openclaw); return; }
                 const value = !!e.target.checked;
                 const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
@@ -523,6 +588,9 @@
             });
         });
 
+        if (state.globalEventsBound) return;
+        state.globalEventsBound = true;
+
         window.addEventListener('neko-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
@@ -543,11 +611,33 @@
         applySnapshot(snapshot, 'ws');
     };
 
+    window.resetAgentUiForCharacterSwitch = async function resetAgentUiForCharacterSwitch() {
+        const resetMasterSeq = state.masterOpSeq;
+        applyLocalAgentOff('character-switch-local');
+        try {
+            const snapshot = await fetchSnapshotRaw();
+            // 用户已经手动打开猫爪时，不允许切换后的慢刷新覆盖乐观开关状态。
+            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
+                applySnapshot(snapshot, 'character-switch-refresh');
+            }
+        } catch (e) {
+            if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
+                render('character-switch-refresh-failed');
+            }
+        }
+        if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0) {
+            await refreshOpenClawAvailability().catch(() => {});
+        }
+    };
+
     window.initAgentUiV2 = function initAgentUiV2() {
-        if (state.inited) return true;
+        const firstInit = !state.inited;
         state.inited = true;
         bindEvents();
-        fetchSnapshot().catch(() => render('init'));
+        if (state.snapshot) {
+            render(firstInit ? 'init-render' : 'rebind');
+        }
+        fetchSnapshot().catch(() => render(firstInit ? 'init' : 'rebind'));
         return true;
     };
 })();
