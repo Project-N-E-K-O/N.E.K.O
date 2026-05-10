@@ -20,11 +20,25 @@ if (-not $OutputDir) {
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDir)
 $packageRoot = [System.IO.Path]::GetFullPath((Join-Path $outputRoot $PackageName))
 
+function Test-PathInsideDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChildPath,
+        [Parameter(Mandatory = $true)][string]$ParentPath
+    )
+
+    $childFull = [System.IO.Path]::GetFullPath($ChildPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $parentFull = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $parentPrefix = $parentFull + [System.IO.Path]::DirectorySeparatorChar
+
+    return $childFull.Equals($parentFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $childFull.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 if (-not (Test-Path $outputRoot)) {
     New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 }
 
-if (-not ($packageRoot.StartsWith($outputRoot, [System.StringComparison]::OrdinalIgnoreCase))) {
+if (-not (Test-PathInsideDirectory -ChildPath $packageRoot -ParentPath $outputRoot)) {
     throw "Refusing to write package outside output directory: $packageRoot"
 }
 

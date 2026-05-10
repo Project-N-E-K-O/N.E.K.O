@@ -191,7 +191,9 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
 
         localVoiceSelect.innerHTML = '';
         voices.forEach(v => {
-            const voiceId = v.voice_id || `kokoro:${v.id || v.name}`;
+            const rawVoiceId = String(v.voice_id || v.id || v.name || '').trim();
+            if (!rawVoiceId) return;
+            const voiceId = normalizeLocalKokoroVoiceId(rawVoiceId, currentProfile);
             if (!voiceId || voiceId === 'kokoro:') return;
             const option = document.createElement('option');
             option.value = voiceId;

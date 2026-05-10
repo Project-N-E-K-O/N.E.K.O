@@ -1,8 +1,8 @@
 # NEKO Local Lightweight TTS
 
-This service is the first-phase local TTS bridge for NEKO. It deliberately
-implements the same WebSocket protocol expected by `local_cosyvoice_worker`, so
-NEKO can use it without changing the main TTS pipeline.
+This service is the first-phase local TTS bridge for NEKO. It intentionally
+keeps the same WebSocket protocol expected by `local_cosyvoice_worker`, so NEKO
+can use it without changing the main TTS pipeline.
 
 ## Protocol
 
@@ -43,8 +43,9 @@ In NEKO settings, use the existing local custom TTS path:
 ws://127.0.0.1:50000
 ```
 
-Keep the existing custom/GPT-SoVITS toggle enabled, because the current router
-uses that switch to route `ws://` custom TTS URLs into `local_cosyvoice_worker`.
+Enable custom TTS and set the URL to `ws://` or `wss://`. WebSocket custom TTS
+routes to `local_cosyvoice_worker` directly; the HTTP GPT-SoVITS path is only
+used for `http://` or `https://` custom TTS URLs.
 
 ## Voice Selector
 
@@ -71,13 +72,26 @@ If `local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh` exists,
 the launcher uses that local model directory before falling back to Hugging
 Face cache/download.
 
-```bash
+### Windows examples
+
+```powershell
 set LOCAL_TTS_KOKORO_MODEL_DIR=F:\models\Kokoro-82M-v1.1-zh
 set LOCAL_TTS_KOKORO_REPO_ID=hexgrad/Kokoro-82M-v1.1-zh
 set LOCAL_TTS_KOKORO_DEFAULT_VOICE=zf_001
 set LOCAL_TTS_KOKORO_CMD=python F:\tts_wrappers\kokoro_cli.py "{text_file}" "{out_file}" "{voice}" {speed}
 set LOCAL_TTS_MELOTTS_CMD=python F:\tts_wrappers\melotts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
 set LOCAL_TTS_CHATTTS_CMD=python F:\tts_wrappers\chattts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}
+```
+
+### Linux / macOS examples
+
+```bash
+export LOCAL_TTS_KOKORO_MODEL_DIR=/models/Kokoro-82M-v1.1-zh
+export LOCAL_TTS_KOKORO_REPO_ID=hexgrad/Kokoro-82M-v1.1-zh
+export LOCAL_TTS_KOKORO_DEFAULT_VOICE=zf_001
+export LOCAL_TTS_KOKORO_CMD='python /opt/tts_wrappers/kokoro_cli.py "{text_file}" "{out_file}" "{voice}" {speed}'
+export LOCAL_TTS_MELOTTS_CMD='python /opt/tts_wrappers/melotts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}'
+export LOCAL_TTS_CHATTTS_CMD='python /opt/tts_wrappers/chattts_cli.py --text-file "{text_file}" --out "{out_file}" --voice "{voice}" --speed {speed}'
 ```
 
 ChatTTS is AGPL-3.0. Keep it as an optional external backend unless the product

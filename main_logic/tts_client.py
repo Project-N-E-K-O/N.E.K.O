@@ -2977,14 +2977,19 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         voice_part, suffix = voice_name.rsplit('|', 1)
         suffix = suffix.strip()
         speed_prefix = 'speed='
-        try:
-            if suffix.lower().startswith(speed_prefix):
+        if suffix.lower().startswith(speed_prefix):
+            try:
                 parsed_speed = float(suffix[len(speed_prefix):])
-                if parsed_speed > 0:
-                    voice_name = voice_part.strip() or "中文女"
-                    speech_speed = parsed_speed
-        except (TypeError, ValueError):
-            pass
+            except (TypeError, ValueError):
+                parsed_speed = None
+            if parsed_speed and parsed_speed > 0:
+                voice_name = voice_part.strip() or "中文女"
+                speech_speed = parsed_speed
+            else:
+                logger.warning("Ignoring invalid local TTS speed override: %s", suffix)
+                voice_name = voice_part.strip() or "中文女"
+        else:
+            voice_name = voice_part.strip() or "中文女"
     
     # 服务器返回的采样率（22050Hz）
     SRC_RATE = 22050

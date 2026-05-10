@@ -5,11 +5,13 @@ This module hosts provider-specific custom TTS voice-id allowance checks,
 so shared config modules can delegate provider details here.
 """
 
+import re
 from typing import Callable, Optional
 
 from config import GSV_VOICE_PREFIX
 
 LOCAL_LIGHTWEIGHT_TTS_PREFIXES = ("kokoro:", "melotts:", "melo:", "chattts:")
+LOCAL_LIGHTWEIGHT_BARE_VOICE_RE = re.compile(r"^(?:zf|zm|zh|af|am|bf|bm)_[A-Za-z0-9_-]+$", re.IGNORECASE)
 
 
 def _is_custom_ws_tts(get_model_api_config: Callable[[str], dict]) -> bool:
@@ -17,6 +19,16 @@ def _is_custom_ws_tts(get_model_api_config: Callable[[str], dict]) -> bool:
     base_url = (tts_config.get('base_url') or '').strip().lower()
     is_custom = tts_config.get('is_custom', False)
     return bool(is_custom and base_url.startswith(('ws://', 'wss://')))
+
+
+def _looks_like_local_lightweight_voice_id(value: str) -> bool:
+    normalized = (value or '').strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES):
+        return True
+    return bool(LOCAL_LIGHTWEIGHT_BARE_VOICE_RE.match(normalized))
 
 
 def check_custom_tts_voice_allowed(
@@ -31,15 +43,14 @@ def check_custom_tts_voice_allowed(
     """
     normalized_voice_id = (voice_id or '').strip()
     lowered_voice_id = normalized_voice_id.lower()
-    if lowered_voice_id.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES):
-        suffix = normalized_voice_id.split(":", 1)[1].strip()
-        if not suffix:
-            return False
+    if _looks_like_local_lightweight_voice_id(normalized_voice_id):
+        if lowered_voice_id.startswith(LOCAL_LIGHTWEIGHT_TTS_PREFIXES):
+            suffix = normalized_voice_id.split(":", 1)[1].strip()
+            if not suffix:
+                return False
         return _is_custom_ws_tts(get_model_api_config)
 
     if not lowered_voice_id.startswith(GSV_VOICE_PREFIX.lower()):
-        if normalized_voice_id and _is_custom_ws_tts(get_model_api_config):
-            return True
         return None
 
     suffix = normalized_voice_id[len(GSV_VOICE_PREFIX):].strip()

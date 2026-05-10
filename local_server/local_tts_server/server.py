@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -42,6 +43,9 @@ TARGET_SAMPLE_RATE = 22050
 CHUNK_BYTES = 4096
 SYNTHESIS_MODE = os.getenv("LOCAL_TTS_SYNTHESIS_MODE", "merged").strip().lower() or "merged"
 DEVICE_REQUEST = os.getenv("LOCAL_TTS_KOKORO_DEVICE", "").strip().lower() or "auto"
+MAX_WS_TEXT_CHARS = int(os.getenv("LOCAL_TTS_MAX_WS_TEXT_CHARS", "8000"))
+MAX_WS_TEXT_CHUNKS = int(os.getenv("LOCAL_TTS_MAX_WS_TEXT_CHUNKS", "128"))
+WS_TEXT_RECEIVE_TIMEOUT_SECONDS = float(os.getenv("LOCAL_TTS_WS_TEXT_TIMEOUT_SECONDS", "0"))
 WARMUP_ON_CONNECT = os.getenv("LOCAL_TTS_WARMUP_ON_CONNECT", "1").strip().lower() in {
     "1",
     "true",
@@ -68,7 +72,7 @@ app = FastAPI(title="NEKO Local Lightweight TTS")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -164,6 +168,10 @@ def read_wav_pcm(path: Path) -> tuple[bytes, int]:
     audio = np.frombuffer(frames, dtype=np.int16).reshape(-1, channels)
     mono = audio.mean(axis=1).clip(-32768, 32767).astype(np.int16)
     return mono.tobytes(), sample_rate
+
+
+def fingerprint_text(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
 class CommandWavEngine:
@@ -698,6 +706,7 @@ async def warmup_engine_for_voice(spec: VoiceSpec) -> None:
 @app.get("/health")
 async def health():
     return {
+        "service": "neko-local-tts",
         "status": "ok",
         "target_sample_rate": TARGET_SAMPLE_RATE,
         "synthesis_mode": SYNTHESIS_MODE,
@@ -751,6 +760,8 @@ async def websocket_endpoint(websocket: WebSocket):
     text_parts: list[str] = []
     voice = ""
     speed = 1.0
+    chunk_count = 0
+    received_chars = 0
 
     try:
         config_msg = await websocket.receive_text()
@@ -766,10 +777,22 @@ async def websocket_endpoint(websocket: WebSocket):
         await warmup_engine_for_voice(spec)
 
         while True:
-            raw = await websocket.receive_text()
+            if WS_TEXT_RECEIVE_TIMEOUT_SECONDS > 0:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=WS_TEXT_RECEIVE_TIMEOUT_SECONDS,
+                )
+            else:
+                raw = await websocket.receive_text()
             msg = json.loads(raw)
+            chunk_count += 1
+            if chunk_count > MAX_WS_TEXT_CHUNKS:
+                raise RuntimeError(f"WS text chunk limit exceeded: {MAX_WS_TEXT_CHUNKS}")
             text_chunk = msg.get("text")
             if isinstance(text_chunk, str) and text_chunk:
+                received_chars += len(text_chunk)
+                if received_chars > MAX_WS_TEXT_CHARS:
+                    raise RuntimeError(f"WS text size limit exceeded: {MAX_WS_TEXT_CHARS}")
                 text_parts.append(text_chunk)
 
             if msg.get("event") == "end":
@@ -785,7 +808,11 @@ async def websocket_endpoint(websocket: WebSocket):
             raise RuntimeError(f"Unsupported local TTS model: {spec.model}")
 
         if LOG_SYNTHESIS_TEXT:
-            logger.info("Synthesis text: %s", text)
+            logger.info(
+                "Synthesis text metadata: chars=%d sha1=%s",
+                len(text),
+                fingerprint_text(text),
+            )
         loop = asyncio.get_running_loop()
         started = time.perf_counter()
         result = await loop.run_in_executor(
@@ -796,35 +823,19 @@ async def websocket_endpoint(websocket: WebSocket):
         pcm = resample_pcm_s16le(result.pcm, result.sample_rate, TARGET_SAMPLE_RATE)
         audio_duration = len(pcm) / (2 * TARGET_SAMPLE_RATE) if pcm else 0.0
         rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
-        if LOG_SYNTHESIS_TEXT:
-            logger.info(
-                "Synthesis done: engine=%s mode=%s output=%s device=%s voice=%s chars=%d "
-                "elapsed=%.3fs audio=%.3fs rtf=%.3f text=%s",
-                engine.name,
-                SYNTHESIS_MODE,
-                "streaming" if SYNTHESIS_MODE == "streaming" else "merged",
-                result.device,
-                spec.voice,
-                len(text),
-                elapsed,
-                audio_duration,
-                rtf,
-                text,
-            )
-        else:
-            logger.info(
-                "Synthesis done: engine=%s mode=%s output=%s device=%s voice=%s chars=%d "
-                "elapsed=%.3fs audio=%.3fs rtf=%.3f",
-                engine.name,
-                SYNTHESIS_MODE,
-                "streaming" if SYNTHESIS_MODE == "streaming" else "merged",
-                result.device,
-                spec.voice,
-                len(text),
-                elapsed,
-                audio_duration,
-                rtf,
-            )
+        logger.info(
+            "Synthesis done: engine=%s mode=%s output=%s device=%s voice=%s chars=%d "
+            "elapsed=%.3fs audio=%.3fs rtf=%.3f",
+            engine.name,
+            SYNTHESIS_MODE,
+            "streaming" if SYNTHESIS_MODE == "streaming" else "merged",
+            result.device,
+            spec.voice,
+            len(text),
+            elapsed,
+            audio_duration,
+            rtf,
+        )
         await send_pcm_chunks(websocket, pcm)
         await websocket.close()
     except WebSocketDisconnect:

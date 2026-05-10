@@ -5535,7 +5535,9 @@ function _panelLocalKokoroVoicesUrlFromWs(wsUrl) {
 function _normalizePanelKokoroVoiceId(value) {
     const raw = (value || '').trim();
     if (!raw) return '';
-    return raw.startsWith('kokoro:') ? raw : `kokoro:${raw}`;
+    if (raw.startsWith('kokoro:')) return raw;
+    if (/^(zf|zm|zh|af|am|bf|bm)_/i.test(raw)) return `kokoro:${raw}`;
+    return '';
 }
 
 function _panelLooksLikeKokoroVoiceId(value) {
@@ -5591,7 +5593,8 @@ async function _fetchPanelKokoroVoices() {
         const voices = result?.data?.kokoro || [];
         if (Array.isArray(voices) && voices.length > 0) {
             return voices.map(v => {
-                const voiceId = _normalizePanelKokoroVoiceId(v.voice_id || v.id || v.name);
+                const rawVoiceId = String(v.voice_id || v.id || v.name || '');
+                const voiceId = _normalizePanelKokoroVoiceId(rawVoiceId);
                 return {
                     voice_id: voiceId,
                     name: v.name || v.id || voiceId.replace(/^kokoro:/, ''),
@@ -5607,9 +5610,7 @@ async function _fetchPanelKokoroVoices() {
 // Local Kokoro TTS 声音列表
 async function _loadPanelKokoroVoices(selectEl, currentVoiceId) {
     const KOKORO_PREFIX = 'kokoro:';
-    const currentKokoroVoiceId = currentVoiceId && currentVoiceId.startsWith(KOKORO_PREFIX)
-        ? _normalizePanelKokoroVoiceId(currentVoiceId)
-        : '';
+    const currentKokoroVoiceId = _normalizePanelKokoroVoiceId(currentVoiceId);
 
     if (!selectEl) return;
 

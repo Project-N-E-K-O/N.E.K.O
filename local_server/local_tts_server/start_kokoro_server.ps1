@@ -330,16 +330,29 @@ $wsUrl = "ws://{0}:{1}" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $healthUrl = "http://{0}:{1}/health" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
 $existingLocalTtsKept = $false
 
+function Normalize-LocalHostAddress {
+    param([string]$HostAddress)
+
+    $value = if ($null -eq $HostAddress) { "" } else { "$HostAddress" }
+    switch ($value.Trim().ToLowerInvariant()) {
+        "localhost" { return "127.0.0.1" }
+        "::1" { return "127.0.0.1" }
+        default { return $value.Trim() }
+    }
+}
+
 function Get-PortOwner {
     param(
         [string]$HostAddress,
         [int]$Port
     )
 
+    $normalizedHost = Normalize-LocalHostAddress $HostAddress
     try {
         $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop
         foreach ($connection in $connections) {
-            if ($connection.LocalAddress -eq $HostAddress -or $connection.LocalAddress -in @("0.0.0.0", "::")) {
+            $connectionAddress = Normalize-LocalHostAddress $connection.LocalAddress
+            if ($connectionAddress -eq $normalizedHost -or $connection.LocalAddress -in @("0.0.0.0", "::")) {
                 $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
                 return [pscustomobject]@{
                     Pid = $connection.OwningProcess
@@ -368,6 +381,15 @@ function Test-LocalTtsHealth {
     }
 }
 
+function Test-IsNekoLocalTtsHealth {
+    param([object]$Health)
+
+    return $Health -and
+        $Health.status -eq "ok" -and
+        $Health.service -eq "neko-local-tts" -and
+        $Health.engines -contains "kokoro"
+}
+
 function Test-UserInterruptExitCode {
     param([int]$ExitCode)
 
@@ -387,7 +409,7 @@ function Stop-ExistingLocalTtsIfNeeded {
     }
 
     $health = Test-LocalTtsHealth -Url $Url
-    $isLocalTts = $health -and $health.status -eq "ok" -and $health.engines
+    $isLocalTts = Test-IsNekoLocalTtsHealth $health
 
     if ($KeepExisting) {
         if ($isLocalTts) {
@@ -512,7 +534,7 @@ try {
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Milliseconds 500
         $health = Test-LocalTtsHealth -Url $healthUrl
-        if ($health -and $health.status -eq "ok" -and $health.engines) {
+        if (Test-IsNekoLocalTtsHealth $health) {
             $ready = $true
             break
         }
