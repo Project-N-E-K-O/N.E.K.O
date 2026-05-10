@@ -6,7 +6,7 @@ Este plugin conecta o QQ por meio do protocolo OneBot e fornece respostas autom�
 
 1. Baixe uma implementação de OneBot (recomenda-se NapCat). Os exemplos abaixo usam NapCat.
    Abra:
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    Escolha qualquer pacote para baixar (o recomendado é `NapCat.Shell.zip`).

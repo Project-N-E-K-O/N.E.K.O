@@ -6,7 +6,7 @@
 
 1. 先下載一個 OneBot 實作（推薦 NapCat）。以下範例會以 NapCat 為主。
    開啟：
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    任選一個版本下載即可（推薦 `NapCat.Shell.zip`）。

@@ -6,7 +6,7 @@ OneBot プロトコル経由で QQ に接続し、権限に応じたインテリ
 
 1. OneBot 実装を用意してください（NapCat 推奨）。以下では NapCat を例にします。
    開く:
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    任意の配布物を選んでください（推奨は `NapCat.Shell.zip`）。

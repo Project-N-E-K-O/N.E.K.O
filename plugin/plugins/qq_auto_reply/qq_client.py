@@ -202,7 +202,13 @@ class QQClient:
             "params": params or {},
             "echo": echo,
         }
-        await self.ws.send(json.dumps(payload))
+        try:
+            await self.ws.send(json.dumps(payload))
+        except Exception:
+            self._pending_actions.pop(echo, None)
+            if not future.done():
+                future.cancel()
+            raise
         try:
             response = await asyncio.wait_for(future, timeout=timeout)
         finally:

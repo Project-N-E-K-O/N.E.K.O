@@ -6,7 +6,7 @@
 
 1. 下载onebot（推荐NapCat），以下用NapCat说明
 打开
-``` 
+``` text 
 https://github.com/NapNeko/NapCatQQ/releases
 ```
 选择一个下载（推荐下载NapCat.Shell.zip）

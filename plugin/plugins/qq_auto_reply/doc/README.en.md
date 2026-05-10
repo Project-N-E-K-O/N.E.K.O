@@ -6,7 +6,7 @@ Connects QQ through the OneBot protocol and provides permission-based intelligen
 
 1. Download a OneBot implementation (NapCat is recommended). The examples below use NapCat.
    Open:
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    Pick a package to download (the recommended one is `NapCat.Shell.zip`).

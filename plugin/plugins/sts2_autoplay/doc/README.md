@@ -6,9 +6,9 @@
 
 ### 获取MOD
 
-使用Git Clone：
+使用Git
 ```text
-git clone https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+https://gitclone.com/github.com/CharTyr/STS2-Agent.git
 ```
 
 ### 安装游戏 Mod
@@ -43,12 +43,28 @@ Slay the Spire 2/
 
 先正常启动游戏，让 Mod 随游戏加载。
 
+第一次切换mod模式会闪退一次，属于正常现象，再次启动游戏即可。
+
 在加载mod后，在NEKO中，启用猫爪，开启插件，进入插件面板，手动启动杀戮尖塔插件
 
 ### 可使用的指令
 
 【打牌】【自动代打】【通一关】【牌打的如何】【停止】
 【打出一张牌】【打出某张牌】【推荐一张牌】……诸如此类…
+
+## 联系人
+
+有任何问题请把游戏运行日志和NEKO运行日志发送邮件到 zhaijiunknown@outlook.com
+
+游戏运行日志
+```text
+%AppData%\SlayTheSpire2\logs
+```
+
+NEKO运行日志
+```text
+您的用户文件夹\AppData\Local\N.E.K.O\logs
+```
 
 ## 功能概览
 
@@ -60,20 +76,6 @@ Slay the Spire 2/
 - 支持猫娘软指导：用户或猫娘可以发送自然语言指导，下一轮 LLM 决策会参考。
 - 支持后台观察汇报：把当前楼层、战斗、手牌、敌人意图、LLM 理由等推送给前端。
 - 支持安全保护：低血量暂停、Boss/危险攻击减速、血量恢复后自动恢复、残血求生策略、收益最大化和连携评分。
-
-## 依赖
-
-本插件依赖上游 Mod `STS2 AI Agent` 提供的本地 HTTP 服务：
-
-- 游戏内 Mod：`STS2AIAgent`
-- 默认本地接口地址：`http://127.0.0.1:8080`
-- 健康检查地址：`http://127.0.0.1:8080/health`
-
-也就是说，这个插件工作的前提是：
-
-1. 已经把 `STS2 AI Agent` 的 Mod 安装进《Slay the Spire 2》。
-2. 游戏启动后，`http://127.0.0.1:8080/health` 可以访问。
-3. N.E.K.O 中启用了 `sts2_autoplay` 插件。
 
 ## 本插件配置
 

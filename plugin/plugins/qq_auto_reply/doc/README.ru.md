@@ -6,7 +6,7 @@
 
 1. Скачайте реализацию OneBot (рекомендуется NapCat). В примерах ниже используется именно NapCat.
    Откройте:
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    Выберите любой релиз для загрузки (рекомендуется `NapCat.Shell.zip`).

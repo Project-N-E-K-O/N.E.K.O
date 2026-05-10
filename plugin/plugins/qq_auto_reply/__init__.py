@@ -231,6 +231,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception as e:
             self.logger.warning(f"Failed to start NapCat launcher {launcher}: {e}")
 
+    async def _stop_managed_napcat(self) -> None:
+        if not self._manages_napcat_process:
+            return
+        process = self._napcat_process
+        self._napcat_process = None
+        self._manages_napcat_process = False
+        if not process or process.returncode is not None:
+            return
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            self.logger.warning(f"Failed to terminate managed NapCat process: {e}")
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self.logger.warning("Timed out waiting for managed NapCat process to stop; killing it")
+            try:
+                process.kill()
+            except ProcessLookupError:
+                return
+            await process.wait()
+
     def _build_runtime_status(self) -> dict[str, Any]:
         qrcode_path = self.config_dir / "static" / "cache" / "qrcode.png"
         return {
@@ -545,6 +570,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._handler_tasks.clear()
         if self.qq_client:
             await self.qq_client.disconnect()
+        if stop_napcat:
+            await self._stop_managed_napcat()
         self._session_locks.clear()
 
     async def _process_messages(self):
@@ -612,7 +639,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return text
 
     async def _handle_normal_relay(self, message_text: str, sender_id: str, source_type: str, source_id: str):
-        del message_text, sender_id, source_type, source_id
+        if not self.qq_client or not self._admin_qq or sender_id == self._admin_qq:
+            return None
+        if self._normal_relay_probability <= 0.0 or random.random() >= self._normal_relay_probability:
+            return None
+        message_text = self._sanitize_message_text(message_text)
+        if source_type == "group":
+            relay_text = f"[QQ群转发] 群 {source_id} / 用户 {sender_id}: {message_text}"
+        else:
+            relay_text = f"[QQ私聊转发] 来自 {sender_id}: {message_text}"
+        await self.qq_client.send_message(self._admin_qq, relay_text)
         return None
 
     def _track_handler_task(self, task: asyncio.Task) -> None:

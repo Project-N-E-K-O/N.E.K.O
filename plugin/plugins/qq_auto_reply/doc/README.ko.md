@@ -8,7 +8,7 @@ OneBot 프로토콜을 통해 QQ에 연결하고, 권한에 따라 지능형 자
 
 1. OneBot 구현체를 준비합니다(NapCat 권장). 아래 예시는 NapCat 기준입니다.
    열기:
-   ```
+   ```text 
    https://github.com/NapNeko/NapCatQQ/releases
    ```
    아무 배포판이나 선택할 수 있지만 `NapCat.Shell.zip` 을 추천합니다.
