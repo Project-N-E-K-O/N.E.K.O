@@ -187,7 +187,6 @@ class MijiaPlugin(NekoPluginBase):
             room_map: dict[str, str] = {}
             device_room_map: dict[str, str] = {}
             device_field_candidates = ("dids", "devices", "device_list", "child_devices")
-            found_field = None
             for home in homes:
                 if not home.rooms:
                     self.logger.info(f"家庭 {home.name}({home.id}) 无房间数据")
@@ -199,15 +198,12 @@ class MijiaPlugin(NekoPluginBase):
                         continue
                     room_map[rid] = rname
 
-                    # 尝试从房间数据提取设备 ID 列表
-                    if found_field is None:
-                        for field in device_field_candidates:
-                            if field in room:
-                                found_field = field
-                                self.logger.info(f"房间数据结构中发现设备列表字段: {field}")
-                                break
-
-                    dids = room.get(found_field) if found_field else None
+                    # 每个房间独立检测设备列表字段，不同 room API 返回可能使用不同 key
+                    room_field = next(
+                        (f for f in device_field_candidates if f in room),
+                        None,
+                    )
+                    dids = room.get(room_field) if room_field else None
                     if dids and isinstance(dids, list):
                         for did in dids:
                             did_str = str(did)
@@ -226,7 +222,7 @@ class MijiaPlugin(NekoPluginBase):
                 self.logger.info(f"房间映射构建完成: {total_rooms} 个房间 {room_names}, 无设备→房间映射")
             return room_map, device_room_map
         except Exception as e:
-            self.logger.info(f"构建房间映射失败: {e}")
+            self.logger.warning(f"构建房间映射失败: {e}")
             return {}, {}
 
     # ========== 设备匹配与命令解析 ==========
@@ -2124,8 +2120,7 @@ class MijiaPlugin(NekoPluginBase):
                 "fan-level": "风量档位",
                 "stepless_fan_level": "无级风速",
                 "Swing Mode": "摆风模式",
-                "vertical_swing": "上下摆风",
-                "vertical_swing": "上下扫风",
+                "vertical_swing": "上下摆风/上下扫风",
                 "Vertical Swing": "上下摆风",
                 "horizontal_swing": "左右摆风",
                 "Horizontal Swing": "左右摆风",
@@ -2134,7 +2129,7 @@ class MijiaPlugin(NekoPluginBase):
                 "Eco Mode": "节能模式",
                 "eco": "节能模式",
                 "Dry Mode": "除湿模式",
-                "dryer": "干燥模式",
+                "dryer": "干燥/烘干",
                 "Heat Mode": "制热模式",
                 "heater": "辅热模式",
                 "Cool Mode": "制冷模式",
@@ -2158,7 +2153,6 @@ class MijiaPlugin(NekoPluginBase):
                 "target_position": "目标位置",
                 "Target Position": "目标位置",
                 "Run Time": "运行时间",
-                "dryer": "烘干/风干",
 
                 # ── 安防/报警类 ──
                 "alarm": "提示音",
