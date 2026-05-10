@@ -73,7 +73,13 @@ class TripRouter(PluginRouter):
 
         # 路线规划
         svc = RoutingService(plugin._cfg)
-        modes = [mode] if mode else None
+        # 校验 mode：未识别的值（如 "drive" / "car"）会被 RoutingService 静默丢弃返回空 routes，
+        # 调用方/LLM 看到的是 Ok(空结果)，分不清是"无路线"还是"参数错"，所以这里提前拒掉喵。
+        mode_clean = mode.strip().lower() if mode else ""
+        _VALID_MODES = {"transit", "walking", "bicycling", "driving"}
+        if mode_clean and mode_clean not in _VALID_MODES:
+            return Err(SdkError(i18n.t("trip.invalid_mode", mode=mode_clean, valid=", ".join(sorted(_VALID_MODES)))))
+        modes = [mode_clean] if mode_clean else None
         routing = await svc.plan(
             origin_loc["lat"], origin_loc["lon"],
             dest_loc["lat"], dest_loc["lon"],

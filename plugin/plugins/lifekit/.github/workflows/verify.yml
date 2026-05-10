@@ -31,9 +31,21 @@ jobs:
 
       - name: Mount plugin into N.E.K.O tree
         run: |
+          # release-check 要求 PLUGIN_ROOT/<id>/plugin.toml；如果直接 cp 整个
+          # plugin-repo，monorepo 场景会把整个 NEKO 仓库塞进 plugins/lifekit，
+          # plugin.toml 反而落在 plugins/lifekit/plugin/plugins/lifekit/ 下，
+          # release-check 找不到喵。这里按照"plugin.toml 在哪儿就从哪儿拷"自动适配。
+          if [ -f "plugin-repo/plugin.toml" ]; then
+            SRC="plugin-repo"
+          elif [ -f "plugin-repo/plugin/plugins/${PLUGIN_ID}/plugin.toml" ]; then
+            SRC="plugin-repo/plugin/plugins/${PLUGIN_ID}"
+          else
+            echo "::error::Cannot locate plugin.toml in plugin-repo"
+            exit 1
+          fi
           rm -rf "neko/plugin/plugins/${PLUGIN_ID}"
           mkdir -p neko/plugin/plugins
-          cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
+          cp -R "$SRC" "neko/plugin/plugins/${PLUGIN_ID}"
 
       - name: Release check
         working-directory: neko/plugin

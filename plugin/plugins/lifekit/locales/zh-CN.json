@@ -66,7 +66,8 @@
   "trip": {
     "distance": "直线距离",
     "recommended": "推荐",
-    "no_destination": "请指定目的地"
+    "no_destination": "请指定目的地",
+    "invalid_mode": "出行方式 '{mode}' 无效，可选：{valid}"
   },
   "nearby": {
     "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",
