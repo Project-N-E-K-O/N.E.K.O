@@ -19,9 +19,20 @@ identical to the previous direct-import style.
 # Best-effort: install runtime bindings as soon as ``app`` is imported.
 # Failures are tolerated so a partial environment (e.g. unit tests that
 # import a single submodule) still loads — the resolvers in config._runtime
-# fall back to safe defaults if a binding is missing.
+# fall back to safe defaults if a binding is missing. We deliberately avoid
+# stdlib ``logging`` here because this runs before ``utils.logger_config``
+# has set up sinks; a stderr breadcrumb is enough to debug the rare case
+# where ``app.runtime_bindings`` itself fails to import (syntax error,
+# missing utils submodule, etc.). The per-binding try/except inside
+# ``install_runtime_bindings`` already swallows expected partial-environment
+# failures silently, so anything reaching here is unexpected.
 try:
     from app.runtime_bindings import install_runtime_bindings as _install
     _install()
-except Exception:
-    pass
+except Exception as _e:  # pragma: no cover - import-time defensive
+    import sys as _sys
+    print(
+        f"[app] runtime_bindings install failed (continuing with defaults): "
+        f"{type(_e).__name__}: {_e}",
+        file=_sys.stderr,
+    )
