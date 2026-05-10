@@ -8,7 +8,7 @@
 
 Usando Git:
 ```text
-https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+https://github.com/CharTyr/STS2-Agent/releases
 ```
 
 ### Instalar o Mod do jogo

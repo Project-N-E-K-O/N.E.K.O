@@ -8,7 +8,7 @@
 
 Git 사용:
 ```text
-https://gitclone.com/github.com/CharTyr/STS2-Agent.git
+https://github.com/CharTyr/STS2-Agent/releases
 ```
 
 ### 게임 Mod 설치

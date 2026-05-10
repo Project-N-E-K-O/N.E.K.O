@@ -101,12 +101,12 @@
             <p class="inline-note" data-i18n="ui.probability.summary">这两个概率只影响未来消息的触发行为，取值范围为 0 到 1。</p>
             <div class="probability-grid">
                 <div class="form-group">
-                    <label class="field-label" data-i18n="ui.probability.normal.label">普通转发概率</label>
+                    <label class="field-label" for="cfg-normal-probability" data-i18n="ui.probability.normal.label">普通转发概率</label>
                     <input type="number" id="cfg-normal-probability" class="input-control" min="0" max="1" step="0.01">
                     <div class="field-hint" data-i18n="ui.probability.normal.hint">普通用户 / 普通群消息命中后，会按这个概率转发给主人。</div>
                 </div>
                 <div class="form-group">
-                    <label class="field-label" data-i18n="ui.probability.truth.label">开放群回复概率</label>
+                    <label class="field-label" for="cfg-truth-probability" data-i18n="ui.probability.truth.label">开放群回复概率</label>
                     <input type="number" id="cfg-truth-probability" class="input-control" min="0" max="1" step="0.01">
                     <div class="field-hint" data-i18n="ui.probability.truth.hint">开放群里未 @ 机器人时，会按这个概率主动回复。</div>
                 </div>
@@ -141,9 +141,9 @@
         </section>
         <section class="config-section" id="config-section">
             <span class="config-label" data-i18n="ui.config.section">OneBot 服务配置</span>
-            <div class="form-group"><label class="field-label" data-i18n="ui.config.url.label">通信地址 (URL)</label><input type="text" id="cfg-url" class="input-control" data-i18n-placeholder="ui.config.url.placeholder" placeholder="ws://127.0.0.1:3001"></div>
-            <div class="form-group"><label class="field-label" data-i18n="ui.config.token.label">访问令牌 (TOKEN)</label><input type="password" id="cfg-token" class="input-control" data-i18n-placeholder="ui.config.token.placeholder" placeholder="请输入 Token..."></div>
-            <div class="form-group"><label class="field-label" data-i18n="ui.config.path.label">执行目录 (PATH)</label><input type="text" id="cfg-path" class="input-control" data-i18n-placeholder="ui.config.path.placeholder" placeholder=""></div>
+            <div class="form-group"><label class="field-label" for="cfg-url" data-i18n="ui.config.url.label">通信地址 (URL)</label><input type="text" id="cfg-url" class="input-control" data-i18n-placeholder="ui.config.url.placeholder" placeholder="ws://127.0.0.1:3001"></div>
+            <div class="form-group"><label class="field-label" for="cfg-token" data-i18n="ui.config.token.label">访问令牌 (TOKEN)</label><input type="password" id="cfg-token" class="input-control" data-i18n-placeholder="ui.config.token.placeholder" placeholder="请输入 Token..."></div>
+            <div class="form-group"><label class="field-label" for="cfg-path" data-i18n="ui.config.path.label">执行目录 (PATH)</label><input type="text" id="cfg-path" class="input-control" data-i18n-placeholder="ui.config.path.placeholder" placeholder=""></div>
             <div class="form-group">
                 <label class="field-label" data-i18n="ui.config.show_napcat_window.label">NapCat 启动窗口</label>
                 <label style="display:flex;align-items:center;gap:10px;font-weight:700;">
@@ -161,15 +161,15 @@
                 <button class="ghost-action" type="button" id="entity-form-cancel-top" data-i18n="ui.actions.cancel">取消</button>
             </div>
             <div class="form-group">
-                <label class="field-label" id="entity-number-label" data-i18n="ui.entity_form.number">号码</label>
+                <label class="field-label" id="entity-number-label" for="entity-number" data-i18n="ui.entity_form.number">号码</label>
                 <input type="text" id="entity-number" class="input-control">
             </div>
             <div class="form-group">
-                <label class="field-label" id="entity-level-label" data-i18n="ui.entity_form.level">级别</label>
+                <label class="field-label" id="entity-level-label" for="entity-level" data-i18n="ui.entity_form.level">级别</label>
                 <select id="entity-level" class="input-control"></select>
             </div>
             <div class="form-group" id="entity-nickname-group">
-                <label class="field-label" data-i18n="ui.entity_form.nickname">昵称</label>
+                <label class="field-label" for="entity-nickname" data-i18n="ui.entity_form.nickname">昵称</label>
                 <input type="text" id="entity-nickname" class="input-control">
             </div>
             <div class="save-row">

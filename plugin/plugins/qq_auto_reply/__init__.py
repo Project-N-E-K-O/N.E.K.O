@@ -656,5 +656,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         task.add_done_callback(self._handler_tasks.discard)
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
+        session_key = self._message_session_key(message)
         async with self._message_concurrency:
-            await self._handle_message(message)
+            if not session_key:
+                await self._handle_message(message)
+                return
+            async def _handle_current_message() -> None:
+                await self._handle_message(message)
+            await self._run_with_session_lock(session_key, _handle_current_message)

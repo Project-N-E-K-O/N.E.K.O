@@ -190,13 +190,16 @@ class QQAutoReplySessionMixin:
                 if result.get("status") == "error":
                     raise RuntimeError(result.get("message", "settle failed"))
                 self.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
-
-            await session.close()
-            self._user_sessions.pop(session_key, None)
-            return True
         except Exception as e:
             self.logger.error(f"[{reason}] 用户 {session_key} 的记忆结算失败: {e}")
             return False
+
+        self._user_sessions.pop(session_key, None)
+        try:
+            await session.close()
+        except Exception as e:
+            self.logger.warning(f"[{reason}] 用户 {session_key} 的本地会话关闭失败: {e}")
+        return True
 
     async def _invalidate_private_session(self, qq_number: str) -> None:
         session_key = self._build_session_key(sender_id=qq_number, is_group=False)
