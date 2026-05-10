@@ -83,4 +83,10 @@ def install_runtime_bindings() -> None:
                     exc_info=True,
                 )
             except Exception:
+                # Logger itself unavailable (utils.logger_config not on
+                # sys.path, log directory unwritable, etc.). The original
+                # binding failure was already swallowed by the outer
+                # handler so the caller in app/__init__.py prints its own
+                # stderr breadcrumb; we deliberately stay silent here to
+                # avoid a secondary crash during process startup.
                 pass
