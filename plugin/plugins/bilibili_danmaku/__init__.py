@@ -1265,8 +1265,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_bg_llm_config",
-        name="获取背景LLM完整配置",
-        description="从 config_enhanced.json 读取完整背景LLM配置（含 cloud/api_key/model 等），不受 enabled 状态影响",
+        name=tr("entries.get_bg_llm_config.name", default="获取背景LLM完整配置"),
+        description=tr("entries.get_bg_llm_config.description", default="从 config_enhanced.json 读取完整背景LLM配置（含 cloud/api_key/model 等），不受 enabled 状态影响"),
         input_schema={
             "type": "object",
             "properties": {},
@@ -1302,8 +1302,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_guidance_config",
-        name="获取背景LLM配置与统计",
-        description="查询背景LLM系统的当前配置，包括聚合窗口大小、采样数、LLM调用统计等",
+        name=tr("entries.get_guidance_config.name", default="获取背景LLM配置与统计"),
+        description=tr("entries.get_guidance_config.description", default="查询背景LLM系统的当前配置，包括聚合窗口大小、采样数、LLM调用统计等"),
         input_schema={
             "type": "object",
             "properties": {},
@@ -1328,8 +1328,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="update_guidance_config",
-        name="更新背景LLM配置",
-        description="更新背景LLM系统的配置参数",
+        name=tr("entries.update_guidance_config.name", default="更新背景LLM配置"),
+        description=tr("entries.update_guidance_config.description", default="更新背景LLM系统的配置参数"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1397,8 +1397,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="test_guidance",
-        name="测试引导词生成",
-        description="用测试弹幕验证引导词生成效果",
+        name=tr("entries.test_guidance.name", default="测试引导词生成"),
+        description=tr("entries.test_guidance.description", default="用测试弹幕验证引导词生成效果"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1435,8 +1435,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.setRoom.label", default="切换房间"), tone="primary", group="room", order=10, refresh_context=True)
     @plugin_entry(
         id="set_room_id",
-        name="更改监听直播间",
-        description="切换要监听的 B站直播间，传入直播间号码（数字ID）",
+        name=tr("entries.set_room_id.name", default="更改监听直播间"),
+        description=tr("entries.set_room_id.description", default="切换要监听的 B站直播间，传入直播间号码（数字ID）"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1476,8 +1476,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.setInterval.label", default="设置间隔"), tone="secondary", group="settings", order=10, refresh_context=True)
     @plugin_entry(
         id="set_interval",
-        name="更改弹幕推送间隔",
-        description=f"设置每次推送弹幕给AI的时间间隔（最小{MIN_INTERVAL}秒，最大{MAX_INTERVAL}秒）",
+        name=tr("entries.set_interval.name", default="更改弹幕推送间隔"),
+        description=tr("entries.set_interval.description", default="设置每次推送弹幕给AI的时间间隔（最小{min_interval}秒，最大{max_interval}秒）", min_interval=MIN_INTERVAL, max_interval=MAX_INTERVAL),
         input_schema={
             "type": "object",
             "properties": {
@@ -1522,8 +1522,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.sendDanmaku.label", default="发送弹幕"), tone="danger", group="danmaku", order=10, refresh_context=True)
     @plugin_entry(
         id="send_danmaku",
-        name="发送弹幕到直播间",
-        description="向当前监听的 B站直播间发送弹幕消息，用于回复弹幕、感谢礼物等互动。需要已登录 B站账号。",
+        name=tr("entries.send_danmaku.name", default="发送弹幕到直播间"),
+        description=tr("entries.send_danmaku.description", default="向当前监听的 B站直播间发送弹幕消息，用于回复弹幕、感谢礼物等互动。需要已登录 B站账号。"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1564,8 +1564,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_danmaku",
-        name="获取直播间弹幕",
-        description="获取当前直播间最新的弹幕、SC、礼物，返回格式化内容供 AI 理解和回复",
+        name=tr("entries.get_danmaku.name", default="获取直播间弹幕"),
+        description=tr("entries.get_danmaku.description", default="获取当前直播间最新的弹幕、SC、礼物，返回格式化内容供 AI 理解和回复"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1713,8 +1713,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_status",
-        name="获取插件状态",
-        description="获取弹幕插件当前状态，包括直播间、监听状态、过滤设置等",
+        name=tr("entries.get_status.name", default="获取插件状态"),
+        description=tr("entries.get_status.description", default="获取弹幕插件当前状态，包括直播间、监听状态、过滤设置等"),
         llm_result_fields=["message"]
     )
     async def get_status(self, **_):
@@ -1809,8 +1809,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_target_lanlan",
-        name="设置目标 AI",
-        description="设置弹幕推送的目标 AI 名称",
+        name=tr("entries.set_target_lanlan.name", default="设置目标 AI"),
+        description=tr("entries.set_target_lanlan.description", default="设置弹幕推送的目标 AI 名称"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1839,8 +1839,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_master_bili_account",
-        name="设置主人B站账号",
-        description="设置主人的 B站 UID 和用户名，帮助 NEKO 识别哪个账号属于主人本人。",
+        name=tr("entries.set_master_bili_account.name", default="设置主人B站账号"),
+        description=tr("entries.set_master_bili_account.description", default="设置主人的 B站 UID 和用户名，帮助 NEKO 识别哪个账号属于主人本人。"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1882,8 +1882,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_danmaku_max_length",
-        name="设置弹幕最大长度",
-        description="设置发送弹幕的最大长度限制",
+        name=tr("entries.set_danmaku_max_length.name", default="设置弹幕最大长度"),
+        description=tr("entries.set_danmaku_max_length.description", default="设置发送弹幕的最大长度限制"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1918,8 +1918,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.connect.label", default="连接"), tone="success", group="connection", order=10, refresh_context=True)
     @plugin_entry(
         id="connect",
-        name="开始监听",
-        description="立即开始（或重启）弹幕监听，可选传入直播间ID",
+        name=tr("entries.connect.name", default="开始监听"),
+        description=tr("entries.connect.description", default="立即开始（或重启）弹幕监听，可选传入直播间ID"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1949,8 +1949,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.disconnect.label", default="断开"), tone="warning", group="connection", order=20, refresh_context=True)
     @plugin_entry(
         id="disconnect",
-        name="停止监听",
-        description="停止当前弹幕监听连接",
+        name=tr("entries.disconnect.name", default="停止监听"),
+        description=tr("entries.disconnect.description", default="停止当前弹幕监听连接"),
         llm_result_fields=["message"]
     )
     async def disconnect(self, **_):
@@ -1967,8 +1967,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="open_ui",
-        name="打开弹幕控制台",
-        description="在浏览器中打开B站弹幕插件的Web UI控制台，用于配置直播间、查看弹幕等",
+        name=tr("entries.open_ui.name", default="打开弹幕控制台"),
+        description=tr("entries.open_ui.description", default="在浏览器中打开B站弹幕插件的Web UI控制台，用于配置直播间、查看弹幕等"),
         kind="action"
     )
     async def open_ui(self, **_):
@@ -1981,8 +1981,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="save_credential",
-        name="保存B站登录凭据",
-        description="将用户提供的 B站 Cookie 字段加密保存到插件本地，重启后生效",
+        name=tr("entries.save_credential.name", default="保存B站登录凭据"),
+        description=tr("entries.save_credential.description", default="将用户提供的 B站 Cookie 字段加密保存到插件本地，重启后生效"),
         input_schema={
             "type": "object",
             "properties": {
@@ -2036,8 +2036,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="clear_credential",
-        name="清除B站登录凭据",
-        description="删除插件本地保存的 B站 Cookie，切换回游客模式",
+        name=tr("entries.clear_credential.name", default="清除B站登录凭据"),
+        description=tr("entries.clear_credential.description", default="删除插件本地保存的 B站 Cookie，切换回游客模式"),
         llm_result_fields=["message"]
     )
     async def clear_credential(self, **_):
@@ -2071,8 +2071,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="reload_credential",
-        name="重新加载凭据",
-        description="重新从本地文件/NEKO全局读取 B站凭据，无需重启插件",
+        name=tr("entries.reload_credential.name", default="重新加载凭据"),
+        description=tr("entries.reload_credential.description", default="重新从本地文件/NEKO全局读取 B站凭据，无需重启插件"),
         llm_result_fields=["message"]
     )
     async def reload_credential(self, **_):
@@ -2087,8 +2087,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_check_credential",
-        name="检查 B站 凭证",
-        description="检查当前 B站 登录凭证是否可用。",
+        name=tr("entries.bili_check_credential.name", default="检查 B站 凭证"),
+        description=tr("entries.bili_check_credential.description", default="检查当前 B站 登录凭证是否可用。"),
         llm_result_fields=["summary"]
     )
     async def bili_check_credential(self, **_):
@@ -2106,8 +2106,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="bili_login",
-        name="生成 B站 登录二维码",
-        description="生成 B站 扫码登录二维码。",
+        name=tr("entries.bili_login.name", default="生成 B站 登录二维码"),
+        description=tr("entries.bili_login.description", default="生成 B站 扫码登录二维码。"),
         llm_result_fields=["summary"]
     )
     async def bili_login(self, **_):
@@ -2125,8 +2125,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="bili_login_check",
-        name="检查 B站 登录状态",
-        description="检查当前扫码登录状态。",
+        name=tr("entries.bili_login_check.name", default="检查 B站 登录状态"),
+        description=tr("entries.bili_login_check.description", default="检查当前扫码登录状态。"),
         llm_result_fields=["summary"]
     )
     async def bili_login_check(self, **_):
@@ -2156,8 +2156,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_search",
-        name="搜索 B站 视频",
-        description="按关键词搜索 B站 视频。",
+        name=tr("entries.bili_search.name", default="搜索 B站 视频"),
+        description=tr("entries.bili_search.description", default="按关键词搜索 B站 视频。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2177,8 +2177,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_hot_videos",
-        name="获取热门视频",
-        description="获取 B站 热门视频列表。",
+        name=tr("entries.bili_hot_videos.name", default="获取热门视频"),
+        description=tr("entries.bili_hot_videos.description", default="获取 B站 热门视频列表。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2196,8 +2196,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_hot_buzzwords",
-        name="获取热搜词",
-        description="获取 B站 热搜关键词。",
+        name=tr("entries.bili_hot_buzzwords.name", default="获取热搜词"),
+        description=tr("entries.bili_hot_buzzwords.description", default="获取 B站 热搜关键词。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2215,8 +2215,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_weekly_hot",
-        name="获取每周必看",
-        description="获取 B站 每周必看列表或指定期内容。",
+        name=tr("entries.bili_weekly_hot.name", default="获取每周必看"),
+        description=tr("entries.bili_weekly_hot.description", default="获取 B站 每周必看列表或指定期内容。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2233,8 +2233,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_rank",
-        name="获取排行榜",
-        description="获取 B站 各分区排行榜。",
+        name=tr("entries.bili_rank.name", default="获取排行榜"),
+        description=tr("entries.bili_rank.description", default="获取 B站 各分区排行榜。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2252,8 +2252,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_video_info",
-        name="获取视频信息",
-        description="根据 bvid 或 aid 获取 B站 视频详情。",
+        name=tr("entries.bili_video_info.name", default="获取视频信息"),
+        description=tr("entries.bili_video_info.description", default="根据 bvid 或 aid 获取 B站 视频详情。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2271,8 +2271,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_comments",
-        name="获取视频评论",
-        description="根据视频 BV 号或关键词获取评论。",
+        name=tr("entries.bili_comments.name", default="获取视频评论"),
+        description=tr("entries.bili_comments.description", default="根据视频 BV 号或关键词获取评论。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2295,8 +2295,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_subtitle",
-        name="获取视频字幕",
-        description="根据视频 BV 号或关键词获取字幕。",
+        name=tr("entries.bili_subtitle.name", default="获取视频字幕"),
+        description=tr("entries.bili_subtitle.description", default="根据视频 BV 号或关键词获取字幕。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2318,8 +2318,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_danmaku",
-        name="获取视频弹幕",
-        description="根据视频 BV 号或关键词获取历史弹幕。",
+        name=tr("entries.bili_danmaku.name", default="获取视频弹幕"),
+        description=tr("entries.bili_danmaku.description", default="根据视频 BV 号或关键词获取历史弹幕。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2342,8 +2342,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_user_info",
-        name="获取用户信息",
-        description="根据 UID 获取 B站 用户信息。",
+        name=tr("entries.bili_user_info.name", default="获取用户信息"),
+        description=tr("entries.bili_user_info.description", default="根据 UID 获取 B站 用户信息。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2361,8 +2361,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_user_videos",
-        name="获取用户投稿",
-        description="根据 UID 获取 B站 用户投稿视频列表。",
+        name=tr("entries.bili_user_videos.name", default="获取用户投稿"),
+        description=tr("entries.bili_user_videos.description", default="根据 UID 获取 B站 用户投稿视频列表。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2384,8 +2384,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_favorite_lists",
-        name="获取收藏夹列表",
-        description="获取当前用户或指定 UID 的收藏夹列表。",
+        name=tr("entries.bili_favorite_lists.name", default="获取收藏夹列表"),
+        description=tr("entries.bili_favorite_lists.description", default="获取当前用户或指定 UID 的收藏夹列表。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2402,8 +2402,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_favorite_content",
-        name="获取收藏夹内容",
-        description="获取指定收藏夹中的视频列表。",
+        name=tr("entries.bili_favorite_content.name", default="获取收藏夹内容"),
+        description=tr("entries.bili_favorite_content.description", default="获取指定收藏夹中的视频列表。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2423,8 +2423,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_reply",
-        name="发表评论或回复",
-        description="在 B站 视频下发表评论或回复评论。需要已登录。",
+        name=tr("entries.bili_reply.name", default="发表评论或回复"),
+        description=tr("entries.bili_reply.description", default="在 B站 视频下发表评论或回复评论。需要已登录。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2445,8 +2445,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_send_dynamic",
-        name="发布动态",
-        description="发布 B站 动态。需要已登录。",
+        name=tr("entries.bili_send_dynamic.name", default="发布动态"),
+        description=tr("entries.bili_send_dynamic.description", default="发布 B站 动态。需要已登录。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2467,8 +2467,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_send_message",
-        name="发送私信",
-        description="向指定用户发送 B站 私信。需要已登录。",
+        name=tr("entries.bili_send_message.name", default="发送私信"),
+        description=tr("entries.bili_send_message.description", default="向指定用户发送 B站 私信。需要已登录。"),
         llm_result_fields=["summary"],
         input_schema={
             "type": "object",
@@ -2487,8 +2487,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="bili_list_tools",
-        name="列出 B站 工具",
-        description="列出当前插件暴露的 B站 工具能力。",
+        name=tr("entries.bili_list_tools.name", default="列出 B站 工具"),
+        description=tr("entries.bili_list_tools.description", default="列出当前插件暴露的 B站 工具能力。"),
         llm_result_fields=["summary"]
     )
     async def bili_list_tools(self, **_):
@@ -2504,8 +2504,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="ask_neko_bili_reply",
-        name="AI代写评论",
-        description="将评论意图交给NEKO AI生成适合B站评论区的自然回复，然后自动发送",
+        name=tr("entries.ask_neko_bili_reply.name", default="AI代写评论"),
+        description=tr("entries.ask_neko_bili_reply.description", default="将评论意图交给NEKO AI生成适合B站评论区的自然回复，然后自动发送"),
         input_schema={
             "type": "object",
             "properties": {
@@ -2534,8 +2534,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="ask_neko_bili_send_dynamic",
-        name="AI代写动态",
-        description="将动态意图交给NEKO AI生成适合B站动态的文案，然后自动发布",
+        name=tr("entries.ask_neko_bili_send_dynamic.name", default="AI代写动态"),
+        description=tr("entries.ask_neko_bili_send_dynamic.description", default="将动态意图交给NEKO AI生成适合B站动态的文案，然后自动发布"),
         input_schema={
             "type": "object",
             "properties": {
@@ -2563,8 +2563,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="ask_neko_bili_send_message",
-        name="AI代写私信",
-        description="将私信意图交给NEKO AI生成礼貌自然的私信内容，然后自动发送",
+        name=tr("entries.ask_neko_bili_send_message.name", default="AI代写私信"),
+        description=tr("entries.ask_neko_bili_send_message.description", default="将私信意图交给NEKO AI生成礼貌自然的私信内容，然后自动发送"),
         input_schema={
             "type": "object",
             "properties": {
@@ -2591,8 +2591,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="ask_neko_send_danmaku",
-        name="AI代发弹幕",
-        description="将弹幕意图交给NEKO AI生成适合直播间的弹幕内容，然后自动发送（需已连接直播间并登录）",
+        name=tr("entries.ask_neko_send_danmaku.name", default="AI代发弹幕"),
+        description=tr("entries.ask_neko_send_danmaku.description", default="将弹幕意图交给NEKO AI生成适合直播间的弹幕内容，然后自动发送（需已连接直播间并登录）"),
         input_schema={
             "type": "object",
             "properties": {
