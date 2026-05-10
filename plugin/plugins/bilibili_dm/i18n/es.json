@@ -80,7 +80,7 @@
   "error.save_failed": "Error al guardar:",
   "error.set_failed": "Error al establecer:",
   "error.timeout": "La llamada ha expirado",
-  "error.auth_failed": "Falha de autenticación",
+  "error.auth_failed": "Error de autenticación",
   "error.message_send_failed": "Error al enviar el mensaje:",
   "error.permission_denied": "Permiso denegado",
   "error.user_not_found": "Usuario no encontrado",
