@@ -14,7 +14,21 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
 Set-Location $repoRoot
 
-$uvExe = (Get-Command uv -ErrorAction Stop).Source
+$script:uvExe = $null
+
+function Get-UvExe {
+    if ($script:uvExe) {
+        return $script:uvExe
+    }
+
+    $cmd = Get-Command uv -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        throw "uv is required to create or repair the local TTS environment. This package can run without uv only when .venv-local-tts is already bundled and complete."
+    }
+
+    $script:uvExe = $cmd.Source
+    return $script:uvExe
+}
 
 if (-not $env:UV_CACHE_DIR) {
     $env:UV_CACHE_DIR = Join-Path $repoRoot ".uv-cache-local"
@@ -188,7 +202,8 @@ function Invoke-UvChecked {
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $output = & $uvExe @Arguments 2>&1
+        $uv = Get-UvExe
+        $output = & $uv @Arguments 2>&1
         $exitCode = $LASTEXITCODE
         return [pscustomobject]@{
             ExitCode = $exitCode
