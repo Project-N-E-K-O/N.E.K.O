@@ -1155,11 +1155,15 @@ class OmniOfflineClient:
                 # 断连 / session 熔断），就不再重试 —— 否则下面的 reroll while
                 # 会先把 _is_responding 重置回 True 然后对 None 调 .astream，
                 # 触发 NoneType.astream AttributeError。
+                # 同样若 cancel_response() / handle_interruption() 在 retry sleep
+                # 期间把 _is_responding 翻成 False（用户主动打断），也不该再
+                # 启动新一轮 attempt —— reroll while 会无条件 reset 回 True，
+                # 默默吞掉用户的取消意图。和 prompt_ephemeral 的守卫保持一致。
                 # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
                 # 属性，但真实代码 __init__ 必设；区分"未初始化（测试桩）"和
                 # "已关闭（生产）"两种情况。
-                if hasattr(self, "llm") and self.llm is None:
-                    logger.info("OmniOfflineClient.stream_text: client 已被 close 释放，终止 retry")
+                if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
+                    logger.info("OmniOfflineClient.stream_text: client 已 close 或响应已被取消，终止 retry")
                     break
                 try:
                     assistant_message = ""
