@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 # ── 数据模型 ─────────────────────────────────────────────────────
@@ -40,6 +44,20 @@ class RoutingResult:
     routes: List[Route] = field(default_factory=list)
     provider: str = ""
     error: str = ""
+
+
+class RoutingProviderError(RuntimeError):
+    """Provider-level route planning failure."""
+
+    def __init__(self, provider: str, detail: str):
+        self.provider = provider
+        self.detail = _sanitize_error_detail(detail)
+        super().__init__(f"{provider}: {self.detail}")
+
+
+def _sanitize_error_detail(detail: str) -> str:
+    text = " ".join(str(detail).split())
+    return text[:160] or "provider error"
 
 
 # ── Provider 协议 ────────────────────────────────────────────────
@@ -133,9 +151,11 @@ class AMapProvider:
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
+                if r.status_code >= 400:
+                    raise RoutingProviderError(self.name, f"HTTP {r.status_code}")
                 data = r.json()
             if data.get("status") != "1":
-                return []
+                raise RoutingProviderError(self.name, data.get("info") or data.get("infocode") or "API status error")
             routes: List[Route] = []
             for transit in (data.get("route", {}).get("transits") or [])[:3]:
                 steps: List[RouteStep] = []
@@ -168,17 +188,21 @@ class AMapProvider:
                 summary = " → ".join(line_names[:4]) if line_names else "公交"
                 routes.append(Route(mode="transit", distance_m=dist, duration_s=dur, steps=steps, summary=summary, cost=str(cost)))
             return routes
-        except Exception:
-            return []
+        except RoutingProviderError:
+            raise
+        except Exception as exc:
+            raise RoutingProviderError(self.name, f"{type(exc).__name__}: {exc}") from exc
 
     async def _simple(self, url: str, origin: str, dest: str, mode: str, timeout: float) -> List[Route]:
         params = {"key": self.api_key, "origin": origin, "destination": dest}
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
+                if r.status_code >= 400:
+                    raise RoutingProviderError(self.name, f"HTTP {r.status_code}")
                 data = r.json()
             if data.get("status") != "1":
-                return []
+                raise RoutingProviderError(self.name, data.get("info") or data.get("infocode") or "API status error")
             paths = data.get("route", {}).get("paths") or []
             routes: List[Route] = []
             for path in paths[:2]:
@@ -194,8 +218,10 @@ class AMapProvider:
                     ))
                 routes.append(Route(mode=mode, distance_m=dist, duration_s=dur, steps=steps))
             return routes
-        except Exception:
-            return []
+        except RoutingProviderError:
+            raise
+        except Exception as exc:
+            raise RoutingProviderError(self.name, f"{type(exc).__name__}: {exc}") from exc
 
     async def _bicycling(self, origin: str, dest: str, timeout: float) -> List[Route]:
         url = "https://restapi.amap.com/v4/direction/bicycling"
@@ -203,9 +229,11 @@ class AMapProvider:
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
+                if r.status_code >= 400:
+                    raise RoutingProviderError(self.name, f"HTTP {r.status_code}")
                 data = r.json()
             if data.get("errcode") != 0:
-                return []
+                raise RoutingProviderError(self.name, data.get("errmsg") or f"API errcode {data.get('errcode')}")
             paths = data.get("data", {}).get("paths") or []
             routes: List[Route] = []
             for path in paths[:2]:
@@ -213,8 +241,10 @@ class AMapProvider:
                 dur = float(path.get("duration", 0))
                 routes.append(Route(mode="bicycling", distance_m=dist, duration_s=dur))
             return routes
-        except Exception:
-            return []
+        except RoutingProviderError:
+            raise
+        except Exception as exc:
+            raise RoutingProviderError(self.name, f"{type(exc).__name__}: {exc}") from exc
 
 
 # ── 百度地图 Provider ────────────────────────────────────────────
@@ -250,9 +280,11 @@ class BaiduMapProvider:
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
+                if r.status_code >= 400:
+                    raise RoutingProviderError(self.name, f"HTTP {r.status_code}")
                 data = r.json()
             if data.get("status") != 0:
-                return []
+                raise RoutingProviderError(self.name, data.get("message") or f"API status {data.get('status')}")
             result = data.get("result", {})
             if mode == "transit":
                 routes: List[Route] = []
@@ -286,8 +318,10 @@ class BaiduMapProvider:
                     dur = float(rd.get("duration", 0))
                     routes.append(Route(mode=mode, distance_m=dist, duration_s=dur))
                 return routes
-        except Exception:
-            return []
+        except RoutingProviderError:
+            raise
+        except Exception as exc:
+            raise RoutingProviderError(self.name, f"{type(exc).__name__}: {exc}") from exc
 
 
 # ── OSRM Provider（免费，无需 key，不支持公交）───────────────────
@@ -315,9 +349,14 @@ class OSRMProvider:
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
+                if r.status_code >= 400:
+                    raise RoutingProviderError(self.name, f"HTTP {r.status_code}")
                 data = r.json()
-            if data.get("code") != "Ok":
+            code = data.get("code")
+            if code == "NoRoute":
                 return []
+            if code != "Ok":
+                raise RoutingProviderError(self.name, str(code or "API code error"))
             routes: List[Route] = []
             for rd in (data.get("routes") or [])[:2]:
                 dist = float(rd.get("distance", 0))
@@ -335,8 +374,10 @@ class OSRMProvider:
                         ))
                 routes.append(Route(mode=mode, distance_m=dist, duration_s=dur, steps=steps))
             return routes
-        except Exception:
-            return []
+        except RoutingProviderError:
+            raise
+        except Exception as exc:
+            raise RoutingProviderError(self.name, f"{type(exc).__name__}: {exc}") from exc
 
 
 # ── 路线规划调度器 ───────────────────────────────────────────────
@@ -372,6 +413,7 @@ class RoutingService:
             modes = suggest_modes(dist_km)
 
         result = RoutingResult(origin_name="", destination_name="")
+        errors: list[str] = []
         for mode in modes:
             for provider in self._providers:
                 if mode == "transit" and not getattr(provider, "supports_transit", False):
@@ -382,6 +424,14 @@ class RoutingService:
                         result.routes.extend(routes)
                         result.provider = provider.name
                         break
-                except Exception:
+                except RoutingProviderError as exc:
+                    errors.append(f"{exc.provider}:{mode}:{exc.detail}")
+                    logger.debug("Routing provider failed: provider=%s mode=%s detail=%s", exc.provider, mode, exc.detail, exc_info=True)
                     continue
+                except Exception:
+                    errors.append(f"{provider.name}:{mode}:provider error")
+                    logger.debug("Routing provider failed: provider=%s mode=%s", provider.name, mode, exc_info=True)
+                    continue
+        if not result.routes and errors:
+            result.error = f"provider_error:{','.join(errors)}"
         return result
