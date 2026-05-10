@@ -238,3 +238,37 @@ def test_function_scoped_import_is_collected(script_module) -> None:
     collector.visit(tree)
     modules = {rec[2] for rec in collector.records}
     assert "inside_pkg" in modules
+
+
+@pytest.mark.unit
+def test_relative_imports_are_skipped(script_module) -> None:
+    """All relative imports must be ignored — both ``from . import foo`` and
+    ``from .foo import bar``. The risk: a sibling submodule whose name
+    collides with a top-level layered package (e.g. ``plugin/core/bus`` has
+    a ``memory`` submodule, plus the repo also has a top-level ``memory/``
+    package) would fabricate a fake ``plugin → memory`` edge if the
+    collector blindly records ``module='memory'`` from
+    ``from .memory import MemoryClient``.
+    """
+    import ast
+
+    source = (
+        "from . import sibling\n"
+        "from .memory import Foo\n"
+        "from .config.sub import Bar\n"
+        "from ..parent_pkg import Baz\n"
+        "from absolute_pkg import qualified\n"  # this one MUST be collected
+    )
+    tree = ast.parse(source)
+    collector = script_module.ImportCollector()
+    collector.visit(tree)
+    modules = {rec[2] for rec in collector.records}
+    # Only the level=0 absolute import is a real cross-package edge.
+    assert "absolute_pkg" in modules
+    # All relative variants must be skipped — none of these are top-level
+    # package names from the layering's perspective.
+    assert "memory" not in modules
+    assert "config" not in modules
+    assert "config.sub" not in modules
+    assert "parent_pkg" not in modules
+    assert "sibling" not in modules

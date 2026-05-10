@@ -182,8 +182,17 @@ class ImportCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        # `from . import x` (level>0, module=None) is intra-package — skip.
-        if node.level and not node.module:
+        # All relative imports are intra-package — skip regardless of whether
+        # ``module`` is set. Both ``from . import x`` (level>0, module=None)
+        # and ``from .foo import x`` (level>0, module='foo') resolve inside
+        # the current package; only ``module`` from ``level=0`` (absolute)
+        # imports can name a top-level package. Without this guard, a file
+        # like ``plugin/core/bus/__init__.py`` containing
+        # ``from .memory import MemoryClient`` would be mis-recorded as a
+        # ``plugin → memory`` edge — fabricating cross-package dependencies
+        # whenever a sibling submodule shares a name with a layered top-level
+        # package, which can produce false LAYER_INVERSION/LAYER_CYCLE reports.
+        if node.level:
             self.generic_visit(node)
             return
         if node.module:
