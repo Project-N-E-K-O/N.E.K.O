@@ -204,6 +204,8 @@ class MijiaPlugin(NekoPluginBase):
                         None,
                     )
                     dids = room.get(room_field) if room_field else None
+                    if room_field is None:
+                        self.logger.debug(f"房间 '{rname}'({rid}) 的 key 不在候选列表中: {list(room.keys())}")
                     if dids and isinstance(dids, list):
                         for did in dids:
                             did_str = str(did)
