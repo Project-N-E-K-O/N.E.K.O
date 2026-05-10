@@ -2,8 +2,14 @@ name: Docker Build
 
 on:
   push:
+    branches:
+      - main # 主分支有新 commit 时触发
     tags:
       - 'v*' # 匹配 v 开头的标签，例如 v1.0.0
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
     types: [opened, synchronize, reopened, labeled]
     branches: [main]
