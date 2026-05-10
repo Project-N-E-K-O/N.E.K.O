@@ -129,7 +129,8 @@ def test_pure_inversion_is_flagged(script_module, monkeypatch) -> None:
 @pytest.mark.unit
 def test_two_node_cycle_is_flagged(script_module, monkeypatch) -> None:
     """Same-layer A→B + B→A is a LAYER_CYCLE even though neither edge is
-    an inversion on its own."""
+    an inversion on its own. The reported cycle path must include both
+    real edges as a closed loop."""
     monkeypatch.setattr(
         script_module, "LAYERS",
         [(0, {"a", "b"})],
@@ -147,15 +148,21 @@ def test_two_node_cycle_is_flagged(script_module, monkeypatch) -> None:
     inversions, cycles = script_module.find_violations(edges)
     assert inversions == []
     assert len(cycles) == 1
-    forward, back = cycles[0]
-    # Both directions captured; pair is (a→b, b→a) regardless of order.
-    pair = {(forward[3], forward[4]), (back[3], back[4])}
+    cycle = cycles[0]
+    # Cycle is a closed loop of EdgeRecord; for a 2-cycle that's 2 edges.
+    assert len(cycle) == 2
+    # cycle[i].dst == cycle[i+1].src; loop closes (last.dst == first.src).
+    assert cycle[0][4] == cycle[1][3]
+    assert cycle[1][4] == cycle[0][3]
+    pair = {(cycle[0][3], cycle[0][4]), (cycle[1][3], cycle[1][4])}
     assert pair == {("a", "b"), ("b", "a")}
 
 
 @pytest.mark.unit
 def test_three_node_cycle_is_flagged(script_module, monkeypatch) -> None:
-    """A→B→C→A (no two-cycles) is still detected via SCC analysis."""
+    """A→B→C→A (no two-cycles) is detected and reported as a 3-edge path
+    where every edge corresponds to a real witness — not a synthetic
+    ``(u→v, v→w)`` pair masquerading as a 2-cycle."""
     monkeypatch.setattr(
         script_module, "LAYERS",
         [(0, {"a", "b", "c"})],
@@ -173,7 +180,20 @@ def test_three_node_cycle_is_flagged(script_module, monkeypatch) -> None:
     ]
     inversions, cycles = script_module.find_violations(edges)
     assert inversions == []
-    assert len(cycles) >= 1
+    assert len(cycles) == 1
+    cycle = cycles[0]
+    # Three edges forming a closed loop: cycle[i].dst == cycle[i+1].src,
+    # and cycle[-1].dst == cycle[0].src.
+    assert len(cycle) == 3
+    for i in range(len(cycle) - 1):
+        assert cycle[i][4] == cycle[i + 1][3], (
+            f"edge {i} dst {cycle[i][4]!r} != edge {i+1} src {cycle[i+1][3]!r}"
+        )
+    assert cycle[-1][4] == cycle[0][3], "cycle does not close"
+    # The set of edges must be exactly the three input edges — no
+    # fabricated ``(u→v, v→w)`` masquerading as evidence.
+    actual = {(e[3], e[4]) for e in cycle}
+    assert actual == {("a", "b"), ("b", "c"), ("c", "a")}
 
 
 @pytest.mark.unit

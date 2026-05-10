@@ -346,22 +346,27 @@ def collect_edges(paths: Iterable[Path]) -> List[EdgeRecord]:
 
 def find_violations(
     edges: List[EdgeRecord],
-) -> Tuple[List[EdgeRecord], List[Tuple[EdgeRecord, EdgeRecord]]]:
+) -> Tuple[List[EdgeRecord], List[List[EdgeRecord]]]:
     """Split ``edges`` into:
       * pure layer-inversions (low package importing high package)
-      * cycles (pairs of edges where each side imports the other; this
-        captures both ``A → B`` + ``B → A`` directly, regardless of
-        whether either crosses layers)
+      * cycles — ordered sequences of edges that form a closed loop in the
+        package dependency graph. Each cycle is reported as a list of
+        ``EdgeRecord`` whose ``dst`` of edge ``i`` equals the ``src`` of
+        edge ``i+1``, and the last edge's ``dst`` equals the first edge's
+        ``src``. A 2-cycle ``A↔B`` produces ``[A→B, B→A]``; a 3-cycle
+        ``A→B→C→A`` produces ``[A→B, B→C, C→A]``.
 
-    A direct inversion is reported as a single LAYER_INVERSION violation.
-    A cycle is reported once per (pkg_a, pkg_b) pair, with one example edge
-    from each direction.
+    Reporting actual cycle paths (rather than synthetic ``(u→v, v→w)``
+    pairs) means every printed edge corresponds to a real import in the
+    repo — reviewers can chase the cycle without hunting for non-existent
+    edges.
     """
     inversions: list[EdgeRecord] = []
 
     # adjacency: src_pkg -> set(dst_pkg). Used for cycle detection.
     adj: Dict[str, Set[str]] = defaultdict(set)
-    # First-witness edge for each (src, dst) pair (for cycle reporting).
+    # First-witness edge for each (src, dst) pair (used to recover an
+    # ``EdgeRecord`` from a graph edge while reporting cycles).
     witness: Dict[Tuple[str, str], EdgeRecord] = {}
 
     for edge in edges:
@@ -371,59 +376,73 @@ def find_violations(
         if PACKAGE_TO_LAYER[src] < PACKAGE_TO_LAYER[dst]:
             inversions.append(edge)
 
-    # Cycle detection over the adjacency graph. We only need 2-cycles
-    # explicitly (A↔B); a longer cycle still implies at least one inversion
-    # OR a same-layer cycle, both of which we want to surface.
-    cycles: list[Tuple[EdgeRecord, EdgeRecord]] = []
-    seen_pairs: Set[Tuple[str, str]] = set()
-    for src, dsts in adj.items():
-        for dst in dsts:
-            if src == dst:
-                continue
-            pair = tuple(sorted((src, dst)))
-            if pair in seen_pairs:
-                continue
-            if dst in adj and src in adj[dst]:
-                seen_pairs.add(pair)
-                cycles.append((witness[(src, dst)], witness[(dst, src)]))
-
-    # Longer SCC detection (3+ node cycles). Use Tarjan over the package
-    # graph; report any SCC with >1 node as a cycle. The first edge along
-    # the SCC's first-encountered cycle is used as the witness.
+    # Each strongly-connected component of size ≥ 2 hosts at least one
+    # directed cycle. Find one simple cycle per SCC and emit it; SCCs of
+    # size 1 have no cycle (unless self-loop, which we don't model — same-
+    # package edges are dropped during ``collect_edges``).
+    cycles: list[list[EdgeRecord]] = []
     sccs = _strongly_connected_components(adj)
     for component in sccs:
         if len(component) <= 1:
             continue
-        # Reduce to the canonical 2-cycles already covered above.
-        # For an SCC of size N, reporting every 2-edge witness inside it is
-        # noisy; we instead emit one synthetic pair: (any edge u→v inside
-        # the SCC) + (any edge v→u or longer return path edge).
-        component_set = set(component)
-        chosen_pair: Optional[Tuple[EdgeRecord, EdgeRecord]] = None
-        for u in component:
-            for v in adj[u]:
-                if v in component_set and u != v:
-                    pair = tuple(sorted((u, v)))
-                    if pair in seen_pairs:
-                        chosen_pair = None
-                        break
-                    # Find a return witness: any edge v→x with x reachable
-                    # back to u via SCC.
-                    return_witness = None
-                    for w in adj[v]:
-                        if w in component_set and w != v:
-                            return_witness = witness.get((v, w))
-                            if return_witness is not None:
-                                break
-                    if return_witness is not None:
-                        seen_pairs.add(pair)
-                        chosen_pair = (witness[(u, v)], return_witness)
-                        break
-            if chosen_pair is not None:
-                cycles.append(chosen_pair)
+        cycle_nodes = _find_simple_cycle(component[0], set(component), adj)
+        if not cycle_nodes:
+            continue  # defensive — SCC>1 always has a cycle
+        # Convert node sequence ``[a, b, c, a]`` to edge witnesses
+        # ``[edge_a→b, edge_b→c, edge_c→a]``.
+        cycle_edges: list[EdgeRecord] = []
+        ok = True
+        for i in range(len(cycle_nodes) - 1):
+            edge_record = witness.get((cycle_nodes[i], cycle_nodes[i + 1]))
+            if edge_record is None:
+                ok = False  # defensive — every traversed edge must have a witness
                 break
+            cycle_edges.append(edge_record)
+        if ok and cycle_edges:
+            cycles.append(cycle_edges)
 
     return inversions, cycles
+
+
+def _find_simple_cycle(
+    start: str,
+    scc: Set[str],
+    adj: Dict[str, Set[str]],
+) -> List[str]:
+    """Return a node sequence ``[start, n1, ..., nk, start]`` describing a
+    simple directed cycle within ``scc``. Returns ``[]`` if none found
+    (which shouldn't happen for an SCC of size ≥ 2).
+
+    Uses iterative DFS so a cycle through every node of a degenerate huge
+    SCC won't blow Python's recursion limit, even though our package-level
+    graph stays tiny.
+    """
+    # Stack frames: (node, iterator over outgoing neighbours within SCC)
+    stack: list[Tuple[str, Iterator[str]]] = [
+        (start, iter(n for n in adj.get(start, ()) if n in scc))
+    ]
+    on_path: list[str] = [start]
+    on_path_set: Set[str] = {start}
+    while stack:
+        node, it = stack[-1]
+        try:
+            nxt = next(it)
+        except StopIteration:
+            stack.pop()
+            on_path.pop()
+            on_path_set.discard(node)
+            continue
+        if nxt == start and len(on_path) >= 1:
+            # Cycle closed.
+            return on_path + [start]
+        if nxt in on_path_set:
+            # Avoid re-entering the same node mid-path; we want a simple
+            # cycle (no repeats besides the closing visit to ``start``).
+            continue
+        on_path.append(nxt)
+        on_path_set.add(nxt)
+        stack.append((nxt, iter(n for n in adj.get(nxt, ()) if n in scc)))
+    return []
 
 
 def _strongly_connected_components(
@@ -534,14 +553,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         total += 1
 
-    for forward, back in cycles:
-        f_path, f_line, f_col, f_src, f_dst, f_repr = forward
-        b_path, b_line, b_col, b_src, b_dst, b_repr = back
+    for cycle in cycles:
+        if not cycle:
+            continue
+        # cycle is a list of EdgeRecord forming a closed loop:
+        # ``cycle[i].dst == cycle[i+1].src`` and ``cycle[-1].dst == cycle[0].src``.
+        nodes = [cycle[0][3]] + [edge[4] for edge in cycle]
+        path_arrow = " → ".join(nodes)
+        first = cycle[0]
+        f_path, f_line, f_col, _, _, f_repr = first
         print(
             f"{_format_path(f_path)}:{f_line}:{f_col}  {CODE_CYCLE}  "
-            f"{f_src} ↔ {f_dst}: {f_repr}  [reverse: "
-            f"{_format_path(b_path)}:{b_line}: {b_repr}]"
+            f"{path_arrow}: {f_repr}"
         )
+        # Print every additional edge that closes the cycle so reviewers
+        # see ALL the imports involved, not just the first one. Pure 2-
+        # cycles emit one extra line; longer cycles emit N-1 extras.
+        for edge in cycle[1:]:
+            e_path, e_line, _, _, _, e_repr = edge
+            print(f"  via {_format_path(e_path)}:{e_line}  {e_repr}")
         total += 1
 
     if total:
