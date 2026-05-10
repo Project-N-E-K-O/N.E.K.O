@@ -1150,6 +1150,17 @@ class OmniOfflineClient:
                     status_reported = True
                 return
             for attempt in range(max_retries):
+                # close() 是唯一会把 self.llm 设为 None 的路径。它若在前一次
+                # APIConnectionError 后的 retry sleep 期间触发（用户切模式 /
+                # 断连 / session 熔断），就不再重试 —— 否则下面的 reroll while
+                # 会先把 _is_responding 重置回 True 然后对 None 调 .astream，
+                # 触发 NoneType.astream AttributeError。
+                # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
+                # 属性，但真实代码 __init__ 必设；区分"未初始化（测试桩）"和
+                # "已关闭（生产）"两种情况。
+                if hasattr(self, "llm") and self.llm is None:
+                    logger.info("OmniOfflineClient.stream_text: client 已被 close 释放，终止 retry")
+                    break
                 try:
                     assistant_message = ""
                     assistant_message_total = ""
@@ -1802,6 +1813,15 @@ class OmniOfflineClient:
                 prefix_buffer = ""
                 prefix_checked = not bool(self._prefix_buffer_size)
                 emitted_any = False  # 本 attempt 是否已经向前端 emit 过文本
+
+                # close() 是唯一会把 self.llm 设为 None 的路径。它若在前一次
+                # APIConnectionError 后的 retry sleep 期间触发（用户切模式 /
+                # 断连 / session 熔断），不再做这次 attempt —— 否则会对 None
+                # 调 .astream 触发 AttributeError，且就算重试 client 也已不在。
+                # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
+                # 属性，但真实代码 __init__ 必设。
+                if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
+                    break
 
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage

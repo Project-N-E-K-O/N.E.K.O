@@ -1097,8 +1097,15 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     master_name = master_data.get('档案名', '玩家')
 
     # 获取角色人格 prompt
+    # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
+    # 模板（普通会话路径在 main_server 写入 SessionManager 时才替换）。Game 流程
+    # 直接从 config_manager 拿，必须在源头补这一步替换，否则下游 _build_game_prompt
+    # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
+    # llm_prompt_leak_check 警告并污染人设。
     _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
-    lanlan_prompt = lanlan_prompt_map.get(current_name, '')
+    lanlan_prompt = lanlan_prompt_map.get(current_name, '') \
+        .replace('{LANLAN_NAME}', current_name) \
+        .replace('{MASTER_NAME}', master_name)
 
     # 获取对话模型配置
     conversation_config = config_manager.get_model_api_config('conversation')
