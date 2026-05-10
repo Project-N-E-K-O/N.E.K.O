@@ -53,7 +53,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config.prompts_chara import get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.config_manager import get_config_manager
 
 from tests.testbench.logger import python_logger

@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Galgame Play Assistant",
+  "plugin.description": "Let a catgirl companion help you play galgames.",
   "entries.galgame_get_status.name": "Get galgame plugin status",
   "entries.galgame_get_status.description": "Return the current bridge connection status, bound game, latest error, and mode.",
   "entries.galgame_install_textractor.name": "Install Textractor",

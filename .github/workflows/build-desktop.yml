@@ -312,9 +312,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=main_server"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=memory_server"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=agent_server"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
@@ -422,9 +420,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_server
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory_server
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=agent_server
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=app
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain

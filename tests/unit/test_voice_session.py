@@ -474,6 +474,37 @@ async def test_signal_user_activity_end_gemini_server_vad_is_noop():
 
 
 @pytest.mark.unit
+async def test_gemini_connect_uses_supplied_native_voice():
+    """Gemini Live should receive the resolved native voice instead of Leda."""
+    pytest.importorskip("google.genai")
+
+    client = OmniRealtimeClient(
+        base_url="https://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.0-flash-exp",
+        voice="中文男",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="gemini",
+    )
+
+    fake_session = AsyncMock()
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+    fake_genai_client = MagicMock()
+    fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
+
+    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+        mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
+        await client.connect(instructions="hi", native_audio=True)
+
+    config = fake_genai_client.aio.live.connect.call_args.kwargs["config"]
+    speech_config = config["speech_config"]
+    voice_name = speech_config.voice_config.prebuilt_voice_config.voice_name
+    assert voice_name == "Puck"
+
+
+@pytest.mark.unit
 async def test_signal_user_activity_end_websocket_manual_sends_commit_and_response_create():
     """OpenAI/Qwen/GLM/Step path MANUAL: signal_user_activity_end() must
     emit ``input_audio_buffer.commit`` followed by ``response.create``.

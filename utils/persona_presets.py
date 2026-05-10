@@ -295,7 +295,7 @@ def _resolve_lang_key(lang: str | None) -> str:
 
     复用 prompts_chara._normalize_lang，避免规则漂移。
     """
-    from config.prompts_chara import _normalize_lang
+    from config.prompts.prompts_chara import _normalize_lang
     return _normalize_lang(lang or "")
 
 
@@ -307,7 +307,7 @@ def _build_persona_prompt(preset_id: str, lang: str | None = None) -> str:
     - 共享英文位段（Format/WARNING/IMPORTANT/Visual Info 调味语）从 _PERSONA_SHARED_EN 取
     - 其余本地化位段从 _PERSONA_L10N[preset_id][lang] 取
     """
-    from config.prompts_chara import _L10N
+    from config.prompts.prompts_chara import _L10N
 
     normalized_preset_id = str(preset_id or "").strip()
     if normalized_preset_id not in _PERSONA_L10N:

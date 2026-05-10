@@ -1,4 +1,6 @@
 {
+  "plugin.name": "ギャルゲームプレイアシスタント",
+  "plugin.description": "猫娘があなたと一緒にギャルゲームを遊ぶのをサポートします。",
   "entries.galgame_get_status.name": "ギャルゲームプラグイン状態を取得",
   "entries.galgame_get_status.description": "現在のブリッジ接続状態、バインドされたゲーム、最新エラー、モードを返す。",
   "entries.galgame_install_textractor.name": "Textractor をインストール",

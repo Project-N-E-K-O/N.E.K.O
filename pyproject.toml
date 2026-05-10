@@ -79,6 +79,7 @@ pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
 
 [tool.hatch.build.targets.wheel]
 packages = [
+  "app",
   "brain",
   "config",
   "main_logic",
@@ -94,6 +95,7 @@ exclude = [
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "app",
   "brain",
   "config",
   "main_logic",
@@ -105,11 +107,7 @@ include = [
   "static",
   "templates",
   "assets",
-  "main_server.py",
-  "memory_server.py",
-  "agent_server.py",
   "launcher.py",
-  "monitor.py",
   "README.MD",
   "LICENSE",
 ]

@@ -9,7 +9,7 @@ import platform
 import uuid
 from types import MappingProxyType
 
-from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
@@ -308,6 +308,12 @@ DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
 DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
 
+# Hide likely assistant/proactive speech that leaks back through microphone STT.
+# Conservative by design: the runtime only suppresses non-empty voice transcripts
+# that closely match recently displayed AI text; unrelated user barge-in remains
+# visible and enters memory normally.
+HIDE_DIRTY_VOICE_TRANSCRIPTS = True
+
 
 CONFIG_FILES = [
     'characters.json',
@@ -528,8 +534,12 @@ def get_localized_default_characters(language: str | None = None) -> dict:
     # 获取语言代码
     if language is None:
         try:
-            from utils.language_utils import _get_steam_language, normalize_language_code
-            steam_lang = _get_steam_language()
+            # Forwarded via config._runtime → utils.language_utils
+            # (DI registered in app/runtime_bindings.py). When unbound (e.g.
+            # cold tooling), resolve_steam_language returns None and we
+            # default to zh-CN, matching the prior except branch.
+            from config._runtime import resolve_steam_language, normalize_language_code
+            steam_lang = resolve_steam_language()
             language = normalize_language_code(steam_lang, format='full') if steam_lang else 'zh-CN'
         except Exception as e:
             logger.warning(f"获取 Steam 语言失败: {e}，使用默认中文")
@@ -1334,7 +1344,7 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
-  config.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
+  config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
 - 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
   分发逻辑无须改动。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
@@ -1566,6 +1576,7 @@ __all__ = [
     'DEFAULT_AGENT_MODEL',
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
+    'HIDE_DIRTY_VOICE_TRANSCRIPTS',
     # 用户自定义模型配置的 URL/API_KEY
     'DEFAULT_CONVERSATION_MODEL_URL',
     'DEFAULT_CONVERSATION_MODEL_API_KEY',

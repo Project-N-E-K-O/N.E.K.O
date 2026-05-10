@@ -133,9 +133,11 @@
 
 ### `GET /api/characters/voice_preview`
 
-预览语音（返回音频流）。
+预览语音。响应是包含 base64 音频的 JSON。
 
-**查询参数：** `voice_id`、`text`、`provider`
+**查询参数：** `voice_id`、`language`（可选，用于选择本地化试听句）
+
+**响应：** `{ "success": true, "audio": "<base64>", "mime_type": "<音频 MIME 类型>" }`
 
 ### `POST /api/characters/voices`
 

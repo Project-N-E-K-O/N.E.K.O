@@ -415,7 +415,7 @@ def test_character_card_manager_renders_and_opens_cards_when_model_scan_never_re
                     });
                 }
 
-                if (url.endsWith('/api/characters/')) {
+                if (url.endsWith('/api/characters/') || url.endsWith('/api/characters')) {
                     return new Response(JSON.stringify({
                         '主人': {},
                         '当前猫娘': '模拟猫娘',
@@ -501,6 +501,171 @@ def test_character_card_manager_renders_and_opens_cards_when_model_scan_never_re
     assert state["panelOpen"] is True
     assert state["profileName"] == "模拟猫娘"
     assert state["saveButtonExists"] is True
+
+
+@pytest.mark.frontend
+def test_character_card_manager_saved_new_field_survives_immediate_reopen_with_stale_reload(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (predicate, timeout = 2500) => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeout) {
+                    if (predicate()) return true;
+                    await sleep(25);
+                }
+                return false;
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            const staleCharacters = {
+                '主人': {},
+                '当前猫娘': '缓存猫娘',
+                '猫娘': {
+                    '缓存猫娘': {
+                        '描述': '旧描述'
+                    }
+                }
+            };
+            const savedBodies = [];
+            const characterFetchCaches = [];
+
+            window.showMessage = () => {};
+            window.showAutoSaveToast = () => {};
+            window.showPrompt = async () => '追加设定';
+            window.showAlert = async () => {};
+            window.showAlertDialog = async () => {};
+            window.fetch = async (input, init = {}) => {
+                const rawUrl = typeof input === 'string' ? input : input.url;
+                const url = new URL(rawUrl, window.location.origin);
+                const path = decodeURIComponent(url.pathname);
+                const method = String(init.method || 'GET').toUpperCase();
+
+                if (path === '/api/characters/catgirl/缓存猫娘' && method === 'PUT') {
+                    savedBodies.push(JSON.parse(init.body || '{}'));
+                    return new Response(JSON.stringify({ success: true }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters' && method === 'GET') {
+                    characterFetchCaches.push(init.cache || '');
+                    return new Response(JSON.stringify(staleCharacters), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/character-card/list') {
+                    return new Response(JSON.stringify({ success: true, character_cards: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/current_catgirl') {
+                    return new Response(JSON.stringify({ current_catgirl: '缓存猫娘' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/card-faces') {
+                    return new Response(JSON.stringify({ success: true, names: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/card-metas') {
+                    return new Response(JSON.stringify({ success: true, metas: {} }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({ voices: {}, free_voices: {}, voice_owners: {} }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/live2d/models') {
+                    return new Response(JSON.stringify([]), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/model/vrm/models' || path === '/api/model/mmd/models') {
+                    return new Response(JSON.stringify({ success: true, models: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            window.characterCards = [{
+                id: 1,
+                name: '缓存猫娘',
+                originalName: '缓存猫娘',
+                description: '旧描述',
+                tags: [],
+                rawData: { '描述': '旧描述' }
+            }];
+            window._workshopCurrentCatgirl = '缓存猫娘';
+            window._cardFaceNames = new Set();
+            window._cardMetas = {};
+            renderCharaCardsView();
+
+            document.querySelector('.chara-card-item')?.click();
+            await waitFor(() => !!document.querySelector('.catgirl-panel-overlay #panel-add-catgirl-field-btn'));
+
+            document.querySelector('.catgirl-panel-overlay #panel-add-catgirl-field-btn').click();
+            await waitFor(() => !!document.querySelector('.catgirl-panel-overlay textarea[name="追加设定"]'));
+            const newField = document.querySelector('.catgirl-panel-overlay textarea[name="追加设定"]');
+            newField.value = '保存后的内容';
+            newField.dispatchEvent(new Event('input', { bubbles: true }));
+            newField.dispatchEvent(new Event('change', { bubbles: true }));
+
+            document.querySelector('.catgirl-panel-overlay #save-button').click();
+            await waitFor(() => savedBodies.length > 0);
+            await waitFor(() => {
+                return !document.querySelector('.catgirl-panel-overlay form[data-submitting="true"]');
+            });
+
+            const valueAfterSave = document.querySelector('.catgirl-panel-overlay textarea[name="追加设定"]')?.value || '';
+            await closeCatgirlPanel();
+            await sleep(850);
+
+            document.querySelector('.chara-card-item')?.click();
+            await waitFor(() => !!document.querySelector('.catgirl-panel-overlay textarea[name="追加设定"]'));
+            const valueAfterReopen = document.querySelector('.catgirl-panel-overlay textarea[name="追加设定"]')?.value || '';
+            const cachedRawData = (window.characterCards || [])[0]?.rawData || {};
+
+            return {
+                savedBodies,
+                characterFetchCaches,
+                valueAfterSave,
+                valueAfterReopen,
+                cachedRawData
+            };
+        }
+        """
+    )
+
+    assert state["savedBodies"][0]["追加设定"] == "保存后的内容"
+    assert "no-store" in state["characterFetchCaches"]
+    assert state["valueAfterSave"] == "保存后的内容"
+    assert state["valueAfterReopen"] == "保存后的内容"
+    assert state["cachedRawData"]["追加设定"] == "保存后的内容"
 
 
 @pytest.mark.frontend

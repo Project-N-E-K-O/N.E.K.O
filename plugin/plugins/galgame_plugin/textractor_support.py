@@ -438,6 +438,30 @@ async def install_textractor(
     task_id: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    if task_id:
+        update_install_task_state(
+            task_id,
+            status="running",
+            phase="preflight",
+            message="Checking Textractor installation",
+            progress=0.01,
+        )
+    await _emit_progress(
+        progress_callback,
+        {
+            "status": "running",
+            "phase": "preflight",
+            "message": "Checking Textractor installation",
+            "progress": 0.01,
+            "downloaded_bytes": 0,
+            "total_bytes": 0,
+            "resume_from": 0,
+            "target_dir": "",
+            "detected_path": "",
+            "release_name": "",
+            "asset_name": "",
+        },
+    )
     install_status = inspect_textractor_installation(
         configured_path=configured_path,
         install_target_dir_raw=install_target_dir_raw,
@@ -758,13 +782,19 @@ async def install_textractor(
                     await _emit_progress(progress_callback, completed_progress)
                     return result
                 except Exception as exc:
+                    exc_message = str(exc).strip() or type(exc).__name__
                     if logger is not None:
-                        logger.warning("Textractor install candidate failed: {} -> {}", asset_name, exc)
+                        logger.warning(
+                            "Textractor install candidate failed: {} -> {}: {!r}",
+                            asset_name,
+                            type(exc).__name__,
+                            exc,
+                        )
                     failed_phase = _infer_textractor_failed_phase(
-                        str(exc),
+                        exc_message,
                         fallback=candidate_phase,
                     )
-                    errors.append((failed_phase, f"{asset_name}: {exc}"))
+                    errors.append((failed_phase, f"{asset_name}: {exc_message}"))
                     continue
         finally:
             try:

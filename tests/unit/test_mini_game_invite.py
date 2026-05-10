@@ -600,7 +600,7 @@ def test_invite_lines_cover_all_native_locales_per_game():
     这条契约是多游戏拓展的「门槛」——加新游戏忘了补对应 locale，line lookup
     会落 _loc 兜底（zh），其它 locale 用户看到中文邀请。"""
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES
-    from config.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
     assert MINI_GAME_INVITE_AVAILABLE_GAMES, "AVAILABLE_GAMES 不能空"
     for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
         assert game in MINI_GAME_INVITE_LINES_BY_GAME, \
@@ -1338,7 +1338,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
 
 def test_option_labels_cover_all_native_locales():
     """5 个 native locale × 3 个 choice 必须有非空 label。"""
-    from config.prompts_proactive import MINI_GAME_INVITE_OPTION_LABELS
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_OPTION_LABELS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_OPTION_LABELS, f"缺 {lang} option labels"
         labels = MINI_GAME_INVITE_OPTION_LABELS[lang]
@@ -1349,7 +1349,7 @@ def test_option_labels_cover_all_native_locales():
 
 def test_keywords_cover_all_native_locales():
     """5 个 native locale × 3 个 choice 必须各有非空关键词列表。"""
-    from config.prompts_proactive import MINI_GAME_INVITE_KEYWORDS
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_KEYWORDS
     for lang in ('zh', 'en', 'ja', 'ko', 'ru'):
         assert lang in MINI_GAME_INVITE_KEYWORDS, f"缺 {lang} keywords"
         kws = MINI_GAME_INVITE_KEYWORDS[lang]

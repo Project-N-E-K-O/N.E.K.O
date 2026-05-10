@@ -70,6 +70,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-lite-260428": EXTRA_BODY_CLAUDE,
+    "doubao-seed-2-0-mini-260428": EXTRA_BODY_CLAUDE,
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,

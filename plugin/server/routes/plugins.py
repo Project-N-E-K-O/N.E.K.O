@@ -31,9 +31,9 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[
 
 
 @router.get("/plugins")
-async def list_plugins() -> dict[str, object]:
+async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
-        return await query_service.list_plugins()
+        return await query_service.list_plugins(locale=locale)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

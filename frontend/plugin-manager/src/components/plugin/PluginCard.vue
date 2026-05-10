@@ -11,7 +11,7 @@
           <el-tag v-if="plugin.type === 'extension'" size="small" type="primary" effect="plain" class="type-tag">
             {{ t('plugins.extension') }}
           </el-tag>
-          <h3 class="plugin-name">{{ plugin.name }}</h3>
+          <h3 class="plugin-name">{{ pluginName }}</h3>
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
             {{ t('plugins.disabled') }}
@@ -24,7 +24,7 @@
     </template>
 
     <div class="plugin-card-body">
-      <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
+      <p class="plugin-description">{{ pluginDescription }}</p>
 
       <PluginMetricsInline
         v-if="showMetrics"
@@ -48,6 +48,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
+import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
 import type { PluginMeta } from '@/types/api'
 
 interface Props {
@@ -61,7 +62,7 @@ const props = withDefaults(defineProps<Props>(), {
   showMetrics: false,
 })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 defineEmits<{
   click: []
@@ -70,6 +71,24 @@ defineEmits<{
 
 const entryCount = computed(() => {
   return props.plugin.entries?.length || 0
+})
+
+const pluginName = computed(() => {
+  return resolvePluginI18nMessage(
+    props.plugin.i18n,
+    'plugin.name',
+    locale.value,
+    props.plugin.name || props.plugin.id,
+  )
+})
+
+const pluginDescription = computed(() => {
+  return resolvePluginI18nMessage(
+    props.plugin.i18n,
+    'plugin.description',
+    locale.value,
+    props.plugin.description || t('common.noData'),
+  )
 })
 </script>
 

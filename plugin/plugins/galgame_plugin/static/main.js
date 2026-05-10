@@ -34,6 +34,8 @@ const PIPELINE_ZOOM_STEP = 1;
 const PIPELINE_ZOOM_DEFAULT = 13;
 const PIPELINE_COLLAPSED_KEY = 'galgame_pipeline_collapsed';
 const OCR_WINDOW_COLLAPSED_KEY = 'galgame_ocr_window_collapsed';
+const PLUGIN_WINDOW_COLLAPSED_KEY = 'galgame_plugin_window_collapsed';
+const PLUGIN_SETTINGS_COLLAPSED_KEY = 'galgame_plugin_settings_collapsed';
 
 function uiT(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -334,6 +336,98 @@ function initOcrWindowCollapse() {
 
   document.getElementById('ocrWindowCollapseToggle')?.addEventListener('click', () => {
     applyOcrWindowCollapsed(!readOcrWindowCollapsed());
+  });
+}
+
+function readPluginWindowCollapsed() {
+  return storageGet(PLUGIN_WINDOW_COLLAPSED_KEY) === '1';
+}
+
+function applyPluginWindowCollapsed(on) {
+  const collapsed = Boolean(on);
+  const hub = document.getElementById('pluginWindowHub');
+  const body = document.getElementById('pluginWindowHubBody');
+  if (hub) {
+    hub.classList.toggle('collapsed', collapsed);
+  }
+  if (body) {
+    body.hidden = collapsed;
+    body.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+
+  const button = document.getElementById('pluginWindowCollapseToggle');
+  if (button) {
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.title = collapsed
+      ? uiT('ui.plugin_window.expand_title', '展开插件窗口')
+      : uiT('ui.plugin_window.collapse_title', '隐藏插件窗口');
+    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  storageSet(PLUGIN_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+function initPluginWindowCollapse() {
+  applyPluginWindowCollapsed(readPluginWindowCollapsed());
+
+  document.getElementById('pluginWindowCollapseToggle')?.addEventListener('click', () => {
+    applyPluginWindowCollapsed(!readPluginWindowCollapsed());
+  });
+}
+
+function readPluginSettingsCollapsed() {
+  return storageGet(PLUGIN_SETTINGS_COLLAPSED_KEY) === '1';
+}
+
+function activePluginSettingsTabName() {
+  const panel = document.getElementById('pluginSettingsPanel');
+  const activeTab = panel?.querySelector('[data-settings-tab].active');
+  return activeTab ? activeTab.getAttribute('data-settings-tab') || 'recognition' : 'recognition';
+}
+
+function applyPluginSettingsCollapsed(on) {
+  const collapsed = Boolean(on);
+  const panel = document.getElementById('pluginSettingsPanel');
+  const body = document.getElementById('pluginSettingsBody');
+  const tabs = document.getElementById('pluginSettingsTabs');
+  const activeName = activePluginSettingsTabName();
+  if (panel) {
+    panel.classList.toggle('collapsed', collapsed);
+  }
+  if (body) {
+    body.hidden = collapsed;
+    body.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+  if (tabs) {
+    tabs.hidden = collapsed;
+    tabs.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+  if (collapsed) {
+    const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+    tabPanels.forEach((tabPanel) => {
+      tabPanel.hidden = true;
+      tabPanel.setAttribute('aria-hidden', 'true');
+    });
+  } else {
+    setPluginSettingsTab(activeName);
+  }
+
+  const button = document.getElementById('pluginSettingsCollapseToggle');
+  if (button) {
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  storageSet(PLUGIN_SETTINGS_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+function initPluginSettingsCollapse() {
+  applyPluginSettingsCollapsed(readPluginSettingsCollapsed());
+
+  document.getElementById('pluginSettingsCollapseToggle')?.addEventListener('click', () => {
+    applyPluginSettingsCollapsed(!readPluginSettingsCollapsed());
   });
 }
 
@@ -4297,6 +4391,7 @@ function renderStatus(status) {
   renderStatusGrid(userStatusRows, debugStatusRows);
 
   renderOcrRuntime(status);
+  renderSnapshotGridFromLatestData();
   renderAgentUserNotice(status);
   syncAgentResumeButton(status);
   syncAutoRefreshIntervalForStatus(status);
@@ -4763,6 +4858,24 @@ function renderOcrRuntime(status) {
     { label: 'candidate_count', value: String(fromWindow('candidate_count') || 0) },
     { label: 'excluded_candidate_count', value: String(fromWindow('excluded_candidate_count') || 0) },
     { label: 'last_exclude_reason', value: fromWindow('last_exclude_reason') || '' },
+  ]);
+}
+
+function renderSnapshotGridFromLatestData() {
+  const snapshot = latestSnapshotData || {};
+  const state = snapshot.snapshot || {};
+  renderGrid('snapshotGrid', [
+    { label: 'game_id', value: snapshot.game_id || '' },
+    { label: 'session_id', value: snapshot.session_id || '' },
+    { label: 'speaker', value: state.speaker || '' },
+    { label: 'text', value: state.text || '' },
+    { label: 'stability', value: state.stability || '' },
+    { label: 'scene_id', value: state.scene_id || '' },
+    { label: 'line_id', value: state.line_id || '' },
+    { label: 'route_id', value: state.route_id || '' },
+    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
+    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
+    { label: 'stale', value: String(Boolean(snapshot.stale)) },
   ]);
 }
 
@@ -5713,23 +5826,6 @@ function renderOcrProfile(status) {
   }
 }
 
-function renderSnapshot(snapshot) {
-  const state = snapshot.snapshot || {};
-  renderGrid('snapshotGrid', [
-    { label: 'game_id', value: snapshot.game_id || '' },
-    { label: 'session_id', value: snapshot.session_id || '' },
-    { label: 'speaker', value: state.speaker || '' },
-    { label: 'text', value: state.text || '' },
-    { label: 'stability', value: state.stability || '' },
-    { label: 'scene_id', value: state.scene_id || '' },
-    { label: 'line_id', value: state.line_id || '' },
-    { label: 'route_id', value: state.route_id || '' },
-    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
-    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
-    { label: 'stale', value: String(Boolean(snapshot.stale)) },
-  ]);
-}
-
 function renderHistory(history) {
   const mergedLines = mergedHistoryLines(history);
   const runtime = latestStatus?.ocr_reader_runtime || {};
@@ -6222,7 +6318,6 @@ async function refreshAll(options = {}) {
       const agentStatus = status.agent || buildAgentStatusFromStatus(status);
       latestSnapshotData = snapshot;
       renderStatus(status);
-      renderSnapshot(snapshot);
       renderHistory(history);
       renderAgentStatus(agentStatus);
       restoreRefreshScrollState(scrollState);
@@ -6336,7 +6431,7 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
   // Caller may already have positioned the viewport on a specific card
   // (e.g. handleDiagnosisAction routes to rapidocrCard before kicking off
   // the download); the unconditional `navigateToInstallPanel(kind)` would
-  // re-snap the viewport to installSection top on the next frame and undo
+  // re-snap the viewport to plugin settings on the next frame and undo
   // that careful scroll. The opt-out lets such callers reuse the existing
   // positioning. The default `navigate: true` preserves the original
   // tesseract/textractor install flow behavior.
@@ -7146,11 +7241,76 @@ function handleFirstRunActionClick(button, action) {
   });
 }
 
+function setPluginSettingsTab(name = 'recognition') {
+  const panel = document.getElementById('pluginSettingsPanel');
+  const tabs = Array.from(panel?.querySelectorAll('[data-settings-tab]') || []);
+  const requestedName = name || 'recognition';
+  const activeName = tabs.some((tab) => tab.getAttribute('data-settings-tab') === requestedName)
+    ? requestedName
+    : 'recognition';
+  tabs.forEach((tab) => {
+    const active = tab.getAttribute('data-settings-tab') === activeName;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+  tabPanels.forEach((tabPanel) => {
+    const active = tabPanel.getAttribute('data-settings-tab-panel') === activeName;
+    tabPanel.hidden = !active;
+    tabPanel.setAttribute('aria-hidden', active ? 'false' : 'true');
+  });
+}
+
+function syncPluginStatusSectionLabels() {
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    const summary = section.querySelector('.plugin-status-section-head');
+    if (!summary) {
+      return;
+    }
+    summary.setAttribute('data-label-collapse', collapseLabel);
+    summary.setAttribute('data-label-expand', expandLabel);
+    summary.setAttribute('aria-expanded', section.hasAttribute('open') ? 'true' : 'false');
+  });
+}
+
+function syncPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  const summary = hub?.querySelector('.plugin-status-hub-summary');
+  if (!hub || !summary) {
+    return;
+  }
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  const titleLabel = uiT('ui.plugin_status.title', '插件状态');
+  const isOpen = hub.hasAttribute('open');
+  summary.setAttribute('data-label-collapse', collapseLabel);
+  summary.setAttribute('data-label-expand', expandLabel);
+  summary.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  summary.setAttribute('aria-label', `${titleLabel} ${isOpen ? collapseLabel : expandLabel}`);
+}
+
+function initPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  if (hub && hub.getAttribute('data-summary-labels-ready') !== 'true') {
+    hub.setAttribute('data-summary-labels-ready', 'true');
+    hub.addEventListener('toggle', syncPluginStatusHubSummaryLabels);
+  }
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    if (section.getAttribute('data-summary-labels-ready') !== 'true') {
+      section.setAttribute('data-summary-labels-ready', 'true');
+      section.addEventListener('toggle', syncPluginStatusSectionLabels);
+    }
+  });
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
+}
+
 function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
   const advancedSettings = document.getElementById('advancedSettings');
   const advancedToggleBtn = document.getElementById('advancedToggleBtn');
-  const dependencyModule = document.getElementById('dependencyModule');
-  const installSection = document.getElementById('installSection');
+  const pluginSettingsPanel = document.getElementById('pluginSettingsPanel');
 
   if (advancedSettings && !advancedSettings.classList.contains('open')) {
     advancedSettings.classList.add('open');
@@ -7163,13 +7323,12 @@ function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
     }
   }
 
-  if (dependencyModule && !dependencyModule.open) {
-    dependencyModule.open = true;
-  }
+  applyPluginSettingsCollapsed(false);
+  setPluginSettingsTab('dependency');
 
-  if (scrollToSection && installSection) {
+  if (scrollToSection && pluginSettingsPanel) {
     requestAnimationFrame(() => {
-      installSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      pluginSettingsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
 }
@@ -7180,6 +7339,9 @@ async function initialize() {
   initPipelineZoom();
   initPipelineCollapse();
   initOcrWindowCollapse();
+  initPluginWindowCollapse();
+  initPluginSettingsCollapse();
+  initPluginStatusHubSummaryLabels();
   updateSettingsDirtyHint();
 
   const progress = await fetchTutorialProgress();
@@ -7345,6 +7507,14 @@ document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) =
     panel.hidden = !active;
     panel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
+});
+document.querySelector('.plugin-settings-tabs')?.addEventListener('click', (event) => {
+  const target = eventElement(event.target);
+  const tab = target ? target.closest('[data-settings-tab]') : null;
+  if (!tab) {
+    return;
+  }
+  setPluginSettingsTab(tab.getAttribute('data-settings-tab') || 'recognition');
 });
 document.getElementById('queryContextBtn')?.addEventListener('click', () => {
   withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
@@ -7538,9 +7708,16 @@ window.addEventListener('focus', () => {
 });
 
 window.addEventListener('i18n-ready', () => {
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
   if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
     refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
   }
+});
+
+window.addEventListener('i18n-lang-changed', () => {
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
 });
 
 initialize();

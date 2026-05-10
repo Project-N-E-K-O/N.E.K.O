@@ -1,0 +1,4 @@
+{
+  "plugin.name": "QQ 自動返信",
+  "plugin.description": "QQ のメッセージを読み取り、権限に応じて自動返信します。OneBot プロトコル経由で QQ に接続し、多段階の権限管理と AI 対話に対応"
+}

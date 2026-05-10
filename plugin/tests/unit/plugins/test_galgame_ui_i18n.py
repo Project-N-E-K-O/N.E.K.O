@@ -11,6 +11,13 @@ UI_I18N_DIR = (
     / "i18n"
     / "ui"
 )
+STATIC_I18N_JS = (
+    Path(__file__).resolve().parents[3]
+    / "plugins"
+    / "galgame_plugin"
+    / "static"
+    / "i18n.js"
+)
 
 EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko"]
 
@@ -57,3 +64,34 @@ def test_galgame_ui_i18n_has_dynamic_dashboard_keys() -> None:
         "ui.action.select_ocr_window",
     ]:
         assert key in bundle
+
+
+def test_galgame_ui_i18n_script_prefers_query_locale_with_api_fallback() -> None:
+    script = STATIC_I18N_JS.read_text(encoding="utf-8")
+
+    assert "new URLSearchParams(location.search).get('locale')" in script
+    assert "const queryLocale = this._queryLocale();" in script
+    assert "const storageLocale = this._storageLocale();" in script
+    assert "if (queryLocale) {" in script
+    assert "this.setLang(queryLocale);" in script
+    assert "else if (storageLocale) {" in script
+    assert "this.setLang(storageLocale);" in script
+    assert "localStorage.getItem('locale')" in script
+    assert "value === 'auto' ? this._browserLocale() : value" in script
+    assert "else {" in script
+    assert "/ui-api/locale" in script
+    assert "/ui-api/i18n/ui/" in script
+    assert "i18n-ready" in script
+
+
+def test_galgame_ui_i18n_script_maps_manager_locales_to_ui_bundles() -> None:
+    script = STATIC_I18N_JS.read_text(encoding="utf-8")
+
+    for expected in [
+        "add('zh-CN');",
+        "add('en');",
+        "add('ja');",
+        "add('ko');",
+        "add('ru');",
+    ]:
+        assert expected in script

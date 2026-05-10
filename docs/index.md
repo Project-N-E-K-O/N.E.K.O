@@ -60,7 +60,7 @@ features:
     linkText: Frontend guide
   - icon: 🌐
     title: 14+ AI Providers & i18n
-    details: OpenAI, Anthropic, Google, Qwen, DeepSeek, Groq, Ollama, and more — with free models out of the box. Full UI and prompt localization across 6 languages (zh-CN, zh-TW, en, ja, ko, ru).
+    details: OpenAI, Anthropic, Google, Qwen, DeepSeek, Groq, Ollama, and more — with free models out of the box. Full UI and prompt localization across 8 languages (zh-CN, zh-TW, en, ja, ko, ru, es, pt).
     link: /config/api-providers
     linkText: Provider list
 ---

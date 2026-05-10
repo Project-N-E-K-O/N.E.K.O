@@ -26,7 +26,7 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
     crash on attribute access.
     """
     # Import lazily to avoid circular import at module load time
-    from main_server import RoleState, _SyncMessageQueue
+    from app.main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
             sync_message_queue=_SyncMessageQueue(),

@@ -110,7 +110,7 @@
 
 | 字段 | 必填 | 取值 |
 |---|---|---|
-| `kind` | **是** | `home` / `screenshot` / `window` / `news` / `video` / `personal` / `music` 等, 详见主程序 `config.prompts_proactive.PROACTIVE_CHAT_PROMPTS` 的 key |
+| `kind` | **是** | `home` / `screenshot` / `window` / `news` / `video` / `personal` / `music` 等, 详见主程序 `config.prompts.prompts_proactive.PROACTIVE_CHAT_PROMPTS` 的 key |
 | `topic` | 否 | 主动对话话题 (r5 之后 UI 允许手动填). 默认由 dispatch table 自动选 |
 | `hours_since_last_interaction` | 否 | 距上次对话的小时数, 影响 prompt 里的 time_passed 片段 |
 | 其它 `kind` 相关字段 | 见 dispatch table | 例如 `personal` 需 `personal_event` 字段 |

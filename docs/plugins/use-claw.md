@@ -4,7 +4,7 @@
 
 本文档不是重新设计一套新的 Agent 架构，而是基于当前仓库里已经存在的：
 
-- `config/prompts_agent.py` 中的统一渠道评估 prompt
+- `config/prompts/prompts_agent.py` 中的统一渠道评估 prompt
 - `brain/task_executor.py` 中的统一渠道判定逻辑
 - `brain/computer_use.py` 中的键鼠执行器
 - `brain/browser_use_adapter.py` 中的浏览器执行器
@@ -25,9 +25,9 @@
 
 当前项目已经有“统一渠道评估”能力，而不是分别硬编码判断：
 
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py) 定义了 `UNIFIED_CHANNEL_SYSTEM_PROMPT`
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py) 定义了 `CHANNEL_DESC_BROWSER_USE`
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py) 定义了 `CHANNEL_DESC_COMPUTER_USE`
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py) 定义了 `UNIFIED_CHANNEL_SYSTEM_PROMPT`
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py) 定义了 `CHANNEL_DESC_BROWSER_USE`
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py) 定义了 `CHANNEL_DESC_COMPUTER_USE`
 - [brain/task_executor.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/brain/task_executor.py) 的 `_assess_unified_channels()` 会把各渠道描述拼进 system prompt，让 LLM 输出：
   - `can_execute`
   - `task_description`
@@ -136,7 +136,7 @@
 
 文件：
 
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py)
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py)
 
 建议做法：
 
@@ -150,8 +150,8 @@
 
 同时可以微调这两个渠道描述：
 
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py)
-- [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py)
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py)
+- [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py)
 
 改动原则：
 
@@ -593,7 +593,7 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 
 ### 必改
 
-1. [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py)
+1. [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py)
    - 强化 `browser_use` / `computer_use` 描述
    - 增加一段全局调度原则
 
@@ -630,6 +630,6 @@ async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
 
 - 在 [brain/task_executor.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/brain/task_executor.py) 加检索与注入
 - 在 [agent_server.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/agent_server.py) 加纠正上报
-- 在 [config/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts_agent.py) 稍微强化渠道描述
+- 在 [config/prompts/prompts_agent.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/config/prompts/prompts_agent.py) 稍微强化渠道描述
 
 这样能最大化复用现有代码，同时把“意图识别 + 用户纠正记忆”真正落到可维护的实现路径上。

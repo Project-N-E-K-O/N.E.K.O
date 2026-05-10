@@ -16,7 +16,7 @@ the Testbench UI:
 * ``metadata`` — resolved ``master_name`` / ``character_name`` / ``language``
   plus flags describing whether the character prompt was taken from the
   session persona's ``system_prompt`` field or defaulted via
-  :func:`config.prompts_chara.get_lanlan_prompt`.
+  :func:`config.prompts.prompts_chara.get_lanlan_prompt`.
 * ``warnings`` — soft messages the UI can surface as info/warn chips
   (e.g. "character_name 未填", "memory_dir 不存在", "stored_system_prompt
   被识别为默认模板").
@@ -52,8 +52,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable
 
-from config.prompts_chara import get_lanlan_prompt, is_default_prompt
-from config.prompts_memory import (
+from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_memory import (
     CHAT_GAP_CURRENT_TIME,
     CHAT_GAP_LONG_HINT,
     CHAT_GAP_NOTICE,
@@ -62,7 +62,7 @@ from config.prompts_memory import (
     INNER_THOUGHTS_HEADER,
     PERSONA_HEADER,
 )
-from config.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT, _loc
+from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT, _loc
 from memory import (
     CompressedRecentHistoryManager,
     FactStore,
@@ -148,7 +148,7 @@ class PreviewNotReady(Exception):
 def _normalize_short_lang(lang: str | None) -> str:
     """Return a short language code ('zh' / 'en' / 'ja' / ...) for prompt dicts.
 
-    Prompt dicts in ``config.prompts_*`` keyed by two-letter codes; the
+    Prompt dicts in ``config.prompts.prompts_*`` keyed by two-letter codes; the
     session persona stores ``zh-CN`` / ``en`` / ``ja`` etc. Falls back to
     ``utils.language_utils.normalize_language_code`` so we inherit the
     same mapping upstream uses, and defaults to ``zh`` when empty.

@@ -65,7 +65,7 @@ textractor_path = ""
 textractor_proxy = ""
 install_release_api_url = ""
 install_target_dir = ""
-install_timeout_seconds = 300
+install_timeout_seconds = 600
 auto_detect = true
 hook_codes = []
 poll_interval_seconds = 1
@@ -133,7 +133,7 @@ enabled = true
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "快速开始"
-entry = "docs/quickstart.md"
+entry = "surfaces/quickstart.tsx"
 permissions = ["state:read"]
 
 [plugin.i18n]

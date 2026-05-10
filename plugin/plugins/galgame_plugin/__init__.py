@@ -3099,28 +3099,37 @@ class GalgamePlugin(NekoPluginBase):
         payload["primary_diagnosis"] = build_primary_diagnosis(payload)
         return payload
 
-    def _resolve_current_run_id(self) -> str:
-        return str(getattr(self.ctx, "run_id", "") or "").strip()
+    def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:
+        current = str(getattr(self.ctx, "run_id", "") or "").strip()
+        if current:
+            return current
+        if isinstance(extra_args, dict):
+            ctx_obj = extra_args.get("_ctx")
+            if isinstance(ctx_obj, dict):
+                return str(ctx_obj.get("run_id") or "").strip()
+        return ""
 
     def _resolve_install_progress_callback(self, current_run_id: str):
         async def _progress_update(event: dict[str, Any]) -> None:
             if not current_run_id:
                 return
-            await self.run_update(
-                run_id=current_run_id,
-                status="running",
-                progress=float(event.get("progress") or 0.0),
-                stage=str(event.get("phase") or ""),
-                message=str(event.get("message") or ""),
-                metrics={
-                    "phase": str(event.get("phase") or ""),
-                    "downloaded_bytes": int(event.get("downloaded_bytes") or 0),
-                    "total_bytes": int(event.get("total_bytes") or 0),
-                    "resume_from": int(event.get("resume_from") or 0),
-                    "asset_name": str(event.get("asset_name") or ""),
-                    "release_name": str(event.get("release_name") or ""),
-                },
-            )
+            try:
+                await self.run_update(
+                    run_id=current_run_id,
+                    progress=float(event.get("progress") or 0.0),
+                    stage=str(event.get("phase") or ""),
+                    message=str(event.get("message") or ""),
+                    metrics={
+                        "phase": str(event.get("phase") or ""),
+                        "downloaded_bytes": int(event.get("downloaded_bytes") or 0),
+                        "total_bytes": int(event.get("total_bytes") or 0),
+                        "resume_from": int(event.get("resume_from") or 0),
+                        "asset_name": str(event.get("asset_name") or ""),
+                        "release_name": str(event.get("release_name") or ""),
+                    },
+                )
+            except Exception as exc:
+                self.logger.warning("install progress run_update failed: {}", exc)
 
         return _progress_update
 
@@ -4567,7 +4576,7 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         if not self._textractor_install_lock.acquire(blocking=False):
             return Err(SdkError(self._install_in_progress_message("Textractor")))
-        current_run_id = self._resolve_current_run_id()
+        current_run_id = self._resolve_current_run_id(_)
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
             install_result = await install_textractor(
@@ -4614,7 +4623,7 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         if not self._tesseract_install_lock.acquire(blocking=False):
             return Err(SdkError(self._install_in_progress_message("Tesseract")))
-        current_run_id = self._resolve_current_run_id()
+        current_run_id = self._resolve_current_run_id(_)
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
             install_result = await install_tesseract(
@@ -4665,7 +4674,7 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         if not self._rapidocr_models_lock.acquire(blocking=False):
             return Err(SdkError(self._install_in_progress_message("RapidOCR Models")))
-        current_run_id = self._resolve_current_run_id()
+        current_run_id = self._resolve_current_run_id(_)
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
             from .rapidocr_support import download_rapidocr_models

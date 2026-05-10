@@ -14,6 +14,8 @@ from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
 
+_PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description"}
+
 
 def _normalize_mapping(
     raw: Mapping[object, object],
@@ -124,6 +126,58 @@ def _resolve_default_locale() -> str:
         return str(get_global_language_full() or "en")
     except Exception:
         return "en"
+
+
+def _plugin_card_i18n_payload(
+    plugin_meta: Mapping[str, object],
+    plugin_i18n: object,
+) -> dict[str, object]:
+    raw_config = plugin_meta.get("i18n")
+    config = dict(raw_config) if isinstance(raw_config, Mapping) else {}
+    messages = getattr(plugin_i18n, "messages", {})
+    card_messages: dict[str, dict[str, str]] = {}
+    if isinstance(messages, Mapping):
+        for locale, bundle in messages.items():
+            if not isinstance(locale, str) or not isinstance(bundle, Mapping):
+                continue
+            selected = {
+                key: value
+                for key, value in bundle.items()
+                if isinstance(key, str)
+                and key in _PLUGIN_CARD_I18N_KEYS
+                and isinstance(value, str)
+            }
+            if selected:
+                card_messages[locale] = selected
+
+    config["messages"] = card_messages
+    return config
+
+
+def _resolve_plugin_display_fields(
+    plugin_info: dict[str, object],
+    plugin_i18n: object,
+    *,
+    locale: str,
+) -> None:
+    missing = "\0__missing_plugin_display_i18n__"
+    name_fallback = plugin_info.get("name")
+    description_fallback = plugin_info.get("description")
+    name_default = name_fallback if isinstance(name_fallback, str) and name_fallback else str(plugin_info.get("id") or "")
+    plugin_info["name"] = plugin_i18n.t(
+        "plugin.name",
+        locale=locale,
+        default=name_default,
+    )
+    description = plugin_i18n.t(
+        "plugin.description",
+        locale=locale,
+        default=description_fallback if isinstance(description_fallback, str) and description_fallback else missing,
+    )
+    if description != missing:
+        plugin_info["description"] = description
+    elif isinstance(description_fallback, str):
+        plugin_info["description"] = description_fallback
 
 
 def _build_entries_from_handlers(
@@ -334,8 +388,9 @@ def _append_plugin_fallback(
     )
 
 
-def _build_plugin_list_sync() -> list[dict[str, object]]:
+def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
+    effective_locale = locale or _resolve_default_locale()
     try:
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
         if not plugins_snapshot:
@@ -380,6 +435,7 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 plugin_id=plugin_id,
                 handlers_snapshot=handlers_snapshot,
                 plugin_meta=plugin_meta,
+                locale=effective_locale,
             )
             _append_entries_from_preview(
                 plugin_id=plugin_id,
@@ -388,8 +444,12 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 seen=seen,
             )
             plugin_i18n = load_plugin_i18n_from_meta(plugin_meta)
+            _resolve_plugin_display_fields(plugin_info, plugin_i18n, locale=effective_locale)
+            plugin_i18n_payload = _plugin_card_i18n_payload(plugin_meta, plugin_i18n)
+            if plugin_i18n_payload:
+                plugin_info["i18n"] = plugin_i18n_payload
             entries = [
-                resolve_i18n_refs(entry, plugin_i18n, locale=_resolve_default_locale())  # type: ignore[misc]
+                resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)  # type: ignore[misc]
                 for entry in entries
                 if isinstance(entry, dict)
             ]
@@ -398,7 +458,7 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
             plugin_info["list_actions"] = resolve_i18n_refs(
                 _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
                 plugin_i18n,
-                locale=_resolve_default_locale(),
+                locale=effective_locale,
             )
             result.append(plugin_info)
         except ServerDomainError as exc:
@@ -467,9 +527,9 @@ class PluginQueryService:
                 },
             ) from exc
 
-    async def list_plugins(self) -> dict[str, object]:
+    async def list_plugins(self, locale: str | None = None) -> dict[str, object]:
         try:
-            raw_plugins = await asyncio.to_thread(_build_plugin_list_sync)
+            raw_plugins = await asyncio.to_thread(_build_plugin_list_sync, locale)
             if not isinstance(raw_plugins, list):
                 raise ServerDomainError(
                     code="INVALID_DATA_SHAPE",

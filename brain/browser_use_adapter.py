@@ -400,7 +400,7 @@ class BrowserUseAdapter:
 
         # Fallback: Steam GeoIP (country only, no IP)
         try:
-            from main_routers.shared_state import get_steamworks
+            from utils.steam_state import get_steamworks
             sw = get_steamworks()
             if sw is not None:
                 raw = sw.Utils.GetIPCountry()

@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft 游戏代理",
+  "plugin.description": "桥接本地 Minecraft Agent（WebSocket），让 AI 通过 minecraft_task 工具下达指令并实时观看游戏画面进行解说"
+}

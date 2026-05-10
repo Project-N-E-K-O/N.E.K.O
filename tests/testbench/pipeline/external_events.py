@@ -15,7 +15,7 @@ Semantic reproduction scope (P25_BLUEPRINT §1.2 / §1.3)
 -------------------------------------------------------
 What we DO reproduce (LESSONS_LEARNED §1.6 semantic contract):
 
-* Avatar prompt assembly via the nine ``config.prompts_avatar_interaction``
+* Avatar prompt assembly via the nine ``config.prompts.prompts_avatar_interaction``
   pure helpers + seven constant tables (no re-implementation).
 * Agent-callback instruction prefix via ``AGENT_CALLBACK_NOTIFICATION``
   five-language dict.
@@ -297,7 +297,7 @@ def _resolve_language(session: Session) -> tuple[str, str]:
     ``full`` is the raw ``session.persona.language`` (default ``zh-CN``).
     ``short`` is the same value normalised to a 2-char base used by the
     proactive dispatch table (``zh/en/ja/ko/ru``), mirroring the
-    ``_normalize_prompt_language`` rule in ``config.prompts_proactive``.
+    ``_normalize_prompt_language`` rule in ``config.prompts.prompts_proactive``.
     """
     persona = session.persona or {}
     full = str(persona.get("language") or "zh-CN").strip()
@@ -321,7 +321,7 @@ def _resolve_names(session: Session) -> tuple[str, str]:
 
     ``master_name`` 缺省时返回空串，由调用方按场景自行兜底——避免在源头硬编码
     "主人"等物化称呼。memory_note 路径下游
-    (:func:`config.prompts_avatar_interaction._build_avatar_interaction_memory_meta`)
+    (:func:`config.prompts.prompts_avatar_interaction._build_avatar_interaction_memory_meta`)
     自带本地化中性词回退（zh="对方"、en="they" 等）。
     """
     persona = session.persona or {}
@@ -1029,7 +1029,7 @@ _PROACTIVE_KINDS = frozenset({
 # 反馈想改就加 UI 可调.
 _PROACTIVE_MEMORY_K: int = 12
 
-# 完整占位符白名单 (逐 kind 扫描 config/prompts_proactive.py 五语种). 缺的
+# 完整占位符白名单 (逐 kind 扫描 config/prompts/prompts_proactive.py 五语种). 缺的
 # 占位符用 ``"(无)"`` 兜底, 保证 ``replace`` 不漏 (见 L33 §1: 语义契约 vs
 # 运行时机制 — 缺失 slot 必须显式 surface, 不能让 ``{window_context}``
 # 字面量漏进 LLM 引发 silent parse error).
@@ -1218,7 +1218,7 @@ def _build_avatar_instruction_bundle(
     :func:`build_external_event_preview` (dry-run path). Both paths see
     the exact same ``instruction_final`` string — that's the contract.
     """
-    from config.prompts_avatar_interaction import (
+    from config.prompts.prompts_avatar_interaction import (
         _build_avatar_interaction_instruction,
         _build_avatar_interaction_memory_meta,
         _normalize_avatar_interaction_payload,
@@ -1281,7 +1281,7 @@ def _build_agent_callback_instruction_bundle(
     ``_build_callback_instruction`` so the testbench wire matches the
     grouped-by-source/status outer template the real LLM sees.
     """
-    from config.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE, _loc
+    from config.prompts.prompts_sys import SYSTEM_NOTIFICATION_PASSIVE, _loc
     from main_logic.core import _build_callback_instruction
 
     _full_lang, short_lang = _resolve_language(session)
@@ -1344,7 +1344,7 @@ def _build_proactive_instruction_bundle(
     / ``{current_chat}`` slot; session.messages[-K:] fills
     ``{memory_context}``.
     """
-    from config.prompts_proactive import (
+    from config.prompts.prompts_proactive import (
         _normalize_prompt_language,
         get_proactive_chat_prompt,
     )
@@ -1421,7 +1421,7 @@ async def simulate_proactive(
     :func:`build_external_event_preview` also calls — L36 §7.25 第 5 层.
     """
     started = time.perf_counter()
-    from config.prompts_proactive import _normalize_prompt_language
+    from config.prompts.prompts_proactive import _normalize_prompt_language
 
     full_lang, _short_lang = _resolve_language(session)
 
