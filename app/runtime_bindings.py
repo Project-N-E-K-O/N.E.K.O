@@ -64,29 +64,47 @@ def install_runtime_bindings() -> None:
             register_language_normalizer(normalize_language_code)
             register_truncate_to_tokens(truncate_to_tokens)
             _INSTALLED["config_runtime"] = True
-        except (ImportError, ModuleNotFoundError, AttributeError):
-            # Expected silent path: entrypoint or test env doesn't ship the
-            # full utils surface. The resolvers in config._runtime fall back
-            # to defaults. Flag stays False so a later call can retry.
-            pass
-        except Exception:
-            # Anything else (signature mismatch, real bug in a register_*
-            # impl, etc.) is a regression we want loud — log with traceback
-            # but DON'T re-raise; flag stays False so a later call can retry
-            # if the underlying issue gets fixed in-process. The logger lives
-            # in utils so we import it lazily to keep this block resilient
-            # against a missing utils itself (caught by the silent path above).
-            try:
-                from utils.logger_config import get_module_logger
-                get_module_logger(__name__, "App").warning(
-                    "install_runtime_bindings(config_runtime) failed unexpectedly",
-                    exc_info=True,
-                )
-            except Exception:
-                # Logger itself unavailable (utils.logger_config not on
-                # sys.path, log directory unwritable, etc.). The original
-                # binding failure was already swallowed by the outer
-                # handler so the caller in app/__init__.py prints its own
-                # stderr breadcrumb; we deliberately stay silent here to
-                # avoid a secondary crash during process startup.
-                pass
+        except Exception as exc:
+            # Two distinct failure modes share this handler:
+            #   (1) Expected partial-env: the imported top-level module
+            #       genuinely isn't on sys.path (memory-only entrypoint
+            #       without the utils surface, etc.). Stay silent — the
+            #       resolvers in config._runtime fall back to defaults.
+            #   (2) Real regression: an imported module exists but its own
+            #       transitive imports are broken, a register_* signature
+            #       changed, AttributeError on a renamed symbol, etc.
+            #       These previously got silenced under a broad
+            #       ``except (ImportError, ModuleNotFoundError, ...)`` and
+            #       caused production to silently run with default-language
+            #       fallback behaviour. Codex P2 catch.
+            # Discriminator: ``ModuleNotFoundError.name`` is the FIRST
+            # module Python couldn't locate. If it matches one of the
+            # top-level modules we explicitly target here, that's case (1).
+            # A transitive failure inside (e.g.) ``utils.language_utils``
+            # surfaces as ``ModuleNotFoundError(name='broken_inner_dep')``,
+            # whose ``name`` is NOT in the expected set — case (2).
+            _expected_absent = {
+                "config",
+                "config._runtime",
+                "utils",
+                "utils.language_utils",
+                "utils.tokenize",
+            }
+            _is_expected_absent = (
+                isinstance(exc, ModuleNotFoundError)
+                and getattr(exc, "name", None) in _expected_absent
+            )
+            if not _is_expected_absent:
+                try:
+                    from utils.logger_config import get_module_logger
+                    get_module_logger(__name__, "App").warning(
+                        "install_runtime_bindings(config_runtime) failed unexpectedly",
+                        exc_info=True,
+                    )
+                except Exception:
+                    # Logger itself unavailable. The caller in
+                    # app/__init__.py prints a stderr breadcrumb; staying
+                    # silent here avoids a secondary crash during startup.
+                    pass
+            # Flag stays False so a later call can retry if the underlying
+            # issue gets fixed in-process.

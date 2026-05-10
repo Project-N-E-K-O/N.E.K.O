@@ -1799,16 +1799,20 @@ state = GlobalState()
 try:
     from main_logic.agent_event_bus import register_user_utterance_sink as _register_sink
     _register_sink(state.add_user_context_event)
-except (ImportError, ModuleNotFoundError, AttributeError):
-    # Expected silent path: plugin subprocess workers may not have
-    # main_logic on sys.path at all. Matches the historical "main_logic-less"
-    # plugin runtime contract.
-    pass
-except Exception:  # pragma: no cover - defensive
-    # Anything else (signature change in agent_event_bus, real bug in
-    # register_*, etc.) is a regression we want loud. Log without
-    # re-raising so plugin runtime still loads.
-    logger.warning(
-        "plugin.core.state: failed to self-register user_utterance_sink",
-        exc_info=True,
+except Exception as _exc:
+    # Distinguish expected partial-env from real regression:
+    #   * ``ModuleNotFoundError(name='main_logic'...)`` → plugin subprocess
+    #     worker without main_logic on sys.path. Legit; stay silent.
+    #   * Anything else (transitive import broken inside
+    #     ``main_logic.agent_event_bus``, ``register_*`` signature
+    #     change, etc.) → regression worth logging. Codex P2 catch.
+    _expected_absent = {"main_logic", "main_logic.agent_event_bus"}
+    _is_expected_absent = (
+        isinstance(_exc, ModuleNotFoundError)
+        and getattr(_exc, "name", None) in _expected_absent
     )
+    if not _is_expected_absent:
+        logger.warning(
+            "plugin.core.state: failed to self-register user_utterance_sink",
+            exc_info=True,
+        )
