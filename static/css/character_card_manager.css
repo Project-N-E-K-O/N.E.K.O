@@ -682,10 +682,12 @@ top: 2px;
 right: 12px;
 height: 20px;
 width: auto;
+max-width: calc(55% - 24px);
 opacity: 0.4;
 z-index: 1;
 pointer-events: none;
 object-fit: contain;
+object-position: right center;
 }
 
 .card-info-title-area {
@@ -700,6 +702,26 @@ object-fit: contain;
     justify-content: space-between;
     padding: 0 16px 0 16px;
     overflow: hidden;
+}
+
+/* 视口足够宽（约最大化窗口）时，让标题区根据内容自适应并显示完整文本；
+   窄屏仍保持 40% 固定宽度 + ellipsis 截断 */
+@media (min-width: 1280px) {
+    .card-info-title-area {
+        width: max-content;
+        min-width: 40%;
+        max-width: calc(80% - 16px);
+        overflow: visible;
+    }
+
+    .card-info-header-text {
+        overflow: visible;
+    }
+
+    .card-info-header-text > span {
+        overflow: visible;
+        text-overflow: clip;
+    }
 }
 
 .card-info-header-text {
@@ -795,7 +817,8 @@ clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43
 position: relative;
 z-index: 1;
 width: fit-content;
-min-width: 40%;
+min-width: min(40%, 240px);
+max-width: calc(45% - 6px);
 height: 46px;
 margin: 3px;
 border-radius: 16px 16px 0 0;
@@ -1104,31 +1127,45 @@ min-height: 0;
     background-color: #bcf1ff;
     padding: 4px;
     border-radius: 50px;
-    display: block;
+    display: flex;
+    align-items: stretch;
+    box-sizing: border-box;
 }
 
 /* 按钮样式 - 照搬 workshop-card 按钮 */
 .character-card-buttons-row .btn-wrapper .btn {
     width: 100%;
+    min-height: 48px;
     background: linear-gradient(to right, #6ae0ff, #1ca5ff);
     border: none;
     border-radius: 50px;
     color: white;
-    font-size: 16px;
-    font-weight: 900;
-    letter-spacing: 2px;
-    padding: 10px 0;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    padding: 8px 14px;
     cursor: pointer;
     text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
     transition: filter 0.2s;
     overflow: hidden;
+    line-height: 1.2;
+    text-align: center;
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+
+.character-card-buttons-row .btn-wrapper .btn img {
+    flex-shrink: 0;
 }
 
 .character-card-buttons-row .btn-wrapper .btn span {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: 1 1 auto;
     min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    text-align: center;
+    line-height: 1.2;
 }
 
 .character-card-buttons-row .btn-wrapper .btn:hover:not(:disabled) {
@@ -1396,11 +1433,21 @@ cursor: not-allowed;
 opacity: 0.7;
 }
 
-/* 上传到创意工坊按钮禁用时保持蓝色背景，降低透明度 */
+/* 上传到创意工坊按钮禁用时使用去饱和的蓝灰渐变，
+   保持 WCAG AA 大号粗体文字 ≥3:1 对比度（白字对 #647e90 ≈ 4.6:1） */
 #upload-to-workshop-btn:disabled {
-background: #0078d4;
-opacity: 0.5;
+background: linear-gradient(to right, #7a96a8, #5a7a8d);
+opacity: 1;
+color: #ffffff;
+text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.35);
 cursor: not-allowed;
+filter: none;
+}
+
+[data-theme="dark"] #upload-to-workshop-btn:disabled {
+background: linear-gradient(to right, #3d5566, #2a3d4c);
+color: #e6edf3;
+text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .layout-container .btn-primary {
@@ -4812,6 +4859,31 @@ margin-top: 10px;
     min-height: 80px;
 }
 
+/* Steam 上传页：按钮行在窄面板中需要更紧凑的字号与图标，避免多语言文本被截断 */
+.panel-tab-steam .character-card-buttons-row {
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.panel-tab-steam .character-card-buttons-row .btn-wrapper {
+    flex: 1 1 180px;
+    min-width: 0;
+}
+
+.panel-tab-steam .character-card-buttons-row .btn-wrapper .btn {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    padding: 8px 12px;
+    gap: 8px !important;
+    min-height: 46px;
+}
+
+.panel-tab-steam .character-card-buttons-row .btn-wrapper .btn img {
+    width: 26px !important;
+    height: 26px !important;
+}
+
 .catgirl-panel-left {
     width: 240px;
     flex-shrink: 0;
@@ -5416,6 +5488,26 @@ margin-top: 10px;
     opacity: 0.95;
 }
 
+/* 红色操作按钮禁用态：使用去饱和暗红 + 不透明白字，
+   保证 WCAG AA ≥4.5:1 对比度（白字对 #8a4a4a ≈ 6.5:1） */
+.catgirl-panel-right .btn.delete:disabled,
+.catgirl-panel-right .btn.sm.delete:disabled {
+    background: #8a4a4a;
+    color: #ffffff;
+    opacity: 1;
+    cursor: not-allowed;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.3);
+    transform: none;
+    box-shadow: none;
+}
+
+[data-theme="dark"] .catgirl-panel-right .btn.delete:disabled,
+[data-theme="dark"] .catgirl-panel-right .btn.sm.delete:disabled {
+    background: #5d3232;
+    color: #e6edf3;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
 .catgirl-panel-right .btn.sm.delete {
     background: #ff5252;
     padding: 6px 12px;
@@ -5785,12 +5877,34 @@ margin-top: 10px;
     box-shadow: 0 1px 2px rgba(15, 30, 60, 0.04);
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 4px;
     box-sizing: border-box;
     flex: 1 1 auto;
     min-height: 0;
     font-size: 11px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
+}
+
+.card-meta-block::-webkit-scrollbar {
+    width: 6px;
+}
+
+.card-meta-block::-webkit-scrollbar-track {
+    background: rgba(179, 229, 252, 0.3);
+    border-radius: 999px;
+}
+
+.card-meta-block::-webkit-scrollbar-thumb {
+    background: rgba(64, 197, 241, 0.55);
+    border-radius: 999px;
+}
+
+.card-meta-block::-webkit-scrollbar-thumb:hover {
+    background: rgba(64, 197, 241, 0.75);
 }
 
 .card-meta-title {
@@ -6239,6 +6353,22 @@ margin-top: 10px;
     border-color: rgba(15, 23, 42, 0.7);
 }
 
+[data-theme="dark"] .card-meta-block {
+    scrollbar-color: rgba(56, 189, 248, 0.55) rgba(15, 23, 42, 0.45);
+}
+
+[data-theme="dark"] .card-meta-block::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.45);
+}
+
+[data-theme="dark"] .card-meta-block::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #38bdf8, #147ea6);
+}
+
+[data-theme="dark"] .card-meta-block::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #7dd3fc, #38bdf8);
+}
+
 [data-theme="dark"] .catgirl-panel-overlay.active {
     background: rgba(0, 0, 0, 0.72);
 }
@@ -6379,9 +6509,10 @@ margin-top: 10px;
 }
 
 [data-theme="dark"] #live2d-preview-controls .btn-play-wrapper {
-    background: rgba(15, 23, 42, 0.68) !important;
-    border: 1px solid rgba(125, 211, 252, 0.18);
-    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.46);
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    align-self: center;
 }
 
 [data-theme="dark"] #live2d-preview-controls .btn-play-wrapper .btn,
@@ -6390,13 +6521,13 @@ margin-top: 10px;
     background-color: #147ea6 !important;
     color: #ffffff !important;
     border: 1px solid rgba(125, 211, 252, 0.38) !important;
-    box-shadow: none !important;
+    box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.16) !important;
 }
 
 [data-theme="dark"] #live2d-preview-controls .btn-play-wrapper .btn:hover:not(:disabled),
 [data-theme="dark"] #live2d-preview-controls .btn:hover:not(:disabled) {
     background: linear-gradient(135deg, #1b96c6, #147ea6) !important;
-    box-shadow: none !important;
+    box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.28) !important;
 }
 
 [data-theme="dark"] #live2d-preview-controls .btn-play-wrapper .btn:disabled,

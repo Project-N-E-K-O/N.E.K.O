@@ -1170,6 +1170,284 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
     assert image_only is not None
 
 
+def test_agent_task_tracker_blocks_cancelled_task_until_later_user_turn():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "_task_blacklist_desc_keys",
+        "_task_desc_matches_blacklist",
+        "AgentTaskTracker",
+    }
+    segments = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted:
+            segments.append(ast.get_source_segment(source, node))
+    assert len(segments) == len(wanted)
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+    ns = {
+        "re": __import__("re"),
+        "time": __import__("time"),
+        "Dict": __import__("typing").Dict,
+        "Any": __import__("typing").Any,
+        "Optional": __import__("typing").Optional,
+        "TASK_TRACKER_TTL": 600.0,
+        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
+        "TASK_TRACKER_MAX_RECORDS": 100,
+        "TASK_DETAIL_MAX_TOKENS": 200,
+        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
+        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
+        "_tt": lambda text, limit: str(text)[:limit],
+        "logger": _Logger(),
+    }
+    exec("\n\n".join(segments), ns)
+    tracker = ns["AgentTaskTracker"]()
+
+    tracker.record_completed(
+        "lanlan",
+        task_id="cancelled-1",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        detail="Cancelled by user",
+        success=False,
+        cancelled=True,
+        trigger_user_fingerprint="fp-before",
+        trigger_user_ts=100.0,
+    )
+    cancelled_at = tracker._records["lanlan"][0]["ts"]
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-before",
+        latest_user_ts=cancelled_at - 1,
+    )["task_id"] == "cancelled-1"
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-after",
+        latest_user_ts=cancelled_at + 1,
+    ) is None
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-after",
+        latest_user_ts=None,
+    ) is None
+
+
+def test_agent_task_tracker_keeps_same_turn_blocked_with_ahead_client_clock():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "_task_blacklist_desc_keys",
+        "_task_desc_matches_blacklist",
+        "AgentTaskTracker",
+    }
+    segments = [
+        ast.get_source_segment(source, node)
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    ]
+    assert len(segments) == len(wanted)
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+    ns = {
+        "re": __import__("re"),
+        "time": __import__("time"),
+        "Dict": __import__("typing").Dict,
+        "Any": __import__("typing").Any,
+        "Optional": __import__("typing").Optional,
+        "TASK_TRACKER_TTL": 600.0,
+        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
+        "TASK_TRACKER_MAX_RECORDS": 100,
+        "TASK_DETAIL_MAX_TOKENS": 200,
+        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
+        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
+        "_tt": lambda text, limit: str(text)[:limit],
+        "logger": _Logger(),
+    }
+    exec("\n\n".join(segments), ns)
+    tracker = ns["AgentTaskTracker"]()
+
+    tracker.record_completed(
+        "lanlan",
+        task_id="cancelled-1",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        detail="Cancelled by user",
+        success=False,
+        cancelled=True,
+        trigger_user_fingerprint="fp-before",
+        trigger_user_ts=100.0,
+    )
+    cancelled_at = tracker._records["lanlan"][0]["ts"]
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-before",
+        latest_user_ts=cancelled_at + 3600,
+    )["task_id"] == "cancelled-1"
+
+
+def test_agent_task_tracker_ignores_metadata_less_cancel_in_fingerprint_fallback():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "_task_blacklist_desc_keys",
+        "_task_desc_matches_blacklist",
+        "AgentTaskTracker",
+    }
+    segments = [
+        ast.get_source_segment(source, node)
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    ]
+    assert len(segments) == len(wanted)
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+    ns = {
+        "re": __import__("re"),
+        "time": __import__("time"),
+        "Dict": __import__("typing").Dict,
+        "Any": __import__("typing").Any,
+        "Optional": __import__("typing").Optional,
+        "TASK_TRACKER_TTL": 600.0,
+        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
+        "TASK_TRACKER_MAX_RECORDS": 100,
+        "TASK_DETAIL_MAX_TOKENS": 200,
+        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
+        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
+        "_tt": lambda text, limit: str(text)[:limit],
+        "logger": _Logger(),
+    }
+    exec("\n\n".join(segments), ns)
+    tracker = ns["AgentTaskTracker"]()
+
+    tracker.record_completed(
+        "lanlan",
+        task_id="cancelled-with-fp",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        detail="Cancelled by user",
+        success=False,
+        cancelled=True,
+        trigger_user_fingerprint="fp-before",
+    )
+    tracker.record_completed(
+        "lanlan",
+        task_id="cancelled-without-fp",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        detail="Task cancelled by user",
+        success=False,
+        cancelled=True,
+    )
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-before",
+        latest_user_ts=None,
+    )["task_id"] == "cancelled-with-fp"
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="browser_use",
+        desc="打开天气网站并截图",
+        latest_user_fingerprint="fp-after",
+        latest_user_ts=None,
+    ) is None
+
+
+def test_openclaw_stop_records_cancel_trigger_metadata():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = None
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cancel_openclaw_tasks_for_stop":
+            segment = ast.get_source_segment(source, node)
+            break
+
+    assert segment is not None
+    assert "_task_tracker.record_completed" in segment
+    assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment
+    assert 'trigger_user_ts=info.get("_trigger_user_ts")' in segment
+
+
+def test_agent_task_tracker_matches_cancelled_user_plugin_suffix():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "_task_blacklist_desc_keys",
+        "_task_desc_matches_blacklist",
+        "AgentTaskTracker",
+    }
+    segments = [
+        ast.get_source_segment(source, node)
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    ]
+    assert len(segments) == len(wanted)
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+    ns = {
+        "re": __import__("re"),
+        "time": __import__("time"),
+        "Dict": __import__("typing").Dict,
+        "Any": __import__("typing").Any,
+        "Optional": __import__("typing").Optional,
+        "TASK_TRACKER_TTL": 600.0,
+        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
+        "TASK_TRACKER_MAX_RECORDS": 100,
+        "TASK_DETAIL_MAX_TOKENS": 200,
+        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
+        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
+        "_tt": lambda text, limit: str(text)[:limit],
+        "logger": _Logger(),
+    }
+    exec("\n\n".join(segments), ns)
+    tracker = ns["AgentTaskTracker"]()
+
+    tracker.record_completed(
+        "lanlan",
+        task_id="cancelled-plugin",
+        method="user_plugin",
+        desc="notes.run: 整理今天的会议纪要",
+        detail="Cancelled by user",
+        success=False,
+        cancelled=True,
+        trigger_user_fingerprint="fp-before",
+    )
+
+    assert tracker.find_cancelled_blacklist(
+        "lanlan",
+        method="user_plugin",
+        desc="整理今天的会议纪要",
+        latest_user_fingerprint="fp-before",
+    )["task_id"] == "cancelled-plugin"
+
+
 @pytest.mark.asyncio
 async def test_task_executor_routes_openclaw_as_independent_execution_method():
     from unittest.mock import AsyncMock, MagicMock, patch

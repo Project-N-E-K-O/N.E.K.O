@@ -33,6 +33,7 @@ permissions = ["state:read", "action:call"]
 id = "quickstart"
 title = "快速开始"
 entry = "docs/quickstart.md"
+mode = "markdown"
 permissions = ["state:read"]
 
 [plugin_runtime]
