@@ -274,9 +274,14 @@ class BaiduMapProvider:
         url = url_map.get(mode)
         if not url:
             return []
-        params: Dict[str, str] = {"ak": self.api_key, "origin": origin, "destination": dest}
-        if mode == "transit":
-            params["coord_type"] = "wgs84"
+        # 输入坐标来自 Open-Meteo / Nominatim，是 WGS84；百度 Direction Lite 默认按 bd09ll 解析，
+        # 不显式传 coord_type 会让 walking/bicycling/driving 也按 bd09ll 起算，规划出从偏移点出发的路线喵。
+        params: Dict[str, str] = {
+            "ak": self.api_key,
+            "origin": origin,
+            "destination": dest,
+            "coord_type": "wgs84",
+        }
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(url, params=params)
