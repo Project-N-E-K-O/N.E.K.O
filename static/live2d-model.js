@@ -933,6 +933,27 @@ Live2DManager.prototype._clearIdleMotionLoopTimers = function() {
     this._idleMotionLoopTimers.clear();
 };
 
+Live2DManager.prototype.getAvatarPerformanceAvatarIds = function() {
+    const ids = ['main-live2d'];
+    if (this.avatarPerformanceAvatarId) ids.push(this.avatarPerformanceAvatarId);
+    if (this.modelName) ids.push(this.modelName);
+    return Array.from(new Set(ids.map(id => String(id || '').trim()).filter(Boolean)));
+};
+
+Live2DManager.prototype.isAvatarPerformanceCapabilityLocked = function(capability) {
+    if (this._avatarPerformanceBypassLocks === true) return false;
+    const api = window.AvatarPerformance;
+    if (!api || typeof api.isCapabilityLocked !== 'function') return false;
+    const ids = this.getAvatarPerformanceAvatarIds();
+    return ids.some(id => {
+        try {
+            return api.isCapabilityLocked(id, capability);
+        } catch (_) {
+            return false;
+        }
+    });
+};
+
 Live2DManager.prototype.suspendTemporaryMotions = function(source, model) {
     const activeModel = model || this.currentModel || null;
     if (!activeModel || activeModel !== this.currentModel || !activeModel.internalModel) {
@@ -971,6 +992,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
     if (this._temporaryMotionSuspendToken) return;
+    if (this.isAvatarPerformanceCapabilityLocked('motion')) return;
 
     // 初始化定时器集合，并在重新设置时清理旧定时器
     this._clearIdleMotionLoopTimers();
@@ -980,7 +1002,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         const timer = setTimeout(() => {
             this._idleMotionLoopTimers.delete(timer);
             // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
-            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
+            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
                 return;
             }
             if (!motionManager.playing) {
@@ -1009,6 +1031,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         if (this._temporaryMotionSuspendToken) {
             return;
         }
+        if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            return;
+        }
         if (window._currentMotionPreviewId != null) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
@@ -1030,7 +1055,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = async function(motionManager) {
-    if (this._temporaryMotionSuspendToken) {
+    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
         return;
     }
     const expectedModel = this.currentModel;
@@ -1040,6 +1065,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && !expectedModel.destroyed
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
+        && !this.isAvatarPerformanceCapabilityLocked('motion')
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -1750,7 +1776,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (!this._temporaryMotionSuspendToken && origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion') && origMotionManagerUpdate) {
                 try {
                     origMotionManagerUpdate(...args);
                 } catch (e) {
@@ -1816,7 +1842,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // === 注入点 1（物理引擎前）：视线微动 ===
             // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化
             // 注意：呼吸由 SDK 原生 Breath 系统接管，无需我们干预
-            if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled) {
+            if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled && !this.isAvatarPerformanceCapabilityLocked('lookAt')) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
             }

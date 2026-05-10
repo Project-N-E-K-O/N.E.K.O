@@ -29,7 +29,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
     _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
-    _PROJECT_ROOT / "static/yui-guide-wakeup.js",
+    _PROJECT_ROOT / "static/avatar-performance-stage.js",
+    _PROJECT_ROOT / "static/yui-guide-avatar-stage.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0

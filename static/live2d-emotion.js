@@ -14,6 +14,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         return;
     }
 
+    let expressionApplied = false;
     try {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
@@ -803,7 +804,14 @@ Live2DManager.prototype._removeManualExpressionOverride = function() {
 Live2DManager.prototype.playExpression = async function(emotion, specifiedExpressionFile = null) {
     if (!this.currentModel) {
         console.warn('无法播放表情：模型未加载');
-        return;
+        return false;
+    }
+    if (
+        this._avatarPerformanceBypassLocks !== true
+        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
+        && this.isAvatarPerformanceCapabilityLocked('expression')
+    ) {
+        return false;
     }
 
     // 如果指定了具体的表情文件，优先使用该文件
@@ -821,7 +829,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
         if (!expressionFiles || expressionFiles.length === 0) {
             console.log(`未找到情感 ${emotion} 对应的表情，将跳过表情播放`);
-            return;
+            return false;
         }
 
         // 过滤已确认失效的 expression，避免重复请求 404
@@ -831,12 +839,12 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 
         if (!expressionFiles || expressionFiles.length === 0) {
             console.log(`情感 ${emotion} 的表情文件均已标记失效，跳过表情播放`);
-            return;
+            return false;
         }
 
         choiceFile = this.getRandomElement(expressionFiles);
     }
-    if (!choiceFile) return;
+    if (!choiceFile) return false;
 
     // 将 basename（如 expression7.exp3.json）归一化回 FileReferences 中的真实路径（如 expressions/expression7.exp3.json）
     const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
@@ -933,7 +941,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                     } catch (e) {
                         console.warn('重新应用常驻表情失败:', e);
                     }
-                    return; // 成功播放，直接返回
+                    return true; // 成功播放，直接返回
                 } else {
                     console.warn(`原生expression API未返回有效结果 (name: ${expressionName})，回退到手动参数设置`);
                 }
@@ -947,6 +955,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
             this._installManualExpressionOverride(expressionData.Parameters, 300);
+            expressionApplied = true;
         }
         
         console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
@@ -957,13 +966,21 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     // 重放常驻表情，确保不被覆盖
     // skipBackup=true 因为只是重新应用，不需要再次备份
     try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
+    return expressionApplied;
 };
 
 // 播放动作
 Live2DManager.prototype.playMotion = async function(emotion) {
     if (!this.currentModel) {
         console.warn('无法播放动作：模型未加载');
-        return;
+        return false;
+    }
+    if (
+        this._avatarPerformanceBypassLocks !== true
+        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
+        && this.isAvatarPerformanceCapabilityLocked('motion')
+    ) {
+        return false;
     }
 
     const playMotionModel = this.currentModel;
@@ -1044,7 +1061,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     // setEmotion() 会先应用本轮表情再播放动作；单独调用 playMotion()
     // 时也应保留用户当前表情，只清掉上一条 motion 的残留。
     await this.resetTransientMotionAndExpressionState({ preserveExpression: true });
-    if (!isCurrentPlayMotionInvocation()) return;
+    if (!isCurrentPlayMotionInvocation()) return false;
 
     if (!motions || motions.length === 0) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
@@ -1058,7 +1075,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             this.motionTimer = null;
         }, 500); // 500ms应该足够让expression稳定显示
         this.motionTimer = { type: 'timeout', id: keepExpressionTimer, generation };
-        return;
+        return false;
     }
 
     const choiceIndex = Math.floor(Math.random() * motions.length);
@@ -1067,14 +1084,14 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     if (!choice || !choiceFile) {
         console.warn(`motion配置无效: ${JSON.stringify(choice)}，回退到简单动作`);
         this.playSimpleMotion(emotion);
-        return;
+        return false;
     }
     const runtimeChoice = findMotionInRuntimeDefinitions(emotion, choiceFile)
         || (motionsUseRuntimeIndexes ? { group: emotion, index: choiceIndex, file: choiceFile } : null);
     if (!runtimeChoice) {
         console.warn(`motion文件未注册到运行时motion组: ${choiceFile}，回退到简单动作`);
         this.playSimpleMotion(emotion);
-        return;
+        return false;
     }
     const runtimeMotionFile = runtimeChoice.file || choiceFile;
     const motionParamTrackModel = this.currentModel;
@@ -1113,7 +1130,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                     console.log(`尝试使用motion组播放motion: ${runtimeChoice.group}[${runtimeChoice.index}]`);
 
                     const motion = await this.currentModel.motion(runtimeChoice.group, runtimeChoice.index);
-                    if (!isCurrentMotionInvocation()) return;
+                    if (!isCurrentMotionInvocation()) return false;
 
                     if (motion) {
                         console.log(`成功开始播放motion（motion组: ${runtimeChoice.group}，预期文件: ${runtimeMotionFile}）`);
@@ -1168,7 +1185,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                         }, motionDuration);
                         this.motionTimer = { type: 'timeout', id: motionEndTimer, generation };
 
-                        return; // 成功播放，直接返回
+                        return true; // 成功播放，直接返回
                     } else {
                         console.warn('motion播放失败，返回值无效');
                     }
@@ -1179,21 +1196,25 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 
             // 如果原生motion播放失败，回退到简单动作
             console.warn(`无法播放motion: ${runtimeMotionFile}，回退到简单动作`);
-            if (!isCurrentMotionInvocation()) return;
+            if (!isCurrentMotionInvocation()) return false;
             this.playSimpleMotion(emotion);
+            return false;
 
         } catch (error) {
             console.error('motion播放过程中出错:', error);
-            if (!isCurrentMotionInvocation()) return;
+            if (!isCurrentMotionInvocation()) return false;
             this.playSimpleMotion(emotion);
+            return false;
         }
 
     } catch (error) {
         console.error('播放动作失败:', error);
         // 回退到简单动作
-        if (!isCurrentMotionInvocation()) return;
+        if (!isCurrentMotionInvocation()) return false;
         this.playSimpleMotion(emotion);
+        return false;
     }
+    return false;
 };
 
 // 播放简单动作（回退方案）
@@ -1321,7 +1342,17 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     // 防止快速连续点击
     if (this.isEmotionChanging) {
         console.log('情感切换中，忽略新的情感请求');
-        return;
+        return false;
+    }
+    if (
+        this._avatarPerformanceBypassLocks !== true
+        && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
+        && (
+            this.isAvatarPerformanceCapabilityLocked('expression')
+            || this.isAvatarPerformanceCapabilityLocked('motion')
+        )
+    ) {
+        return false;
     }
     
     // 清除点击效果的 ID，这样点击效果的恢复定时器会检测到并跳过恢复
