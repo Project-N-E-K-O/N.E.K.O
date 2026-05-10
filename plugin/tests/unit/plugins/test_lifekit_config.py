@@ -44,3 +44,37 @@ def test_router_plugin_entries_are_registered() -> None:
         registered = set(router.entry_ids)
         missing = ids - registered
         assert not missing, f"{router_cls.__name__} missing entries: {missing}"
+
+
+
+def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
+    """装饰器入口必须在 collect_entries() 时按当前 prefix 解析，
+    并和 add_entry 保持相同的冲突语义、meta.id 与 key 一致喵。"""
+    from plugin.sdk.plugin import plugin_entry
+    from plugin.sdk.shared.core.router import PluginRouter
+    from plugin.sdk.shared.models.exceptions import EntryConflictError
+
+    class _FooRouter(PluginRouter):
+        @plugin_entry(id="do_thing")
+        async def do_thing(self):
+            return None
+
+    # prefix 在 __init__ 之后变更时，新 key 必须生效，meta.id 也要跟 key 一致
+    router = _FooRouter()
+    assert router.entry_ids == ["do_thing"]
+    router.set_prefix("foo.")
+    entries = router.collect_entries()
+    assert list(entries.keys()) == ["foo.do_thing"]
+    assert entries["foo.do_thing"].meta.id == "foo.do_thing"
+
+    # 装饰器 id 与 add_entry 已注册的 id 冲突时必须显式报错（不静默覆盖）
+    import asyncio
+
+    conflict_router = _FooRouter()
+    asyncio.run(conflict_router.add_entry("do_thing", lambda payload: None))
+
+    try:
+        conflict_router.collect_entries()
+    except EntryConflictError:
+        return
+    raise AssertionError("expected EntryConflictError for duplicate entry id")
