@@ -202,6 +202,7 @@ class PluginCliUploadResponse(BaseModel):
 class PluginCliUploadAndInstallResponse(BaseModel):
     upload: PluginCliUploadResponse
     install: PluginCliInstallResponse
+    install_source_warning: str | None = None
 
 
 @router.get("/plugin-cli/plugins", response_model=PluginCliPluginListResponse)

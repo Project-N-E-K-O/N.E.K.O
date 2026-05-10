@@ -24,6 +24,7 @@ from plugin.server.routes import (
     config_router,
     frontend_router,
     health_router,
+    install_sources_router,
     llm_tools_router,
     logs_router,
     market_bridge_router,
@@ -102,6 +103,39 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not _EMBEDDED_BY_AGENT:
         await lifecycle_startup()
 
+    # Install-source lock subsystem (design §6.1 / §4.6). Runs after
+    # lifecycle_startup so the plugin loader's filesystem state is
+    # stable, but before the bridge-token write below because
+    # /plugins/install-sources and the /plugins install_source field
+    # injection both need the global manager to be set. Req 17.1: any
+    # failure here must NOT block the remainder of lifespan startup —
+    # StartupReconciler already swallows internal errors, and the outer
+    # try/except here catches any issue in build_install_source_manager
+    # (e.g. a weird env that prevents path resolution) so we can degrade
+    # gracefully to set_global_manager(None).
+    try:
+        from plugin.server.application.install_source import (
+            StartupReconciler,
+            build_install_source_manager,
+            set_global_manager,
+        )
+        _install_source_mgr = build_install_source_manager()
+        await StartupReconciler(_install_source_mgr).run()
+        set_global_manager(_install_source_mgr)
+    except Exception as exc:
+        logger.error(
+            "InstallSourceManager init failed, subsystem will run in degraded mode: {}",
+            exc,
+        )
+        try:
+            from plugin.server.application.install_source import set_global_manager
+            set_global_manager(None)
+        except Exception as inner_exc:
+            logger.error(
+                "Failed to mark install-source subsystem as degraded: {}",
+                inner_exc,
+            )
+
     # 写入 bridge token 文件，供 Market 前端和 URI handler 使用
     try:
         from plugin.server.routes.market_bridge import write_bridge_token_file
@@ -176,6 +210,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
 
     app.include_router(health_router)
     app.include_router(plugins_router)
+    app.include_router(install_sources_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from pathlib import Path
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -13,6 +14,79 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
+
+
+# Default install_source sub-object injected when the manager is
+# unavailable/degraded or when a plugin cannot be matched to any lock
+# entry (Req 15.6 / design §11.2). Kept as a module-local constant so
+# tests can monkeypatch and callers can ``.copy()`` it cheaply.
+_DEFAULT_INSTALL_SOURCE: dict[str, object] = {
+    "source": "unknown",
+    "reason": None,
+    "installed_at": None,
+    "source_detail": None,
+}
+
+
+def _attach_install_source(
+    plugin_info: dict[str, object],
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+) -> None:
+    """Inject the ``install_source`` sub-object into ``plugin_info`` (Req 15).
+
+    Derives the plugin's on-disk directory from ``plugin_meta["config_path"]``
+    (the path of the plugin's ``plugin.toml``) when available — this is the
+    single source of truth for the plugin's directory in the state
+    snapshot. When ``config_path`` is missing or malformed we fall back
+    to a ``None`` directory_path, which forces
+    :meth:`InstallSourceManager.to_api_view` into its plugin_id text-match
+    branch — still correct, just less precise.
+
+    The whole attach path is defensive: any failure injects
+    ``_DEFAULT_INSTALL_SOURCE`` instead of raising, so that ``/plugins``
+    responses stay 200 even when the install-source subsystem is
+    degraded or unavailable (Req 15.6 / 17.2).
+    """
+
+    try:
+        from plugin.server.application.install_source import (
+            get_install_source_manager,
+        )
+    except Exception as exc:  # pragma: no cover — defensive import
+        logger.warning(
+            "install_source import failed, using default: err={}", exc
+        )
+        plugin_info["install_source"] = _DEFAULT_INSTALL_SOURCE.copy()
+        return
+
+    mgr = get_install_source_manager()
+    if mgr is None or mgr.is_degraded:
+        plugin_info["install_source"] = _DEFAULT_INSTALL_SOURCE.copy()
+        return
+
+    # Resolve directory_path from plugin_meta["config_path"] — the
+    # plugin.toml path set at registration time (see
+    # plugin.core.registry.register_plugin). Open-question §17.1
+    # acknowledges this is the best available source today.
+    directory_path: Path | None = None
+    config_path_obj = plugin_meta.get("config_path")
+    if isinstance(config_path_obj, str) and config_path_obj:
+        try:
+            directory_path = Path(config_path_obj).parent
+        except (OSError, ValueError):
+            directory_path = None
+
+    try:
+        plugin_info["install_source"] = mgr.to_api_view(
+            plugin_id, directory_path=directory_path
+        )
+    except Exception as exc:  # pragma: no cover — to_api_view should never raise
+        logger.warning(
+            "install_source: to_api_view failed for plugin_id=%s err=%s",
+            plugin_id, exc,
+        )
+        plugin_info["install_source"] = _DEFAULT_INSTALL_SOURCE.copy()
 
 
 def _normalize_mapping(
@@ -400,6 +474,10 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 plugin_i18n,
                 locale=_resolve_default_locale(),
             )
+            # Req 15 / design §11.2 — attach install_source sub-object.
+            # Never raises; always produces either a real entry view or
+            # _DEFAULT_INSTALL_SOURCE so /plugins stays 200.
+            _attach_install_source(plugin_info, plugin_id, plugin_meta)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

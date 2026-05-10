@@ -132,19 +132,52 @@ class PluginCliService:
         filename: str,
         content: bytes,
         on_conflict: str = "rename",
+        install_source_override: dict | None = None,
     ) -> dict[str, object]:
         """Upload a package file and immediately install it.
 
         Combines ``save_uploaded_package`` and ``install`` into a single operation
         for convenience.
+
+        After a successful install, records the install source in the
+        install-source lock (design §7 / Req 9). When ``install_source_override``
+        is ``None`` (the default, used by the direct ``/plugin-cli/upload-and-install``
+        route), the entry is recorded with ``channel="imported"`` and
+        ``source_detail.package_filename`` / ``source_detail.package_sha256``
+        derived from the upload. When ``install_source_override`` is provided
+        (used by ``market_bridge`` — design Fix 8), it drives the subsequent
+        call to ``record_market`` instead, bypassing the imported channel
+        entirely so the lock file never passes through an ``imported →
+        market`` intermediate state.
+
+        If the install-source manager is unavailable, degraded, or
+        otherwise raises during recording, the response body still
+        returns the original upload + install payload plus an
+        ``install_source_warning`` field describing the issue (Req 9.6
+        / 10.8). The HTTP status stays 200 — install-source failures
+        must never mask a successful install.
         """
+        import hashlib
+
         save_result = await self.save_uploaded_package(filename=filename, content=content)
         saved_path = str(save_result["path"])
         install_result = await self.install(package=saved_path, on_conflict=on_conflict)
-        return {
+
+        package_sha256 = hashlib.sha256(content).hexdigest().lower()
+        warning = await self._record_install_source_best_effort(
+            install_result=install_result,
+            package_filename=filename,
+            package_sha256=package_sha256,
+            override=install_source_override,
+        )
+
+        payload: dict[str, object] = {
             "upload": save_result,
             "install": install_result,
         }
+        if warning is not None:
+            payload["install_source_warning"] = warning
+        return payload
 
     def resolve_download_path(self, package: str) -> Path:
         """Resolve and validate a package path for download.
@@ -452,6 +485,70 @@ class PluginCliService:
 
         raise FileNotFoundError(f"package file not found: {raw}")
 
+    async def _record_install_source_best_effort(
+        self,
+        *,
+        install_result: dict,
+        package_filename: str,
+        package_sha256: str,
+        override: dict | None,
+    ) -> str | None:
+        """Best-effort record the install source in the lock file (design §7.3).
+
+        Returns ``None`` on success or a short human-readable warning
+        string on failure (to be surfaced as ``install_source_warning``
+        per Req 9.6 / 10.8). This helper intentionally never raises: a
+        broken install-source subsystem must not mask a successful
+        plugin install.
+        """
+        try:
+            from plugin.server.application.install_source import (
+                get_install_source_manager,
+            )
+        except Exception as exc:
+            return f"install_source_import_failed: {exc}"
+
+        mgr = get_install_source_manager()
+        if mgr is None:
+            return "install_source_manager_unavailable"
+        if mgr.is_degraded:
+            return f"install_source_manager_degraded: {mgr.degrade_reason}"
+
+        try:
+            await asyncio.to_thread(
+                _record_install_source_for_install_result,
+                mgr,
+                install_result,
+                package_filename,
+                package_sha256,
+                override,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "record_install_source failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            # Design §13 Fix 12: for BUILTIN_CHANNEL_LOCKED errors,
+            # surface a specifically-shaped warning so ops can grep for
+            # internal bug triggers.
+            try:
+                from plugin.server.application.install_source import InstallSourceError
+
+                if isinstance(exc, InstallSourceError):
+                    if exc.code == "BUILTIN_CHANNEL_LOCKED":
+                        details = exc.details
+                        return (
+                            "internal_error: attempted to mutate builtin channel, "
+                            f"plugin_id={details.get('plugin_id', '')} "
+                            f"directory={details.get('directory_name', '')}"
+                        )
+                    return f"{exc.code}: {exc.message}"
+            except Exception:
+                pass
+            return f"unexpected: {exc}"
+
     def _domain_error_from_exception(self, exc: Exception, *, action: str) -> ServerDomainError:
         if isinstance(exc, ServerDomainError):
             return exc
@@ -480,3 +577,46 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _record_install_source_for_install_result(
+    mgr,
+    install_result: dict,
+    package_filename: str,
+    package_sha256: str,
+    override: dict | None,
+) -> None:
+    """Walk ``install_result["installed_plugins"]`` and call the appropriate
+    ``record_*`` method on ``mgr`` for each one (design §7.3).
+
+    Raises :class:`InstallSourceError` with code ``"UNSUPPORTED_OVERRIDE"``
+    when the caller supplies an ``override`` whose ``channel`` is not one
+    of the supported values. Other ``InstallSourceError`` codes (e.g.
+    ``PATH_OUTSIDE_ROOTS``, ``BUILTIN_CHANNEL_LOCKED``) propagate from
+    the manager.
+    """
+    from plugin.server.application.install_source import InstallSourceError
+
+    installed_plugins = install_result.get("installed_plugins", [])
+    for installed in installed_plugins:
+        target_dir = Path(installed["target_dir"])
+        if override is None:
+            mgr.record_import(
+                directory_path=target_dir,
+                package_filename=package_filename,
+                package_sha256=package_sha256,
+            )
+        elif override.get("channel") == "market":
+            detail = override.get("market_detail", {})
+            mgr.record_market(
+                directory_path=target_dir,
+                plugin_market_id=detail.get("plugin_market_id", ""),
+                version=detail.get("version", ""),
+                package_url=detail.get("package_url", ""),
+            )
+        else:
+            raise InstallSourceError(
+                "UNSUPPORTED_OVERRIDE",
+                f"unsupported override channel={override.get('channel')}",
+                details={"override": override},
+            )

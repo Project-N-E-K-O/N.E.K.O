@@ -109,6 +109,7 @@ class MarketTaskStatus(BaseModel):
     error: str | None = None
     created_at: float = 0.0
     completed_at: float | None = None
+    install_source_warning: str | None = None
 
 
 class MarketInstalledPlugin(BaseModel):
@@ -328,10 +329,27 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
 
         # 推断文件名
         filename = _extract_filename(payload.package_url)
+
+        # Fix 8 — single-write market: tell upload_and_install to record
+        # this install directly as channel="market" rather than first
+        # writing "imported" and then overriding. This removes the
+        # intermediate state (observable on crash / concurrent read)
+        # and also makes installed_at align with the first market
+        # write instead of the transient imported write.
+        market_override: dict[str, Any] = {
+            "channel": "market",
+            "market_detail": {
+                "plugin_market_id": payload.plugin_id or "",
+                "version": payload.version or "",
+                "package_url": payload.package_url,
+            },
+        }
+
         result = await _cli_service.upload_and_install(
             filename=filename,
             content=content,
             on_conflict=payload.on_conflict,
+            install_source_override=market_override,
         )
 
         # 4. 可选：校验 payload_hash
@@ -352,6 +370,10 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
         task["message"] = "安装成功"
         task["result"] = result
         task["completed_at"] = time.time()
+
+        # Req 10.8: surface any install_source_warning back to the client.
+        if isinstance(result, dict) and "install_source_warning" in result:
+            task["install_source_warning"] = result["install_source_warning"]
 
     except Exception as exc:
         task["status"] = "failed"
