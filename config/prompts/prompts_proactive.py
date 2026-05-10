@@ -2283,9 +2283,9 @@ Preferencias de selección:
 - Frescura: temas recientes o en tendencia primero
 - Gancho de conversación: fácil de mencionar con naturalidad
 
-======Abajo está el contenido agregado======
+======以下为汇总内容======
 {merged_content}
-======Arriba está el contenido agregado======
+======以上为汇总内容======
 
 Reglas:
 1. NO elijas nada que se solape con el historial o chats proactivos recientes
@@ -2303,9 +2303,9 @@ Preferências de seleção:
 - Frescor: temas recentes ou em tendência primeiro
 - Gancho de conversa: fácil de mencionar com naturalidade
 
-======Abaixo está o conteúdo agregado======
+======以下为汇总内容======
 {merged_content}
-======Acima está o conteúdo agregado======
+======以上为汇总内容======
 
 Regras:
 1. NÃO escolha nada que se sobreponha ao histórico ou chats proativos recentes
