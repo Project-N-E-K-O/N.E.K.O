@@ -8,14 +8,18 @@
 
 Just say one of the following kinds of commands to the AI Agent, and the plugin will parse and execute it automatically:
 
-| Action type | Example command (copy and use) | Notes |
-| :--- | :--- | :--- |
-| **💡 Switch device** | `turn on the bedroom light` <br> `turn off the living room socket` | Supports verbs like "turn on / turn off / on / off" |
-| **🏠 Room control** | `turn on the light in the living room` <br> `turn off the master bedroom AC` | **(New focus)** Supports "room name + device name" |
-| **🌡️ Adjust temperature** | `set the AC to 26 degrees` <br> `set the AC to 24 degrees` | Automatically recognizes numbers and units |
-| **☀️ Adjust brightness** | `set the light to 50%` <br> `desk lamp brightness 30` | Supports percentages or integers |
-| **🔄 Switch mode** | `set the AC to cool mode` <br> `set the fan to auto` | Supports common mode words |
-| **🎬 Run a scene** | `run the come-home scene` <br> `trigger the leave-home scene` | Scenes must be pre-configured in the Mijia App |
+- **💡 Switch device** — `turn on the bedroom light` / `turn off the living room socket`  
+  Supports verbs like "turn on / turn off / on / off"
+- **🏠 Room control** — `turn on the light in the living room` / `turn off the master bedroom AC`  
+  **(New focus)** Supports "room name + device name"
+- **🌡️ Adjust temperature** — `set the AC to 26 degrees` / `set the AC to 24 degrees`  
+  Automatically recognizes numbers and units
+- **☀️ Adjust brightness** — `set the light to 50%` / `desk lamp brightness 30`  
+  Supports percentages or integers
+- **🔄 Switch mode** — `set the AC to cool mode` / `set the fan to auto`  
+  Supports common mode words
+- **🎬 Run a scene** — `run the come-home scene` / `trigger the leave-home scene`  
+  Scenes must be pre-configured in the Mijia App
 
 ---
 
@@ -44,12 +48,14 @@ To avoid confusion, we recommend getting into the habit of using **`[room name] 
 
 If you need to call the plugin interface directly, here are the core entry points:
 
-| Entry ID | Function | Example parameters |
-| :--- | :--- | :--- |
-| `smart_control` | **Unified natural-language control (recommended)** | `{ "command": "turn on the bedroom light" }` |
-| `find_device_by_name` | Find a device | `{ "name": "bedroom light" }` |
-| `query_device_state` | Query device state | `{ "name": "AC" }` |
-| `execute_scene` | Run a scene | `{ "scene_id": "12345" }` |
+- **`smart_control`** — Unified natural-language control (recommended)  
+  Params: `{ "command": "turn on the bedroom light" }`
+- **`find_device_by_name`** — Find a device  
+  Params: `{ "name": "bedroom light" }`
+- **`query_device_state`** — Query device state  
+  Params: `{ "name": "AC" }`
+- **`execute_scene`** — Run a scene  
+  Params: `{ "scene_id": "12345" }`
 
 ---
 
