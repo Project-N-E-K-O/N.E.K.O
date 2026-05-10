@@ -535,6 +535,17 @@ async def _cancel_openclaw_tasks_for_stop(
         info["error"] = "Cancelled by user"
         info["end_time"] = _now_iso()
         cancelled_task_ids.append(task_id)
+        _task_tracker.record_completed(
+            info.get("lanlan_name"),
+            task_id=task_id,
+            method="openclaw",
+            desc=_tracker_desc_for_task_info(info),
+            detail="Cancelled by user",
+            success=False,
+            cancelled=True,
+            trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
+            trigger_user_ts=info.get("_trigger_user_ts"),
+        )
 
         # Let the task coroutine emit the cancelled update when it is still
         # alive; only emit here when there is no active background handle.
@@ -2578,6 +2589,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
                             detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
+                            trigger_user_fingerprint=(_reg or {}).get("_trigger_user_fingerprint"),
+                            trigger_user_ts=(_reg or {}).get("_trigger_user_ts"),
                         )
                         try:
                             await _emit_task_result(

@@ -1377,6 +1377,21 @@ def test_agent_task_tracker_ignores_metadata_less_cancel_in_fingerprint_fallback
     ) is None
 
 
+def test_openclaw_stop_records_cancel_trigger_metadata():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    segment = None
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cancel_openclaw_tasks_for_stop":
+            segment = ast.get_source_segment(source, node)
+            break
+
+    assert segment is not None
+    assert "_task_tracker.record_completed" in segment
+    assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment
+    assert 'trigger_user_ts=info.get("_trigger_user_ts")' in segment
+
+
 def test_agent_task_tracker_matches_cancelled_user_plugin_suffix():
     source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
