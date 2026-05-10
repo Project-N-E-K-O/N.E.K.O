@@ -10,6 +10,7 @@ https://platform.stepfun.com/docs/zh/guides/developer/tts
 from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.native_voice_registry import (
     NativeVoiceProvider,
+    get_provider,
     register_provider,
 )
 
@@ -74,14 +75,27 @@ if FREE_STEPFUN_PROVIDER is not None:
     register_provider(FREE_STEPFUN_PROVIDER)
 
 
-def normalize_stepfun_tts_voice(voice_id: str | None) -> tuple[str, bool]:
+def get_stepfun_tts_default_voice(provider_key: str = "step") -> str:
+    """按当前阶跃线路 Provider 读取默认音色。"""
+    provider = get_provider(provider_key if provider_key in ("step", "free") else "step")
+    if provider is not None and provider.default_voice:
+        return provider.default_voice
+    return STEPFUN_TTS_DEFAULT_VOICE
+
+
+def normalize_stepfun_tts_voice(
+    voice_id: str | None,
+    provider_key: str = "step",
+) -> tuple[str, bool]:
     """阶跃线路内部使用的 voice_id 规范化辅助函数。"""
-    if STEPFUN_PROVIDER is None:
+    provider = get_provider(provider_key if provider_key in ("step", "free") else "step")
+    if provider is None:
         return (voice_id or "").strip(), False
-    return STEPFUN_PROVIDER.normalize(voice_id)
+    return provider.normalize(voice_id)
 
 
-def is_stepfun_tts_voice(voice_id: str | None) -> bool:
-    if STEPFUN_PROVIDER is None:
+def is_stepfun_tts_voice(voice_id: str | None, provider_key: str = "step") -> bool:
+    provider = get_provider(provider_key if provider_key in ("step", "free") else "step")
+    if provider is None:
         return False
-    return STEPFUN_PROVIDER.is_voice(voice_id)
+    return provider.is_voice(voice_id)

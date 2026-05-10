@@ -29,6 +29,7 @@ from utils.native_voice_registry import (
 )
 from utils.stepfun_tts_voices import (
     STEPFUN_TTS_DEFAULT_VOICE,
+    get_stepfun_tts_default_voice,
     normalize_stepfun_tts_voice,
 )
 
@@ -798,6 +799,9 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     # free + livestream 子模式：voice_id 优先取 api_providers.json 的
     # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
     # 多进程 worker 这里独立 import，与主进程对偶。
+    native_provider_key = 'free' if free_mode else 'step'
+    default_voice_id = get_stepfun_tts_default_voice(native_provider_key)
+
     if free_mode:
         try:
             from utils.api_config_loader import is_livestream_active, get_livestream_config
@@ -810,7 +814,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 直播音色已生效却实际还在用 caller 传入或默认 preset
                     logger.warning(
                         "livestream_config.enabled=true 但 voice_id 为空，"
-                        f"继续使用 caller 传入或默认音色: {voice_id or STEPFUN_TTS_DEFAULT_VOICE}"
+                        f"继续使用 caller 传入或默认音色: {voice_id or default_voice_id}"
                     )
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
@@ -819,9 +823,12 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
     # 使用配置中的默认 StepFun 音色
     if not voice_id:
-        voice_id = STEPFUN_TTS_DEFAULT_VOICE
+        voice_id = default_voice_id or STEPFUN_TTS_DEFAULT_VOICE
     else:
-        normalized_voice_id, voice_recognized = normalize_stepfun_tts_voice(voice_id)
+        normalized_voice_id, voice_recognized = normalize_stepfun_tts_voice(
+            voice_id,
+            native_provider_key,
+        )
         if voice_recognized:
             voice_id = normalized_voice_id
     

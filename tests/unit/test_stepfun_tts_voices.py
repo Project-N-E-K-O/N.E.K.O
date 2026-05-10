@@ -5,15 +5,20 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.native_voice_registry import (
+    NativeVoiceProvider,
+    get_provider,
     get_native_voice_catalog_for_ui,
     is_native_voice,
+    register_provider,
     resolve_native_voice_for_routing,
 )
 from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.stepfun_tts_voices import (
+    FREE_STEPFUN_PROVIDER,
     FALLBACK_STEPFUN_TTS_DEFAULT_VOICE,
     STEPFUN_TTS_DEFAULT_MALE_VOICE,
     STEPFUN_TTS_DEFAULT_VOICE,
+    get_stepfun_tts_default_voice,
     normalize_stepfun_tts_voice,
 )
 
@@ -41,6 +46,34 @@ def test_stepfun_native_voice_aliases_route_to_canonical_ids():
         STEPFUN_TTS_DEFAULT_MALE_VOICE,
         True,
     )
+
+
+def test_stepfun_worker_normalization_uses_active_provider_catalog():
+    original_free_provider = get_provider("free")
+    custom_free_provider = NativeVoiceProvider(
+        key="free",
+        catalog={"free-only-voice": "免费专属"},
+        aliases={"free-alias": "free-only-voice"},
+        default_voice="free-only-voice",
+        default_male_voice="free-only-voice",
+        catalog_prefix="免费 API",
+        catalog_value_is_display_name=True,
+    )
+    register_provider(custom_free_provider)
+    try:
+        assert normalize_stepfun_tts_voice("free-alias", "free") == (
+            "free-only-voice",
+            True,
+        )
+        assert normalize_stepfun_tts_voice("free-alias", "step") == (
+            STEPFUN_TTS_DEFAULT_VOICE,
+            False,
+        )
+        assert get_stepfun_tts_default_voice("free") == "free-only-voice"
+    finally:
+        provider_to_restore = original_free_provider or FREE_STEPFUN_PROVIDER
+        if provider_to_restore is not None:
+            register_provider(provider_to_restore)
 
 
 def test_stepfun_ui_catalog_exposes_provider_label():
