@@ -111,6 +111,48 @@ JSONのみを返し、説明文は付けないでください。""",
 8. confidence должно быть числом от 0 до 1.
 
 Верните только JSON без пояснений.""",
+
+    'es': """你是一个情感分析专家。Identifica la única emoción más dominante y más visible en el texto de entrada y devuelve solo JSON: {"emotion": "emotion_type", "confidence": confidence}.
+
+Emociones permitidas:
+- happy: alegría, entusiasmo, afecto, juego, ternura, deleite, calidez
+- sad: tristeza, dolor, decepción, bajón, arrepentimiento, vulnerabilidad
+- angry: enojo, molestia, irritación, hostilidad, queja, explosión
+- surprised: sorpresa, shock, sobresalto, algo inesperado, reacción exagerada
+- neutral: calma, hechos, emoción débil, difícil de juzgar
+
+Reglas:
+1. Elige la emoción principal más fuerte, no la opción más segura.
+2. No devuelvas neutral salvo que el texto sea realmente débil o plano emocionalmente.
+3. Usa happy solo cuando el texto exprese claramente disfrute positivo, afecto, alegría, placer juguetón o auténtica diversión; no trates una formulación tierna o muletillas como happy por sí solas.
+4. Si la emoción central es dolor, vulnerabilidad, ganas de llorar, sentirse maltratado, miedo, súplica o búsqueda de consuelo, prefiere sad aunque la redacción suene tierna o dependiente.
+5. Usa angry cuando la emoción central sea culpa, hostilidad, queja, irritación, advertencia, rechazo, colapso o impaciencia. Para quejas o desprecio ocasionales, si el tono general sigue siendo ligero, bromista o tierno, usa tu criterio.
+6. Usa surprised solo para shock claro, sorpresa repentina o asombro exagerado; no etiquetes como surprised solo por signos de exclamación o partículas.
+7. Muletillas, efectos de sonido, habla tipo mascota y palabras de relleno son marcadores de estilo, no emociones por sí mismas.
+8. confidence debe ser un número entre 0 y 1.
+
+Devuelve solo JSON, sin explicación.""",
+
+    'pt': """你是一个情感分析专家。Identifique a única emoção mais dominante e mais externa no texto de entrada e retorne apenas JSON: {"emotion": "emotion_type", "confidence": confidence}.
+
+Emoções permitidas:
+- happy: alegria, empolgação, afeto, brincadeira, fofura, deleite, calor
+- sad: tristeza, mágoa, decepção, baixo astral, arrependimento, vulnerabilidade
+- angry: raiva, incômodo, irritação, hostilidade, reclamação, explosão
+- surprised: surpresa, choque, susto, inesperado, reação exagerada
+- neutral: calma, factual, emoção fraca, difícil de julgar
+
+Regras:
+1. Escolha a emoção principal mais forte, não a mais segura.
+2. Não retorne neutral a menos que o texto seja realmente fraco ou plano emocionalmente.
+3. Use happy apenas quando o texto expressar claramente prazer positivo, afeto, deleite, prazer brincalhão ou diversão genuína; não trate uma formulação fofa ou tiques verbais sozinhos como happy.
+4. Se a emoção central for mágoa, vulnerabilidade, vontade de chorar, sensação de estar sendo maltratado, medo, súplica ou busca de consolo, prefira sad mesmo que a redação soe fofa ou carente.
+5. Use angry quando a emoção central for culpa, hostilidade, reclamação, irritação, aviso, rejeição, explosão ou impaciência. Para reclamações ou desprezo ocasionais, se o tom geral ainda for leve, brincalhão ou fofo, use seu julgamento.
+6. Use surprised apenas para choque claro, surpresa repentina ou espanto exagerado; não rotule como surprised só por pontos de exclamação ou partículas.
+7. Bordões, efeitos sonoros, fala de bichinho e palavras de preenchimento são marcadores de estilo, não emoções por si só.
+8. confidence deve ser um número entre 0 e 1.
+
+Retorne apenas JSON, sem explicação.""",
 }
 
 
@@ -165,6 +207,18 @@ EMOTION_KEYWORDS_BY_LANG = {
         # 里假阳，去掉。剩余 `ничего себе/внезапно/удив` 已能覆盖真惊讶表达。
         'surprised': ('ничего себе', 'внезапно', 'удив'),
     },
+    'es': {
+        'happy': ('feliz', 'alegre', 'contento', 'contenta', 'me encanta', 'genial', 'jaja'),
+        'sad': ('triste', 'dolido', 'dolida', 'deprimido', 'deprimida', 'llorar', 'me duele'),
+        'angry': ('enojado', 'enojada', 'furioso', 'furiosa', 'molesto', 'molesta', 'irritado', 'irritada'),
+        'surprised': ('wow', 'vaya', 'no puede ser', 'en serio', 'sorprendido', 'sorprendida'),
+    },
+    'pt': {
+        'happy': ('feliz', 'alegre', 'contente', 'adorei', 'amei', 'legal', 'haha'),
+        'sad': ('triste', 'magoado', 'magoada', 'deprimido', 'deprimida', 'chorar', 'dói'),
+        'angry': ('irritado', 'irritada', 'bravo', 'brava', 'zangado', 'zangada', 'furioso', 'furiosa'),
+        'surprised': ('uau', 'nossa', 'não acredito', 'nao acredito', 'sério', 'serio', 'surpreso', 'surpresa'),
+    },
 }
 
 # 强烈攻击/敌意表达：命中后启发式给 angry 分数 ×2
@@ -174,6 +228,8 @@ ANGRY_ATTACK_PATTERNS_BY_LANG = {
     'ja': ('うるさい', '黙れ', 'あっち行け', 'ふざけるな', 'ふざけんな'),
     'ko': ('닥쳐', '꺼져', '저리 가', '그만해'),
     'ru': ('заткнись', 'отвали', 'уйди', 'хватит уже'),
+    'es': ('cállate', 'callate', 'vete', 'déjame en paz', 'dejame en paz', 'basta ya', 'aléjate'),
+    'pt': ('cala a boca', 'vai embora', 'me deixa em paz', 'chega', 'para com isso'),
 }
 
 # 脆弱/受伤表达：命中后启发式给 sad 分数 ×2
@@ -184,6 +240,8 @@ SAD_VULNERABLE_PATTERNS_BY_LANG = {
     'ja': ('泣きたい', 'つらすぎ', '心が痛', '落ち込んで'),
     'ko': ('울고 싶', '너무 속상', '마음이 아프', '서러워'),
     'ru': ('хочется плакать', 'так больно', 'разбил сердце', 'очень обидно'),
+    'es': ('quiero llorar', 'me duele', 'me siento herido', 'me siento herida', 'me rompió el corazón'),
+    'pt': ('quero chorar', 'me machucou', 'me sinto magoado', 'me sinto magoada', 'partiu meu coração'),
 }
 
 # 撒娇/玩闹表达：命中后启发式给 happy 分数 +1（仅在没有 sad/angry 信号时）
@@ -193,6 +251,8 @@ HAPPY_PLAYFUL_PATTERNS_BY_LANG = {
     'ja': ('わーい', 'やったー', 'えへへ', 'うふふ'),
     'ko': ('히히', '헤헤', '꺄아', '신난다'),
     'ru': ('ура', 'хихи', 'хаха'),
+    'es': ('jaja', 'jeje', 'yay', 'qué bien', 'que bien'),
+    'pt': ('haha', 'hehe', 'eba', 'que bom'),
 }
 
 # 否定上下文回看 token：关键词命中前 N 字符内若出现这些 token，本次命中作废，
@@ -208,6 +268,8 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     'ja': ('ない', 'ません', 'なくて'),
     'ko': ('안 ', '안은', '안이', '못 ', '않', '없'),
     'ru': ('не ', 'нет ', 'никогда'),
+    'es': ('no ', 'nunca ', 'jamás ', 'jamas '),
+    'pt': ('não ', 'nao ', 'nunca ', 'jamais '),
 }
 
 # 紧凑否定 token：仅在命中关键词紧邻前若干字符（_HEURISTIC_TIGHT_NEGATION_LOOKBACK）
@@ -222,6 +284,8 @@ HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG = {
     # 单字 `안/못` 也会出现在 `안녕/안내/안전/안경/못이` 等非否定词组里，所以走紧凑
     # lookback：仅在命中关键词紧邻前若干字符内才算否定。
     'ko': ('안', '못'),
+    'es': ('no',),
+    'pt': ('não', 'nao'),
 }
 
 # 否定回看的非否定固定搭配白名单：window 中含这些短语时，把它们替换成空白后
@@ -231,6 +295,8 @@ HEURISTIC_NEGATION_BLOCKLIST_BY_LANG = {
     'en': ('not only', 'no doubt', 'no wonder'),
     'zh': ('不仅', '不只', '不但', '不光'),
     'ru': ('не только',),
+    'es': ('no solo',),
+    'pt': ('não só', 'nao so', 'não apenas', 'nao apenas'),
 }
 
 # 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
@@ -243,6 +309,8 @@ HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG = {
     # `-지만/-는데`（如 `슬프지 않지만 행복해`），这两个也加进来
     'ko': ('하지만', '그러나', '근데', '대신', '지만', '는데'),
     'ru': (' но ', ' однако', ' зато', ' а '),
+    'es': (' pero ', ' aunque ', ' sin embargo', ' en cambio'),
+    'pt': (' mas ', ' porém', ' porem', ' embora ', ' no entanto', ' em vez disso'),
 }
 
 # 模型可能输出的 emotion label 别名/同义词，归一化到 canonical 5 类。
@@ -288,6 +356,22 @@ EMOTION_LABEL_ALIASES_BY_LANG = {
         'сержусь': 'angry', 'рассержен': 'angry', 'рассержена': 'angry',
         'удивлен': 'surprised', 'удивлена': 'surprised', 'удивление': 'surprised', 'шок': 'surprised',
         'нейтрально': 'neutral', 'спокойно': 'neutral', 'спокойный': 'neutral', 'спокойная': 'neutral',
+    },
+    'es': {
+        'feliz': 'happy', 'alegre': 'happy', 'contento': 'happy', 'contenta': 'happy',
+        'triste': 'sad', 'tristeza': 'sad', 'deprimido': 'sad', 'deprimida': 'sad',
+        'enojado': 'angry', 'enojada': 'angry', 'enfadado': 'angry', 'enfadada': 'angry',
+        'molesto': 'angry', 'molesta': 'angry',
+        'sorprendido': 'surprised', 'sorprendida': 'surprised', 'sorpresa': 'surprised',
+        'neutral': 'neutral', 'tranquilo': 'neutral', 'tranquila': 'neutral', 'calmado': 'neutral',
+    },
+    'pt': {
+        'feliz': 'happy', 'alegre': 'happy', 'contente': 'happy', 'animado': 'happy', 'animada': 'happy',
+        'triste': 'sad', 'tristeza': 'sad', 'deprimido': 'sad', 'deprimida': 'sad',
+        'irritado': 'angry', 'irritada': 'angry', 'bravo': 'angry', 'brava': 'angry',
+        'zangado': 'angry', 'zangada': 'angry',
+        'surpreso': 'surprised', 'surpresa': 'surprised', 'chocado': 'surprised', 'chocada': 'surprised',
+        'neutro': 'neutral', 'neutra': 'neutral', 'calmo': 'neutral', 'calma': 'neutral',
     },
 }
 

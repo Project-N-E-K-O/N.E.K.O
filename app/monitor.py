@@ -3,6 +3,13 @@ import sys, os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+
+# Wire DI bindings explicitly — direct script invocation
+# (``python app/monitor.py``) doesn't run app/__init__.py.
+# Idempotent under launcher's ``from app import monitor`` path too.
+from app.runtime_bindings import install_runtime_bindings as _install_runtime_bindings
+_install_runtime_bindings()
+
 import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 import asyncio

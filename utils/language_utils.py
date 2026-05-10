@@ -20,6 +20,7 @@ from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
+from utils.steam_state import get_steamworks
 
 logger = get_module_logger(__name__)
 
@@ -193,8 +194,6 @@ def _get_steam_language() -> Optional[str]:
         语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，如果无法获取则返回 None
     """
     try:
-        from main_routers.shared_state import get_steamworks
-
         steamworks = get_steamworks()
         if steamworks is None:
             return None

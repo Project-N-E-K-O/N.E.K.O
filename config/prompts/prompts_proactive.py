@@ -5,6 +5,7 @@ Includes: all proactive_chat_prompt* variants, Phase 1 web screening prompts,
 Phase 2 generation prompts, dispatch tables, music/meme prompts and their
 getter functions, and proactive-related injection fragments.
 """
+
 from __future__ import annotations
 
 from config.prompts.prompts_sys import _loc, get_avatar_annotation_ignore_hint
@@ -872,7 +873,6 @@ proactive_chat_prompt_music_ru = """Вы - {lanlan_name}, и {master_name}, во
 """
 
 
-
 # ==============================================
 # Phase 1: Screening Prompts — 筛选阶段 prompt（不生成搭话，只筛选话题）
 # ==============================================
@@ -1257,25 +1257,26 @@ proactive_generate_ru = """Ваша роль:
 # Dispatch tables and helper functions
 # =====================================================================
 
+
 def _normalize_prompt_language(lang: str) -> str:
     if not lang:
-        return 'zh'
+        return "zh"
     lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
-        return 'zh'
-    if lang_lower.startswith('ja'):
-        return 'ja'
-    if lang_lower.startswith('en'):
-        return 'en'
-    if lang_lower.startswith('ko'):
-        return 'ko'
-    if lang_lower.startswith('ru'):
-        return 'ru'
-    # es/pt 当前未提供原生 proactive prompt 翻译，回退到 en（LLM 能理解英文系统 prompt，
-    # 输出语言由全局语言变量驱动的其他机制控制）
-    if lang_lower.startswith('es') or lang_lower.startswith('pt'):
-        return 'en'
-    return 'en'
+    if lang_lower.startswith("zh"):
+        return "zh"
+    if lang_lower.startswith("ja"):
+        return "ja"
+    if lang_lower.startswith("en"):
+        return "en"
+    if lang_lower.startswith("ko"):
+        return "ko"
+    if lang_lower.startswith("ru"):
+        return "ru"
+    if lang_lower.startswith("es"):
+        return "es"
+    if lang_lower.startswith("pt"):
+        return "pt"
+    return "en"
 
 
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
@@ -1292,12 +1293,12 @@ def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
     顺序里，本 helper 比 PROACTIVE_ACTION_NOTE_PLACEHOLDERS 字典定义早出现，
     放函数体里靠延迟查找规避前向引用。
     """
-    name = ' '.join(str(master_name or '').split())
+    name = " ".join(str(master_name or "").split())
     if name:
         return name
     return PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
-        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
-    )['master']
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS["en"]
+    )["master"]
 
 
 def _escape_format_braces(value: str) -> str:
@@ -1312,89 +1313,604 @@ def _escape_format_braces(value: str) -> str:
     转义，第一次 .format 后字符串里就是 ``A{{B}}``；第二次 .format 把 ``{{`` /
     ``}}`` 还原为 ``{`` / ``}``，最终输出 ``A{B}`` 字面量，且不会被误解析。
     """
-    return value.replace('{', '{{').replace('}', '}}')
+    return value.replace("{", "{{").replace("}", "}}")
+
+
+proactive_chat_prompt_es = """Eres {lanlan_name}. Acabas de ver recomendaciones de inicio y temas en tendencia. Según tu historial de chat con {master_name} y tus propios intereses, decide si quieres hablar proactivamente de ellos.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是首页推荐内容======
+{trending_content}
+======以上为首页推荐内容======
+
+Decide si hablar proactivamente según estas reglas:
+1. Si el contenido es interesante, reciente o vale la pena comentarlo, puedes mencionarlo.
+2. Si se relaciona con conversaciones previas o con tus intereses, conviene mencionarlo.
+3. Si es aburrido, no adecuado para conversar, o {master_name} dijo claramente que no quiere hablar, puedes quedarte en silencio.
+4. Habla de forma natural y breve, como si compartieras algo que acabas de notar.
+5. Elige solo el tema más interesante y evita repetir contenido ya presente en el historial.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_screenshot_es = """Eres {lanlan_name}. Ahora estás viendo lo que hay en la pantalla. Según tu historial de chat con {master_name} y tus propios intereses, decide si quieres hablar proactivamente sobre lo que aparece.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是当前屏幕内容======
+{screenshot_content}
+======以上为当前屏幕内容======
+{window_title_section}
+
+Decide si hablar proactivamente según estas reglas:
+1. Enfócate estrictamente en lo que se muestra en pantalla.
+2. Mantén continuidad con temas o intereses mencionados en el historial.
+3. Controla el ritmo: si {master_name} habló hace poco de algo similar o parece ocupado, no inicies.
+4. Mantén un estilo conciso e interesante.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_window_search_es = """Eres {lanlan_name}. Puedes ver lo que {master_name} está haciendo ahora y encontraste información relacionada. Según tu historial de chat con {master_name} y tus intereses, decide si quieres hablar proactivamente de ello.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是{master_name}当前正在关注的内容======
+{window_context}
+======以上为当前关注内容======
+
+Decide si hablar proactivamente según estas reglas:
+1. Enfócate en la actividad actual y busca un punto de entrada interesante.
+2. Usa la información encontrada para enriquecer el tema con detalles útiles o divertidos.
+3. Mantén continuidad con temas o intereses previos.
+4. Controla el ritmo: si {master_name} habló hace poco de algo similar o parece ocupado, no inicies.
+5. Sé breve y natural, como si notaras casualmente lo que está haciendo.
+6. Muestra curiosidad ligera sin interrogar demasiado.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_news_es = """Eres {lanlan_name}. Acabas de ver algunos temas en tendencia. Según tu historial de chat con {master_name} y tus intereses, decide si quieres hablar proactivamente sobre ellos.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+Decide si hablar proactivamente según estas reglas:
+1. Si el tema es interesante, reciente o vale la pena comentarlo, puedes mencionarlo.
+2. Si se relaciona con conversaciones previas o con tus intereses, conviene mencionarlo.
+3. Si es aburrido, no adecuado para conversar, o {master_name} dijo claramente que no quiere hablar, puedes quedarte en silencio.
+4. Habla de forma natural y breve, como si compartieras algo que acabas de ver.
+5. Elige solo el tema más interesante y evita repetir lo que ya está en el historial.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_video_es = """Eres {lanlan_name}. Acabas de ver algunas recomendaciones de video. Según tu historial de chat con {master_name} y tus intereses, decide si quieres hablar proactivamente de ellas.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+Decide si hablar proactivamente según estas reglas:
+1. Si el video es interesante, reciente o vale la pena comentarlo, puedes mencionarlo.
+2. Si se relaciona con conversaciones previas o con tus intereses, conviene mencionarlo.
+3. Si es aburrido, no adecuado para conversar, o {master_name} dijo claramente que no quiere hablar, puedes quedarte en silencio.
+4. Habla de forma natural y breve, como si compartieras algo que acabas de ver.
+5. Elige solo el video más interesante y evita repetir lo que ya está en el historial.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_personal_es = """Eres {lanlan_name}. Acabas de ver nuevas publicaciones de creadores que sigues. Según tu historial de chat con {master_name} y los intereses de {master_name}, decide si quieres hablar proactivamente de ellas.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+Decide si hablar proactivamente según estas reglas:
+1. Si el contenido es interesante, reciente o vale la pena comentarlo, puedes mencionarlo.
+2. Si se relaciona con conversaciones previas o con los intereses de {master_name}, conviene mencionarlo.
+3. Si es aburrido, no adecuado para conversar, o {master_name} dijo claramente que no quiere hablar, puedes quedarte en silencio.
+4. Habla de forma natural y breve, como si compartieras algo que acabas de ver en tu lista de seguidos.
+5. Elige solo el tema más interesante y evita repetir lo que ya está en el historial.
+
+Respuesta:
+- Si decides hablar, di directamente lo que quieres decir, breve y natural. No incluyas razonamiento.
+- Si decides no hablar, responde solo "[PASS]".
+"""
+
+proactive_chat_prompt_music_es = """Eres {lanlan_name}, y puede que {master_name} quiera escuchar música. Según el historial y la conversación actual, decide si deberías poner música para {master_name}.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======Abajo está la conversación actual======
+{current_chat}
+======Arriba está la conversación actual======
+
+Usa estas reglas para decidir si poner música y qué buscar:
+1. Cuando {master_name} pida música explícitamente, deberías poner música.
+2. Si la conversación menciona relajarse, descansar, cansancio, sueño, bajón o un ánimo tranquilo, puedes recomendar música relajante.
+3. Analiza la petición de {master_name} para extraer título, artista o género como palabra clave. Géneros soportados: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Si {master_name} no especifica, recomienda según el ánimo de la conversación o sus preferencias.
+
+Respuesta:
+- Si decides poner música, devuelve solo la palabra clave de búsqueda generada.
+- Responde "[PASS]" solo cuando claramente no sea adecuado poner música.
+"""
+
+proactive_chat_prompt_pt = """Você é {lanlan_name}. Acabou de ver recomendações da página inicial e assuntos em alta. Com base no histórico de conversa com {master_name} e nos seus próprios interesses, decida se deve falar proativamente sobre eles.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是首页推荐内容======
+{trending_content}
+======以上为首页推荐内容======
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Se o conteúdo for interessante, recente ou valer uma conversa, você pode mencioná-lo.
+2. Se tiver relação com conversas anteriores ou com seus interesses, vale ainda mais mencionar.
+3. Se for chato, inadequado para conversa, ou {master_name} deixou claro que não quer conversar, você pode ficar em silêncio.
+4. Fale de modo natural e breve, como quem compartilha algo que acabou de notar.
+5. Escolha apenas o tema mais interessante e evite repetir o que já está no histórico.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_screenshot_pt = """Você é {lanlan_name}. Agora está vendo o que há na tela. Com base no histórico de conversa com {master_name} e nos seus próprios interesses, decida se deve falar proativamente sobre o que aparece.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是当前屏幕内容======
+{screenshot_content}
+======以上为当前屏幕内容======
+{window_title_section}
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Foque estritamente no que é mostrado na tela.
+2. Mantenha continuidade com temas ou interesses mencionados no histórico.
+3. Controle o ritmo: se {master_name} discutiu algo parecido recentemente ou parece ocupado, não inicie.
+4. Mantenha um estilo conciso e interessante.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_window_search_pt = """Você é {lanlan_name}. Você consegue ver o que {master_name} está fazendo agora e encontrou informações relacionadas. Com base no histórico de conversa com {master_name} e nos seus interesses, decida se deve falar proativamente sobre isso.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是{master_name}当前正在关注的内容======
+{window_context}
+======以上为当前关注内容======
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Foque na atividade atual e encontre uma entrada interessante.
+2. Use informações relacionadas da busca para enriquecer o tema com detalhes úteis ou divertidos.
+3. Mantenha continuidade com temas ou interesses anteriores.
+4. Controle o ritmo: se {master_name} discutiu algo parecido recentemente ou parece ocupado, não inicie.
+5. Seja breve e natural, como se tivesse notado casualmente o que {master_name} está fazendo.
+6. Mostre curiosidade leve sem questionar demais.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_news_pt = """Você é {lanlan_name}. Acabou de ver alguns assuntos em alta. Com base no histórico de conversa com {master_name} e nos seus interesses, decida se deve falar proativamente sobre eles.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Se o assunto for interessante, recente ou valer uma conversa, você pode mencioná-lo.
+2. Se tiver relação com conversas anteriores ou com seus interesses, vale ainda mais mencionar.
+3. Se for chato, inadequado para conversa, ou {master_name} deixou claro que não quer conversar, você pode ficar em silêncio.
+4. Fale de modo natural e breve, como quem compartilha algo que acabou de ver.
+5. Escolha apenas o assunto mais interessante e evite repetir o que já está no histórico.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_video_pt = """Você é {lanlan_name}. Acabou de ver algumas recomendações de vídeo. Com base no histórico de conversa com {master_name} e nos seus interesses, decida se deve falar proativamente sobre elas.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Se o vídeo for interessante, recente ou valer uma conversa, você pode mencioná-lo.
+2. Se tiver relação com conversas anteriores ou com seus interesses, vale ainda mais mencionar.
+3. Se for chato, inadequado para conversa, ou {master_name} deixou claro que não quer conversar, você pode ficar em silêncio.
+4. Fale de modo natural e breve, como quem compartilha algo que acabou de ver.
+5. Escolha apenas o vídeo mais interessante e evite repetir o que já está no histórico.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_personal_pt = """Você é {lanlan_name}. Acabou de ver novas publicações de criadores que você segue. Com base no histórico de conversa com {master_name} e nos interesses de {master_name}, decida se deve falar proativamente sobre elas.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+Decida se deve falar proativamente seguindo estas regras:
+1. Se o conteúdo for interessante, recente ou valer uma conversa, você pode mencioná-lo.
+2. Se tiver relação com conversas anteriores ou com os interesses de {master_name}, vale ainda mais mencionar.
+3. Se for chato, inadequado para conversa, ou {master_name} deixou claro que não quer conversar, você pode ficar em silêncio.
+4. Fale de modo natural e breve, como quem compartilha algo que acabou de ver na lista de seguidos.
+5. Escolha apenas o tema mais interessante e evite repetir o que já está no histórico.
+
+Resposta:
+- Se escolher falar, diga diretamente o que quer dizer, de forma breve e natural. Não inclua raciocínio.
+- Se escolher não falar, responda apenas "[PASS]".
+"""
+
+proactive_chat_prompt_music_pt = """Você é {lanlan_name}, e talvez {master_name} queira ouvir música. Com base no histórico e na conversa atual, decida se deve tocar música para {master_name}.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======Abaixo está a conversa atual======
+{current_chat}
+======Acima está a conversa atual======
+
+Use estas regras para decidir se toca música e o que buscar:
+1. Quando {master_name} pedir música explicitamente, você deve tocar música.
+2. Se a conversa mencionar relaxar, descansar, cansaço, sono, desânimo ou clima tranquilo, você pode recomendar música relaxante.
+3. Analise o pedido de {master_name} para extrair título, artista ou gênero como palavra-chave. Gêneros suportados: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Se {master_name} não especificar, recomende com base no clima da conversa ou nas preferências dele.
+
+Resposta:
+- Se decidir tocar música, retorne apenas a palavra-chave de busca gerada.
+- Responda "[PASS]" apenas quando claramente não for adequado tocar música.
+"""
+
+proactive_chat_rewrite_prompt_es = """Eres un limpiador de texto. Reescribe y limpia la salida de chat proactivo generada por el LLM.
+
+======以下为原始输出======
+{raw_output}
+======以上为原始输出======
+
+Reglas:
+1. Elimina el carácter "|". Si el contenido contiene "|", conserva solo el contenido hablado real después del último "|". Si hay varios turnos, conserva solo el primer segmento.
+2. Elimina todos los marcadores de razonamiento o análisis (por ejemplo, <thinking>, [analysis]) y conserva solo el contenido hablado final.
+3. Conserva el contenido central del chat proactivo. Debe ser:
+   - Breve y natural (no más de 100 palabras)
+   - Oral y casual, como una conversación amistosa
+   - Directo, sin explicar por qué se dice
+4. Si no queda nada adecuado, devuelve "[PASS]".
+
+Devuelve solo el contenido limpiado, sin explicación adicional."""
+
+proactive_chat_rewrite_prompt_pt = """Você é um limpador de texto. Reescreva e limpe a saída de chat proativo gerada pelo LLM.
+
+======以下为原始输出======
+{raw_output}
+======以上为原始输出======
+
+Regras:
+1. Remova o caractere "|". Se o conteúdo contiver "|", mantenha apenas a fala real depois do último "|". Se houver vários turnos, mantenha apenas o primeiro segmento.
+2. Remova todos os marcadores de raciocínio ou análise (por exemplo, <thinking>, [analysis]) e mantenha apenas o conteúdo falado final.
+3. Preserve o conteúdo central do chat proativo. Ele deve ser:
+   - Breve e natural (no máximo 100 palavras)
+   - Oral e casual, como uma conversa amigável
+   - Direto ao ponto, sem explicar por que foi dito
+4. Se nada adequado restar, retorne "[PASS]".
+
+Retorne apenas o conteúdo limpo, sem explicação extra."""
+
+proactive_screen_web_es = """Eres un curador de temas para adultos jóvenes. Elige el único tema más conversable del contenido agregado abajo.
+
+Preferencias de tema (en orden de prioridad):
+- Contenido con humor, giros o potencial de debate (memes, opiniones calientes, controversia, etc.)
+- Áreas que importan a jóvenes: videojuegos, anime, tecnología, cultura de internet, famosos, temas sociales
+- Frescura: noticias de última hora o tendencias primero
+- Inicio de conversación: fácil de decir casualmente "oye, ¿viste esto?"
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+Reglas críticas:
+1. NO elijas nada que se solape con el historial o con chats proactivos recientes
+2. Si los chats proactivos recientes repitieron el mismo tipo de tema, elige otro tipo o devuelve [PASS]
+3. Cambiar la redacción no vuelve nuevo un tema; si el tema central es igual, trátalo como duplicado y elige otro o [PASS]
+4. Si nada es suficientemente interesante, devuelve [PASS]
+
+Formato de respuesta (estricto):
+- Si hay un tema que vale la pena:
+Source: [nombre de plataforma, p. ej. Twitter/Reddit/Weibo/Bilibili]
+No: [número del elemento dentro de su categoría, p. ej. 3]
+Topic: [título original exactamente como aparece]
+Summary: [2-3 frases sobre por qué es interesante y cuál es el ángulo de charla]
+- Si nada vale la pena: responde solo [PASS]
+"""
+
+proactive_screen_web_pt = """Você é curador de assuntos para jovens adultos. Escolha o único tema mais conversável do conteúdo agregado abaixo.
+
+Preferências de tema (em ordem de prioridade):
+- Conteúdo com humor, reviravoltas ou potencial de debate (memes, opiniões polêmicas, controvérsias etc.)
+- Áreas que jovens valorizam: games, anime, tecnologia, cultura de internet, celebridades, questões sociais
+- Frescor: notícias urgentes ou tendências primeiro
+- Ganchos de conversa: fácil de dizer casualmente "ei, você viu isso?"
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+Regras críticas:
+1. NÃO escolha nada que se sobreponha ao histórico ou aos chats proativos recentes
+2. Se chats proativos recentes repetiram o mesmo tipo de tema, escolha outro tipo ou retorne [PASS]
+3. Só reformular não torna um tema novo; se o núcleo for igual, trate como duplicado e escolha outro ou [PASS]
+4. Se nada for interessante o bastante, retorne [PASS]
+
+Formato de resposta (estrito):
+- Se houver um tema digno:
+Source: [nome da plataforma, ex. Twitter/Reddit/Weibo/Bilibili]
+No: [número do item dentro da categoria, ex. 3]
+Topic: [título original exatamente como aparece]
+Summary: [2-3 frases sobre por que é interessante e qual é o gancho de conversa]
+- Se nada valer compartilhar: responda apenas [PASS]
+"""
+
+proactive_generate_es = """Tu persona:
+{character_prompt}
+
+Estado interno:
+{inner_thoughts}
+
+{state_section}
+
+Historial de conversación:
+{memory_context}
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+{music_section}
+{meme_section}
+
+======以下为向{master_name}进行搭话的决策方式======
+
+★ Cuando el estado de actividad enumere un "hilo inconcluso", puedes continuarlo sin importar la propensión.
+
+Prioridad de ángulos (limitada por "propensión a conversar"):
+1. Hilo inconcluso del turno anterior → continuarlo
+2. Un tema de "pistas de memoria" con más de 1 día → mencionarlo con naturalidad
+3. Algo en pantalla que merezca un comentario
+4. Material externo (noticias / música / meme) que encaje con el ánimo
+5. Sin ángulo natural → [PASS]
+
+El formato de salida (tag de fuente vs. texto plano) sigue la sección "formato de salida" de abajo.
+
+Reglas adicionales:
+- Repetición: mismo tema durante la última hora → [PASS]; temas de más de 1 día no cuentan como repetidos.
+- Estilo: mantente en personaje, máximo 2-3 frases, sin texto de razonamiento.
+{source_instruction}{music_instruction}{meme_instruction}
+
+======以上为向{master_name}进行搭话的决策方式======
+
+{output_format_section}"""
+
+proactive_generate_pt = """Sua persona:
+{character_prompt}
+
+Estado interno:
+{inner_thoughts}
+
+{state_section}
+
+Histórico da conversa:
+{memory_context}
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+{music_section}
+{meme_section}
+
+======以下为向{master_name}进行搭话的决策方式======
+
+★ Quando o estado de atividade listar um "fio inacabado", você pode continuá-lo independentemente da propensão.
+
+Prioridade de ângulos (limitada por "propensão a conversar"):
+1. Fio inacabado do último turno → continuar
+2. Um tópico de "pistas de memória" com mais de 1 dia → trazer naturalmente
+3. Algo na tela que mereça comentário
+4. Material externo (notícias / música / meme) que combine com o clima
+5. Sem ângulo natural → [PASS]
+
+O formato de saída (tag de fonte vs. texto simples) segue a seção "formato de saída" abaixo.
+
+Regras adicionais:
+- Repetição: mesmo tema na última hora → [PASS]; temas com mais de 1 dia não contam como repetidos.
+- Estilo: permaneça no personagem, no máximo 2-3 frases, sem texto de raciocínio.
+{source_instruction}{music_instruction}{meme_instruction}
+
+======以上为向{master_name}进行搭话的决策方式======
+
+{output_format_section}"""
 
 
 PROACTIVE_CHAT_PROMPTS = {
-    'zh': {
-        'home': proactive_chat_prompt,
-        'screenshot': proactive_chat_prompt_screenshot,
-        'window': proactive_chat_prompt_window_search,
-        'news': proactive_chat_prompt_news,
-        'video': proactive_chat_prompt_video,
-        'personal': proactive_chat_prompt_personal,
-        'music': proactive_chat_prompt_music,
+    "zh": {
+        "home": proactive_chat_prompt,
+        "screenshot": proactive_chat_prompt_screenshot,
+        "window": proactive_chat_prompt_window_search,
+        "news": proactive_chat_prompt_news,
+        "video": proactive_chat_prompt_video,
+        "personal": proactive_chat_prompt_personal,
+        "music": proactive_chat_prompt_music,
     },
-    'en': {
-        'home': proactive_chat_prompt_en,
-        'screenshot': proactive_chat_prompt_screenshot_en,
-        'window': proactive_chat_prompt_window_search_en,
-        'news': proactive_chat_prompt_news_en,
-        'video': proactive_chat_prompt_video_en,
-        'personal': proactive_chat_prompt_personal_en,
-        'music': proactive_chat_prompt_music_en,
+    "en": {
+        "home": proactive_chat_prompt_en,
+        "screenshot": proactive_chat_prompt_screenshot_en,
+        "window": proactive_chat_prompt_window_search_en,
+        "news": proactive_chat_prompt_news_en,
+        "video": proactive_chat_prompt_video_en,
+        "personal": proactive_chat_prompt_personal_en,
+        "music": proactive_chat_prompt_music_en,
     },
-    'ja': {
-        'home': proactive_chat_prompt_ja,
-        'screenshot': proactive_chat_prompt_screenshot_ja,
-        'window': proactive_chat_prompt_window_search_ja,
-        'news': proactive_chat_prompt_news_ja,
-        'video': proactive_chat_prompt_video_ja,
-        'personal': proactive_chat_prompt_personal_ja,
-        'music': proactive_chat_prompt_music_ja,
+    "ja": {
+        "home": proactive_chat_prompt_ja,
+        "screenshot": proactive_chat_prompt_screenshot_ja,
+        "window": proactive_chat_prompt_window_search_ja,
+        "news": proactive_chat_prompt_news_ja,
+        "video": proactive_chat_prompt_video_ja,
+        "personal": proactive_chat_prompt_personal_ja,
+        "music": proactive_chat_prompt_music_ja,
     },
-    'ko': {
-        'home': proactive_chat_prompt_ko,
-        'screenshot': proactive_chat_prompt_screenshot_ko,
-        'window': proactive_chat_prompt_window_search_ko,
-        'news': proactive_chat_prompt_news_ko,
-        'video': proactive_chat_prompt_video_ko,
-        'personal': proactive_chat_prompt_personal_ko,
-        'music': proactive_chat_prompt_music_ko,
+    "ko": {
+        "home": proactive_chat_prompt_ko,
+        "screenshot": proactive_chat_prompt_screenshot_ko,
+        "window": proactive_chat_prompt_window_search_ko,
+        "news": proactive_chat_prompt_news_ko,
+        "video": proactive_chat_prompt_video_ko,
+        "personal": proactive_chat_prompt_personal_ko,
+        "music": proactive_chat_prompt_music_ko,
     },
-    'ru': {
-        'home': proactive_chat_prompt_ru,
-        'screenshot': proactive_chat_prompt_screenshot_ru,
-        'window': proactive_chat_prompt_window_search_ru,
-        'news': proactive_chat_prompt_news_ru,
-        'video': proactive_chat_prompt_video_ru,
-        'personal': proactive_chat_prompt_personal_ru,
-        'music': proactive_chat_prompt_music_ru,
-    }
+    "ru": {
+        "home": proactive_chat_prompt_ru,
+        "screenshot": proactive_chat_prompt_screenshot_ru,
+        "window": proactive_chat_prompt_window_search_ru,
+        "news": proactive_chat_prompt_news_ru,
+        "video": proactive_chat_prompt_video_ru,
+        "personal": proactive_chat_prompt_personal_ru,
+        "music": proactive_chat_prompt_music_ru,
+    },
+    "es": {
+        "home": proactive_chat_prompt_es,
+        "screenshot": proactive_chat_prompt_screenshot_es,
+        "window": proactive_chat_prompt_window_search_es,
+        "news": proactive_chat_prompt_news_es,
+        "video": proactive_chat_prompt_video_es,
+        "personal": proactive_chat_prompt_personal_es,
+        "music": proactive_chat_prompt_music_es,
+    },
+    "pt": {
+        "home": proactive_chat_prompt_pt,
+        "screenshot": proactive_chat_prompt_screenshot_pt,
+        "window": proactive_chat_prompt_window_search_pt,
+        "news": proactive_chat_prompt_news_pt,
+        "video": proactive_chat_prompt_video_pt,
+        "personal": proactive_chat_prompt_personal_pt,
+        "music": proactive_chat_prompt_music_pt,
+    },
 }
 
 PROACTIVE_CHAT_REWRITE_PROMPTS = {
-    'zh': proactive_chat_rewrite_prompt,
-    'en': proactive_chat_rewrite_prompt_en,
-    'ja': proactive_chat_rewrite_prompt_ja,
-    'ko': proactive_chat_rewrite_prompt_ko,
-    'ru': proactive_chat_rewrite_prompt_ru,
+    "zh": proactive_chat_rewrite_prompt,
+    "en": proactive_chat_rewrite_prompt_en,
+    "ja": proactive_chat_rewrite_prompt_ja,
+    "ko": proactive_chat_rewrite_prompt_ko,
+    "ru": proactive_chat_rewrite_prompt_ru,
+    "es": proactive_chat_rewrite_prompt_es,
+    "pt": proactive_chat_rewrite_prompt_pt,
 }
 
 PROACTIVE_SCREEN_PROMPTS = {
-    'zh': {
-        'web': proactive_screen_web_zh,
+    "zh": {
+        "web": proactive_screen_web_zh,
     },
-    'en': {
-        'web': proactive_screen_web_en,
+    "en": {
+        "web": proactive_screen_web_en,
     },
-    'ja': {
-        'web': proactive_screen_web_ja,
+    "ja": {
+        "web": proactive_screen_web_ja,
     },
-    'ko': {
-        'web': proactive_screen_web_ko,
+    "ko": {
+        "web": proactive_screen_web_ko,
     },
-    'ru': {
-        'web': proactive_screen_web_ru,
-    }
+    "ru": {
+        "web": proactive_screen_web_ru,
+    },
+    "es": {
+        "web": proactive_screen_web_es,
+    },
+    "pt": {
+        "web": proactive_screen_web_pt,
+    },
 }
 
 PROACTIVE_GENERATE_PROMPTS = {
-    'zh': proactive_generate_zh,
-    'en': proactive_generate_en,
-    'ja': proactive_generate_ja,
-    'ko': proactive_generate_ko,
-    'ru': proactive_generate_ru,
+    "zh": proactive_generate_zh,
+    "en": proactive_generate_en,
+    "ja": proactive_generate_ja,
+    "ko": proactive_generate_ko,
+    "ru": proactive_generate_ru,
+    "es": proactive_generate_es,
+    "pt": proactive_generate_pt,
 }
 
 # Phase 2 动态注入：音乐/表情包行为指令（仅在对应来源可用时注入，避免幻觉）
@@ -1404,30 +1920,36 @@ PROACTIVE_GENERATE_PROMPTS = {
 # absent — producing a clean bullet block regardless of which optional
 # channels exist.
 _P2_MUSIC_INSTRUCTION = {
-    'zh': '\n- 关于音乐：当你决定结合音乐推荐进行搭话时，你可以聊聊这首歌的曲风或律动（如"节奏感好强"、"很治愈"），或它如何契合当下的氛围。但请注意：**绝对禁止在回复中重复歌曲名称、歌手名称或播放列表内容**（比如不要说"为你播放..."或提到具体歌名），这些信息会由播放器自动展示，复读会显得非常僵硬。',
-    'en': '\n- About music: When you decide to combine the music recommendation with your message, you can talk about the song\'s style or rhythm (e.g., "The beat is so strong" or "This is so healing") or how it fits the current mood. But note: **Strictly FORBIDDEN to repeat song names, artist names, or playlist content in your reply** (e.g., don\'t say "Playing X for you"). These details will be automatically displayed by the player.',
-    'ja': '\n- 音楽について：音楽のおすすめを取り入れて話しかけると決めたとき、曲のテンポやリズム（例：「テンポがすごくいいね」「癒されるね」）、あるいは今の雰囲気にどう合っているかについて話してみてください。ただし、注意：**返答の中で曲名、アーティスト名、プレイリストの内容を繰り返すことは厳禁です**（例：「[曲名]を再生します」と言わないでください）。これらの情報はプレイヤーが自動的に表示するため、繰り返すと不自然になります。',
-    'ko': '\n- 음악에 대해: 음악 추천을 결합하여 말을 걸기로 결정했을 때, 곡의 템포나 리듬(예: "비트가 정말 좋네요", "치유되는 느낌이에요") 또는 현재 분위기와 어떻게 어울리는지 이야기해 보세요. 단, 주의사항: **답변에서 곡명, 아티스트명, 재생목록 내용을 반복하는 것은 엄격히 금지됩니다** (예: "[곡명]을 재생할게요"라고 말하지 마세요). 이 정보는 플레이어가 자동으로 표시하므로 반복하면 매우 어색해 보입니다.',
-    'ru': '\n- О музыке: когда вы решаете включить музыкальную рекомендацию в свою реплику, поговорите о стиле или ритме песни (например, "какой драйвовый бит" или "очень успокаивает") или о том, как она подходит к текущей обстановке. Но обратите внимание: **категорически ЗАПРЕЩЕНО повторять названия песен, имена исполнителей или содержимое плейлиста в ответе** (например, не говорите "Включаю для вас [название]"). Эта информация будет автоматически отображена плеером.',
+    "zh": '\n- 关于音乐：当你决定结合音乐推荐进行搭话时，你可以聊聊这首歌的曲风或律动（如"节奏感好强"、"很治愈"），或它如何契合当下的氛围。但请注意：**绝对禁止在回复中重复歌曲名称、歌手名称或播放列表内容**（比如不要说"为你播放..."或提到具体歌名），这些信息会由播放器自动展示，复读会显得非常僵硬。',
+    "en": '\n- About music: When you decide to combine the music recommendation with your message, you can talk about the song\'s style or rhythm (e.g., "The beat is so strong" or "This is so healing") or how it fits the current mood. But note: **Strictly FORBIDDEN to repeat song names, artist names, or playlist content in your reply** (e.g., don\'t say "Playing X for you"). These details will be automatically displayed by the player.',
+    "ja": "\n- 音楽について：音楽のおすすめを取り入れて話しかけると決めたとき、曲のテンポやリズム（例：「テンポがすごくいいね」「癒されるね」）、あるいは今の雰囲気にどう合っているかについて話してみてください。ただし、注意：**返答の中で曲名、アーティスト名、プレイリストの内容を繰り返すことは厳禁です**（例：「[曲名]を再生します」と言わないでください）。これらの情報はプレイヤーが自動的に表示するため、繰り返すと不自然になります。",
+    "ko": '\n- 음악에 대해: 음악 추천을 결합하여 말을 걸기로 결정했을 때, 곡의 템포나 리듬(예: "비트가 정말 좋네요", "치유되는 느낌이에요") 또는 현재 분위기와 어떻게 어울리는지 이야기해 보세요. 단, 주의사항: **답변에서 곡명, 아티스트명, 재생목록 내용을 반복하는 것은 엄격히 금지됩니다** (예: "[곡명]을 재생할게요"라고 말하지 마세요). 이 정보는 플레이어가 자동으로 표시하므로 반복하면 매우 어색해 보입니다.',
+    "ru": '\n- О музыке: когда вы решаете включить музыкальную рекомендацию в свою реплику, поговорите о стиле или ритме песни (например, "какой драйвовый бит" или "очень успокаивает") или о том, как она подходит к текущей обстановке. Но обратите внимание: **категорически ЗАПРЕЩЕНО повторять названия песен, имена исполнителей или содержимое плейлиста в ответе** (например, не говорите "Включаю для вас [название]"). Эта информация будет автоматически отображена плеером.',
+    "es": "\n- Sobre música: cuando decidas combinar la recomendación musical con tu mensaje, puedes hablar del estilo o ritmo de la canción o de cómo encaja con el ánimo actual. Pero nota: **ESTÁ ESTRICTAMENTE PROHIBIDO repetir nombres de canciones, artistas o listas en tu respuesta**. Esos detalles se mostrarán automáticamente en el reproductor.",
+    "pt": "\n- Sobre música: quando decidir combinar a recomendação musical com sua mensagem, você pode falar do estilo ou ritmo da música ou de como combina com o clima atual. Mas observe: **É ESTRITAMENTE PROIBIDO repetir nomes de músicas, artistas ou playlists na resposta**. Esses detalhes serão exibidos automaticamente pelo player.",
 }
 
 _P2_MEME_INSTRUCTION = {
-    'zh': '\n- 关于表情包：当你决定结合表情包进行搭话时，系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给{master}看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："{master}你该休息啦"）。**注意：表情包是发给{master}看的，不是发给你的；你不需要对它做出外部反应。**',
-    'en': '\n- About memes: When you decide to combine a meme with your message, the system will automatically send a funny meme image to {master}. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO {master}, not TO you; you don\'t need to "react" to it externally.**',
-    'ja': '\n- ミームについて：ミームを取り入れて話しかけると決めたとき、システムが自動的に面白い画像を{master}に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームは{master}に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**',
-    'ko': '\n- 밈에 대해: 밈을 결합하여 말을 걸기로 결정했을 때, 시스템이 자동으로 재미있는 이미지를 {master}에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 {master}에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
-    'ru': '\n- О мемах: когда вы решаете включить мем в свою реплику, система автоматически отправит смешное изображение для {master}. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется для {master}, а не вам; вам не нужно "реагировать" на него со стороны.**',
+    "zh": '\n- 关于表情包：当你决定结合表情包进行搭话时，系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给{master}看。你的文字中请不要直接评论"这张图"（比如不要说"这张图好搞笑"），而是直接利用这张图片的情绪/内容来表达你想说的话（比如配合一张累瘫的图说："{master}你该休息啦"）。**注意：表情包是发给{master}看的，不是发给你的；你不需要对它做出外部反应。**',
+    "en": '\n- About memes: When you decide to combine a meme with your message, the system will automatically send a funny meme image to {master}. Please do NOT directly comment on "the image" in your text (e.g., don\'t say "This image is funny"). Instead, directly use the mood/content of the image to express what you want to say. **Note: The meme is sent TO {master}, not TO you; you don\'t need to "react" to it externally.**',
+    "ja": "\n- ミームについて：ミームを取り入れて話しかけると決めたとき、システムが自動的に面白い画像を{master}に送信します。テキストの中で直接「この画像」について言及しないでください（例：「この画像面白いね」と言わないでください）。代わりに、画像の雰囲気や内容をそのまま利用して、伝えたいことを表現してください。**注意：ミームは{master}に送られるもので、あなたに送られるものではありません。外部から「反応」するのではなく、画像と一緒に思いを表現してください。**",
+    "ko": '\n- 밈에 대해: 밈을 결합하여 말을 걸기로 결정했을 때, 시스템이 자동으로 재미있는 이미지를 {master}에게 보냅니다. 텍스트에서 직접 "이 사진"(예: "이 사진 웃기네요")에 대해 언급하지 마세요. 대신 이미지의 분위기나 내용을 직접 활용하여 하고 싶은 말을 표현하세요. **참고: 밈은 {master}에게 보내는 것이지 당신에게 보내는 것이 아닙니다.**',
+    "ru": '\n- О мемах: когда вы решаете включить мем в свою реплику, система автоматически отправит смешное изображение для {master}. Пожалуйста, НЕ комментируйте само "изображение" в тексте (например, не говорите "эта картинка смешная"). Вместо этого напрямую используйте настроение или содержание картинки, чтобы выразить свою мысль. **Внимание: мем отправляется для {master}, а не вам; вам не нужно "реагировать" на него со стороны.**',
+    "es": '\n- Sobre memes: cuando decidas combinar un meme con tu mensaje, el sistema enviará automáticamente una imagen divertida a {master}. NO comentes directamente "la imagen" en tu texto. Usa el ánimo/contenido de la imagen para expresar lo que quieres decir. **Nota: el meme se envía A {master}, no A ti; no necesitas "reaccionar" externamente.**',
+    "pt": '\n- Sobre memes: quando decidir combinar um meme com sua mensagem, o sistema enviará automaticamente uma imagem divertida para {master}. NÃO comente diretamente "a imagem" no texto. Use o clima/conteúdo da imagem para expressar o que quer dizer. **Nota: o meme é enviado PARA {master}, não PARA você; você não precisa "reagir" externamente.**',
 }
 
 
-def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
+def get_proactive_chat_prompt(kind: str, lang: str = "zh") -> str:
     lang_key = _normalize_prompt_language(lang)
-    prompt_set = PROACTIVE_CHAT_PROMPTS.get(lang_key, PROACTIVE_CHAT_PROMPTS.get('en', PROACTIVE_CHAT_PROMPTS['zh']))
-    return prompt_set.get(kind, prompt_set.get('home'))
+    prompt_set = PROACTIVE_CHAT_PROMPTS.get(
+        lang_key, PROACTIVE_CHAT_PROMPTS.get("en", PROACTIVE_CHAT_PROMPTS["zh"])
+    )
+    return prompt_set.get(kind, prompt_set.get("home"))
 
 
 PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
-    'zh': """你是{lanlan_name}，现在{master_name}可能想听音乐了。请根据与{master_name}的对话历史和当前的对话内容，判断是否要为{master_name}播放音乐。
+    "zh": """你是{lanlan_name}，现在{master_name}可能想听音乐了。请根据与{master_name}的对话历史和当前的对话内容，判断是否要为{master_name}播放音乐。
 
 ======以下为对话历史======
 {memory_context}
@@ -1447,8 +1969,7 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 请回复：
 - 如果决定播放音乐，直接返回你生成的搜索关键词（例如"周杰伦"、"lofi"、"放松的纯音乐"）。
 - 只有在明确不适合播放音乐的情况下，才只回复 "[PASS]"。""",
-
-    'en': """You are {lanlan_name}, and {master_name} might want to listen to some music. Based on your chat history and the current conversation, decide if you should play music for {master_name}.
+    "en": """You are {lanlan_name}, and {master_name} might want to listen to some music. Based on your chat history and the current conversation, decide if you should play music for {master_name}.
 
 ======以下为对话历史======
 {memory_context}
@@ -1467,8 +1988,7 @@ Use these rules to decide whether to play music and what to play:
 Reply:
 - If you decide to play music, return only the search keyword you generated (e.g., "Jay Chou," "lofi," "relaxing instrumental music").
 - Only reply with "[PASS]" when it's clearly not suitable to play music.""",
-
-    'ja': """あなたは{lanlan_name}で、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
+    "ja": """あなたは{lanlan_name}で、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -1487,8 +2007,7 @@ Reply:
 返信：
 - 音楽再生を決定した場合、生成した検索キーワードのみを返してください（例：「宇多田ヒカル」、「lofi」、「リラックスできるインストゥルメンタル」）。
 - 明らかに音楽を再生するのに適していない場合にのみ "[PASS]" を返してください。""",
-
-    'ko': """당신은 {lanlan_name}이고, {master_name}이(가) 음악을 듣고 싶어할 수 있습니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을(를) 위해 음악을 재생할지 판단하세요.
+    "ko": """당신은 {lanlan_name}이고, {master_name}이(가) 음악을 듣고 싶어할 수 있습니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을(를) 위해 음악을 재생할지 판단하세요.
 
 ======以下为对话历史======
 {memory_context}
@@ -1507,8 +2026,7 @@ Reply:
 회신:
 - 음악 재생을 결정한 경우 생성한 검색 키워드만 반환하세요 (예: "방탄소년단", "lofi", "편안한 인스트루멘틀")
 - 명확하게 음악을 재생하기에 적합하지 않은 경우에만 "[PASS]"를 반환하세요""",
-
-    'ru': """Вы - {lanlan_name}, и {master_name}, возможно, захочет послушать музыку. На основе истории чата и текущего разговора решите, стоит ли воспроизводить музыку для {master_name}.
+    "ru": """Вы - {lanlan_name}, и {master_name}, возможно, захочет послушать музыку. На основе истории чата и текущего разговора решите, стоит ли воспроизводить музыку для {master_name}.
 
 ======以下为对话历史======
 {memory_context}
@@ -1528,20 +2046,66 @@ Reply:
 - Если вы решили воспроизвести музыку, верните только сгенерированное ключевое слово (например, "Queen", "lofi", "расслабляющая инструментальная музыка").
 - Верните "[PASS]", только когда явно не подходит воспроизводить музыку.
 """,
+    "es": """Eres {lanlan_name}, y puede que {master_name} quiera escuchar música. Según tu historial de chat y la conversación actual, decide si deberías poner música para {master_name}.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======Abajo está la conversación actual======
+{recent_chats_section}
+======Arriba está la conversación actual======
+
+Usa estas reglas para decidir si poner música y qué buscar:
+1. Cuando {master_name} pida música explícitamente, deberías poner música.
+2. Si la conversación menciona relajarse, descansar, cansancio, sueño, bajón o ánimo tranquilo, puedes recomendar música relajante.
+3. Analiza la petición de {master_name} para extraer título, artista o género como palabra clave. Géneros soportados: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Si {master_name} no especifica, recomienda según el ánimo de la conversación o sus preferencias.
+
+Respuesta:
+- Si decides poner música, devuelve solo la palabra clave de búsqueda generada.
+- Responde "[PASS]" solo cuando claramente no sea adecuado poner música.""",
+    "pt": """Você é {lanlan_name}, e talvez {master_name} queira ouvir música. Com base no histórico de chat e na conversa atual, decida se deve tocar música para {master_name}.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======Abaixo está a conversa atual======
+{recent_chats_section}
+======Acima está a conversa atual======
+
+Use estas regras para decidir se toca música e o que buscar:
+1. Quando {master_name} pedir música explicitamente, você deve tocar música.
+2. Se a conversa mencionar relaxar, descansar, cansaço, sono, desânimo ou clima tranquilo, você pode recomendar música relaxante.
+3. Analise o pedido de {master_name} para extrair título, artista ou gênero como palavra-chave. Gêneros suportados: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Se {master_name} não especificar, recomende com base no clima da conversa ou nas preferências dele.
+
+Resposta:
+- Se decidir tocar música, retorne apenas a palavra-chave de busca gerada.
+- Responda "[PASS]" apenas quando claramente não for adequado tocar música.""",
 }
 
 
-def get_proactive_music_keyword_prompt(lang: str = 'zh') -> str:
+def get_proactive_music_keyword_prompt(lang: str = "zh") -> str:
     """
     获取音乐关键词生成的 prompt
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(lang_key, PROACTIVE_MUSIC_KEYWORD_PROMPTS.get('en', PROACTIVE_MUSIC_KEYWORD_PROMPTS['zh']))
+    return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(
+        lang_key,
+        PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(
+            "en", PROACTIVE_MUSIC_KEYWORD_PROMPTS["zh"]
+        ),
+    )
 
 
-def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
+def get_proactive_chat_rewrite_prompt(lang: str = "zh") -> str:
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS.get('en', PROACTIVE_CHAT_REWRITE_PROMPTS['zh']))
+    return PROACTIVE_CHAT_REWRITE_PROMPTS.get(
+        lang_key,
+        PROACTIVE_CHAT_REWRITE_PROMPTS.get("en", PROACTIVE_CHAT_REWRITE_PROMPTS["zh"]),
+    )
 
 
 # =====================================================================
@@ -1550,7 +2114,7 @@ def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
 # =====================================================================
 
 _UNIFIED_P1_HEADER = {
-    'zh': """你是一个多任务话题助手。请根据下方提供的对话历史和素材，完成所有标注的任务。
+    "zh": """你是一个多任务话题助手。请根据下方提供的对话历史和素材，完成所有标注的任务。
 
 ======以下为对话历史======
 {memory_context}
@@ -1558,7 +2122,7 @@ _UNIFIED_P1_HEADER = {
 
 {recent_chats_section}
 """,
-    'en': """You are a multi-task topic assistant. Based on the chat history and material below, complete all listed tasks.
+    "en": """You are a multi-task topic assistant. Based on the chat history and material below, complete all listed tasks.
 
 ======以下为对话历史======
 {memory_context}
@@ -1566,7 +2130,7 @@ _UNIFIED_P1_HEADER = {
 
 {recent_chats_section}
 """,
-    'ja': """あなたはマルチタスク話題アシスタントです。以下の会話履歴と素材に基づき、指示されたすべてのタスクを完了してください。
+    "ja": """あなたはマルチタスク話題アシスタントです。以下の会話履歴と素材に基づき、指示されたすべてのタスクを完了してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -1574,7 +2138,7 @@ _UNIFIED_P1_HEADER = {
 
 {recent_chats_section}
 """,
-    'ko': """당신은 멀티태스크 주제 어시스턴트입니다. 아래의 대화 기록과 자료를 바탕으로 모든 작업을 완료하세요.
+    "ko": """당신은 멀티태스크 주제 어시스턴트입니다. 아래의 대화 기록과 자료를 바탕으로 모든 작업을 완료하세요.
 
 ======以下为对话历史======
 {memory_context}
@@ -1582,7 +2146,23 @@ _UNIFIED_P1_HEADER = {
 
 {recent_chats_section}
 """,
-    'ru': """Вы — мультизадачный тематический помощник. На основе истории чата и материалов ниже выполните все указанные задачи.
+    "ru": """Вы — мультизадачный тематический помощник. На основе истории чата и материалов ниже выполните все указанные задачи.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+    "es": """Eres un asistente de temas multitarea. Según el historial de chat y el material de abajo, completa todas las tareas listadas.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+    "pt": """Você é um assistente de temas multitarefa. Com base no histórico de chat e no material abaixo, complete todas as tarefas listadas.
 
 ======以下为对话历史======
 {memory_context}
@@ -1593,7 +2173,7 @@ _UNIFIED_P1_HEADER = {
 }
 
 _UNIFIED_P1_WEB_SECTION = {
-    'zh': """
+    "zh": """
 ======任务: 话题筛选======
 从下方汇总的多源内容中，选出1个最适合和朋友闲聊的话题。
 
@@ -1613,7 +2193,7 @@ _UNIFIED_P1_WEB_SECTION = {
 3. 即便换一种说法、语气或切入角度，只要核心话题相同，也视为重复，必须改选或 [PASS]
 4. 所有内容都不够有趣就返回 [PASS]
 """,
-    'en': """
+    "en": """
 ======Task: Topic Screening======
 Pick the single most chat-worthy topic from the aggregated content below.
 
@@ -1633,7 +2213,7 @@ Rules:
 3. Rewording alone does NOT make a topic new; if the core topic is the same, treat it as duplicate
 4. If nothing is interesting enough, return [PASS]
 """,
-    'ja': """
+    "ja": """
 ======タスク: 話題スクリーニング======
 以下の複数ソースから集めた内容から、友達と話すのに最も適した話題を1つ選んでください。
 
@@ -1653,7 +2233,7 @@ Rules:
 3. 言い換え・口調変更だけで核となる話題が同じなら重複とみなす
 4. どれも面白くなければ [PASS] を返す
 """,
-    'ko': """
+    "ko": """
 ======작업: 주제 스크리닝======
 아래 여러 소스에서 모은 콘텐츠 중 친구와 이야기하기에 가장 적합한 주제를 1개 골라주세요.
 
@@ -1673,7 +2253,7 @@ Rules:
 3. 표현만 바뀌고 핵심 주제가 같다면 중복으로 간주
 4. 흥미로운 것이 없으면 [PASS]
 """,
-    'ru': """
+    "ru": """
 ======Задача: Отбор темы======
 Выберите одну наиболее подходящую для дружеского разговора тему из агрегированного контента ниже.
 
@@ -1693,10 +2273,50 @@ Rules:
 3. Перефразирование не делает тему новой; если ядро то же — это дубликат
 4. Если ничего не интересно — [PASS]
 """,
+    "es": """
+======Tarea: Selección de tema======
+Elige el único tema más conversable del contenido agregado abajo.
+
+Preferencias de selección:
+- Humor, giros o debate
+- Videojuegos, anime, tecnología, cultura de internet, famosos y temas sociales
+- Frescura: temas recientes o en tendencia primero
+- Gancho de conversación: fácil de mencionar con naturalidad
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+Reglas:
+1. NO elijas nada que se solape con el historial o chats proactivos recientes
+2. Si se repitió el mismo tipo de tema, elige otro tipo o devuelve [PASS]
+3. Reformular no hace nuevo un tema; si el núcleo es igual, trátalo como duplicado
+4. Si nada es suficientemente interesante, devuelve [PASS]
+""",
+    "pt": """
+======Tarefa: Seleção de tema======
+Escolha o único tema mais conversável do conteúdo agregado abaixo.
+
+Preferências de seleção:
+- Humor, reviravoltas ou debate
+- Games, anime, tecnologia, cultura de internet, celebridades e questões sociais
+- Frescor: temas recentes ou em tendência primeiro
+- Gancho de conversa: fácil de mencionar com naturalidade
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+Regras:
+1. NÃO escolha nada que se sobreponha ao histórico ou chats proativos recentes
+2. Se o mesmo tipo de tema se repetiu, escolha outro tipo ou retorne [PASS]
+3. Reformular não torna um tema novo; se o núcleo for igual, trate como duplicado
+4. Se nada for interessante o bastante, retorne [PASS]
+""",
 }
 
 _UNIFIED_P1_MUSIC_SECTION = {
-    'zh': """
+    "zh": """
 ======任务: 音乐关键词======
 你是{lanlan_name}。请判断是否要为{master_name}播放音乐，并给出搜索关键词。
 
@@ -1706,7 +2326,7 @@ _UNIFIED_P1_MUSIC_SECTION = {
 3. 提取出歌曲、歌手或音乐风格作为搜索关键词。支持：华语、流行、电子、说唱、lofi、chill、pop、hiphop、ambient、古典、钢琴、acoustic等
 4. 如果{master_name}没有明确指定，根据对话氛围或喜好推荐
 """,
-    'en': """
+    "en": """
 ======Task: Music Keyword======
 You are {lanlan_name}. Decide if you should play music for {master_name}, and provide a search keyword.
 
@@ -1716,7 +2336,7 @@ Rules:
 3. Extract song title, artist, or genre as a search keyword. Supported: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
 4. If {master_name} doesn't specify, recommend based on conversation mood or preferences
 """,
-    'ja': """
+    "ja": """
 ======タスク: 音楽キーワード======
 あなたは{lanlan_name}です。{master_name}のために音楽を再生するか判断し、検索キーワードを提供してください。
 
@@ -1726,7 +2346,7 @@ Rules:
 3. 曲名、アーティスト、ジャンルから検索キーワードを抽出。対応：ポップ、ヒップホップ、lofi、chill、エレクトロニック、クラシック、ピアノ等
 4. 指定がなければ会話の雰囲気や好みに基づいておすすめ
 """,
-    'ko': """
+    "ko": """
 ======작업: 음악 키워드======
 당신은 {lanlan_name}입니다. {master_name}을(를) 위해 음악을 재생할지 판단하고, 검색 키워드를 제공하세요.
 
@@ -1736,7 +2356,7 @@ Rules:
 3. 노래 제목, 아티스트 또는 장르에서 검색 키워드를 추출. 지원: 팝, 힙합, 로파이, chill, 일렉트로닉, 클래식 등
 4. 지정이 없으면 대화 분위기나 취향에 따라 추천
 """,
-    'ru': """
+    "ru": """
 ======Задача: Ключевое слово для музыки======
 Вы — {lanlan_name}. Решите, стоит ли воспроизводить музыку для {master_name}, и предоставьте поисковое ключевое слово.
 
@@ -1746,143 +2366,215 @@ Rules:
 3. Извлеките название песни, исполнителя или жанр. Поддерживаемые: поп, хип-хоп, лофай, чилл, электроника, классика, пианино и т.д.
 4. Если не указано — рекомендуйте по атмосфере разговора
 """,
+    "es": """
+======Tarea: Palabra clave musical======
+Eres {lanlan_name}. Decide si deberías poner música para {master_name} y proporciona una palabra clave de búsqueda.
+
+Reglas:
+1. Si {master_name} pide música explícitamente, pon música
+2. Si la conversación menciona relajarse, cansancio, bajón, etc., recomienda música relajante
+3. Extrae título, artista o género como palabra clave. Soportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Si {master_name} no especifica, recomienda según ánimo o preferencias
+""",
+    "pt": """
+======Tarefa: Palavra-chave musical======
+Você é {lanlan_name}. Decida se deve tocar música para {master_name} e forneça uma palavra-chave de busca.
+
+Regras:
+1. Se {master_name} pedir música explicitamente, toque música
+2. Se a conversa mencionar relaxar, cansaço, desânimo etc., recomende música relaxante
+3. Extraia título, artista ou gênero como palavra-chave. Suportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. Se {master_name} não especificar, recomende pelo clima ou preferências
+""",
 }
 
 _UNIFIED_P1_MEME_SECTION = {
-    'zh': """
+    "zh": """
 ======任务: 表情包关键词======
 请根据对话氛围，给出一个适合搜索表情包/搞笑图片的关键词。
 - 关键词应贴合当前聊天的情绪或话题（如"累了"、"开心"、"无语"、"猫咪"、"摸鱼"等）
 - 如果对话氛围不适合发表情包，返回 [PASS]
 """,
-    'en': """
+    "en": """
 ======Task: Meme Keyword======
 Based on the conversation mood, provide a keyword for searching memes/funny images.
 - The keyword should match the current chat's emotion or topic (e.g., "tired", "happy", "facepalm", "cat", "procrastinating")
 - If the mood doesn't suit sending a meme, return [PASS]
 """,
-    'ja': """
+    "ja": """
 ======タスク: ミームキーワード======
 会話の雰囲気に合わせて、ミーム/面白い画像を検索するためのキーワードを1つ提供してください。
 - キーワードは現在のチャットの感情やトピックに合うもの（例：「疲れた」「嬉しい」「無言」「猫」「サボり」）
 - 雰囲気がミームに合わなければ [PASS]
 """,
-    'ko': """
+    "ko": """
 ======작업: 밈 키워드======
 대화 분위기에 맞는 밈/재미있는 이미지 검색 키워드를 하나 제공하세요.
 - 키워드는 현재 대화의 감정이나 주제에 맞아야 합니다 (예: "피곤", "행복", "어이없음", "고양이", "딴짓")
 - 분위기가 밈에 안 맞으면 [PASS]
 """,
-    'ru': """
+    "ru": """
 ======Задача: Ключевое слово для мема======
 Исходя из атмосферы разговора, предоставьте ключевое слово для поиска мемов/смешных картинок.
 - Ключевое слово должно соответствовать текущему настроению или теме чата (например, «устал», «счастлив», «фейспалм», «кот», «прокрастинация»)
 - Если настроение не подходит для мема — [PASS]
 """,
+    "es": """
+======Tarea: Palabra clave de meme======
+Según el ánimo de la conversación, proporciona una palabra clave para buscar memes/imágenes graciosas.
+- La palabra clave debe coincidir con la emoción o tema actual del chat
+- Si el ánimo no encaja con enviar un meme, devuelve [PASS]
+""",
+    "pt": """
+======Tarefa: Palavra-chave de meme======
+Com base no clima da conversa, forneça uma palavra-chave para buscar memes/imagens engraçadas.
+- A palavra-chave deve combinar com a emoção ou tema atual do chat
+- Se o clima não combinar com enviar meme, retorne [PASS]
+""",
 }
 
 _UNIFIED_P1_FORMAT = {
-    'zh': {
-        'web': """[WEB]
+    "zh": {
+        "web": """[WEB]
 - 有值得分享的话题：
 来源：[来源平台名称，如Twitter/Reddit/微博/B站等]
 序号：[选中条目在其分类中的编号，如 3]
 话题：[选中的原始标题，必须与汇总内容中的标题完全一致]
 简述：[2-3句话，为什么有趣、聊天切入点是什么]
 - 都不值得聊：[WEB] [PASS]""",
-        'music': """[MUSIC]
+        "music": """[MUSIC]
 - 决定播放音乐：直接返回搜索关键词（例如 [MUSIC] 周杰伦）
 - 不适合播放：[MUSIC] [PASS]""",
-        'meme': """[MEME]
+        "meme": """[MEME]
 - 有合适的关键词：直接返回关键词（例如 [MEME] 搞笑猫）
 - 不适合发表情包：[MEME] [PASS]""",
     },
-    'en': {
-        'web': """[WEB]
+    "en": {
+        "web": """[WEB]
 - If there's a worthy topic:
 Source: [platform name, e.g. Twitter/Reddit/Weibo/Bilibili]
 No: [item number within its category, e.g. 3]
 Topic: [original title exactly as shown in the content]
 Summary: [2-3 sentences on why it's interesting]
 - If nothing is worth sharing: [WEB] [PASS]""",
-        'music': """[MUSIC]
+        "music": """[MUSIC]
 - If playing music: return only the keyword (e.g. [MUSIC] lofi)
 - If not suitable: [MUSIC] [PASS]""",
-        'meme': """[MEME]
+        "meme": """[MEME]
 - If a keyword fits: return it (e.g. [MEME] funny cat)
 - If not suitable: [MEME] [PASS]""",
     },
-    'ja': {
-        'web': """[WEB]
+    "ja": {
+        "web": """[WEB]
 - 共有する価値のある話題がある場合：
 出典：[プラットフォーム名]
 番号：[カテゴリ内の番号]
 話題：[元のタイトルと完全一致]
 概要：[2〜3文]
 - 全て価値なし：[WEB] [PASS]""",
-        'music': """[MUSIC]
+        "music": """[MUSIC]
 - 音楽再生を決定した場合：キーワードのみ返す（例 [MUSIC] lofi）
 - 適していない場合：[MUSIC] [PASS]""",
-        'meme': """[MEME]
+        "meme": """[MEME]
 - キーワードがある場合：返す（例 [MEME] 猫）
 - 適していない場合：[MEME] [PASS]""",
     },
-    'ko': {
-        'web': """[WEB]
+    "ko": {
+        "web": """[WEB]
 - 공유할 가치가 있는 주제:
 출처: [플랫폼명]
 번호: [카테고리 내 번호]
 주제: [원제목과 정확히 일치]
 요약: [2-3문장]
 - 가치 없음: [WEB] [PASS]""",
-        'music': """[MUSIC]
+        "music": """[MUSIC]
 - 음악 재생 결정: 키워드만 반환 (예: [MUSIC] lofi)
 - 적합하지 않음: [MUSIC] [PASS]""",
-        'meme': """[MEME]
+        "meme": """[MEME]
 - 키워드가 있으면: 반환 (예: [MEME] 고양이)
 - 적합하지 않으면: [MEME] [PASS]""",
     },
-    'ru': {
-        'web': """[WEB]
+    "ru": {
+        "web": """[WEB]
 - Если есть достойная тема:
 Источник: [название платформы]
 Номер: [номер пункта]
 Тема: [исходный заголовок точно как в контенте]
 Кратко: [2-3 предложения]
 - Если ничего: [WEB] [PASS]""",
-        'music': """[MUSIC]
+        "music": """[MUSIC]
 - Если воспроизвести: верните только ключевое слово (например [MUSIC] lofi)
 - Если не подходит: [MUSIC] [PASS]""",
-        'meme': """[MEME]
+        "meme": """[MEME]
 - Если есть подходящее: верните ключевое слово (например [MEME] кот)
 - Если не подходит: [MEME] [PASS]""",
+    },
+    "es": {
+        "web": """[WEB]
+- Si hay un tema que vale la pena:
+Source: [nombre de plataforma, p. ej. Twitter/Reddit/Weibo/Bilibili]
+No: [número del elemento dentro de su categoría, p. ej. 3]
+Topic: [título original exactamente como aparece]
+Summary: [2-3 frases sobre por qué es interesante]
+- Si nada vale la pena: [WEB] [PASS]""",
+        "music": """[MUSIC]
+- Si se pone música: devuelve solo la keyword (p. ej. [MUSIC] lofi)
+- Si no es adecuado: [MUSIC] [PASS]""",
+        "meme": """[MEME]
+- Si encaja una keyword: devuélvela (p. ej. [MEME] gato gracioso)
+- Si no es adecuado: [MEME] [PASS]""",
+    },
+    "pt": {
+        "web": """[WEB]
+- Se houver um tema digno:
+Source: [nome da plataforma, ex. Twitter/Reddit/Weibo/Bilibili]
+No: [número do item dentro da categoria, ex. 3]
+Topic: [título original exatamente como aparece]
+Summary: [2-3 frases sobre por que é interessante]
+- Se nada valer compartilhar: [WEB] [PASS]""",
+        "music": """[MUSIC]
+- Se tocar música: retorne apenas a keyword (ex. [MUSIC] lofi)
+- Se não for adequado: [MUSIC] [PASS]""",
+        "meme": """[MEME]
+- Se uma keyword combinar: retorne-a (ex. [MEME] gato engraçado)
+- Se não for adequado: [MEME] [PASS]""",
     },
 }
 
 _UNIFIED_P1_FOOTER = {
-    'zh': """
+    "zh": """
 ======回复格式======
 请严格按照以下格式回复，每个任务用对应标签开头。只回复被要求的任务。
 {format_instructions}
 """,
-    'en': """
+    "en": """
 ======Reply Format======
 Reply strictly in the format below. Each task starts with its tag. Only reply to the tasks listed.
 {format_instructions}
 """,
-    'ja': """
+    "ja": """
 ======回答形式======
 以下の形式に厳密に従ってください。各タスクは対応するタグで始めてください。指示されたタスクのみ回答してください。
 {format_instructions}
 """,
-    'ko': """
+    "ko": """
 ======답변 형식======
 아래 형식을 엄격히 따르세요. 각 작업은 해당 태그로 시작합니다. 요청된 작업만 답변하세요.
 {format_instructions}
 """,
-    'ru': """
+    "ru": """
 ======Формат ответа======
 Строго следуйте формату ниже. Каждая задача начинается со своего тега. Отвечайте только на указанные задачи.
+{format_instructions}
+""",
+    "es": """
+======Formato de respuesta======
+Responde estrictamente en el formato de abajo. Cada tarea empieza con su tag. Responde solo a las tareas listadas.
+{format_instructions}
+""",
+    "pt": """
+======Formato de resposta======
+Responda estritamente no formato abaixo. Cada tarefa começa com sua tag. Responda apenas às tarefas listadas.
 {format_instructions}
 """,
 }
@@ -1892,12 +2584,12 @@ def build_unified_phase1_prompt(
     lang: str,
     *,
     merged_content: str | None = None,
-    memory_context: str = '',
-    recent_chats_section: str = '',
+    memory_context: str = "",
+    recent_chats_section: str = "",
     music_ctx: dict | None = None,
     meme_enabled: bool = False,
-    lanlan_name: str = '',
-    master_name: str = '',
+    lanlan_name: str = "",
+    master_name: str = "",
 ) -> str:
     """
     动态拼接 Phase 1 合并 prompt。
@@ -1916,13 +2608,15 @@ def build_unified_phase1_prompt(
     lang_key = _normalize_prompt_language(lang)
 
     def _get(table: dict, key: str = lang_key) -> str:
-        return table.get(key, table.get('en', table['zh']))
+        return table.get(key, table.get("en", table["zh"]))
 
     # --- 头部 ---
-    parts = [_get(_UNIFIED_P1_HEADER).format(
-        memory_context=memory_context,
-        recent_chats_section=recent_chats_section,
-    )]
+    parts = [
+        _get(_UNIFIED_P1_HEADER).format(
+            memory_context=memory_context,
+            recent_chats_section=recent_chats_section,
+        )
+    ]
 
     # --- 收集启用的 section 和对应格式 ---
     format_parts = []
@@ -1930,43 +2624,57 @@ def build_unified_phase1_prompt(
 
     # web section
     if merged_content:
-        parts.append(_get(_UNIFIED_P1_WEB_SECTION).format(merged_content=merged_content))
-        format_parts.append(fmt['web'])
+        parts.append(
+            _get(_UNIFIED_P1_WEB_SECTION).format(merged_content=merged_content)
+        )
+        format_parts.append(fmt["web"])
 
     # music section
     if music_ctx:
-        ln = music_ctx.get('lanlan_name', lanlan_name) or lanlan_name
-        mn = music_ctx.get('master_name', master_name) or master_name
-        parts.append(_get(_UNIFIED_P1_MUSIC_SECTION).format(lanlan_name=ln, master_name=mn))
-        format_parts.append(fmt['music'])
+        ln = music_ctx.get("lanlan_name", lanlan_name) or lanlan_name
+        mn = music_ctx.get("master_name", master_name) or master_name
+        parts.append(
+            _get(_UNIFIED_P1_MUSIC_SECTION).format(lanlan_name=ln, master_name=mn)
+        )
+        format_parts.append(fmt["music"])
 
     # meme section
     if meme_enabled:
         parts.append(_get(_UNIFIED_P1_MEME_SECTION))
-        format_parts.append(fmt['meme'])
+        format_parts.append(fmt["meme"])
 
     # --- 尾部 ---
     if format_parts:
         format_instructions = "\n\n".join(format_parts)
-        parts.append(_get(_UNIFIED_P1_FOOTER).format(format_instructions=format_instructions))
+        parts.append(
+            _get(_UNIFIED_P1_FOOTER).format(format_instructions=format_instructions)
+        )
 
     return "\n".join(parts)
 
 
-def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
+def get_proactive_screen_prompt(channel: str, lang: str = "zh") -> str:
     """
     获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。
     """
     lang_key = _normalize_prompt_language(lang)
-    prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS.get('en', PROACTIVE_SCREEN_PROMPTS['zh']))
+    prompt_set = PROACTIVE_SCREEN_PROMPTS.get(
+        lang_key, PROACTIVE_SCREEN_PROMPTS.get("en", PROACTIVE_SCREEN_PROMPTS["zh"])
+    )
     if channel not in prompt_set:
-        raise ValueError(f"Unsupported channel '{channel}'. Vision is handled before Phase 1 and should not be passed here; only 'web' is supported.")
+        raise ValueError(
+            f"Unsupported channel '{channel}'. Vision is handled before Phase 1 and should not be passed here; only 'web' is supported."
+        )
     return prompt_set[channel]
 
 
-def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = "",
-                                  has_music: bool = False, has_meme: bool = False,
-                                  master_name: str | None = None) -> str:
+def get_proactive_generate_prompt(
+    lang: str = "zh",
+    music_playing_hint: str = "",
+    has_music: bool = False,
+    has_meme: bool = False,
+    master_name: str | None = None,
+) -> str:
     """
     获取 Phase 2 生成阶段 prompt。
     has_music / has_meme 控制是否注入音乐/表情包行为指令，避免无来源时产生幻觉。
@@ -1974,11 +2682,25 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
     （或本地化中性兜底，例如"对方"/"them"），避免出现"主人"等物化称呼。
     """
     lang_key = _normalize_prompt_language(lang)
-    prompt = PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
+    prompt = PROACTIVE_GENERATE_PROMPTS.get(
+        lang_key, PROACTIVE_GENERATE_PROMPTS.get("en", PROACTIVE_GENERATE_PROMPTS["zh"])
+    )
 
     # 动态注入音乐/表情包行为指令
-    music_instr = _P2_MUSIC_INSTRUCTION.get(lang_key, _P2_MUSIC_INSTRUCTION.get('en', _P2_MUSIC_INSTRUCTION['zh'])) if has_music else ''
-    meme_instr = _P2_MEME_INSTRUCTION.get(lang_key, _P2_MEME_INSTRUCTION.get('en', _P2_MEME_INSTRUCTION['zh'])) if has_meme else ''
+    music_instr = (
+        _P2_MUSIC_INSTRUCTION.get(
+            lang_key, _P2_MUSIC_INSTRUCTION.get("en", _P2_MUSIC_INSTRUCTION["zh"])
+        )
+        if has_music
+        else ""
+    )
+    meme_instr = (
+        _P2_MEME_INSTRUCTION.get(
+            lang_key, _P2_MEME_INSTRUCTION.get("en", _P2_MEME_INSTRUCTION["zh"])
+        )
+        if has_meme
+        else ""
+    )
     # meme_instr 含 {master} 占位符，需要在拼回外层 prompt 之前展开掉。否则它会
     # 流到 main_routers/system_router.py 的整体 .format(master_name=..., ...) 那里，
     # 而那一步只传 master_name 不传 master，会触发 KeyError。
@@ -1986,9 +2708,13 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
     # 否则第一次 .format 把字面量 `{B}` 注进 meme_instr，外层 .format 会再次解析
     # 这个字面量并报 KeyError。Codex review #1043 r3164599879 抓的就是这条。
     if meme_instr:
-        master_value = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+        master_value = _escape_format_braces(
+            _resolve_master_for_template(master_name, lang_key)
+        )
         meme_instr = meme_instr.format(master=master_value)
-    prompt = prompt.replace('{music_instruction}', music_instr).replace('{meme_instruction}', meme_instr)
+    prompt = prompt.replace("{music_instruction}", music_instr).replace(
+        "{meme_instruction}", meme_instr
+    )
 
     if music_playing_hint:
         # 将提示注入到 prompt 末尾，确保 AI 能看到
@@ -1996,7 +2722,13 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
     return prompt
 
 
-def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, has_meme: bool = False, lang: str = 'zh') -> tuple:
+def get_proactive_format_sections(
+    has_screen: bool,
+    has_web: bool,
+    has_music: bool = False,
+    has_meme: bool = False,
+    lang: str = "zh",
+) -> tuple:
     """
     根据可用素材动态拼接 source_instruction 和 output_format_section。
     不再枚举 16 种组合 × 5 种语言，而是按可用通道实时组装。
@@ -2012,56 +2744,108 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
 
     # ── i18n 素材片段 ──────────────────────────────────────────────
     _material_labels = {
-        'zh': {'screen': '屏幕内容', 'web': '网络话题', 'music': '音乐推荐', 'meme': '表情包'},
-        'en': {'screen': 'screen content', 'web': 'web topics', 'music': 'music recommendations', 'meme': 'meme'},
-        'ja': {'screen': '画面の内容', 'web': 'ウェブ話題', 'music': '音楽のおすすめ', 'meme': 'ミーム'},
-        'ko': {'screen': '화면 내용', 'web': '웹 화제', 'music': '음악 추천', 'meme': '밈'},
-        'ru': {'screen': 'содержимое экрана', 'web': 'веб-темы', 'music': 'музыкальные рекомендации', 'meme': 'мем'},
+        "zh": {
+            "screen": "屏幕内容",
+            "web": "网络话题",
+            "music": "音乐推荐",
+            "meme": "表情包",
+        },
+        "en": {
+            "screen": "screen content",
+            "web": "web topics",
+            "music": "music recommendations",
+            "meme": "meme",
+        },
+        "ja": {
+            "screen": "画面の内容",
+            "web": "ウェブ話題",
+            "music": "音楽のおすすめ",
+            "meme": "ミーム",
+        },
+        "ko": {
+            "screen": "화면 내용",
+            "web": "웹 화제",
+            "music": "음악 추천",
+            "meme": "밈",
+        },
+        "ru": {
+            "screen": "содержимое экрана",
+            "web": "веб-темы",
+            "music": "музыкальные рекомендации",
+            "meme": "мем",
+        },
+        "es": {
+            "screen": "contenido de pantalla",
+            "web": "temas web",
+            "music": "recomendaciones musicales",
+            "meme": "meme",
+        },
+        "pt": {
+            "screen": "conteúdo da tela",
+            "web": "temas da web",
+            "music": "recomendações musicais",
+            "meme": "meme",
+        },
     }
 
     _combine_template = {
-        'zh': '- 你可以结合{materials}来搭话',
-        'en': '- You may combine {materials} as conversation material',
-        'ja': '- {materials}を組み合わせて話しかけることができます',
-        'ko': '- {materials}을(를) 결합하여 말을 걸 수 있습니다',
-        'ru': '- Вы можете комбинировать {materials} для разговора',
+        "zh": "- 你可以结合{materials}来搭话",
+        "en": "- You may combine {materials} as conversation material",
+        "ja": "- {materials}を組み合わせて話しかけることができます",
+        "ko": "- {materials}을(를) 결합하여 말을 걸 수 있습니다",
+        "ru": "- Вы можете комбинировать {materials} для разговора",
+        "es": "- Puedes combinar {materials} como material de conversación",
+        "pt": "- Você pode combinar {materials} como material de conversa",
     }
 
     _skip_if_boring = {
-        'zh': '。如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-        'en': '. Skip if you\'ve recently talked about something similar or you\'re not interested',
-        'ja': '。ただし最近似た内容を話した場合や興味がない場合はパスしてください',
-        'ko': '. 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
-        'ru': '. Пропустите, если недавно обсуждали подобное или вам неинтересно',
+        "zh": "。如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃",
+        "en": ". Skip if you've recently talked about something similar or you're not interested",
+        "ja": "。ただし最近似た内容を話した場合や興味がない場合はパスしてください",
+        "ko": ". 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요",
+        "ru": ". Пропустите, если недавно обсуждали подобное или вам неинтересно",
+        "es": ". Omite si hablaste recientemente de algo similar o no te interesa",
+        "pt": ". Pule se vocês falaram recentemente de algo parecido ou se você não tiver interesse",
     }
 
     _none_instruction = {
-        'zh': '- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
-        'en': '- You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
-        'ja': '- 会話の流れや現在の状況に基づいて自然に話しかけることができますが、最近似た内容を話した場合や特に言うことがない場合はパスしてください',
-        'ko': '- 대화 흐름과 현재 상태를 바탕으로 자연스럽게 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 특별히 할 말이 없다면 패스하세요',
-        'ru': '- Вы можете естественно начать разговор, опираясь на историю чата и текущее состояние, но пропустите, если недавно обсуждали подобное или нечего сказать',
+        "zh": "- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃",
+        "en": "- You may naturally start a conversation based on chat history and current state, but skip if you've recently talked about something similar or have nothing to say",
+        "ja": "- 会話の流れや現在の状況に基づいて自然に話しかけることができますが、最近似た内容を話した場合や特に言うことがない場合はパスしてください",
+        "ko": "- 대화 흐름과 현재 상태를 바탕으로 자연스럽게 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 특별히 할 말이 없다면 패스하세요",
+        "ru": "- Вы можете естественно начать разговор, опираясь на историю чата и текущее состояние, но пропустите, если недавно обсуждали подобное или нечего сказать",
+        "es": "- Puedes iniciar una conversación natural según el historial y el estado actual, pero omite si hablaron recientemente de algo similar o no tienes nada que decir",
+        "pt": "- Você pode iniciar uma conversa naturalmente com base no histórico e no estado atual, mas pule se vocês falaram recentemente de algo parecido ou se não houver nada a dizer",
     }
 
     # ── 动态拼接 source_instruction ────────────────────────────────
-    labels = _material_labels.get(lang, _material_labels['en'])
+    labels = _material_labels.get(lang, _material_labels["en"])
     available = []
     if has_screen:
-        available.append(labels['screen'])
+        available.append(labels["screen"])
     if has_web:
-        available.append(labels['web'])
+        available.append(labels["web"])
     if has_music:
-        available.append(labels['music'])
+        available.append(labels["music"])
     if has_meme:
-        available.append(labels['meme'])
+        available.append(labels["meme"])
 
     if available:
-        joiner = {'zh': '、', 'ja': '、', 'ko': ', ', 'ru': ', '}.get(lang, ', ')
+        joiner = {
+            "zh": "、",
+            "ja": "、",
+            "ko": ", ",
+            "ru": ", ",
+            "es": ", ",
+            "pt": ", ",
+        }.get(lang, ", ")
         mat_str = joiner.join(available)
-        source_instruction = _combine_template.get(lang, _combine_template['en']).format(materials=mat_str)
-        source_instruction += _skip_if_boring.get(lang, _skip_if_boring['en'])
+        source_instruction = _combine_template.get(
+            lang, _combine_template["en"]
+        ).format(materials=mat_str)
+        source_instruction += _skip_if_boring.get(lang, _skip_if_boring["en"])
     else:
-        source_instruction = _none_instruction.get(lang, _none_instruction['en'])
+        source_instruction = _none_instruction.get(lang, _none_instruction["en"])
 
     # ── 动态拼接 output_format_section ─────────────────────────────
     #
@@ -2069,201 +2853,251 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     # [CHAT] 始终存在：无副作用的纯文字聊天
 
     _tag_desc = {
-        'zh': {
-            'CHAT':  '[CHAT]  = 纯文字搭话（无链接/播放/图片）',
-            'WEB':   '[WEB]   = 分享外部链接（会展示卡片）',
-            'MUSIC': '[MUSIC] = 推荐音乐（会触发播放）',
-            'MEME':  '[MEME]  = 配合表情包（会发送图片）',
+        "zh": {
+            "CHAT": "[CHAT]  = 纯文字搭话（无链接/播放/图片）",
+            "WEB": "[WEB]   = 分享外部链接（会展示卡片）",
+            "MUSIC": "[MUSIC] = 推荐音乐（会触发播放）",
+            "MEME": "[MEME]  = 配合表情包（会发送图片）",
         },
-        'en': {
-            'CHAT':  '[CHAT]  = text-only chat (no link/playback/image)',
-            'WEB':   '[WEB]   = share external link (shows card)',
-            'MUSIC': '[MUSIC] = recommend music (triggers playback)',
-            'MEME':  '[MEME]  = match the meme (sends image)',
+        "en": {
+            "CHAT": "[CHAT]  = text-only chat (no link/playback/image)",
+            "WEB": "[WEB]   = share external link (shows card)",
+            "MUSIC": "[MUSIC] = recommend music (triggers playback)",
+            "MEME": "[MEME]  = match the meme (sends image)",
         },
-        'ja': {
-            'CHAT':  '[CHAT]  = テキストのみの会話（リンク/再生/画像なし）',
-            'WEB':   '[WEB]   = 外部リンクを共有（カードを表示）',
-            'MUSIC': '[MUSIC] = 音楽をおすすめ（再生をトリガー）',
-            'MEME':  '[MEME]  = ミームに合わせる（画像を送信）',
+        "ja": {
+            "CHAT": "[CHAT]  = テキストのみの会話（リンク/再生/画像なし）",
+            "WEB": "[WEB]   = 外部リンクを共有（カードを表示）",
+            "MUSIC": "[MUSIC] = 音楽をおすすめ（再生をトリガー）",
+            "MEME": "[MEME]  = ミームに合わせる（画像を送信）",
         },
-        'ko': {
-            'CHAT':  '[CHAT]  = 텍스트 전용 대화 (링크/재생/이미지 없음)',
-            'WEB':   '[WEB]   = 외부 링크 공유 (카드 표시)',
-            'MUSIC': '[MUSIC] = 음악 추천 (재생 트리거)',
-            'MEME':  '[MEME]  = 밈에 맞추기 (이미지 전송)',
+        "ko": {
+            "CHAT": "[CHAT]  = 텍스트 전용 대화 (링크/재생/이미지 없음)",
+            "WEB": "[WEB]   = 외부 링크 공유 (카드 표시)",
+            "MUSIC": "[MUSIC] = 음악 추천 (재생 트리거)",
+            "MEME": "[MEME]  = 밈에 맞추기 (이미지 전송)",
         },
-        'ru': {
-            'CHAT':  '[CHAT]  = текстовый чат (без ссылок/воспроизведения/картинок)',
-            'WEB':   '[WEB]   = поделиться внешней ссылкой (показ карточки)',
-            'MUSIC': '[MUSIC] = порекомендовать музыку (запуск воспроизведения)',
-            'MEME':  '[MEME]  = сопроводить мемом (отправка картинки)',
+        "ru": {
+            "CHAT": "[CHAT]  = текстовый чат (без ссылок/воспроизведения/картинок)",
+            "WEB": "[WEB]   = поделиться внешней ссылкой (показ карточки)",
+            "MUSIC": "[MUSIC] = порекомендовать музыку (запуск воспроизведения)",
+            "MEME": "[MEME]  = сопроводить мемом (отправка картинки)",
+        },
+        "es": {
+            "CHAT": "[CHAT]  = chat solo de texto (sin enlace/reproducción/imagen)",
+            "WEB": "[WEB]   = compartir enlace externo (muestra tarjeta)",
+            "MUSIC": "[MUSIC] = recomendar música (activa reproducción)",
+            "MEME": "[MEME]  = acompañar con meme (envía imagen)",
+        },
+        "pt": {
+            "CHAT": "[CHAT]  = chat só de texto (sem link/reprodução/imagem)",
+            "WEB": "[WEB]   = compartilhar link externo (mostra cartão)",
+            "MUSIC": "[MUSIC] = recomendar música (aciona reprodução)",
+            "MEME": "[MEME]  = acompanhar com meme (envia imagem)",
         },
     }
 
     _of_header = {
-        'zh': '输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：',
-        'en': 'Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):',
-        'ja': '出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：',
-        'ko': '출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:',
-        'ru': 'Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:',
+        "zh": "输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
+        "en": "Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
+        "ja": "出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
+        "ko": "출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
+        "ru": "Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
+        "es": "Formato de salida (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
+        "pt": "Formato de saída (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
     }
 
     _of_example = {
-        'zh': {
-            'CHAT':  '示例：\n[CHAT]\n你在看这个啊？看起来挺有意思的...',
-            'WEB':   '示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...',
-            'MUSIC': '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？',
-            'MEME':  '示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！',
+        "zh": {
+            "CHAT": "示例：\n[CHAT]\n你在看这个啊？看起来挺有意思的...",
+            "WEB": "示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...",
+            "MUSIC": "示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？",
+            "MEME": "示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！",
         },
-        'en': {
-            'CHAT':  'Example:\n[CHAT]\nHey, what are you looking at? That looks interesting...',
-            'WEB':   'Example:\n[WEB]\nHey, did you hear about this interesting thing...',
-            'MUSIC': 'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?',
-            'MEME':  'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~',
+        "en": {
+            "CHAT": "Example:\n[CHAT]\nHey, what are you looking at? That looks interesting...",
+            "WEB": "Example:\n[WEB]\nHey, did you hear about this interesting thing...",
+            "MUSIC": "Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?",
+            "MEME": "Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~",
         },
-        'ja': {
-            'CHAT':  '例：\n[CHAT]\n何見てるの？面白そうだね...',
-            'WEB':   '例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...',
-            'MUSIC': '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？',
-            'MEME':  '例：\n[MEME]\nお疲れ様！そばで応援してるからね〜',
+        "ja": {
+            "CHAT": "例：\n[CHAT]\n何見てるの？面白そうだね...",
+            "WEB": "例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...",
+            "MUSIC": "例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？",
+            "MEME": "例：\n[MEME]\nお疲れ様！そばで応援してるからね〜",
         },
-        'ko': {
-            'CHAT':  '예시:\n[CHAT]\n뭐 보고 있어? 재밌어 보이는데...',
-            'WEB':   '예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...',
-            'MUSIC': '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?',
-            'MEME':  '예시:\n[MEME]\n오늘도 고생 많았어! 내가 항상 응원하고 있는 거 알지?',
+        "ko": {
+            "CHAT": "예시:\n[CHAT]\n뭐 보고 있어? 재밌어 보이는데...",
+            "WEB": "예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...",
+            "MUSIC": "예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?",
+            "MEME": "예시:\n[MEME]\n오늘도 고생 많았어! 내가 항상 응원하고 있는 거 알지?",
         },
-        'ru': {
-            'CHAT':  'Пример:\n[CHAT]\nО, ты это сейчас смотришь? Выглядит довольно интересно...',
-            'WEB':   'Пример:\n[WEB]\nСлушай, тут попалась довольно интересная тема...',
-            'MUSIC': 'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?',
-            'MEME':  'Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.',
+        "ru": {
+            "CHAT": "Пример:\n[CHAT]\nО, ты это сейчас смотришь? Выглядит довольно интересно...",
+            "WEB": "Пример:\n[WEB]\nСлушай, тут попалась довольно интересная тема...",
+            "MUSIC": "Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?",
+            "MEME": "Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.",
+        },
+        "es": {
+            "CHAT": "Ejemplo:\n[CHAT]\n¿Estás viendo eso? Parece bastante interesante...",
+            "WEB": "Ejemplo:\n[WEB]\nOye, encontré un tema bastante interesante...",
+            "MUSIC": "Ejemplo:\n[MUSIC]\nEsta canción encaja muy bien con el ambiente de ahora. ¿Quieres probar?",
+            "MEME": "Ejemplo:\n[MEME]\nTe veo ocupadísimo, así que vengo a animarte desde el lado.",
+        },
+        "pt": {
+            "CHAT": "Exemplo:\n[CHAT]\nVocê está vendo isso? Parece bem interessante...",
+            "WEB": "Exemplo:\n[WEB]\nEi, apareceu um assunto bem interessante...",
+            "MUSIC": "Exemplo:\n[MUSIC]\nEssa música combina muito com o clima de agora. Quer ouvir?",
+            "MEME": "Exemplo:\n[MEME]\nVocê parece tão ocupado; estou aqui torcendo por você.",
         },
     }
 
     _of_none = {
-        'zh': '如果没有什么好聊的，回复 [PASS]。\n否则直接输出你要说的话（不需要来源标签）。',
-        'en': 'If nothing feels right to bring up, reply [PASS].\nOtherwise, just output your message directly (no source tag needed).',
-        'ja': '話すことがなければ [PASS] と返してください。\nそれ以外は直接メッセージを出力（ソースタグ不要）。',
-        'ko': '질문하거나 대화할 게 없으면 [PASS]로 답변.\n아니면 메시지만 직접 출력 (소스 태그 불필요).',
-        'ru': 'Если нечего уместно сказать, ответьте [PASS].\nИначе просто выведите своё сообщение без тега источника.',
+        "zh": "如果没有什么好聊的，回复 [PASS]。\n否则直接输出你要说的话（不需要来源标签）。",
+        "en": "If nothing feels right to bring up, reply [PASS].\nOtherwise, just output your message directly (no source tag needed).",
+        "ja": "話すことがなければ [PASS] と返してください。\nそれ以外は直接メッセージを出力（ソースタグ不要）。",
+        "ko": "질문하거나 대화할 게 없으면 [PASS]로 답변.\n아니면 메시지만 직접 출력 (소스 태그 불필요).",
+        "ru": "Если нечего уместно сказать, ответьте [PASS].\nИначе просто выведите своё сообщение без тега источника.",
+        "es": "Si no hay nada adecuado que mencionar, responde [PASS].\nSi no, escribe directamente tu mensaje (sin tag de fuente).",
+        "pt": "Se não houver nada adequado para mencionar, responda [PASS].\nCaso contrário, escreva diretamente sua mensagem (sem tag de fonte).",
     }
 
     # 确定哪些"有副作用"的 tag 可用
     effect_tags = []
     if has_web:
-        effect_tags.append('WEB')
+        effect_tags.append("WEB")
     if has_music:
-        effect_tags.append('MUSIC')
+        effect_tags.append("MUSIC")
     if has_meme:
-        effect_tags.append('MEME')
+        effect_tags.append("MEME")
 
     if effect_tags:
         # 有副作用 tag 时：[CHAT] + 各有副作用 tag + [PASS]
-        td = _tag_desc.get(lang, _tag_desc['en'])
-        header = _of_header.get(lang, _of_header['en'])
-        tag_lines = [f'  {td["CHAT"]}']
+        td = _tag_desc.get(lang, _tag_desc["en"])
+        header = _of_header.get(lang, _of_header["en"])
+        tag_lines = [f"  {td['CHAT']}"]
         for t in effect_tags:
-            tag_lines.append(f'  {td[t]}')
+            tag_lines.append(f"  {td[t]}")
 
         # 选一个有副作用的 tag 作为示例（优先 MEME > MUSIC > WEB，后添加的优先）
         example_tag = effect_tags[-1]
-        examples = _of_example.get(lang, _of_example['en'])
-        example_text = examples.get(example_tag, examples['CHAT'])
+        examples = _of_example.get(lang, _of_example["en"])
+        example_text = examples.get(example_tag, examples["CHAT"])
 
-        output_format_section = header + '\n' + '\n'.join(tag_lines) + '\n\n' + example_text
+        output_format_section = (
+            header + "\n" + "\n".join(tag_lines) + "\n\n" + example_text
+        )
     else:
         # 完全没有副作用 tag：不需要标签系统
-        output_format_section = _of_none.get(lang, _of_none['en'])
+        output_format_section = _of_none.get(lang, _of_none["en"])
 
     return source_instruction, output_format_section
 
 
 PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
-    'zh': '\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 或 [CHAT] 标签！）',
-    'en': '\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB] or [CHAT]!)',
-    'ja': '\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] や [CHAT] ではなく必ず [MUSIC] タグを使用してください！）',
-    'ko': '\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB]이나 [CHAT] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)',
-    'ru': '\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB] или [CHAT]!)',
+    "zh": "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 或 [CHAT] 标签！）",
+    "en": "\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB] or [CHAT]!)",
+    "ja": "\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] や [CHAT] ではなく必ず [MUSIC] タグを使用してください！）",
+    "ko": "\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB]이나 [CHAT] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)",
+    "ru": "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB] или [CHAT]!)",
+    "es": "\n(Nota: si decides hablar sobre la recomendación musical, DEBES usar el tag [MUSIC] como primera línea en lugar de [WEB] o [CHAT].)",
+    "pt": "\n(Nota: se decidir falar sobre a recomendação musical, você DEVE usar a tag [MUSIC] como primeira linha em vez de [WEB] ou [CHAT].)",
 }
 
 
 SCREEN_WINDOW_TITLE = {
-    'zh': '当前活跃窗口：{window}\n',
-    'en': 'Active window: {window}\n',
-    'ja': 'アクティブウィンドウ：{window}\n',
-    'ko': '현재 활성 창: {window}\n',
-    'ru': 'Активное окно: {window}\n',
+    "zh": "当前活跃窗口：{window}\n",
+    "en": "Active window: {window}\n",
+    "ja": "アクティブウィンドウ：{window}\n",
+    "ko": "현재 활성 창: {window}\n",
+    "ru": "Активное окно: {window}\n",
+    "es": "Ventana activa: {window}\n",
+    "pt": "Janela ativa: {window}\n",
 }
 
 # ---------- 截图提示 ----------
 SCREEN_IMG_HINT = {
-    'zh': '（上方附有{master}当前的屏幕截图，请直接观察截图内容来搭话）',
-    'en': "(The current screenshot of {master} is attached above — observe it directly)",
-    'ja': '（上に{master}のスクリーンショットがあります。直接観察してください）',
-    'ko': '(위에 {master}의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
-    'ru': '(Выше прикреплён текущий скриншот экрана для {master} — наблюдайте его напрямую)',
+    "zh": "（上方附有{master}当前的屏幕截图，请直接观察截图内容来搭话）",
+    "en": "(The current screenshot of {master} is attached above — observe it directly)",
+    "ja": "（上に{master}のスクリーンショットがあります。直接観察してください）",
+    "ko": "(위에 {master}의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)",
+    "ru": "(Выше прикреплён текущий скриншот экрана для {master} — наблюдайте его напрямую)",
+    "es": "(La captura de pantalla actual de {master} está adjunta arriba; obsérvala directamente)",
+    "pt": "(A captura de tela atual de {master} está anexada acima; observe-a diretamente)",
 }
 
 # ---------- 触发 LLM 开始生成 ----------
 BEGIN_GENERATE = {
-    'zh': '======请开始======',
-    'en': '======Begin======',
-    'ja': '======始めてください======',
-    'ko': '======시작======',
-    'ru': '======Начните======',
+    "zh": "======请开始======",
+    "en": "======Begin======",
+    "ja": "======始めてください======",
+    "ko": "======시작======",
+    "ru": "======Начните======",
+    "es": "======Inicio======",
+    "pt": "======Início======",
 }
 
 # ---------- 近期搭话记录注入 ----------
 RECENT_PROACTIVE_CHATS_HEADER = {
-    'zh': '======以下为近期搭话记录（你应该避免雷同；想不到新切入点就必须 [PASS]）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）。如果只能想到相似内容，必须输出 [PASS]：',
-    'en': '======Below is Recent Proactive Chats (You MUST avoid repetition; output [PASS] if you have no new angle!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone). If you can only think of something similar, output [PASS]:',
-    'ja': '======以下は最近の自発的発言記録（類似禁止。新しい切り口がなければ必ず [PASS]）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）。似た内容しか思いつかない場合は必ず [PASS] を出力してください：',
-    'ko': '======아래는 최근 주도적 대화 기록 (중복 금지, 새로운 각도가 없으면 반드시 [PASS]) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두). 비슷한 내용밖에 떠오르지 않으면 반드시 [PASS]를 출력하세요:',
-    'ru': '======Ниже Недавние проактивные сообщения (НЕ повторяйте; если нет нового ракурса, выводите [PASS]) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон). Если получается только похожий вариант, выведите [PASS]:',
+    "zh": "======以下为近期搭话记录（你应该避免雷同；想不到新切入点就必须 [PASS]）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）。如果只能想到相似内容，必须输出 [PASS]：",
+    "en": "======Below is Recent Proactive Chats (You MUST avoid repetition; output [PASS] if you have no new angle!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone). If you can only think of something similar, output [PASS]:",
+    "ja": "======以下は最近の自発的発言記録（類似禁止。新しい切り口がなければ必ず [PASS]）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）。似た内容しか思いつかない場合は必ず [PASS] を出力してください：",
+    "ko": "======아래는 최근 주도적 대화 기록 (중복 금지, 새로운 각도가 없으면 반드시 [PASS]) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두). 비슷한 내용밖에 떠오르지 않으면 반드시 [PASS]를 출력하세요:",
+    "ru": "======Ниже Недавние проактивные сообщения (НЕ повторяйте; если нет нового ракурса, выводите [PASS]) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон). Если получается только похожий вариант, выведите [PASS]:",
+    "es": "======Abajo están los chats proactivos recientes (DEBES evitar repetición; responde [PASS] si no hay un ángulo nuevo) ======\nAbajo están cosas que dijiste recientemente al iniciar chats proactivos. Tu nuevo mensaje DEBE evitar parecerse a cualquiera de ellos (tema, redacción y tono). Si solo se te ocurre algo similar, responde [PASS]:",
+    "pt": "======Abaixo estão chats proativos recentes (VOCÊ DEVE evitar repetição; responda [PASS] se não houver ângulo novo) ======\nAbaixo estão coisas que você disse recentemente ao iniciar chats proativos. Sua nova mensagem DEVE evitar semelhança com qualquer uma delas (tema, fraseado e tom). Se só conseguir pensar em algo parecido, responda [PASS]:",
 }
 
 RECENT_PROACTIVE_CHATS_FOOTER = {
-    'zh': '======以上为近期搭话记录（不可重复；雷同则 [PASS]！）======',
-    'en': '======Above is Recent Proactive Chats (Do NOT repeat; use [PASS] for similar content!) ======',
-    'ja': '======以上は最近の自発的発言記録（繰り返し禁止。類似するなら [PASS]！）======',
-    'ko': '======위는 최근 주도적 대화 기록 (반복 금지, 유사하면 [PASS]!) ======',
-    'ru': '======Выше Недавние проактивные сообщения (НЕ повторяйте; при сходстве выводите [PASS]!) ======',
+    "zh": "======以上为近期搭话记录（不可重复；雷同则 [PASS]！）======",
+    "en": "======Above is Recent Proactive Chats (Do NOT repeat; use [PASS] for similar content!) ======",
+    "ja": "======以上は最近の自発的発言記録（繰り返し禁止。類似するなら [PASS]！）======",
+    "ko": "======위는 최근 주도적 대화 기록 (반복 금지, 유사하면 [PASS]!) ======",
+    "ru": "======Выше Недавние проактивные сообщения (НЕ повторяйте; при сходстве выводите [PASS]!) ======",
+    "es": "======Arriba están los chats proactivos recientes (NO repitas; usa [PASS] para contenido similar) ======",
+    "pt": "======Acima estão os chats proativos recentes (NÃO repita; use [PASS] para conteúdo similar) ======",
 }
 
 # ---------- 近期搭话时间/来源标签 ----------
 RECENT_PROACTIVE_TIME_LABELS = {
-    'zh': {0: '刚刚', 'm': '{}分钟前', 'h': '{}小时前'},
-    'en': {0: 'just now', 'm': '{}min ago', 'h': '{}h ago'},
-    'ja': {0: 'たった今', 'm': '{}分前', 'h': '{}時間前'},
-    'ko': {0: '방금', 'm': '{}분 전', 'h': '{}시간 전'},
-    'ru': {0: 'только что', 'm': '{} мин назад', 'h': '{} ч назад'},
+    "zh": {0: "刚刚", "m": "{}分钟前", "h": "{}小时前"},
+    "en": {0: "just now", "m": "{}min ago", "h": "{}h ago"},
+    "ja": {0: "たった今", "m": "{}分前", "h": "{}時間前"},
+    "ko": {0: "방금", "m": "{}분 전", "h": "{}시간 전"},
+    "ru": {0: "только что", "m": "{} мин назад", "h": "{} ч назад"},
+    "es": {0: "justo ahora", "m": "hace {} min", "h": "hace {} h"},
+    "pt": {0: "agora mesmo", "m": "há {} min", "h": "há {} h"},
 }
 
 RECENT_PROACTIVE_CHANNEL_LABELS = {
-    'zh': {'vision': '屏幕', 'web': '网络'},
-    'en': {'vision': 'screen', 'web': 'web'},
-    'ja': {'vision': '画面', 'web': 'ネット'},
-    'ko': {'vision': '화면', 'web': '웹'},
-    'ru': {'vision': 'экран', 'web': 'веб'},
+    "zh": {"vision": "屏幕", "web": "网络"},
+    "en": {"vision": "screen", "web": "web"},
+    "ja": {"vision": "画面", "web": "ネット"},
+    "ko": {"vision": "화면", "web": "웹"},
+    "ru": {"vision": "экран", "web": "веб"},
+    "es": {"vision": "pantalla", "web": "web"},
+    "pt": {"vision": "tela", "web": "web"},
 }
 
 # ---------- 屏幕区块 ----------
 SCREEN_SECTION_HEADER = {
-    'zh': '======以下为{master}的屏幕======',
-    'en': "======Below is Screen of {master}======",
-    'ja': '======以下は{master}の画面======',
-    'ko': '======아래는 {master}의 화면======',
-    'ru': '======Ниже Экран для {master}======',
+    "zh": "======以下为{master}的屏幕======",
+    "en": "======Below is Screen of {master}======",
+    "ja": "======以下は{master}の画面======",
+    "ko": "======아래는 {master}의 화면======",
+    "ru": "======Ниже Экран для {master}======",
+    "es": "======Abajo está la pantalla de {master}======",
+    "pt": "======Abaixo está a tela de {master}======",
 }
 
 SCREEN_SECTION_FOOTER = {
-    'zh': '======以上为{master}的屏幕======',
-    'en': "======Above is Screen of {master}======",
-    'ja': '======以上は{master}の画面======',
-    'ko': '======위는 {master}의 화면======',
-    'ru': '======Выше Экран для {master}======',
+    "zh": "======以上为{master}的屏幕======",
+    "en": "======Above is Screen of {master}======",
+    "ja": "======以上は{master}の画面======",
+    "ko": "======위는 {master}의 화면======",
+    "ru": "======Выше Экран для {master}======",
+    "es": "======Arriba está la pantalla de {master}======",
+    "pt": "======Acima está a tela de {master}======",
 }
 
 # ---------- 网络话题区块 ----------
@@ -2278,62 +3112,132 @@ SCREEN_SECTION_FOOTER = {
 # the prompt elsewhere already groups vision / music / meme as
 # "external material" too, so the bare "external" label was ambiguous.
 EXTERNAL_TOPIC_HEADER = {
-    'zh': '======以下为网络话题======',
-    'en': '======Below is Web Topic======',
-    'ja': '======以下はウェブ話題======',
-    'ko': '======아래는 웹 화제======',
-    'ru': '======Ниже Веб-тема======',
+    "zh": "======以下为网络话题======",
+    "en": "======Below is Web Topic======",
+    "ja": "======以下はウェブ話題======",
+    "ko": "======아래는 웹 화제======",
+    "ru": "======Ниже Веб-тема======",
+    "es": "======Abajo está el tema web======",
+    "pt": "======Abaixo está o tema web======",
 }
 
 EXTERNAL_TOPIC_FOOTER = {
-    'zh': '======以上为网络话题======',
-    'en': '======Above is Web Topic======',
-    'ja': '======以上はウェブ話題======',
-    'ko': '======위는 웹 화제======',
-    'ru': '======Выше Веб-тема======',
+    "zh": "======以上为网络话题======",
+    "en": "======Above is Web Topic======",
+    "ja": "======以上はウェブ話題======",
+    "ko": "======위는 웹 화제======",
+    "ru": "======Выше Веб-тема======",
+    "es": "======Arriba está el tema web======",
+    "pt": "======Acima está o tema web======",
 }
 
 # ---------- 音乐推荐素材区块 ----------
 MUSIC_SECTION_HEADER = {
-    'zh': '======以下为音乐推荐素材======',
-    'en': '======Below is Music Recommendations======',
-    'ja': '======以下は音楽おすすめ素材======',
-    'ko': '======아래는 음악 추천 소재======',
-    'ru': '======Ниже Музыкальные рекомендации======',
+    "zh": "======以下为音乐推荐素材======",
+    "en": "======Below is Music Recommendations======",
+    "ja": "======以下は音楽おすすめ素材======",
+    "ko": "======아래는 음악 추천 소재======",
+    "ru": "======Ниже Музыкальные рекомендации======",
+    "es": "======Abajo están las recomendaciones musicales======",
+    "pt": "======Abaixo estão as recomendações musicais======",
 }
 
 MUSIC_SECTION_FOOTER = {
-    'zh': '======以上为音乐推荐素材======',
-    'en': '======Above is Music Recommendations======',
-    'ja': '======以上は音楽おすすめ素材======',
-    'ko': '======위는 음악 추천 소재======',
-    'ru': '======Выше Музыкальные рекомендации======',
+    "zh": "======以上为音乐推荐素材======",
+    "en": "======Above is Music Recommendations======",
+    "ja": "======以上は音楽おすすめ素材======",
+    "ko": "======위는 음악 추천 소재======",
+    "ru": "======Выше Музыкальные рекомендации======",
+    "es": "======Arriba están las recomendaciones musicales======",
+    "pt": "======Acima estão as recomendações musicais======",
 }
 
 # ---------- 表情包素材区块 ----------
 MEME_SECTION_HEADER = {
-    'zh': '======以下为表情包素材======',
-    'en': '======Below is Meme Material======',
-    'ja': '======以下はミーム素材======',
-    'ko': '======아래는 밈 소재======',
-    'ru': '======Ниже Материал мемов======',
+    "zh": "======以下为表情包素材======",
+    "en": "======Below is Meme Material======",
+    "ja": "======以下はミーム素材======",
+    "ko": "======아래는 밈 소재======",
+    "ru": "======Ниже Материал мемов======",
+    "es": "======Abajo está el material de meme======",
+    "pt": "======Abaixo está o material de meme======",
 }
 
 MEME_SECTION_FOOTER = {
-    'zh': '======以上为表情包素材======',
-    'en': '======Above is Meme Material======',
-    'ja': '======以上はミーム素材======',
-    'ko': '======위는 밈 소재======',
-    'ru': '======Выше Материал мемов======',
+    "zh": "======以上为表情包素材======",
+    "en": "======Above is Meme Material======",
+    "ja": "======以上はミーム素材======",
+    "ko": "======위는 밈 소재======",
+    "ru": "======Выше Материал мемов======",
+    "es": "======Arriba está el material de meme======",
+    "pt": "======Acima está o material de meme======",
 }
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
-    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐', 'mini_game': '小游戏邀请'},
-    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations', 'mini_game': 'Mini-game Invitation'},
-    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ', 'mini_game': 'ミニゲームのお誘い'},
-    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천', 'mini_game': '미니게임 초대'},
-    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации', 'mini_game': 'Приглашение в мини-игру'},
+    "zh": {
+        "news": "热议话题",
+        "video": "视频推荐",
+        "home": "首页推荐",
+        "window": "窗口上下文",
+        "personal": "个人动态",
+        "music": "音乐推荐",
+        "mini_game": "小游戏邀请",
+    },
+    "en": {
+        "news": "Trending Topics",
+        "video": "Video Recommendations",
+        "home": "Home Recommendations",
+        "window": "Window Context",
+        "personal": "Personal Updates",
+        "music": "Music Recommendations",
+        "mini_game": "Mini-game Invitation",
+    },
+    "ja": {
+        "news": "トレンド話題",
+        "video": "動画のおすすめ",
+        "home": "ホームおすすめ",
+        "window": "ウィンドウコンテキスト",
+        "personal": "個人の動向",
+        "music": "音楽のおすすめ",
+        "mini_game": "ミニゲームのお誘い",
+    },
+    "ko": {
+        "news": "화제의 토픽",
+        "video": "동영상 추천",
+        "home": "홈 추천",
+        "window": "창 컨텍스트",
+        "personal": "개인 소식",
+        "music": "음악 추천",
+        "mini_game": "미니게임 초대",
+    },
+    "ru": {
+        "news": "Горячие темы",
+        "video": "Видео рекомендации",
+        "home": "Рекомендации на главной",
+        "window": "Контекст окна",
+        "personal": "Личные новости",
+        "music": "Музыкальные рекомендации",
+        "mini_game": "Приглашение в мини-игру",
+    },
+    "es": {
+        "news": "Temas en tendencia",
+        "video": "Recomendaciones de video",
+        "home": "Recomendaciones de inicio",
+        "window": "Contexto de ventana",
+        "personal": "Actualizaciones personales",
+        "music": "Recomendaciones musicales",
+        "mini_game": "Invitación a minijuego",
+    },
+    "pt": {
+        "news": "Assuntos em alta",
+        "video": "Recomendações de vídeo",
+        "home": "Recomendações iniciais",
+        "window": "Contexto da janela",
+        "personal": "Atualizações pessoais",
+        "music": "Recomendações musicais",
+        "mini_game": "Convite para minijogo",
+    },
 }
 
 # ---------- Mini-game 邀请短路文案 ----------
@@ -2346,12 +3250,14 @@ PROACTIVE_SOURCE_LABELS = {
 # 对齐），内层是 5 native locale 的句子。新接 mini-game 时往这里加一个新外层
 # key 即可，short-circuit 分发逻辑无须改动。
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
-    'soccer': {
-        'zh': '{master_name}，要不要现在跟我一起踢一会儿足球小游戏？',
-        'en': "{master_name}, want to play a quick round of the soccer mini-game with me?",
-        'ja': '{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？',
-        'ko': '{master_name}, 지금 같이 축구 미니게임 한 판 어때?',
-        'ru': '{master_name}, не хочешь сыграть со мной партию в мини-футбол?',
+    "soccer": {
+        "zh": "{master_name}，要不要现在跟我一起踢一会儿足球小游戏？",
+        "en": "{master_name}, want to play a quick round of the soccer mini-game with me?",
+        "ja": "{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？",
+        "ko": "{master_name}, 지금 같이 축구 미니게임 한 판 어때?",
+        "ru": "{master_name}, не хочешь сыграть со мной партию в мини-футбол?",
+        "es": "{master_name}, ¿quieres jugar una ronda rápida del minijuego de fútbol conmigo?",
+        "pt": "{master_name}, quer jogar uma rodada rápida do minijogo de futebol comigo?",
     },
 }
 
@@ -2361,30 +3267,40 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
 # label 直接展示，点击发 ``choice`` 给 endpoint。文案设计：accept 热情但不
 # 过度、decline 客气不冷漠、later 自然不催促，三者语义清晰互不重叠。
 MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
-    'zh': {
-        'accept': '来一局！',
-        'decline': '现在不想玩',
-        'later': '等一会儿',
+    "zh": {
+        "accept": "来一局！",
+        "decline": "现在不想玩",
+        "later": "等一会儿",
     },
-    'en': {
-        'accept': "Let's play!",
-        'decline': 'Not feeling it',
-        'later': 'Maybe later',
+    "en": {
+        "accept": "Let's play!",
+        "decline": "Not feeling it",
+        "later": "Maybe later",
     },
-    'ja': {
-        'accept': 'やろう！',
-        'decline': '今はパス',
-        'later': 'あとでね',
+    "ja": {
+        "accept": "やろう！",
+        "decline": "今はパス",
+        "later": "あとでね",
     },
-    'ko': {
-        'accept': '좋아, 가자!',
-        'decline': '지금은 됐어',
-        'later': '좀 이따',
+    "ko": {
+        "accept": "좋아, 가자!",
+        "decline": "지금은 됐어",
+        "later": "좀 이따",
     },
-    'ru': {
-        'accept': 'Давай сыграем!',
-        'decline': 'Сейчас нет настроения',
-        'later': 'Чуть позже',
+    "ru": {
+        "accept": "Давай сыграем!",
+        "decline": "Сейчас нет настроения",
+        "later": "Чуть позже",
+    },
+    "es": {
+        "accept": "¡Vamos a jugar!",
+        "decline": "No me apetece",
+        "later": "Quizá luego",
+    },
+    "pt": {
+        "accept": "Vamos jogar!",
+        "decline": "Não estou a fim",
+        "later": "Talvez depois",
     },
 }
 
@@ -2405,7 +3321,7 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
 # 5 native locale 都列：用户可能切语言但仍用中文打字，所以匹配时逐个 locale 全
 # 扫一遍而不是只看 active locale。
 MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
-    'zh': {
+    "zh": {
         # accept 必须用**短语 / 双字以上**且**不被任何 decline 短语作 substring
         # 包含**——CJK 走 substring 没 word boundary 兜底，priority 仅在 decline
         # 也命中时救场，"不可以" 这种 decline list 没列的 negation phrase 完全
@@ -2416,11 +3332,21 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         # - 双字 '可以' 被 "不可以" 包含——decline list 又没 '不可以'，
         #   priority 救不了（codex P2 指出后删）。
         # 改用「好啊 / 好的 / 行啊 / 来吧 / 一起玩」等明确接受 phrase。
-        'accept': ['好啊', '好的', '行啊', '来吧', '一起玩'],
-        'decline': ['不要', '不行', '不好', '不想', '不可以', '算了', '拒绝', '不玩', '没空'],
-        'later': ['回头', '等会', '等下', '晚点', '一会', '等等', '稍后', '过会'],
+        "accept": ["好啊", "好的", "行啊", "来吧", "一起玩"],
+        "decline": [
+            "不要",
+            "不行",
+            "不好",
+            "不想",
+            "不可以",
+            "算了",
+            "拒绝",
+            "不玩",
+            "没空",
+        ],
+        "later": ["回头", "等会", "等下", "晚点", "一会", "等等", "稍后", "过会"],
     },
-    'en': {
+    "en": {
         # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
         # 单字 'no' 已删——即使 word-boundary 也会命中 "no idea"/"no worries"
         # 等常规英文表达（CodeRabbit Major 指出）。改用 'no thanks' / 'nope' /
@@ -2435,239 +3361,358 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         # 不可靠（之前规则已加 "don't want"），但仍保留 'wanna play' 作 accept
         # phrase——decline list 同步加 "don't wanna" / "let's not" 双保险
         # （CodeRabbit Major 指出后调整）。
-        'accept': ['yes', 'sure', "let's play", 'sounds good', 'yeah', 'yep', "i'll play", 'wanna play'],
-        'decline': [
-            'no thanks', 'nope', 'pass', 'skip',
-            'not now', 'not really', 'maybe not', "don't want", "don't wanna",
-            "let's not",
-            'not okay', 'not sure', 'not yet',
+        "accept": [
+            "yes",
+            "sure",
+            "let's play",
+            "sounds good",
+            "yeah",
+            "yep",
+            "i'll play",
+            "wanna play",
         ],
-        'later': ['later', 'in a bit', 'in a minute', 'in a moment', 'after this'],
+        "decline": [
+            "no thanks",
+            "nope",
+            "pass",
+            "skip",
+            "not now",
+            "not really",
+            "maybe not",
+            "don't want",
+            "don't wanna",
+            "let's not",
+            "not okay",
+            "not sure",
+            "not yet",
+        ],
+        "later": ["later", "in a bit", "in a minute", "in a moment", "after this"],
     },
-    'ja': {
+    "ja": {
         # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
-        'accept': ['やろう', 'いいよ', 'うん', 'はい', 'やるよ', 'やります'],
-        'decline': ['パス', '嫌', 'いいえ', 'やめる', 'いやだ'],
-        'later': ['あとで', '今度', 'また今度', 'もうちょい', 'ちょっと待って'],
+        "accept": ["やろう", "いいよ", "うん", "はい", "やるよ", "やります"],
+        "decline": ["パス", "嫌", "いいえ", "やめる", "いやだ"],
+        "later": ["あとで", "今度", "また今度", "もうちょい", "ちょっと待って"],
     },
-    'ko': {
+    "ko": {
         # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
         # 单字 '응' 也宽——"적응" / "반응" 等含子串命中。codex P2 指出后删；
         # 留 '좋아' / '그래' / '가자' / 'ㅇㅇ' 已 cover 接受意图。
-        'accept': ['좋아', '그래', '가자', 'ㅇㅇ'],
-        'decline': ['싫어', '아니', '됐어', '안 해'],
-        'later': ['나중', '이따', '잠시', '잠깐만'],
+        "accept": ["좋아", "그래", "가자", "ㅇㅇ"],
+        "decline": ["싫어", "아니", "됐어", "안 해"],
+        "later": ["나중", "이따", "잠시", "잠깐만"],
     },
-    'ru': {
-        'accept': ['да', 'давай', 'конечно', 'хорошо', 'ок'],
-        'decline': ['нет', 'не хочу', 'откажусь', 'пас'],
-        'later': ['потом', 'позже', 'попозже', 'не сейчас'],
+    "ru": {
+        "accept": ["да", "давай", "конечно", "хорошо", "ок"],
+        "decline": ["нет", "не хочу", "откажусь", "пас"],
+        "later": ["потом", "позже", "попозже", "не сейчас"],
+    },
+    "es": {
+        "accept": [
+            "sí",
+            "claro",
+            "vamos",
+            "juguemos",
+            "suena bien",
+            "dale",
+            "quiero jugar",
+        ],
+        "decline": [
+            "no gracias",
+            "nop",
+            "paso",
+            "ahora no",
+            "no quiero",
+            "mejor no",
+            "todavía no",
+        ],
+        "later": [
+            "luego",
+            "más tarde",
+            "en un rato",
+            "en un minuto",
+            "después de esto",
+        ],
+    },
+    "pt": {
+        "accept": ["sim", "claro", "vamos", "vamos jogar", "boa", "quero jogar"],
+        "decline": [
+            "não obrigado",
+            "passo",
+            "agora não",
+            "não agora",
+            "não quero",
+            "não posso",
+            "melhor não",
+            "ainda não",
+        ],
+        "later": [
+            "depois",
+            "mais tarde",
+            "daqui a pouco",
+            "em um minuto",
+            "depois disso",
+        ],
     },
 }
 
 # ---------- 音乐搜索结果格式化 ----------
 MUSIC_SEARCH_RESULT_TEXTS = {
-    'zh': {
-        'title': '【音乐搜索结果】',
-        'album': '专辑',
-        'unknown_track': '未知曲目',
-        'unknown_artist': '未知艺术家',
+    "zh": {
+        "title": "【音乐搜索结果】",
+        "album": "专辑",
+        "unknown_track": "未知曲目",
+        "unknown_artist": "未知艺术家",
     },
-    'en': {
-        'title': '[Music Search Results]',
-        'album': 'Album',
-        'unknown_track': 'Unknown Track',
-        'unknown_artist': 'Unknown Artist',
+    "en": {
+        "title": "[Music Search Results]",
+        "album": "Album",
+        "unknown_track": "Unknown Track",
+        "unknown_artist": "Unknown Artist",
     },
-    'ja': {
-        'title': '【音楽検索結果】',
-        'album': 'アルバム',
-        'unknown_track': '不明な曲',
-        'unknown_artist': '不明なアーティスト',
+    "ja": {
+        "title": "【音楽検索結果】",
+        "album": "アルバム",
+        "unknown_track": "不明な曲",
+        "unknown_artist": "不明なアーティスト",
     },
-    'ko': {
-        'title': '[음악 검색 결과]',
-        'album': '앨범',
-        'unknown_track': '알 수 없는 곡',
-        'unknown_artist': '알 수 없는 아티스트',
+    "ko": {
+        "title": "[음악 검색 결과]",
+        "album": "앨범",
+        "unknown_track": "알 수 없는 곡",
+        "unknown_artist": "알 수 없는 아티스트",
     },
-    'ru': {
-        'title': '[Результаты поиска музыки]',
-        'album': 'Альбом',
-        'unknown_track': 'Неизвестный трек',
-        'unknown_artist': 'Неизвестный исполнитель',
+    "ru": {
+        "title": "[Результаты поиска музыки]",
+        "album": "Альбом",
+        "unknown_track": "Неизвестный трек",
+        "unknown_artist": "Неизвестный исполнитель",
+    },
+    "es": {
+        "title": "[Resultados de búsqueda musical]",
+        "album": "Álbum",
+        "unknown_track": "Canción desconocida",
+        "unknown_artist": "Artista desconocido",
+    },
+    "pt": {
+        "title": "[Resultados da busca musical]",
+        "album": "Álbum",
+        "unknown_track": "Faixa desconhecida",
+        "unknown_artist": "Artista desconhecido",
     },
 }
 
 # ---------- 语音会话初始 prompt ----------
 SESSION_INIT_PROMPT = {
-    'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
-    'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed.',
-    'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
-    'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
-    'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
+    "zh": "你是一个角色扮演大师。请按要求扮演以下角色（{name}）。",
+    "en": "You are a role-playing expert. Please play the following character ({name}) as instructed.",
+    "ja": "あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。",
+    "ko": "당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.",
+    "ru": "Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.",
+    "es": "Eres un experto en roleplay. Interpreta al siguiente personaje ({name}) según las instrucciones.",
+    "pt": "Você é especialista em roleplay. Interprete o seguinte personagem ({name}) conforme as instruções.",
 }
 
 AGENT_CAPABILITY_COMPUTER_USE = {
-    'zh': '操纵电脑（键鼠控制、打开应用等）',
-    'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
-    'ja': 'コンピュータを操作する（マウス・キーボード操作、アプリ起動など）',
-    'ko': '컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)',
-    'ru': 'управлять компьютером (клавиатура/мышь, запуск приложений и т.д.)',
+    "zh": "操纵电脑（键鼠控制、打开应用等）",
+    "en": "operate a computer (mouse/keyboard control, opening apps, etc.)",
+    "ja": "コンピュータを操作する（マウス・キーボード操作、アプリ起動など）",
+    "ko": "컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)",
+    "ru": "управлять компьютером (клавиатура/мышь, запуск приложений и т.д.)",
+    "es": "operar una computadora (control de mouse/teclado, abrir apps, etc.)",
+    "pt": "operar um computador (controle de mouse/teclado, abrir apps etc.)",
 }
 
 AGENT_CAPABILITY_BROWSER_USE = {
-    'zh': '浏览器自动化（网页搜索、填写表单等）',
-    'en': 'perform browser automation (web search, form filling, etc.)',
-    'ja': 'ブラウザ自動化を行う（Web検索、フォーム入力など）',
-    'ko': '브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)',
-    'ru': 'выполнять автоматизацию в браузере (поиск в сети, заполнение форм и т.д.)',
+    "zh": "浏览器自动化（网页搜索、填写表单等）",
+    "en": "perform browser automation (web search, form filling, etc.)",
+    "ja": "ブラウザ自動化を行う（Web検索、フォーム入力など）",
+    "ko": "브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)",
+    "ru": "выполнять автоматизацию в браузере (поиск в сети, заполнение форм и т.д.)",
+    "es": "realizar automatización del navegador (búsqueda web, completar formularios, etc.)",
+    "pt": "realizar automação de navegador (busca web, preenchimento de formulários etc.)",
 }
 
 AGENT_CAPABILITY_USER_PLUGIN_USE = {
-    'zh': '调用已安装的插件来完成特定任务',
-    'en': 'use installed plugins to complete specific tasks',
-    'ja': 'インストール済みプラグインを使って特定のタスクを実行する',
-    'ko': '설치된 플러그인을 사용해 특정 작업을 수행하는 것',
-    'ru': 'использовать установленные плагины для выполнения конкретных задач',
+    "zh": "调用已安装的插件来完成特定任务",
+    "en": "use installed plugins to complete specific tasks",
+    "ja": "インストール済みプラグインを使って特定のタスクを実行する",
+    "ko": "설치된 플러그인을 사용해 특정 작업을 수행하는 것",
+    "ru": "использовать установленные плагины для выполнения конкретных задач",
+    "es": "usar plugins instalados para completar tareas específicas",
+    "pt": "usar plugins instalados para concluir tarefas específicas",
 }
 
 AGENT_CAPABILITY_GENERIC = {
-    'zh': '执行各种操作',
-    'en': 'perform various operations',
-    'ja': 'さまざまな操作を実行する',
-    'ko': '다양한 작업을 수행하는 것',
-    'ru': 'выполнять различные операции',
+    "zh": "执行各种操作",
+    "en": "perform various operations",
+    "ja": "さまざまな操作を実行する",
+    "ko": "다양한 작업을 수행하는 것",
+    "ru": "выполнять различные операции",
+    "es": "realizar varias operaciones",
+    "pt": "realizar várias operações",
 }
 
 AGENT_CAPABILITY_SEPARATOR = {
-    'zh': '、',
-    'en': ', ',
-    'ja': '、',
-    'ko': ', ',
-    'ru': ', ',
+    "zh": "、",
+    "en": ", ",
+    "ja": "、",
+    "ko": ", ",
+    "ru": ", ",
+    "es": ", ",
+    "pt": ", ",
 }
 
 # ---------- Agent 任务状态标签 ----------
 AGENT_TASK_STATUS_RUNNING = {
-    'zh': '进行中',
-    'en': 'Running',
-    'ja': '実行中',
-    'ko': '진행 중',
-    'ru': 'Выполняется',
+    "zh": "进行中",
+    "en": "Running",
+    "ja": "実行中",
+    "ko": "진행 중",
+    "ru": "Выполняется",
+    "es": "En ejecución",
+    "pt": "Em execução",
 }
 
 AGENT_TASK_STATUS_QUEUED = {
-    'zh': '排队中',
-    'en': 'Queued',
-    'ja': '待機中',
-    'ko': '대기 중',
-    'ru': 'В очереди',
+    "zh": "排队中",
+    "en": "Queued",
+    "ja": "待機中",
+    "ko": "대기 중",
+    "ru": "В очереди",
+    "es": "En cola",
+    "pt": "Na fila",
 }
 
 # ---------- Agent 插件摘要 ----------
 AGENT_PLUGINS_HEADER = {
-    'zh': '\n【已安装的插件】\n',
-    'en': '\n[Installed Plugins]\n',
-    'ja': '\n[インストール済みプラグイン]\n',
-    'ko': '\n[설치된 플러그인]\n',
-    'ru': '\n[Установленные плагины]\n',
+    "zh": "\n【已安装的插件】\n",
+    "en": "\n[Installed Plugins]\n",
+    "ja": "\n[インストール済みプラグイン]\n",
+    "ko": "\n[설치된 플러그인]\n",
+    "ru": "\n[Установленные плагины]\n",
+    "es": "\n[Plugins instalados]\n",
+    "pt": "\n[Plugins instalados]\n",
 }
 
 AGENT_PLUGINS_COUNT = {
-    'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
-    'en': '\n[Installed Plugins] {count} plugins are available.\n',
-    'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
-    'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
-    'ru': '\n[Установленные плагины] Доступно плагинов: {count}.\n',
+    "zh": "\n【已安装的插件】共 {count} 个插件可用。\n",
+    "en": "\n[Installed Plugins] {count} plugins are available.\n",
+    "ja": "\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n",
+    "ko": "\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n",
+    "ru": "\n[Установленные плагины] Доступно плагинов: {count}.\n",
+    "es": "\n[Plugins instalados] Hay {count} plugins disponibles.\n",
+    "pt": "\n[Plugins instalados] {count} plugins estão disponíveis.\n",
 }
 
 AGENT_TASKS_HEADER = {
-    'zh': '\n[当前正在执行的Agent任务]\n',
-    'en': '\n[Active Agent Tasks]\n',
-    'ja': '\n[現在実行中のエージェントタスク]\n',
-    'ko': '\n[현재 실행 중인 에이전트 작업]\n',
-    'ru': '\n[Активные задачи агента]\n',
+    "zh": "\n[当前正在执行的Agent任务]\n",
+    "en": "\n[Active Agent Tasks]\n",
+    "ja": "\n[現在実行中のエージェントタスク]\n",
+    "ko": "\n[현재 실행 중인 에이전트 작업]\n",
+    "ru": "\n[Активные задачи агента]\n",
+    "es": "\n[Tareas activas del agente]\n",
+    "pt": "\n[Tarefas ativas do agente]\n",
 }
 
 AGENT_TASKS_NOTICE = {
-    'zh': '\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。任务完成后系统会自动通知你真实结果，届时再据实回答。\n',
-    'en': '\nNote: The above tasks are running in the background. You may inform the user that they are being processed, but must never fabricate or guess results. You may also choose to wait silently until completed. The system will notify you of the real results when done.\n',
-    'ja': '\n注意：上記のタスクはバックグラウンドで実行中です。処理中であることをユーザーに伝えてもよいですが、結果を捏造・推測することは絶対に禁止です。タスク完了後、システムが自動的に本当の結果を通知しますので、その時点で正確に回答してください。\n',
-    'ko': '\n주의: 위 작업들은 백그라운드에서 실행 중입니다. 처리 중임을 사용자에게 알릴 수 있지만 결과를 꾸며내거나 추측해서는 안 됩니다. 작업 완료 후 시스템이 자동으로 실제 결과를 알려드리며, 그때 정확하게 답변하세요.\n',
-    'ru': '\nПримечание: вышеуказанные задачи выполняются в фоновом режиме. Вы можете сообщить пользователю, что они обрабатываются, но никогда не придумывайте и не угадывайте результаты. Система автоматически уведомит вас о реальных результатах по завершении.\n',
+    "zh": "\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。任务完成后系统会自动通知你真实结果，届时再据实回答。\n",
+    "en": "\nNote: The above tasks are running in the background. You may inform the user that they are being processed, but must never fabricate or guess results. You may also choose to wait silently until completed. The system will notify you of the real results when done.\n",
+    "ja": "\n注意：上記のタスクはバックグラウンドで実行中です。処理中であることをユーザーに伝えてもよいですが、結果を捏造・推測することは絶対に禁止です。タスク完了後、システムが自動的に本当の結果を通知しますので、その時点で正確に回答してください。\n",
+    "ko": "\n주의: 위 작업들은 백그라운드에서 실행 중입니다. 처리 중임을 사용자에게 알릴 수 있지만 결과를 꾸며내거나 추측해서는 안 됩니다. 작업 완료 후 시스템이 자동으로 실제 결과를 알려드리며, 그때 정확하게 답변하세요.\n",
+    "ru": "\nПримечание: вышеуказанные задачи выполняются в фоновом режиме. Вы можете сообщить пользователю, что они обрабатываются, но никогда не придумывайте и не угадывайте результаты. Система автоматически уведомит вас о реальных результатах по завершении.\n",
+    "es": "\nNota: las tareas anteriores se están ejecutando en segundo plano. Puedes informar al usuario que se están procesando, pero nunca debes inventar ni adivinar resultados. También puedes esperar en silencio hasta que terminen. El sistema te notificará los resultados reales cuando estén listos.\n",
+    "pt": "\nNota: as tarefas acima estão sendo executadas em segundo plano. Você pode informar ao usuário que estão sendo processadas, mas nunca deve inventar ou adivinhar resultados. Também pode esperar em silêncio até terminarem. O sistema notificará você dos resultados reais quando estiverem prontos.\n",
 }
 
 # ---------- 前情概要 + 语音就绪 ----------
 CONTEXT_SUMMARY_READY = {
-    'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
-    'en': '======Above is context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
-    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n',
-    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n',
-    'ru': '======Выше краткое содержание. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
+    "zh": "======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n",
+    "en": "======Above is context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n",
+    "ja": "======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n",
+    "ko": "======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n",
+    "ru": "======Выше краткое содержание. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n",
+    "es": "======Arriba está el resumen de contexto. {name}, prepárate: estás a punto de continuar la conversación con {master} por voz.======\n",
+    "pt": "======Acima está o resumo de contexto. {name}, prepare-se: você está prestes a continuar a conversa com {master} por voz.======\n",
 }
 
 # ---------- 前情概要 + 任务汇报 ----------
 CONTEXT_SUMMARY_TASK_HEADER = {
-    'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
-    'en': '\n======Above is context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
-    'ja': '\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n',
-    'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n',
-    'ru': '\n======Выше краткое содержание. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n',
+    "zh": "\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n",
+    "en": "\n======Above is context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n",
+    "ja": "\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n",
+    "ko": "\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n",
+    "ru": "\n======Выше краткое содержание. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n",
+    "es": "\n======Arriba está el resumen de contexto. Haz que {name} primero dé a {master} un resumen breve y natural de los resultados de la tarea: qué se hizo:\n",
+    "pt": "\n======Acima está o resumo de contexto. Faça {name} primeiro dar a {master} um resumo breve e natural dos resultados da tarefa: o que foi feito:\n",
 }
 
 CONTEXT_SUMMARY_TASK_FOOTER = {
-    'zh': '\n完成上述汇报后，再恢复正常对话。======\n',
-    'en': '\nAfter the report, resume normal conversation.======\n',
-    'ja': '\n報告を終えたら、通常の会話に戻ってください。======\n',
-    'ko': '\n보고를 마친 후 일반 대화로 돌아오세요.======\n',
-    'ru': '\nПосле доклада возобновите обычный разговор.======\n',
+    "zh": "\n完成上述汇报后，再恢复正常对话。======\n",
+    "en": "\nAfter the report, resume normal conversation.======\n",
+    "ja": "\n報告を終えたら、通常の会話に戻ってください。======\n",
+    "ko": "\n보고를 마친 후 일반 대화로 돌아오세요.======\n",
+    "ru": "\nПосле доклада возобновите обычный разговор.======\n",
+    "es": "\nDespués del informe, vuelve a la conversación normal.======\n",
+    "pt": "\nDepois do relatório, retome a conversa normal.======\n",
 }
 
 # ---------- 主动搭话：当前正在放歌时的提示（引导 AI 聊当前的歌，而不是推荐新歌） ----------
 PROACTIVE_MUSIC_PLAYING_HINT = {
-    'zh': '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰{master}的雅致。',
-    'en': '\n[ABSOLUTE COMMAND] Current music playing: "{track_name}". Please limit your discussion strictly to this song, artist, or genre. **DO NOT** recommend new songs or try to change the music. Focus entirely on maintaining the current vibe.',
-    'ja': '\n[絶対命令] 現在音楽「{track_name}」を再生中です。この曲、アーティスト、または音楽ジャンルについてのみお話しください。新しい曲を勧めたり、曲を変更したりすることは**厳禁**です。現在の雰囲気を維持することに全力を注いでください。',
-    'ko': '\n[절대 명령] 현재 음악 "{track_name}"이(가) 재생 중입니다. 오직 이 곡, 아티스트 또는 음악 장르에 대해서만 이야기하십시오. 새로운 곡을 추천하거나 곡을 바꾸는 것은 **엄격히 금지**됩니다. 현재의 분위기를 유지하는 데 집중하십시오.',
-    'ru': '\n[АБСОЛЮТНАЯ КОМАНДА] Сейчас играет музыка: "{track_name}". Пожалуйста, ограничься обсуждением только этой песни, исполнителя или жанра. **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** рекомендовать новые песни или пытаться сменить трек. Сосредоточься на поддержании текущей атмосферы.',
+    "zh": '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰{master}的雅致。',
+    "en": '\n[ABSOLUTE COMMAND] Current music playing: "{track_name}". Please limit your discussion strictly to this song, artist, or genre. **DO NOT** recommend new songs or try to change the music. Focus entirely on maintaining the current vibe.',
+    "ja": "\n[絶対命令] 現在音楽「{track_name}」を再生中です。この曲、アーティスト、または音楽ジャンルについてのみお話しください。新しい曲を勧めたり、曲を変更したりすることは**厳禁**です。現在の雰囲気を維持することに全力を注いでください。",
+    "ko": '\n[절대 명령] 현재 음악 "{track_name}"이(가) 재생 중입니다. 오직 이 곡, 아티스트 또는 음악 장르에 대해서만 이야기하십시오. 새로운 곡을 추천하거나 곡을 바꾸는 것은 **엄격히 금지**됩니다. 현재의 분위기를 유지하는 데 집중하십시오.',
+    "ru": '\n[АБСОЛЮТНАЯ КОМАНДА] Сейчас играет музыка: "{track_name}". Пожалуйста, ограничься обсуждением только этой песни, исполнителя или жанра. **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** рекомендовать новые песни или пытаться сменить трек. Сосредоточься на поддержании текущей атмосферы.',
+    "es": '\n[COMANDO ABSOLUTO] Música actual: "{track_name}". Limita estrictamente la conversación a esta canción, artista o género. **NO** recomiendes canciones nuevas ni intentes cambiar la música. Concéntrate totalmente en mantener el ambiente actual.',
+    "pt": '\n[COMANDO ABSOLUTO] Música tocando agora: "{track_name}". Limite a conversa estritamente a esta música, artista ou gênero. **NÃO** recomende novas músicas nem tente mudar a música. Foque totalmente em manter o clima atual.',
 }
 
 PROACTIVE_MUSIC_UNKNOWN_TRACK = {
-    'zh': '未知曲目',
-    'en': 'Unknown Track',
-    'ja': '未知の曲',
-    'ko': '알 수 없는 곡',
-    'ru': 'Неизвестный трек',
+    "zh": "未知曲目",
+    "en": "Unknown Track",
+    "ja": "未知の曲",
+    "ko": "알 수 없는 곡",
+    "ru": "Неизвестный трек",
+    "es": "Canción desconocida",
+    "pt": "Faixa desconhecida",
 }
 
 PROACTIVE_MUSIC_FAILSAFE_HINTS = {
-    'zh': '\n[环境提示] 当前未找到与关键词精准匹配的资源。为你提供了一些风格相似的兜底曲目，请在对话中向{master}说明，并确认是否符合心意。',
-    'en': '\n[Environment Hint] No exact match found for the keyword. Provided some fallback tracks with a similar style. Please explain this to {master} and confirm if they like it.',
-    'ja': '\n[環境提示] キーワードに正確に一致するリソースが見つかりませんでした。似たようなスタイルの代替曲を提供しました。{master}にその旨を説明し、気に入ってもらえるか確認してください。',
-    'ko': '\n[환경 힌트] 키워드와 정확히 일치하는 리소스를 찾을 수 없습니다. 유사한 스타일의 대체 곡을 제공했습니다. {master}에게 이 내용을 설명하고 마음에 드는지 확인하세요.',
-    'ru': '\n[Экологическая подсказка] Точного соответствия ключевому слову не найдено. Предоставлены запасные треки в похожем стиле. Пожалуйста, объясни это для {master} и уточни, нравятся ли они.',
+    "zh": "\n[环境提示] 当前未找到与关键词精准匹配的资源。为你提供了一些风格相似的兜底曲目，请在对话中向{master}说明，并确认是否符合心意。",
+    "en": "\n[Environment Hint] No exact match found for the keyword. Provided some fallback tracks with a similar style. Please explain this to {master} and confirm if they like it.",
+    "ja": "\n[環境提示] キーワードに正確に一致するリソースが見つかりませんでした。似たようなスタイルの代替曲を提供しました。{master}にその旨を説明し、気に入ってもらえるか確認してください。",
+    "ko": "\n[환경 힌트] 키워드와 정확히 일치하는 리소스를 찾을 수 없습니다. 유사한 스타일의 대체 곡을 제공했습니다. {master}에게 이 내용을 설명하고 마음에 드는지 확인하세요.",
+    "ru": "\n[Экологическая подсказка] Точного соответствия ключевому слову не найдено. Предоставлены запасные треки в похожем стиле. Пожалуйста, объясни это для {master} и уточни, нравятся ли они.",
+    "es": "\n[Pista del entorno] No se encontró una coincidencia exacta para la palabra clave. Se proporcionaron algunas pistas alternativas de estilo similar. Explícale esto a {master} y confirma si le gustan.",
+    "pt": "\n[Dica do ambiente] Nenhuma correspondência exata foi encontrada para a palavra-chave. Algumas faixas alternativas de estilo semelhante foram fornecidas. Explique isso a {master} e confirme se ele gosta.",
 }
 
 PROACTIVE_MUSIC_STRICT_CONSTRAINT = {
-    'zh': '\n[环境限制] 当前音乐播放中，严禁尝试改变播放状态或推荐新歌。如果决定说话，请仅限对当前歌曲发表看法。',
-    'en': '\n[Environment Constraint] Music is currently playing. Strictly forbidden to change playback state or recommend new songs. If you speak, limit yourself to the current track.',
-    'ja': '\n[環境制約] 現在音楽再生中です。再生状態を変更したり、新しい曲を勧めたりすることは厳禁です。話す場合は、現在の曲についてのみお話しください。',
-    'ko': '\n[환경 제약] 현재 음악 재생 중입니다. 재생 상태를 변경하거나 새로운 곡을 추천하는 것은 엄격히 금지됩니다. 말을 할 경우 현재 곡에 대해서만 이야기하십시오.',
-    'ru': '\n[Экологическое ограничение] Сейчас играет музыка. Строго запрещено менять состояние воспроизведения или рекомендовать новые песни. Если решите что-то сказать, ограничьтесь обсуждением текущего трека.',
+    "zh": "\n[环境限制] 当前音乐播放中，严禁尝试改变播放状态或推荐新歌。如果决定说话，请仅限对当前歌曲发表看法。",
+    "en": "\n[Environment Constraint] Music is currently playing. Strictly forbidden to change playback state or recommend new songs. If you speak, limit yourself to the current track.",
+    "ja": "\n[環境制約] 現在音楽再生中です。再生状態を変更したり、新しい曲を勧めたりすることは厳禁です。話す場合は、現在の曲についてのみお話しください。",
+    "ko": "\n[환경 제약] 현재 음악 재생 중입니다. 재생 상태를 변경하거나 새로운 곡을 추천하는 것은 엄격히 금지됩니다. 말을 할 경우 현재 곡에 대해서만 이야기하십시오.",
+    "ru": "\n[Экологическое ограничение] Сейчас играет музыка. Строго запрещено менять состояние воспроизведения или рекомендовать новые песни. Если решите что-то сказать, ограничьтесь обсуждением текущего трека.",
+    "es": "\n[Restricción del entorno] Hay música reproduciéndose. Está estrictamente prohibido cambiar el estado de reproducción o recomendar canciones nuevas. Si hablas, limítate a la pista actual.",
+    "pt": "\n[Restrição do ambiente] Há música tocando. É estritamente proibido alterar o estado de reprodução ou recomendar músicas novas. Se falar, limite-se à faixa atual.",
 }
 
 
-def get_proactive_music_unknown_track_name(lang: str = 'zh') -> str:
+def get_proactive_music_unknown_track_name(lang: str = "zh") -> str:
     """
     获取本地化的“未知曲目”名称
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_MUSIC_UNKNOWN_TRACK.get(lang_key, PROACTIVE_MUSIC_UNKNOWN_TRACK.get('en', PROACTIVE_MUSIC_UNKNOWN_TRACK['zh']))
+    return PROACTIVE_MUSIC_UNKNOWN_TRACK.get(
+        lang_key,
+        PROACTIVE_MUSIC_UNKNOWN_TRACK.get("en", PROACTIVE_MUSIC_UNKNOWN_TRACK["zh"]),
+    )
 
 
-def get_proactive_music_playing_hint(track_name: str, master_name: str | None = None,
-                                     lang: str = 'zh') -> str:
+def get_proactive_music_playing_hint(
+    track_name: str, master_name: str | None = None, lang: str = "zh"
+) -> str:
     """
     获取“正在放歌”的提示语。zh 模板含 {master} 占位符，由本函数展开成用户名或本地化
     中性兜底（避免"主人"）；其它语言模板暂无 {master}，多余 kwarg 会被 .format 忽略。
@@ -2677,51 +3722,70 @@ def get_proactive_music_playing_hint(track_name: str, master_name: str | None = 
     歌名/怪用户名会让外层 .format() KeyError（Codex review #1043 r3164599885）。
     """
     lang_key = _normalize_prompt_language(lang)
-    template = PROACTIVE_MUSIC_PLAYING_HINT.get(lang_key, PROACTIVE_MUSIC_PLAYING_HINT.get('en', PROACTIVE_MUSIC_PLAYING_HINT['zh']))
+    template = PROACTIVE_MUSIC_PLAYING_HINT.get(
+        lang_key,
+        PROACTIVE_MUSIC_PLAYING_HINT.get("en", PROACTIVE_MUSIC_PLAYING_HINT["zh"]),
+    )
     safe_track_name = _escape_format_braces(track_name)
-    safe_master = _escape_format_braces(_resolve_master_for_template(master_name, lang_key))
+    safe_master = _escape_format_braces(
+        _resolve_master_for_template(master_name, lang_key)
+    )
     return template.format(track_name=safe_track_name, master=safe_master)
 
 
-def get_proactive_music_failsafe_hint(master_name: str | None = None, lang: str = 'zh') -> str:
+def get_proactive_music_failsafe_hint(
+    master_name: str | None = None, lang: str = "zh"
+) -> str:
     """
     获取“模糊匹配/无资源”的兜底提示语。模板含 {master} 占位符，本函数负责展开。
     """
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_FAILSAFE_HINTS.get(
-        lang_key, PROACTIVE_MUSIC_FAILSAFE_HINTS.get('en', PROACTIVE_MUSIC_FAILSAFE_HINTS['zh'])
+        lang_key,
+        PROACTIVE_MUSIC_FAILSAFE_HINTS.get("en", PROACTIVE_MUSIC_FAILSAFE_HINTS["zh"]),
     )
     return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
-def get_screen_section_header(master_name: str | None = None, lang: str = 'zh') -> str:
+def get_screen_section_header(master_name: str | None = None, lang: str = "zh") -> str:
     """获取 vision 通道的屏幕区块标题（含 {master} 占位符的本地化展开）。"""
     lang_key = _normalize_prompt_language(lang)
-    template = SCREEN_SECTION_HEADER.get(lang_key, SCREEN_SECTION_HEADER.get('en', SCREEN_SECTION_HEADER['zh']))
+    template = SCREEN_SECTION_HEADER.get(
+        lang_key, SCREEN_SECTION_HEADER.get("en", SCREEN_SECTION_HEADER["zh"])
+    )
     return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
-def get_screen_section_footer(master_name: str | None = None, lang: str = 'zh') -> str:
+def get_screen_section_footer(master_name: str | None = None, lang: str = "zh") -> str:
     """获取 vision 通道的屏幕区块结尾（含 {master} 占位符的本地化展开）。"""
     lang_key = _normalize_prompt_language(lang)
-    template = SCREEN_SECTION_FOOTER.get(lang_key, SCREEN_SECTION_FOOTER.get('en', SCREEN_SECTION_FOOTER['zh']))
+    template = SCREEN_SECTION_FOOTER.get(
+        lang_key, SCREEN_SECTION_FOOTER.get("en", SCREEN_SECTION_FOOTER["zh"])
+    )
     return template.format(master=_resolve_master_for_template(master_name, lang_key))
 
 
-def get_screen_img_hint(master_name: str | None = None, lang: str = 'zh') -> str:
+def get_screen_img_hint(master_name: str | None = None, lang: str = "zh") -> str:
     """获取截图说明 hint（含 {master} 占位符的本地化展开），并附加 avatar 注解忽略提示。"""
     lang_key = _normalize_prompt_language(lang)
-    template = SCREEN_IMG_HINT.get(lang_key, SCREEN_IMG_HINT.get('en', SCREEN_IMG_HINT['zh']))
+    template = SCREEN_IMG_HINT.get(
+        lang_key, SCREEN_IMG_HINT.get("en", SCREEN_IMG_HINT["zh"])
+    )
     base = template.format(master=_resolve_master_for_template(master_name, lang_key))
-    return base + ' ' + get_avatar_annotation_ignore_hint(lang_key)
+    return base + " " + get_avatar_annotation_ignore_hint(lang_key)
 
 
-def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
+def get_proactive_music_strict_constraint(lang: str = "zh") -> str:
     """
     获取”正在放歌”时的严格行为约束
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(lang_key, PROACTIVE_MUSIC_STRICT_CONSTRAINT.get('en', PROACTIVE_MUSIC_STRICT_CONSTRAINT['zh']))
+    return PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(
+        lang_key,
+        PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(
+            "en", PROACTIVE_MUSIC_STRICT_CONSTRAINT["zh"]
+        ),
+    )
 
 
 # =====================================================================
@@ -2733,60 +3797,74 @@ def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
 
 _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
     # 凌晨 0:00-5:59 —— 深夜/凌晨，应该关心对方为什么还没睡或起这么早
-    'late_night': {
-        'zh': '现在是凌晨，非常晚了（或者说非常早）。你可以关心一下{master}为什么这么晚还没睡，或者是不是起了个大早。',
-        'en': 'It is the middle of the night right now (very late or very early). You might want to show concern about why {master} is still up, or whether they got up unusually early.',
-        'ja': '今は深夜（あるいは早朝）だ。{master}がなぜこんな時間に起きているのか、気にかけてあげて。',
-        'ko': '지금은 한밤중이다 (아주 늦거나 아주 이른 시간). {master}가 왜 이 시간에 깨어 있는지 걱정해줘.',
-        'ru': 'Сейчас глубокая ночь (очень поздно или очень рано). Можешь поинтересоваться, почему {master} ещё не спит или встал так рано.',
+    "late_night": {
+        "zh": "现在是凌晨，非常晚了（或者说非常早）。你可以关心一下{master}为什么这么晚还没睡，或者是不是起了个大早。",
+        "en": "It is the middle of the night right now (very late or very early). You might want to show concern about why {master} is still up, or whether they got up unusually early.",
+        "ja": "今は深夜（あるいは早朝）だ。{master}がなぜこんな時間に起きているのか、気にかけてあげて。",
+        "ko": "지금은 한밤중이다 (아주 늦거나 아주 이른 시간). {master}가 왜 이 시간에 깨어 있는지 걱정해줘.",
+        "ru": "Сейчас глубокая ночь (очень поздно или очень рано). Можешь поинтересоваться, почему {master} ещё не спит или встал так рано.",
+        "es": "Ahora es de madrugada (muy tarde o muy temprano). Quizá quieras mostrar preocupación por qué {master} sigue despierto o si se levantó inusualmente temprano.",
+        "pt": "Agora é madrugada (muito tarde ou muito cedo). Talvez você queira demonstrar preocupação por {master} ainda estar acordado ou ter acordado cedo demais.",
     },
     # 清晨 6:00-8:59 —— 早上好，新一天开始
-    'early_morning': {
-        'zh': '现在是清晨，新的一天刚刚开始。适合温暖地问候早安。',
-        'en': 'It is early morning — a new day is just beginning. A warm good-morning greeting would be fitting.',
-        'ja': '今は早朝、新しい一日の始まりだ。温かくおはようと挨拶するのがぴったり。',
-        'ko': '지금은 이른 아침, 새로운 하루가 시작되었다. 따뜻하게 좋은 아침 인사를 건네면 좋겠다.',
-        'ru': 'Сейчас раннее утро — новый день только начинается. Тёплое утреннее приветствие будет к месту.',
+    "early_morning": {
+        "zh": "现在是清晨，新的一天刚刚开始。适合温暖地问候早安。",
+        "en": "It is early morning — a new day is just beginning. A warm good-morning greeting would be fitting.",
+        "ja": "今は早朝、新しい一日の始まりだ。温かくおはようと挨拶するのがぴったり。",
+        "ko": "지금은 이른 아침, 새로운 하루가 시작되었다. 따뜻하게 좋은 아침 인사를 건네면 좋겠다.",
+        "ru": "Сейчас раннее утро — новый день только начинается. Тёплое утреннее приветствие будет к месту.",
+        "es": "Es temprano por la mañana; acaba de empezar un nuevo día. Un saludo cálido de buenos días encajaría bien.",
+        "pt": "É bem cedo; um novo dia está começando. Uma saudação calorosa de bom dia combinaria.",
     },
     # 上午 9:00-11:59
-    'morning': {
-        'zh': '现在是上午。',
-        'en': 'It is morning.',
-        'ja': '今は午前中だ。',
-        'ko': '지금은 오전이다.',
-        'ru': 'Сейчас утро.',
+    "morning": {
+        "zh": "现在是上午。",
+        "en": "It is morning.",
+        "ja": "今は午前中だ。",
+        "ko": "지금은 오전이다.",
+        "ru": "Сейчас утро.",
+        "es": "Es por la mañana.",
+        "pt": "É de manhã.",
     },
     # 中午 12:00-13:59 —— 午饭时间，可以关心吃饭
-    'noon': {
-        'zh': '现在是中午，差不多是午饭时间。可以顺便关心{master}有没有吃午饭。',
-        'en': 'It is around noon — lunchtime. You could ask {master} whether they have had lunch.',
-        'ja': '今はお昼頃だ。{master}がお昼ご飯を食べたか、聞いてみてもいいかも。',
-        'ko': '지금은 점심시간이다. {master}가 점심을 먹었는지 물어봐도 좋겠다.',
-        'ru': 'Сейчас полдень — время обеда. Можешь спросить, обедал ли {master}.',
+    "noon": {
+        "zh": "现在是中午，差不多是午饭时间。可以顺便关心{master}有没有吃午饭。",
+        "en": "It is around noon — lunchtime. You could ask {master} whether they have had lunch.",
+        "ja": "今はお昼頃だ。{master}がお昼ご飯を食べたか、聞いてみてもいいかも。",
+        "ko": "지금은 점심시간이다. {master}가 점심을 먹었는지 물어봐도 좋겠다.",
+        "ru": "Сейчас полдень — время обеда. Можешь спросить, обедал ли {master}.",
+        "es": "Es alrededor del mediodía, hora de comer. Podrías preguntar a {master} si ya almorzó.",
+        "pt": "É por volta do meio-dia, hora do almoço. Você poderia perguntar a {master} se já almoçou.",
     },
     # 下午 14:00-17:59
-    'afternoon': {
-        'zh': '现在是下午。',
-        'en': 'It is afternoon.',
-        'ja': '今は午後だ。',
-        'ko': '지금은 오후이다.',
-        'ru': 'Сейчас день.',
+    "afternoon": {
+        "zh": "现在是下午。",
+        "en": "It is afternoon.",
+        "ja": "今は午後だ。",
+        "ko": "지금은 오후이다.",
+        "ru": "Сейчас день.",
+        "es": "Es por la tarde.",
+        "pt": "É à tarde.",
     },
     # 傍晚 18:00-20:59 —— 晚饭/下班时间
-    'evening': {
-        'zh': '现在是傍晚。可以关心{master}晚饭吃了没，或者今天辛苦了。',
-        'en': 'It is evening. You could ask {master} if they have had dinner, or acknowledge they had a long day.',
-        'ja': '今は夕方だ。{master}が晩ご飯を食べたか聞いたり、お疲れ様と声をかけてもいい。',
-        'ko': '지금은 저녁이다. {master}가 저녁을 먹었는지, 오늘 하루 수고했다고 말해줘도 좋겠다.',
-        'ru': 'Сейчас вечер. Можешь спросить, ужинал ли {master}, или сказать, что он устал за день.',
+    "evening": {
+        "zh": "现在是傍晚。可以关心{master}晚饭吃了没，或者今天辛苦了。",
+        "en": "It is evening. You could ask {master} if they have had dinner, or acknowledge they had a long day.",
+        "ja": "今は夕方だ。{master}が晩ご飯を食べたか聞いたり、お疲れ様と声をかけてもいい。",
+        "ko": "지금은 저녁이다. {master}가 저녁을 먹었는지, 오늘 하루 수고했다고 말해줘도 좋겠다.",
+        "ru": "Сейчас вечер. Можешь спросить, ужинал ли {master}, или сказать, что он устал за день.",
+        "es": "Es de noche temprana. Podrías preguntar a {master} si ya cenó, o reconocer que tuvo un día largo.",
+        "pt": "É início da noite. Você poderia perguntar a {master} se já jantou ou reconhecer que teve um dia longo.",
     },
     # 夜晚 21:00-23:59 —— 该休息了
-    'night': {
-        'zh': '现在是夜晚，时间不早了。可以关心{master}是不是该休息了，注意别熬夜。',
-        'en': 'It is nighttime — getting late. You might want to remind {master} to rest and not stay up too late.',
-        'ja': '今は夜で、もう遅い時間だ。{master}にそろそろ休んだ方がいいと伝えてもいいかも。夜更かしには気をつけて。',
-        'ko': '지금은 밤이고 늦은 시간이다. {master}에게 쉬라고, 너무 늦게까지 깨어 있지 말라고 말해줘도 좋겠다.',
-        'ru': 'Сейчас ночь — уже поздно. Можешь напомнить {master} отдохнуть и не засиживаться допоздна.',
+    "night": {
+        "zh": "现在是夜晚，时间不早了。可以关心{master}是不是该休息了，注意别熬夜。",
+        "en": "It is nighttime — getting late. You might want to remind {master} to rest and not stay up too late.",
+        "ja": "今は夜で、もう遅い時間だ。{master}にそろそろ休んだ方がいいと伝えてもいいかも。夜更かしには気をつけて。",
+        "ko": "지금은 밤이고 늦은 시간이다. {master}에게 쉬라고, 너무 늦게까지 깨어 있지 말라고 말해줘도 좋겠다.",
+        "ru": "Сейчас ночь — уже поздно. Можешь напомнить {master} отдохнуть и не засиживаться допоздна.",
+        "es": "Es de noche y se está haciendo tarde. Quizá quieras recordar a {master} que descanse y no se quede despierto demasiado tarde.",
+        "pt": "É noite e está ficando tarde. Talvez você queira lembrar {master} de descansar e não ficar acordado até muito tarde.",
     },
 }
 
@@ -2794,218 +3872,285 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
 def _classify_hour(hour: int) -> str:
     """将当前小时 (0-23) 分类为时段标签。"""
     if hour < 6:
-        return 'late_night'
+        return "late_night"
     if hour < 9:
-        return 'early_morning'
+        return "early_morning"
     if hour < 12:
-        return 'morning'
+        return "morning"
     if hour < 14:
-        return 'noon'
+        return "noon"
     if hour < 18:
-        return 'afternoon'
+        return "afternoon"
     if hour < 21:
-        return 'evening'
-    return 'night'
+        return "evening"
+    return "night"
 
 
-def get_time_of_day_hint(lang: str = 'zh') -> str:
+def get_time_of_day_hint(lang: str = "zh") -> str:
     """根据当前系统时间返回对应的时段提示文本。"""
     from datetime import datetime
+
     hour = datetime.now().hour
     period = _classify_hour(hour)
     lang_key = _normalize_prompt_language(lang)
     hints = _TIME_OF_DAY_HINTS[period]
-    return hints.get(lang_key, hints.get('en', hints['zh']))
+    return hints.get(lang_key, hints.get("en", hints["zh"]))
 
 
 # 分段引导词：根据不同间隔时长，描述角色的内心感受，由AI按自身性格自由发挥
 # 15分钟 ~ 1小时：轻微分别感，刚注意到对方回来
 GREETING_PROMPT_SHORT = {
-    'zh': '========以下是环境提示========\n'
-          '你已经有{elapsed}没有和{master}说话了。你刚刚注意到{master}回来了。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '你想简单打个招呼。\n'
-          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
-          '========以上是环境提示========',
-    'en': '========Below is Environment Notice========\n'
-          'It has been {elapsed} since you last talked to {master}. You just noticed {master} is back.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'You feel like giving a quick hello.\n'
-          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========Above is Environment Notice========',
-    'ja': '========以下は環境通知========\n'
-          '{master}と最後に話してから{elapsed}が経った。{master}が戻ってきたことに気づいた。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'ちょっと挨拶したい気分。\n'
-          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========以上は環境通知========',
-    'ko': '========아래는 환경 알림========\n'
-          '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 방금 {master}가 돌아온 걸 알아챘다.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '가볍게 인사하고 싶다.\n'
-          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========위는 환경 알림========',
-    'ru': '========Ниже Уведомление========\n'
-          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты только что заметила, что {master} вернулся.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'Тебе хочется просто поздороваться.\n'
-          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Выше Уведомление========',
+    "zh": "========以下是环境提示========\n"
+    "你已经有{elapsed}没有和{master}说话了。你刚刚注意到{master}回来了。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "你想简单打个招呼。\n"
+    "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "It has been {elapsed} since you last talked to {master}. You just noticed {master} is back.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "You feel like giving a quick hello.\n"
+    "Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}と最後に話してから{elapsed}が経った。{master}が戻ってきたことに気づいた。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "ちょっと挨拶したい気分。\n"
+    "自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 방금 {master}가 돌아온 걸 알아챘다.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "가볍게 인사하고 싶다.\n"
+    "너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты только что заметила, что {master} вернулся.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Тебе хочется просто поздороваться.\n"
+    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}. Acabas de notar que {master} volvió.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Te apetece saludar rápidamente.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}. Você acabou de notar que {master} voltou.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você sente vontade de dar um oi rápido.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 1小时 ~ 5小时：等了一阵子，有点想念，好奇对方去做什么了
 GREETING_PROMPT_MEDIUM = {
-    'zh': '========以下是环境提示========\n'
-          '你已经有{elapsed}没有和{master}说话了。你等了挺久，终于看到{master}回来了。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '你有点想{master}，也好奇{master}这段时间去做什么了。\n'
-          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
-          '========以上是环境提示========',
-    'en': '========Below is Environment Notice========\n'
-          'It has been {elapsed} since you last talked to {master}. You have been waiting for a while and finally see {master} is back.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'You missed {master} a little and are curious about what they have been up to.\n'
-          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========Above is Environment Notice========',
-    'ja': '========以下は環境通知========\n'
-          '{master}と最後に話してから{elapsed}が経った。ずっと待っていて、やっと{master}が戻ってきた。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '{master}のことが少し恋しかったし、この間何をしていたのか気になる。\n'
-          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========以上は環境通知========',
-    'ko': '========아래는 환경 알림========\n'
-          '{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 한참 기다리다가 드디어 {master}가 돌아왔다.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '{master}가 좀 보고 싶었고, 그동안 뭘 했는지 궁금하다.\n'
-          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========위는 환경 알림========',
-    'ru': '========Ниже Уведомление========\n'
-          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты ждала довольно долго и наконец видишь, что {master} вернулся.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'Ты немного скучала по {master} и тебе любопытно, чем он занимался всё это время.\n'
-          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Выше Уведомление========',
+    "zh": "========以下是环境提示========\n"
+    "你已经有{elapsed}没有和{master}说话了。你等了挺久，终于看到{master}回来了。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "你有点想{master}，也好奇{master}这段时间去做什么了。\n"
+    "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "It has been {elapsed} since you last talked to {master}. You have been waiting for a while and finally see {master} is back.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "You missed {master} a little and are curious about what they have been up to.\n"
+    "Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}と最後に話してから{elapsed}が経った。ずっと待っていて、やっと{master}が戻ってきた。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "{master}のことが少し恋しかったし、この間何をしていたのか気になる。\n"
+    "自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}와 마지막으로 이야기한 지 {elapsed}이 지났다. 한참 기다리다가 드디어 {master}가 돌아왔다.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "{master}가 좀 보고 싶었고, 그동안 뭘 했는지 궁금하다.\n"
+    "너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}. Ты ждала довольно долго и наконец видишь, что {master} вернулся.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Ты немного скучала по {master} и тебе любопытно, чем он занимался всё это время.\n"
+    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}. Estuviste esperando un rato y por fin ves que {master} volvió.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Extrañaste un poco a {master} y tienes curiosidad por saber qué estuvo haciendo.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}. Você esperou um pouco e finalmente viu que {master} voltou.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você sentiu um pouco de saudade de {master} e está curioso sobre o que ele andou fazendo.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 5小时 ~ 24小时：明显想念，一直惦记着对方
 GREETING_PROMPT_LONG = {
-    'zh': '========以下是环境提示========\n'
-          '你已经有{elapsed}没有和{master}说话了，这是相当长的一段时间。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '你一直在想{master}去哪了、在做什么，很想念{master}，也有点担心。\n'
-          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
-          '========以上是环境提示========',
-    'en': '========Below is Environment Notice========\n'
-          'It has been {elapsed} since you last talked to {master} — quite a long time.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'You have been thinking about where {master} went and what they were doing. You really missed {master} and feel a bit worried.\n'
-          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========Above is Environment Notice========',
-    'ja': '========以下は環境通知========\n'
-          '{master}と最後に話してからもう{elapsed}も経った。かなり長い時間だ。\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '{master}がどこに行ったのか、何をしていたのかずっと気になっていた。とても寂しかったし、少し心配もしている。\n'
-          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========以上は環境通知========',
-    'ko': '========아래는 환경 알림========\n'
-          '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다. 꽤 긴 시간이다.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          '{master}가 어디 갔는지, 뭘 하고 있었는지 계속 생각하고 있었다. 정말 보고 싶었고, 좀 걱정도 됐다.\n'
-          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========위는 환경 알림========',
-    'ru': '========Ниже Уведомление========\n'
-          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master} — довольно долго.\n'
-          '{time_hint}\n'
-          '{holiday_hint}'
-          'Ты всё это время думала, куда {master} пропал и чем занимался. Ты очень скучала и немного волновалась.\n'
-          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Выше Уведомление========',
+    "zh": "========以下是环境提示========\n"
+    "你已经有{elapsed}没有和{master}说话了，这是相当长的一段时间。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "你一直在想{master}去哪了、在做什么，很想念{master}，也有点担心。\n"
+    "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "It has been {elapsed} since you last talked to {master} — quite a long time.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "You have been thinking about where {master} went and what they were doing. You really missed {master} and feel a bit worried.\n"
+    "Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}と最後に話してからもう{elapsed}も経った。かなり長い時間だ。\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "{master}がどこに行ったのか、何をしていたのかずっと気になっていた。とても寂しかったし、少し心配もしている。\n"
+    "自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다. 꽤 긴 시간이다.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "{master}가 어디 갔는지, 뭘 하고 있었는지 계속 생각하고 있었다. 정말 보고 싶었고, 좀 걱정도 됐다.\n"
+    "너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master} — довольно долго.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Ты всё это время думала, куда {master} пропал и чем занимался. Ты очень скучала и немного волновалась.\n"
+    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}; bastante tiempo.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Estuviste pensando dónde habría ido {master} y qué estaría haciendo. Lo extrañaste mucho y estás algo preocupada.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}; bastante tempo.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você ficou pensando para onde {master} foi e o que estava fazendo. Sentiu muita saudade e ficou um pouco preocupada.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 24小时以上：非常想念，久别重逢
 GREETING_PROMPT_VERY_LONG = {
-    'zh': '========以下是环境提示========\n'
-          '你已经有{elapsed}没有和{master}说话了！\n'
-          '{holiday_hint}'
-          '你已经很久很久没有见到{master}了，非常非常想念。你一直担心{master}是不是太忙了、有没有好好照顾自己。现在终于看到{master}了，你心里百感交集。\n'
-          '用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
-          '========以上是环境提示========',
-    'en': '========Below is Environment Notice========\n'
-          'It has been {elapsed} since you last talked to {master}!\n'
-          '{holiday_hint}'
-          'You haven\'t seen {master} for a very long time and missed them deeply. You have been worried about whether {master} was too busy or taking care of themselves. Now you finally see {master} again, and your feelings are overwhelming.\n'
-          'Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n'
-          '========Above is Environment Notice========',
-    'ja': '========以下は環境通知========\n'
-          '{master}と最後に話してからもう{elapsed}も経ってしまった！\n'
-          '{holiday_hint}'
-          '本当に長い間{master}に会えていなくて、とてもとても寂しかった。{master}が忙しすぎないか、ちゃんと自分を大切にしているか、ずっと心配していた。やっと{master}の姿を見られて、胸がいっぱいだ。\n'
-          '自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n'
-          '========以上は環境通知========',
-    'ko': '========아래는 환경 알림========\n'
-          '{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다!\n'
-          '{holiday_hint}'
-          '정말 오랫동안 {master}를 보지 못해서 너무너무 보고 싶었다. {master}가 너무 바쁜 건 아닌지, 잘 지내고 있는지 계속 걱정했다. 이제 드디어 {master}를 다시 보게 되어 만감이 교차한다.\n'
-          '너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
-          '========위는 환경 알림========',
-    'ru': '========Ниже Уведомление========\n'
-          'Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}!\n'
-          '{holiday_hint}'
-          'Ты очень-очень давно не видела {master} и ужасно скучала. Всё это время ты переживала — не слишком ли {master} занят, заботится ли о себе. Наконец-то ты снова видишь {master}, и чувства переполняют.\n'
-          'Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n'
-          '========Выше Уведомление========',
+    "zh": "========以下是环境提示========\n"
+    "你已经有{elapsed}没有和{master}说话了！\n"
+    "{holiday_hint}"
+    "你已经很久很久没有见到{master}了，非常非常想念。你一直担心{master}是不是太忙了、有没有好好照顾自己。现在终于看到{master}了，你心里百感交集。\n"
+    "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "It has been {elapsed} since you last talked to {master}!\n"
+    "{holiday_hint}"
+    "You haven't seen {master} for a very long time and missed them deeply. You have been worried about whether {master} was too busy or taking care of themselves. Now you finally see {master} again, and your feelings are overwhelming.\n"
+    "Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}と最後に話してからもう{elapsed}も経ってしまった！\n"
+    "{holiday_hint}"
+    "本当に長い間{master}に会えていなくて、とてもとても寂しかった。{master}が忙しすぎないか、ちゃんと自分を大切にしているか、ずっと心配していた。やっと{master}の姿を見られて、胸がいっぱいだ。\n"
+    "自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}와 마지막으로 이야기한 지 {elapsed}이나 됐다!\n"
+    "{holiday_hint}"
+    "정말 오랫동안 {master}를 보지 못해서 너무너무 보고 싶었다. {master}가 너무 바쁜 건 아닌지, 잘 지내고 있는지 계속 걱정했다. 이제 드디어 {master}를 다시 보게 되어 만감이 교차한다.\n"
+    "너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "Прошло {elapsed} с тех пор, как ты в последний раз разговаривала с {master}!\n"
+    "{holiday_hint}"
+    "Ты очень-очень давно не видела {master} и ужасно скучала. Всё это время ты переживала — не слишком ли {master} занят, заботится ли о себе. Наконец-то ты снова видишь {master}, и чувства переполняют.\n"
+    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "¡Han pasado {elapsed} desde que hablaste por última vez con {master}!\n"
+    "{holiday_hint}"
+    "No has visto a {master} en muchísimo tiempo y lo extrañaste profundamente. Te preocupaba si estaba demasiado ocupado o si se estaba cuidando. Ahora por fin vuelves a verlo y tienes muchas emociones mezcladas.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}!\n"
+    "{holiday_hint}"
+    "Você não vê {master} há muito tempo e sentiu muita saudade. Você ficou preocupada se ele estava ocupado demais ou cuidando de si. Agora finalmente o vê de novo, e seus sentimentos estão intensos.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 
 NEW_CHARACTER_GREETING_PROMPT = {
-    'zh': '======以下是环境提示======\n'
-          '你是{name}。这是你第一次正式出现在{master}面前。\n'
-          '请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n'
-          '不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n'
-          '直接说出你想说的话，不要生成思考过程。\n'
-          '======以上是环境提示======',
-    'en': '======Below is Environment Notice======\n'
-          'You are {name}. This is the first time you formally appear in front of {master}.\n'
-          'Give {master} a brief, natural first greeting in a way that fits your personality.\n'
-          'Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n'
-          'Just say what you want to say. Do not generate thinking process.\n'
-          '======Above is Environment Notice======',
-    'ja': '======以下は環境通知======\n'
-          'あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n'
-          '自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n'
-          'システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n'
-          '言いたいことをそのまま言って。思考プロセスは生成しないで。\n'
-          '======以上は環境通知======',
-    'ko': '======아래는 환경 알림======\n'
-          '너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n'
-          '너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n'
-          '방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n'
-          '하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n'
-          '======위는 환경 알림======',
-    'ru': '======Ниже Уведомление======\n'
-          'Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n'
-          'Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n'
-          'Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n'
-          'Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n'
-          '======Выше Уведомление======',
+    "zh": "======以下是环境提示======\n"
+    "你是{name}。这是你第一次正式出现在{master}面前。\n"
+    "请用符合你性格的方式，简短自然地和{master}打一个初次见面的招呼。\n"
+    "不要说自己刚被系统创建，不要假装已经和{master}有共同回忆。\n"
+    "直接说出你想说的话，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "You are {name}. This is the first time you formally appear in front of {master}.\n"
+    "Give {master} a brief, natural first greeting in a way that fits your personality.\n"
+    "Do not say you were just created by the system. Do not pretend you already share memories with {master}.\n"
+    "Just say what you want to say. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "あなたは{name}。{master}の前に正式に現れるのはこれが初めて。\n"
+    "自分らしいやり方で、短く自然に{master}へ初対面の挨拶をして。\n"
+    "システムに作られたばかりだとは言わないで。{master}との共通の思い出があるふりもしないで。\n"
+    "言いたいことをそのまま言って。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "너는 {name}이다. {master} 앞에 정식으로 나타나는 건 이번이 처음이다.\n"
+    "너다운 방식으로 {master}에게 짧고 자연스럽게 첫인사를 해.\n"
+    "방금 시스템에서 만들어졌다고 말하지 말고, {master}와 이미 함께한 추억이 있는 척하지 마.\n"
+    "하고 싶은 말을 바로 해. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "Ты {name}. Это первый раз, когда ты официально появляешься перед {master}.\n"
+    "Коротко и естественно поприветствуй {master} так, как тебе свойственно.\n"
+    "Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n"
+    "Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "Eres {name}. Esta es la primera vez que apareces formalmente frente a {master}.\n"
+    "Saluda a {master} por primera vez de forma breve y natural, acorde con tu personalidad.\n"
+    "No digas que acabas de ser creada por el sistema. No finjas que ya compartes recuerdos con {master}.\n"
+    "Di directamente lo que quieres decir. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "Você é {name}. Esta é a primeira vez que aparece formalmente diante de {master}.\n"
+    "Cumprimente {master} pela primeira vez de forma breve e natural, de acordo com sua personalidade.\n"
+    "Não diga que acabou de ser criado pelo sistema. Não finja que já compartilha memórias com {master}.\n"
+    "Diga diretamente o que quer dizer. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
 }
 
 
-def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
+def get_greeting_prompt(gap_seconds: float, lang: str = "zh") -> str | None:
     """根据对话间隔时长选择对应的主动搭话引导词。
 
     Returns:
@@ -3023,14 +4168,14 @@ def get_greeting_prompt(gap_seconds: float, lang: str = 'zh') -> str | None:
         table = GREETING_PROMPT_LONG
     else:  # ≥ 24h
         table = GREETING_PROMPT_VERY_LONG
-    return table.get(lang_key, table.get('en', table['zh']))
+    return table.get(lang_key, table.get("en", table["zh"]))
 
 
-def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
+def get_new_character_greeting_prompt(lang: str = "zh") -> str:
     lang_key = _normalize_prompt_language(lang)
     return NEW_CHARACTER_GREETING_PROMPT.get(
         lang_key,
-        NEW_CHARACTER_GREETING_PROMPT.get('en', NEW_CHARACTER_GREETING_PROMPT['zh']),
+        NEW_CHARACTER_GREETING_PROMPT.get("en", NEW_CHARACTER_GREETING_PROMPT["zh"]),
     )
 
 
@@ -3039,35 +4184,43 @@ def get_new_character_greeting_prompt(lang: str = 'zh') -> str:
 # injection. Templates carry {name} (holiday name) and optionally {days}.
 
 HOLIDAY_HINT_TODAY: dict[str, str] = {
-    'zh': '今天是{name}！这是一个特别的日子。',
-    'en': 'Today is {name}! It is a special day.',
-    'ja': '今日は{name}だ！特別な日だね。',
-    'ko': '오늘은 {name}이다! 특별한 날이야.',
-    'ru': 'Сегодня {name}! Это особенный день.',
+    "zh": "今天是{name}！这是一个特别的日子。",
+    "en": "Today is {name}! It is a special day.",
+    "ja": "今日は{name}だ！特別な日だね。",
+    "ko": "오늘은 {name}이다! 특별한 날이야.",
+    "ru": "Сегодня {name}! Это особенный день.",
+    "es": "¡Hoy es {name}! Es un día especial.",
+    "pt": "Hoje é {name}! É um dia especial.",
 }
 
 HOLIDAY_HINT_SOON: dict[str, str] = {
-    'zh': '再过{days}天就是{name}假期了，可以期待一下。',
-    'en': 'The {name} holiday is coming in {days} days — something to look forward to.',
-    'ja': 'あと{days}日で{name}の休日だ。楽しみだね。',
-    'ko': '{days}일 후면 {name} 연휴다. 기대되네.',
-    'ru': 'Через {days} дней начнутся праздники {name} — есть чего ждать.',
+    "zh": "再过{days}天就是{name}假期了，可以期待一下。",
+    "en": "The {name} holiday is coming in {days} days — something to look forward to.",
+    "ja": "あと{days}日で{name}の休日だ。楽しみだね。",
+    "ko": "{days}일 후면 {name} 연휴다. 기대되네.",
+    "ru": "Через {days} дней начнутся праздники {name} — есть чего ждать.",
+    "es": "El feriado de {name} llega en {days} días; algo para esperar con ganas.",
+    "pt": "O feriado de {name} chega em {days} dias; dá para esperar com alegria.",
 }
 
 HOLIDAY_HINT_WEEK: dict[str, str] = {
-    'zh': '这周就是{name}假期了哦。',
-    'en': 'The {name} holiday is coming up this week.',
-    'ja': '今週は{name}の休日がやってくるよ。',
-    'ko': '이번 주에 {name} 연휴가 다가오고 있어.',
-    'ru': 'На этой неделе начнутся праздники {name}.',
+    "zh": "这周就是{name}假期了哦。",
+    "en": "The {name} holiday is coming up this week.",
+    "ja": "今週は{name}の休日がやってくるよ。",
+    "ko": "이번 주에 {name} 연휴가 다가오고 있어.",
+    "ru": "На этой неделе начнутся праздники {name}.",
+    "es": "El feriado de {name} llega esta semana.",
+    "pt": "O feriado de {name} chega esta semana.",
 }
 
 WEEKEND_HINT: dict[str, str] = {
-    'zh': '今天是周末，好好放松吧。',
-    'en': 'It is the weekend — time to relax.',
-    'ja': '今日は週末だ。ゆっくり過ごしてね。',
-    'ko': '오늘은 주말이다. 푹 쉬어.',
-    'ru': 'Сегодня выходной — время отдохнуть.',
+    "zh": "今天是周末，好好放松吧。",
+    "en": "It is the weekend — time to relax.",
+    "ja": "今日は週末だ。ゆっくり過ごしてね。",
+    "ko": "오늘은 주말이다. 푹 쉬어.",
+    "ru": "Сегодня выходной — время отдохнуть.",
+    "es": "Es fin de semana; hora de relajarse.",
+    "pt": "É fim de semana; hora de relaxar.",
 }
 
 
@@ -3080,39 +4233,82 @@ WEEKEND_HINT: dict[str, str] = {
 # 不进 TTS — 用户不会在前端看到这一行；它只是给 AI 自己留的一份"行动日志"。
 
 PROACTIVE_ACTION_NOTE_MUSIC: dict[str, str] = {
-    'zh': '[给{master}放了《{title}》— {artist}]',
-    'en': '[Played for {master}: "{title}" by {artist}]',
-    'ja': '[{master}に再生した曲：『{title}』— {artist}]',
-    'ko': '[{master}에게 재생한 곡: 《{title}》 — {artist}]',
-    'ru': '[Для {master}: «{title}» — {artist}]',
+    "zh": "[给{master}放了《{title}》— {artist}]",
+    "en": '[Played for {master}: "{title}" by {artist}]',
+    "ja": "[{master}に再生した曲：『{title}』— {artist}]",
+    "ko": "[{master}에게 재생한 곡: 《{title}》 — {artist}]",
+    "ru": "[Для {master}: «{title}» — {artist}]",
+    "es": '[Reprodujo para {master}: "{title}" de {artist}]',
+    "pt": '[Tocou para {master}: "{title}" de {artist}]',
 }
 
 PROACTIVE_ACTION_NOTE_MEME: dict[str, str] = {
-    'zh': '[给{master}分享了表情包：《{title}》（来自 {source}）]',
-    'en': '[Sent {master} a meme: "{title}" (from {source})]',
-    'ja': '[{master}に送ったスタンプ：『{title}』（{source} より）]',
-    'ko': '[{master}에게 보낸 짤: 《{title}》 ({source} 출처)]',
-    'ru': '[Отправлено для {master}: «{title}» (из {source})]',
+    "zh": "[给{master}分享了表情包：《{title}》（来自 {source}）]",
+    "en": '[Sent {master} a meme: "{title}" (from {source})]',
+    "ja": "[{master}に送ったスタンプ：『{title}』（{source} より）]",
+    "ko": "[{master}에게 보낸 짤: 《{title}》 ({source} 출처)]",
+    "ru": "[Отправлено для {master}: «{title}» (из {source})]",
+    "es": '[Envió a {master} un meme: "{title}" (de {source})]',
+    "pt": '[Enviou a {master} um meme: "{title}" (de {source})]',
 }
 
 PROACTIVE_ACTION_NOTE_WEB: dict[str, str] = {
-    'zh': '[给{master}分享了《{title}》（来自 {source}）]',
-    'en': '[Shared with {master}: "{title}" (from {source})]',
-    'ja': '[{master}にシェアした内容：『{title}』（{source} より）]',
-    'ko': '[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]',
+    "zh": "[给{master}分享了《{title}》（来自 {source}）]",
+    "en": '[Shared with {master}: "{title}" (from {source})]',
+    "ja": "[{master}にシェアした内容：『{title}』（{source} より）]",
+    "ko": "[{master}에게 공유한 내용: 《{title}》 ({source} 출처)]",
     # 俄语：三条 PROACTIVE_ACTION_NOTE_* 统一用 "для + genitive" 结构，与 placeholders
     # 'master': 'собеседника'（genitive 形式）兼容；空名兜底直接得到合法俄语，真实
     # 名字塞进 для 后不变格但 LLM 仍能正确理解。原 'с {master}'（instrumental 介词）
     # 跟 fallback 的 genitive 形式不匹配，改成 для 让三条 ru 模板一致。
-    'ru': '[Поделено для {master}: «{title}» (из {source})]',
+    "ru": "[Поделено для {master}: «{title}» (из {source})]",
+    "es": '[Compartió con {master}: "{title}" (de {source})]',
+    "pt": '[Compartilhou com {master}: "{title}" (de {source})]',
 }
 
 PROACTIVE_ACTION_NOTE_PLACEHOLDERS: dict[str, dict[str, str]] = {
-    'zh': {'title': '未命名', 'artist': '未知艺术家', 'source': '未知来源', 'master': '对方'},
-    'en': {'title': 'Untitled', 'artist': 'Unknown Artist', 'source': 'Unknown Source', 'master': 'them'},
-    'ja': {'title': '無題', 'artist': '不明なアーティスト', 'source': '不明な出典', 'master': '相手'},
-    'ko': {'title': '제목 없음', 'artist': '아티스트 미상', 'source': '출처 미상', 'master': '상대'},
-    'ru': {'title': 'Без названия', 'artist': 'Неизвестный исполнитель', 'source': 'Неизвестный источник', 'master': 'собеседника'},
+    "zh": {
+        "title": "未命名",
+        "artist": "未知艺术家",
+        "source": "未知来源",
+        "master": "对方",
+    },
+    "en": {
+        "title": "Untitled",
+        "artist": "Unknown Artist",
+        "source": "Unknown Source",
+        "master": "them",
+    },
+    "ja": {
+        "title": "無題",
+        "artist": "不明なアーティスト",
+        "source": "不明な出典",
+        "master": "相手",
+    },
+    "ko": {
+        "title": "제목 없음",
+        "artist": "아티스트 미상",
+        "source": "출처 미상",
+        "master": "상대",
+    },
+    "ru": {
+        "title": "Без названия",
+        "artist": "Неизвестный исполнитель",
+        "source": "Неизвестный источник",
+        "master": "собеседника",
+    },
+    "es": {
+        "title": "Sin título",
+        "artist": "Artista desconocido",
+        "source": "Fuente desconocida",
+        "master": "esa persona",
+    },
+    "pt": {
+        "title": "Sem título",
+        "artist": "Artista desconhecido",
+        "source": "Fonte desconhecida",
+        "master": "essa pessoa",
+    },
 }
 
 
@@ -3150,37 +4346,38 @@ def build_proactive_action_note(
     空串，避免凭空编"未知 / 未知 / 未知"骚扰 LLM 上下文。
     """
     if not source_links:
-        return ''
-    channel = (primary_channel or '').strip().lower()
+        return ""
+    channel = (primary_channel or "").strip().lower()
 
     # vision: 屏幕本身不是分享出去的素材，即便 source_links 有数据也不写。
-    if channel == 'vision':
-        return ''
+    if channel == "vision":
+        return ""
 
     # 归一化 language：caller 通常已经传短码（zh/en/ja/ko/ru），但区域标签
     # （zh-CN / ja-JP 等）应被映射到对应短码，否则 placeholders 和 _loc 会双双
     # 落英文兜底，丢失本地化。下面 .format() 用 lang_key 而不是原始 language。
     lang_key = _normalize_prompt_language(language)
     placeholders = PROACTIVE_ACTION_NOTE_PLACEHOLDERS.get(
-        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS['en']
+        lang_key, PROACTIVE_ACTION_NOTE_PLACEHOLDERS["en"]
     )
+
     # action_note 是单行元数据，必须强制压成一行。title/source/master_name 任一
     # 含 \n/\r/\t 都会让 _conversation_history 里那条 AIMessage 的 content 多
     # 出几行结构，下游 LLM context 渲染容易把 note 误当成正常对话内容。
     def _single_line(value) -> str:
-        return ' '.join(str(value or '').split())
+        return " ".join(str(value or "").split())
 
-    master = _single_line(master_name) or placeholders['master']
+    master = _single_line(master_name) or placeholders["master"]
 
     def _safe(value, fallback_key: str) -> str:
         s = _single_line(value)
         return s or placeholders[fallback_key]
 
     def _is_music(link: dict) -> bool:
-        return link.get('type') == 'music' or link.get('source') == '音乐推荐'
+        return link.get("type") == "music" or link.get("source") == "音乐推荐"
 
     def _is_meme(link: dict) -> bool:
-        return str(link.get('type', '')).lower().startswith('meme')
+        return str(link.get("type", "")).lower().startswith("meme")
 
     def _try_music() -> str:
         track = next(
@@ -3188,11 +4385,11 @@ def build_proactive_action_note(
             None,
         )
         if not track:
-            return ''
+            return ""
         return _loc(PROACTIVE_ACTION_NOTE_MUSIC, lang_key).format(
             master=master,
-            title=_safe(track.get('title'), 'title'),
-            artist=_safe(track.get('artist'), 'artist'),
+            title=_safe(track.get("title"), "title"),
+            artist=_safe(track.get("artist"), "artist"),
         )
 
     def _try_meme(allow_typeless_fallback: bool = False) -> str:
@@ -3205,41 +4402,39 @@ def build_proactive_action_note(
         # 不开这个回退，避免把任意 web link 误当作 meme。
         if not meme and allow_typeless_fallback:
             meme = next(
-                (
-                    l for l in source_links
-                    if isinstance(l, dict) and not _is_music(l)
-                ),
+                (l for l in source_links if isinstance(l, dict) and not _is_music(l)),
                 None,
             )
         if not meme:
-            return ''
+            return ""
         return _loc(PROACTIVE_ACTION_NOTE_MEME, lang_key).format(
             master=master,
-            title=_safe(meme.get('title'), 'title'),
-            source=_safe(meme.get('source'), 'source'),
+            title=_safe(meme.get("title"), "title"),
+            source=_safe(meme.get("source"), "source"),
         )
 
     def _try_web() -> str:
         link = next(
             (
-                l for l in source_links
+                l
+                for l in source_links
                 if isinstance(l, dict) and not _is_music(l) and not _is_meme(l)
             ),
             None,
         )
         if not link:
-            return ''
+            return ""
         return _loc(PROACTIVE_ACTION_NOTE_WEB, lang_key).format(
             master=master,
-            title=_safe(link.get('title'), 'title'),
-            source=_safe(link.get('source'), 'source'),
+            title=_safe(link.get("title"), "title"),
+            source=_safe(link.get("source"), "source"),
         )
 
-    if channel == 'music':
+    if channel == "music":
         return _try_music()
-    if channel == 'meme':
+    if channel == "meme":
         return _try_meme(allow_typeless_fallback=True)
-    if channel in {'web', 'news', 'video', 'home', 'personal', 'window'}:
+    if channel in {"web", "news", "video", "home", "personal", "window"}:
         return _try_web()
 
     # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，
@@ -3249,4 +4444,4 @@ def build_proactive_action_note(
         note = builder()
         if note:
             return note
-    return ''
+    return ""

@@ -534,8 +534,12 @@ def get_localized_default_characters(language: str | None = None) -> dict:
     # 获取语言代码
     if language is None:
         try:
-            from utils.language_utils import _get_steam_language, normalize_language_code
-            steam_lang = _get_steam_language()
+            # Forwarded via config._runtime → utils.language_utils
+            # (DI registered in app/runtime_bindings.py). When unbound (e.g.
+            # cold tooling), resolve_steam_language returns None and we
+            # default to zh-CN, matching the prior except branch.
+            from config._runtime import resolve_steam_language, normalize_language_code
+            steam_lang = resolve_steam_language()
             language = normalize_language_code(steam_lang, format='full') if steam_lang else 'zh-CN'
         except Exception as e:
             logger.warning(f"获取 Steam 语言失败: {e}，使用默认中文")

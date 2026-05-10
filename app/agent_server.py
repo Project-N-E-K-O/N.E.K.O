@@ -4,6 +4,13 @@ import os
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+
+# Wire DI bindings explicitly — direct script invocation
+# (``python app/agent_server.py``) doesn't run app/__init__.py.
+# Idempotent under launcher's ``from app import agent_server`` path too.
+from app.runtime_bindings import install_runtime_bindings as _install_runtime_bindings
+_install_runtime_bindings()
+
 import mimetypes
 import json
 mimetypes.add_type("application/javascript", ".js")
@@ -50,7 +57,7 @@ try:
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
-    from brain.result_parser import (
+    from utils.result_parser import (
         parse_computer_use_result,
         parse_browser_use_result,
         parse_plugin_result,
