@@ -1799,5 +1799,16 @@ state = GlobalState()
 try:
     from main_logic.agent_event_bus import register_user_utterance_sink as _register_sink
     _register_sink(state.add_user_context_event)
-except Exception:  # pragma: no cover - main_logic may not be importable in subprocess workers
+except (ImportError, ModuleNotFoundError, AttributeError):
+    # Expected silent path: plugin subprocess workers may not have
+    # main_logic on sys.path at all. Matches the historical "main_logic-less"
+    # plugin runtime contract.
     pass
+except Exception:  # pragma: no cover - defensive
+    # Anything else (signature change in agent_event_bus, real bug in
+    # register_*, etc.) is a regression we want loud. Log without
+    # re-raising so plugin runtime still loads.
+    logger.warning(
+        "plugin.core.state: failed to self-register user_utterance_sink",
+        exc_info=True,
+    )

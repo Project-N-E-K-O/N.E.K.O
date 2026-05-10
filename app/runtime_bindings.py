@@ -64,8 +64,23 @@ def install_runtime_bindings() -> None:
             register_language_normalizer(normalize_language_code)
             register_truncate_to_tokens(truncate_to_tokens)
             _INSTALLED["config_runtime"] = True
-        except Exception:
-            # Some entrypoints (or test environments) may not ship the full
-            # utils surface; the resolvers in config._runtime fall back to
-            # defaults. Flag stays False so a later call can retry.
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            # Expected silent path: entrypoint or test env doesn't ship the
+            # full utils surface. The resolvers in config._runtime fall back
+            # to defaults. Flag stays False so a later call can retry.
             pass
+        except Exception:
+            # Anything else (signature mismatch, real bug in a register_*
+            # impl, etc.) is a regression we want loud — log with traceback
+            # but DON'T re-raise; flag stays False so a later call can retry
+            # if the underlying issue gets fixed in-process. The logger lives
+            # in utils so we import it lazily to keep this block resilient
+            # against a missing utils itself (caught by the silent path above).
+            try:
+                from utils.logger_config import get_module_logger
+                get_module_logger(__name__, "App").warning(
+                    "install_runtime_bindings(config_runtime) failed unexpectedly",
+                    exc_info=True,
+                )
+            except Exception:
+                pass
