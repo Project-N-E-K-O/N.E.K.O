@@ -31,8 +31,10 @@ try:
     _install()
 except Exception as _e:  # pragma: no cover - import-time defensive
     import sys as _sys
-    print(
+    # sys.stderr.write rather than print(..., file=stderr): no print
+    # buffering semantics, and we're already on the cold-error path where
+    # a process might crash right after — direct write is the safest.
+    _sys.stderr.write(
         f"[app] runtime_bindings install failed (continuing with defaults): "
-        f"{type(_e).__name__}: {_e}",
-        file=_sys.stderr,
+        f"{type(_e).__name__}: {_e}\n"
     )
