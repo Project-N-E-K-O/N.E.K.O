@@ -51,7 +51,7 @@ Controlam como os danmaku são enviados ao AI para processamento:
 - **Intervalo de envio (segundos)** — Intervalo de envio dos danmaku agregados ao AI. Recomenda-se 10–30 segundos. Curto demais: o AI reage com frequência excessiva; longo demais: alta latência de resposta
 - **Comprimento máximo do danmaku** — O Bilibili limita a 20 caracteres; o que ultrapassar na resposta do AI será cortado automaticamente. Recomenda-se manter 20
 - **Nome do AI alvo** — Define qual AI recebe os danmaku. Se deixado em branco, envia ao AI padrão
-- **UID / nome de usuário do dono no Bilibili** — Após configurar a conta do dono, a NEKO trata as mensagens dele de forma especial (resposta prioritária, tom distinto etc.)
+- **UID / nome de usuário do dono no Bilibili** — Após configurar a conta do dono, a NEKO trata as mensagens dele de forma especial (resposta prioritária, tom distinto, etc.)
 
 ---
 
@@ -79,7 +79,7 @@ Leem dados públicos do Bilibili sem permissão de escrita — chamada segura. P
 - **Vídeos populares** — Lista de vídeos populares de todo o site
 - **Pesquisas em alta** — Ranking de pesquisas em tempo real do Bilibili
 - **Imperdíveis da semana** — Seleção semanal de imperdíveis
-- **Ranking** — Ranking de uma categoria específica. Obrigatório: Ordem/categoria (`all`/`game`/`dance` etc.)
+- **Ranking** — Ranking de uma categoria específica. Obrigatório: Ordem/categoria (`all`/`game`/`dance`, etc.)
 - **Informações do vídeo** — Obter detalhes do vídeo. Obrigatório: BV
 - **Comentários do vídeo** — Obter a lista de comentários do vídeo. Obrigatório: BV
 - **Legendas do vídeo** — Obter legendas geradas por AI. Obrigatório: BV
