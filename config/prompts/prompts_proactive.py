@@ -1455,9 +1455,9 @@ proactive_chat_prompt_music_es = """Eres {lanlan_name}, y puede que {master_name
 {memory_context}
 ======以上为对话历史======
 
-======Below is Current Conversation======
+======以下为当前的对话======
 {current_chat}
-======Above is Current Conversation======
+======以上为当前的对话======
 
 Usa estas reglas para decidir si poner música y qué buscar:
 1. Cuando {master_name} pida música explícitamente, deberías poner música.
@@ -1609,9 +1609,9 @@ proactive_chat_prompt_music_pt = """Você é {lanlan_name}, e talvez {master_nam
 {memory_context}
 ======以上为对话历史======
 
-======Below is Current Conversation======
+======以下为当前的对话======
 {current_chat}
-======Above is Current Conversation======
+======以上为当前的对话======
 
 Use estas regras para decidir se toca música e o que buscar:
 1. Quando {master_name} pedir música explicitamente, você deve tocar música.
@@ -1747,12 +1747,12 @@ Historial de conversación:
 
 Prioridad de ángulos (limitada por "propensión a conversar"):
 1. Hilo inconcluso del turno anterior → continuarlo
-2. Un tema de "Memory cues" con más de 1 día → mencionarlo con naturalidad
+2. Un tema de "pistas de memoria" con más de 1 día → mencionarlo con naturalidad
 3. Algo en pantalla que merezca un comentario
 4. Material externo (noticias / música / meme) que encaje con el ánimo
 5. Sin ángulo natural → [PASS]
 
-El formato de salida (tag de fuente vs. texto plano) sigue la sección "Output format" de abajo.
+El formato de salida (tag de fuente vs. texto plano) sigue la sección "formato de salida" de abajo.
 
 Reglas adicionales:
 - Repetición: mismo tema durante la última hora → [PASS]; temas de más de 1 día no cuentan como repetidos.
@@ -1786,12 +1786,12 @@ Histórico da conversa:
 
 Prioridade de ângulos (limitada por "propensão a conversar"):
 1. Fio inacabado do último turno → continuar
-2. Um tópico de "Memory cues" com mais de 1 dia → trazer naturalmente
+2. Um tópico de "pistas de memória" com mais de 1 dia → trazer naturalmente
 3. Algo na tela que mereça comentário
 4. Material externo (notícias / música / meme) que combine com o clima
 5. Sem ângulo natural → [PASS]
 
-O formato de saída (tag de fonte vs. texto simples) segue a seção "Output format" abaixo.
+O formato de saída (tag de fonte vs. texto simples) segue a seção "formato de saída" abaixo.
 
 Regras adicionais:
 - Repetição: mesmo tema na última hora → [PASS]; temas com mais de 1 dia não contam como repetidos.
@@ -2052,9 +2052,9 @@ Reply:
 {memory_context}
 ======以上为对话历史======
 
-======Below is Current Conversation======
+======以下为当前的对话======
 {recent_chats_section}
-======Above is Current Conversation======
+======以上为当前的对话======
 
 Usa estas reglas para decidir si poner música y qué buscar:
 1. Cuando {master_name} pida música explícitamente, deberías poner música.
@@ -2071,9 +2071,9 @@ Respuesta:
 {memory_context}
 ======以上为对话历史======
 
-======Below is Current Conversation======
+======以下为当前的对话======
 {recent_chats_section}
-======Above is Current Conversation======
+======以上为当前的对话======
 
 Use estas regras para decidir se toca música e o que buscar:
 1. Quando {master_name} pedir música explicitamente, você deve tocar música.
@@ -2568,12 +2568,12 @@ Reply strictly in the format below. Each task starts with its tag. Only reply to
 {format_instructions}
 """,
     "es": """
-======Reply Format======
+======Formato de respuesta======
 Responde estrictamente en el formato de abajo. Cada tarea empieza con su tag. Responde solo a las tareas listadas.
 {format_instructions}
 """,
     "pt": """
-======Reply Format======
+======Formato de resposta======
 Responda estritamente no formato abaixo. Cada tarefa começa com sua tag. Responda apenas às tarefas listadas.
 {format_instructions}
 """,
