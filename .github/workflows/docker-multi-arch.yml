@@ -18,24 +18,32 @@ on:
 
 env:
   REGISTRY_GHCR: ghcr.io
-  REGISTRY_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME }}
   IMAGE_NAME: project-n-e-k-o/n.e.k.o
-  SKIP_DOCKERHUB: ${{ github.event.inputs.skip_dockerhub || 'false' }}
 
 jobs:
   # ============================================================================
   # Job 1: Calculate version (shared by all build jobs)
   # ============================================================================
   calculate-version:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     outputs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
+      skip_dockerhub: ${{ steps.calc_skip.outputs.SKIP_DOCKERHUB }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Calculate skip_dockerhub flag
+        id: calc_skip
+        run: |
+          # For manual dispatch, use the input value; for tag push, default to false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "SKIP_DOCKERHUB=${{ github.event.inputs.skip_dockerhub || 'false' }}" >> $GITHUB_OUTPUT
+          else
+            echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Calculate Docker image version
         id: version_calc
@@ -62,7 +70,6 @@ jobs:
   # ============================================================================
   build-standard:
     needs: calculate-version
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,14 +97,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for Docker (GHCR only)
-        if: env.SKIP_DOCKERHUB == 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub == 'true'
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
@@ -107,13 +114,13 @@ jobs:
             type=raw,value=latest-standard,enable={{is_default_branch}}
 
       - name: Extract metadata for Docker (both registries)
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         id: meta_both
         uses: docker/metadata-action@v5
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard
             type=raw,value=latest-standard,enable={{is_default_branch}}
@@ -135,7 +142,6 @@ jobs:
   # ============================================================================
   build-full:
     needs: calculate-version
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -163,14 +169,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for Docker (GHCR only)
-        if: env.SKIP_DOCKERHUB == 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub == 'true'
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
@@ -180,13 +186,13 @@ jobs:
             type=raw,value=latest-full,enable={{is_default_branch}}
 
       - name: Extract metadata for Docker (both registries)
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         id: meta_both
         uses: docker/metadata-action@v5
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full
             type=raw,value=latest-full,enable={{is_default_branch}}
@@ -208,7 +214,6 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -222,7 +227,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -239,15 +244,15 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard
 
       - name: Create and push multi-arch manifest for standard version (DockerHub)
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           docker manifest create \
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard
 
       - name: Create and push multi-arch manifest for full version (GHCR)
         run: |
@@ -260,15 +265,15 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full
 
       - name: Create and push multi-arch manifest for full version (DockerHub)
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           docker manifest create \
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full-linux-amd64 \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full-linux-arm64
-          docker manifest push ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
 
       - name: Create and push latest manifests (GHCR)
         run: |
@@ -289,20 +294,20 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
 
       - name: Create and push latest manifests (DockerHub)
-        if: env.SKIP_DOCKERHUB != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - latest-standard
           docker manifest create \
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:latest-standard \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:latest-standard
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard
 
           # DockerHub - latest-full
           docker manifest create \
-            ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:latest-full \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full-linux-amd64 \
-            --amend ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:${VERSION}-full-linux-arm64
-          docker manifest push ${{ env.REGISTRY_DOCKERHUB }}/n.e.k.o:latest-full
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-full \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-full
