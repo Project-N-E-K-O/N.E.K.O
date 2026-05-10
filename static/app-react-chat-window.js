@@ -45,7 +45,7 @@
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
         // galgame-mode-change event, which is the only signal chat.html's
-        // syncWindowToGalgameMin uses to bump Electron window height.
+        // syncWindowToMinH uses to bump Electron window height.
         // Defaulting to true here would leave saved-OFF users permanently
         // bumped: chat.html's listener only ever grows the window.
         galgameModeEnabled: false,
@@ -82,6 +82,15 @@
     function applyGalgameBodyClass(enabled) {
         if (typeof document === 'undefined' || !document.body) return;
         document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+    }
+
+    // 镜像 galgame 的 body class 策略：附件区（截图 / 导入图片）出现时贴
+    // body 上 composer-has-attachments，让 chat.html 的 min-height 兜底和
+    // preload-chat-react.js 的 Electron resize 下限同时感知。否则附件直接
+    // 把 .composer-input 顶出可视区域 —— galgame 的 385px 兜底不覆盖它。
+    function applyAttachmentsBodyClass(hasAttachments) {
+        if (typeof document === 'undefined' || !document.body) return;
+        document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
     }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
@@ -1719,6 +1728,7 @@
     }
 
     function setComposerAttachments(attachments) {
+        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -1729,7 +1739,15 @@
                 };
             }).filter(Boolean)
             : [];
+        var nextHas = state.composerAttachments.length > 0;
+        applyAttachmentsBodyClass(nextHas);
         renderWindow();
+        if (prevHas !== nextHas) {
+            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
+            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
+            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
+        }
         return state.composerAttachments;
     }
 
