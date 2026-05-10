@@ -34,7 +34,6 @@ import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable
 
 from plugin.logging_config import get_logger
@@ -276,68 +275,25 @@ def _normalize_ts(value: Any, *, now: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Parser (design §5.1)
+# Parser
 # ---------------------------------------------------------------------------
 
-# Known fields at each structural level. Anything not in these sets is
-# preserved into the corresponding ``extra_fields`` MappingProxyType for
-# round-trip (Req 2.5 / 2.6 / 13.3).
-_TOP_LEVEL_KNOWN_FIELDS = frozenset(
-    {"schema_version", "entries", "updated_at", "bundles", "created_at"}
-)
-_ENTRY_KNOWN_FIELDS = frozenset(
-    {
-        "root_id",
-        "directory_name",
-        "plugin_id",
-        "channel",
-        "source",
-        "reason",
-        "bundle_ref",
-        "installed_at",
-        "updated_at",
-        "last_seen_at",
-        "removed",
-        "removed_at",
-        "source_detail",
-    }
-)
-_SOURCE_DETAIL_MARKET_KNOWN = frozenset(
-    {"plugin_market_id", "version", "package_url", "previous_version"}
-)
-_SOURCE_DETAIL_IMPORTED_KNOWN = frozenset({"package_filename", "package_sha256"})
-
-# Legal enum values — kept here as plain sets so Parser can test membership
-# without depending on runtime introspection of ``typing.Literal``.
+# Legal enum values — kept as plain sets so the Parser can test membership
+# without introspecting ``typing.Literal``.
 _LEGAL_CHANNELS = frozenset({"builtin", "manual", "imported", "market"})
 _LEGAL_REASONS = frozenset({"user_requested", "auto_dependency"})
 _LEGAL_ROOT_IDS = frozenset({"builtin", "user"})
 
-# Default ``install_source`` sub-object returned by :meth:`InstallSourceManager.to_api_view`
-# when the plugin cannot be matched to any lock entry, or when the entry is
-# soft-deleted. The ``/plugins`` response injector in
-# :mod:`plugin.server.application.plugins.query_service` also uses this
-# constant verbatim when the manager is unavailable or degraded
-# (Req 15.2 – 15.6 / design §11.2). Kept module-level so callers can
-# ``from ... import _DEFAULT_INSTALL_SOURCE`` and copy it with ``.copy()``
-# (do not mutate the module-level object in place).
+# Default ``install_source`` sub-object for the ``/plugins`` response when
+# the plugin can't be matched to a lock entry (or the entry is soft-deleted,
+# or the manager is unavailable). Callers should ``.copy()`` before use —
+# do not mutate the module-level object in place.
 _DEFAULT_INSTALL_SOURCE: dict[str, Any] = {
     "source": "unknown",
     "reason": None,
     "installed_at": None,
     "source_detail": None,
 }
-
-
-def _extract_extras(raw: dict[str, Any], known: frozenset[str]) -> MappingProxyType[str, Any]:
-    """Return a read-only view over keys of ``raw`` not in ``known``.
-
-    The wrapped dict is built with a single generator so the original input
-    is never mutated (the caller is free to keep using ``raw``).
-    """
-
-    extras = {k: v for k, v in raw.items() if k not in known}
-    return MappingProxyType(extras)
 
 
 def _parse_source_detail(
@@ -377,7 +333,6 @@ def _parse_source_detail(
                 version=str(raw.get("version", "")),
                 package_url=str(raw.get("package_url", "")),
                 previous_version=raw.get("previous_version"),
-                extra_fields=_extract_extras(raw, _SOURCE_DETAIL_MARKET_KNOWN),
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
@@ -398,7 +353,6 @@ def _parse_source_detail(
             return SourceDetailImported(
                 package_filename=str(raw.get("package_filename", "")),
                 package_sha256=str(raw.get("package_sha256", "")),
-                extra_fields=_extract_extras(raw, _SOURCE_DETAIL_IMPORTED_KNOWN),
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
@@ -452,22 +406,18 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     directory_name: str = directory_name_val
     key: tuple[str, str] = (root_id, directory_name)
 
-    # —— channel / source merge (Req 3.6 / 3.7 / 3.8, Fix 6) ——
+    # —— channel / source merge ——
     raw_channel = raw.get("channel")
     raw_source = raw.get("source")
-
-    extras_mut: dict[str, Any] = {
-        k: v for k, v in raw.items() if k not in _ENTRY_KNOWN_FIELDS
-    }
 
     channel_legal = isinstance(raw_channel, str) and raw_channel in _LEGAL_CHANNELS
     source_legal = isinstance(raw_source, str) and raw_source in _LEGAL_CHANNELS
 
     if raw_channel is None and raw_source is not None and source_legal:
-        # Req 3.8: missing channel but legal source → adopt source.
+        # Missing channel but legal source → adopt source.
         channel: Channel = raw_source  # type: ignore[assignment]
     elif channel_legal and source_legal and raw_channel != raw_source:
-        # Req 3.7: both legal but disagree → channel wins + WARN.
+        # Both legal but disagree → channel wins + WARN.
         logger.warning(
             "install_source: channel/source conflict key=%s channel=%s source=%s — taking channel",
             key,
@@ -478,11 +428,9 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     elif channel_legal:
         channel = raw_channel  # type: ignore[assignment]
     else:
-        # Fix 6: channel illegal (or missing & no legal source). Preserve
-        # the original value for forensic round-trip, fall back to source
-        # if that's legal, otherwise "manual" (never "builtin" — Req 5.2).
+        # Channel illegal (or missing & no legal source). Fall back to
+        # source if legal, otherwise "manual" (never "builtin").
         if raw_channel is not None:
-            extras_mut["_original_channel"] = raw_channel
             logger.warning(
                 "install_source: illegal channel key=%s value=%r, falling back",
                 key,
@@ -493,24 +441,20 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         else:
             channel = "manual"
 
-    # Preserve original source verbatim when it's illegal or disagrees and
-    # we ignored it above — symmetric with _original_channel (Fix 6).
     if raw_source is not None and not source_legal:
-        extras_mut["_original_source"] = raw_source
         logger.warning(
             "install_source: illegal source key=%s value=%r, dropping",
             key,
             raw_source,
         )
 
-    # —— reason (Req 3.9, Fix 6) ——
+    # —— reason ——
     raw_reason = raw.get("reason")
     if raw_reason is None:
         reason: Reason = "user_requested"
     elif isinstance(raw_reason, str) and raw_reason in _LEGAL_REASONS:
         reason = raw_reason  # type: ignore[assignment]
     else:
-        extras_mut["_original_reason"] = raw_reason
         logger.warning(
             "install_source: illegal reason key=%s value=%r, falling back to user_requested",
             key,
@@ -518,11 +462,11 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         )
         reason = "user_requested"
 
-    # —— plugin_id (Req 3.3: may be "") ——
+    # —— plugin_id (may be "") ——
     raw_plugin_id = raw.get("plugin_id", "")
     plugin_id = raw_plugin_id if isinstance(raw_plugin_id, str) else ""
 
-    # —— Timestamps (Fix 7) ——
+    # —— Timestamps ——
     installed_at = _normalize_ts(raw.get("installed_at"), now=now)
     updated_at = _normalize_ts(raw.get("updated_at"), now=now)
     last_seen_at = _normalize_ts(raw.get("last_seen_at"), now=now)
@@ -533,14 +477,10 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     else:
         removed_at = _normalize_ts(raw_removed_at, now=now)
 
-    # —— removed flag (Req 3.13) ——
-    raw_removed = raw.get("removed", False)
-    removed = bool(raw_removed)
+    # —— removed flag ——
+    removed = bool(raw.get("removed", False))
 
-    # —— bundle_ref (Fix 5: pass-through, v1 None) ——
-    bundle_ref = raw.get("bundle_ref")
-
-    # —— source_detail (Req 3.17 / 3.19 / 3.20) ——
+    # —— source_detail ——
     source_detail = _parse_source_detail(channel, raw.get("source_detail"), key=key)
 
     return LockEntry(
@@ -554,9 +494,7 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         last_seen_at=last_seen_at,
         removed=removed,
         removed_at=removed_at,
-        bundle_ref=bundle_ref,
         source_detail=source_detail,
-        extra_fields=MappingProxyType(extras_mut),
     )
 
 
@@ -647,17 +585,6 @@ def _parse_lock(raw: bytes) -> LockFile:
             details={"reason": "entries_not_list"},
         )
 
-    # —— Step 4: bundles missing → [] (Req 2.9) ——
-    raw_bundles = data.get("bundles")
-    if raw_bundles is None:
-        raw_bundles = []
-    elif not isinstance(raw_bundles, list):
-        logger.warning(
-            "install_source: 'bundles' field is not a list (got %s), treating as []",
-            type(raw_bundles).__name__,
-        )
-        raw_bundles = []
-
     # —— Step 7 + 8: parse each entry ——
     parsed: list[LockEntry] = []
     for raw_entry in raw_entries:
@@ -690,7 +617,7 @@ def _parse_lock(raw: bytes) -> LockFile:
                 entry.installed_at,
             )
 
-    # —— Step 7 (top-level timestamps) ——
+    # —— Top-level timestamps ——
     updated_at = _normalize_ts(data.get("updated_at"), now=now)
     raw_created_at = data.get("created_at")
     if raw_created_at is None:
@@ -698,17 +625,11 @@ def _parse_lock(raw: bytes) -> LockFile:
     else:
         created_at = _normalize_ts(raw_created_at, now=now)
 
-    # —— Step 9: unknown top-level fields → extra_fields ——
-    top_extras = _extract_extras(data, _TOP_LEVEL_KNOWN_FIELDS)
-
-    # —— Step 11: build frozen snapshot ——
     return LockFile(
         schema_version=schema_version,
         entries=tuple(by_key.values()),
         updated_at=updated_at,
-        bundles=tuple(raw_bundles),
         created_at=created_at,
-        extra_fields=top_extras,
     )
 
 
@@ -718,36 +639,24 @@ def _parse_lock(raw: bytes) -> LockFile:
 
 
 def _serialize_source_detail_for_json(detail: SourceDetail) -> dict[str, Any] | None:
-    """Convert a :class:`SourceDetail` to a JSON-ready dict (or ``None``).
-
-    Field order is fixed per design §5.2: known fields first in the order
-    declared below, ``extra_fields`` appended last. Any known field that
-    would duplicate an extra key "wins" (extras cannot shadow known fields
-    on the output side).
-    """
+    """Convert a :class:`SourceDetail` to a JSON-ready dict (or ``None``)."""
 
     if detail is None:
         return None
 
-    out: dict[str, Any] = {}
     if isinstance(detail, SourceDetailMarket):
-        out["plugin_market_id"] = detail.plugin_market_id
-        out["version"] = detail.version
-        out["package_url"] = detail.package_url
-        # previous_version is always written (Req 3.18 round-trip); None → null.
-        out["previous_version"] = detail.previous_version
-        for k, v in detail.extra_fields.items():
-            if k not in out:
-                out[k] = v
-        return out
+        return {
+            "plugin_market_id": detail.plugin_market_id,
+            "version": detail.version,
+            "package_url": detail.package_url,
+            "previous_version": detail.previous_version,
+        }
 
     if isinstance(detail, SourceDetailImported):
-        out["package_filename"] = detail.package_filename
-        out["package_sha256"] = detail.package_sha256
-        for k, v in detail.extra_fields.items():
-            if k not in out:
-                out[k] = v
-        return out
+        return {
+            "package_filename": detail.package_filename,
+            "package_sha256": detail.package_sha256,
+        }
 
     # Defensive: an unknown SourceDetail subclass shouldn't exist, but if
     # one shows up we log and drop it rather than raising.
@@ -774,26 +683,20 @@ def _serialize_entry_for_json(entry: LockEntry) -> dict[str, Any]:
         "directory_name": entry.directory_name,
         "plugin_id": entry.plugin_id,
         "channel": entry.channel,
-        "source": entry.channel,  # Req 3.6: source mirrors channel.
+        "source": entry.channel,  # source mirrors channel
         "reason": entry.reason,
-        "bundle_ref": entry.bundle_ref,  # Fix 5: passthrough, v1 always None.
         "installed_at": entry.installed_at,
         "updated_at": entry.updated_at,
         "last_seen_at": entry.last_seen_at,
         "removed": entry.removed,
     }
 
-    # Req 3.14: removed_at only present when removed=True.
+    # removed_at only present when removed=True.
     if entry.removed:
         out["removed_at"] = entry.removed_at
 
-    # Req 3.20: source_detail always present (null for None).
+    # source_detail always present (null for None).
     out["source_detail"] = _serialize_source_detail_for_json(entry.source_detail)
-
-    # Append entry-level extras last; known keys take precedence.
-    for k, v in entry.extra_fields.items():
-        if k not in out:
-            out[k] = v
 
     return out
 
@@ -802,43 +705,24 @@ def _serialize_lock(lock: LockFile) -> bytes:
     """Serialize a :class:`LockFile` snapshot to UTF-8 JSON bytes.
 
     Deterministic output, suitable for atomic write via :func:`_atomic_write`.
-    Key ordering rules (design §5.2):
-
-    * Top level: ``schema_version``, ``created_at`` (only when non-None),
-      ``updated_at``, ``entries``, ``bundles``, then ``extra_fields``.
-    * Entries are sorted by ``(root_id, directory_name)`` lexicographically
-      (Req 13.4) so identical input produces identical output regardless of
-      in-memory iteration order.
-    * ``json.dumps(..., ensure_ascii=False, indent=2, sort_keys=False)`` is
-      used to preserve our explicit key order and keep Unicode readable.
+    Entries are sorted by ``(root_id, directory_name)`` lexicographically
+    so identical input produces identical output regardless of in-memory
+    iteration order.
 
     Pure function; safe to call from property tests without a manager.
     """
 
-    out: dict[str, Any] = {
-        "schema_version": lock.schema_version,
-    }
-    # created_at only written when set (Req 6.4: only First_Startup emits it
-    # initially; subsequent writes preserve whatever was parsed).
+    out: dict[str, Any] = {"schema_version": lock.schema_version}
+    # created_at only written when set (First_Startup emits it initially;
+    # subsequent writes preserve whatever was parsed).
     if lock.created_at is not None:
         out["created_at"] = lock.created_at
-
     out["updated_at"] = lock.updated_at
 
     sorted_entries = sorted(
         lock.entries, key=lambda e: (e.root_id, e.directory_name)
     )
     out["entries"] = [_serialize_entry_for_json(e) for e in sorted_entries]
-
-    # bundles is a tuple in memory; json.dumps handles tuples natively as
-    # arrays, but converting to list makes the intent obvious and matches
-    # what would round-trip back through the parser.
-    out["bundles"] = list(lock.bundles)
-
-    # Append top-level extras last; never shadow known keys.
-    for k, v in lock.extra_fields.items():
-        if k not in out:
-            out[k] = v
 
     return json.dumps(out, ensure_ascii=False, indent=2, sort_keys=False).encode("utf-8")
 
@@ -851,52 +735,23 @@ def _serialize_lock(lock: LockFile) -> bytes:
 class InstallSourceManager:
     """In-memory owner of the ``plugins.lock.json`` snapshot.
 
-    This task (2.2) implements only the lifecycle scaffolding: ``load``,
-    ``save``, the degrade/recovery bookkeeping, and the read-only
-    properties. The reconcile loop and write-path methods
-    (``reconcile`` / ``record_import`` / ``record_market`` / ``list_entries``
-    / ``to_api_view``) land in subsequent tasks (2.3 — 2.6).
+    Concurrency: writers hold ``self._lock`` for the read-modify-publish
+    cycle and replace ``self._current`` with a freshly-built
+    :class:`LockFile` in a single attribute assignment. Readers
+    (``list_entries`` / ``to_api_view``) dereference ``self._current``
+    without the lock; because :class:`LockFile` is frozen and ``entries``
+    is a tuple, readers always see a fully consistent snapshot.
 
-    Concurrency model (design §3.1 / Fix 2):
+    Degrade:
 
-    * Writers (``load`` / ``save`` / future ``reconcile`` / ``record_*``)
-      hold ``self._lock`` for the duration of the read-modify-publish cycle
-      and replace ``self._current`` with a freshly-built :class:`LockFile`
-      in a single attribute assignment.
-    * Readers (future ``list_entries`` / ``to_api_view``) dereference
-      ``self._current`` without a lock. Because :class:`LockFile` is frozen
-      and its ``entries`` tuple is immutable, the reader always sees a
-      fully consistent snapshot — either before or after any given
-      writer publish, never a torn state.
-
-    Degrade semantics (design §6.4):
-
-    * ``FileNotFoundError`` on first read triggers **First_Startup**: we
-      seed an empty :class:`LockFile` with ``created_at`` set to the
-      current timestamp. This is the one code path that writes
-      ``created_at``; subsequent writes preserve whatever was parsed
-      from disk.
-    * ``PermissionError`` / ``OSError`` on read enters **read-only
-      degrade**: ``_current`` is populated with an empty snapshot
-      (without ``created_at``, so a later successful read can still
-      reconcile against the on-disk file without clobbering its original
-      creation timestamp), ``save()`` becomes a no-op, and
-      ``is_degraded`` / ``degrade_reason`` surface the failure to
-      callers.
-    * ``LOCK_FILE_CORRUPT`` (invalid JSON, top-level non-dict,
-      ``entries`` not a list) triggers a **back-up + First_Startup
-      rebuild**: the corrupt file is renamed to
-      ``plugins.lock.json.bak-<epoch>`` (best-effort) and we fall through
-      to the First_Startup seed path. The rebuild intentionally clears
-      any prior degrade so that a subsequent healthy write can succeed.
-
-    Self-healing (Fix 9):
-
-    * ``try_recover`` re-runs ``load``, stamps
-      ``_last_recover_attempt`` so that callers (the module-level
-      ``get_install_source_manager()`` scheduler added in task 3.2) can
-      rate-limit retries to once per 60s, and returns ``True`` iff the
-      manager exited degrade as a result.
+    * ``FileNotFoundError`` on first read → **First_Startup**: seed an
+      empty :class:`LockFile` with ``created_at`` set. The on-disk file
+      is created on the next ``save()``.
+    * ``PermissionError`` / ``OSError`` → **read-only degrade**: in-memory
+      snapshot is populated, but ``save()`` becomes a no-op until the
+      underlying issue is resolved and ``load()`` is re-run.
+    * ``LOCK_FILE_CORRUPT`` → rename the bad file to
+      ``plugins.lock.json.bak-<epoch>`` and rebuild via First_Startup.
     """
 
     def __init__(
@@ -921,7 +776,6 @@ class InstallSourceManager:
         self._lock: threading.RLock = threading.RLock()
         self._read_only: bool = False
         self._degrade_reason: str | None = None
-        self._last_recover_attempt: datetime | None = None
 
         # Seed an empty snapshot so readers that fire before ``load()``
         # completes (or in tests that skip ``load``) see a consistent
@@ -930,7 +784,6 @@ class InstallSourceManager:
             schema_version=1,
             entries=(),
             updated_at=self._now_iso(),
-            bundles=(),
             created_at=None,
         )
 
@@ -1031,7 +884,6 @@ class InstallSourceManager:
                     schema_version=1,
                     entries=(),
                     updated_at=now,
-                    bundles=(),
                     created_at=now,
                 )
                 self._clear_degrade()
@@ -1048,7 +900,6 @@ class InstallSourceManager:
                     schema_version=1,
                     entries=(),
                     updated_at=now,
-                    bundles=(),
                     created_at=None,
                 )
                 self._enter_read_only_degrade(reason=f"read_failed: {exc}")
@@ -1089,7 +940,6 @@ class InstallSourceManager:
                     schema_version=1,
                     entries=(),
                     updated_at=now,
-                    bundles=(),
                     created_at=now,
                 )
                 self._clear_degrade()
@@ -1112,47 +962,6 @@ class InstallSourceManager:
                 return
             payload = _serialize_lock(self._current)
             _atomic_write(self.lock_path, payload)
-
-    def try_recover(self) -> bool:
-        """Attempt to exit degrade by re-running :meth:`load` (Fix 9).
-
-        Always stamps ``_last_recover_attempt`` so that the module-level
-        scheduler added in task 3.2 can rate-limit retries to once per
-        60s regardless of outcome. Returns ``True`` iff the manager was
-        degraded *and* is no longer degraded after ``load()`` completes
-        — i.e. this call actually recovered something. A successful
-        ``try_recover`` on an already-healthy manager returns ``True``
-        too, but a ``False`` result always means "still degraded".
-
-        ``load()`` itself handles the normal degrade / corrupt-file
-        branches internally and shouldn't raise under them; we still
-        wrap it in a broad ``except Exception`` so that an unexpected
-        parser bug can't crash the scheduler that calls us.
-        """
-
-        with self._lock:
-            attempt_dt = self._clock()
-            if attempt_dt.tzinfo is None:
-                attempt_dt = attempt_dt.replace(tzinfo=UTC)
-            else:
-                attempt_dt = attempt_dt.astimezone(UTC)
-            self._last_recover_attempt = attempt_dt
-
-            was_degraded = self._read_only
-            try:
-                self.load()
-            except Exception as exc:  # noqa: BLE001 — belt-and-braces
-                logger.warning(
-                    "InstallSourceManager.try_recover: load raised %s, staying degraded",
-                    exc,
-                )
-                return False
-
-            if self._read_only:
-                return False
-            if was_degraded:
-                logger.info("InstallSourceManager: recovered from degrade")
-            return True
 
     # ------------------------------------------------------------------
     # Reconcile (design §6.2 / §6.3)
@@ -1211,19 +1020,17 @@ class InstallSourceManager:
             }
             now = self._now_iso()
             new_entries: dict[tuple[str, str], LockEntry] = {}
-            any_structural_change = False
 
             # —— Branch A: disk exists ——
             for key, d in disc_by_key.items():
                 prev = entries_by_key.get(key)
                 if prev is None:
-                    # Req 7.2 / 11.1 / 5.1: brand-new directory.
+                    # Brand-new directory — seed channel from root_id.
                     new_entries[key] = self._seed_entry(d, now)
-                    any_structural_change = True
                 elif prev.removed:
-                    # Req 7.4: resurrect. Preserve channel / source /
-                    # reason / installed_at / bundle_ref; clear the
-                    # removed flags and refresh both seen and updated.
+                    # Resurrect: preserve channel / source / reason /
+                    # installed_at / bundle_ref; clear removed flags and
+                    # refresh seen + updated.
                     new_entries[key] = dataclasses.replace(
                         prev,
                         removed=False,
@@ -1231,57 +1038,45 @@ class InstallSourceManager:
                         last_seen_at=now,
                         updated_at=now,
                     )
-                    any_structural_change = True
                 elif not prev.plugin_id and d.plugin_id:
-                    # Fix 1: scanner just learned the plugin's real id.
-                    # Treat it as a real change so the new value gets
-                    # persisted immediately.
+                    # Scanner just learned the plugin's real id — patch it.
                     new_entries[key] = dataclasses.replace(
                         prev,
                         plugin_id=d.plugin_id,
                         last_seen_at=now,
                         updated_at=now,
                     )
-                    any_structural_change = True
                 else:
-                    # Fix 4: no change — carry over the existing entry
-                    # verbatim, including its original last_seen_at,
-                    # so the dirty check below can correctly skip save().
-                    new_entries[key] = prev
+                    # Stable: refresh last_seen_at so we have a
+                    # "still present" heartbeat.
+                    new_entries[key] = dataclasses.replace(
+                        prev,
+                        last_seen_at=now,
+                    )
 
             # —— Branch B: lock has entry, disk doesn't ——
             for key, prev in entries_by_key.items():
                 if key in new_entries:
                     continue
                 if prev.removed:
-                    # Req 8.2: already soft-deleted — preserve as-is.
+                    # Already soft-deleted — preserve as-is (idempotent).
                     new_entries[key] = prev
                 else:
-                    # Req 8.1: directory just disappeared — soft delete.
+                    # Directory just disappeared — soft delete.
                     new_entries[key] = dataclasses.replace(
                         prev,
                         removed=True,
                         removed_at=now,
                         updated_at=now,
                     )
-                    any_structural_change = True
-
-            # —— Fix 4 dirty check ——
-            # If nothing structural changed, don't touch updated_at and
-            # don't save; the on-disk file's mtime should stay stable.
-            if not any_structural_change:
-                return
 
             new_lock = dataclasses.replace(
                 old_lock,
                 entries=tuple(new_entries.values()),
                 updated_at=now,
             )
-            # Fix 2: single-assignment publish. Readers that dereference
-            # self._current without the lock see either the old or new
-            # snapshot, never a torn intermediate.
             self._current = new_lock
-            self.save()  # Req 7.5
+            self.save()
 
     # ------------------------------------------------------------------
     # Write-path helpers (tasks 2.4 / 2.5)
@@ -1432,7 +1227,6 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
-                    bundle_ref=None,
                     source_detail=detail,
                 )
             else:
@@ -1544,20 +1338,36 @@ class InstallSourceManager:
                 },
             )
 
-        # Step 4: build the market source_detail. Req 10.5: v1 always
-        # writes previous_version=None on this path.
-        detail = SourceDetailMarket(
-            plugin_market_id=plugin_market_id,
-            version=version,
-            package_url=package_url,
-            previous_version=None,
-        )
+        # Step 4: build the market source_detail. ``previous_version`` is
+        # computed inside the lock block below, after we know the existing
+        # entry (if any), so an upgrade captures the old version.
 
         # Step 5 + 6: upsert under the lock and publish.
         with self._lock:
             old_lock = self._current
             now = self._now_iso()
             existing = self._find_entry(old_lock, root_id, directory_name)
+
+            # Compute previous_version: capture the old market version
+            # when this is a genuine upgrade (different version string).
+            # Imported → market promotion and first install both leave
+            # previous_version=None — there's no prior market version to
+            # record.
+            previous_version: str | None = None
+            if (
+                existing is not None
+                and isinstance(existing.source_detail, SourceDetailMarket)
+                and existing.source_detail.version
+                and existing.source_detail.version != version
+            ):
+                previous_version = existing.source_detail.version
+
+            detail = SourceDetailMarket(
+                plugin_market_id=plugin_market_id,
+                version=version,
+                package_url=package_url,
+                previous_version=previous_version,
+            )
 
             if existing is None:
                 new_entry = LockEntry(
@@ -1571,7 +1381,6 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
-                    bundle_ref=None,
                     source_detail=detail,
                 )
             else:
@@ -1598,6 +1407,77 @@ class InstallSourceManager:
             self.save()
 
     # ------------------------------------------------------------------
+    # Write path: mark_removed (delete-hook)
+    # ------------------------------------------------------------------
+
+    def mark_removed(
+        self,
+        *,
+        directory_path: Path,
+        reason: str = "user_delete",
+    ) -> None:
+        """Soft-delete the lock entry at ``directory_path``.
+
+        Mirrors :meth:`record_import` / :meth:`record_market` structurally
+        but only flips ``removed`` / ``removed_at`` / ``updated_at``; all
+        other fields (including ``installed_at`` and ``source_detail``)
+        are preserved as audit trail.
+
+        Idempotent: calling twice on an already-removed entry is a no-op
+        (no timestamp mutation, no save). Missing entry is a WARN no-op.
+        Builtin entries are rejected per Req 5.2 / Fix 12.
+
+        ``reason`` is a log-only hint; it does NOT mutate the entry's
+        ``reason`` field (which describes why the plugin was originally
+        installed, not why it was removed).
+        """
+
+        root_id, directory_name = classify_plugin_path(
+            directory_path,
+            builtin_root=self.builtin_root,
+            user_root=self.user_root,
+        )
+
+        if root_id == "builtin":
+            logger.error(
+                "InstallSourceManager.mark_removed: builtin channel is locked "
+                "(directory=%s)",
+                directory_name,
+            )
+            raise InstallSourceError(
+                "BUILTIN_CHANNEL_LOCKED",
+                f"builtin plugin {directory_name} cannot be soft-deleted",
+                details={
+                    "directory_name": directory_name,
+                    "target_channel": "removed",
+                },
+            )
+
+        with self._lock:
+            old_lock = self._current
+            existing = self._find_entry(old_lock, root_id, directory_name)
+            if existing is None:
+                logger.warning(
+                    "InstallSourceManager.mark_removed: no lock entry for "
+                    "(root_id=%s, directory=%s), skipping (reason=%s)",
+                    root_id, directory_name, reason,
+                )
+                return
+            if existing.removed:
+                # Already removed — idempotent no-op.
+                return
+            now = self._now_iso()
+            new_entry = dataclasses.replace(
+                existing,
+                removed=True,
+                removed_at=now,
+                updated_at=now,
+            )
+            new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
+            self._current = new_lock
+            self.save()
+
+    # ------------------------------------------------------------------
     # Read path: list_entries / to_api_view (task 2.6 / design §11.3 / §12.3)
     # ------------------------------------------------------------------
 
@@ -1605,96 +1485,19 @@ class InstallSourceManager:
         self,
         *,
         include_removed: bool = False,
-        channel: str | None = None,
-        source: str | None = None,
-        reason: str | None = None,
-        root_id: str | None = None,
     ) -> list[LockEntry]:
-        """Return a filtered list of :class:`LockEntry` from the current snapshot.
+        """Return a snapshot of entries, optionally including soft-deleted ones.
 
-        **Fix 2 — lock-free read path.** This method intentionally does
-        NOT acquire ``self._lock``: it dereferences ``self._current``
-        once into a local ``snapshot`` variable and iterates that frozen
-        object. Because writers publish new snapshots via a single
-        attribute assignment, every reader observes either the
-        pre-publish or post-publish state in full — never a torn
-        intermediate (design §3.1 / §12.3).
-
-        Filter semantics (design §12.3):
-
-        * ``include_removed=False`` (default) drops entries whose
-          ``removed == True`` (Req 16.1 / 8.3).
-        * ``channel`` and ``source`` both refer to
-          :attr:`LockEntry.channel` — ``source`` is the on-disk JSON
-          alias that mirrors it (Req 3.6). If both are provided and
-          disagree, ``channel`` wins and we log a WARN (Req 16.8).
-          If only ``source`` is provided it is used as the effective
-          channel filter.
-        * ``reason`` filters on :attr:`LockEntry.reason`.
-        * ``root_id`` filters on :attr:`LockEntry.root_id`.
-
-        Any provided filter value that is not in the legal enumeration
-        raises :class:`InstallSourceError` with code
-        ``"INVALID_FILTER"`` and ``details={"field": ..., "value": ...}``
-        (Req 16.7 — the HTTP layer maps this to a 422). The four
-        ``_LEGAL_*`` frozensets defined at module scope are the single
-        source of truth for legality, kept in sync with the Parser.
+        Reads ``self._current`` without the lock: writers publish new
+        :class:`LockFile` snapshots via a single attribute assignment, so
+        each reader sees either the pre-publish or post-publish state in
+        full — never a torn intermediate.
         """
 
-        # —— Validate filters up front (Req 16.7) ——
-        if channel is not None and channel not in _LEGAL_CHANNELS:
-            raise InstallSourceError(
-                "INVALID_FILTER",
-                f"invalid channel filter: {channel!r}",
-                details={"field": "channel", "value": channel},
-            )
-        if source is not None and source not in _LEGAL_CHANNELS:
-            raise InstallSourceError(
-                "INVALID_FILTER",
-                f"invalid source filter: {source!r}",
-                details={"field": "source", "value": source},
-            )
-        if reason is not None and reason not in _LEGAL_REASONS:
-            raise InstallSourceError(
-                "INVALID_FILTER",
-                f"invalid reason filter: {reason!r}",
-                details={"field": "reason", "value": reason},
-            )
-        if root_id is not None and root_id not in _LEGAL_ROOT_IDS:
-            raise InstallSourceError(
-                "INVALID_FILTER",
-                f"invalid root_id filter: {root_id!r}",
-                details={"field": "root_id", "value": root_id},
-            )
-
-        # —— Resolve channel vs source (Req 16.8) ——
-        # When both are set and disagree, channel wins + WARN. When only
-        # ``source`` is given we promote it to the effective channel
-        # filter so callers that use either alias get identical results.
-        effective_channel = channel
-        if channel is not None and source is not None and channel != source:
-            logger.warning(
-                "install_source: list_entries channel=%r and source=%r conflict, taking channel",
-                channel,
-                source,
-            )
-        elif effective_channel is None and source is not None:
-            effective_channel = source
-
-        # —— Iterate the immutable snapshot without locking (Fix 2) ——
         snapshot = self._current
-        out: list[LockEntry] = []
-        for entry in snapshot.entries:
-            if not include_removed and entry.removed:
-                continue
-            if effective_channel is not None and entry.channel != effective_channel:
-                continue
-            if reason is not None and entry.reason != reason:
-                continue
-            if root_id is not None and entry.root_id != root_id:
-                continue
-            out.append(entry)
-        return out
+        if include_removed:
+            return list(snapshot.entries)
+        return [e for e in snapshot.entries if not e.removed]
 
     def to_api_view(
         self,
@@ -1840,7 +1643,6 @@ class InstallSourceManager:
             last_seen_at=now,
             removed=False,
             removed_at=None,
-            bundle_ref=None,
             source_detail=None,
         )
 

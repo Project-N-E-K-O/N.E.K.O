@@ -981,6 +981,38 @@ class PluginLifecycleService:
 
         try:
             deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+            # Soft-delete the install-source lock entry. Best-effort:
+            # failures surface as install_source_warning in the response,
+            # never a 5xx.
+            install_source_warning: str | None = None
+            try:
+                from plugin.server.application.install_source import (
+                    InstallSourceError,
+                    get_install_source_manager,
+                )
+                mgr = get_install_source_manager()
+                if mgr is None:
+                    install_source_warning = "install_source_manager_unavailable"
+                elif mgr.is_degraded:
+                    install_source_warning = f"install_source_manager_degraded: {mgr.degrade_reason}"
+                else:
+                    await asyncio.to_thread(
+                        mgr.mark_removed,
+                        directory_path=plugin_dir,
+                        reason="user_delete",
+                    )
+            except InstallSourceError as exc:
+                install_source_warning = f"{exc.code}: {exc.message}"
+                logger.warning(
+                    "delete_plugin: mark_removed failed code={} msg={}",
+                    exc.code, exc.message,
+                )
+            except Exception as exc:
+                install_source_warning = f"unexpected: {exc}"
+                logger.warning(
+                    "delete_plugin: mark_removed unexpected err_type={} err={}",
+                    type(exc).__name__, str(exc),
+                )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
@@ -1021,6 +1053,8 @@ class PluginLifecycleService:
         }
         if plugin_type == "extension" and isinstance(host_plugin_id, str) and host_plugin_id:
             response["host_plugin_id"] = host_plugin_id
+        if install_source_warning is not None:
+            response["install_source_warning"] = install_source_warning
         return response
 
     async def disable_extension(self, ext_id: str) -> dict[str, object]:

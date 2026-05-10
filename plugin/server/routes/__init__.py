@@ -4,7 +4,6 @@
 提供所有 HTTP 和 WebSocket 路由端点。
 """
 from plugin.server.routes.health import router as health_router
-from plugin.server.routes.install_sources import router as install_sources_router
 from plugin.server.routes.plugins import router as plugins_router
 from plugin.server.routes.runs import router as runs_router
 from plugin.server.routes.messages import router as messages_router
@@ -21,7 +20,6 @@ from plugin.server.routes.market_bridge import router as market_bridge_router
 
 __all__ = [
     'health_router',
-    'install_sources_router',
     'plugins_router',
     'runs_router',
     'messages_router',

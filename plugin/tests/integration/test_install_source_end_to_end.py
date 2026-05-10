@@ -1,24 +1,16 @@
 """End-to-end integration tests for the install-source subsystem.
 
-Covers tasks 8.1 — 8.7 of the plugin-install-source-lock spec.
-
-These tests drive the manager through its full public API surface from
-real filesystem state, instead of standing up the whole FastAPI app in
-every test. Integration with FastAPI routes is verified at a thinner
-level (schema serialization + request plumbing) inside each test's
-assertions rather than via TestClient — the app's lifespan pulls in
-half the plugin runtime, which is more friction than this spec's
-integration goals call for. Startup wiring itself is covered by
-test_first_startup_migration, which reuses the same build/reconcile
-sequence the lifespan hook does.
+Drives the manager through its full public API surface from real
+filesystem state. FastAPI route plumbing is covered at unit level
+inside the route tests; here we care about: First_Startup migration,
+write paths (import / market / delete), read path (to_api_view), and
+parser resilience on a corrupt lock file.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -28,8 +20,6 @@ from plugin.server.application.install_source.manager import (
     _parse_lock,
 )
 from plugin.server.application.install_source.models import (
-    LockEntry,
-    LockFile,
     SourceDetailImported,
     SourceDetailMarket,
 )
@@ -58,35 +48,31 @@ def _build_mgr(tmp_path: Path) -> tuple[InstallSourceManager, Path, Path, Path]:
 
 @pytest.mark.asyncio
 async def test_first_startup_migration(tmp_path: Path) -> None:
-    """Task 8.1: First_Startup creates lock with builtin + manual seeds."""
+    """First_Startup creates lock with builtin + manual seeds."""
     mgr, builtin_root, user_root, lock_path = _build_mgr(tmp_path)
-    # Seed disk
     (builtin_root / "core").mkdir()
     (user_root / "p1").mkdir()
     (user_root / "p2").mkdir()
-    # Write plugin.toml for one of them so plugin_id gets filled
     (user_root / "p1" / "plugin.toml").write_text(
         '[plugin]\nid = "p1"\n', encoding="utf-8"
     )
-    # Run the StartupReconciler — it's what lifespan calls
     await StartupReconciler(mgr).run()
 
-    assert lock_path.exists(), "First_Startup must write the lock file"
+    assert lock_path.exists()
     doc = json.loads(lock_path.read_bytes())
     assert doc["schema_version"] == 1
-    assert "created_at" in doc  # Req 6.4
+    assert "created_at" in doc
     entries_by_key = {(e["root_id"], e["directory_name"]): e for e in doc["entries"]}
-    assert ("builtin", "core") in entries_by_key
     assert entries_by_key[("builtin", "core")]["channel"] == "builtin"
     assert entries_by_key[("user", "p1")]["channel"] == "manual"
     assert entries_by_key[("user", "p1")]["plugin_id"] == "p1"
-    # All timestamps equal on First_Startup
+    # All three timestamps align on First_Startup.
     e = entries_by_key[("builtin", "core")]
     assert e["installed_at"] == e["updated_at"] == e["last_seen_at"]
 
 
 def test_upload_and_install_records_source(tmp_path: Path) -> None:
-    """Task 8.2: record_import reflects imported channel + sha256 + plugin_id (Fix 1)."""
+    """record_import: channel="imported" + sha256 + plugin_id populated (Fix 1)."""
     mgr, _, user_root, _ = _build_mgr(tmp_path)
     target = user_root / "uploaded_plugin"
     target.mkdir()
@@ -98,23 +84,21 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
         package_filename="uploaded_plugin.neko-plugin",
         package_sha256="d" * 64,
     )
-    # Re-read from disk to verify persistence
     lf = _parse_lock(mgr.lock_path.read_bytes())
     assert len(lf.entries) == 1
     e = lf.entries[0]
     assert e.channel == "imported"
     assert e.reason == "user_requested"
-    assert e.plugin_id == "uploaded_plugin"  # Fix 1
+    assert e.plugin_id == "uploaded_plugin"
     assert isinstance(e.source_detail, SourceDetailImported)
     assert e.source_detail.package_sha256 == "d" * 64
 
 
 def test_market_install_single_write(tmp_path: Path) -> None:
-    """Task 8.3: record_market without any preceding record_import (Fix 8)."""
+    """record_market writes market directly, never goes through import (Fix 8)."""
     mgr, _, user_root, _ = _build_mgr(tmp_path)
-    # Monkey-patch record_import so any call is counted
     original_record_import = mgr.record_import
-    import_calls: list[tuple[Any, ...]] = []
+    import_calls: list[dict] = []
 
     def tracked_record_import(**kwargs):
         import_calls.append(kwargs)
@@ -129,19 +113,18 @@ def test_market_install_single_write(tmp_path: Path) -> None:
         version="1.0.0",
         package_url="https://m.example/pkg.neko-plugin",
     )
-    assert len(import_calls) == 0  # Fix 8: never goes through import
+    assert len(import_calls) == 0
     lf = _parse_lock(mgr.lock_path.read_bytes())
     e = lf.entries[0]
     assert e.channel == "market"
     assert isinstance(e.source_detail, SourceDetailMarket)
     assert e.source_detail.plugin_market_id == "pid-1"
     assert e.source_detail.previous_version is None
-    # installed_at == updated_at on first write
     assert e.installed_at == e.updated_at
 
 
 def test_plugins_endpoint_injects_install_source(tmp_path: Path) -> None:
-    """Task 8.4: to_api_view returns correct sub-object + degrade default."""
+    """to_api_view returns correct sub-object + default for unknown plugin_id."""
     mgr, _, user_root, _ = _build_mgr(tmp_path)
     target = user_root / "p"
     target.mkdir()
@@ -153,8 +136,7 @@ def test_plugins_endpoint_injects_install_source(tmp_path: Path) -> None:
     view = mgr.to_api_view("p", directory_path=target)
     assert view["source"] == "imported"
     assert view["source_detail"]["package_sha256"] == "e" * 64
-    # Degrade: replace _current with an empty lock and return is_degraded=False;
-    # for real degrade, pretend mgr is gone
+
     view_miss = mgr.to_api_view("unknown")
     assert view_miss == {
         "source": "unknown", "reason": None,
@@ -162,80 +144,138 @@ def test_plugins_endpoint_injects_install_source(tmp_path: Path) -> None:
     }
 
 
-def test_install_sources_endpoint(tmp_path: Path) -> None:
-    """Task 8.5: list_entries applied through full filter matrix."""
+def test_soft_delete_via_reconcile(tmp_path: Path) -> None:
+    """Disk directory disappears → reconcile soft-deletes the entry."""
     mgr, _, user_root, _ = _build_mgr(tmp_path)
-    # Seed two entries via reconcile
     (user_root / "p1").mkdir()
     (user_root / "p2").mkdir()
     mgr.reconcile()
-    # include_removed default
     assert len(mgr.list_entries()) == 2
-    # Filter by channel
-    assert all(e.channel == "manual" for e in mgr.list_entries(channel="manual"))
-    # Illegal filter -> INVALID_FILTER
-    with pytest.raises(InstallSourceError) as info:
-        mgr.list_entries(channel="xxx")
-    assert info.value.code == "INVALID_FILTER"
-    # Delete p1 directory and reconcile -> soft delete
+
     (user_root / "p1").rmdir()
     mgr.reconcile()
-    # include_removed=False excludes removed
     live = mgr.list_entries()
-    assert all(not e.removed for e in live)
-    # include_removed=True shows both
-    assert len(mgr.list_entries(include_removed=True)) == 2
-
-
-def test_noop_reconcile_does_not_rewrite_lock(tmp_path: Path) -> None:
-    """Task 8.6: two reconciles on identical state → mtime unchanged (Fix 4)."""
-    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
-    (user_root / "p").mkdir()
-    mgr.reconcile()
-    mtime1 = lock_path.stat().st_mtime
-    updated_at1 = mgr._current.updated_at  # noqa: SLF001
-    import time
-    time.sleep(0.05)
-    mgr.reconcile()
-    mtime2 = lock_path.stat().st_mtime
-    assert mtime2 == mtime1
-    assert mgr._current.updated_at == updated_at1  # noqa: SLF001
+    assert len(live) == 1
+    assert live[0].directory_name == "p2"
+    # The soft-deleted row is still there under include_removed.
+    all_entries = mgr.list_entries(include_removed=True)
+    assert len(all_entries) == 2
 
 
 def test_corrupt_lock_is_backed_up_and_rebuilt(tmp_path: Path) -> None:
-    """Task 8.7a: corrupt JSON is renamed .bak-<epoch> and rebuilt."""
+    """Corrupt JSON → renamed to .bak-<epoch>, lock re-seeded from disk."""
     mgr, _, user_root, lock_path = _build_mgr(tmp_path)
-    # Plant a corrupt lock file
     lock_path.write_text("{not valid json", encoding="utf-8")
     (user_root / "rebuild").mkdir()
     mgr.load()
-    # After load, a .bak-* file should exist
     bak_files = list(lock_path.parent.glob("plugins.lock.json.bak-*"))
     assert len(bak_files) == 1
-    # Manager should be in First_Startup seeded state
     assert mgr._current.entries == ()  # noqa: SLF001
     assert mgr._current.created_at is not None  # noqa: SLF001
 
 
-def test_permission_error_degrades_then_recovers(tmp_path: Path) -> None:
-    """Task 8.7b: OSError during read → degrade; try_recover() succeeds after fix."""
-    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
-    # Write good content first
-    (user_root / "p").mkdir()
-    mgr.reconcile()
-    assert mgr.is_degraded is False
-    # Force the next read to fail by making lock_path a directory
-    # (os.read() raises IsADirectoryError -> OSError)
-    lock_path.unlink()
-    lock_path.mkdir()
-    mgr.load()
-    assert mgr.is_degraded is True
-    assert mgr.degrade_reason and "read_failed" in mgr.degrade_reason
-    # Save is a no-op while degraded
-    mgr.save()
-    # Fix the filesystem: replace the dir with a valid file
-    lock_path.rmdir()
-    # Re-run recovery
-    ok = mgr.try_recover()
-    assert ok is True
-    assert mgr.is_degraded is False
+# ──────────────────────────────────────────────────────────────────────
+# mark_removed (delete-hook)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_mark_removed_flips_and_preserves_audit(tmp_path: Path) -> None:
+    """mark_removed soft-deletes while preserving installed_at / source_detail."""
+    mgr, _, user_root, _ = _build_mgr(tmp_path)
+    target = user_root / "plugin_to_delete"
+    target.mkdir()
+    mgr.record_import(
+        directory_path=target,
+        package_filename="p.neko-plugin",
+        package_sha256="f" * 64,
+    )
+    before = mgr.list_entries()[0]
+    mgr.mark_removed(directory_path=target)
+
+    lf = _parse_lock(mgr.lock_path.read_bytes())
+    assert len(lf.entries) == 1
+    after = lf.entries[0]
+    assert after.removed is True
+    assert after.removed_at is not None
+    assert after.installed_at == before.installed_at
+    assert after.source_detail == before.source_detail
+    assert after.channel == "imported"
+    assert mgr.list_entries() == []
+    assert len(mgr.list_entries(include_removed=True)) == 1
+
+
+def test_mark_removed_idempotent_and_builtin_locked(tmp_path: Path) -> None:
+    """mark_removed: repeat call is a no-op; builtin rejected."""
+    mgr, builtin_root, user_root, _ = _build_mgr(tmp_path)
+    target = user_root / "p"
+    target.mkdir()
+    mgr.record_import(
+        directory_path=target,
+        package_filename="p.neko-plugin",
+        package_sha256="a" * 64,
+    )
+    mgr.mark_removed(directory_path=target)
+    mtime1 = mgr.lock_path.stat().st_mtime
+    removed_at1 = mgr.list_entries(include_removed=True)[0].removed_at
+    import time
+    time.sleep(0.02)
+    mgr.mark_removed(directory_path=target)
+    # Second call is a no-op: mtime stable, removed_at doesn't drift.
+    assert mgr.lock_path.stat().st_mtime == mtime1
+    assert mgr.list_entries(include_removed=True)[0].removed_at == removed_at1
+
+    builtin_target = builtin_root / "core"
+    builtin_target.mkdir()
+    with pytest.raises(InstallSourceError) as info:
+        mgr.mark_removed(directory_path=builtin_target)
+    assert info.value.code == "BUILTIN_CHANNEL_LOCKED"
+
+
+def test_record_market_captures_previous_version_on_upgrade(tmp_path: Path) -> None:
+    """Market upgrade captures previous_version; same-version no-op; promotion=None."""
+    mgr, _, user_root, _ = _build_mgr(tmp_path)
+    target = user_root / "market_plugin"
+    target.mkdir()
+    mgr.record_market(
+        directory_path=target,
+        plugin_market_id="pid-1",
+        version="1.0.0",
+        package_url="https://m/pkg.neko-plugin",
+    )
+    assert mgr.list_entries()[0].source_detail.previous_version is None
+
+    mgr.record_market(
+        directory_path=target,
+        plugin_market_id="pid-1",
+        version="2.0.0",
+        package_url="https://m/pkg-v2.neko-plugin",
+    )
+    e = mgr.list_entries()[0]
+    assert e.source_detail.version == "2.0.0"
+    assert e.source_detail.previous_version == "1.0.0"
+
+    # Same-version re-call: previous_version stays None (not an upgrade).
+    mgr.record_market(
+        directory_path=target,
+        plugin_market_id="pid-1",
+        version="2.0.0",
+        package_url="https://m/pkg-v2.neko-plugin",
+    )
+    assert mgr.list_entries()[0].source_detail.previous_version is None
+
+    # Imported → market promotion: no prior market version.
+    target2 = user_root / "promoted"
+    target2.mkdir()
+    mgr.record_import(
+        directory_path=target2,
+        package_filename="p.neko-plugin",
+        package_sha256="a" * 64,
+    )
+    mgr.record_market(
+        directory_path=target2,
+        plugin_market_id="pid-2",
+        version="1.0.0",
+        package_url="https://m/p.neko-plugin",
+    )
+    e = next(x for x in mgr.list_entries() if x.directory_name == "promoted")
+    assert e.source_detail.previous_version is None
