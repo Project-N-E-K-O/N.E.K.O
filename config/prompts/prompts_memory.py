@@ -699,8 +699,8 @@ EMOTION_ANALYSIS_PROMPT = {
     "ja": """你是一个情感分析专家。ユーザーの入力テキストの感情を分析し、以下のJSON形式で返してください：{"emotion": "感情タイプ", "confidence": 信頼度(0-1)}。感情タイプ：happy, sad, angry, neutral, surprised.""",
     "ko": """你是一个情感分析专家. 사용자 입력 텍스트의 감정을 분석하고 다음 JSON 형식으로 반환해 주세요: {"emotion": "감정유형", "confidence": 신뢰도(0-1)}. 감정 유형: happy, sad, angry, neutral, surprised.""",
     "ru": """你是一个情感分析专家. Проанализируйте эмоцию во вводимом пользователем тексте и верните JSON в следующем формате: {"emotion": "тип_эмоции", "confidence": уверенность(0-1)}. Типы эмоций: happy, sad, angry, neutral, surprised.""",
-    "es": """Analiza la emoción del texto del usuario y devuelve JSON con el formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Los únicos valores permitidos de emotion son: happy, sad, angry, neutral, surprised. Devuelve solo JSON; no expliques.""",
-    "pt": """Analise a emoção do texto do usuário e retorne JSON no formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Os únicos valores permitidos para emotion são: happy, sad, angry, neutral, surprised. Retorne apenas JSON; não explique.""",
+    "es": """你是一个情感分析专家. Analiza la emoción del texto de entrada del usuario y devuelve JSON con el formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Los tipos de emoción son: happy, sad, angry, neutral, surprised.""",
+    "pt": """你是一个情感分析专家. Analise a emoção do texto de entrada do usuário e retorne JSON no formato {"emotion": "emotion_type", "confidence": confidence(0-1)}. Os tipos de emoção são: happy, sad, angry, neutral, surprised.""",
 }
 
 
@@ -721,8 +721,8 @@ INNER_THOUGHTS_HEADER = {
     "ja": "\n======{name}の心の声======\n",
     "ko": "\n======{name}의 내면 활동======\n",
     "ru": "\n======Внутренние мысли {name}======\n",
-    "es": "Pensamientos internos:",
-    "pt": "Pensamentos internos:",
+    "es": "\n======Pensamientos internos de {name}======\n",
+    "pt": "\n======Pensamentos internos de {name}======\n",
 }
 
 INNER_THOUGHTS_BODY = {
@@ -870,8 +870,8 @@ MEMORY_RECALL_HEADER = {
     "ja": "======{name}の回想======\n",
     "ko": "======{name}의 회상======\n",
     "ru": "======{name} пытается вспомнить======\n",
-    "es": "Recuerdos posiblemente relevantes:",
-    "pt": "Memórias possivelmente relevantes:",
+    "es": "======{name} intenta recordar======\n",
+    "pt": "======{name} tenta se lembrar======\n",
 }
 
 MEMORY_RESULTS_HEADER = {
@@ -880,8 +880,8 @@ MEMORY_RESULTS_HEADER = {
     "ja": "======{name}の関連する記憶======\n",
     "ko": "======{name}의 관련 기억======\n",
     "ru": "======{name} — связанные воспоминания======\n",
-    "es": "Resultados de memoria:",
-    "pt": "Resultados da memória:",
+    "es": "======Recuerdos relacionados de {name}======\n",
+    "pt": "======Memórias relacionadas de {name}======\n",
 }
 
 # ---------- Persona header (static prefix) ----------
@@ -891,8 +891,8 @@ PERSONA_HEADER = {
     "ja": "\n======{name}の長期記憶======\n",
     "ko": "\n======{name}의 장기 기억======\n",
     "ru": "\n======Долговременная память {name}======\n",
-    "es": "Información de persona:",
-    "pt": "Informações de persona:",
+    "es": "\n======Memoria a largo plazo de {name}======\n",
+    "pt": "\n======Memória de longo prazo de {name}======\n",
 }
 
 # ---------- Proactive chat followup header ----------
@@ -905,8 +905,8 @@ PROACTIVE_FOLLOWUP_HEADER = {
     "ja": "\n[記憶の手がかり] 以前の会話で出た古い話題——自然に回想して持ち出すのに向いている：\n",
     "ko": "\n[기억 단서] 이전 대화에서 나온 오래된 화제——자연스럽게 회상하여 꺼내기 좋음:\n",
     "ru": "\n[Подсказки памяти] Старые темы из прошлых разговоров — удачные для естественного возврата:\n",
-    "es": "Posibles seguimientos proactivos basados en memoria:",
-    "pt": "Possíveis acompanhamentos proativos baseados em memória:",
+    "es": "\n[Pistas de memoria] Temas antiguos de conversaciones previas, adecuados para recordar y dar seguimiento con naturalidad:\n",
+    "pt": "\n[Pistas de memória] Temas antigos de conversas anteriores, adequados para recordar e acompanhar com naturalidade:\n",
 }
 
 # =====================================================================
