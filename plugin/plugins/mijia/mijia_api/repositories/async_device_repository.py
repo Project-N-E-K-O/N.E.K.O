@@ -312,7 +312,7 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             name=data.get("name", ""),
             model=data.get("model", ""),
             home_id=home_id,
-            room_id=data.get("roomid"),
+            room_id=data.get("roomid") or data.get("room_id"),
             status=status,
             parent_id=data.get("parent_id"),
             parent_model=data.get("parent_model"),
