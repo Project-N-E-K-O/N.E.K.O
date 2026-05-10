@@ -823,8 +823,8 @@ CHAT_GAP_NOTICE = {
     "ja": "{master}との最後の会話から{elapsed}が経過しました。",
     "ko": "{master}와의 마지막 대화로부터 {elapsed}이 지났습니다.",
     "ru": "С момента последнего разговора с {master} прошло {elapsed}.",
-    "es": "Han pasado {elapsed} desde la última conversación.",
-    "pt": "Já se passaram {elapsed} desde a última conversa.",
+    "es": "Han pasado {elapsed} desde la última conversación con {master}.",
+    "pt": "Já se passaram {elapsed} desde a última conversa com {master}.",
 }
 
 # 超过5小时时追加的额外提示
@@ -834,8 +834,8 @@ CHAT_GAP_LONG_HINT = {
     "ja": "{name}は{master}と長い間話していなかったことに気づきました。この間に何があったのでしょう？{name}は{master}の最近の様子が気になっています。",
     "ko": "{name}은 {master}와 꽤 오랫동안 이야기하지 않았다는 것을 깨달았습니다. 그동안 무슨 일이 있었을까요? {name}은 {master}의 근황이 궁금합니다.",
     "ru": "{name} осознаёт, что давно не разговаривала с {master}. Что произошло за это время? {name} хочет узнать, как дела у {master}.",
-    "es": "Hubo una pausa larga; no finjas que fue continuo. Puedes reconocer suavemente el regreso si encaja.",
-    "pt": "Houve uma pausa longa; não finja continuidade. Você pode reconhecer suavemente o retorno se couber.",
+    "es": "{name} nota que hace mucho que no habla con {master}. ¿Qué habrá pasado en este tiempo? {name} quiere saber cómo ha estado {master}.",
+    "pt": "{name} percebe que faz bastante tempo que não conversa com {master}. O que aconteceu nesse período? {name} quer saber como {master} tem estado.",
 }
 
 # 超过5小时时追加的当前时间提示 — {now}: 格式化后的当前时间
