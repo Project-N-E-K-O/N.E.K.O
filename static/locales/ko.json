@@ -1868,7 +1868,7 @@
         "unregisterError": "등록을 취소하는 동안 오류가 발생했습니다.",
         "switchFailed": "전환 실패",
         "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
-        "freePresetVoices": "무료 사전 설정 음색",
+        "freePresetVoices": "── 무료 사전 설정 음색 ──",
         "geminiNativeVoices": "Gemini 네이티브 음성",
         "nativePresetVoices": "{{provider}} 네이티브 음성",
         "nativePresetVoicesGeneric": "네이티브 프리셋 음성",

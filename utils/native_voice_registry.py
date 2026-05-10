@@ -211,11 +211,25 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     Returns None when neither realtime nor core api type is a registered
     native-voice provider.
     """
+    base_url = ""
     try:
         realtime_config = cm.get_model_api_config('realtime')
         api_type = realtime_config.get('api_type')
+        base_url = str(realtime_config.get('base_url') or '')
     except Exception:
-        api_type = (cm.get_core_config() or {}).get('CORE_API_TYPE')
+        core_config = cm.get_core_config() or {}
+        api_type = core_config.get('CORE_API_TYPE')
+        base_url = str(core_config.get('CORE_URL') or '')
+
+    if not base_url:
+        try:
+            base_url = str((cm.get_core_config() or {}).get('CORE_URL') or '')
+        except Exception:
+            base_url = ""
+
+    # lanlan.app 的免费路由会把 Step/free voice_id 映射为固定音色，不能展示原生目录。
+    if str(api_type or '').lower() == 'free' and 'lanlan.app' in base_url.lower():
+        return None
     return api_type if api_type in _PROVIDERS else None
 
 

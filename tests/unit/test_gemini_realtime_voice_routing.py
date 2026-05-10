@@ -27,8 +27,9 @@ class _FakeCharactersRouterConfigManager:
     """Mimics the ConfigManager surface used by characters_router.get_voices
     plus the registry's get_active_realtime_native_provider lookup."""
 
-    def __init__(self, realtime_api_type):
+    def __init__(self, realtime_api_type, base_url=""):
         self._realtime_api_type = realtime_api_type
+        self._base_url = base_url
 
     def get_voices_for_current_api(self):
         return {}
@@ -37,7 +38,7 @@ class _FakeCharactersRouterConfigManager:
         return {"CORE_API_TYPE": "gemini"}
 
     def get_model_api_config(self, model_type):
-        return {"api_type": self._realtime_api_type}
+        return {"api_type": self._realtime_api_type, "base_url": self._base_url}
 
     def get_core_config(self):
         return {"CORE_API_TYPE": "gemini"}
@@ -132,6 +133,56 @@ async def test_voice_catalog_uses_active_realtime_provider(monkeypatch):
 
     assert "native_voices" not in local_result
     assert "native_voices" in gemini_result
+
+
+@pytest.mark.asyncio
+async def test_free_voice_catalog_hidden_on_lanlan_app(monkeypatch):
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager(
+            "free",
+            "wss://lanlan.app/realtime",
+        ),
+    )
+
+    overseas_free_result = await characters_router.get_voices()
+
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager(
+            "free",
+            "wss://lanlan.tech/realtime",
+        ),
+    )
+
+    domestic_free_result = await characters_router.get_voices()
+
+    assert "native_voices" not in overseas_free_result
+    assert "native_voices" in domestic_free_result
+
+
+def test_free_native_voice_blocked_on_lanlan_app_route():
+    mgr = _make_mgr("qingchunshaonv")
+    mgr.core_api_type = "free"
+
+    assert (
+        LLMSessionManager._should_block_free_voice_for_route(
+            mgr,
+            "qingchunshaonv",
+            "wss://lanlan.app/realtime",
+        )
+        is True
+    )
+    assert (
+        LLMSessionManager._should_block_free_voice_for_route(
+            mgr,
+            "qingchunshaonv",
+            "wss://lanlan.tech/realtime",
+        )
+        is False
+    )
 
 
 def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():

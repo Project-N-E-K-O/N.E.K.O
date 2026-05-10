@@ -479,7 +479,7 @@ class LLMSessionManager:
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
         raw_voice_id = self._get_voice_id()
-        if self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', '')):
+        if self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', '')):
             self.voice_id = ''
             self._is_free_preset_voice = False
         else:
@@ -2870,10 +2870,9 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
+        _, uses_provider_native_voice = self._resolve_native_voice_for_route(
             self.voice_id,
-            self._config_manager.voice_id_exists_in_any_storage,
+            realtime_config.get('base_url', ''),
         )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
@@ -2894,9 +2893,43 @@ class LLMSessionManager:
     def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
         return bool(
-            self.core_api_type == "free"
-            and "lanlan.app" in (realtime_base_url or "")
+            self._is_free_lanlan_app_route(realtime_base_url)
             and self._is_preset_voice_id(voice_id)
+        )
+
+    def _is_free_lanlan_app_route(self, realtime_base_url: str) -> bool:
+        """判断当前是否为会强制映射 Leda 的海外免费路由。"""
+        return bool(
+            self.core_api_type == "free"
+            and "lanlan.app" in (realtime_base_url or "").lower()
+        )
+
+    def _should_block_free_native_voice(self, voice_id: str, realtime_base_url: str) -> bool:
+        """lanlan.app/free 下屏蔽 StepFun 原生音色，避免选择被强制映射为 Leda。"""
+        if not (voice_id and self._is_free_lanlan_app_route(realtime_base_url)):
+            return False
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
+            "free",
+            voice_id,
+            self._config_manager.voice_id_exists_in_any_storage,
+        )
+        return uses_provider_native_voice
+
+    def _should_block_free_voice_for_route(self, voice_id: str, realtime_base_url: str) -> bool:
+        """lanlan.app/free 下不下发 free preset 或 StepFun 原生音色。"""
+        return (
+            self._should_block_free_preset_voice(voice_id, realtime_base_url)
+            or self._should_block_free_native_voice(voice_id, realtime_base_url)
+        )
+
+    def _resolve_native_voice_for_route(self, voice_id: str, realtime_base_url: str) -> tuple[str, bool]:
+        """按当前路由解析原生音色；海外免费路由不启用 Step/free 原生音色。"""
+        if self._should_block_free_native_voice(voice_id, realtime_base_url):
+            return (voice_id or "").strip(), False
+        return resolve_native_voice_for_routing(
+            self.core_api_type,
+            voice_id,
+            self._config_manager.voice_id_exists_in_any_storage,
         )
 
     def _get_voice_id(self) -> str:
@@ -2921,12 +2954,11 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
+           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_voice_for_route 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
+        voice_name, uses_provider_native_voice = self._resolve_native_voice_for_route(
             self.voice_id,
-            self._config_manager.voice_id_exists_in_any_storage,
+            realtime_config.get('base_url', ''),
         )
         if uses_provider_native_voice:
             return voice_name
@@ -3126,8 +3158,8 @@ class LLMSessionManager:
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
+            block_free_voice = self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', ''))
+            if block_free_voice:
                 self.voice_id = ''
                 self._is_free_preset_voice = False
             else:
@@ -3763,8 +3795,8 @@ class LLMSessionManager:
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
+            block_free_voice = self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', ''))
+            if block_free_voice:
                 self.voice_id = ''
                 self._is_free_preset_voice = False
             else:

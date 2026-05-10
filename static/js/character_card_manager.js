@@ -5577,6 +5577,10 @@ function _panelFormatNativeVoiceGroupLabel(nativeEntries) {
     return window.t ? window.t('character.nativePresetVoicesGeneric') : '原生预设音色';
 }
 
+function _panelNormalizeVoiceGroupLabel(label) {
+    return String(label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
+}
+
 // 创建音色自定义单选下拉，原生 select 只负责表单值。
 function _panelCreateVoiceSelectUi(selectEl) {
     const container = document.createElement('div');
@@ -5764,7 +5768,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
                     groupLabel.className = 'voice-select-group-label';
                     const groupLabelText = document.createElement('span');
                     groupLabelText.className = 'voice-select-group-text';
-                    groupLabelText.textContent = String(child.label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
+                    groupLabelText.textContent = _panelNormalizeVoiceGroupLabel(child.label);
                     groupLabel.appendChild(groupLabelText);
                     options.appendChild(groupLabel);
                     groupOptions.forEach(appendOptionItem);
@@ -5860,7 +5864,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
                 const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = freeLabel;
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(freeLabel);
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -5889,7 +5893,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
-                    nativeGroup.label = _panelFormatNativeVoiceGroupLabel(nativeEntries);
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(_panelFormatNativeVoiceGroupLabel(nativeEntries));
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
@@ -5909,7 +5913,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
                     const fallbackGroup = document.createElement('optgroup');
                     const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
-                    fallbackGroup.label = fallbackLabel;
+                    fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
                     fallbackGroup.dataset.geminiFallbackGroup = 'true';
                     const fallbackOption = document.createElement('option');
                     fallbackOption.value = currentVoiceId;
@@ -5943,7 +5947,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = gsvLabel;
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             selectEl.appendChild(gsvGroup);
         }
@@ -5964,7 +5968,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = gsvLabel;
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
