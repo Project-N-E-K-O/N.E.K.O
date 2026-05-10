@@ -16,6 +16,7 @@
         :plugin="item"
         :is-selected="multiSelectEnabled && selectedPluginIds.includes(item.id)"
         :show-metrics="showMetrics"
+        :show-source-detail="showSourceDetail"
         @click="$emit('item-click', item.id)"
         @contextmenu="$emit('item-contextmenu', $event, item)"
       />
@@ -38,6 +39,7 @@ defineProps<{
   multiSelectEnabled: boolean
   selectedPluginIds: string[]
   showMetrics: boolean
+  showSourceDetail?: boolean
   variant?: 'default' | 'adapter' | 'extension'
 }>()
 

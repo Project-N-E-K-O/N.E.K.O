@@ -100,6 +100,15 @@
                 <span>{{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}</span>
               </button>
               <button
+                class="header-btn"
+                :class="{ 'header-btn--active': showSourceDetail }"
+                data-yui-guide-id="plugin-list-source-toggle"
+                @click="toggleSourceDetail"
+              >
+                <el-icon><InfoFilled /></el-icon>
+                <span>{{ showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail') }}</span>
+              </button>
+              <button
                 class="header-btn header-btn--warn"
                 :disabled="reloadingAll || runningPlugins.length === 0"
                 @click="handleReloadAll"
@@ -174,6 +183,7 @@
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
               :show-metrics="showMetrics"
+              :show-source-detail="showSourceDetail"
               :variant="section.variant"
               @item-click="handlePluginPrimaryAction"
               @item-contextmenu="handlePluginContextMenu"
@@ -314,10 +324,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
+import { useMarketVersionsStore } from '@/stores/marketVersions'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
@@ -411,6 +422,23 @@ const {
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
+
+// Show-source-detail mirrors the Metrics toggle pattern. Turning it on
+// also kicks off a best-effort fetch of the Market's latest versions so
+// the "update available" badge can light up on market-installed plugins.
+const showSourceDetail = ref(false)
+const marketVersionsStore = useMarketVersionsStore()
+
+async function toggleSourceDetail() {
+  showSourceDetail.value = !showSourceDetail.value
+  if (showSourceDetail.value) {
+    // Fire-and-forget; if Market is unreachable the badge simply won't
+    // appear, which is a fine degraded state.
+    marketVersionsStore.ensureFresh().catch((err) => {
+      console.warn('Failed to refresh market versions:', err)
+    })
+  }
+}
 const pluginSections = computed(() => [
   {
     key: 'plugin',

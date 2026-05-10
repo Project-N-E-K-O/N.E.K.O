@@ -19,6 +19,10 @@
           <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
+          <SourceTag
+            :source="plugin.install_source?.source"
+            :has-update="hasUpdate"
+          />
         </div>
       </div>
     </template>
@@ -30,6 +34,12 @@
         v-if="showMetrics"
         :plugin-id="plugin.id"
         :plugin-status="plugin.status || 'stopped'"
+      />
+
+      <SourceDetailRow
+        v-if="showSourceDetail"
+        :install-source="plugin.install_source"
+        :latest-version="latestVersion"
       />
 
       <div class="plugin-meta">
@@ -48,20 +58,27 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
-import type { PluginMeta } from '@/types/api'
+import SourceTag from '@/components/plugin/SourceTag.vue'
+import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
+import { useMarketVersionsStore } from '@/stores/marketVersions'
+import { hasNewerVersion } from '@/utils/version'
+import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
   isSelected?: boolean
   showMetrics?: boolean
+  showSourceDetail?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false,
+  showSourceDetail: false,
 })
 
 const { t } = useI18n()
+const marketVersions = useMarketVersionsStore()
 
 defineEmits<{
   click: []
@@ -70,6 +87,27 @@ defineEmits<{
 
 const entryCount = computed(() => {
   return props.plugin.entries?.length || 0
+})
+
+/** Look up the market's latest version for this plugin, IF it was installed
+ *  from the market. Returns null for non-market / unknown plugins. Callers
+ *  (PluginList) kick off the market refresh when they turn the "show source
+ *  detail" toggle on, so by the time we render here the store is populated
+ *  (or never will be, if market is offline — in which case latest stays
+ *  null and no "update available" badge appears). */
+const latestVersion = computed<string | null>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return null
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  if (!detail?.plugin_market_id) return null
+  return marketVersions.latest(detail.plugin_market_id)
+})
+
+const hasUpdate = computed<boolean>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return false
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  return hasNewerVersion(detail?.version, latestVersion.value)
 })
 </script>
 

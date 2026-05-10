@@ -18,6 +18,10 @@
             <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
               {{ t('plugins.manualStart') }}
             </el-tag>
+            <SourceTag
+              :source="plugin.install_source?.source"
+              :has-update="hasUpdate"
+            />
           </div>
         </div>
 
@@ -29,6 +33,12 @@
           v-if="showMetrics"
           :plugin-id="plugin.id"
           :plugin-status="plugin.status || 'stopped'"
+        />
+
+        <SourceDetailRow
+          v-if="showSourceDetail"
+          :install-source="plugin.install_source"
+          :latest-version="latestVersion"
         />
       </div>
 
@@ -61,17 +71,23 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
-import type { PluginMeta } from '@/types/api'
+import SourceTag from '@/components/plugin/SourceTag.vue'
+import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
+import { useMarketVersionsStore } from '@/stores/marketVersions'
+import { hasNewerVersion } from '@/utils/version'
+import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
   isSelected?: boolean
   showMetrics?: boolean
+  showSourceDetail?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false,
+  showSourceDetail: false,
 })
 
 defineEmits<{
@@ -80,8 +96,24 @@ defineEmits<{
 }>()
 
 const { t } = useI18n()
+const marketVersions = useMarketVersionsStore()
 
 const entryCount = computed(() => props.plugin.entries?.length || 0)
+
+const latestVersion = computed<string | null>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return null
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  if (!detail?.plugin_market_id) return null
+  return marketVersions.latest(detail.plugin_market_id)
+})
+
+const hasUpdate = computed<boolean>(() => {
+  const src = props.plugin.install_source
+  if (!src || src.source !== 'market') return false
+  const detail = src.source_detail as PluginInstallSourceDetailMarket | null
+  return hasNewerVersion(detail?.version, latestVersion.value)
+})
 
 const typeLabel = computed(() => {
   if (props.plugin.type === 'adapter') return t('plugins.typeAdapter')

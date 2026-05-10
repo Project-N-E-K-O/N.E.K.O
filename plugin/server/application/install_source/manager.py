@@ -30,6 +30,7 @@ import json
 import os
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -129,6 +130,32 @@ def resolve_lock_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _normalise_path_for_compare(p: Path) -> tuple[str, Path]:
+    """Normalise a path for cross-platform prefix comparison.
+
+    Returns ``(comparable_str, original_resolved_path)`` — the str form is
+    lower-cased on case-insensitive platforms (Windows, default macOS) and
+    NFC-normalised so that the same directory name produced by different
+    filesystems compares equal.
+
+    The returned ``Path`` is the ``resolve(strict=False)``-ed original, kept
+    so callers can still pull ``.parts`` from it for the final directory name.
+    """
+
+    resolved = p.resolve(strict=False)
+    text = str(resolved)
+    # Unicode: macOS APFS/HFS+ uses NFD internally; Windows and Linux see
+    # whatever the user typed. Normalising to NFC picks a canonical form
+    # that survives a round trip through any of the three platforms.
+    text = unicodedata.normalize("NFC", text)
+    # Case: Windows is case-insensitive; macOS is case-insensitive by
+    # default (APFS can be flagged case-sensitive but defaults aren't).
+    # ``os.path.normcase`` is the stdlib's cross-platform way to say
+    # "compare paths the way the filesystem would".
+    text = os.path.normcase(text)
+    return text, resolved
+
+
 def classify_plugin_path(
     p: Path,
     *,
@@ -137,30 +164,57 @@ def classify_plugin_path(
 ) -> tuple[RootId, str]:
     """Reverse-map a plugin directory path to ``(root_id, directory_name)``.
 
-    All three inputs are normalised via ``Path.resolve(strict=False)`` before
-    comparison so that trailing slashes, ``..`` segments, and symlinks do not
-    cause spurious mismatches. :meth:`Path.is_relative_to` (Python 3.9+) is
-    used instead of string-prefix matching so that e.g. ``/foo/bar`` does not
-    incorrectly match ``/foo/bar_other``.
+    Paths are compared after :meth:`Path.resolve` + ``os.path.normcase`` +
+    ``unicodedata.normalize("NFC", ...)`` so that Windows drive-letter
+    casing (``C:\\`` vs ``c:\\``) and macOS Unicode NFD/NFC differences
+    don't misclassify a real plugin directory as ``PATH_OUTSIDE_ROOTS``.
 
-    The returned ``directory_name`` is the first path component *under the
-    matched root* (``relative_to(root).parts[0]``), never ``p.name`` — this
-    prevents subdirectories of a plugin from being misidentified as separate
-    plugins.
+    The returned ``directory_name`` is the first path component **under
+    the matched root**, taken from the (non-case-folded) resolved path so
+    the caller gets the real on-disk casing back.
 
     On no-match, raises :class:`InstallSourceError` with code
     ``"PATH_OUTSIDE_ROOTS"``. Callers typically bubble this up as an
-    ``install_source_warning`` in API responses rather than fatal failure.
+    ``install_source_warning`` rather than fatal failure.
     """
 
-    resolved = p.resolve(strict=False)
-    b_root = builtin_root.resolve(strict=False)
-    u_root = user_root.resolve(strict=False)
+    p_key, p_resolved = _normalise_path_for_compare(p)
+    b_key, b_resolved = _normalise_path_for_compare(builtin_root)
+    u_key, u_resolved = _normalise_path_for_compare(user_root)
+    sep = os.sep
 
-    if resolved.is_relative_to(b_root):
-        return ("builtin", resolved.relative_to(b_root).parts[0])
-    if resolved.is_relative_to(u_root):
-        return ("user", resolved.relative_to(u_root).parts[0])
+    # ``startswith`` with a trailing separator so that e.g. ``/foo/bar``
+    # does not match ``/foo/barbell``. Equality with the root itself
+    # means "the plugin *is* the root" which is never legal — we still
+    # want parts[0] under the root.
+    def _matches(resolved: Path, key: str, root_key: str, root_resolved: Path) -> str | None:
+        if key == root_key:
+            return None  # p == root: no directory under root
+        prefix = root_key if root_key.endswith(sep) else root_key + sep
+        if not key.startswith(prefix):
+            return None
+        # Pull the on-disk name from the pre-normalised resolved path,
+        # aligning via the same component count.
+        try:
+            rel_parts = resolved.relative_to(root_resolved).parts
+        except ValueError:
+            # resolve() drift between compare-form and original-form
+            # (very rare; only on symlink races). Fall back to splitting
+            # the case-normalised form, which is still correct as a
+            # directory_name — callers will match it against on-disk
+            # scanner output that goes through the same normalisation.
+            rel = key[len(prefix):]
+            rel_parts = tuple(part for part in rel.split(sep) if part)
+        if not rel_parts:
+            return None
+        return rel_parts[0]
+
+    dir_name = _matches(p_resolved, p_key, b_key, b_resolved)
+    if dir_name is not None:
+        return ("builtin", dir_name)
+    dir_name = _matches(p_resolved, p_key, u_key, u_resolved)
+    if dir_name is not None:
+        return ("user", dir_name)
 
     raise InstallSourceError(
         "PATH_OUTSIDE_ROOTS",
@@ -179,19 +233,14 @@ def _atomic_write(lock_path: Path, payload: bytes) -> None:
 
     Steps:
 
-    1. Ensure the parent directory exists (``mkdir(parents=True, exist_ok=True)``)
-       per Req 1.3.
+    1. Ensure the parent directory exists.
     2. Write ``payload`` to ``<parent>/plugins.lock.json.<pid>.<uuid>.tmp``.
-    3. ``os.replace`` the temp file over ``lock_path``. On POSIX this is a
-       single-syscall atomic rename; on Windows ``os.replace`` is also atomic
-       for same-volume renames.
-    4. On any exception (including the ``PermissionError`` raised when the
-       parent directory exists but is not writable — Req 1.4), unlink the
-       temp file best-effort and re-raise so the caller sees the original
-       error.
-
-    The ``<pid>.<uuid>`` suffix avoids collisions between concurrent writers
-    from different processes and makes temp-file cleanup diagnosable.
+    3. ``os.replace`` the temp file over ``lock_path``. POSIX rename is
+       atomic by kernel guarantee. Windows is atomic for same-volume
+       renames but can transiently fail with WinError 32 when another
+       process (antivirus, Explorer preview, OneDrive) has the target
+       file open — we retry a few times with a short backoff.
+    4. On any exception, unlink the temp file best-effort and re-raise.
     """
 
     parent = lock_path.parent
@@ -202,13 +251,50 @@ def _atomic_write(lock_path: Path, payload: bytes) -> None:
 
     try:
         tmp_path.write_bytes(payload)
-        os.replace(tmp_path, lock_path)
+        # Windows AV / Explorer can briefly hold an open handle on the
+        # target, causing os.replace → PermissionError (WinError 32).
+        # Retry 3 times with 50/100/200 ms backoff before giving up.
+        # POSIX doesn't need this but the retry is cheap there too.
+        last_exc: BaseException | None = None
+        for attempt_ms in (0, 50, 100, 200):
+            if attempt_ms:
+                time.sleep(attempt_ms / 1000.0)
+            try:
+                os.replace(tmp_path, lock_path)
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                continue
+        # Exhausted retries — re-raise the last PermissionError.
+        assert last_exc is not None
+        raise last_exc
     except BaseException:
-        # Best-effort cleanup; the tmp file may not exist if write_bytes
-        # failed before creating it (e.g. PermissionError on the parent).
         with suppress(FileNotFoundError):
             tmp_path.unlink()
         raise
+
+
+def _sweep_stale_tmp_files(lock_path: Path) -> None:
+    """Remove ``plugins.lock.json.*.tmp`` leftovers from previous runs.
+
+    A hard process kill (SIGKILL, taskkill, power loss) between
+    ``write_bytes`` and ``os.replace`` leaves the tmp file behind. These
+    are harmless (nothing ever reads them) but they accumulate and
+    confuse users browsing the config directory. We sweep once at
+    startup; never fatal — any error is swallowed.
+    """
+
+    parent = lock_path.parent
+    if not parent.is_dir():
+        return
+    pattern = f"{lock_path.name}.*.tmp"
+    try:
+        stale = list(parent.glob(pattern))
+    except OSError:
+        return
+    for path in stale:
+        with suppress(OSError):
+            path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +962,10 @@ class InstallSourceManager:
 
         with self._lock:
             now = self._now_iso()
+            # Clean up any stale ``plugins.lock.json.<pid>.<uuid>.tmp``
+            # leftovers from a previous run that was hard-killed between
+            # tmp-write and atomic rename.
+            _sweep_stale_tmp_files(self.lock_path)
             try:
                 raw = self.lock_path.read_bytes()
             except FileNotFoundError:
