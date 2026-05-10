@@ -79,7 +79,7 @@ def script_module():
     return _load_script_module()
 
 
-def _make_edge(mod, src: str, dst: str, *, line: int = 1) -> tuple:
+def _make_edge(src: str, dst: str, *, line: int = 1) -> tuple:
     """Build an EdgeRecord matching the script's tuple shape."""
     return (
         Path("synthetic.py"),    # path
@@ -107,7 +107,7 @@ def test_pure_inversion_is_flagged(script_module, monkeypatch) -> None:
         {"low": 0, "high": 1},
         raising=True,
     )
-    edges = [_make_edge(script_module, "low", "high")]
+    edges = [_make_edge("low", "high")]
     inversions, cycles = script_module.find_violations(edges)
     assert len(inversions) == 1
     assert inversions[0][3] == "low"
@@ -130,8 +130,8 @@ def test_two_node_cycle_is_flagged(script_module, monkeypatch) -> None:
         raising=True,
     )
     edges = [
-        _make_edge(script_module, "a", "b", line=10),
-        _make_edge(script_module, "b", "a", line=20),
+        _make_edge("a", "b", line=10),
+        _make_edge("b", "a", line=20),
     ]
     inversions, cycles = script_module.find_violations(edges)
     assert inversions == []
@@ -156,9 +156,9 @@ def test_three_node_cycle_is_flagged(script_module, monkeypatch) -> None:
         raising=True,
     )
     edges = [
-        _make_edge(script_module, "a", "b"),
-        _make_edge(script_module, "b", "c"),
-        _make_edge(script_module, "c", "a"),
+        _make_edge("a", "b"),
+        _make_edge("b", "c"),
+        _make_edge("c", "a"),
     ]
     inversions, cycles = script_module.find_violations(edges)
     assert inversions == []
@@ -179,9 +179,9 @@ def test_clean_dag_passes(script_module, monkeypatch) -> None:
         raising=True,
     )
     edges = [
-        _make_edge(script_module, "high", "mid"),
-        _make_edge(script_module, "high", "low"),
-        _make_edge(script_module, "mid", "low"),
+        _make_edge("high", "mid"),
+        _make_edge("high", "low"),
+        _make_edge("mid", "low"),
     ]
     inversions, cycles = script_module.find_violations(edges)
     assert inversions == []
