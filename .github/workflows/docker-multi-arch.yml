@@ -72,8 +72,9 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "SKIP_DOCKERHUB=${{ github.event.inputs.skip_dockerhub || 'false' }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # PR builds always skip DockerHub (only push to GHCR)
-            echo "SKIP_DOCKERHUB=true" >> $GITHUB_OUTPUT
+            # PR builds: skip DockerHub only if credentials are missing
+            # If credentials exist, push to both GHCR and DockerHub
+            echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
           else
             echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
           fi
