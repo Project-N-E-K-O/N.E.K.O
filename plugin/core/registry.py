@@ -803,6 +803,54 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
         # Best-effort: preview must never break plugin listing.
         pass
 
+    # 1b) Router-decorated entries declared via `__routers__`.
+    #     这些 entry 是通过 @plugin_entry 装饰在 PluginRouter 子类方法上的，
+    #     静态 preview 之前只看 plugin class 本身的成员，所以 router 入口对
+    #     UI/agent 列表完全不可见喵。这里额外扫描 `__routers__` 里声明的
+    #     router 类（或已实例化的 router），和 1) 一样只抽元数据，不触发运行时。
+    try:
+        declared_routers = getattr(cls, "__routers__", None) or []
+        for router_item in declared_routers:
+            router_cls = router_item if isinstance(router_item, type) else type(router_item)
+            for name, member in inspect.getmembers(router_cls):
+                event_meta = getattr(member, EVENT_META_ATTR, None)
+                if event_meta is None and hasattr(member, "__wrapped__"):
+                    event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+                if not event_meta:
+                    continue
+                etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                if etype != "plugin_entry":
+                    continue
+                eid = str(getattr(event_meta, "id", None) or name)
+                if not eid or eid in seen:
+                    continue
+                seen.add(eid)
+                input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+                name_obj = getattr(event_meta, "name", None) or ""
+                description_obj = getattr(event_meta, "description", None) or ""
+                entry_preview = {
+                    "id": eid,
+                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
+                    "event_key": f"{pid}.{eid}",
+                    "input_schema": input_schema,
+                    "return_message": "",
+                    "event_type": "plugin_entry",
+                    "kind": str(getattr(event_meta, "kind", "action") or "action"),
+                    "auto_start": bool(getattr(event_meta, "auto_start", False)),
+                    "timeout": getattr(event_meta, "timeout", None),
+                    "model_validate": bool(getattr(event_meta, "model_validate", True)),
+                    "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+                    "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+                    "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+                }
+                meta_dict = getattr(event_meta, "metadata", None)
+                if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+                    entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+                results.append(entry_preview)
+    except Exception:
+        pass
+
     # 2) Config-specified entries (conf/pdata)
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:

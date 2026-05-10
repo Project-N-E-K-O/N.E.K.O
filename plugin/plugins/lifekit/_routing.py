@@ -341,8 +341,12 @@ class OSRMProvider:
     ) -> List[Route]:
         if mode == "transit":
             return []  # OSRM 不支持公交
-        profile_map = {"driving": "car", "bicycling": "bike", "walking": "foot"}
-        profile = profile_map.get(mode, "car")
+        # 注意：公共实例 router.project-osrm.org 的路径是 /route/v1/{driving|foot|bike}/...
+        # 而本地/自建 osrm-backend 默认 profile 叫 car；这里优先匹配公共实例（用户无 key
+        # 时走的就是公共实例），自建实例可以通过 base_url 搭配 car profile 改写——不过
+        # 这已经超出默认 fallback 的需求范围喵
+        profile_map = {"driving": "driving", "bicycling": "bike", "walking": "foot"}
+        profile = profile_map.get(mode, "driving")
         coords = f"{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
         url = f"{self.base_url}/route/v1/{profile}/{coords}"
         params = {"overview": "false", "steps": "true"}

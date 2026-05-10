@@ -87,3 +87,34 @@ async def test_osrm_network_error_is_provider_error(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RoutingProviderError, match="ConnectError"):
         await OSRMProvider().plan_route(31.2, 121.4, 31.3, 121.5, "walking")
+
+
+@pytest.mark.asyncio
+async def test_osrm_public_instance_uses_driving_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """router.project-osrm.org 公共实例要求路径是 /route/v1/driving/...，
+    而不是本地 osrm-backend 默认的 /route/v1/car/... 喵。无 AMap/Baidu key 时
+    lifekit 默认走的就是这个公共实例，所以 driving 路径必须对上喵。"""
+    captured_url: dict[str, str] = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"code": "Ok", "routes": []}
+
+    class Client:
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, url: str, *_: object, **__: object) -> Response:
+            captured_url["url"] = url
+            return Response()
+
+    monkeypatch.setattr(_routing.httpx, "AsyncClient", lambda **_: Client())
+
+    await OSRMProvider().plan_route(31.2, 121.4, 31.3, 121.5, "driving")
+
+    assert "/route/v1/driving/" in captured_url["url"], f"unexpected URL: {captured_url}"

@@ -78,3 +78,17 @@ def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
     except EntryConflictError:
         return
     raise AssertionError("expected EntryConflictError for duplicate entry id")
+
+
+
+def test_registry_entries_preview_includes_routers() -> None:
+    """静态预览（插件未启动时 UI 列出的 entries）必须把 __routers__ 里装饰的入口也覆盖到喵；
+    否则用户在插件管理器里根本看不到 get_weather/unit_convert 这些操作。"""
+    from plugin.core.registry import _extract_entries_preview
+    from plugin.plugins.lifekit import LifeKitPlugin
+
+    entries = _extract_entries_preview("lifekit", LifeKitPlugin, conf={}, pdata={})
+    ids = {e["id"] for e in entries}
+    # 随手挑 3 个分别来自不同 router 的代表入口
+    for required in ("get_weather", "unit_convert", "food_recommend"):
+        assert required in ids, f"static preview missing {required} (got {sorted(ids)})"
