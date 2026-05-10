@@ -33,6 +33,7 @@ from utils.frontend_utils import calculate_text_similarity
 from utils.gemini_tts_voices import normalize_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
+from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE
 
 # Gemini Live API SDK (startup-time import)
 try:
@@ -59,10 +60,12 @@ def _get_native_default_voice(provider_key: str) -> str:
             return default_voice
         if provider_key != 'step':
             step_cfg = get_native_tts_voice_provider_config('step')
-            return str(step_cfg.get('default_voice') or '').strip()
+            step_default_voice = str(step_cfg.get('default_voice') or '').strip()
+            if step_default_voice:
+                return step_default_voice
     except Exception as exc:
         logger.warning(f"读取 {provider_key} 默认原生音色失败: {exc}")
-    return ''
+    return STEPFUN_TTS_DEFAULT_VOICE
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
 _PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"

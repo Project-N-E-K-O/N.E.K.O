@@ -77,6 +77,7 @@ def test_get_native_voice_catalog_for_ui_shape():
         assert meta["builtin"] is True
         assert "Synth" in meta["prefix"]
         assert name in meta["prefix"]
+        assert meta["display_name"] == name
 
 
 def test_resolve_for_routing_unknown_core_returns_no_native():
@@ -170,6 +171,30 @@ def test_active_realtime_hides_free_provider_on_lanlan_app_route():
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
 
     assert get_active_realtime_native_provider(_CM()) is None
+
+
+def test_active_realtime_hides_free_provider_on_lanlan_app_subdomain():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://edge.lanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://edge.lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider(_CM()) is None
+
+
+def test_active_realtime_does_not_match_lanlan_app_substring():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://notlanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://notlanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider(_CM()) == "free"
 
 
 def test_active_realtime_keeps_free_provider_on_lanlan_tech_route():

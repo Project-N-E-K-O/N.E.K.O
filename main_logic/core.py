@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import urlparse
 
 
 # Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
@@ -2892,34 +2893,40 @@ class LLMSessionManager:
 
     def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
+        normalized_voice_id = (voice_id or "").strip()
         return bool(
             self._is_free_lanlan_app_route(realtime_base_url)
-            and self._is_preset_voice_id(voice_id)
+            and self._is_preset_voice_id(normalized_voice_id)
         )
 
     def _is_free_lanlan_app_route(self, realtime_base_url: str) -> bool:
         """判断当前是否为会强制映射 Leda 的海外免费路由。"""
+        raw_url = str(realtime_base_url or "").strip()
+        parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
+        hostname = (parsed.hostname or "").lower()
         return bool(
             self.core_api_type == "free"
-            and "lanlan.app" in (realtime_base_url or "").lower()
+            and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
         )
 
     def _should_block_free_native_voice(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下屏蔽 StepFun 原生音色，避免选择被强制映射为 Leda。"""
-        if not (voice_id and self._is_free_lanlan_app_route(realtime_base_url)):
+        normalized_voice_id = (voice_id or "").strip()
+        if not (normalized_voice_id and self._is_free_lanlan_app_route(realtime_base_url)):
             return False
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
             "free",
-            voice_id,
+            normalized_voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
         )
         return uses_provider_native_voice
 
     def _should_block_free_voice_for_route(self, voice_id: str, realtime_base_url: str) -> bool:
         """lanlan.app/free 下不下发 free preset 或 StepFun 原生音色。"""
+        normalized_voice_id = (voice_id or "").strip()
         return (
-            self._should_block_free_preset_voice(voice_id, realtime_base_url)
-            or self._should_block_free_native_voice(voice_id, realtime_base_url)
+            self._should_block_free_preset_voice(normalized_voice_id, realtime_base_url)
+            or self._should_block_free_native_voice(normalized_voice_id, realtime_base_url)
         )
 
     def _resolve_native_voice_for_route(self, voice_id: str, realtime_base_url: str) -> tuple[str, bool]:

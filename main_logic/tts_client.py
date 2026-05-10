@@ -27,7 +27,10 @@ from utils.native_voice_registry import (
     get_native_tts_worker,
     register_tts_worker_resolver,
 )
-from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE
+from utils.stepfun_tts_voices import (
+    STEPFUN_TTS_DEFAULT_VOICE,
+    normalize_stepfun_tts_voice,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -812,9 +815,15 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
 
+    voice_id = (voice_id or '').strip()
+
     # 使用配置中的默认 StepFun 音色
     if not voice_id:
         voice_id = STEPFUN_TTS_DEFAULT_VOICE
+    else:
+        normalized_voice_id, voice_recognized = normalize_stepfun_tts_voice(voice_id)
+        if voice_recognized:
+            voice_id = normalized_voice_id
     
     async def async_worker():
         """异步TTS worker主循环"""

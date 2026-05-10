@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from utils.config_manager import ConfigManager
@@ -75,21 +76,28 @@ class NativeVoiceProvider:
 
     def voice_catalog_for_ui(self) -> dict[str, dict[str, str | bool]]:
         """返回角色 UI 需要的音色列表结构。"""
-        def format_prefix(voice_name: str, label: str) -> str:
+        def format_prefix(voice_name: str, group: str, display_name: str) -> str:
             if self.catalog_value_is_display_name:
-                return label
-            return f"{self.catalog_prefix} {voice_name} ({label})"
+                return display_name
+            return f"{self.catalog_prefix} {display_name} ({group})"
 
-        return {
-            voice_name: {
-                "prefix": format_prefix(voice_name, gender),
+        def split_catalog_value(voice_name: str, value: str) -> tuple[str, str]:
+            if self.catalog_value_is_display_name:
+                return "", value or voice_name
+            return value, voice_name
+
+        catalog_for_ui: dict[str, dict[str, str | bool]] = {}
+        for voice_name, catalog_value in self.catalog.items():
+            gender, display_name = split_catalog_value(voice_name, catalog_value)
+            catalog_for_ui[voice_name] = {
+                "prefix": format_prefix(voice_name, gender, display_name),
                 "provider": self.key,
                 "provider_label": self.catalog_prefix,
                 "gender": gender,
+                "display_name": display_name,
                 "builtin": True,
             }
-            for voice_name, gender in self.catalog.items()
-        }
+        return catalog_for_ui
 
     def resolve_for_routing(
         self,
@@ -227,8 +235,13 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
         except Exception:
             base_url = ""
 
+    parsed_url = urlparse(base_url if "://" in base_url else f"//{base_url}")
+    hostname = (parsed_url.hostname or "").lower()
     # lanlan.app 的免费路由会把 Step/free voice_id 映射为固定音色，不能展示原生目录。
-    if str(api_type or '').lower() == 'free' and 'lanlan.app' in base_url.lower():
+    if (
+        str(api_type or '').lower() == 'free'
+        and (hostname == 'lanlan.app' or hostname.endswith('.lanlan.app'))
+    ):
         return None
     return api_type if api_type in _PROVIDERS else None
 

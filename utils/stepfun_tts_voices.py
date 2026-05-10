@@ -13,6 +13,9 @@ from utils.native_voice_registry import (
     register_provider,
 )
 
+FALLBACK_STEPFUN_TTS_DEFAULT_VOICE = "qingchunshaonv"
+FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE = "cixingnansheng"
+
 
 def _load_stepfun_provider_config(provider_key: str) -> dict:
     """从 api_providers.json 读取并规范化阶跃音色 Provider 配置。"""
@@ -55,8 +58,12 @@ def _create_provider(provider_key: str) -> NativeVoiceProvider | None:
 
 _STEP_CONFIG = _load_stepfun_provider_config("step")
 STEPFUN_TTS_VOICE_LABELS: dict[str, str] = _STEP_CONFIG.get('voices') or {}
-STEPFUN_TTS_DEFAULT_VOICE = _STEP_CONFIG.get('default_voice') or ''
-STEPFUN_TTS_DEFAULT_MALE_VOICE = _STEP_CONFIG.get('default_male_voice') or STEPFUN_TTS_DEFAULT_VOICE
+STEPFUN_TTS_DEFAULT_VOICE = _STEP_CONFIG.get('default_voice') or FALLBACK_STEPFUN_TTS_DEFAULT_VOICE
+STEPFUN_TTS_DEFAULT_MALE_VOICE = (
+    _STEP_CONFIG.get('default_male_voice')
+    or FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE
+    or STEPFUN_TTS_DEFAULT_VOICE
+)
 
 STEPFUN_PROVIDER = _create_provider("step")
 FREE_STEPFUN_PROVIDER = _create_provider("free")

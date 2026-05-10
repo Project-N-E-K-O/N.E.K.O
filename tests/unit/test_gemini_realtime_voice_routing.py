@@ -170,7 +170,7 @@ def test_free_native_voice_blocked_on_lanlan_app_route():
     assert (
         LLMSessionManager._should_block_free_voice_for_route(
             mgr,
-            "qingchunshaonv",
+            "  qingchunshaonv  ",
             "wss://lanlan.app/realtime",
         )
         is True
@@ -180,6 +180,14 @@ def test_free_native_voice_blocked_on_lanlan_app_route():
             mgr,
             "qingchunshaonv",
             "wss://lanlan.tech/realtime",
+        )
+        is False
+    )
+    assert (
+        LLMSessionManager._should_block_free_voice_for_route(
+            mgr,
+            "qingchunshaonv",
+            "wss://notlanlan.app/realtime",
         )
         is False
     )
