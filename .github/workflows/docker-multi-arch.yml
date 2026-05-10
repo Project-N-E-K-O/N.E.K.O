@@ -33,6 +33,14 @@ on:
         required: false
         default: false
 
+# Concurrency configuration: queue Docker builds to avoid parallel runs
+# - Same group for all triggers to ensure serialization
+# - cancel-in-progress: false to wait for current build to complete
+# - PR builds use separate group to not block main branch builds
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && 'main' || github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY_GHCR: ghcr.io
   IMAGE_NAME: project-n-e-k-o/n.e.k.o
