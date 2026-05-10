@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="ui.page.title">喵喵控制中心</title>
+    <style>
+        :root { --primary: #fb7185; --primary-light: #fff1f2; --secondary: #818cf8; --bg: #fff5f7; --card-bg: #ffffff; --text-main: #4b5563; --text-sub: #9ca3af; --border: #fee2e2; --input-bg: #fff9fa; --radius-lg: 32px; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body, html { margin: 0; padding: 0; font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text-main); overflow-x: hidden; }
+        #onboarding { position: fixed; inset: 0; z-index: 100; background: #fff; display: none; align-items: center; justify-content: center; transition: 0.8s cubic-bezier(0.85, 0, 0.15, 1); }
+        #onboarding.hidden { transform: translateY(-100%); pointer-events: none; }
+        .guide-container { width: 100%; max-width: 400px; padding: 40px; text-align: center; position: relative; }
+        .step-card { display: none; animation: slideIn 0.5s ease-out forwards; }
+        .step-card.active { display: block; }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
+        .guide-icon { font-size: 60px; margin-bottom: 20px; display: block; }
+        .guide-title { font-size: 24px; font-weight: 900; color: var(--primary); margin-bottom: 12px; }
+        .guide-desc { font-size: 15px; color: var(--text-sub); line-height: 1.6; margin-bottom: 30px; }
+        .guide-footer { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+        .btn-next, .primary-action, .secondary-action, .ghost-action { padding: 14px 18px; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease; }
+        .btn-next, .primary-action { background: var(--primary); color: white; box-shadow: 0 8px 0 #e11d48; }
+        .secondary-action { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 2px var(--border); }
+        .ghost-action { background: white; color: var(--secondary); box-shadow: inset 0 0 0 2px #c7d2fe; }
+        .btn-next:active, .primary-action:active { transform: translateY(4px); box-shadow: 0 4px 0 #e11d48; }
+        .secondary-action:active, .ghost-action:active { transform: translateY(2px); }
+        .btn-next:disabled, .primary-action:disabled, .secondary-action:disabled, .ghost-action:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
+        .btn-skip { color: var(--text-sub); font-size: 13px; cursor: pointer; font-weight: 600; text-decoration: underline; }
+        .step-dots { display: flex; gap: 8px; justify-content: center; margin-top: 30px; }
+        .dot { width: 8px; height: 8px; border-radius: 4px; background: var(--border); transition: 0.3s; }
+        .dot.active { width: 24px; background: var(--primary); }
+        .app-container { width: 100%; max-width: 560px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+        .page-title { font-size: 28px; font-weight: 900; color: var(--primary); text-align: center; margin: 10px 0; }
+        .guide-panel, .probability-section, .status-card, .config-section, .manager-container, .entity-form-card { background: var(--card-bg); border-radius: var(--radius-lg); padding: 24px; border: 2px solid var(--border); }
+        .guide-panel { display: flex; flex-direction: column; gap: 14px; }
+        .guide-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+        .guide-title-inline { font-size: 18px; font-weight: 900; color: var(--primary); }
+        .guide-step-list { display: grid; gap: 10px; }
+        .guide-step-item { background: var(--primary-light); border-radius: 18px; padding: 14px 16px; border: 2px solid transparent; transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease; cursor: pointer; }
+        .guide-step-item:hover { transform: translateY(-2px); }
+        .guide-step-item.is-complete { background: #ecfdf5; border-color: #86efac; }
+        .guide-step-item.is-pending { background: #fff7ed; border-color: #fdba74; }
+        .guide-step-item.is-complete .guide-step-name { color: #166534; }
+        .guide-step-item.is-pending .guide-step-name { color: #9a3412; }
+        .guide-step-badge { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; min-width: 72px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+        .guide-step-item.is-complete .guide-step-badge { background: #dcfce7; color: #166534; }
+        .guide-step-item.is-pending .guide-step-badge { background: #ffedd5; color: #9a3412; }
+        .guide-step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+        .guide-step-index { font-size: 11px; font-weight: 800; color: var(--secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+        .guide-step-name { font-weight: 800; margin-bottom: 4px; }
+        .guide-step-desc { color: var(--text-sub); font-size: 13px; line-height: 1.5; }
+        .probability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+        .field-hint { margin-top: 6px; color: var(--text-sub); font-size: 12px; line-height: 1.4; }
+        .inline-note { color: var(--text-sub); font-size: 13px; line-height: 1.5; }
+        @media (max-width: 640px) { .probability-grid, .status-grid { grid-template-columns: 1fr; } }
+        .status-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .status-title { font-size: 18px; font-weight: 900; color: var(--primary); }
+        .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: var(--primary-light); color: var(--primary); font-size: 13px; font-weight: 700; }
+        .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .status-item { background: var(--primary-light); border-radius: 18px; padding: 14px; }
+        .status-label { display: block; font-size: 12px; color: var(--text-sub); margin-bottom: 6px; }
+        .status-value { font-weight: 800; word-break: break-word; }
+        .status-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+        .config-gate { display: none; background: #fff7ed; border: 2px solid #fdba74; color: #9a3412; border-radius: 20px; padding: 16px 18px; }
+        .config-gate.show { display: block; }
+        .config-gate-title { font-weight: 900; margin-bottom: 6px; }
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-radius: 18px; background: var(--primary-light); margin-bottom: 18px; }
+        .toggle-copy { display: flex; flex-direction: column; gap: 4px; }
+        .toggle-label { font-size: 13px; font-weight: 800; }
+        .toggle-hint { font-size: 12px; color: var(--text-sub); }
+        .toggle-control { width: 52px; height: 30px; accent-color: var(--primary); }
+        .entity-form-card { display: none; }
+        .entity-form-card.show { display: block; }
+        .entity-form-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .entity-form-title { font-size: 18px; font-weight: 900; color: var(--primary); }
+        .config-label { font-size: 11px; font-weight: 800; color: var(--secondary); text-transform: uppercase; margin-bottom: 20px; display: block; letter-spacing: 1px; }
+        .form-group { margin-bottom: 18px; }
+        .field-label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+        .input-control { width: 100%; padding: 14px 18px; border-radius: 18px; border: 2px solid var(--border); background: var(--input-bg); font-family: monospace; }
+        .input-control:focus { outline: none; border-color: var(--primary); background: #fff; }
+        .save-row { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+        .save-row > button { min-width: 132px; }
+        .tab-switcher { display: flex; background: var(--primary-light); margin-bottom: 14px; padding: 6px; border-radius: 20px; }
+        .tab-btn { flex: 1; padding: 12px; border: none; border-radius: 16px; background: transparent; color: var(--text-sub); font-weight: 700; cursor: pointer; }
+        .tab-btn.active { background: white; color: var(--primary); box-shadow: 0 4px 12px rgba(251,113,133,0.1); }
+        .list-toolbar { padding-bottom: 12px; display: flex; justify-content: flex-end; }
+        .btn-add-entity { padding: 14px 18px; background: var(--primary); color: white; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; box-shadow: 0 8px 0 #e11d48; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+        .btn-add-entity:active { transform: translateY(4px); box-shadow: 0 4px 0 #e11d48; }
+        .list-content { min-height: 100px; }
+        .entity-item { padding: 14px; border-radius: 20px; display: flex; align-items: center; gap: 14px; background: var(--primary-light); margin-bottom: 8px; position: relative; }
+        .avatar-circle { width: 40px; height: 40px; border-radius: 14px; background: white; color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 800; }
+        .item-meta { display: flex; flex-direction: column; gap: 4px; }
+        .item-name { font-weight: 800; }
+        .item-sub { color: var(--text-sub); font-size: 12px; }
+        .btn-del { position: absolute; right: 16px; color: #fda4af; cursor: pointer; font-weight: 900; }
+        .toast { position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 10px 24px; border-radius: 50px; font-size: 13px; opacity: 0; transition: 0.3s; z-index: 200; }
+        .toast.show { opacity: 1; }
+        .empty-state { padding: 20px; text-align: center; color: var(--text-sub); }
+    </style>
+</head>
+<body>
+    <div id="onboarding">
+        <div class="guide-container">
+            <div class="step-card active" id="step1">
+                <span class="guide-icon">🧩</span>
+                <h2 class="guide-title" data-i18n="ui.onboarding.step1.title">启动 NapCat</h2>
+                <p class="guide-desc" data-i18n="ui.onboarding.step1.desc">先启动 NapCat，让本地 QQ OneBot 服务进入可连接状态。</p>
+                <div class="guide-footer">
+                    <button class="btn-next" onclick="nextStep(2)" data-i18n="ui.onboarding.step1.next">下一步</button>
+                    <span class="btn-skip" onclick="enterApp()" data-i18n="ui.onboarding.step1.skip">跳过引导</span>
+                </div>
+            </div>
+            <div class="step-card" id="step2">
+                <span class="guide-icon">🔌</span>
+                <h2 class="guide-title" data-i18n="ui.onboarding.step2.title">配置 NapCat 服务</h2>
+                <p class="guide-desc" data-i18n="ui.onboarding.step2.desc">填写 OneBot 地址和访问令牌，只要这两项不为空就视为已完成。</p>
+                <div class="guide-footer">
+                    <button class="btn-next" onclick="nextStep(3)" data-i18n="ui.onboarding.step2.next">下一步</button>
+                    <span class="btn-skip" onclick="enterApp()" data-i18n="ui.onboarding.step2.skip">跳过引导</span>
+                </div>
+            </div>
+            <div class="step-card" id="step3">
+                <span class="guide-icon">👥</span>
+                <h2 class="guide-title" data-i18n="ui.onboarding.step3.title">添加联系人</h2>
+                <p class="guide-desc" data-i18n="ui.onboarding.step3.desc">至少添加一个信任用户；检测到 trusted_users 不为空时就显示已完成。</p>
+                <div class="guide-footer">
+                    <button class="btn-next" onclick="nextStep(4)" data-i18n="ui.onboarding.step3.next">下一步</button>
+                    <span class="btn-skip" onclick="enterApp()" data-i18n="ui.onboarding.step3.skip">跳过引导</span>
+                </div>
+            </div>
+            <div class="step-card" id="step4">
+                <span class="guide-icon">💬</span>
+                <h2 class="guide-title" data-i18n="ui.onboarding.step4.title">启动自动回复</h2>
+                <p class="guide-desc" data-i18n="ui.onboarding.step4.desc">点击启用自动回复后，该步骤会写入配置并显示为已完成。</p>
+                <div class="guide-footer">
+                    <button class="btn-next" onclick="finishOnboarding()" data-i18n="ui.onboarding.step4.next">完成引导</button>
+                </div>
+            </div>
+            <div class="step-dots">
+                <div class="dot active" id="dot1"></div>
+                <div class="dot" id="dot2"></div>
+                <div class="dot" id="dot3"></div>
+                <div class="dot" id="dot4"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <header><h1 class="page-title" data-i18n="ui.page.title">控制中心</h1></header>
+        <section class="guide-panel">
+            <div class="guide-header">
+                <span class="guide-title-inline" data-i18n="ui.guide.title">快速引导</span>
+                <button class="ghost-action" type="button" onclick="reopenOnboarding()" data-i18n="ui.guide.replay">重新播放引导</button>
+            </div>
+            <p class="inline-note" data-i18n="ui.guide.summary">按顺序完成启动 NapCat、配置 NapCat 服务、添加联系人、启动自动回复。</p>
+            <div class="guide-step-list">
+                <button class="guide-step-item" id="guide-step-napcat" type="button">
+                    <div class="guide-step-head">
+                        <div class="guide-step-index" data-i18n="ui.guide.step1.index">STEP 1</div>
+                        <span class="guide-step-badge" id="guide-step-napcat-badge" data-i18n="ui.guide.pending">未完成</span>
+                    </div>
+                    <div class="guide-step-name" data-i18n="ui.guide.step1.title">启动 NapCat</div>
+                    <div class="guide-step-desc" data-i18n="ui.guide.step1.desc">先启动 NapCat，让本地 QQ OneBot 服务进入可连接状态。</div>
+                </button>
+                <button class="guide-step-item" id="guide-step-settings" type="button">
+                    <div class="guide-step-head">
+                        <div class="guide-step-index" data-i18n="ui.guide.step2.index">STEP 2</div>
+                        <span class="guide-step-badge" id="guide-step-settings-badge" data-i18n="ui.guide.pending">未完成</span>
+                    </div>
+                    <div class="guide-step-name" data-i18n="ui.guide.step2.title">配置 NapCat 服务</div>
+                    <div class="guide-step-desc" data-i18n="ui.guide.step2.desc">填写 OneBot 地址和访问令牌，只要这两项不为空就视为已完成。</div>
+                </button>
+                <button class="guide-step-item" id="guide-step-contacts" type="button">
+                    <div class="guide-step-head">
+                        <div class="guide-step-index" data-i18n="ui.guide.step3.index">STEP 3</div>
+                        <span class="guide-step-badge" id="guide-step-contacts-badge" data-i18n="ui.guide.pending">未完成</span>
+                    </div>
+                    <div class="guide-step-name" data-i18n="ui.guide.step3.title">添加联系人</div>
+                    <div class="guide-step-desc" data-i18n="ui.guide.step3.desc">至少添加一个信任用户；检测到 trusted_users 不为空时就显示已完成。</div>
+                </button>
+                <button class="guide-step-item" id="guide-step-runtime" type="button">
+                    <div class="guide-step-head">
+                        <div class="guide-step-index" data-i18n="ui.guide.step4.index">STEP 4</div>
+                        <span class="guide-step-badge" id="guide-step-runtime-badge" data-i18n="ui.guide.pending">未完成</span>
+                    </div>
+                    <div class="guide-step-name" id="guide-step-runtime-title" data-i18n="ui.guide.step4.title">启动自动回复</div>
+                    <div class="guide-step-desc" id="guide-step-runtime-desc" data-i18n="ui.guide.step4.desc">点击启用自动回复后，该步骤会写入配置并显示为已完成。</div>
+                </button>
+            </div>
+        </section>
+        <section class="probability-section">
+            <span class="config-label" data-i18n="ui.probability.section">回复概率设置</span>
+            <p class="inline-note" data-i18n="ui.probability.summary">这两个概率只影响未来消息的触发行为，取值范围为 0 到 1。</p>
+            <div class="probability-grid">
+                <div class="form-group">
+                    <label class="field-label" data-i18n="ui.probability.normal.label">普通转发概率</label>
+                    <input type="number" id="cfg-normal-probability" class="input-control" min="0" max="1" step="0.01">
+                    <div class="field-hint" data-i18n="ui.probability.normal.hint">普通用户 / 普通群消息命中后，会按这个概率转发给主人。</div>
+                </div>
+                <div class="form-group">
+                    <label class="field-label" data-i18n="ui.probability.truth.label">开放群回复概率</label>
+                    <input type="number" id="cfg-truth-probability" class="input-control" min="0" max="1" step="0.01">
+                    <div class="field-hint" data-i18n="ui.probability.truth.hint">开放群里未 @ 机器人时，会按这个概率主动回复。</div>
+                </div>
+            </div>
+        </section>
+        <section class="status-card">
+            <div class="status-head">
+                <span class="status-title" data-i18n="ui.status.title">运行状态</span>
+                <span id="login-status-pill" class="status-pill" data-i18n="ui.status.loading">加载中</span>
+            </div>
+            <div class="status-grid">
+                <div class="status-item"><span class="status-label" data-i18n="ui.status.napcat_pid">NapCat PID</span><div id="status-self-id" class="status-value">-</div></div>
+                <div class="status-item"><span class="status-label" data-i18n="ui.status.onebot">OneBot</span><div id="status-onebot" class="status-value">-</div></div>
+                <div class="status-item"><span class="status-label" data-i18n="ui.status.users">信任用户</span><div id="status-users" class="status-value">0</div></div>
+                <div class="status-item"><span class="status-label" data-i18n="ui.status.groups">信任群聊</span><div id="status-groups" class="status-value">0</div></div>
+            </div>
+            <div class="form-group" id="qrcode-card">
+                <label class="field-label" data-i18n="ui.qrcode.title">登录二维码</label>
+                <div class="field-hint" data-i18n="ui.qrcode.hint">启动 NapCat 后会在 NapCat.Shell\cache\qrcode.png 生成登录二维码。</div>
+                <img id="qrcode-image" alt="QR Code" style="display:none;max-width:220px;border-radius:18px;border:2px solid var(--border);background:#fff;padding:8px;margin-top:12px;" />
+                <div id="qrcode-empty" class="empty-state" data-i18n="ui.qrcode.empty">暂未检测到二维码，请先启动 NapCat。</div>
+            </div>
+        </section>
+        <section class="config-section" id="config-section">
+            <span class="config-label" data-i18n="ui.config.section">OneBot 服务配置</span>
+            <div class="form-group"><label class="field-label" data-i18n="ui.config.url.label">通信地址 (URL)</label><input type="text" id="cfg-url" class="input-control" data-i18n-placeholder="ui.config.url.placeholder" placeholder="ws://127.0.0.1:3001"></div>
+            <div class="form-group"><label class="field-label" data-i18n="ui.config.token.label">访问令牌 (TOKEN)</label><input type="password" id="cfg-token" class="input-control" data-i18n-placeholder="ui.config.token.placeholder" placeholder=""></div>
+            <div class="form-group"><label class="field-label" data-i18n="ui.config.path.label">执行目录 (PATH)</label><input type="text" id="cfg-path" class="input-control" data-i18n-placeholder="ui.config.path.placeholder" placeholder=""></div>
+            <div class="form-group">
+                <label class="field-label" data-i18n="ui.config.show_napcat_window.label">NapCat 启动窗口</label>
+                <label style="display:flex;align-items:center;gap:10px;font-weight:700;">
+                    <input type="checkbox" id="cfg-show-napcat-window" />
+                    <span data-i18n="ui.config.show_napcat_window.hint">勾选为前台启动（显示 NapCat 控制台），取消为后台启动。</span>
+                </label>
+            </div>
+            <div class="save-row">
+                <button class="primary-action" id="save-settings-btn" data-i18n="ui.actions.save_settings">保存设置</button>
+            </div>
+        </section>
+        <section class="entity-form-card" id="entity-form-card">
+            <div class="entity-form-head">
+                <span class="entity-form-title" id="entity-form-title" data-i18n="ui.entity_form.user.title">添加用户</span>
+                <button class="ghost-action" type="button" id="entity-form-cancel-top" data-i18n="ui.actions.cancel">取消</button>
+            </div>
+            <div class="form-group">
+                <label class="field-label" id="entity-number-label" data-i18n="ui.entity_form.number">号码</label>
+                <input type="text" id="entity-number" class="input-control">
+            </div>
+            <div class="form-group">
+                <label class="field-label" id="entity-level-label" data-i18n="ui.entity_form.level">级别</label>
+                <select id="entity-level" class="input-control"></select>
+            </div>
+            <div class="form-group" id="entity-nickname-group">
+                <label class="field-label" data-i18n="ui.entity_form.nickname">昵称</label>
+                <input type="text" id="entity-nickname" class="input-control">
+            </div>
+            <div class="save-row">
+                <button class="ghost-action" type="button" id="entity-form-cancel" data-i18n="ui.actions.cancel">取消</button>
+                <button class="primary-action" type="button" id="entity-form-save" data-i18n="ui.actions.save">保存</button>
+            </div>
+        </section>
+        <section class="manager-container">
+            <div class="tab-switcher">
+                <button id="tab-users" class="tab-btn active" onclick="switchTab('users')" data-i18n="ui.tabs.users">小鱼干用户</button>
+                <button id="tab-groups" class="tab-btn" onclick="switchTab('groups')" data-i18n="ui.tabs.groups">猫圈群聊</button>
+            </div>
+            <div class="list-toolbar">
+                <button class="btn-add-entity" onclick="addNewEntity()"><span data-i18n="ui.actions.add">添加</span></button>
+            </div>
+            <div id="list-container" class="list-content"></div>
+        </section>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <script src="./i18n.js"></script>
+    <script>
+        const pluginId = 'qq_auto_reply';
+        const RUNS_URL = '/runs';
+
+        async function callPlugin(entry, args = {}) {
+            const resp = await fetch(RUNS_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plugin_id: pluginId, entry_id: entry, args })
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const { run_id, id } = await resp.json();
+            const runId = run_id || id;
+            if (!runId) throw new Error('未获取到 run_id');
+
+            const deadline = Date.now() + 20000;
+            let delay = 300;
+            while (Date.now() < deadline) {
+                const poll = await fetch(`${RUNS_URL}/${runId}`);
+                if (!poll.ok) continue;
+                const rec = await poll.json();
+                if (rec.status === 'succeeded') {
+                    const exp = await fetch(`${RUNS_URL}/${runId}/export`);
+                    if (!exp.ok) return {};
+                    const { items = [] } = await exp.json();
+                    const item = items.find(i => i.type === 'json' && i.json) || items[0];
+                    if (!item) return {};
+                    let raw = item.json || {};
+                    while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
+                        raw = raw.data;
+                    }
+                    return raw;
+                }
+                if (['failed', 'canceled', 'timeout'].includes(rec.status)) {
+                    throw new Error(rec.error?.message || rec.message || rec.status);
+                }
+            }
+            throw new Error('调用超时');
+        }
+        let state = {
+            config: {
+                url: '',
+                token: '',
+                path: '',
+                showOnboarding: false,
+                guideStepConfigDone: false,
+                guideStepSettingsDone: false,
+                guideStepRuntimeDone: false,
+                normalRelayProbability: 0.1,
+                truthReplyProbability: 0.1,
+            },
+            users: [],
+            groups: [],
+            currentTab: 'users',
+            dashboard: null,
+            entityFormMode: null,
+        };
+
+        function nextStep(stepNum) {
+            document.querySelectorAll('.step-card').forEach(card => card.classList.remove('active'));
+            document.querySelectorAll('.dot').forEach(dot => dot.classList.remove('active'));
+            document.getElementById('step' + stepNum).classList.add('active');
+            document.getElementById('dot' + stepNum).classList.add('active');
+        }
+
+        async function initConfig() {
+            try {
+                const payload = await callPlugin('init_config', {});
+                applyDashboardState(payload);
+            } catch (error) {
+                showToast(error.message || t('ui.toast.load_failed', '加载失败'));
+                throw error;
+            }
+        }
+
+        async function finishOnboarding() {
+            try {
+                await callPlugin('save_settings', { show_onboarding: false, guide_step_config_done: true });
+                await reloadDashboard();
+            } catch (error) {
+                showToast(error.message || t('ui.toast.save_failed', '保存失败'));
+                return;
+            }
+            const onboarding = document.getElementById('onboarding');
+            onboarding.classList.add('hidden');
+            onboarding.style.display = 'none';
+            updateConfigGate();
+        }
+
+        async function enterApp() {
+            await finishOnboarding();
+        }
+
+        function updateConfigGate() {
+            return;
+        }
+
+        function reopenOnboarding() {
+            document.getElementById('onboarding').classList.remove('hidden');
+            document.getElementById('onboarding').style.display = 'flex';
+            nextStep(1);
+        }
+
+        function uiT(key, fallback) {
+            return window.I18n && typeof window.I18n.t === 'function'
+                ? window.I18n.t(key, fallback)
+                : (fallback || key);
+        }
+
+        function uiTf(key, fallback, values = {}) {
+            const template = uiT(key, fallback);
+            return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+                Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+            ));
+        }
+
+        function t(key, fallback) { return uiT(key, fallback); }
+        function showToast(message) {
+            const el = document.getElementById('toast');
+            el.textContent = message;
+            el.classList.add('show');
+            window.clearTimeout(showToast._timer);
+            showToast._timer = window.setTimeout(() => el.classList.remove('show'), 2400);
+        }
+        
+        function updateGuideStep(id, completed) {
+            const card = document.getElementById(`guide-step-${id}`);
+            const badge = document.getElementById(`guide-step-${id}-badge`);
+            if (!card || !badge) return;
+            card.classList.toggle('is-complete', completed);
+            card.classList.toggle('is-pending', !completed);
+            badge.textContent = completed ? t('ui.guide.completed', '已完成') : t('ui.guide.pending', '未完成');
+        }
+
+        function refreshGuideProgress() {
+            const guide = (state.dashboard && state.dashboard.guide) || {};
+            const runtimeRunning = !!(state.dashboard && state.dashboard.runtime && state.dashboard.runtime.auto_reply_running);
+            const runtimeDone = !!guide.step_auto_reply_done;
+            updateGuideStep('napcat', !!guide.step_napcat_done);
+            updateGuideStep('settings', !!guide.step_service_done);
+            updateGuideStep('contacts', !!guide.step_contacts_done);
+            updateGuideStep('runtime', runtimeDone);
+            const runtimeTitle = document.getElementById('guide-step-runtime-title');
+            const runtimeDesc = document.getElementById('guide-step-runtime-desc');
+            if (runtimeTitle) {
+                runtimeTitle.textContent = runtimeRunning ? t('ui.guide.step4.done_title', '停止自动回复') : t('ui.guide.step4.title', '启动自动回复');
+            }
+            if (runtimeDesc) {
+                runtimeDesc.textContent = runtimeRunning ? t('ui.guide.step4.done_desc', '点击后会停止自动回复，并把该步骤切回未完成状态。') : t('ui.guide.step4.desc', '点击启用自动回复后，该步骤会写入配置并显示为已完成。');
+            }
+        }
+
+        function applyDashboardState(payload) {
+            const raw = payload || {};
+            const data = raw.value || raw.data || raw;
+            const settings = data.settings || {};
+            const permissions = data.permissions || {};
+            console.log('[qq_auto_reply debug] applyDashboardState payload =', data);
+            console.log('[qq_auto_reply debug] applyDashboardState settings =', settings);
+            console.log('[qq_auto_reply debug] applyDashboardState permissions =', permissions);
+            state.dashboard = data;
+            state.users = Array.isArray(permissions.trusted_users) ? permissions.trusted_users : [];
+            state.groups = Array.isArray(permissions.trusted_groups) ? permissions.trusted_groups : [];
+            state.config.url = String(settings.onebot_url || '');
+            state.config.path = String(settings.napcat_directory || '');
+            state.config.showOnboarding = Boolean(settings.show_onboarding ?? true);
+            state.config.guideStepConfigDone = Boolean(settings.guide_step_config_done ?? false);
+            state.config.guideStepSettingsDone = Boolean(settings.guide_step_settings_done ?? false);
+            state.config.guideStepRuntimeDone = Boolean(settings.guide_step_runtime_done ?? false);
+            state.config.normalRelayProbability = Number(settings.normal_relay_probability ?? 0.1);
+            state.config.truthReplyProbability = Number(settings.truth_reply_probability ?? 0.1);
+            document.getElementById('cfg-url').value = state.config.url;
+            console.log('[qq_auto_reply debug] cfg-url after set =', document.getElementById('cfg-url').value);
+            document.getElementById('cfg-token').value = String(settings.token || '');
+            console.log('[qq_auto_reply debug] cfg-token after set =', document.getElementById('cfg-token').value);
+            document.getElementById('cfg-path').value = state.config.path;
+            document.getElementById('cfg-show-napcat-window').checked = Boolean(settings.show_napcat_window ?? true);
+            console.log('[qq_auto_reply debug] cfg-path after set =', document.getElementById('cfg-path').value);
+            document.getElementById('cfg-normal-probability').value = Number.isFinite(state.config.normalRelayProbability) ? String(state.config.normalRelayProbability) : '0.1';
+            document.getElementById('cfg-truth-probability').value = Number.isFinite(state.config.truthReplyProbability) ? String(state.config.truthReplyProbability) : '0.1';
+            const runtime = data.runtime || {};
+            document.getElementById('status-self-id').textContent = runtime.napcat_pid ? String(runtime.napcat_pid) : '-';
+            document.getElementById('status-onebot').textContent = data.runtime && data.runtime.onebot_connected ? t('ui.status.connected', '已连接') : t('ui.status.disconnected', '未连接');
+            const qrcodeImage = document.getElementById('qrcode-image');
+            const qrcodeEmpty = document.getElementById('qrcode-empty');
+            const qrcodeUrl = runtime.qrcode_url || '';
+            if (qrcodeImage && qrcodeEmpty) {
+                if (qrcodeUrl) {
+                    qrcodeImage.src = `${qrcodeUrl}${qrcodeUrl.includes('?') ? '&' : '?'}_ts=${Date.now()}`;
+                    qrcodeImage.style.display = 'block';
+                    qrcodeEmpty.style.display = 'none';
+                } else {
+                    qrcodeImage.removeAttribute('src');
+                    qrcodeImage.style.display = 'none';
+                    qrcodeEmpty.style.display = 'block';
+                }
+            }
+            document.getElementById('status-users').textContent = String(state.users.length);
+            document.getElementById('status-groups').textContent = String(state.groups.length);
+            const loginStatus = data.login && data.login.status ? data.login.status : 'offline';
+            document.getElementById('login-status-pill').textContent = loginStatus === 'online' ? uiT('ui.status.online', '在线') : (loginStatus === 'error' ? uiT('ui.status.error', '异常') : uiT('ui.status.offline', '离线'));
+            updateConfigGate();
+            refreshGuideProgress();
+            renderList();
+            console.log('[qq_auto_reply debug] onboarding desired visible =', state.config.showOnboarding);
+            console.log('[qq_auto_reply debug] onboarding display after apply =', document.getElementById('onboarding').style.display);
+        }
+        function scrollToConfigSection() {
+            document.getElementById('config-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function focusAddUser() {
+            state.currentTab = 'users';
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tab-users')?.classList.add('active');
+            renderList();
+            openEntityForm('users');
+            document.getElementById('entity-form-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function openEntityForm(mode) {
+            state.entityFormMode = mode;
+            const isUser = mode === 'users';
+            document.getElementById('entity-form-card').classList.add('show');
+            document.getElementById('entity-form-title').textContent = isUser ? t('ui.entity_form.user.title', '添加用户') : t('ui.entity_form.group.title', '添加群聊');
+            document.getElementById('entity-number-label').textContent = isUser ? t('ui.entity_form.user.number', '号码') : t('ui.entity_form.group.number', '号码');
+            document.getElementById('entity-level-label').textContent = t('ui.entity_form.level', '级别');
+            document.getElementById('entity-number').value = '';
+            document.getElementById('entity-nickname').value = '';
+            document.getElementById('entity-nickname-group').style.display = isUser ? 'block' : 'none';
+            const levelSelect = document.getElementById('entity-level');
+            const options = isUser
+                ? [['admin', 'admin'], ['trusted', 'trusted'], ['normal', 'normal']]
+                : [['trusted', 'trusted'], ['open', 'open'], ['normal', 'normal']];
+            levelSelect.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
+        }
+
+        function closeEntityForm() {
+            state.entityFormMode = null;
+            document.getElementById('entity-form-card').classList.remove('show');
+        }
+
+        function switchTab(tabId) {
+            state.currentTab = tabId;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tab-' + tabId).classList.add('active');
+            renderList();
+        }
+        function renderList() {
+            const container = document.getElementById('list-container');
+            const items = state.currentTab === 'users' ? state.users : state.groups;
+            if (!items.length) {
+                container.innerHTML = `<div class="empty-state">${t('ui.empty.no_items', '暂无数据')}</div>`;
+                return;
+            }
+            container.innerHTML = items.map((item, index) => {
+                const name = state.currentTab === 'users' ? (item.nickname || item.qq || t('ui.defaults.user', '喵呜管理员')) : (item.group_id || t('ui.defaults.group', '核心猫草群'));
+                const sub = state.currentTab === 'users' ? `${item.level || ''}${item.qq ? ` · ${item.qq}` : ''}` : `${item.level || ''}${item.group_id ? ` · ${item.group_id}` : ''}`;
+                return `<div class="entity-item"><div class="avatar-circle">${String(name).charAt(0).toUpperCase()}</div><div class="item-meta"><span class="item-name">${name}</span><span class="item-sub">${sub}</span></div><span class="btn-del" onclick="deleteItem(${index})">✕</span></div>`;
+            }).join('');
+        }
+        function validateProbability(rawValue, key) {
+            const value = Number(rawValue);
+            if (!Number.isFinite(value) || value < 0 || value > 1) {
+                throw new Error(t(key, '概率必须在 0 到 1 之间'));
+            }
+            return value;
+        }
+
+        function saveSettings() {
+            return (async () => {
+                try {
+                    const normalRelayProbability = validateProbability(document.getElementById('cfg-normal-probability').value, 'ui.probability.normal.invalid');
+                    const truthReplyProbability = validateProbability(document.getElementById('cfg-truth-probability').value, 'ui.probability.truth.invalid');
+                    await callPlugin('save_settings', {
+                        onebot_url: document.getElementById('cfg-url').value.trim(),
+                        token: document.getElementById('cfg-token').value,
+                        napcat_directory: document.getElementById('cfg-path').value.trim(),
+                        show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
+                        guide_step_settings_done: true,
+                        normal_relay_probability: normalRelayProbability,
+                        truth_reply_probability: truthReplyProbability
+                    });
+                    await reloadDashboard();
+                    showToast(t('ui.toast.saved', '设置已保存'));
+                    return true;
+                } catch (error) {
+                    showToast(error.message || t('ui.toast.save_failed', '保存失败'));
+                    return false;
+                }
+            })();
+        }
+        async function refreshContacts() {
+            try {
+                const refreshed = await callPlugin('refresh_actual_contacts', {});
+                applyDashboardState(refreshed);
+                showToast(t('ui.toast.refreshed', '联系人已刷新'));
+            } catch (error) { showToast(error.message || t('ui.toast.refresh_failed', '刷新失败')); }
+        }
+        async function reloadDashboard() {
+            const payload = await callPlugin('get_dashboard_state', {});
+            applyDashboardState(payload);
+            return payload;
+        }
+
+        async function bootstrapDashboard() {
+            try {
+                await reloadDashboard();
+            } catch (error) { showToast(error.message || t('ui.toast.load_failed', '加载失败')); }
+        }
+        function addNewEntity() {
+            openEntityForm(state.currentTab);
+        }
+
+        async function submitEntityForm() {
+            const number = document.getElementById('entity-number').value.trim();
+            const level = document.getElementById('entity-level').value;
+            const nickname = document.getElementById('entity-nickname').value.trim();
+            if (!number) {
+                showToast(t('ui.entity_form.required', '请先填写号码'));
+                return;
+            }
+            if (state.entityFormMode === 'users') {
+                await saveUser(number, level, nickname);
+            } else if (state.entityFormMode === 'groups') {
+                await saveGroup(number, level);
+            }
+        }
+
+        async function saveUser(qqNumber, level, nickname = '') {
+            try {
+                await callPlugin('add_trusted_user', { qq_number: qqNumber, level, nickname });
+                await reloadDashboard();
+                closeEntityForm();
+                showToast(t('ui.toast.saved', '设置已保存'));
+            } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
+        }
+        async function saveGroup(groupId, level) {
+            try {
+                await callPlugin('add_trusted_group', { group_id: groupId, level });
+                await reloadDashboard();
+                closeEntityForm();
+                showToast(t('ui.toast.saved', '设置已保存'));
+            } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
+        }
+        async function deleteItem(index) {
+            try {
+                const items = state.currentTab === 'users' ? state.users : state.groups;
+                const item = items[index];
+                if (!item) return;
+                if (state.currentTab === 'users') {
+                    await callPlugin('remove_trusted_user', { qq_number: item.qq });
+                } else {
+                    await callPlugin('remove_trusted_group', { group_id: item.group_id });
+                }
+                await reloadDashboard();
+                showToast(t('ui.toast.saved', '设置已保存'));
+            } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
+        }
+        document.getElementById('guide-step-napcat').addEventListener('click', () => {
+            showToast(t('ui.toast.start_napcat_manual', '请先手动启动 NapCat，再回到这里继续配置。'));
+        });
+        document.getElementById('guide-step-settings').addEventListener('click', () => {
+            scrollToConfigSection();
+        });
+        document.getElementById('guide-step-contacts').addEventListener('click', () => {
+            focusAddUser();
+        });
+        document.getElementById('guide-step-runtime').addEventListener('click', async () => {
+            const runtimeRunning = !!(state.dashboard && state.dashboard.runtime && state.dashboard.runtime.auto_reply_running);
+            try {
+                if (runtimeRunning) {
+                    await callPlugin('stop_auto_reply', {});
+                    await callPlugin('save_settings', { guide_step_runtime_done: false });
+                    await reloadDashboard();
+                    showToast(t('ui.toast.stopped', '自动回复已停止'));
+                } else {
+                    await callPlugin('start_auto_reply', {});
+                    await callPlugin('save_settings', { guide_step_runtime_done: true });
+                    await reloadDashboard();
+                    showToast(t('ui.toast.started', '自动回复已启动'));
+                }
+            } catch (error) {
+                showToast(error.message || t('ui.toast.start_failed', '启动失败'));
+            }
+        });
+        document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
+        document.getElementById('entity-form-save').addEventListener('click', submitEntityForm);
+        document.getElementById('entity-form-cancel').addEventListener('click', closeEntityForm);
+        document.getElementById('entity-form-cancel-top').addEventListener('click', closeEntityForm);
+        window.addEventListener('qq-auto-reply-i18n-refreshed', (event) => {
+            console.log('[qq_auto_reply i18n debug] qq-auto-reply-i18n-refreshed', event.detail);
+            if (state.dashboard) {
+                applyDashboardState(state.dashboard);
+            }
+        });
+        window.addEventListener('localechange', (event) => {
+            console.log('[qq_auto_reply i18n debug] localechange received', event.detail, {
+                documentLang: document.documentElement.lang,
+                search: location.search,
+                localStorageLocale: (() => { try { return localStorage.getItem('locale'); } catch { return null; } })(),
+            });
+            if (state.dashboard) {
+                applyDashboardState(state.dashboard);
+            }
+        });
+        window.onload = async () => {
+            const onboarding = document.getElementById('onboarding');
+            onboarding.style.display = 'none';
+            onboarding.classList.remove('hidden');
+            if (window.I18n?.whenReady) {
+                await new Promise((resolve) => window.I18n.whenReady(resolve));
+            }
+            await bootstrapDashboard();
+            refreshGuideProgress();
+            onboarding.style.display = state.config.showOnboarding ? 'flex' : 'none';
+            switchTab(state.currentTab);
+        };
+    </script>
+</body>
+</html>

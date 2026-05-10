@@ -16,7 +16,7 @@
 
 ## 安装依赖
 
-插件依赖以下 Python 包（已在 `pyproject.toml` 中定义）：
+插件依赖以下 Python 包：
 
 ```toml
 dependencies = [
@@ -27,16 +27,7 @@ dependencies = [
   "tomli-w>=1.0.0",
 ]
 ```
-
-使用 uv 或 pip 安装：
-
-```bash
-# 使用 uv（推荐）
-uv pip install -e .
-
-# 或使用 pip
-pip install -e .
-```
+使用 uv 或 pip 安装
 
 ## 配置说明
 
