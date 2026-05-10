@@ -85,7 +85,7 @@ Read public Bilibili data without write permissions - safe to call. Fill in the 
 - **Video subtitles** — Get AI-generated subtitles. Required: BV
 - **Historical danmaku** — Get historical danmaku. Required: BV
 - **User info** — Get user profile. Required: UID
-- **User uploads** — Get user uploaded video list. Required: UID
+- **User uploads** — Get user-uploaded video list. Required: UID
 - **Favorites list** — Get user favorites list. Required: UID
 - **Favorites contents** — Get videos inside a favorites folder. Required: favorites media_id
 

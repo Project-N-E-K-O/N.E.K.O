@@ -167,7 +167,7 @@
   "entries.send_danmaku.name": "Отправить данму",
   "entries.set_danmaku_max_length.description": "Установить максимальный лимит длины отправляемых danmaku",
   "entries.set_danmaku_max_length.name": "Установить макс. длину danmaku",
-  "entries.set_interval.description": "弹幕推送给 AI 的间隔秒数（最小{min_interval}秒，最大{max_interval}秒）",
+  "entries.set_interval.description": "Интервал в секундах для отправки danmaku в ИИ (мин. {min_interval}с, макс. {max_interval}с)",
   "entries.set_interval.name": "Задать интервал отправки",
   "entries.set_master_bili_account.description": "Установить UID и имя пользователя мастера Bilibili, чтобы NEKO мог идентифицировать его аккаунт",
   "entries.set_master_bili_account.name": "Установить аккаунт мастера Bilibili",

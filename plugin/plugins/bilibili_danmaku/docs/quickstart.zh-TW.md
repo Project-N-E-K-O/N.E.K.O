@@ -115,7 +115,7 @@
 - **啟用開關** — 開啟/關閉背景 LLM 功能
 - **API 位址** — 相容 OpenAI 格式的端點，例如 `https://api.openai.com/v1/chat/completions`
 - **模型名稱** — 例如 `gpt-4o-mini`、`deepseek-chat`
-- **API Key** — API 金鑰（輸入時預設隱藏，點擊 可檢視）
+- **API Key** — API 金鑰（輸入時預設隱藏，點擊即可檢視）
 - **聚合視窗** — 收集多少條彈幕後觸發一次 LLM 總結，建議 10~20
 - **最大取樣數** — 彈幕取樣池最大容量，超出後依時間淘汰舊彈幕
 

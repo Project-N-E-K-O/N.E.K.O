@@ -50,12 +50,12 @@ Se precisar chamar diretamente as interfaces do plugin, estes são os pontos de 
 
 - **`smart_control`** — Controle unificado por linguagem natural (recomendado)  
   Parâmetros: `{ "command": "acenda a luz do quarto" }`
-- **`find_device_by_name`** — Procurar um dispositivo  
-  Parâmetros: `{ "name": "luz do quarto" }`
+- **`list_devices`** — Obter lista de dispositivos  
+  Parâmetros: `{ "home_id": "12345" }`
 - **`query_device_state`** — Consultar o estado de um dispositivo  
   Parâmetros: `{ "name": "ar-condicionado" }`
-- **`execute_scene`** — Executar uma cena  
-  Parâmetros: `{ "scene_id": "12345" }`
+- **`list_scenes`** — Listar cenas inteligentes  
+  Parâmetros: `{ "home_id": "12345" }`
 
 ---
 

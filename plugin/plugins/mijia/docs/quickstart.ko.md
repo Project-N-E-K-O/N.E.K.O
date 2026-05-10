@@ -50,12 +50,12 @@ AI Agent 에게 아래 유형의 명령을 말하기만 하면, 플러그인이 
 
 - **`smart_control`** — 자연어 통합 제어 (권장)  
   매개변수: `{ "command": "침실 조명 켜줘" }`
-- **`find_device_by_name`** — 장치 찾기  
-  매개변수: `{ "name": "침실 조명" }`
+- **`list_devices`** — 기기 목록 가져오기  
+  매개변수: `{ "home_id": "12345" }`
 - **`query_device_state`** — 장치 상태 조회  
   매개변수: `{ "name": "에어컨" }`
-- **`execute_scene`** — 씬 실행  
-  매개변수: `{ "scene_id": "12345" }`
+- **`list_scenes`** — 스마트 시나리오 목록 가져오기  
+  매개변수: `{ "home_id": "12345" }`
 
 ---
 

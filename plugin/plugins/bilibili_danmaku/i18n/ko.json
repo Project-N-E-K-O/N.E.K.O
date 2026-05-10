@@ -167,7 +167,7 @@
   "entries.send_danmaku.name": "탄막 전송",
   "entries.set_danmaku_max_length.description": "전송할 댄마쿠의 최대 길이 제한 설정",
   "entries.set_danmaku_max_length.name": "댄마쿠 최대 길이 설정",
-  "entries.set_interval.description": "弹幕推送给 AI 的间隔秒数（最小{min_interval}秒，最大{max_interval}秒）",
+  "entries.set_interval.description": "탄막을 AI로 푸시하는 간격(초) (최소 {min_interval}초, 최대 {max_interval}초)",
   "entries.set_interval.name": "전송 간격 설정",
   "entries.set_master_bili_account.description": "마스터의 Bilibili UID와 사용자명을 설정하여 NEKO가 마스터 계정을 식별할 수 있도록 함",
   "entries.set_master_bili_account.name": "마스터 Bilibili 계정 설정",

@@ -50,12 +50,12 @@
 
 - **`smart_control`** — 自然語言統一控制 (推薦)  
   參數：`{ "command": "打開臥室燈" }`
-- **`find_device_by_name`** — 查找裝置  
-  參數：`{ "name": "臥室燈" }`
+- **`list_devices`** — 取得裝置清單  
+  參數：`{ "home_id": "12345" }`
 - **`query_device_state`** — 查詢裝置狀態  
   參數：`{ "name": "冷氣" }`
-- **`execute_scene`** — 執行場景  
-  參數：`{ "scene_id": "12345" }`
+- **`list_scenes`** — 取得智慧場景清單  
+  參數：`{ "home_id": "12345" }`
 
 ---
 

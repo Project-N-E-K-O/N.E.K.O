@@ -167,7 +167,7 @@
   "entries.send_danmaku.name": "Enviar danmaku",
   "entries.set_danmaku_max_length.description": "Definir o limite máximo de comprimento para danmaku enviados",
   "entries.set_danmaku_max_length.name": "Definir comprimento máximo do danmaku",
-  "entries.set_interval.description": "弹幕推送给 AI 的间隔秒数（最小{min_interval}秒，最大{max_interval}秒）",
+  "entries.set_interval.description": "Intervalo em segundos para enviar danmaku para a IA (mín. {min_interval}s, máx. {max_interval}s)",
   "entries.set_interval.name": "Definir intervalo de envio",
   "entries.set_master_bili_account.description": "Definir UID e nome de usuário do mestre no Bilibili para ajudar o NEKO a identificar a conta",
   "entries.set_master_bili_account.name": "Definir conta mestra do Bilibili",

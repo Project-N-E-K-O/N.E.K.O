@@ -167,7 +167,7 @@
   "entries.send_danmaku.name": "弾幕を送信",
   "entries.set_danmaku_max_length.description": "送信する弾幕の最大長制限を設定",
   "entries.set_danmaku_max_length.name": "弾幕の最大長を設定",
-  "entries.set_interval.description": "弹幕推送给 AI 的间隔秒数（最小{min_interval}秒，最大{max_interval}秒）",
+  "entries.set_interval.description": "弾幕をAIにプッシュする間隔（秒）（最小{min_interval}秒、最大{max_interval}秒）",
   "entries.set_interval.name": "送信間隔を設定",
   "entries.set_master_bili_account.description": "主人のBilibili UIDとユーザー名を設定。NEKOが主人のアカウントを識別できるようにする",
   "entries.set_master_bili_account.name": "主人のBilibiliアカウントを設定",

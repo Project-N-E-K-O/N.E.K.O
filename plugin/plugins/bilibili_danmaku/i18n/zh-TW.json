@@ -167,7 +167,7 @@
   "entries.send_danmaku.name": "傳送彈幕",
   "entries.set_danmaku_max_length.description": "設定傳送彈幕的最大長度限制",
   "entries.set_danmaku_max_length.name": "設定彈幕最大長度",
-  "entries.set_interval.description": "弹幕推送给 AI 的间隔秒数（最小{min_interval}秒，最大{max_interval}秒）",
+  "entries.set_interval.description": "彈幕推送給 AI 的間隔秒數（最小{min_interval}秒，最大{max_interval}秒）",
   "entries.set_interval.name": "設定推送間隔",
   "entries.set_master_bili_account.description": "設定主人的 B站 UID 和使用者名稱，幫助 NEKO 識別哪個帳號屬於主人本人。",
   "entries.set_master_bili_account.name": "設定主人B站帳號",

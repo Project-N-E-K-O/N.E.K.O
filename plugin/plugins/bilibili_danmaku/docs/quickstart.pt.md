@@ -115,7 +115,7 @@ Quando ativada, os danmaku são agregados e enviados a uma LLM designada que ger
 - **Interruptor de ativação** — Liga/desliga a função de LLM em segundo plano
 - **URL da API** — Endpoint compatível com OpenAI, p. ex. `https://api.openai.com/v1/chat/completions`
 - **Nome do modelo** — P. ex. `gpt-4o-mini`, `deepseek-chat`
-- **API Key** — Chave da API (oculta por padrão ao digitar; clique em para visualizar)
+- **API Key** — Chave da API (oculta por padrão ao digitar; clique no ícone para visualizar)
 - **Janela de agregação** — Quantos danmaku coletar antes de acionar o resumo da LLM. Recomenda-se 10–20
 - **Tamanho máx. da amostra** — Capacidade máxima do pool de amostras de danmaku; ao ultrapassar, os mais antigos são descartados por ordem temporal
 

@@ -50,12 +50,12 @@ If you need to call the plugin interface directly, here are the core entry point
 
 - **`smart_control`** — Unified natural-language control (recommended)  
   Params: `{ "command": "turn on the bedroom light" }`
-- **`find_device_by_name`** — Find a device  
-  Params: `{ "name": "bedroom light" }`
+- **`list_devices`** — Get device list  
+  Params: `{ "home_id": "12345" }`
 - **`query_device_state`** — Query device state  
   Params: `{ "name": "AC" }`
-- **`execute_scene`** — Run a scene  
-  Params: `{ "scene_id": "12345" }`
+- **`list_scenes`** — List smart scenes  
+  Params: `{ "home_id": "12345" }`
 
 ---
 
