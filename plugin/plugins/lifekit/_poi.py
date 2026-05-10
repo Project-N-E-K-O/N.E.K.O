@@ -196,9 +196,18 @@ class OverpassPOI:
                 name = tags.get("name", "")
                 if not name:
                     continue
-                plat = float(el.get("lat") or el.get("center", {}).get("lat", 0))
-                plon = float(el.get("lon") or el.get("center", {}).get("lon", 0))
-                dist = haversine_km(lat, lon, plat, plon) * 1000 if plat and plon else 0
+                raw_lat = el.get("lat")
+                raw_lon = el.get("lon")
+                if raw_lat is None or raw_lon is None:
+                    center = el.get("center", {}) or {}
+                    raw_lat = raw_lat if raw_lat is not None else center.get("lat")
+                    raw_lon = raw_lon if raw_lon is not None else center.get("lon")
+                # 合法坐标可能是 0.0（赤道/本初子午线），所以用显式 None 判定喵
+                if raw_lat is None or raw_lon is None:
+                    continue
+                plat = float(raw_lat)
+                plon = float(raw_lon)
+                dist = haversine_km(lat, lon, plat, plon) * 1000
                 addr_parts = [tags.get("addr:street", ""), tags.get("addr:housenumber", "")]
                 items.append(POIItem(
                     name=name,

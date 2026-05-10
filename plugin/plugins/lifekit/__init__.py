@@ -59,6 +59,10 @@ class LifeKitPlugin(NekoPluginBase):
         cache_ttl_seconds: int = SettingsField(1800, description="缓存有效期（秒）")
         locale: str = SettingsField("", hot=True, description="语言（留空自动检测）", json_schema_extra={"hot": True, "enum": ["", "zh-CN", "zh-TW", "en"]})
         force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
+        enable_geoip: bool = SettingsField(
+            True,
+            description="允许通过 IP 自动定位（禁用后仅用保存/手填/时区 fallback，走 HTTPS 的 ipapi.co）",
+        )
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
     __routers__ = [
@@ -118,6 +122,8 @@ class LifeKitPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("lifekit", {}) if isinstance(cfg.get("lifekit"), dict) else {}
+        # locale 配置可能在 config_change 里改动，必须立刻生效，否则要重启才切换喵
+        self._resolve_locale()
 
     # ── locale 解析（供 routers 调用）──
 
@@ -187,12 +193,13 @@ class LifeKitPlugin(NekoPluginBase):
             except GeocodeError as e:
                 return None, "error.geocode_timeout" if e.cause == "timeout" else "error.geocode_failed"
 
-        # IP 定位
+        # IP 定位（可禁用以避免把 IP/位置发给第三方；默认开启，走 HTTPS）
         ip_loc = None
-        try:
-            ip_loc = await geoip_locate(locale=locale)
-        except GeoIPError:
-            pass  # IP 定位失败不致命，继续 fallback
+        if bool(self._cfg.get("enable_geoip", True)):
+            try:
+                ip_loc = await geoip_locate(locale=locale)
+            except GeoIPError:
+                pass  # IP 定位失败不致命，继续 fallback
 
         if ip_loc is None:
             fallback = await self._timezone_fallback()

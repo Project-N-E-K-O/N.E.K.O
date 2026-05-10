@@ -1,4 +1,4 @@
-"""Open-Meteo / ip-api 网络请求封装。"""
+"""Open-Meteo / IP-geolocation 网络请求封装。"""
 
 from __future__ import annotations
 
@@ -6,15 +6,16 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-_GEOIP_BASE = "http://ip-api.com/json/"
+# HTTPS IP 定位 provider；旧版用的 ip-api.com 免费端点是纯 HTTP + 禁止商用喵
+_GEOIP_BASE = "https://ipapi.co"
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 _UA = "NEKO-LifeKit-Plugin/0.2"
 
-# locale → ip-api lang
+# ipapi.co 用 ISO 639 简码；Content-Language 头部即可
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
-    "zh-CN": "zh-CN", "zh-TW": "zh-CN", "en": "en",
+    "zh-CN": "zh", "zh-TW": "zh", "en": "en",
 }
 # locale → Open-Meteo geocoding language
 LOCALE_TO_GEOCODE_LANG: Dict[str, str] = {
@@ -50,20 +51,20 @@ class ForecastError(WeatherAPIError):
 # ── API 函数 ─────────────────────────────────────────────────────
 
 async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[Dict[str, Any]]:
-    """IP 定位。成功返回 dict，无结果返回 None，网络问题抛 GeoIPError。"""
+    """IP 定位（HTTPS via ipapi.co）。成功返回 dict，无结果返回 None，网络问题抛 GeoIPError。"""
     lang = LOCALE_TO_GEOIP_LANG.get(locale, "en")
-    url = f"{_GEOIP_BASE}?fields=city,lat,lon,countryCode,regionName,timezone&lang={lang}"
+    url = f"{_GEOIP_BASE}/json/"
     try:
         async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as c:
-            r = await c.get(url, headers={"User-Agent": _UA})
+            r = await c.get(url, headers={"User-Agent": _UA, "Accept-Language": lang})
             d = r.json()
-            lat, lon = d.get("lat"), d.get("lon")
+            lat, lon = d.get("latitude"), d.get("longitude")
             if lat is not None and lon is not None:
                 return {
-                    "city": d.get("city") or d.get("regionName") or "",
+                    "city": d.get("city") or d.get("region") or "",
                     "lat": float(lat),
                     "lon": float(lon),
-                    "country": d.get("countryCode", ""),
+                    "country": d.get("country_code", ""),
                     "ip_timezone": d.get("timezone", ""),
                 }
             return None
@@ -168,9 +169,9 @@ async def fetch_forecast(
 
 
 def daily_val(daily: Dict[str, Any], field: str, idx: int) -> Any:
-    """安全取 daily 数组元素。"""
+    """安全取 daily 数组元素；负索引视为无效（避免上游 idx 回退时静默展示错天数喵）。"""
     arr = daily.get(field)
-    if isinstance(arr, list) and idx < len(arr):
+    if isinstance(arr, list) and 0 <= idx < len(arr):
         return arr[idx]
     return None
 

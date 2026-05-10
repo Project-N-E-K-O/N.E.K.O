@@ -5,9 +5,14 @@ Primary import target for standard plugin development.
 
 from __future__ import annotations
 
+import sys as _sys
+from importlib import import_module as _import_module
+
 from . import base as _base
 from . import decorators as _decorators
-from . import llm_tool as _llm_tool
+# 避免 `from . import llm_tool as _llm_tool` 在 importlib.reload 时被外部 `llm_tool` 函数名
+# 遮蔽（第一次加载后本模块的 `llm_tool` 属性变成函数，导致下次 `from . import llm_tool` 拿回函数而非子模块）喵
+_llm_tool = _sys.modules.get("plugin.sdk.plugin.llm_tool") or _import_module("plugin.sdk.plugin.llm_tool")
 from . import runtime as _runtime
 from . import settings as _settings
 from . import ui as ui

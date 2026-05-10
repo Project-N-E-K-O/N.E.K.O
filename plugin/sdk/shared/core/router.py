@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Mapping, Protocol
 
+from plugin.sdk.shared.constants import EVENT_META_ATTR
 from plugin.sdk.shared.models import Err, Ok, Result
 from plugin.sdk.shared.models.exceptions import EntryConflictError, PluginRouterError, RouterErrorLike
 from .events import EventHandler, EventMeta
@@ -32,6 +34,33 @@ class PluginRouter:
         self._name = name or self.__class__.__name__
         self._entries: dict[str, _EntryRecord] = {}
         self._main_plugin: object | None = None
+        # 自动收集 @plugin_entry / @on_event 装饰过的方法，避免用户必须手动调 add_entry 喵
+        self._collect_decorated_entries()
+
+    def _collect_decorated_entries(self) -> None:
+        """扫描子类上带有 EVENT_META_ATTR 的方法，生成条目记录。
+
+        设计理由：
+        - 子类通常用 `@plugin_entry(id=...)` 声明 entry，而 `PluginRouter.collect_entries`
+          只返回 `self._entries`，所以装饰器信息以前完全被忽略掉了。
+        - 这里只做一次静态扫描，保留 `add_entry` 的动态注册能力；如果同一 id 两种方式都提供了，
+          `add_entry` 的后入为准。
+        """
+        for attr_name, class_value in inspect.getmembers_static(type(self)):
+            if attr_name.startswith("_"):
+                continue
+            target = class_value.__func__ if isinstance(class_value, (staticmethod, classmethod)) else class_value
+            if not callable(target):
+                continue
+            meta = getattr(target, EVENT_META_ATTR, None)
+            if meta is None or getattr(meta, "id", "") == "":
+                continue
+            # 只收 plugin_entry 类型（router 里写 on_event/lifecycle 一般不合逻辑，但为兼容也允许）
+            bound = getattr(self, attr_name, None)
+            if not callable(bound):
+                continue
+            entry_id = self._resolve_entry_id(str(meta.id))
+            self._entries[entry_id] = _EntryRecord(meta=meta, handler=bound)
 
     @property
     def prefix(self) -> str:
