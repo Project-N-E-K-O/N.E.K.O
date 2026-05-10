@@ -14,7 +14,15 @@ import time
 import math
 from typing import Optional
 
-from utils.language_utils import normalize_language_code, get_global_language_full
+# Why config._runtime: ``config`` (L0) must not import from ``utils`` (L1) —
+# enforced by scripts/check_module_layering.py. Higher layers register the
+# concrete language/tokenize helpers at app startup; we read them via
+# resolvers that fall back gracefully when nothing is bound.
+from config._runtime import (
+    normalize_language_code,
+    resolve_global_language,
+    truncate_to_tokens,
+)
 
 
 _AVATAR_INTERACTION_ALLOWED_ACTIONS = {
@@ -913,7 +921,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
 
 
 def _avatar_interaction_locale(language: str | None) -> str:
-    raw_language = language or get_global_language_full()
+    raw_language = language or resolve_global_language()
     normalized = normalize_language_code(raw_language, format='full')
     locale = str(normalized or "zh-CN").strip().lower()
     if locale.startswith("zh"):
@@ -930,7 +938,7 @@ def _avatar_interaction_locale(language: str | None) -> str:
 
 
 def _sanitize_avatar_interaction_text_context(text: str, max_tokens: int | None = None) -> str:
-    from utils.tokenize import truncate_to_tokens
+    # truncate_to_tokens forwarded via config._runtime (DI; see top of file).
     if max_tokens is None:
         # Lazy import 避免 config 包加载顺序问题（本文件被 config/__init__.py
         # 末尾的 re-export 路径间接导入）。

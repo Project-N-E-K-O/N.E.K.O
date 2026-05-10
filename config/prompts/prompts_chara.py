@@ -230,8 +230,11 @@ def get_lanlan_prompt(lang: str | None = None) -> str:
         包含 {LANLAN_NAME} / {MASTER_NAME} 占位符的提示词字符串。
     """
     if lang is None:
-        from utils.language_utils import get_global_language_full
-        lang = get_global_language_full()
+        # config._runtime resolves to utils.language_utils.get_global_language_full
+        # at runtime (registered in app/runtime_bindings.py); falls back to
+        # "zh-CN" if unbound (cold-import / unit tests).
+        from config._runtime import resolve_global_language
+        lang = resolve_global_language()
     return _build_lanlan_prompt(lang)
 
 

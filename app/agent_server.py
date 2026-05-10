@@ -50,7 +50,7 @@ try:
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
-    from brain.result_parser import (
+    from utils.result_parser import (
         parse_computer_use_result,
         parse_browser_use_result,
         parse_plugin_result,
