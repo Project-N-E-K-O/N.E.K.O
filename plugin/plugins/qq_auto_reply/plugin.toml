@@ -36,7 +36,7 @@ permissions = ["state:read", "action:call"]
 [[plugin.ui.guide]]
 id = "quickstart"
 title = "快速开始"
-entry = "README.md"
+entry = "doc/README.md"
 permissions = ["state:read"]
 
 [plugin_runtime]

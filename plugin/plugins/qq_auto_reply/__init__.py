@@ -10,6 +10,7 @@ del _sys, _pathlib, _lib_dir
 
 import asyncio
 import random
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -175,6 +176,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     def _get_napcat_qrcode_path(self) -> Path:
         return self._get_napcat_directory() / "cache" / "qrcode.png"
 
+    async def _sync_napcat_qrcode_into_static(self) -> bool:
+        source = self._get_napcat_qrcode_path()
+        target = self.config_dir / "static" / "cache" / "qrcode.png"
+        if not source.is_file():
+            return False
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.copy2, source, target)
+            return True
+        except Exception as e:
+            self.logger.warning(f"Failed to copy NapCat QR code into static cache: {e}")
+            return False
+
     def _find_napcat_launcher(self) -> Path | None:
         root = self._get_napcat_directory()
         candidates = [
@@ -210,11 +224,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             )
             self._manages_napcat_process = True
             self.logger.info(f"Started NapCat launcher via cmd: {launcher} (pid={self._napcat_process.pid}, show_window={show_window})")
+            async def _delayed_sync_qrcode():
+                await asyncio.sleep(1.5)
+                await self._sync_napcat_qrcode_into_static()
+            asyncio.create_task(_delayed_sync_qrcode())
         except Exception as e:
             self.logger.warning(f"Failed to start NapCat launcher {launcher}: {e}")
 
     def _build_runtime_status(self) -> dict[str, Any]:
-        qrcode_path = self._get_napcat_qrcode_path()
+        qrcode_path = self.config_dir / "static" / "cache" / "qrcode.png"
         return {
             "plugin_running": True,
             "auto_reply_running": self._running,
@@ -222,7 +240,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "napcat_managed": self._manages_napcat_process,
             "napcat_running": bool(self._napcat_process and self._napcat_process.returncode is None),
             "napcat_pid": int(self._napcat_process.pid) if self._napcat_process and self._napcat_process.returncode is None and self._napcat_process.pid else None,
-            "qrcode_url": f"/plugin/{self.plugin_id}/ui-api/qrcode" if qrcode_path.is_file() else "",
+            "qrcode_url": f"/plugin/{self.plugin_id}/ui/cache/qrcode.png" if qrcode_path.is_file() else "",
             "show_napcat_window": bool((self._qq_settings or {}).get("show_napcat_window", True)),
             "startup_error": None,
         }
@@ -479,6 +497,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         payload = await self._build_dashboard_state()
         payload["persisted"] = success
         return Ok(payload)
+
+    @plugin_entry(id="qq_auto_reply_sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新复制 NapCat 登录二维码到插件静态目录并返回最新状态。"), input_schema={"type": "object", "properties": {}})
+    async def sync_qrcode(self, **_):
+        await self._sync_napcat_qrcode_into_static()
+        return Ok(await self._build_dashboard_state())
 
     @plugin_entry(id="start_auto_reply", name=tr("entries.start_auto_reply.name", default="启动自动回复"), description=tr("entries.start_auto_reply.description", default="开始监听 QQ 消息并自动回复。"), input_schema={"type": "object", "properties": {}})
     async def start_auto_reply(self, **_):
