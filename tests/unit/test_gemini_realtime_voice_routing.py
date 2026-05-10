@@ -120,6 +120,26 @@ def test_validate_gemini_voice_uses_active_realtime_provider():
     assert ConfigManager.validate_voice_id(gemini_realtime_mgr, "中文男") is True
 
 
+def test_new_catgirl_default_voice_id_keeps_legacy_fallback(monkeypatch):
+    monkeypatch.setattr("utils.api_config_loader.get_free_voices", lambda: {})
+
+    assert characters_router._get_new_catgirl_default_voice_id() == "voice-tone-PGLiyZt65w"
+
+
+def test_new_catgirl_default_voice_id_prefers_configured_presets(monkeypatch):
+    monkeypatch.setattr(
+        "utils.api_config_loader.get_free_voices",
+        lambda: {"cuteGirl": "", "other": "voice-other"},
+    )
+    assert characters_router._get_new_catgirl_default_voice_id() == "voice-other"
+
+    monkeypatch.setattr(
+        "utils.api_config_loader.get_free_voices",
+        lambda: {"cuteGirl": "voice-custom", "other": "voice-other"},
+    )
+    assert characters_router._get_new_catgirl_default_voice_id() == "voice-custom"
+
+
 def test_native_preview_provider_respects_custom_voice_collision():
     native_mgr = _FakeCharactersRouterConfigManager("gemini")
     colliding_mgr = _FakeCharactersRouterConfigManager("gemini", stored_voice_ids={"Puck"})

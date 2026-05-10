@@ -122,6 +122,7 @@ logger = get_module_logger(__name__, "Main")
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
 
 
 def _voice_session_starting_response():
@@ -146,6 +147,18 @@ def _is_current_catgirl_voice_session_starting(name: str, characters, session_ma
         getattr(mgr, "is_starting", False)
         and not getattr(mgr, "is_active", False)
         and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
+    )
+
+
+def _get_new_catgirl_default_voice_id() -> str:
+    """获取新建角色的默认音色，兼容旧版/自定义 free_voices 缺失的配置。"""
+    from utils.api_config_loader import get_free_voices
+
+    free_voices = get_free_voices() or {}
+    return (
+        free_voices.get('cuteGirl')
+        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
+        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
     )
 
 
@@ -2710,10 +2723,8 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
-    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到配置中的首个预设。
-    from utils.api_config_loader import get_free_voices
-    free_voices = get_free_voices() or {}
-    default_free_voice_id = free_voices.get('cuteGirl') or next(iter(free_voices.values()), '')
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+    default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
