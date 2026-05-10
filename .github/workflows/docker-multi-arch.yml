@@ -19,9 +19,9 @@ on:
         description: '构建模式'
         type: choice
         options:
-          - custom
           - ci
-        default: 'custom'
+          - custom
+        default: 'ci'
         required: true
       version:
         description: '自定义版本号 (仅在 custom 模式下生效)'
@@ -151,15 +151,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
+      - name: Check Docker Hub credentials
+        id: check_dockerhub
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker Hub credentials found"
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker Hub credentials not configured, skipping Docker Hub push"
+            echo "   To enable Docker Hub push, set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in repository secrets"
+          fi
+
+      - name: Log in to Docker Hub
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for Docker (GHCR only)
-        if: needs.calculate-version.outputs.skip_dockerhub == 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub == 'true' || (needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials != 'true')
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
@@ -175,7 +188,7 @@ jobs:
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         id: meta_both
         uses: docker/metadata-action@v5
         with:
@@ -235,15 +248,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
+      - name: Check Docker Hub credentials
+        id: check_dockerhub
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker Hub credentials found"
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker Hub credentials not configured, skipping Docker Hub push"
+            echo "   To enable Docker Hub push, set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in repository secrets"
+          fi
+
+      - name: Log in to Docker Hub
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for Docker (GHCR only)
-        if: needs.calculate-version.outputs.skip_dockerhub == 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub == 'true' || (needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials != 'true')
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
@@ -259,7 +285,7 @@ jobs:
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         id: meta_both
         uses: docker/metadata-action@v5
         with:
@@ -305,8 +331,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
+      - name: Check Docker Hub credentials
+        id: check_dockerhub
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker Hub credentials found"
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker Hub credentials not configured, skipping Docker Hub manifest push"
+          fi
+
+      - name: Log in to Docker Hub
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -323,7 +361,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard
 
       - name: Create and push multi-arch manifest for standard version (DockerHub)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -344,7 +382,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full
 
       - name: Create and push multi-arch manifest for full version (DockerHub)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -372,7 +410,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-full
 
       - name: Create and push CI short tags (DockerHub)
-        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           # DockerHub - ci-standard (without hash)
           docker manifest create \
@@ -425,7 +463,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
 
       - name: Create and push latest manifests (DockerHub)
-        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
