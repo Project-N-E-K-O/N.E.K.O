@@ -27,9 +27,10 @@ class _FakeCharactersRouterConfigManager:
     """Mimics the ConfigManager surface used by characters_router.get_voices
     plus the registry's get_active_realtime_native_provider lookup."""
 
-    def __init__(self, realtime_api_type, base_url=""):
+    def __init__(self, realtime_api_type, base_url="", stored_voice_ids=()):
         self._realtime_api_type = realtime_api_type
         self._base_url = base_url
+        self._stored_voice_ids = set(stored_voice_ids)
 
     def get_voices_for_current_api(self):
         return {}
@@ -42,6 +43,12 @@ class _FakeCharactersRouterConfigManager:
 
     def get_core_config(self):
         return {"CORE_API_TYPE": "gemini"}
+
+    def voice_id_exists_in_any_storage(self, voice_id):
+        return voice_id.casefold() in {
+            stored_voice_id.casefold()
+            for stored_voice_id in self._stored_voice_ids
+        }
 
     async def aload_characters(self):
         return {"猫娘": {}}
@@ -111,6 +118,28 @@ def test_validate_gemini_voice_uses_active_realtime_provider():
 
     assert ConfigManager.validate_voice_id(local_realtime_mgr, "中文男") is False
     assert ConfigManager.validate_voice_id(gemini_realtime_mgr, "中文男") is True
+
+
+def test_native_preview_provider_respects_custom_voice_collision():
+    native_mgr = _FakeCharactersRouterConfigManager("gemini")
+    colliding_mgr = _FakeCharactersRouterConfigManager("gemini", stored_voice_ids={"Puck"})
+
+    assert characters_router._get_active_native_preview_provider(native_mgr, "中文男") == "gemini"
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "Puck") is None
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "中文男") is None
+
+
+def test_step_native_preview_provider_respects_custom_voice_collision():
+    native_mgr = _FakeCharactersRouterConfigManager("free", "wss://lanlan.tech/realtime")
+    colliding_mgr = _FakeCharactersRouterConfigManager(
+        "free",
+        "wss://lanlan.tech/realtime",
+        stored_voice_ids={"qingchunshaonv"},
+    )
+
+    assert characters_router._get_active_native_preview_provider(native_mgr, "中文女") == "free"
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "qingchunshaonv") is None
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "中文女") is None
 
 
 @pytest.mark.asyncio

@@ -68,8 +68,8 @@ from utils.config_manager import (
 from utils.native_voice_registry import (
     get_active_realtime_native_provider,
     get_native_voice_catalog_for_ui,
-    is_native_voice,
     normalize_native_voice,
+    resolve_native_voice_for_routing,
 )
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -268,12 +268,19 @@ def _is_free_preset_voice_id(voice_id: object) -> bool:
 
 
 def _get_active_native_preview_provider(config_manager, voice_id: object) -> str | None:
-    """判断 voice_id 是否属于当前实时 Provider 的原生音色目录。"""
+    """判断 voice_id 是否应走当前实时 Provider 的原生预览路径。"""
     normalized = str(voice_id or "").strip()
     if not normalized:
         return None
     active_provider = get_active_realtime_native_provider(config_manager)
-    if active_provider and is_native_voice(normalized, active_provider):
+    if not active_provider:
+        return None
+    _, uses_provider_native_voice = resolve_native_voice_for_routing(
+        active_provider,
+        normalized,
+        config_manager.voice_id_exists_in_any_storage,
+    )
+    if uses_provider_native_voice:
         return active_provider
     return None
 
