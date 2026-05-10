@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*' # 匹配 v 开头的标签，例如 v1.0.0
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -38,9 +41,12 @@ jobs:
       - name: Calculate skip_dockerhub flag
         id: calc_skip
         run: |
-          # For manual dispatch, use the input value; for tag push, default to false
+          # For manual dispatch, use the input value; for PR builds and tag push, default to false
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "SKIP_DOCKERHUB=${{ github.event.inputs.skip_dockerhub || 'false' }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # PR builds always skip DockerHub (only push to GHCR)
+            echo "SKIP_DOCKERHUB=true" >> $GITHUB_OUTPUT
           else
             echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
           fi
@@ -56,7 +62,12 @@ jobs:
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version }}"
             echo "版本号来源于手动输入: $VERSION"
-          # 策略3: 默认情况，生成基于日期和提交哈希的版本号
+          # 策略3: 如果是 PR 触发，使用 pr-{number}-ci 标签
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            PR_NUMBER=${{ github.event.pull_request.number }}
+            VERSION="pr-${PR_NUMBER}-ci"
+            echo "版本号来源于PR编号: $VERSION"
+          # 策略4: 默认情况，生成基于日期和提交哈希的版本号
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
@@ -111,7 +122,7 @@ jobs:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard
-            type=raw,value=latest-standard,enable={{is_default_branch}}
+            type=raw,value=latest-standard,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Extract metadata for Docker (both registries)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
@@ -123,7 +134,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard
-            type=raw,value=latest-standard,enable={{is_default_branch}}
+            type=raw,value=latest-standard,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build and push standard image
         uses: docker/build-push-action@v5
@@ -183,7 +194,7 @@ jobs:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full
-            type=raw,value=latest-full,enable={{is_default_branch}}
+            type=raw,value=latest-full,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Extract metadata for Docker (both registries)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
@@ -195,7 +206,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full
-            type=raw,value=latest-full,enable={{is_default_branch}}
+            type=raw,value=latest-full,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build and push full image
         uses: docker/build-push-action@v5
@@ -276,6 +287,7 @@ jobs:
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
 
       - name: Create and push latest manifests (GHCR)
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -294,7 +306,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
 
       - name: Create and push latest manifests (DockerHub)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
