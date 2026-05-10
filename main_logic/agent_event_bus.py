@@ -318,7 +318,7 @@ def notify_analyze_ack(event_id: str) -> None:
 
 # ---------------------------------------------------------------------------
 #  Layering-inversion sinks: lower layers (main_logic) emit, higher layers
-#  (plugin / main_routers) register. Wired in app/runtime_bindings.py.
+#  (plugin / main_routers) register.
 #
 #  Why this exists
 #  ---------------
@@ -329,9 +329,17 @@ def notify_analyze_ack(event_id: str) -> None:
 #  ``scripts/check_module_layering.py``.
 #
 #  Now main_logic emits via ``dispatch_*`` and the higher layers attach via
-#  ``register_*``. If nothing is registered (e.g. memory_server entrypoint
-#  doesn't ship plugin runtime), the dispatchers silently no-op, matching
-#  the historical behaviour of the original lazy-import + try/except.
+#  ``register_*``. The CONSUMERS self-register at module-import time
+#  (plugin/core/state.py and main_routers/system_router.py), so any context
+#  that loads those modules — even directly, without going through the
+#  ``app`` entrypoint — gets its sink wired automatically. This preserves
+#  the side-effect that direct ``main_logic.core`` consumers (testbench /
+#  ad-hoc scripts) used to enjoy via the previous chained import. The
+#  registries dedupe on identity, so ``app/runtime_bindings.py`` calling
+#  ``register_*`` again after the consumer module is loaded is a no-op.
+#
+#  If nothing is registered (e.g. memory_server entrypoint doesn't ship
+#  plugin runtime), the dispatchers silently no-op.
 # ---------------------------------------------------------------------------
 
 # Fire-and-forget user-utterance sink. Plugin's user-context bus subscribes
@@ -343,7 +351,15 @@ _user_utterance_sinks: list[Callable[[str, Dict[str, Any]], None]] = []
 def register_user_utterance_sink(
     fn: Callable[[str, Dict[str, Any]], None],
 ) -> None:
-    """Subscribe to user-utterance events: ``fn(bucket: str, event: dict)``."""
+    """Subscribe to user-utterance events: ``fn(bucket: str, event: dict)``.
+
+    Dedupes on identity — re-registering the same callable is a no-op.
+    Important because both ``plugin.core.state`` (self-register on import)
+    and ``app.runtime_bindings`` (explicit wiring) call this for the same
+    function; without dedup, every utterance would fire twice.
+    """
+    if fn in _user_utterance_sinks:
+        return
     _user_utterance_sinks.append(fn)
 
 
@@ -369,7 +385,10 @@ def register_text_user_message_hook(
     """Subscribe to text user-message events: ``fn(lanlan_name, text) -> dict?``.
 
     First hook returning a truthy value wins; later hooks are skipped.
+    Dedupes on identity (see ``register_user_utterance_sink`` rationale).
     """
+    if fn in _text_user_message_hooks:
+        return
     _text_user_message_hooks.append(fn)
 
 

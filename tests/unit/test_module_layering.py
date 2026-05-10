@@ -56,12 +56,23 @@ def test_live_repo_passes() -> None:
     a non-zero exit and a stderr explanation; both are surfaced in the
     pytest failure so the offending edges are immediately visible.
     """
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT_PATH)],
-        cwd=str(PROJECT_ROOT),
-        capture_output=True,
-        text=True,
-    )
+    # 30s timeout: the script normally finishes in <2s on this repo. The cap
+    # protects CI from hanging if the AST walker ever regresses into an
+    # infinite loop on a malformed file.
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            "Layering check timed out:\n"
+            f"--- stdout ---\n{exc.stdout or ''}\n"
+            f"--- stderr ---\n{exc.stderr or ''}"
+        )
     assert result.returncode == 0, (
         "Live repo violates module layering:\n"
         f"--- stdout ---\n{result.stdout}\n"
