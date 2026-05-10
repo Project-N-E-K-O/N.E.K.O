@@ -243,8 +243,8 @@ class MijiaPlugin(NekoPluginBase):
                     devices = cached.get('devices', [])
                     if not devices:
                         self.logger.info("设备缓存为空，自动刷新")
-                    elif not devices[0].get('room_name'):
-                        self.logger.info("设备缓存中 room_name 为空，自动刷新")
+                    elif not any(d.get('room_name') for d in devices):
+                        self.logger.info("设备缓存中所有设备均无 room_name，自动刷新")
                     else:
                         room_names = set(d.get('room_name', '') for d in devices)
                         self.logger.info(f"设备缓存有效: {len(devices)} 个设备, 房间: {room_names}")
@@ -374,7 +374,7 @@ class MijiaPlugin(NekoPluginBase):
         for d in devices:
             dname = d.get('name', '').lower()
             dalias = d.get('alias', '')
-            if name_lower in dname or dname in name_lower:
+            if dname and (name_lower in dname or dname in name_lower):
                 fuzzy.append(d)
                 continue
             if dalias:
