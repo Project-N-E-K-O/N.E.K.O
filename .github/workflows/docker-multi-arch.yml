@@ -15,10 +15,18 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      version:
-        description: '镜像版本号 (例如: 1.0.0-beta.1)'
+      build_mode:
+        description: '构建模式'
+        type: choice
+        options:
+          - custom
+          - ci
+        default: 'custom'
         required: true
-        default: 'PLEASE-SET-VERSION'
+      version:
+        description: '自定义版本号 (仅在 custom 模式下生效)'
+        required: false
+        default: ''
       skip_dockerhub:
         description: '跳过 Docker Hub 推送 (仅推送到 GHCR)'
         type: boolean
@@ -48,7 +56,10 @@ jobs:
       - name: Calculate is_main_commit flag
         id: calc_is_main
         run: |
+          # True for: main branch push OR manual dispatch in CI mode
           if [[ "$GITHUB_REF" == refs/heads/main ]] && [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "IS_MAIN_COMMIT=true" >> $GITHUB_OUTPUT
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] && [[ "${{ github.event.inputs.build_mode }}" == "ci" ]]; then
             echo "IS_MAIN_COMMIT=true" >> $GITHUB_OUTPUT
           else
             echo "IS_MAIN_COMMIT=false" >> $GITHUB_OUTPUT
@@ -74,21 +85,33 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
             echo "版本号来源于Git标签: $VERSION"
-          # 策略2: 如果手动触发，则使用 input 中的 version 参数
-          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+          # 策略2: 如果手动触发且选择 CI 模式，使用 ci-{commit hash} 格式
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] && [[ "${{ github.event.inputs.build_mode }}" == "ci" ]]; then
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            VERSION="ci-${COMMIT_SHORT}"
+            echo "版本号来源于CI模式(手动触发): $VERSION"
+          # 策略3: 如果手动触发且选择 custom 模式，使用自定义版本号
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] && [[ "${{ github.event.inputs.build_mode }}" == "custom" ]]; then
             VERSION="${{ github.event.inputs.version }}"
-            echo "版本号来源于手动输入: $VERSION"
-          # 策略3: 如果是 PR 触发，使用 pr-{number}-ci 标签
+            if [ -z "$VERSION" ] || [ "$VERSION" = "" ]; then
+              COMMIT_SHORT=$(git rev-parse --short HEAD)
+              DATE=$(date +%Y%m%d)
+              VERSION="${DATE}-${COMMIT_SHORT}"
+              echo "版本号为自动生成(未提供自定义版本): $VERSION"
+            else
+              echo "版本号来源于手动输入: $VERSION"
+            fi
+          # 策略4: 如果是 PR 触发，使用 pr-{number}-ci 标签
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             PR_NUMBER=${{ github.event.pull_request.number }}
             VERSION="pr-${PR_NUMBER}-ci"
             echo "版本号来源于PR编号: $VERSION"
-          # 策略4: 如果是 main 分支 commit，使用 ci-{commit hash} 格式
+          # 策略5: 如果是 main 分支 commit，使用 ci-{commit hash} 格式
           elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             VERSION="ci-${COMMIT_SHORT}"
             echo "版本号来源于main分支commit: $VERSION"
-          # 策略5: 其他情况，生成基于日期和提交哈希的版本号
+          # 策略6: 其他情况，生成基于日期和提交哈希的版本号
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
