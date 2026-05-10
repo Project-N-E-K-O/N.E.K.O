@@ -2160,6 +2160,7 @@
                     metrics: this.experienceMetrics
                 })
                 : null;
+            this.avatarStage = this.createAvatarStage();
             this.tutorialFaceForwardLockSnapshot = null;
             this.enableTutorialFaceForwardLock();
 
@@ -2206,6 +2207,39 @@
             return pageOrder.filter(function (sceneId) {
                 return typeof sceneId === 'string' && sceneId.indexOf('intro_') === 0;
             });
+        }
+
+        createAvatarStage() {
+            if (this.page !== 'home') {
+                return null;
+            }
+            if (!window.YuiGuideAvatarStage || typeof window.YuiGuideAvatarStage.create !== 'function') {
+                return null;
+            }
+            try {
+                return window.YuiGuideAvatarStage.create({
+                    logger: console
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 模型演出模块初始化失败，降级为原教程表现:', error);
+                return null;
+            }
+        }
+
+        callAvatarStage(methodName) {
+            if (!this.avatarStage || typeof this.avatarStage[methodName] !== 'function') {
+                return Promise.resolve(false);
+            }
+            const args = Array.prototype.slice.call(arguments, 1);
+            try {
+                return Promise.resolve(this.avatarStage[methodName].apply(this.avatarStage, args)).catch((error) => {
+                    console.warn('[YuiGuide] 模型演出异步调用失败:', methodName, error);
+                    return false;
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 模型演出调用失败:', methodName, error);
+                return Promise.resolve(false);
+            }
         }
 
         enableTutorialFaceForwardLock() {
@@ -7148,6 +7182,13 @@
             if (this.wakeup && typeof this.wakeup.cancel === 'function') {
                 this.wakeup.cancel('termination');
             }
+            if (this.avatarStage && typeof this.avatarStage.release === 'function') {
+                try {
+                    this.avatarStage.release('termination');
+                } catch (error) {
+                    console.warn('[YuiGuide] 终止时释放模型演出模块失败:', error);
+                }
+            }
             this.clearIntroFlow();
             this.voiceQueue.stop();
             this.clearAllVirtualSpotlights();
@@ -7734,6 +7775,7 @@
             }
 
             this.applyTutorialFaceForwardLock();
+            this.callAvatarStage('polishWakeup');
             try {
                 const result = await this.wakeup.run();
                 this.recordExperienceMetric('wakeup_result', {
@@ -7746,6 +7788,8 @@
                     result: 'fallback',
                     reason: 'exception'
                 });
+            } finally {
+                await this.callAvatarStage('resumeAfterWakeup');
             }
         }
 
@@ -7774,10 +7818,10 @@
             if (this.isStopping()) {
                 return;
             }
-            this.focusAndHighlightChatInput(this.getChatInputTarget());
+            const inputTarget = this.getChatInputTarget();
+            this.focusAndHighlightChatInput(inputTarget);
 
             // Ghost cursor 出现 + 气泡引导用户点击输入框（解锁 autoplay）
-            const inputTarget = this.getChatInputTarget();
             const inputRect = this.getElementRect(inputTarget);
             if (inputRect) {
                 const cx = inputRect.left + inputRect.width / 2;
@@ -8688,6 +8732,14 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            if (this.avatarStage && typeof this.avatarStage.destroy === 'function') {
+                try {
+                    this.avatarStage.destroy('director-destroy');
+                } catch (error) {
+                    console.warn('[YuiGuide] 销毁模型演出模块失败:', error);
+                }
+            }
+            this.avatarStage = null;
             this.releaseTutorialFaceForwardLock();
             this.resumeCurrentSceneAfterResistance();
             this.clearExternalizedChatFx();

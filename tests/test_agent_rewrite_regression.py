@@ -425,6 +425,16 @@ _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-director.js",
 )
 
+_YUI_HOME_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "yui-guide-wakeup.js",
+    "avatar-performance-stage.js",
+    "yui-guide-avatar-stage.js",
+    "yui-guide-director.js",
+)
+
 
 def _script_tag_position(source: str, script_name: str) -> int:
     """Find the position of a `<script src="/static/{script_name}...">` tag,
@@ -448,7 +458,7 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
 
     positions = [
         _script_tag_position(source, name)
-        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        for name in (*_YUI_HOME_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
     ]
     assert positions == sorted(positions)
 
@@ -462,6 +472,8 @@ def test_home_template_loads_yui_wakeup_before_director():
             "yui-guide-overlay.js",
             "yui-guide-page-handoff.js",
             "yui-guide-wakeup.js",
+            "avatar-performance-stage.js",
+            "yui-guide-avatar-stage.js",
             "yui-guide-director.js",
             "universal-tutorial-manager.js",
         )
