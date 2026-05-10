@@ -721,7 +721,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
             gap_seconds = max(time.time() - float(session_data.get('last_activity_at') or 0.0), 0.0)
 
         try:
-            from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
+            from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
             from utils.language_utils import get_global_language
         except Exception as e:
             self.logger.error(f"加载主动问候提示词失败: {e}")
@@ -730,7 +730,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
         lang = get_global_language()
         template = get_greeting_prompt(gap_seconds, lang)
         if not template and force:
-            from config.prompts_proactive import GREETING_PROMPT_SHORT
+            from config.prompts.prompts_proactive import GREETING_PROMPT_SHORT
             lang_key = lang if lang in GREETING_PROMPT_SHORT else 'zh'
             template = GREETING_PROMPT_SHORT.get(lang_key, GREETING_PROMPT_SHORT['zh'])
         if not template:
@@ -754,7 +754,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
             return False
 
         try:
-            from config.prompts_proactive import get_proactive_chat_prompt
+            from config.prompts.prompts_proactive import get_proactive_chat_prompt
             from utils.language_utils import get_global_language
         except Exception as e:
             self.logger.error(f"加载主动对话提示词失败: {e}")
@@ -957,7 +957,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
         try:
             from main_logic.omni_offline_client import OmniOfflineClient
             from utils.config_manager import get_config_manager
-            from config.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
             from utils.language_utils import get_global_language
 
             config_manager = get_config_manager()
@@ -1081,7 +1081,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
         group_facing: bool = False,
     ) -> tuple[str, bool]:
         """构建 QQ 会话初始化提示词，复用 N.E.K.O 当前提示词链语义。"""
-        from config.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT
+        from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT
         from utils.language_utils import get_global_language
 
         try:

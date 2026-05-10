@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Resposta automática do QQ",
+  "plugin.description": "Lê mensagens do QQ e responde automaticamente conforme as permissões. Conecta-se ao QQ via OneBot, com controle de acesso em vários níveis e conversa com IA"
+}

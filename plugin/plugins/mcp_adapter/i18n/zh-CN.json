@@ -1,4 +1,6 @@
 {
+  "plugin.name": "MCP 适配器",
+  "plugin.description": "MCP (Model Context Protocol) 路由器：连接 MCP Server 并把它们的工具发布为 N.E.K.O 插件入口",
   "panel.subtitle": "管理 MCP Server 连接、发现 tools，并把外部能力发布为 N.E.K.O 插件入口。",
   "panel.errors.addServerUnavailable": "add_server 动作不可用",
   "panel.errors.addServerFormUnavailable": "当前上下文没有暴露 add_server 动作，无法使用自动表单。",

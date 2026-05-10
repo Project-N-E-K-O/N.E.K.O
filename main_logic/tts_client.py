@@ -18,7 +18,15 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.gemini_tts_voices import (
+    GEMINI_TTS_MODEL,
+    normalize_gemini_tts_voice,
+)
 from utils.logger_config import get_module_logger
+from utils.native_voice_registry import (
+    get_native_tts_worker,
+    register_tts_worker_resolver,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -195,11 +203,29 @@ _TTS_LANGUAGE_CODE_MAP = {
 def _get_tts_language_code() -> str:
     """获取 lanlan.app TTS 服务器所需的 language_code。"""
     try:
-        from utils.language_utils import get_global_language
-        lang = get_global_language()
+        from utils.language_utils import get_global_language_full, normalize_language_code
+        lang = normalize_language_code(get_global_language_full(), format='full')
     except Exception:
-        lang = 'zh'
+        lang = 'zh-CN'
     return _TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+
+
+def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_app: bool) -> dict:
+    """根据 URL 和语言提示组装 Step/free TTS 的 tts.create data 字段。"""
+    data = {
+        "session_id": sid_,
+        "voice_id": voice_id,
+        "response_format": "wav",
+        "sample_rate": 24000,
+    }
+    if is_lanlan_app:
+        data["voice_id"] = "Leda"
+        data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
+    else:
+        # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label。
+        if lang_hint == "ja":
+            data["voice_label"] = {"language": "日语"}
+    return data
 
 
 # ─── TTS Provider 元数据注册表 ─────────────────────────────────────────────
@@ -819,20 +845,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             - lanlan.app: language_code（Gemini streaming-TTS 风格；命中 ja 时覆盖全局语言）
             - lanlan.tech / 自建 StepFun: 协议对称，voice_label.language="日语"（命中 ja 时）
             """
-            data = {
-                "session_id": sid_,
-                "voice_id": voice_id,
-                "response_format": "wav",
-                "sample_rate": 24000,
-            }
-            if is_lanlan_app:
-                data["voice_id"] = "Leda"
-                data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
-            else:
-                # lanlan.tech (free) 和自建 StepFun (wss://api.stepfun.com/...) 共用同一协议
-                if lang_hint == "ja":
-                    data["voice_label"] = {"language": "日语"}
-            return data
+            return _build_step_tts_create_data(sid_, voice_id, lang_hint, is_lanlan_app)
 
         async def _flush_deferred_create(force: bool = False) -> bool:
             """尚未发 tts.create 时，检测语言并发送，然后把 pending 文本刷出去。
@@ -1198,7 +1211,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         receive_task.cancel()
         
         except Exception as e:
-            logger.error(f"StepFun实时TTS Worker错误: {e}")
+            logger.error(f"StepFun实时TTS Worker错误: {type(e).__name__}: {e!r}", exc_info=True)
             if 'HTTP 503' in str(e):
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
@@ -1221,7 +1234,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     try:
         asyncio.run(async_worker())
     except Exception as e:
-        logger.error(f"StepFun实时TTS Worker启动失败: {e}")
+        logger.error(f"StepFun实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
 
 
@@ -1589,7 +1602,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         receive_task.cancel()
         
         except Exception as e:
-            logger.error(f"Qwen实时TTS Worker错误: {e}")
+            logger.error(f"Qwen实时TTS Worker错误: {type(e).__name__}: {e!r}", exc_info=True)
             if 'HTTP 503' in str(e):
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
@@ -1612,7 +1625,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     try:
         asyncio.run(async_worker())
     except Exception as e:
-        logger.error(f"Qwen实时TTS Worker启动失败: {e}")
+        logger.error(f"Qwen实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
 
 
@@ -2135,13 +2148,18 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """Gemini TTS worker — 按句切分合成，httpx 异步直连。"""
     import httpx
 
-    if not voice_id:
-        voice_id = "Leda"
+    requested_voice_id = (voice_id or "").strip()
+    voice_id, voice_recognized = normalize_gemini_tts_voice(voice_id)
+    if requested_voice_id and not voice_recognized:
+        logger.warning(
+            "Gemini TTS voice '%s' is not in the supported catalog; falling back to '%s'",
+            requested_voice_id,
+            voice_id,
+        )
 
-    MODEL = "gemini-2.5-flash-preview-tts"
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent?key={audio_api_key}"
+        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
     )
     TTS_TIMEOUT = 12
     MAX_RETRIES = 3
@@ -2156,7 +2174,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TTS_MODEL}",
                 params={"key": audio_api_key},
                 timeout=10,
             )
@@ -2220,6 +2238,18 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         return synthesize, client.aclose
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
+
+
+def _resolve_gemini_native_tts_worker(cm):
+    """Native voice registry resolver for Gemini's TTS worker.
+
+    Gemini's native voices are billed against CORE_API_KEY (the same key the
+    realtime/LLM endpoint uses), not the optional custom TTS api_key.
+    """
+    return gemini_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+
+
+register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -2878,6 +2908,18 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
 
+    # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
+    # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
+    # 的 GPT-SoVITS / local CosyVoice fallthrough 拦截 —— _has_custom_tts 已经判断
+    # voice_id 不是用户克隆音色，这里 has_custom_voice 必为 False，是用户显式选择的
+    # 原生路径，应当尊重该选择喵。api_key 由 provider 注册的 resolver 提供
+    # (Gemini 用 CORE_API_KEY；若 fallback 到 get_model_api_config('tts_default')
+    # 会拿到自定义 TTS 的 key，鉴权必失败)。
+    if not has_custom_voice:
+        native = get_native_tts_worker(core_api_type, cm, voice_id)
+        if native is not None:
+            return native
+
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         if tts_config.get('is_custom'):
@@ -2895,6 +2937,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
     # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
+    # 注：core.py 的 _has_custom_tts 对 core_api_type=='gemini' + Gemini voice 短路返回 False，
+    # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
+    # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):

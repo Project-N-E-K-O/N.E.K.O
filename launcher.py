@@ -743,11 +743,11 @@ def run_merged_servers() -> int:
 
     # 分步 import（控制峰值内存 & 提供进度反馈）
     print("[Merged] Importing memory_server...", flush=True)
-    import memory_server
+    from app import memory_server
     print("[Merged] Importing agent_server...", flush=True)
-    import agent_server
+    from app import agent_server
     print("[Merged] Importing main_server...", flush=True)
-    import main_server
+    from app import main_server
 
     _apps = [
         (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
@@ -896,11 +896,11 @@ def run_memory_server(
             except: # noqa
                 pass
         
-        import memory_server
+        from app import memory_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
         
         _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
@@ -993,11 +993,11 @@ def run_agent_server(
             except: # noqa
                 pass
         
-        import agent_server
+        from app import agent_server
         import uvicorn
         if import_event:
             import_event.set()
-        
+
         print(f"[Agent Server] Starting on port {TOOL_SERVER_PORT}")
         
         # Agent Server 不需要等待，立即通知就绪
@@ -1058,7 +1058,7 @@ def run_main_server(
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
         
         print("[Main Server] Importing main_server module...")
-        import main_server
+        from app import main_server
         import uvicorn
         if import_event:
             import_event.set()

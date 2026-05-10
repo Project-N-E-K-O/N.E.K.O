@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Acompanhante de Slay the Spire 2",
+  "plugin.description": "Conecta-se ao agente local de Slay the Spire 2, lê o estado da partida e oferece jogo automático, passos individuais, sugestões de cartas, comandos em linguagem natural, orientação suave da gatinha, relatórios e comentários ao vivo. Atualmente suporta principalmente os personagens originais"
+}

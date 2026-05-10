@@ -29,6 +29,10 @@
     /* 描边宽度（视觉上的） */
     --dropdown-text-max-width: 200px;
     /* 下拉菜单项文字最大宽度，超出显示省略号 */
+    --model-manager-control-width: 270px;
+    /* 模型管理侧栏主控件统一宽度，避免不同语言把按钮撑成不同尺寸 */
+    --model-manager-side-action-gap: 8px;
+    /* 主控件右侧图标按钮间距 */
 }
 
 /* 通用按钮文字截断样式 - 合并重复规则 */
@@ -38,6 +42,7 @@
 #vrm-model-select-btn span:not(.dropdown-arrow),
 #vrm-animation-select-btn span:not(.dropdown-arrow),
 #vrm-expression-select-btn span:not(.dropdown-arrow),
+#mmd-model-select-btn span:not(.dropdown-arrow),
 #mmd-animation-select-btn span:not(.dropdown-arrow) {
     position: relative;
     z-index: 20;
@@ -2888,7 +2893,9 @@ body {
 .persistent-expression-dropdown::-webkit-scrollbar,
 .vrm-model-dropdown::-webkit-scrollbar,
 .vrm-animation-dropdown::-webkit-scrollbar,
-.vrm-expression-dropdown::-webkit-scrollbar {
+.vrm-expression-dropdown::-webkit-scrollbar,
+.mmd-model-dropdown::-webkit-scrollbar,
+.mmd-animation-dropdown::-webkit-scrollbar {
     width: 8px;
 }
 
@@ -2899,7 +2906,9 @@ body {
 .persistent-expression-dropdown::-webkit-scrollbar-track,
 .vrm-model-dropdown::-webkit-scrollbar-track,
 .vrm-animation-dropdown::-webkit-scrollbar-track,
-.vrm-expression-dropdown::-webkit-scrollbar-track {
+.vrm-expression-dropdown::-webkit-scrollbar-track,
+.mmd-model-dropdown::-webkit-scrollbar-track,
+.mmd-animation-dropdown::-webkit-scrollbar-track {
     background: #f0f8ff;
     border-radius: 4px;
 }
@@ -2911,7 +2920,9 @@ body {
 .persistent-expression-dropdown::-webkit-scrollbar-thumb,
 .vrm-model-dropdown::-webkit-scrollbar-thumb,
 .vrm-animation-dropdown::-webkit-scrollbar-thumb,
-.vrm-expression-dropdown::-webkit-scrollbar-thumb {
+.vrm-expression-dropdown::-webkit-scrollbar-thumb,
+.mmd-model-dropdown::-webkit-scrollbar-thumb,
+.mmd-animation-dropdown::-webkit-scrollbar-thumb {
     background: #96e8ff;
     border-radius: 4px;
 }
@@ -2923,7 +2934,9 @@ body {
 .persistent-expression-dropdown::-webkit-scrollbar-thumb:hover,
 .vrm-model-dropdown::-webkit-scrollbar-thumb:hover,
 .vrm-animation-dropdown::-webkit-scrollbar-thumb:hover,
-.vrm-expression-dropdown::-webkit-scrollbar-thumb:hover {
+.vrm-expression-dropdown::-webkit-scrollbar-thumb:hover,
+.mmd-model-dropdown::-webkit-scrollbar-thumb:hover,
+.mmd-animation-dropdown::-webkit-scrollbar-thumb:hover {
     background: #7dd3ff;
 }
 
@@ -2935,7 +2948,9 @@ body {
 .persistent-expression-dropdown.has-scrollbar,
 .vrm-model-dropdown.has-scrollbar,
 .vrm-animation-dropdown.has-scrollbar,
-.vrm-expression-dropdown.has-scrollbar {
+.vrm-expression-dropdown.has-scrollbar,
+.mmd-model-dropdown.has-scrollbar,
+.mmd-animation-dropdown.has-scrollbar {
     border-radius: 12px 0 0 12px;
 }
 
@@ -2947,7 +2962,9 @@ body {
 .persistent-expression-dropdown.has-scrollbar .dropdown-item,
 .vrm-model-dropdown.has-scrollbar .dropdown-item,
 .vrm-animation-dropdown.has-scrollbar .dropdown-item,
-.vrm-expression-dropdown.has-scrollbar .dropdown-item {
+.vrm-expression-dropdown.has-scrollbar .dropdown-item,
+.mmd-model-dropdown.has-scrollbar .dropdown-item,
+.mmd-animation-dropdown.has-scrollbar .dropdown-item {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
 }
@@ -2959,7 +2976,9 @@ body {
 .persistent-expression-dropdown.has-scrollbar .dropdown-item:first-child,
 .vrm-model-dropdown.has-scrollbar .dropdown-item:first-child,
 .vrm-animation-dropdown.has-scrollbar .dropdown-item:first-child,
-.vrm-expression-dropdown.has-scrollbar .dropdown-item:first-child {
+.vrm-expression-dropdown.has-scrollbar .dropdown-item:first-child,
+.mmd-model-dropdown.has-scrollbar .dropdown-item:first-child,
+.mmd-animation-dropdown.has-scrollbar .dropdown-item:first-child {
     border-top-right-radius: 0;
 }
 
@@ -2970,7 +2989,9 @@ body {
 .persistent-expression-dropdown.has-scrollbar .dropdown-item:last-child,
 .vrm-model-dropdown.has-scrollbar .dropdown-item:last-child,
 .vrm-animation-dropdown.has-scrollbar .dropdown-item:last-child,
-.vrm-expression-dropdown.has-scrollbar .dropdown-item:last-child {
+.vrm-expression-dropdown.has-scrollbar .dropdown-item:last-child,
+.mmd-model-dropdown.has-scrollbar .dropdown-item:last-child,
+.mmd-animation-dropdown.has-scrollbar .dropdown-item:last-child {
     border-bottom-right-radius: 0;
 }
 
@@ -2982,7 +3003,9 @@ body {
 .persistent-expression-dropdown,
 .vrm-model-dropdown,
 .vrm-animation-dropdown,
-.vrm-expression-dropdown {
+.vrm-expression-dropdown,
+.mmd-model-dropdown,
+.mmd-animation-dropdown {
     scrollbar-width: thin;
     scrollbar-color: #96e8ff #f0f8ff;
 }
@@ -3407,94 +3430,279 @@ input:checked + .toggle-slider:before {
     transform: translateX(18px);
 }
 
-/* ==================== 中文模式下按钮固定宽度 ==================== */
-/* 中文文字较短，固定宽度更整齐美观 */
-html[lang|="zh"] #backToMainBtn,
-html[lang|="zh"] #upload-btn,
-html[lang|="zh"] #model-type-select-btn,
-html[lang|="zh"] #live2d-model-select-btn,
-html[lang|="zh"] #motion-select-btn,
-html[lang|="zh"] #expression-select-btn,
-html[lang|="zh"] #persistent-expression-select-btn,
-html[lang|="zh"] #vrm-model-select-btn,
-html[lang|="zh"] #vrm-animation-select-btn,
-html[lang|="zh"] #vrm-expression-select-btn,
-html[lang|="zh"] #mmd-animation-select-btn,
-html[lang|="zh"] #upload-mmd-animation-btn,
-html[lang|="zh"] #save-position-btn,
-html[lang|="zh"] #emotion-config-btn,
-html[lang|="zh"] #live3d-emotion-config-btn,
-html[lang|="zh"] #parameter-editor-btn,
-html[lang|="zh"] #touch-anim-btn {
-    width: 270px !important;
-    min-width: 270px !important;
-    padding: 10px 25px !important;
-    justify-content: center !important;
+/* ==================== 模型管理侧栏主控件固定比例 ==================== */
+/* 所有语言共用同一套宽度，避免翻译文本改变按钮尺寸 */
+#backToMainBtn,
+#upload-btn,
+#model-type-select-btn,
+#live2d-model-select-btn,
+#motion-select-btn,
+#expression-select-btn,
+#persistent-expression-select-btn,
+#vrm-model-select-btn,
+#vrm-animation-select-btn,
+#vrm-expression-select-btn,
+#mmd-model-select-btn,
+#mmd-animation-select-btn,
+#upload-mmd-animation-btn,
+#parameter-editor-btn,
+#touch-anim-btn {
+    width: var(--model-manager-control-width) !important;
+    min-width: var(--model-manager-control-width) !important;
+    max-width: var(--model-manager-control-width) !important;
+    box-sizing: border-box !important;
 }
 
-/* 中文模式下 span 的 margin 清零 */
-html[lang|="zh"] #backToMainBtn span:not(.dropdown-arrow),
-html[lang|="zh"] #upload-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #model-type-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #live2d-model-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #motion-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #expression-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #vrm-model-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #mmd-animation-select-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #upload-mmd-animation-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #parameter-editor-btn span:not(.dropdown-arrow),
-html[lang|="zh"] #touch-anim-btn span:not(.dropdown-arrow) {
+#backToMainBtn,
+#upload-btn,
+#model-type-select-btn,
+#live2d-model-select-btn,
+#motion-select-btn,
+#expression-select-btn,
+#persistent-expression-select-btn,
+#vrm-model-select-btn,
+#vrm-animation-select-btn,
+#vrm-expression-select-btn,
+#mmd-model-select-btn,
+#mmd-animation-select-btn,
+#upload-mmd-animation-btn,
+#parameter-editor-btn,
+#touch-anim-btn {
+    padding: 10px 34px 10px 60px !important;
+    justify-content: flex-start !important;
+}
+
+#backToMainBtn {
+    padding-right: 60px !important;
+}
+
+#save-position-btn,
+#emotion-config-btn,
+#live3d-emotion-config-btn {
+    width: var(--model-manager-control-width) !important;
+    min-width: var(--model-manager-control-width) !important;
+    max-width: var(--model-manager-control-width) !important;
+    padding: 10px 20px !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+}
+
+#backToMainBtn span:not(.dropdown-arrow),
+#upload-btn span:not(.dropdown-arrow),
+#model-type-select-btn span:not(.dropdown-arrow),
+#live2d-model-select-btn span:not(.dropdown-arrow),
+#motion-select-btn span:not(.dropdown-arrow),
+#expression-select-btn span:not(.dropdown-arrow),
+#persistent-expression-select-btn span:not(.dropdown-arrow),
+#vrm-model-select-btn span:not(.dropdown-arrow),
+#vrm-animation-select-btn span:not(.dropdown-arrow),
+#vrm-expression-select-btn span:not(.dropdown-arrow),
+#mmd-model-select-btn span:not(.dropdown-arrow),
+#mmd-animation-select-btn span:not(.dropdown-arrow),
+#upload-mmd-animation-btn span:not(.dropdown-arrow),
+#parameter-editor-btn span:not(.dropdown-arrow),
+#touch-anim-btn span:not(.dropdown-arrow),
+#save-position-btn span,
+#emotion-config-btn span,
+#live3d-emotion-config-btn span {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
     margin-left: 0 !important;
     margin-right: 0 !important;
-    flex: none !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+    letter-spacing: 0 !important;
 }
 
-/* ==================== 英文模式下按钮固定宽度 ==================== */
-/* 英文文字较长，使用稍大的固定宽度保持整齐 */
-html[lang|="en"] #backToMainBtn,
-html[lang|="en"] #upload-btn,
-html[lang|="en"] #model-type-select-btn,
-html[lang|="en"] #live2d-model-select-btn,
-html[lang|="en"] #motion-select-btn,
-html[lang|="en"] #expression-select-btn,
-html[lang|="en"] #persistent-expression-select-btn,
-html[lang|="en"] #vrm-model-select-btn,
-html[lang|="en"] #vrm-animation-select-btn,
-html[lang|="en"] #vrm-expression-select-btn,
-html[lang|="en"] #mmd-animation-select-btn,
-html[lang|="en"] #upload-mmd-animation-btn,
-html[lang|="en"] #save-position-btn,
-html[lang|="en"] #emotion-config-btn,
-html[lang|="en"] #live3d-emotion-config-btn,
-html[lang|="en"] #parameter-editor-btn,
-html[lang|="en"] #touch-anim-btn {
-    width: 270px !important;
-    min-width: 270px !important;
-    padding: 10px 25px !important;
-    justify-content: center !important;
+#mmd-model-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    color: white;
+    cursor: pointer;
+    display: inline-flex !important;
+    align-items: center;
+    font-weight: bold;
+    min-height: 54px;
+    overflow: hidden !important;
+    position: relative;
+    text-align: left !important;
 }
 
-/* 英文模式下 span 的 margin 清零 */
-html[lang|="en"] #backToMainBtn span:not(.dropdown-arrow),
-html[lang|="en"] #upload-btn span:not(.dropdown-arrow),
-html[lang|="en"] #model-type-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #motion-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #expression-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #mmd-animation-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #upload-mmd-animation-btn span:not(.dropdown-arrow),
-html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow),
-html[lang|="en"] #touch-anim-btn span:not(.dropdown-arrow) {
+#mmd-model-select-btn .mmd-model-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#mmd-model-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#mmd-model-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#mmd-model-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#delete-mmd-model-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
     margin-left: 0 !important;
-    margin-right: 0 !important;
-    flex: none !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#delete-mmd-model-btn img {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#delete-mmd-model-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#delete-mmd-model-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+.model-type-dropdown,
+.live2d-model-dropdown,
+.motion-dropdown,
+.expression-dropdown,
+.persistent-expression-dropdown,
+.vrm-model-dropdown,
+.vrm-animation-dropdown,
+.vrm-expression-dropdown,
+.mmd-model-dropdown,
+.mmd-animation-dropdown {
+    width: var(--model-manager-control-width) !important;
+    min-width: var(--model-manager-control-width) !important;
+    max-width: var(--model-manager-control-width) !important;
+    box-sizing: border-box;
+}
+
+.mmd-model-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.mmd-model-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.mmd-model-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.mmd-model-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.mmd-model-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+.model-type-dropdown .dropdown-item,
+.live2d-model-dropdown .dropdown-item,
+.motion-dropdown .dropdown-item,
+.expression-dropdown .dropdown-item,
+.persistent-expression-dropdown .dropdown-item,
+.vrm-model-dropdown .dropdown-item,
+.vrm-animation-dropdown .dropdown-item,
+.vrm-expression-dropdown .dropdown-item,
+.mmd-model-dropdown .dropdown-item,
+.mmd-animation-dropdown .dropdown-item {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.model-type-dropdown .dropdown-item-text,
+.live2d-model-dropdown .dropdown-item-text,
+.motion-dropdown .dropdown-item-text,
+.expression-dropdown .dropdown-item-text,
+.persistent-expression-dropdown .dropdown-item-text,
+.vrm-model-dropdown .dropdown-item-text,
+.vrm-animation-dropdown .dropdown-item-text,
+.vrm-expression-dropdown .dropdown-item-text,
+.mmd-model-dropdown .dropdown-item-text,
+.mmd-animation-dropdown .dropdown-item-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0;
 }
 
 #sidebar .sidebar-controls {
@@ -3540,12 +3748,14 @@ html[lang|="en"] #touch-anim-btn span:not(.dropdown-arrow) {
 #sidebar.mode-live2d #delete-model-btn,
 #sidebar.mode-live2d #play-motion-btn,
 #sidebar.mode-live2d #play-expression-btn {
-    margin-left: 8px !important;
+    margin-left: var(--model-manager-side-action-gap) !important;
 }
 
 #sidebar.mode-vrm #delete-model-btn,
+#sidebar.mode-vrm #delete-mmd-model-btn,
 #sidebar.mode-vrm #play-vrm-animation-btn,
 #sidebar.mode-vrm #trigger-vrm-expression-btn,
-#sidebar.mode-vrm #play-mmd-animation-btn {
-    margin-left: 8px !important;
+#sidebar.mode-vrm #play-mmd-animation-btn,
+#sidebar.mode-vrm #delete-mmd-animation-btn {
+    margin-left: var(--model-manager-side-action-gap) !important;
 }

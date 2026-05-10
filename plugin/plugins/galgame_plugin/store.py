@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
+import os
+import threading
+import time
+import uuid
+from pathlib import Path
 from typing import Any
+
+import portalocker
 
 from .models import (
     ADVANCE_SPEEDS,
@@ -28,6 +37,9 @@ from .models import (
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_TRIGGER_MODE,
     STORE_OCR_WINDOW_TARGET,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+    STORE_RAPIDOCR_LANG_TYPE,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
@@ -39,19 +51,143 @@ from .models import (
 
 
 class GalgameStore:
-    def __init__(self, plugin_store, logger) -> None:
-        self._store = plugin_store
+    _thread_lock = threading.RLock()
+
+    def __init__(self, store_path: Path, logger) -> None:
+        self._store_path = Path(store_path)
         self._logger = logger
+        self._loaded = False
+        self._values: dict[str, Any] = {}
+
+    @staticmethod
+    def _is_json_value(value: Any) -> bool:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return True
+        if isinstance(value, list):
+            return all(GalgameStore._is_json_value(item) for item in value)
+        if isinstance(value, dict):
+            return all(
+                isinstance(key, str) and GalgameStore._is_json_value(item)
+                for key, item in value.items()
+            )
+        return False
+
+    def _lock_path(self) -> Path:
+        return self._store_path.with_name(f"{self._store_path.name}.lock")
+
+    def _backup_path(self) -> Path:
+        return self._store_path.with_name(f"{self._store_path.name}.bak")
+
+    def _unique_tmp_path(self, suffix: str) -> Path:
+        token = f"{os.getpid()}.{time.time_ns()}.{uuid.uuid4().hex}"
+        return self._store_path.with_name(f".{self._store_path.name}.{token}.{suffix}")
+
+    @contextmanager
+    def _locked_store(self):
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._thread_lock, portalocker.Lock(str(self._lock_path()), mode="a+", timeout=10):
+            yield
+
+    def _read_values_from_path(self, path: Path) -> dict[str, Any]:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("galgame store json root is not an object")
+        return {
+            str(key): value
+            for key, value in raw.items()
+            if isinstance(key, str) and self._is_json_value(value)
+        }
+
+    def _load_values(self, *, force: bool = False, locked: bool = False) -> None:
+        if self._loaded and not force:
+            return
+        if not locked:
+            with self._locked_store():
+                self._load_values(force=force, locked=True)
+            return
+
+        if self._store_path.exists():
+            try:
+                values = self._read_values_from_path(self._store_path)
+            except Exception as exc:
+                self._logger.warning("failed to read galgame store json {}: {}", self._store_path, exc)
+                backup_path = self._backup_path()
+                if not backup_path.exists():
+                    raise
+                try:
+                    values = self._read_values_from_path(backup_path)
+                except Exception as backup_exc:
+                    self._logger.warning(
+                        "failed to recover galgame store json from backup {}: {}",
+                        backup_path,
+                        backup_exc,
+                    )
+                    raise
+                self._logger.warning(
+                    "recovered galgame store values from backup {} after read failure",
+                    backup_path,
+                )
+            self._values = values
+        else:
+            self._values = {}
+        self._loaded = True
+
+    def _refresh_backup(self) -> None:
+        if not self._store_path.exists():
+            return
+        backup_tmp_path = self._unique_tmp_path("bak.tmp")
+        try:
+            backup_tmp_path.write_bytes(self._store_path.read_bytes())
+            os.replace(backup_tmp_path, self._backup_path())
+        finally:
+            backup_tmp_path.unlink(missing_ok=True)
+
+    def _save_values(self, *, locked: bool = False) -> None:
+        if not locked:
+            with self._locked_store():
+                self._save_values(locked=True)
+            return
+
+        tmp_path = self._unique_tmp_path("tmp")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as tmp_file:
+                json.dump(self._values, tmp_file, ensure_ascii=False, indent=2, sort_keys=True)
+                tmp_file.write("\n")
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            self._refresh_backup()
+            os.replace(tmp_path, self._store_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def _read(self, key: str, default: Any) -> Any:
-        if not getattr(self._store, "enabled", False):
-            return default
-        return self._store._read_value(key, default)  # type: ignore[attr-defined]
+        with self._locked_store():
+            self._load_values(force=True, locked=True)
+            return self._values.get(key, default)
 
     def _write(self, key: str, value: Any) -> None:
-        if not getattr(self._store, "enabled", False):
-            return
-        self._store._write_value(key, value)  # type: ignore[attr-defined]
+        if not self._is_json_value(value):
+            raise TypeError("value must be JSON-compatible")
+        with self._locked_store():
+            self._load_values(force=True, locked=True)
+            self._values[key] = value
+            self._save_values(locked=True)
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if value in {0, 1}:
+                return bool(value)
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        return None
 
     def load_config_overrides(self) -> dict[str, Any]:
         raw_backend = self._read(STORE_OCR_BACKEND_SELECTION, None)
@@ -63,6 +199,19 @@ class GalgameStore:
         raw_vision = self._read(STORE_LLM_VISION_ENABLED, None)
         raw_px = self._read(STORE_LLM_VISION_MAX_IMAGE_PX, None)
         raw_templates = self._read(STORE_OCR_SCREEN_TEMPLATES, None)
+        raw_rapidocr_lang = self._read(STORE_RAPIDOCR_LANG_TYPE, None)
+        raw_rapidocr_auto = self._read(STORE_RAPIDOCR_AUTO_DETECT_LANG, None)
+        raw_rapidocr_last_lang = self._read(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG, None)
+        rapidocr_lang = (
+            raw_rapidocr_lang.strip().lower()
+            if isinstance(raw_rapidocr_lang, str)
+            else ""
+        )
+        rapidocr_last_lang = (
+            raw_rapidocr_last_lang.strip().lower()
+            if isinstance(raw_rapidocr_last_lang, str)
+            else ""
+        )
 
         return {
             STORE_OCR_BACKEND_SELECTION: (
@@ -96,6 +245,19 @@ class GalgameStore:
                 else None
             ),
             STORE_OCR_SCREEN_TEMPLATES: raw_templates if isinstance(raw_templates, list) else None,
+            STORE_RAPIDOCR_LANG_TYPE: (
+                rapidocr_lang
+                if rapidocr_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
+            STORE_RAPIDOCR_AUTO_DETECT_LANG: (
+                self._coerce_bool(raw_rapidocr_auto)
+            ),
+            STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG: (
+                rapidocr_last_lang
+                if rapidocr_last_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
         }
 
     def persist_config_override(self, key: str, value: Any) -> None:

@@ -44,6 +44,29 @@
         return payload;
     }
 
+    function getCurrentLanguage() {
+        try {
+            if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
+                return window.i18next.language;
+            }
+            if (window.i18n && typeof window.i18n.language === 'string' && window.i18n.language) {
+                return window.i18n.language;
+            }
+            if (typeof localStorage !== 'undefined') {
+                const cached = localStorage.getItem('i18nextLng');
+                if (cached) {
+                    return cached;
+                }
+            }
+            if (typeof navigator !== 'undefined' && navigator.language) {
+                return navigator.language;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
     function ensureStyles() {
         if (document.getElementById(STYLE_ID)) {
             return;
@@ -86,6 +109,7 @@
             this.restoreBodyPointerEventsNeeded = false;
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
+            this.currentLanguage = '';
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
@@ -155,7 +179,8 @@
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             this.ensureOverlay();
             this.renderStageOne();
             this.showOverlay();
@@ -338,7 +363,8 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
             }
@@ -357,7 +383,8 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.presets = await this.fetchPresets();
+            this.currentLanguage = getCurrentLanguage();
+            this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
             }
@@ -372,8 +399,12 @@
             return String(payload.current_catgirl || '').trim();
         }
 
-        async fetchPresets() {
-            const payload = await requestJson('/api/characters/persona-presets');
+        async fetchPresets(language) {
+            const requestLanguage = String(language || '').trim();
+            const url = requestLanguage
+                ? `/api/characters/persona-presets?language=${encodeURIComponent(requestLanguage)}`
+                : '/api/characters/persona-presets';
+            const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
         }
 
@@ -760,7 +791,7 @@
                 );
                 card.appendChild(quote);
 
-                card.addEventListener('click', () => this.renderStageTwo(preset));
+                card.addEventListener('click', () => this.renderStageTwo(preset, this.currentLanguage));
                 grid.appendChild(card);
             });
 
@@ -794,11 +825,12 @@
             stageTwo.hidden = true;
         }
 
-        renderStageTwo(preset) {
+        renderStageTwo(preset, language) {
             if (!this.overlay || !preset) {
                 return;
             }
 
+            const requestLanguage = String(language || '').trim();
             this.selectedPresetId = preset.preset_id;
 
             const stageOne = this.overlay.querySelector('.character-personality-stage-one');
@@ -952,6 +984,7 @@
                             body: JSON.stringify({
                                 preset_id: selectedPresetId,
                                 source: openReason,
+                                i18n_language: requestLanguage,
                             }),
                         }
                     );

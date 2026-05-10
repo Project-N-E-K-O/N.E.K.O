@@ -30,6 +30,7 @@ import base64
 import hashlib
 import struct
 import tempfile
+import wave
 import zlib
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -40,6 +41,8 @@ import httpx
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from .shared_state import (
     get_config_manager,
     get_session_manager,
@@ -61,6 +64,10 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
     strip_generated_persona_selection_prompt,
+)
+from utils.native_voice_registry import (
+    get_active_realtime_native_provider,
+    get_native_voice_catalog_for_ui,
 )
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -86,7 +93,7 @@ from utils.voice_clone import (
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
-from utils.language_utils import normalize_language_code
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -179,6 +186,180 @@ def _build_persona_selection_payload(character_payload: dict) -> dict:
         "selected_at": str(override.get("selected_at") or "").strip(),
         "profile": dict(profile) if isinstance(profile, dict) else {},
     }
+
+
+def _normalize_persona_request_language(raw_language: object) -> str | None:
+    """归一化人格选择请求携带的界面语言，无效值保持 None 让下游使用现有兜底。"""
+    raw = str(raw_language or "").strip()
+    if not raw or not is_supported_language_code(raw):
+        return None
+    return normalize_language_code(raw, format="full")
+
+
+def _get_persona_request_language(request: Request) -> str | None:
+    """从查询参数或 Accept-Language 里提取人格预设语言。"""
+    language = request.query_params.get("language") or request.query_params.get("i18n_language")
+    if language:
+        normalized = _normalize_persona_request_language(language)
+        if normalized is not None:
+            return normalized
+    accept_lang = request.headers.get("Accept-Language", "")
+    if accept_lang:
+        for language_part in accept_lang.split(","):
+            normalized = _normalize_persona_request_language(language_part.split(";")[0].strip())
+            if normalized is not None:
+                return normalized
+    return None
+
+
+def _get_persona_payload_request_language(payload: object, request: Request) -> str | None:
+    """优先使用请求体语言；无效或缺失时回退到查询参数和请求头。"""
+    body_language = None
+    if isinstance(payload, dict):
+        body_language = payload.get("i18n_language") or payload.get("language")
+    if body_language:
+        normalized = _normalize_persona_request_language(body_language)
+        if normalized is not None:
+            return normalized
+    return _get_persona_request_language(request)
+
+
+def _normalize_voice_preview_language(raw_language: object) -> str | None:
+    """归一化语音试听语言，无效值返回 None 以便继续尝试其他来源。"""
+    raw = str(raw_language or "").strip()
+    if not raw or not is_supported_language_code(raw):
+        return None
+    normalized = normalize_language_code(raw, format="full")
+    if normalized in VOICE_PREVIEW_TEXTS:
+        return normalized
+    return None
+
+
+def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:
+    """按前端 i18n 语言选择试听文本，缺省保持旧版中文试听。"""
+    for candidate in (language, i18n_language):
+        normalized = _normalize_voice_preview_language(candidate)
+        if normalized:
+            return normalized
+
+    accept_lang = request.headers.get("Accept-Language", "")
+    if accept_lang:
+        for language_part in accept_lang.split(","):
+            normalized = _normalize_voice_preview_language(language_part.split(";")[0].strip())
+            if normalized:
+                return normalized
+
+    return "zh-CN"
+
+
+def _is_free_preset_voice_id(voice_id: object) -> bool:
+    """判断是否为运行时免费预设音色。"""
+    normalized = str(voice_id or "").strip()
+    if not normalized:
+        return False
+    try:
+        from utils.api_config_loader import get_free_voices
+        free_voice_ids = set((get_free_voices() or {}).values())
+    except Exception:
+        return False
+    return normalized in free_voice_ids
+
+
+def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
+    """读取上游返回的 WAV，返回 PCM 与声道、采样宽度、采样率。"""
+    with io.BytesIO(audio_bytes) as wav_io:
+        with wave.open(wav_io, "rb") as wav_file:
+            pcm_data = wav_file.readframes(wav_file.getnframes())
+            return (
+                pcm_data,
+                wav_file.getnchannels(),
+                wav_file.getsampwidth(),
+                wav_file.getframerate(),
+            )
+
+
+def _build_wav_payload(pcm_chunks: list[bytes], channels: int, sample_width: int, sample_rate: int) -> bytes:
+    """把多个 PCM 片段封装为单个 WAV，供前端 Audio 直接播放。"""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(pcm_chunks))
+    return out.getvalue()
+
+
+async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
+    """使用 free TTS WebSocket 为免费预设音色生成试听 WAV。"""
+    import websockets
+
+    from main_logic.tts_client import _adjust_free_tts_url
+
+    tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
+    headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
+    lang_hint = "ja" if preview_language == "ja" else None
+    session_id = ""
+    pcm_chunks: list[bytes] = []
+    wav_meta: tuple[int, int, int] | None = None
+
+    async with asyncio.timeout(20):
+        async with websockets.connect(tts_url, additional_headers=headers) as ws:
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "tts.connection.done":
+                    session_id = event.get("data", {}).get("session_id") or ""
+                    break
+                if event_type == "tts.response.error":
+                    raise RuntimeError(str(event.get("data") or event))
+
+            if not session_id:
+                raise RuntimeError("free TTS connection did not return session_id")
+
+            create_data = {
+                "session_id": session_id,
+                "voice_id": voice_id,
+                "response_format": "wav",
+                "sample_rate": 24000,
+            }
+            if lang_hint == "ja":
+                create_data["voice_label"] = {"language": "日语"}
+
+            await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
+            await ws.send(json.dumps({
+                "type": "tts.text.delta",
+                "data": {"session_id": session_id, "text": preview_line},
+            }))
+            await ws.send(json.dumps({
+                "type": "tts.text.done",
+                "data": {"session_id": session_id},
+            }))
+
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=12.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "tts.response.error":
+                    raise RuntimeError(str(event.get("data") or event))
+                if event_type == "tts.response.audio.delta":
+                    audio_b64 = event.get("data", {}).get("audio", "")
+                    if audio_b64:
+                        pcm_data, channels, sample_width, sample_rate = _read_wav_payload(base64.b64decode(audio_b64))
+                        pcm_chunks.append(pcm_data)
+                        wav_meta = wav_meta or (channels, sample_width, sample_rate)
+                elif event_type in ("tts.response.done", "tts.response.audio.done"):
+                    break
+
+    if not pcm_chunks or wav_meta is None:
+        raise RuntimeError("free TTS did not return audio")
+
+    channels, sample_width, sample_rate = wav_meta
+    return _build_wav_payload(pcm_chunks, channels, sample_width, sample_rate)
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -2034,10 +2215,10 @@ async def get_current_catgirl():
 
 
 @router.get('/persona-presets')
-async def list_persona_presets_route():
+async def list_persona_presets_route(request: Request):
     return _json_no_store_response({
         "success": True,
-        "presets": list_persona_presets(),
+        "presets": list_persona_presets(lang=_get_persona_request_language(request)),
     })
 
 
@@ -2132,10 +2313,12 @@ async def update_character_persona_selection(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '角色不存在'}, status_code=404)
 
     selected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    request_language = _get_persona_payload_request_language(payload, request)
     override_payload = build_persona_override_payload(
         preset_id,
         source=source,
         selected_at=selected_at,
+        lang=request_language,
     )
     if override_payload is None:
         return JSONResponse({'success': False, 'error': '无效的人格预设'}, status_code=400)
@@ -2873,6 +3056,10 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
     core_config = await _config_manager.aget_core_config()
+    active_native_provider = get_active_realtime_native_provider(_config_manager)
+    if active_native_provider:
+        result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
+
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')
         openrouter_url = core_config.get('OPENROUTER_URL', '')
@@ -2898,13 +3085,19 @@ async def get_voices():
 
 
 @router.get('/voice_preview')
-async def get_voice_preview(voice_id: str):
+async def get_voice_preview(
+    request: Request,
+    voice_id: str,
+    language: str | None = None,
+    i18n_language: str | None = None,
+):
     """获取音色预览音频"""
     try:
         _config_manager = get_config_manager()
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
+        is_free_preset_voice = _is_free_preset_voice_id(voice_id)
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
@@ -2922,7 +3115,30 @@ async def get_voice_preview(voice_id: str):
 
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
         
-        text = "喵喵喵～这里是neko～很高兴见到你～"
+        preview_language = _get_voice_preview_language(request, language, i18n_language)
+        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+        if is_free_preset_voice:
+            try:
+                audio_data = await _synthesize_free_voice_preview(
+                    voice_id=voice_id,
+                    preview_line=text,
+                    preview_language=preview_language,
+                    audio_api_key=audio_api_key or '',
+                )
+                logger.info(f"免费预设音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/wav'
+                }
+            except Exception as e:
+                logger.error(f"免费预设音色 {voice_id} 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'免费预设音色预览生成失败: {str(e)}'
+                }, status_code=500)
+
         if provider in ('minimax', 'minimax_intl'):
             minimax_api_key = _config_manager.get_tts_api_key(provider)
             if not minimax_api_key:

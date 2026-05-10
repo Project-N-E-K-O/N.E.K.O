@@ -249,7 +249,7 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
     ai_behavior="blind" must call mgr.passthrough_to_chat_bubble exactly
     once with the event's text, source_kind, and task_id."""
     # Late import: main_server is heavy; only import when needed.
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -259,9 +259,9 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
     fake_mgr._pending_agent_callback_task = None
 
     # Force the manager resolution helpers in main_server to find our fake.
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
     # Also bypass ``_is_websocket_connected`` so HUD path is skipped.
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -299,7 +299,7 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
     callback paths in _handle_agent_event use a stripped local. CodeRabbit
     PR #1128 r3182231689 — pre-fix the call shared the stripped local and
     silently swallowed surrounding whitespace/newlines."""
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -308,8 +308,8 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -339,7 +339,7 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     enqueues the LLM callback, and the AI's own response is what fills
     the chat bubble.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -348,8 +348,8 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -385,7 +385,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
     (blind + proactive) that today the bridge wouldn't produce, to lock
     in the host-side defense.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -394,8 +394,8 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -427,7 +427,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
 async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkeypatch):
     """Symmetric to the proactive case: blind + passive must also be
     forced to silent on the host side."""
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -436,8 +436,8 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -467,7 +467,7 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
     with a "plugin" default — otherwise non-plugin sources get
     mislabeled as ``plugin`` in the chat bubble metadata.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -476,8 +476,8 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -504,7 +504,7 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
 async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(monkeypatch):
     """visibility=["hud"] + ai_behavior="blind" → HUD-only toast path,
     passthrough must NOT fire (no "chat" in visibility)."""
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -513,8 +513,8 @@ async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -577,10 +577,10 @@ def _hud_fake_mgr():
 
 
 def _patch_main_server(monkeypatch, fake_mgr):
-    import main_server  # noqa: F401  (imported by callers)
+    from app import main_server  # noqa: F401  (imported by callers)
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: True)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: True)
 
 
 def _hud_send_count(fake_mgr) -> int:
@@ -599,7 +599,7 @@ async def test_visibility_chat_blind_chat_fires_hud_does_not(monkeypatch):
     This is the codex P2 regression: prior code fired HUD unconditionally,
     double-rendering chat-only events as both bubble and toast.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     _patch_main_server(monkeypatch, fake_mgr)
@@ -613,7 +613,7 @@ async def test_visibility_chat_blind_chat_fires_hud_does_not(monkeypatch):
 @pytest.mark.unit
 async def test_visibility_hud_blind_hud_fires_chat_does_not(monkeypatch):
     """visibility=["hud"] + blind → HUD toast fires, chat passthrough does NOT."""
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     _patch_main_server(monkeypatch, fake_mgr)
@@ -627,7 +627,7 @@ async def test_visibility_hud_blind_hud_fires_chat_does_not(monkeypatch):
 @pytest.mark.unit
 async def test_visibility_chat_and_hud_blind_both_fire(monkeypatch):
     """visibility=["chat","hud"] + blind → BOTH chat passthrough and HUD fire."""
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     _patch_main_server(monkeypatch, fake_mgr)
@@ -645,7 +645,7 @@ async def test_visibility_empty_explicit_blind_suppresses_hud(monkeypatch):
     Per the v2 schema (`plugin/sdk/shared/core/push_message_schema.py`)
     an explicit empty list means "no verbatim user-facing render".
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     _patch_main_server(monkeypatch, fake_mgr)
@@ -664,7 +664,7 @@ async def test_visibility_absent_field_legacy_fires_hud(monkeypatch):
     keep their original "fire HUD by default" behavior. We distinguish
     "field absent" from "field == []" so v2 callers can opt out via [].
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     _patch_main_server(monkeypatch, fake_mgr)
@@ -716,7 +716,7 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
     codex P2 regression: prior code dispatched the gemini_response bubble
     but never closed the assistant turn lifecycle on the frontend.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
@@ -726,8 +726,8 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -756,7 +756,7 @@ async def test_chat_and_hud_blind_emits_turn_end_exactly_once(monkeypatch):
     emitted EXACTLY ONCE. The HUD branch doesn't open an assistant turn,
     so a single emit gated on the chat passthrough is correct.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     fake_mgr.handle_proactive_complete = AsyncMock()
@@ -775,7 +775,7 @@ async def test_hud_only_blind_does_not_emit_turn_end(monkeypatch):
     on the frontend is a toast that doesn't open an assistant turn lifecycle,
     so turn-end must NOT be emitted (no lifecycle to close).
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = _hud_fake_mgr()
     fake_mgr.handle_proactive_complete = AsyncMock()
@@ -820,7 +820,7 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
     never sent a frame, while ``main_server`` still emitted turn-end
     based purely on absence-of-exception.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     # Simulate a swallowed no-op (e.g. WS disconnected mid-flight): the
@@ -833,8 +833,8 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-noop"))
 
@@ -850,7 +850,7 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
     refactor accidentally lets an exception escape, we must still NOT
     emit a stray turn-end.
     """
-    import main_server
+    from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(side_effect=RuntimeError("ws boom"))
@@ -860,8 +860,8 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-raise"))
 
@@ -880,7 +880,7 @@ async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(
     "send_json blew up, was swallowed; no turn was ever opened on the
     frontend; do not close a phantom turn."
     """
-    import main_server
+    from app import main_server
 
     real_mgr = _make_mgr(websocket=_FakeWebsocket(connected=True))
     # Make send_json raise so the real helper exercises the swallow path.
@@ -890,8 +890,8 @@ async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(
     real_mgr.trigger_agent_callbacks = AsyncMock()
     real_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("main_server._get_session_manager", lambda name: real_mgr)
-    monkeypatch.setattr("main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: real_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-swallowed"))
 

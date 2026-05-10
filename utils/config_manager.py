@@ -23,7 +23,7 @@ from config import (
     DEFAULT_CONFIG_DATA,
     RESERVED_FIELD_SCHEMA,
 )
-from config.prompts_chara import get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,
@@ -34,7 +34,12 @@ from utils.api_config_loader import (
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
+from utils.native_voice_registry import (
+    get_active_realtime_native_provider,
+    is_native_voice,
+)
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
+from utils.steam_state import get_steamworks
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
@@ -2240,6 +2245,30 @@ class ConfigManager:
         voice_storage[api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    def voice_id_exists_in_any_storage(self, voice_id: str) -> bool:
+        """voice_id 是否出现在 voice_storage.json 的任意 bucket 下。
+
+        比 get_voices_for_current_api() 的视图更宽：后者按当前 tts_custom 配置
+        筛选 bucket（AUDIO_API_KEY / __LOCAL_TTS__ / 当前 ASSIST_API_KEY_QWEN
+        等），配置切换后曾在旧 bucket 保存过的克隆音色不会出现在视图里。
+        碰撞检测场景（"用户曾经显式克隆过这个 voice_id 吗"）必须看完整存储，
+        不能只看当前视图，否则同名 voice 会被静默切到内置 provider 上。
+        """
+        if not voice_id:
+            return False
+        voice_storage = self.load_voice_storage()
+        if not isinstance(voice_storage, dict):
+            return False
+        voice_id_key = voice_id.casefold()
+        for bucket in voice_storage.values():
+            if isinstance(bucket, dict) and any(
+                isinstance(stored_voice_id, str)
+                and stored_voice_id.casefold() == voice_id_key
+                for stored_voice_id in bucket
+            ):
+                return True
+        return False
+
     def find_voice_by_audio_md5(self, api_key: str, audio_md5: str, ref_language: str | None = None):
         """在指定 API Key 下按参考音频 MD5（及可选 ref_language）查找已有音色。
 
@@ -2317,6 +2346,10 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
+        active_native_provider = get_active_realtime_native_provider(self)
+        if active_native_provider and is_native_voice(voice_id, active_native_provider):
+            return True
+
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
@@ -2337,6 +2370,10 @@ class ConfigManager:
         voice_storage = self.load_voice_storage()
         voices = voice_storage.get(api_key, {})
         if voice_id in voices:
+            return True
+
+        active_native_provider = get_active_realtime_native_provider(self)
+        if active_native_provider and is_native_voice(voice_id, active_native_provider):
             return True
 
         from utils.api_config_loader import get_free_voices
@@ -2517,7 +2554,6 @@ class ConfigManager:
         if ConfigManager._steam_check_cache is not None:
             return ConfigManager._steam_check_cache
         try:
-            from main_routers.shared_state import get_steamworks
             steamworks = get_steamworks()
             if steamworks is None:
                 return None
@@ -2593,7 +2629,7 @@ class ConfigManager:
 
         try:
             if self._check_non_mainland():
-                return url.replace('lanlan.tech', 'lanlan.app')
+                return url.replace('lanlan.tech', 'lanlan.app').replace("www.lanlan.app/tts", "lanlan.app/tts")
         except Exception:
             pass
 

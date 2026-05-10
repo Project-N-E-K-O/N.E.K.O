@@ -57,6 +57,7 @@
         if (!minimizeButton || minimizeButton.dataset.nekoWindowControlBound === '1') return;
         minimizeButton.dataset.nekoWindowControlBound = '1';
         minimizeButton.addEventListener('click', async () => {
+            if (minimizeButton.disabled) return;
             const api = window.nekoWindowControl;
             if (!api || typeof api.minimize !== 'function') return;
             try {
@@ -72,6 +73,7 @@
         if (!maximizeButton || maximizeButton.dataset.nekoWindowControlBound === '1') return;
         maximizeButton.dataset.nekoWindowControlBound = '1';
         maximizeButton.addEventListener('click', async () => {
+            if (maximizeButton.disabled) return;
             const api = window.nekoWindowControl;
             if (!api || typeof api.maximize !== 'function') return;
             try {
@@ -85,7 +87,7 @@
         });
     }
 
-    function closeCurrentWindow() {
+    function defaultCloseCurrentWindow() {
         try {
             window.close();
         } catch (error) {
@@ -101,13 +103,28 @@
         }, 120);
     }
 
+    async function closeCurrentWindow() {
+        try {
+            if (typeof window.nekoBeforeWindowClose === 'function') {
+                const result = await window.nekoBeforeWindowClose();
+                if (result === false || (result && result.handled === true)) {
+                    return;
+                }
+            }
+        } catch (error) {
+            // 页面自定义关闭逻辑失败时回退到默认关闭
+        }
+        defaultCloseCurrentWindow();
+    }
+
     function bindCloseButton() {
         const closeButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="close"]`);
         if (!closeButton || closeButton.dataset.nekoWindowControlBound === '1') return;
         closeButton.dataset.nekoWindowControlBound = '1';
         closeButton.addEventListener('click', (event) => {
             event.preventDefault();
-            closeCurrentWindow();
+            if (closeButton.disabled) return;
+            void closeCurrentWindow();
         });
     }
 

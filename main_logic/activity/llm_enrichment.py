@@ -36,7 +36,7 @@ import re
 import time
 from typing import Any
 
-from config.prompts_activity import ACTIVITY_GUESS_PROMPTS, OPEN_THREADS_PROMPTS
+from config.prompts.prompts_activity import ACTIVITY_GUESS_PROMPTS, OPEN_THREADS_PROMPTS
 from utils.file_utils import robust_json_loads
 
 logger = logging.getLogger(__name__)
@@ -64,8 +64,8 @@ _SCORED_STATES: tuple[str, ...] = (
 )
 
 
-# Prompt templates moved to config/prompts_activity.py per the project's
-# i18n convention (multi-language str→str dicts must live in config/prompts_*).
+# Prompt templates moved to config/prompts/prompts_activity.py per the project's
+# i18n convention (multi-language str→str dicts must live in config/prompts/prompts_*).
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

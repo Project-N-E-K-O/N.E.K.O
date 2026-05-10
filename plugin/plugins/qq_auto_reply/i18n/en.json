@@ -1,0 +1,4 @@
+{
+  "plugin.name": "QQ Auto-Reply",
+  "plugin.description": "Read QQ messages and auto-reply based on permission tiers. Connects to QQ over the OneBot protocol with multi-level access control and AI conversation"
+}

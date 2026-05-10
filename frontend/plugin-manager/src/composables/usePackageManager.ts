@@ -1,4 +1,5 @@
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
   analyzePluginBundle,
@@ -22,6 +23,11 @@ import {
   type PluginWorkbenchItem,
   type PluginWorkbenchLayoutMode,
 } from '@/composables/usePluginWorkbench'
+import {
+  buildPackageResultDisplayRecords,
+  type PackageResultDisplayRecord,
+  type PackageResultSourceRecord,
+} from '@/components/plugin/packageResultDisplay'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type PackMode = PluginCliPackMode
@@ -30,20 +36,11 @@ export type PackageResultKind = '' | 'pack' | 'inspect' | 'verify' | 'unpack' | 
 
 export type SelectablePlugin = PluginWorkbenchItem
 
-export type PackageResultRecord = {
-  id: string
-  createdAt: string
-  kind: Exclude<PackageResultKind, ''>
-  resultText: string
-  inspectResult: PluginCliInspectResponse | null
-  summaryMetrics: Array<{ label: string; value: string }>
-  summaryHighlights: Array<{ label: string; value: string }>
-  summaryListItems: string[]
-  summaryWarnings: string[]
-}
+export type PackageResultRecord = PackageResultDisplayRecord
 
 export function usePackageManager() {
   const pluginStore = usePluginStore()
+  const { t, locale } = useI18n()
 
   const activeTab = ref('pack')
   const packMode = ref<PackMode>('selected')
@@ -65,7 +62,7 @@ export function usePackageManager() {
   const resultData = ref<Record<string, any> | null>(null)
   const inspectResult = ref<PluginCliInspectResponse | null>(null)
   const resultDialogVisible = ref(false)
-  const resultHistory = ref<PackageResultRecord[]>([])
+  const resultHistoryRaw = ref<PackageResultSourceRecord[]>([])
   const activeResultId = ref('')
 
   const packForm = ref<PluginCliPackRequest>({
@@ -106,6 +103,7 @@ export function usePackageManager() {
           type: normalizePluginType(plugin.type),
           status: plugin.status,
           host_plugin_id: plugin.host_plugin_id,
+          i18n: plugin.i18n,
           entries: plugin.entries || [],
           runtime_enabled: plugin.runtime_enabled,
           runtime_auto_start: plugin.runtime_auto_start,
@@ -166,6 +164,10 @@ export function usePackageManager() {
       return localPackages.value
     }
     return localPackages.value.filter((pkg) => inferPackageType(pkg) === packageFilterType.value)
+  })
+
+  const resultHistory = computed<PackageResultRecord[]>(() => {
+    return buildPackageResultDisplayRecords(resultHistoryRaw.value, t, locale.value)
   })
 
   const activeResultRecord = computed<PackageResultRecord | null>(() => {
@@ -359,18 +361,15 @@ export function usePackageManager() {
     resultKind.value = kind
     resultData.value = payload && typeof payload === 'object' ? (payload as Record<string, any>) : null
     resultText.value = JSON.stringify(payload, null, 2)
-    const record: PackageResultRecord = {
+    const record: PackageResultSourceRecord = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+      createdAtTs: Date.now(),
       kind,
       resultText: resultText.value,
       inspectResult: kind === 'inspect' || kind === 'verify' ? (resultData.value as PluginCliInspectResponse | null) : null,
-      summaryMetrics: buildSummaryMetrics(kind, resultData.value),
-      summaryHighlights: buildSummaryHighlights(kind, resultData.value),
-      summaryListItems: buildSummaryListItems(kind, resultData.value),
-      summaryWarnings: buildSummaryWarnings(kind, resultData.value),
+      resultData: resultData.value,
     }
-    resultHistory.value = [record, ...resultHistory.value].slice(0, 30)
+    resultHistoryRaw.value = [record, ...resultHistoryRaw.value].slice(0, 30)
     activeResultId.value = record.id
     resultDialogVisible.value = true
   }

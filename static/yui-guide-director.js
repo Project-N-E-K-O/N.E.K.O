@@ -1308,22 +1308,23 @@
             }
         }
 
-        async fetchPreviewAudioSrc(text) {
-            const message = typeof text === 'string' ? text.trim() : '';
-            if (!message) {
-                return null;
-            }
-
+        async fetchPreviewAudioSrc() {
             const voiceId = await this.getCurrentVoiceId();
             if (!voiceId) {
                 return null;
             }
+            const previewLanguage = resolveGuidePreferredLanguage() || 'zh-CN';
 
-            const cacheKey = voiceId + '::' + message;
-            if (this.previewCache.has(cacheKey)) {
+            const cacheKey = voiceId;
+            const cachedPreview = this.previewCache.get(cacheKey);
+            if (
+                cachedPreview
+                && cachedPreview.language === previewLanguage
+                && cachedPreview.audioSrc
+            ) {
                 return {
                     voiceId: voiceId,
-                    audioSrc: this.previewCache.get(cacheKey)
+                    audioSrc: cachedPreview.audioSrc
                 };
             }
 
@@ -1331,8 +1332,8 @@
                 const response = await fetch(
                     '/api/characters/voice_preview?voice_id='
                     + encodeURIComponent(voiceId)
-                    + '&text='
-                    + encodeURIComponent(message),
+                    + '&language='
+                    + encodeURIComponent(previewLanguage),
                     {
                         credentials: 'same-origin'
                     }
@@ -1347,7 +1348,10 @@
                 }
 
                 const audioSrc = 'data:' + (data.mime_type || 'audio/mpeg') + ';base64,' + data.audio;
-                this.previewCache.set(cacheKey, audioSrc);
+                this.previewCache.set(cacheKey, {
+                    language: previewLanguage,
+                    audioSrc: audioSrc
+                });
                 return {
                     voiceId: voiceId,
                     audioSrc: audioSrc

@@ -1594,7 +1594,7 @@ class PersonaManager:
         - 末尾"重读 corrections 文件 → filter processed_keys → save"已经
           做了对 LLM 期间新增 correction 的保护
         """
-        from config.prompts_memory import persona_correction_prompt
+        from config.prompts.prompts_memory import persona_correction_prompt
 
         # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
         async with self._get_resolve_alock(name):

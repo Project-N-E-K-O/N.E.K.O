@@ -17,6 +17,8 @@ from plugin.server.runs.trigger_service import trigger_plugin
 from plugin.server.messaging.plane_bridge import publish_record as _publish_record_impl
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
+_TIMEOUT_UNSET = object()
+
 
 ExportType = Literal["text", "json", "url", "binary_url", "binary"]
 ExportCategory = Literal["system", "user"]
@@ -737,8 +739,8 @@ async def _execute_run_guarded(
     client_host: Optional[str],
 ) -> None:
     """Wrap ``_execute_run`` with a timeout guard."""
-    timeout = float(RUN_EXECUTION_TIMEOUT)
-    if timeout <= 0:
+    timeout = _resolve_run_execution_timeout(args)
+    if timeout is None or timeout <= 0:
         await _execute_run(
             run_id, plugin_id=plugin_id, entry_id=entry_id,
             args=args, task_id=task_id, client_host=client_host,
@@ -772,6 +774,30 @@ async def _execute_run_guarded(
         )
         if term is not None:
             _emit_runs("change", term)
+
+
+def _normalize_timeout_value(value: object) -> float | None | object:
+    if value is _TIMEOUT_UNSET:
+        return _TIMEOUT_UNSET
+    if value is None:
+        return _TIMEOUT_UNSET
+    if isinstance(value, bool):
+        return _TIMEOUT_UNSET
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return _TIMEOUT_UNSET
+    return timeout if timeout > 0 else _TIMEOUT_UNSET
+
+
+def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
+    default_timeout = float(RUN_EXECUTION_TIMEOUT)
+    ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
+    if isinstance(ctx_obj, dict) and "entry_timeout" in ctx_obj:
+        entry_timeout = _normalize_timeout_value(ctx_obj.get("entry_timeout"))
+        if entry_timeout is not _TIMEOUT_UNSET:
+            return entry_timeout
+    return default_timeout
 
 
 async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:

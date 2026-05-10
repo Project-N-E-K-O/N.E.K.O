@@ -11,6 +11,7 @@ from plugin.logging_config import get_logger
 from plugin.core.ui_manifest import (
     default_permissions,
     normalize_warnings,
+    resolve_localized_surface_entry_path,
     resolve_surface_entry_path,
     static_surface_url,
 )
@@ -552,7 +553,14 @@ class PluginUiQueryService:
                 details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
             ) from exc
 
-    async def get_surface_source(self, plugin_id: str, *, kind: str, surface_id: str) -> dict[str, object]:
+    async def get_surface_source(
+        self,
+        plugin_id: str,
+        *,
+        kind: str,
+        surface_id: str,
+        locale: str | None = None,
+    ) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
             if plugin_meta is None:
@@ -597,7 +605,14 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id},
                 )
 
-            entry_path = resolve_surface_entry_path(plugin_meta, entry_obj)
+            # Pick the locale-suffixed sibling (e.g. quickstart.zh-TW.md) when
+            # available; fall back to the unsuffixed default for back-compat
+            # with surfaces authored before this i18n rollout.
+            entry_path, hit_locale = resolve_localized_surface_entry_path(
+                plugin_meta,
+                entry_obj,
+                locale,
+            )
             if entry_path is None or not entry_path.is_file():
                 raise ServerDomainError(
                     code="PLUGIN_UI_SURFACE_ENTRY_NOT_FOUND",
@@ -615,7 +630,7 @@ class PluginUiQueryService:
                 "mode": mode,
                 "entry": entry_obj,
                 "source": source,
-                "source_locale": translations_payload["source_locale"],
+                "source_locale": hit_locale or translations_payload["source_locale"],
                 "translations": translations_payload["translations"],
                 "warnings": warnings,
             }
@@ -899,6 +914,30 @@ class PluginUiQueryService:
                 message="Failed to execute plugin UI action",
                 status_code=500,
                 details={"plugin_id": plugin_id, "action_id": action_id, "error_type": type(exc).__name__},
+            ) from exc
+
+    async def get_plugin_meta(self, plugin_id: str) -> dict[str, object] | None:
+        """Return raw plugin metadata snapshot, or None if not registered.
+
+        Used by ui-api routes that need the plugin directory (config_path) but
+        don't require the plugin to have called register_static_ui().
+        """
+        try:
+            return await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_plugin_meta failed: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_UI_QUERY_FAILED",
+                message="Failed to query plugin metadata",
+                status_code=500,
+                details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
             ) from exc
 
     async def get_static_dir(self, plugin_id: str) -> Path | None:

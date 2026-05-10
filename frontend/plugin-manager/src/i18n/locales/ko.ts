@@ -326,6 +326,107 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '취소 요청을 전송했습니다'
   },
+  packageManager: {
+    resultDialog: {
+      title: '패키지 결과 기록',
+      subtitle: '최근 {count}개 실행 결과 보관',
+      empty: '패키지 작업 결과가 여기에 표시돼',
+      viewDetails: '자세히 보기',
+      detailTitle: '결과 상세',
+      summaryTitle: '상세',
+      notesTitle: '주의',
+      rawJsonTitle: '원본 결과 JSON',
+      kinds: {
+        pack: '패키징',
+        inspect: '검사',
+        verify: '검증',
+        unpack: '압축 해제',
+        analyze: '분석',
+      },
+      inspect: {
+        packageId: '패키지 ID',
+        packageType: '유형',
+        version: '버전',
+        schemaVersion: 'Schema',
+        hashCheck: 'Hash 검증',
+        profiles: 'Profiles',
+        packageTypes: {
+          bundle: '번들',
+          plugin: '플러그인 패키지',
+        },
+        hashStatus: {
+          notChecked: '미검사',
+          passed: '통과',
+          failed: '실패',
+        },
+      },
+      metrics: {
+        pack: {
+          type: '유형',
+          succeeded: '성공',
+          failed: '실패',
+          containsPlugins: '포함된 플러그인',
+          status: '상태',
+          complete: '완료',
+          partialFailed: '일부 실패',
+        },
+        inspect: {
+          pluginCount: '플러그인 수',
+          profileCount: 'Profiles',
+          hash: 'Hash',
+        },
+        unpack: {
+          processedPlugins: '처리된 플러그인',
+          conflictStrategy: '충돌 전략',
+          hash: 'Hash',
+        },
+        analyze: {
+          pluginCount: '플러그인 수',
+          commonDependencies: '공통 의존성',
+          sharedDependencies: '공유 의존성',
+        },
+      },
+      highlights: {
+        pack: {
+          bundlePluginId: '번들 ID',
+          bundleName: '번들 이름',
+          bundleVersion: '번들 버전',
+          outputPath: '출력 경로',
+          firstPlugin: '첫 번째 플러그인',
+          latestPackagePath: '최신 패키지 경로',
+        },
+        inspect: {
+          packageId: '패키지 ID',
+          packageType: '패키지 유형',
+          version: '버전',
+        },
+        unpack: {
+          packageId: '패키지 ID',
+          pluginsRoot: '플러그인 디렉터리',
+          profilesRoot: 'Profiles 디렉터리',
+        },
+        analyze: {
+          currentSdk: '현재 SDK 지원',
+          supported: '지원됨',
+          unsupported: '완전히 호환되지 않음',
+          matchingVersions: '권장 조합',
+        },
+      },
+      list: {
+        pluginPrefix: 'plugin:',
+        profilePrefix: 'profile:',
+        renamedSuffix: '(이름 변경)',
+        arrow: '->',
+      },
+      warnings: {
+        bundleNeedsTwoPlugins: '번들은 보통 최소 두 개의 플러그인을 포함해야 해',
+        verifyFailed: '패키지가 hash 검증을 통과하지 못했어. 런타임 환경에 바로 가져오지 마.',
+        inspectHashFailed: '현재 패키지 hash 검증이 실패했고 내용이 변경되었을 수 있어.',
+        analyzeSdkMismatch: '현재 SDK 버전은 모든 플러그인이 함께 지원하지 않아.',
+        analyzeSharedDependencies: '{count}개의 공유 의존성이 감지됐어. 번들링할 때 버전 제약을 주의 깊게 확인해.',
+      },
+    },
+  },
   status: {
     running: '실행 중',
     stopped: '정지됨',
@@ -455,79 +556,79 @@ export default {
     steps: {
       start: {
         title: '여기서 시작',
-        body: '이 버튼으로 언제든 플러그인 관리자 튜토리얼을 다시 볼 수 있어. 내가 먼저 튀어나오진 않는다냥.'
+        body: '이 버튼으로 언제든 플러그인 관리자 투어를 다시 볼 수 있어. 재생 중에 언어를 바꾸면 새 언어를 따라가.'
       },
       stats: {
         title: '플러그인 개요',
-        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 확인할 수 있어.'
+        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 볼 수 있어. 먼저 플러그인 서비스 전체 상태를 판단할 때 봐.'
       },
       metrics: {
         title: '성능 모니터링',
-        body: '플러그인 서비스의 CPU, 메모리, 스레드, 활성 플러그인 상태를 보여줘.'
+        body: 'CPU, 메모리, 스레드, 활성 플러그인 수를 보여줘. galgame OCR이나 Agent 작업이 느릴 때 먼저 확인해.'
       },
       server: {
         title: '서버 정보',
-        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 서비스 상태를 볼 수 있어.'
+        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 백엔드 플러그인 서비스가 사용 가능한지 볼 수 있어.'
       },
       plugins: {
         title: '플러그인 목록',
-        body: '플러그인 시작, 정지, 설정, 로그 확인은 왼쪽의 플러그인 관리에서 하면 된다냥.'
+        body: '왼쪽의 플러그인 관리에서 시작, 중지, 재시작, 설정 변경, galgame_plugin UI와 가이드를 열 수 있어.'
       },
       pluginWorkbench: {
         title: '플러그인 관리 작업대',
-        body: '여기에서 플러그인, 어댑터, 확장을 한곳에서 관리할 수 있어.'
+        body: '일반 플러그인, 어댑터, 확장을 한곳에서 관리하는 공간이야. galgame_plugin, 탄막, MCP 같은 플러그인이 여기 있어.'
       },
       pluginFilters: {
         title: '검색과 필터',
-        body: '이름, 상태, 유형, 고급 규칙으로 플러그인을 빠르게 찾을 수 있어.'
+        body: '이름, 상태, 유형, 고급 규칙으로 빠르게 걸러낼 수 있어. galgame_plugin을 빨리 찾으려면 galgame으로 검색해.'
       },
       pluginLayout: {
         title: '보기 레이아웃',
-        body: '목록, 한 줄, 두 줄, 콤팩트 표시를 화면에 맞게 바꿀 수 있어.'
+        body: '목록, 한 줄, 두 줄, 콤팩트 표시를 전환할 수 있어. 플러그인이 많을 때는 두 줄이나 콤팩트 표시가 스크롤을 줄여줘.'
       },
       pluginContextMenu: {
         title: '우클릭 작업',
-        body: '플러그인을 우클릭하면 상세, 설정, 로그를 열거나 시작, 정지, 리로드를 실행할 수 있어.'
+        body: '플러그인을 우클릭하면 상세, 설정, 로그, UI, 가이드를 열 수 있고, 시작·중지·재시작도 실행할 수 있어.'
       },
       packageManager: {
         title: '패키지 관리',
-        body: '현재 필터와 선택을 재사용해서 패키징, 검사, 검증, 압축 해제를 할 수 있어.'
+        body: '현재 필터와 다중 선택을 재사용해서 단일 플러그인 패키지나 bundle을 만들고, 로컬 패키지도 다룰 수 있어.'
       },
       packageOperations: {
         title: '패키지 작업',
-        body: '패키징 모드, 패키지 검사, 압축 해제, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.'
+        body: '선택한 플러그인, 단일 플러그인, 전체 플러그인을 패키징하고, bundle을 만들고, 패키지 검사·검증·압축 해제와 bundle 의존성 분석을 할 수 있어.'
       },
       pluginDetail: {
         title: '플러그인 상세',
-        body: '상세 페이지에서는 메타 정보, 엔트리, 성능, 설정, 로그를 확인할 수 있어.'
+        body: '상세 페이지에서는 UI, 가이드, 기본 정보, 엔트리, 메트릭, 설정, 로그를 볼 수 있어. galgame_plugin의 주 패널은 UI 탭이야.'
       },
       pluginDetailActions: {
         title: '상세 페이지 작업',
-        body: '오른쪽 위 작업은 현재 플러그인에 대한 빠른 작업이야.'
+        body: '오른쪽 위 작업은 현재 플러그인에 적용돼. galgame_plugin을 디버깅할 땐 UI나 로그를 열기 전에 실행 중인지 먼저 확인해.'
       },
       runs: {
         title: '실행 기록',
-        body: '실행 기록은 플러그인 엔트리 작업의 히스토리와 상태를 보여줘.'
+        body: '실행 기록에서는 OCR 의존성 설치, 대사 설명, 장면 요약 같은 플러그인 엔트리 작업의 기록과 실시간 상태를 볼 수 있어.'
       },
       runsList: {
         title: '실행 목록',
-        body: '왼쪽 목록에서 실행을 선택하고 새로고침으로 최신 기록을 동기화할 수 있어.'
+        body: '왼쪽에서 작업 실행을 선택해. 설치, 분석, Agent 엔트리가 끝나면 이 목록에서 결과를 다시 볼 수 있어.'
       },
       runsDetail: {
         title: '실행 상세',
-        body: '오른쪽에는 단계, 진행률, 오류, 내보낸 결과가 표시돼.'
+        body: '상세 패널에는 단계, 진행률, 오류, 내보내기가 보여. 취소는 중단 가능한 긴 작업에만 나타나.'
       },
       logs: {
         title: '서버 로그',
-        body: '서버 로그에서는 플러그인 서비스 자체의 출력과 오류를 확인할 수 있어.'
+        body: '서버 로그에서는 플러그인 서비스 전체의 출력을 볼 수 있어. galgame_plugin 전용 로그도 상세 페이지에서 열 수 있어.'
       },
       logToolbar: {
         title: '로그 필터',
-        body: '레벨, 키워드, 줄 수로 로그를 필터링하고 자동 스크롤을 바꿀 수 있어.'
+        body: '레벨, 키워드, 줄 수로 필터링하거나 자동 스크롤을 바꿀 수 있어. 디버깅할 때는 플러그인 ID를 키워드로 쓰면 좋아.'
       },
       logList: {
         title: '로그 목록',
-        body: '시간, 출처, 레벨, 메시지를 보고 플러그인 문제를 추적할 수 있어.'
+        body: '로그에는 시간, 출처, 레벨, 메시지가 표시돼. OCR, Memory Reader, Agent, 패키지 관리자 오류는 보통 여기서 먼저 찾을 수 있어.'
       }
     }
   }

@@ -375,7 +375,7 @@ class FactDedupResolver:
             return await self._aresolve_locked(name)
 
     async def _aresolve_locked(self, name: str) -> int:
-        from config.prompts_memory import get_fact_dedup_prompt
+        from config.prompts.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
         from utils.token_tracker import set_call_type

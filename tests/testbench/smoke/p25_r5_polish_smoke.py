@@ -669,7 +669,7 @@ def check_r5g_injection_coverage(client, mock_ext) -> list[str]:
         # --- P0 #1: avatar_event.text_context.raw -----------------------
         # Shape mirrors p25_prompt_preview_truth_smoke PP2 — the validator
         # requires target=avatar + a tool_id that has a defined action_id
-        # in config/prompts_avatar_interaction.py (``fist/poke`` is known
+        # in config/prompts/prompts_avatar_interaction.py (``fist/poke`` is known
         # good). reward_drop=True is only meaningful for ``fist`` so we
         # include it to exercise a larger instruction surface.
         r = client.post(

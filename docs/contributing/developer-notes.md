@@ -24,7 +24,7 @@ pytest tests/
 
 ### 2. i18n is mandatory for all user-facing text
 
-The project supports 5 languages (`en`, `zh-CN`, `zh-TW`, `ja`, `ko`). All user-visible strings must go through the i18n system.
+The project supports 8 languages (`en`, `zh-CN`, `zh-TW`, `ja`, `ko`, `ru`, `es`, `pt`). All user-visible strings must go through the i18n system.
 
 - **HTML**: Use `data-i18n` attributes
 - **JS**: Use `window.t('key')` with Chinese fallback

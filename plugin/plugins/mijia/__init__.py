@@ -345,8 +345,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="open_ui",
-        name="打开配置页面",
-        description="在浏览器中打开米家插件的 Web UI 配置页面",
+        name=tr("entries.open_ui.name", default="打开配置页面"),
+        description=tr("entries.open_ui.description", default="在浏览器中打开米家插件的 Web UI 配置页面"),
         kind="action"
     )
     async def open_ui(self, **_):
@@ -391,8 +391,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="reload_credential",
-        name="重新加载凭据",
-        description="重新从文件加载米家凭据并初始化API，防止插件重载后凭据未及时加载导致显示未登录",
+        name=tr("entries.reload_credential.name", default="重新加载凭据"),
+        description=tr("entries.reload_credential.description", default="重新从文件加载米家凭据并初始化API，防止插件重载后凭据未及时加载导致显示未登录"),
         kind="action"
     )
     async def reload_credential(self, **_):
@@ -502,8 +502,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.login.label", default="扫码登录"), tone="primary", group="auth", order=10, refresh_context=True)
     @plugin_entry(
         id="start_qrcode_login",
-        name="开始二维码登录",
-        description="获取二维码图片并开始登录流程",
+        name=tr("entries.start_qrcode_login.name", default="开始二维码登录"),
+        description=tr("entries.start_qrcode_login.description", default="获取二维码图片并开始登录流程"),
         kind="action"
     )
     async def start_qrcode_login(self, **_):
@@ -525,8 +525,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="check_login_status",
-        name="检查登录状态",
-        description="轮询检查二维码登录是否成功",
+        name=tr("entries.check_login_status.name", default="检查登录状态"),
+        description=tr("entries.check_login_status.description", default="轮询检查二维码登录是否成功"),
         kind="action"
     )
     async def check_login_status(self, login_url: str, **_):
@@ -615,8 +615,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.logout.label", default="登出"), tone="danger", group="auth", order=20, refresh_context=True)
     @plugin_entry(
         id="logout",
-        name="登出",
-        description="清除保存的凭据并清空本地数据",
+        name=tr("entries.logout.name", default="登出"),
+        description=tr("entries.logout.description", default="清除保存的凭据并清空本地数据"),
         kind="action"
     )
     async def logout(self, **_):
@@ -661,8 +661,8 @@ class MijiaPlugin(NekoPluginBase):
     # ========== 核心功能入口 ==========
     @plugin_entry(
         id="list_homes",
-        name="获取家庭列表",
-        description="列出当前账号下所有米家家庭及其 ID",
+        name=tr("entries.list_homes.name", default="获取家庭列表"),
+        description=tr("entries.list_homes.description", default="列出当前账号下所有米家家庭及其 ID"),
         llm_result_fields=["message"]
     )
     async def list_homes(self, **_):
@@ -692,8 +692,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.refreshDevices.label", default="刷新设备"), tone="secondary", group="device", order=10, refresh_context=True)
     @plugin_entry(
         id="list_devices",
-        name="获取设备列表",
-        description="获取设备列表，home_id留空自动使用第一个家庭，支持缓存",
+        name=tr("entries.list_devices.name", default="获取设备列表"),
+        description=tr("entries.list_devices.description", default="获取设备列表，home_id留空自动使用第一个家庭，支持缓存"),
         input_schema={
             "type": "object",
             "properties": {
@@ -835,8 +835,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_cached_devices",
-        name="获取缓存的设备列表",
-        description="读取本地缓存的设备列表，缓存不存在时自动拉取",
+        name=tr("entries.get_cached_devices.name", default="获取缓存的设备列表"),
+        description=tr("entries.get_cached_devices.description", default="读取本地缓存的设备列表，缓存不存在时自动拉取"),
         input_schema={
             "type": "object",
             "properties": {
@@ -879,8 +879,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="list_scenes",
-        name="获取智能场景列表",
-        description="列出当前账号下所有米家智能场景，支持缓存",
+        name=tr("entries.list_scenes.name", default="获取智能场景列表"),
+        description=tr("entries.list_scenes.description", default="列出当前账号下所有米家智能场景，支持缓存"),
         input_schema={
             "type": "object",
             "properties": {
@@ -963,8 +963,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_device_alias",
-        name="设置设备别名",
-        description="为指定设备设置自定义别名，方便用别名控制设备",
+        name=tr("entries.set_device_alias.name", default="设置设备别名"),
+        description=tr("entries.set_device_alias.description", default="为指定设备设置自定义别名，方便用别名控制设备"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1007,8 +1007,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_device_aliases",
-        name="获取设备别名列表",
-        description="返回所有设备的别名映射（did -> alias）",
+        name=tr("entries.get_device_aliases.name", default="获取设备别名列表"),
+        description=tr("entries.get_device_aliases.description", default="返回所有设备的别名映射（did -> alias）"),
         llm_result_fields=["message"]
     )
     async def get_device_aliases(self, **_):
@@ -1032,13 +1032,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.smartControl.label", default="智能控制"), tone="success", group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="smart_control",
-        name="智能控制",
-        description=(
-            "统一设备控制入口，用一句话控制设备或执行场景。"
-            "支持：开关（'打开卧室灯'）、亮度（'灯调到50%'）、温度（'空调调26度'）、"
-            "模式（'空调调制冷'）、场景（'执行回家场景'）。"
-            "支持设备名、别名、房间名+设备名（如'卧室灯'）。"
-        ),
+        name=tr("entries.smart_control.name", default="智能控制"),
+        description=tr("entries.smart_control.description", default="用一句话控制设备"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1848,8 +1843,8 @@ class MijiaPlugin(NekoPluginBase):
     # ========== 辅助功能：获取设备规格（可选） ==========
     @plugin_entry(
         id="query_device_state",
-        name="查询设备状态",
-        description="按名称查询设备所有可读属性的当前值，支持设备名、别名、房间名+设备名（如'卧室灯'）",
+        name=tr("entries.query_device_state.name", default="查询设备状态"),
+        description=tr("entries.query_device_state.description", default="按名称查询设备所有可读属性的当前值，支持设备名、别名、房间名+设备名"),
         input_schema={
             "type": "object",
             "properties": {

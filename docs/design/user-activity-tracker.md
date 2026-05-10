@@ -100,7 +100,7 @@ produces a state, just a no-op tick.
 | `greeting_window` | All channels | Encourage gentle greeting + 1d+ reminiscence |
 
 Phase 2 prompt rewrites map these directives into language directives
-(see `config/prompts_proactive.py` for the post-revision prompt).
+(see `config/prompts/prompts_proactive.py` for the post-revision prompt).
 
 ## Skip probability (probabilistic gate, distinct from propensity)
 
@@ -630,13 +630,13 @@ process lifetime, and gaming detection runs purely on keywords.
 `propensity_reasons` are stored as `(code, params)` tuples — language
 agnostic. Rendering happens at `format_activity_state_section` time
 via the `ACTIVITY_REASON_TEMPLATES` dict (zh / en / ja / ko / ru) in
-`config/prompts_activity.py`. This keeps state-machine code free of
+`config/prompts/prompts_activity.py`. This keeps state-machine code free of
 i18n concerns and avoids re-emitting the snapshot when the user's
 prompt language changes. The other three nested-dict tables for the
 activity tracker (`ACTIVITY_STATE_LABELS`,
 `ACTIVITY_PROPENSITY_DIRECTIVES`, `ACTIVITY_STATE_SECTION_LABELS`)
 live alongside it for the same reason — the project i18n convention
-puts every translatable string under `config/prompts_*` so adding a
+puts every translatable string under `config/prompts/prompts_*` so adding a
 new language is a single-directory pass.
 
 ## Emotion-tier LLM enrichment

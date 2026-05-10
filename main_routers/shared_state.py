@@ -27,9 +27,21 @@ for code that wants to migrate off the per-field views.
 from collections.abc import MutableMapping
 from typing import Dict
 
+# Steamworks handle lives at the L1 ``utils`` layer (see utils/steam_state.py)
+# so low-layer consumers (utils.config_manager GeoIP probe,
+# utils.language_utils Steam-language detection) can read it without
+# back-importing main_routers (would be a layering inversion + cycle).
+# We re-export get/set here unchanged for legacy callers.
+from utils.steam_state import (  # noqa: F401  (re-export)
+    get_steamworks,
+    set_steamworks,
+)
+
 _UNSET = object()
 
-# Global state containers (set by main_server.py)
+# Global state containers (set by main_server.py).
+# ``steamworks`` is intentionally NOT in this dict; it lives in
+# utils.steam_state and is re-exported above.
 _state = {
     'role_state': _UNSET,            # NEW canonical store (dict[str, RoleState])
     'sync_message_queue': _UNSET,    # _RoleStateFieldView adapter (legacy API)
@@ -38,7 +50,6 @@ _state = {
     'session_id': _UNSET,            # _RoleStateFieldView adapter (legacy API)
     'sync_process': _UNSET,          # _RoleStateFieldView adapter (legacy API)
     'websocket_locks': _UNSET,       # _RoleStateFieldView adapter (legacy API)
-    'steamworks': None,
     'templates': _UNSET,
     'config_manager': _UNSET,
     'logger': _UNSET,
@@ -161,7 +172,10 @@ def init_shared_state(
     in main_server.py are reflected without a re-init step.
     """
     _state['role_state'] = role_state
-    _state['steamworks'] = steamworks
+    # Steamworks now lives in utils.steam_state (see top of this file). The
+    # set is forwarded so existing callers that pass ``steamworks=...`` here
+    # still install it for the whole process.
+    set_steamworks(steamworks)
     _state['templates'] = templates
     _state['config_manager'] = config_manager
     _state['logger'] = logger
@@ -243,21 +257,6 @@ def get_websocket_locks() -> Dict:
     """
     _check_initialized('websocket_locks')
     return _state['websocket_locks']
-
-
-def get_steamworks():
-    """Get the steamworks instance.
-
-    Note: This may return None if Steamworks failed to initialize
-    (e.g., Steam client not running). Callers must handle None gracefully.
-    We do NOT call _check_initialized here because None is a valid value.
-    """
-    return _state['steamworks']
-
-
-def set_steamworks(steamworks):
-    """Set the steamworks instance (called during startup event)."""
-    _state['steamworks'] = steamworks
 
 
 def get_templates():

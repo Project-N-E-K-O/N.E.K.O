@@ -29,7 +29,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from config.prompts_proactive import (
+from config.prompts.prompts_proactive import (
     PROACTIVE_ACTION_NOTE_PLACEHOLDERS,
     get_proactive_generate_prompt,
     get_proactive_music_failsafe_hint,

@@ -2610,7 +2610,7 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -2630,6 +2630,122 @@ let currentCharacterCardId = null;
 
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
+
+function getCharacterCardDescriptionFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return window.t ? window.t('steam.noDescription') : '暂无描述';
+    }
+    if (data['description']) return data['description'];
+    if (data['描述']) return data['描述'];
+    if (data['角色卡描述']) return data['角色卡描述'];
+    return window.t ? window.t('steam.noDescription') : '暂无描述';
+}
+
+function getCharacterCardTagsFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return [];
+    }
+    return Array.isArray(data['关键词']) ? data['关键词'] : [];
+}
+
+function buildCharacterCardEntry(name, data, id) {
+    return {
+        id: id,
+        name: name,
+        description: getCharacterCardDescriptionFromData(data),
+        tags: getCharacterCardTagsFromData(data),
+        rawData: data || {},
+        originalName: name
+    };
+}
+
+function findCharacterCardIndexByName(name) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    return cards.findIndex(card => String(card?.originalName || card?.name || '') === String(name));
+}
+
+function getNextCharacterCardId() {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    let maxId = 0;
+    cards.forEach(card => {
+        const numericId = Number(card && card.id);
+        if (Number.isFinite(numericId)) {
+            maxId = Math.max(maxId, numericId);
+        }
+    });
+    return maxId + 1;
+}
+
+function buildLocalCatgirlRawData(catgirlName, submittedData) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const previousRawData = existingIdx >= 0 && cards[existingIdx]?.rawData && typeof cards[existingIdx].rawData === 'object'
+        ? cards[existingIdx].rawData
+        : {};
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const nextRawData = {};
+
+    // 通用编辑接口会保留系统字段，但会用本次提交的普通字段整体替换旧普通字段。
+    Object.keys(previousRawData).forEach(key => {
+        if (allReservedFields.includes(key)) {
+            nextRawData[key] = previousRawData[key];
+        }
+    });
+    Object.entries(submittedData || {}).forEach(([key, value]) => {
+        if (!key || key === '档案名' || allReservedFields.includes(key)) {
+            return;
+        }
+        if (value !== null && value !== undefined && String(value).trim() !== '') {
+            nextRawData[key] = value;
+        }
+    });
+    return nextRawData;
+}
+
+function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const merged = {};
+
+    // 本轮刚保存的普通字段优先；重新拉取的数据只用于补回模型、音色等保留字段。
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (!allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(freshRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    return merged;
+}
+
+function syncCharacterCardCache(catgirlName, rawData) {
+    if (!catgirlName) return;
+    if (!Array.isArray(window.characterCards)) {
+        window.characterCards = [];
+    }
+
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const existingCard = existingIdx >= 0 ? window.characterCards[existingIdx] : null;
+    const cardId = existingCard?.id ?? getNextCharacterCardId();
+    const updatedCard = buildCharacterCardEntry(catgirlName, rawData || {}, cardId);
+
+    if (existingIdx >= 0) {
+        window.characterCards[existingIdx] = updatedCard;
+    } else {
+        window.characterCards.push(updatedCard);
+    }
+    globalCharacterCards = window.characterCards || [];
+
+    refreshCharacterCardSelectOptions();
+    renderCharaCardsView();
+}
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
     const eventual = Promise.resolve(scanPromise)
@@ -2816,31 +2932,7 @@ async function loadCharacterCards() {
     // 只处理猫娘数据，忽略其他角色类型（包括主人）
     const catgirls = characterData['猫娘'] || {};
     for (const [name, data] of Object.entries(catgirls)) {
-        // 兼容实际的数据结构 - 使用可用字段创建角色卡
-        // 只从description或角色卡描述字段获取描述信息
-        let description = window.t ? window.t('steam.noDescription') : '暂无描述';
-        if (data['description']) {
-            description = data['description'];
-        } else if (data['描述']) {
-            description = data['描述'];
-        } else if (data['角色卡描述']) {
-            description = data['角色卡描述'];
-        }
-
-        // 只从关键词字段获取标签信息，不自动生成标签
-        let tags = [];
-        if (data['关键词'] && Array.isArray(data['关键词']) && data['关键词'].length > 0) {
-            tags = data['关键词'];
-        }
-
-        window.characterCards.push({
-            id: idCounter++,
-            name: name,
-            description: description,
-            tags: tags,
-            rawData: data,  // 保存原始数据，方便详情页使用
-            originalName: name  // 保存原始键名
-        });
+        window.characterCards.push(buildCharacterCardEntry(name, data, idCounter++));
     }
 
     // 从character_cards文件夹加载角色卡
@@ -4698,6 +4790,10 @@ async function closeCatgirlPanel() {
     overlay.dataset.closing = 'true';
 
     const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._voiceSelectCleanup) {
+        currentForm._voiceSelectCleanup();
+        delete currentForm._voiceSelectCleanup;
+    }
     if (currentForm && currentForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
@@ -4758,6 +4854,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const previousForm = container && typeof container.querySelector === 'function'
         ? container.querySelector('form')
         : null;
+    if (previousForm && previousForm._voiceSelectCleanup) {
+        previousForm._voiceSelectCleanup();
+    }
     if (previousForm && previousForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
     }
@@ -5175,7 +5274,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.maxWidth = '300px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
-    voiceSelect.className = 'form-control';
+    voiceSelect.className = 'form-control voice-native-select';
+    voiceSelect.tabIndex = -1;
+    voiceSelect.setAttribute('aria-hidden', 'true');
     voiceSelect.style.flex = '0 0 auto';
     voiceSelect.style.width = '100%';
     voiceSelect.style.position = 'relative';
@@ -5189,6 +5290,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
+    const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
+    voiceRow.appendChild(voiceSelectUi.container);
+    form._voiceSelectCleanup = voiceSelectUi.destroy;
     voiceWrapper.appendChild(voiceRow);
 
     // 注册新声音按钮
@@ -5333,7 +5437,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
+        voiceSelectUi.refresh();
+    }, () => {
+        voiceSelectUi.refresh();
+    });
     form._voicesLoadPromise = voicesLoadPromise;
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
@@ -5450,6 +5558,247 @@ function _panelAttachTextareaAutoResize(textarea) {
     resize();
 }
 
+// 创建音色自定义单选下拉，原生 select 只负责表单值。
+function _panelCreateVoiceSelectUi(selectEl) {
+    const container = document.createElement('div');
+    container.className = 'voice-custom-select';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'voice-select-header';
+    header.setAttribute('aria-haspopup', 'listbox');
+    header.setAttribute('aria-expanded', 'false');
+
+    const selectedText = document.createElement('span');
+    selectedText.className = 'voice-select-selected';
+    selectedText.textContent = selectEl.options[selectEl.selectedIndex]?.textContent || '';
+    header.appendChild(selectedText);
+
+    const options = document.createElement('div');
+    options.className = 'voice-select-options';
+    options.id = 'voice-select-options-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    options.setAttribute('role', 'listbox');
+    header.setAttribute('aria-controls', options.id);
+
+    container.appendChild(header);
+    container.appendChild(options);
+
+    function getItems() {
+        return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
+    }
+
+    function updateScrollbarState() {
+        requestAnimationFrame(() => {
+            options.classList.toggle('has-scrollbar', options.scrollHeight > options.clientHeight);
+        });
+    }
+
+    function setOptionTabbability(isTabbable) {
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            if (item.classList.contains('disabled')) {
+                item.setAttribute('tabindex', '-1');
+                return;
+            }
+            item.setAttribute('tabindex', isTabbable ? '0' : '-1');
+        });
+    }
+
+    function applyDropdownDirection() {
+        const maxHeight = 250;
+        const gap = 8;
+        const headerRect = header.getBoundingClientRect();
+        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight);
+        const spaceBelow = window.innerHeight - headerRect.bottom - gap;
+        const spaceAbove = headerRect.top - gap;
+        let placement = 'open-down';
+        let computedMaxHeight = maxHeight;
+
+        if (spaceBelow >= optionHeight) {
+            placement = 'open-down';
+        } else if (spaceAbove >= optionHeight) {
+            placement = 'open-up';
+        } else if (spaceAbove > spaceBelow) {
+            placement = 'open-up';
+            computedMaxHeight = Math.max(80, Math.floor(spaceAbove));
+        } else {
+            computedMaxHeight = Math.max(80, Math.floor(spaceBelow));
+        }
+
+        container.classList.toggle('open-up', placement === 'open-up');
+        container.classList.toggle('open-down', placement === 'open-down');
+        options.style.maxHeight = computedMaxHeight + 'px';
+        updateScrollbarState();
+    }
+
+    function closeDropdown(restoreFocus = false) {
+        const wasActive = container.classList.contains('active');
+        container.classList.remove('active', 'open-up', 'open-down');
+        header.setAttribute('aria-expanded', 'false');
+        setOptionTabbability(false);
+        if (restoreFocus && wasActive && header.isConnected) {
+            header.focus();
+        }
+    }
+
+    function openDropdown() {
+        document.querySelectorAll('.voice-custom-select.active').forEach(activeSelect => {
+            if (activeSelect === container) return;
+            activeSelect.classList.remove('active', 'open-up', 'open-down');
+            const activeHeader = activeSelect.querySelector('.voice-select-header');
+            if (activeHeader) activeHeader.setAttribute('aria-expanded', 'false');
+            activeSelect.querySelectorAll('.voice-select-option:not(.disabled)').forEach(item => {
+                item.setAttribute('tabindex', '-1');
+            });
+        });
+
+        container.classList.add('active');
+        header.setAttribute('aria-expanded', 'true');
+        setOptionTabbability(true);
+        applyDropdownDirection();
+
+        const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+        if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    function toggleDropdown() {
+        if (container.classList.contains('active')) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    }
+
+    function syncSelectionState() {
+        const selectedOption = selectEl.options[selectEl.selectedIndex] || selectEl.querySelector('option');
+        const displayText = selectedOption ? selectedOption.textContent : '';
+        selectedText.textContent = displayText;
+        header.title = selectedOption ? (selectedOption.title || displayText) : '';
+
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            const isSelected = item.dataset.value === selectEl.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+    }
+
+    function selectOptionValue(value) {
+        if (selectEl.value === value) {
+            closeDropdown(true);
+            return;
+        }
+        selectEl.value = value;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        closeDropdown(true);
+    }
+
+    function focusItemByOffset(currentItem, offset) {
+        const items = getItems();
+        if (items.length === 0) return;
+        const currentIndex = items.indexOf(currentItem);
+        const nextIndex = currentIndex >= 0
+            ? (currentIndex + offset + items.length) % items.length
+            : 0;
+        items[nextIndex].focus();
+    }
+
+    function appendOptionItem(option) {
+        const item = document.createElement('div');
+        item.className = 'voice-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('tabindex', '-1');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent || option.value;
+        item.title = option.title || item.textContent;
+
+        if (option.disabled) {
+            item.classList.add('disabled');
+            item.setAttribute('aria-disabled', 'true');
+        } else {
+            item.addEventListener('click', () => selectOptionValue(option.value));
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    selectOptionValue(option.value);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    focusItemByOffset(item, 1);
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    focusItemByOffset(item, -1);
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeDropdown(true);
+                }
+            });
+        }
+
+        options.appendChild(item);
+    }
+
+    function refresh() {
+        options.innerHTML = '';
+        Array.from(selectEl.children).forEach(child => {
+            if (child.tagName === 'OPTGROUP') {
+                const groupOptions = Array.from(child.children).filter(option => option.tagName === 'OPTION');
+                if (groupOptions.length > 0) {
+                    const groupLabel = document.createElement('div');
+                    groupLabel.className = 'voice-select-group-label';
+                    groupLabel.textContent = child.label || '';
+                    options.appendChild(groupLabel);
+                    groupOptions.forEach(appendOptionItem);
+                }
+            } else if (child.tagName === 'OPTION') {
+                appendOptionItem(child);
+            }
+        });
+        syncSelectionState();
+        setOptionTabbability(container.classList.contains('active'));
+        updateScrollbarState();
+    }
+
+    function handleDocumentClick(event) {
+        if (!container.contains(event.target)) {
+            closeDropdown();
+        }
+    }
+
+    function handleDocumentKeydown(event) {
+        if (event.key === 'Escape' && container.classList.contains('active')) {
+            closeDropdown(true);
+        }
+    }
+
+    header.addEventListener('click', toggleDropdown);
+    header.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!container.classList.contains('active')) openDropdown();
+            const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+            (selectedItem || getItems()[0])?.focus();
+        }
+    });
+    selectEl.addEventListener('change', syncSelectionState);
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleDocumentKeydown);
+
+    refresh();
+
+    return {
+        container,
+        refresh,
+        destroy() {
+            closeDropdown();
+            selectEl.removeEventListener('change', syncSelectionState);
+            document.removeEventListener('click', handleDocumentClick);
+            document.removeEventListener('keydown', handleDocumentKeydown);
+            container.remove();
+        }
+    };
+}
+
 // 加载音色列表（完整复制原版逻辑）
 async function _loadPanelVoices(selectEl, currentVoiceId) {
     const GSV_PREFIX = 'gsv:';
@@ -5498,6 +5847,57 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     freeGroup.appendChild(option);
                 });
                 selectEl.appendChild(freeGroup);
+            }
+
+            // Gemini 原生音色（仅在 CORE_API_TYPE=gemini 时由后端注入）
+            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                const renderedVoiceIds = new Set();
+                Object.keys(data.voices || {}).forEach(function (id) {
+                    renderedVoiceIds.add(String(id).toLowerCase());
+                });
+                if (data.free_voices) {
+                    Object.values(data.free_voices).forEach(function (id) {
+                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                    });
+                }
+                const nativeEntries = Object.entries(data.native_voices)
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
+                if (nativeEntries.length > 0) {
+                    const nativeGroup = document.createElement('optgroup');
+                    const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';
+                    nativeGroup.label = '── ' + nativeLabel + ' ──';
+                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.title = voiceId;
+                        if (voiceId === currentVoiceId) option.selected = true;
+                        nativeGroup.appendChild(option);
+                    });
+                    selectEl.appendChild(nativeGroup);
+                }
+
+                // 保底：currentVoiceId 是 Gemini 别名（"中文男"、"male" 等）或本轮 catalog 没暴露
+                // 该 ID 时，下拉里没有匹配项 select 会回到首项；下次保存表单会被误判为
+                // "已清空"走 unregister_voice 分支，把用户保存的音色丢掉。这里仿 GSV 兜底，
+                // 给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+                if (currentVoiceId
+                    && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                    const fallbackGroup = document.createElement('optgroup');
+                    const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+                    fallbackGroup.label = '── ' + fallbackLabel + ' ──';
+                    fallbackGroup.dataset.geminiFallbackGroup = 'true';
+                    const fallbackOption = document.createElement('option');
+                    fallbackOption.value = currentVoiceId;
+                    fallbackOption.textContent = currentVoiceId + ' (?)';
+                    fallbackOption.title = currentVoiceId;
+                    fallbackOption.selected = true;
+                    fallbackGroup.appendChild(fallbackOption);
+                    selectEl.appendChild(fallbackGroup);
+                }
             }
         }
 
@@ -5662,6 +6062,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return;
         }
+        const localRawData = buildLocalCatgirlRawData(data['档案名'], data);
+        let savedRawDataForCache = localRawData;
+        syncCharacterCardCache(data['档案名'], localRawData);
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -5754,7 +6157,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const catgirlName = data['档案名'];
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
-                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerParams = new URLSearchParams({
+                    name: catgirlName,
+                    mode: 'maker',
+                    fallback_default_on_close: '1'
+                });
+                const makerUrl = `/card_maker?${makerParams.toString()}`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
                     CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
@@ -5777,14 +6185,19 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
-                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
-                }
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
+                    ? freshData['猫娘'][data['档案名']]
+                    : {};
+                savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
+                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
             }
         }
         await loadCharacterCards();
+        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
     } catch (error) {
         console.error('保存猫娘失败:', error);
         const errorMessage = error.message || String(error);
@@ -9324,6 +9737,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
+            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data));
             storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             const sentFields = new Set(Object.keys(data));

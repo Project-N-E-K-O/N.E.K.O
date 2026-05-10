@@ -89,8 +89,8 @@ from config import (
     PROACTIVE_SOURCE_FORGET_P,
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
-from config.prompts_sys import _loc
-from config.prompts_emotion import (
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_emotion import (
     get_outward_emotion_analysis_prompt,
     get_emotion_keywords_flat,
     get_angry_attack_patterns_flat,
@@ -102,8 +102,8 @@ from config.prompts_emotion import (
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
-from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
-from config.prompts_proactive import (
+from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
+from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
@@ -652,7 +652,7 @@ async def get_system_status(response: Response):
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
-# 多语言关键词/别名表统一在 config/prompts_emotion.py 维护，此处只做扁平索引。
+# 多语言关键词/别名表统一在 config/prompts/prompts_emotion.py 维护，此处只做扁平索引。
 _EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
 _EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
@@ -744,7 +744,7 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
 
     return False
 
-# 启发式关键词/patterns 全部在 config/prompts_emotion.py 按语种维护，此处只做扁平化。
+# 启发式关键词/patterns 全部在 config/prompts/prompts_emotion.py 按语种维护，此处只做扁平化。
 _EMOTION_KEYWORDS = get_emotion_keywords_flat()
 _SAD_VULNERABLE_PATTERNS = get_sad_vulnerable_patterns_flat()
 _ANGRY_ATTACK_PATTERNS = get_angry_attack_patterns_flat()
@@ -867,7 +867,7 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
-# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
+# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 _HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
@@ -1285,7 +1285,7 @@ _proactive_chat_totals_lock = asyncio.Lock()
 _proactive_chat_totals_loaded = False
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
-_PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
+_PROACTIVE_SIMILARITY_THRESHOLD = 0.90  # 保守硬拦截阈值：90% 以上重复直接放弃本轮
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
 _PHASE1_TOTAL_TOPIC_TARGET = PROACTIVE_PHASE1_TOTAL_TOPICS  # Phase 1 输入给筛选模型的总候选目标条数
 
@@ -1568,6 +1568,11 @@ def _parse_web_screening_result(text: str) -> dict | None:
     return None
 
 
+def _phase1_text_is_pass(text: str) -> bool:
+    """Return True when a Phase 1 section explicitly says PASS."""
+    return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
+
+
 def _parse_unified_phase1_result(text: str) -> dict:
     """
     解析合并 Phase 1 LLM 输出。
@@ -1580,11 +1585,21 @@ def _parse_unified_phase1_result(text: str) -> dict:
     Returns:
         {
             'web': {'title': ..., 'source': ..., 'number': ...} | None,
-            'music_keyword': str | None,    # None 表示 PASS 或不存在
-            'meme_keyword': str | None,     # None 表示 PASS 或不存在
+            'music_keyword': str | None,    # None 表示无关键词
+            'meme_keyword': str | None,     # None 表示无关键词
+            'web_pass': bool,               # True 表示该通道明确 PASS
+            'music_pass': bool,
+            'meme_pass': bool,
         }
     """
-    result: dict = {'web': None, 'music_keyword': None, 'meme_keyword': None}
+    result: dict = {
+        'web': None,
+        'music_keyword': None,
+        'meme_keyword': None,
+        'web_pass': False,
+        'music_pass': False,
+        'meme_pass': False,
+    }
 
     # 按 [WEB] / [MUSIC] / [MEME] 分段
     # 使用正则切分，保留标签
@@ -1637,14 +1652,16 @@ def _parse_unified_phase1_result(text: str) -> dict:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
             result['web'] = parsed_web
-        elif '[PASS]' in web_text.upper():
-            pass  # 确实是 PASS，web 保持 None
+        elif _phase1_text_is_pass(web_text):
+            result['web_pass'] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
     music_text = sections.get('music', '')
     if music_text:
         music_text = music_text.strip()
-        if '[PASS]' not in music_text.upper() and music_text:
+        if _phase1_text_is_pass(music_text):
+            result['music_pass'] = True
+        elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
             keyword = re.sub(
                 r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+',
@@ -1660,7 +1677,9 @@ def _parse_unified_phase1_result(text: str) -> dict:
     meme_text = sections.get('meme', '')
     if meme_text:
         meme_text = meme_text.strip()
-        if '[PASS]' not in meme_text.upper() and meme_text:
+        if _phase1_text_is_pass(meme_text):
+            result['meme_pass'] = True
+        elif meme_text:
             keyword = re.sub(
                 r'(?i).*?(?:关键词|keyword|キーワード|키워드|ключевое\s*слово)[：:\s]+',
                 '', meme_text, count=1
@@ -2346,7 +2365,7 @@ def _render_work_break_prompt(
     pinned to the snapshot) so consecutive failed-then-retried
     deliveries naturally rotate the suggested action.
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         WORK_BREAK_REMINDER_PROMPT, WORK_BREAK_SEED_HINTS,
         WORK_BREAK_GENERIC_WORK_LABEL,
     )
@@ -2379,7 +2398,7 @@ def _render_anti_slack_prompt(
     No seed slot — single behaviour, variation comes from prev/new app
     names + minute count + AI persona. Returns the system prompt text.
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         ANTI_SLACK_REMINDER_PROMPT,
         WORK_BREAK_GENERIC_WORK_LABEL, WORK_BREAK_GENERIC_LEISURE_LABEL,
     )
@@ -2409,7 +2428,7 @@ def _render_work_break_game_invite_prompt(
     the given game_type (caller falls back to the regular water-break
     branch).
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME, WORK_BREAK_GENERIC_WORK_LABEL,
     )
     per_lang = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME.get(game_type)
@@ -5293,7 +5312,7 @@ async def proactive_chat(request: Request):
             if mgr.state.is_proactive_preempted():
                 return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_llm")))
             try:
-                from config.prompts_proactive import build_unified_phase1_prompt
+                from config.prompts.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,
@@ -5392,14 +5411,18 @@ async def proactive_chat(request: Request):
         fetch_tasks_p1: list = []
         fetch_labels: list[str] = []
 
-        if has_music_task:
+        if has_music_task and not unified_parsed.get('music_pass'):
             kw = music_keyword or ""
             fetch_tasks_p1.append(_fetch_music_with_fallback(kw))
             fetch_labels.append('music')
-        if has_meme_task:
+        elif has_music_task:
+            print(f"[{lanlan_name}] Phase 1 音乐通道明确 PASS，跳过后置 fetch")
+        if has_meme_task and not unified_parsed.get('meme_pass'):
             kw = meme_keyword or ""
             fetch_tasks_p1.append(_fetch_meme_with_fallback(kw))
             fetch_labels.append('meme')
+        elif has_meme_task:
+            print(f"[{lanlan_name}] Phase 1 表情包通道明确 PASS，跳过后置 fetch")
 
         if fetch_tasks_p1:
             # Phase 1 preempt check：unified LLM 刚回，music/meme 后置 fetch 前再瞄
@@ -5780,7 +5803,8 @@ async def proactive_chat(request: Request):
             # （handle_new_message 或 text stream_text 入口）会 fire USER_INPUT，
             # 在 PHASE2 阶段 sticky 把 _preempted 翻到 True；同时 current_speech_id
             # 被轮换，proactive_sid != 新 sid 兜底覆盖竞态窗口。
-            # feed_tts_chunk 下面还有 lock 内 expected_speech_id 二次校验。
+            # TTS 不在流式阶段输出：先缓冲全文，等相似度/数据级硬拦截都通过后
+            # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
             if mgr.state.is_proactive_preempted(proactive_sid):
                 print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
                 aborted = True
@@ -5799,7 +5823,6 @@ async def proactive_chat(request: Request):
                 aborted = True
                 return True
             full_text += text
-            await mgr.feed_tts_chunk(text, expected_speech_id=proactive_sid)
             return False
         
         try:
@@ -5921,6 +5944,28 @@ async def proactive_chat(request: Request):
         logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
+        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
+        if is_duplicate:
+            logger.info(
+                "[%s] proactive repeat guard blocked Phase 2 output (similarity=%.3f threshold=%.2f)",
+                lanlan_name, similarity_score, _PROACTIVE_SIMILARITY_THRESHOLD,
+            )
+            print(
+                f"[{lanlan_name}] 主动搭话重复度过高，已拦截 "
+                f"(similarity={similarity_score:.3f}, threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            else:
+                logger.info("[%s] repeat guard hit but user already took over; skip TTS cleanup", lanlan_name)
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "主动搭话重复度过高，已拦截",
+                "similarity": similarity_score,
+                "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
+            }))
+
         has_music_topic = 'music' in active_channels
 
         # 【加固】数据级锁：如果正在播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
@@ -6005,11 +6050,24 @@ async def proactive_chat(request: Request):
             language=proactive_lang,
             master_name=master_name_current,
         )
-        committed = await mgr.finish_proactive_delivery(
-            response_text,
-            expected_speech_id=proactive_sid,
-            action_note=action_note,
-        )
+        try:
+            await mgr.feed_tts_chunk(response_text, expected_speech_id=proactive_sid)
+            committed = await mgr.finish_proactive_delivery(
+                response_text,
+                expected_speech_id=proactive_sid,
+                action_note=action_note,
+            )
+        except Exception as exc:
+            logger.warning("[%s] buffered proactive delivery failed: %s", lanlan_name, exc)
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            else:
+                logger.info("[%s] buffered delivery failed after user takeover; skip TTS cleanup", lanlan_name)
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "Phase 2 buffered delivery failed",
+            }))
         if not committed:
             # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：
             # 否则 _record_proactive_chat 会把未送达内容计入去重历史、topic usage
@@ -6644,3 +6702,35 @@ async def get_personal_dynamics(request: Request):
             "error": "服务器内部错误",
             "detail": str(e)
         }, status_code=500)
+
+
+# Self-register the mini-game-invite keyword matcher with main_logic's
+# event bus. Same rationale as plugin/core/state.py: ``main_logic.core``
+# previously imported this function directly (a layering inversion);
+# after the inversion was removed, the only way this hook gets attached
+# is via ``register_text_user_message_hook``. Registering at module import
+# time keeps the path alive for any context that loads system_router
+# directly (testbench, ad-hoc scripts) without going through
+# ``app/runtime_bindings.py``. ``register_text_user_message_hook`` dedupes
+# on identity, so the explicit wiring in ``app/runtime_bindings.py`` is a
+# no-op once we've fired here.
+try:
+    from main_logic.agent_event_bus import register_text_user_message_hook as _register_text_hook
+    _register_text_hook(_maybe_apply_mini_game_invite_keyword)
+except Exception as _exc:
+    # Same discriminator pattern as plugin/core/state.py: only
+    # ``ModuleNotFoundError`` whose missing module IS one of the top-level
+    # targets here is a legit partial-env case (and even that is rare —
+    # main_logic should always be importable when system_router loads).
+    # A transitive failure or a register_* regression must be logged so
+    # the silent dispatcher no-op doesn't hide a real bug. Codex P2 catch.
+    _expected_absent = {"main_logic", "main_logic.agent_event_bus"}
+    _is_expected_absent = (
+        isinstance(_exc, ModuleNotFoundError)
+        and getattr(_exc, "name", None) in _expected_absent
+    )
+    if not _is_expected_absent:
+        logger.warning(
+            "system_router: failed to self-register text_user_message_hook",
+            exc_info=True,
+        )

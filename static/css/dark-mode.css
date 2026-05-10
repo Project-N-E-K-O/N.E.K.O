@@ -764,6 +764,57 @@ html #chat-container {
   color: #4aa3df;
 }
 
+/* 角色面板音色自定义下拉暗色适配 */
+[data-theme="dark"] .catgirl-panel-right .voice-select-header {
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-header::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238dd1ff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-options {
+  background: #252525 !important;
+  border-color: #3a5a6e !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e !important;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-track {
+  background: #1e1e1e !important;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb {
+  background: rgba(74, 163, 223, 0.55) !important;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 163, 223, 0.8) !important;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-option {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-option:not(.disabled):hover,
+[data-theme="dark"] .catgirl-panel-right .voice-select-option:not(.disabled):focus {
+  background: rgba(74, 163, 223, 0.18);
+  color: #f5fbff;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-option.selected {
+  background: rgba(74, 163, 223, 0.25);
+  color: #8dd1ff;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-option.disabled {
+  color: #7a8da3;
+}
+
+[data-theme="dark"] .catgirl-panel-right .voice-select-group-label {
+  color: #8dd1ff;
+}
+
 [data-theme="dark"] .field-row label {
   color: #4aa3df;
 }

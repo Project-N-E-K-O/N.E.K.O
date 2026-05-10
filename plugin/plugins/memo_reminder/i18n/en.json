@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Memo Reminder",
+  "plugin.description": "Scheduled memo and alarm plugin that nudges the master at the chosen time. Supports one-shot and recurring reminders"
+}

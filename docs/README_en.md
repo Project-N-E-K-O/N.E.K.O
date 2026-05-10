@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 ![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
@@ -466,8 +466,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agent subsystem
 ├── 📁 config/                   # ⚙️ Configuration management
 │   ├── api_providers.json       # API provider configuration
-│   ├── prompts_chara.py         # Character prompts
-│   └── prompts_sys.py           # System prompts
+│   └── 📁 prompts/              # Character, system, and feature prompts
+│       ├── prompts_chara.py     # Character prompts
+│       └── prompts_sys.py       # System prompts
 ├── 📁 main_logic/               # 🔧 Core modules
 │   ├── core.py                  # Core dialogue module
 │   ├── cross_server.py          # Cross-server communication
