@@ -891,6 +891,86 @@ def test_home_tutorial_skip_persists_completion_state(
 
 
 @pytest.mark.frontend
+def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.pageConfigReady = Promise.resolve({
+                success: true,
+                autostart_csrf_token: 'stale-token',
+            });
+            window.__pageConfigFetchCount = 0;
+            window.__resetTokens = [];
+            window.__resetBodies = [];
+            window.alert = function(message) {
+                window.__lastAlert = String(message || '');
+            };
+        """,
+        fetch_js="""
+            const csrfToken = headers['X-CSRF-Token'] || headers['x-csrf-token'] || '';
+            if (requestUrl === '/api/config/page_config') {
+                window.__pageConfigFetchCount += 1;
+                return jsonResponse({
+                    success: true,
+                    autostart_csrf_token: 'fresh-token',
+                    model_path: '',
+                    model_type: 'live2d',
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/reset') {
+                window.__resetTokens.push(csrfToken);
+                window.__resetBodies.push(body);
+                if (csrfToken !== 'fresh-token') {
+                    return jsonResponse({
+                        ok: false,
+                        error_code: 'csrf_validation_failed',
+                    }, 403);
+                }
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+        """,
+        script_names=("app-prompt-shared.js", "universal-tutorial-manager.js"),
+    )
+
+    mock_page.evaluate(
+        """
+        async () => {
+            localStorage.setItem('neko_tutorial_home', 'true');
+            await resetTutorialForPage('home');
+        }
+        """
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            pageConfigFetchCount: window.__pageConfigFetchCount,
+            resetTokens: window.__resetTokens.slice(),
+            resetBodies: window.__resetBodies.slice(),
+            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+        })
+        """
+    )
+
+    assert result["pageConfigFetchCount"] >= 1
+    assert result["resetTokens"] == ["stale-token", "fresh-token"]
+    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
+    assert result["resetBodies"][1]["reason"] == "manual_home_tutorial_reset"
+    assert result["homeSeen"] is None
+    assert result["manualIntent"] == "true"
+
+
+@pytest.mark.frontend
 def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
     mock_page: Page,
 ):

@@ -56,11 +56,28 @@ async function getTutorialMutationHeaders() {
 }
 
 async function postTutorialPromptReset(reason) {
-    const response = await fetch('/api/tutorial-prompt/reset', {
+    const body = JSON.stringify({ reason });
+    const sendResetRequest = async () => fetch('/api/tutorial-prompt/reset', {
         method: 'POST',
         headers: await getTutorialMutationHeaders(),
-        body: JSON.stringify({ reason }),
+        body,
     });
+
+    let response = await sendResetRequest();
+    if (response.status === 403 && window.nekoLocalMutationSecurity &&
+        typeof window.nekoLocalMutationSecurity.refreshToken === 'function') {
+        let shouldRetry = false;
+        try {
+            const payload = await response.clone().json();
+            shouldRetry = payload && payload.error_code === 'csrf_validation_failed';
+        } catch (_) {
+            shouldRetry = false;
+        }
+        if (shouldRetry) {
+            await window.nekoLocalMutationSecurity.refreshToken();
+            response = await sendResetRequest();
+        }
+    }
     if (!response.ok) {
         throw new Error(`tutorial prompt reset failed: ${response.status}`);
     }
