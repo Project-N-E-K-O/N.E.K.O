@@ -704,6 +704,26 @@ object-position: right center;
     overflow: hidden;
 }
 
+/* 视口足够宽（约最大化窗口）时，让标题区根据内容自适应并显示完整文本；
+   窄屏仍保持 40% 固定宽度 + ellipsis 截断 */
+@media (min-width: 1280px) {
+    .card-info-title-area {
+        width: max-content;
+        min-width: 40%;
+        max-width: calc(80% - 16px);
+        overflow: visible;
+    }
+
+    .card-info-header-text {
+        overflow: visible;
+    }
+
+    .card-info-header-text > span {
+        overflow: visible;
+        text-overflow: clip;
+    }
+}
+
 .card-info-header-text {
 display: flex;
 align-items: center;
