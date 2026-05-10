@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 import main_routers.characters_router as characters_router
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
-from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
+from utils.native_voice_registry import resolve_native_voice_for_routing
 
 
 class _FakeConfigManager:
@@ -24,6 +24,9 @@ class _FakeConfigManager:
 
 
 class _FakeCharactersRouterConfigManager:
+    """Mimics the ConfigManager surface used by characters_router.get_voices
+    plus the registry's get_active_realtime_native_provider lookup."""
+
     def __init__(self, realtime_api_type):
         self._realtime_api_type = realtime_api_type
 
@@ -33,8 +36,11 @@ class _FakeCharactersRouterConfigManager:
     async def aget_core_config(self):
         return {"CORE_API_TYPE": "gemini"}
 
-    def is_gemini_realtime_api_active(self):
-        return self._realtime_api_type == "gemini"
+    def get_model_api_config(self, model_type):
+        return {"api_type": self._realtime_api_type}
+
+    def get_core_config(self):
+        return {"CORE_API_TYPE": "gemini"}
 
     async def aload_characters(self):
         return {"猫娘": {}}
@@ -61,7 +67,7 @@ def test_gemini_alias_checks_canonical_voice_collision():
     config_manager = _FakeConfigManager(stored_voice_ids={"Puck"})
 
     assert (
-        resolve_gemini_native_voice_for_routing(
+        resolve_native_voice_for_routing(
             "gemini",
             "中文男",
             config_manager.voice_id_exists_in_any_storage,
@@ -74,7 +80,7 @@ def test_gemini_alias_checks_canonical_voice_collision_case_insensitively():
     config_manager = _FakeConfigManager(stored_voice_ids={"puck"})
 
     assert (
-        resolve_gemini_native_voice_for_routing(
+        resolve_native_voice_for_routing(
             "gemini",
             "中文男",
             config_manager.voice_id_exists_in_any_storage,
@@ -88,7 +94,7 @@ def test_gemini_alias_without_collision_uses_native_realtime_voice():
     config_manager = _FakeConfigManager()
 
     assert (
-        resolve_gemini_native_voice_for_routing(
+        resolve_native_voice_for_routing(
             "gemini",
             "中文男",
             config_manager.voice_id_exists_in_any_storage,

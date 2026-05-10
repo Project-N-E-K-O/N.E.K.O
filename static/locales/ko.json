@@ -1153,7 +1153,7 @@
             "select": "선택",
             "defaultClickAnim": "기본 클릭 애니메이션"
         },
-        "emotionConfig": "감정 구성",
+        "emotionConfig": "감정",
         "saveSettings": "설정 저장",
         "persistentExpression": "영구 표현식(표현식만 해당):",
         "pleaseLoadModel": "모델을 로드하세요.",
@@ -1161,8 +1161,8 @@
         "delete": "삭제",
         "savePersistent": "지속 표현식 저장",
         "persistentHint": "영구 표현식은 항상 활성화됩니다.",
-        "backToMain": "메인으로 돌아가기",
-        "importModel": "모델 가져오기",
+        "backToMain": "홈으로",
+        "importModel": "가져오기",
         "motionPreview": "모션 미리보기",
         "expressionPreview": "표현식 미리보기",
         "play": "플레이",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
         "selectLive2DModel": "Live2D 모델 선택",
-        "selectVRMModel": "VRM 모델 선택",
+        "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
         "vrmModelListLoaded": "VRM 모델 목록이 성공적으로 로드되었습니다.",
         "noVRMModelsFound": "사용 가능한 VRM 모델을 찾을 수 없습니다.",
@@ -1251,7 +1251,7 @@
             "speed": "속도:"
         },
         "mmdModel": {
-            "selectModel": "MMD 모델 선택",
+            "selectModel": "MMD 모델",
             "deleteModel": "가져온 MMD 모델 삭제",
             "deleteModelTitle": "가져온 MMD 모델 삭제",
             "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "선택 삭제"
         },
         "mmdAnimation": {
-            "selectAnimation": "VMD 애니메이션 선택",
+            "selectAnimation": "VMD 선택",
             "noAnimation": "애니메이션 없음",
             "play": "재생",
-            "uploadAnimation": "VMD 애니메이션 가져오기",
+            "uploadAnimation": "VMD 가져오기",
             "deleteAnimation": "VMD 애니메이션 삭제",
             "deleteAnimationTitle": "가져온 VMD 애니메이션 삭제",
             "deleteAnimationWarning": "가져온 모든 사용자 VMD 애니메이션 파일이 아래에 나열됩니다. 삭제할 애니메이션을 선택하세요.",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "오류: {{error}}",
         "parameterEditor": {
-            "title": "얼굴 편집기",
+            "title": "얼굴 편집",
             "backToMain": "← L2D 설정으로 돌아가기",
             "backToL2DManager": "뒤로",
             "selectModel": "모델 선택",
@@ -2430,6 +2430,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",
             "AGENT_NOT_INITIALIZED": "네코클로 초기화 실패",
             "AGENT_LLM_UNREACHABLE": "네코클로 LLM에 연결할 수 없습니다",
             "AGENT_MODEL_NOT_CONFIGURED": "네코클로 모델이 구성되지 않았습니다",

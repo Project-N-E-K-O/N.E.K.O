@@ -49,7 +49,7 @@ from config import (
     AVATAR_INTERACTION_DEDUPE_MAX_ITEMS,
     HIDE_DIRTY_VOICE_TRANSCRIPTS,
 )
-from config.prompts_sys import (
+from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
@@ -218,14 +218,14 @@ def _build_callback_instruction(
             # the joined output is clean.
             parts.append(header.rstrip())
     return "\n\n".join(parts)
-from config.prompts_avatar_interaction import (
+from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
 # Historical imports kept here (commented) for easy rollback:
 # from config import USER_PLUGIN_SERVER_PORT
-# from config.prompts_sys import (
+# from config.prompts.prompts_sys import (
 #     SESSION_INIT_PROMPT_AGENT_DYNAMIC,
 #     AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
 #     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
@@ -233,7 +233,7 @@ from config.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.gemini_tts_voices import resolve_gemini_native_voice_for_routing
+from utils.native_voice_registry import resolve_native_voice_for_routing
 from utils.api_config_loader import (
     get_free_voices,
     get_livestream_config,
@@ -2531,7 +2531,7 @@ class LLMSessionManager:
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
-        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
@@ -2869,13 +2869,13 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
         )
         if uses_provider_native_voice:
-            logger.info(f"{log_prefix}🔊 Gemini 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
+            logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
         if (
             self._is_free_preset_voice
@@ -2914,14 +2914,15 @@ class LLMSessionManager:
         """决定 OmniRealtimeClient 传给 server/provider 的 voice。
 
         优先级：
-        1. Gemini 原生音色（Puck / 中文男 等）→ 规范化后传入 Gemini Live。
+        1. core_api_type 注册了 native voice provider，且 voice_id 命中其 catalog
+           （Gemini Puck / 中文男 等）→ 规范化后由 provider client 直接消费。
         2. livestream 子模式启用且配置了 voice_id → 用 livestream voice_id
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
            lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_gemini_native_voice_for_routing(
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
@@ -4273,7 +4274,7 @@ class LLMSessionManager:
         "本轮实际放了什么歌 / 分享了什么内容 / 来源在哪"作为元数据留给 LLM 下
         一轮看到，避免用户反问"刚才放的什么"时 AI 完全不知道——只记得自己说
         了什么，不记得自己做了什么。构造逻辑见
-        ``config.prompts_proactive.build_proactive_action_note``。
+        ``config.prompts.prompts_proactive.build_proactive_action_note``。
 
         返回 True 表示真正落库，False 表示因 sid 变化被跳过。调用方据此短路
         下游副作用（_record_proactive_chat / topic usage / surfaced reflection 等），
@@ -4723,7 +4724,7 @@ class LLMSessionManager:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
-        from config.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
+        from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
         from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
         template = get_greeting_prompt(gap_seconds, _lang)
@@ -4840,7 +4841,7 @@ class LLMSessionManager:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     async def trigger_new_character_greeting(self) -> None:
-        from config.prompts_proactive import get_new_character_greeting_prompt
+        from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending
 
         config_manager = get_config_manager()

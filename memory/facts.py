@@ -23,7 +23,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
 )
-from config.prompts_memory import (
+from config.prompts.prompts_memory import (
     get_fact_extraction_prompt,
     get_signal_detection_prompt,
 )

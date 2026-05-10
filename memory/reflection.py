@@ -626,7 +626,7 @@ class ReflectionEngine:
             一批 facts 算出同 rid，post-LLM 锁内 dedup append 兜住。失败一方
             返回 [] 不污染 caller 视图。
         """
-        from config.prompts_memory import get_reflection_prompt
+        from config.prompts.prompts_memory import get_reflection_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
@@ -1441,7 +1441,7 @@ class ReflectionEngine:
             return await self._check_feedback_locked(lanlan_name, user_messages)
 
     async def _check_feedback_locked(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
-        from config.prompts_memory import get_reflection_feedback_prompt
+        from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
@@ -1507,7 +1507,7 @@ class ReflectionEngine:
         Used by periodic rebuttal check (every 5 min). Only returns 'denied' or 'ignored'.
         Returns None on LLM/processing failure (same convention as check_feedback).
         """
-        from config.prompts_memory import get_reflection_feedback_prompt
+        from config.prompts.prompts_memory import get_reflection_feedback_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 
@@ -2226,7 +2226,7 @@ class ReflectionEngine:
         failure — caller (`_apromote_with_merge`) catches and treats as
         skip_retry_pending per §3.9.4.
         """
-        from config.prompts_memory import get_promotion_merge_prompt
+        from config.prompts.prompts_memory import get_promotion_merge_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
 

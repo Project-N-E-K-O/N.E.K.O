@@ -714,7 +714,7 @@ for s in signals:
 **Layer 1 — 关键词扫描（本地、零成本、零延迟）**：
 
 ```python
-# config/prompts_memory.py 旁路声明
+# config/prompts/prompts_memory.py 旁路声明
 NEGATIVE_KEYWORDS_I18N = {
     'zh': frozenset(["别再说", "别说了", "别提", "不想聊", "换个话题", ...]),
     'en': frozenset(["stop talking about", "don't mention", "change the topic", ...]),
@@ -801,7 +801,7 @@ EVIDENCE_SIGNAL_CHECK_ENABLED = True  # 独立开关，可热关
 
 **§3.4.5 两个独立 prompt 的设计**：
 
-**Prompt 1：`FACT_EXTRACTION_PROMPT` 改造**（`config/prompts_memory.py:699`，5 语言 i18n dict 全部同步）
+**Prompt 1：`FACT_EXTRACTION_PROMPT` 改造**（`config/prompts/prompts_memory.py:699`，5 语言 i18n dict 全部同步）
 
 只做"从 user 消息抽新 fact"。**不**带已有观察作 context、**不**问 reinforces/negates、**不**问 tags（Q9：tags 字段保留但不再要求 LLM 填）。
 
@@ -1250,7 +1250,7 @@ async def _apromote_with_merge(self, name: str, R: dict) -> str:
 
 **成本**：每次 promotion 触发 1 次 LLM call（~500 tokens in + ~100 tokens out）。promotion 频次 <5/天/角色。日均 <5K token，可忽略。
 
-**LLM prompt 结构**（新增到 `config/prompts_memory.py`，i18n 5 语言）：
+**LLM prompt 结构**（新增到 `config/prompts/prompts_memory.py`，i18n 5 语言）：
 
 ```
 你在维护{ai_name}对{master_name}的长期印象。当前有一条待晋升的观察：
@@ -1391,7 +1391,7 @@ def _is_visible_for_proactive_retrieval(entry: dict) -> bool:
 **PR-1 (P-A + P-B)**：signal detection + data layer + migration
 - `pyproject.toml` 加 `tiktoken>=0.7.0`（为 P-D 提前挂，P-A 不需要）；`requirements.txt` 由 `uv export` 重新生成
 - `config/__init__.py` 加全部 evidence 常量 + 加进 `__all__`
-- `config/prompts_memory.py` 改造 `FACT_EXTRACTION_PROMPT`（5 语言；删 tags 要求；不加 reinforces/negates）；新增 `SIGNAL_DETECTION_PROMPT`（5 语言 i18n，带水印）；新增 `NEGATIVE_TARGET_CHECK_PROMPT`（5 语言 i18n，带水印）；新增 `NEGATIVE_KEYWORDS_I18N`（5 语言 frozenset）
+- `config/prompts/prompts_memory.py` 改造 `FACT_EXTRACTION_PROMPT`（5 语言；删 tags 要求；不加 reinforces/negates）；新增 `SIGNAL_DETECTION_PROMPT`（5 语言 i18n，带水印）；新增 `NEGATIVE_TARGET_CHECK_PROMPT`（5 语言 i18n，带水印）；新增 `NEGATIVE_KEYWORDS_I18N`（5 语言 frozenset）
 - `memory/evidence.py` 新建（**只放纯函数 + 背景辅助**：score 公式 / derive_status / effective_reinforcement / effective_disputation / maybe_mark_sub_zero；不放常量）
 - `memory/facts.py` 重写 `aextract_facts` 为 `aextract_facts_and_detect_signals`（两次 LLM call）；删 `importance < 5` 硬丢
 - `memory/reflection.py` 新增 `aapply_signal`（async only）；`check_feedback` 新增 `ignored → reinforcement -= 0.2`；reflection schema 加 4 字段（reinforcement / disputation / last_signal_at / sub_zero_days）；**删除** `AUTO_CONFIRM_DAYS` / `AUTO_PROMOTE_DAYS` + 时间跳级分支
@@ -1407,7 +1407,7 @@ def _is_visible_for_proactive_retrieval(entry: dict) -> bool:
 
 **PR-3 (P-D + §3.9 merge-on-promote)**：
 - `utils/tokenize.py` 新建（sync + async + fallback + 一次性 warn）
-- `config/prompts_memory.py` 新增 `PROMOTION_MERGE_PROMPT`（5 语言 i18n）
+- `config/prompts/prompts_memory.py` 新增 `PROMOTION_MERGE_PROMPT`（5 语言 i18n）
 - `memory/persona.py` `_compose_persona_markdown` 改写为 Phase 1/2/3；新增 `amerge_into`
 - `memory/reflection.py` 新增 `_apromote_with_merge`；替换现有 promote 调用
 - 测试：Nuitka 打包产物 token 计数真跑（o200k_base encoding 被打入）；merge LLM 超时**不**降级 promote_fresh，reflection 留在 confirmed 等下次 retry；score-trim 保留 `protected`；persona / reflection 预算独立（一侧超不影响另一侧）
@@ -1682,8 +1682,8 @@ Merge-on-promote：
 | `memory_server.py:569` | `_periodic_rebuttal_loop` | 参考模式 |
 | `memory_server.py:651` | `_periodic_auto_promote_loop` | §3.9 入口——重构为 score-driven |
 | `memory_server.py:680` | `_periodic_idle_maintenance_loop` | §3.4.3 复用路径（但独立开关） |
-| `config/prompts_memory.py:699` | `FACT_EXTRACTION_PROMPT` 5 语言 | §3.4.5 扩字段 |
-| `config/prompts_memory.py:899` | `REFLECTION_FEEDBACK_PROMPT` | §3.4 复用 |
+| `config/prompts/prompts_memory.py:699` | `FACT_EXTRACTION_PROMPT` 5 语言 | §3.4.5 扩字段 |
+| `config/prompts/prompts_memory.py:899` | `REFLECTION_FEEDBACK_PROMPT` | §3.4 复用 |
 | `utils/token_tracker.py` | LLM usage 追踪 | §3.6 区分：新增 `utils/tokenize.py` 管本地计数，职责不重叠 |
 | `pyproject.toml` | `[project.dependencies]` | 加 `tiktoken>=0.7.0` |
 
@@ -1697,7 +1697,7 @@ Merge-on-promote：
 4. **归档 JSON 分片**：按日期 + uuid8 后缀；每分片 ≤ `ARCHIVE_FILE_MAX_ENTRIES` 条；目录 `memory/<char>/{persona,reflection}_archive/`。
 5. **配置常量集中到 `config/__init__.py`**：所有 evidence / token / 阈值常量都在这里、加进文件末 `__all__`。`memory/evidence.py` 是新模块**只放纯函数 + 背景辅助**，不放常量。`memory/event_log.py:51-70` 的 `EVT_*` 常量是例外（event_log 模块内聚 API surface 的一部分），新增的 3 个 `EVT_*` 也加在那里、不进 `config/__init__.py`。
 6. **默认只 async，不强制 sync 对偶**：本 RFC 新增的 public method（`aapply_signal` / `amerge_into` / `acount_tokens` / `aextract_facts_and_detect_signals` 等）默认只有 `a*` 异步版本。生产代码路径全 async；测试用 `pytest-asyncio`。**不**为对偶性而对偶——只有真有 sync 调用方（如 migration 脚本必须 sync 跑）才补 sync twin，且明示理由。
-7. **i18n 5 语言覆盖**：所有新 prompt / 新用户可见文本（zh / en / ja / ko / ru）同步更新。`config/prompts_memory.py` 的现行 dict 模式（每条 prompt 是 `{lang: prompt_str, ...}`）保持。
+7. **i18n 5 语言覆盖**：所有新 prompt / 新用户可见文本（zh / en / ja / ko / ru）同步更新。`config/prompts/prompts_memory.py` 的现行 dict 模式（每条 prompt 是 `{lang: prompt_str, ...}`）保持。
 8. **Prompt 安全水印**（防 prompt injection 检测）：所有新增 prompt（每语言每条）必须包含以下字符串中**至少一个**：
    - `"======以上为"`（现行 `FACT_EXTRACTION_PROMPT` 已用此模式）
    - `"你是一个情感分析专家"`

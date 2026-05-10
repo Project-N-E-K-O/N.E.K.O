@@ -22,8 +22,9 @@ N.E.K.O/
 ├── config/                     # 設定
 │   ├── __init__.py             # 定数、デフォルト値、ポート定義
 │   ├── api_providers.json      # APIプロバイダープロファイル
-│   ├── prompts_sys.py          # システムプロンプト（感情、プロアクティブチャット）
-│   └── prompts_chara.py        # キャラクターシステムプロンプト
+│   └── prompts/                # キャラクター、システム、機能プロンプト
+│       ├── prompts_sys.py      # システムプロンプト（感情、プロアクティブチャット）
+│       └── prompts_chara.py    # キャラクターシステムプロンプト
 │
 ├── main_logic/                 # コアビジネスロジック
 │   ├── core.py                 # LLMSessionManager（中央セッションハンドラー）
@@ -76,7 +77,7 @@ N.E.K.O/
 │   ├── theme-manager.js        # ダーク/ライトモード
 │   ├── css/                    # スタイルシート
 │   ├── js/                     # 機能別JSモジュール
-│   ├── locales/                # i18n JSONファイル（en、zh-CN、zh-TW、ja、ko）
+│   ├── locales/                # i18n JSONファイル（en、zh-CN、zh-TW、ja、ko、ru、es、pt）
 │   └── live2d-ui-*.js          # Live2D UIコンポーネント
 │
 ├── templates/                  # Jinja2 HTMLテンプレート

@@ -118,6 +118,42 @@ body .page-title-bar {
     justify-content: center;
 }
 
+.master-profile-arrow-bubble {
+    width: 20px;
+    height: 20px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(218, 246, 255, 0.82));
+    border: 1px solid rgba(75, 212, 253, 0.48);
+    box-shadow: 0 4px 10px rgba(64, 197, 241, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.master-profile-arrow-symbol {
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid #40C5F1;
+    border-bottom: 2px solid #40C5F1;
+    transform: rotate(-45deg);
+    transition: transform 0.2s ease;
+}
+
+.master-profile-header:hover .master-profile-arrow-bubble {
+    background: linear-gradient(180deg, #ffffff, #cff4ff);
+    box-shadow: 0 6px 14px rgba(64, 197, 241, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+.master-profile-header.open .master-profile-arrow-bubble {
+    transform: translateY(1px);
+}
+
+.master-profile-header.open .master-profile-arrow-symbol {
+    transform: rotate(45deg) translate(-1px, -1px);
+}
+
 .page-title-bar .close-btn img {
     width: 32px;
     height: 32px;
@@ -3246,11 +3282,11 @@ color: #40C5F1;
 .sidebar-cloudsave-btn {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
+    justify-content: flex-start;
+    gap: 8px;
     width: 100%;
     margin-top: 12px;
-    padding: 8px 12px;
+    padding: 7px 10px;
     border: 1px solid #40C5F1;
     border-radius: 10px;
     background: linear-gradient(135deg, #e3f4ff, #ffffff);
@@ -3261,10 +3297,26 @@ color: #40C5F1;
     transition: background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease, color 0.2s ease;
 }
 
-.sidebar-cloudsave-btn svg {
-    width: 16px;
-    height: 16px;
+.sidebar-cloudsave-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    color: #40C5F1;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(64, 197, 241, 0.34);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 8px rgba(64, 197, 241, 0.14);
+    transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.sidebar-cloudsave-icon svg {
+    width: 15px;
+    height: 15px;
+    fill: none !important;
+    stroke: currentColor;
 }
 
 .sidebar-cloudsave-btn:hover {
@@ -3272,6 +3324,18 @@ color: #40C5F1;
     color: #fff;
     box-shadow: 0 4px 12px rgba(64, 197, 241, 0.28);
     transform: translateY(-1px);
+}
+
+.sidebar-cloudsave-btn:hover .sidebar-cloudsave-icon {
+    color: #23a4d7;
+    background: rgba(255, 255, 255, 0.95);
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 10px rgba(18, 125, 170, 0.18);
+}
+
+.sidebar-cloudsave-btn:focus-visible {
+    outline: 2px solid rgba(64, 197, 241, 0.42);
+    outline-offset: 2px;
 }
 
 .sidebar-cloudsave-btn:active {
@@ -4970,6 +5034,166 @@ margin-top: 10px;
     outline: none;
 }
 
+.catgirl-panel-right .field-row select.voice-native-select {
+    display: none !important;
+}
+
+.catgirl-panel-right .voice-custom-select {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+}
+
+.catgirl-panel-right .voice-select-header {
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 32px 4px 12px;
+    border: none;
+    border-radius: 48px;
+    background: transparent;
+    color: #40C5F1;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    cursor: pointer;
+    position: relative;
+    box-sizing: border-box;
+    user-select: none;
+}
+
+.catgirl-panel-right .voice-select-header::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s ease;
+    pointer-events: none;
+}
+
+.catgirl-panel-right .voice-custom-select.active .voice-select-header::after {
+    transform: translateY(-50%) rotate(180deg);
+}
+
+.catgirl-panel-right .voice-custom-select.open-down .voice-select-header::after {
+    transform: translateY(-50%) rotate(0deg);
+}
+
+.catgirl-panel-right .voice-select-selected {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.catgirl-panel-right .voice-select-options {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: -2px;
+    width: calc(100% + 4px);
+    max-height: 250px;
+    overflow-y: auto;
+    display: none;
+    padding: 6px;
+    background: #fff;
+    border: 2px solid #b3e5fc;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 3000;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+.catgirl-panel-right .voice-custom-select.active .voice-select-options {
+    display: block;
+}
+
+.catgirl-panel-right .voice-custom-select.open-up .voice-select-options {
+    top: auto;
+    bottom: calc(100% + 8px);
+}
+
+.catgirl-panel-right .voice-select-options.has-scrollbar {
+    border-radius: 12px 0 0 12px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar {
+    width: 8px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.catgirl-panel-right .voice-select-options::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+.catgirl-panel-right .voice-select-option,
+.catgirl-panel-right .voice-select-group-label {
+    min-height: 34px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.35;
+    box-sizing: border-box;
+}
+
+.catgirl-panel-right .voice-select-option {
+    color: #257da5;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: background 0.2s ease, color 0.2s ease;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.catgirl-panel-right .voice-select-option:not(.disabled):hover,
+.catgirl-panel-right .voice-select-option:not(.disabled):focus {
+    background: #e0f7ff;
+    color: #1686c2;
+    outline: none;
+}
+
+.catgirl-panel-right .voice-select-option.selected {
+    background: #e0f7ff;
+    color: #0d77ad;
+    font-weight: 700;
+}
+
+.catgirl-panel-right .voice-select-option.disabled {
+    color: #9fb9c5;
+    cursor: default;
+}
+
+.catgirl-panel-right .voice-select-group-label {
+    color: #40C5F1;
+    font-weight: 700;
+    cursor: default;
+    opacity: 0.85;
+}
+
+.catgirl-panel-right .field-row:has(.voice-custom-select.active) {
+    border-color: #40C5F1;
+}
+
 .catgirl-panel-right .field-row:focus-within {
     border-color: #40C5F1;
 }
@@ -5793,6 +6017,16 @@ margin-top: 10px;
     color: #7dd3fc;
 }
 
+[data-theme="dark"] .master-profile-arrow-bubble {
+    background: linear-gradient(180deg, rgba(36, 58, 75, 0.96), rgba(24, 42, 56, 0.96));
+    border-color: rgba(125, 211, 252, 0.44);
+    box-shadow: 0 5px 12px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .master-profile-arrow-symbol {
+    border-color: #7dd3fc;
+}
+
 [data-theme="dark"] .master-profile-content .field-row,
 [data-theme="dark"] .master-profile-content .field-row input,
 [data-theme="dark"] .master-profile-content .field-row textarea,
@@ -5837,11 +6071,18 @@ margin-top: 10px;
     color: #ffffff !important;
 }
 
+[data-theme="dark"] .sidebar-cloudsave-icon {
+    color: #7dd3fc !important;
+    background: rgba(15, 35, 48, 0.76);
+    border-color: rgba(125, 211, 252, 0.34);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 10px rgba(0, 0, 0, 0.2);
+}
+
 [data-theme="dark"] .sidebar-cloudsave-btn svg,
 [data-theme="dark"] .api-key-toolbar-btn svg,
 [data-theme="dark"] .chara-add-btn svg {
-    color: #ffffff !important;
-    fill: currentColor;
+    color: currentColor !important;
+    fill: none;
 }
 
 [data-theme="dark"] .sidebar-cloudsave-btn:hover,

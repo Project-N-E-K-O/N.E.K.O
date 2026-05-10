@@ -76,7 +76,7 @@ def test_core_config_uses_agent_model_only():
 
 
 def test_agent_server_legacy_endpoints_removed():
-    paths = _route_paths_from_decorators("agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server.py", "app")
     assert "/process" not in paths
     assert "/plan" not in paths
     assert "/analyze_and_plan" not in paths
@@ -221,7 +221,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("agent_server.py", "app")
+    paths = _route_paths_from_decorators("app/agent_server.py", "app")
     for expected in {
         "/health",
         "/agent/flags",
@@ -566,6 +566,151 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         assert expected in source
 
 
+def test_character_card_manager_tutorial_uses_current_page_and_targets():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    steps_start = source.index("    getCharaManagerSteps() {")
+    steps_end = source.index("getSettingsSteps()", steps_start)
+    steps_source = source[steps_start:steps_end]
+    wait_start = source.index("waitForCatgirlCards(")
+    wait_end = source.index("getTargetCatgirlBlock()", wait_start)
+    wait_source = source[wait_start:wait_end]
+
+    for expected in (
+        "path.includes('character_card_manager') || path.includes('chara_manager')",
+    ):
+        assert expected in source
+
+    for expected in (
+        "element: '#master-profile-section'",
+        "element: '#character-cards-content'",
+        "element: '.chara-add-btn'",
+        "element: '.chara-card-item:first-child, .chara-list-item:first-child'",
+        "element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn'",
+    ):
+        assert expected in steps_source
+
+    for expected in (
+        "document.getElementById('chara-cards-container')",
+        "document.querySelector('.chara-card-item, .chara-list-item')",
+    ):
+        assert expected in wait_source
+
+    for obsolete in (
+        "element: '#master-section'",
+        "element: '#catgirl-section'",
+    ):
+        assert obsolete not in steps_source
+
+    for obsolete in (
+        "document.getElementById('catgirl-list')",
+        "document.querySelector('.catgirl-block:first-child')",
+    ):
+        assert obsolete not in wait_source
+
+
+def test_character_card_manager_tutorial_prepare_helpers_use_current_card_selectors():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    prepare_start = source.index("async prepareCharaManagerForTutorial()")
+    prepare_end = source.index("cleanupCharaManagerTutorialIds()", prepare_start)
+    prepare_source = source[prepare_start:prepare_end]
+    ensure_start = source.index("async _ensureCharaManagerExpanded()")
+    ensure_end = source.index("createHelpButton()", ensure_start)
+    ensure_source = source[ensure_start:ensure_end]
+    step_change_start = source.index("async onStepChange()")
+    step_change_end = source.index("onTutorialEnd()", step_change_start)
+    step_change_source = source[step_change_start:step_change_end]
+
+    for helper_source in (prepare_source, ensure_source):
+        assert ".chara-card-item" in helper_source
+        assert ".chara-list-item" in helper_source
+        assert ".catgirl-block" not in helper_source
+        assert ".catgirl-details" not in helper_source
+        assert ".catgirl-expand" not in helper_source
+
+    assert ".chara-card-item:first-child, .chara-list-item:first-child" in ensure_source
+    assert ".catgirl-block:first-child" not in step_change_source
+
+
+def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "_tutorialScrollBlockOptions = { capture: true, passive: false }",
+        "blockTutorialScrollEvent(event)",
+        "event.preventDefault();",
+        "window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+    ):
+        assert expected in source
+
+
+def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "blockTutorialPointerEvent(event)",
+        "isTutorialControlEventTarget(target)",
+        "if (this.currentPage !== 'chara_manager') return;",
+        "target.closest('.driver-popover, #neko-tutorial-skip-btn')",
+        "event.stopImmediatePropagation();",
+        "window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+    ):
+        assert expected in source
+
+
+def test_universal_tutorial_manager_limits_input_blockers_to_chara_manager_page():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    scroll_start = source.index("blockTutorialScrollEvent(event)")
+    scroll_end = source.index("blockTutorialScroll()", scroll_start)
+    scroll_source = source[scroll_start:scroll_end]
+    pointer_start = source.index("blockTutorialPointerEvent(event)")
+    pointer_end = source.index("blockTutorialPointerEvents()", pointer_start)
+    pointer_source = source[pointer_start:pointer_end]
+
+    assert "if (this.currentPage !== 'chara_manager') return;" in scroll_source
+    assert "if (this.currentPage !== 'chara_manager') return;" in pointer_source
+
+
+def test_character_card_manager_master_profile_arrow_uses_bubble_style():
+    template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "class=\"master-profile-arrow-bubble\"",
+        "class=\"master-profile-arrow-symbol\"",
+    ):
+        assert expected in template_source
+
+    for expected in (
+        ".master-profile-arrow-bubble",
+        ".master-profile-arrow-symbol",
+        ".master-profile-header.open .master-profile-arrow-bubble",
+    ):
+        assert expected in css_source
+
+
+def test_character_card_manager_cloudsave_button_uses_icon_badge():
+    template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    assert "class=\"sidebar-cloudsave-icon\"" in template_source
+    for expected in (
+        ".sidebar-cloudsave-icon",
+        ".sidebar-cloudsave-btn:focus-visible",
+        "[data-theme=\"dark\"] .sidebar-cloudsave-icon",
+    ):
+        assert expected in css_source
+
+
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
@@ -685,7 +830,7 @@ def test_task_executor_format_messages_mentions_image_attachments():
 
 
 def test_plugin_terminal_status_defaults_and_run_data_overrides():
-    from agent_server import _plugin_terminal_status
+    from app.agent_server import _plugin_terminal_status
 
     # Default: success → completed, fail → failed.
     assert _plugin_terminal_status(True, None) == "completed"
@@ -992,7 +1137,7 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1241,7 +1386,7 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
 
 
 def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1264,7 +1409,7 @@ def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
 
 
 def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     fn_src = None
     for node in tree.body:
@@ -1352,6 +1497,62 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
     ready, reasons = manager.is_agent_api_ready()
     assert ready is False
     assert expected_reason in reasons
+
+
+def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "agent_command":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+
+    assert 'command == "set_agent_enabled"' in func_src
+    assert "gate = _check_agent_api_gate()" in func_src
+    assert "adapter_refreshed = _try_refresh_computer_use_adapter(force=True)" in func_src
+    assert "if not adapter_refreshed and Modules.computer_use is not None:" in func_src
+    assert "falling back to existing adapter" in func_src
+    assert "if Modules.computer_use is not None:" in func_src
+    assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
+    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert 'first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]' in func_src
+    assert '_set_capability("computer_use", False, first_reason)' in func_src
+    assert '_set_capability("browser_use", False, first_reason)' in func_src
+    assert '"is_free_version": bool(gate.get("is_free_version"))' in func_src
+    assert '"agent_api_gate": gate' in func_src
+
+
+def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_fire_agent_llm_connectivity_check":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+
+    assert "adapter = Modules.computer_use" in func_src
+    assert "if adapter is None:" in func_src
+    assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
+    assert "bu = Modules.browser_use" in func_src
+    assert "if bu is None:" in func_src
+    assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
+
+
+def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+
+    assert "const isFreeVersion" in source
+    assert "cmdResult.is_free_version" in source
+    assert "cmdResult.agent_api_gate && cmdResult.agent_api_gate.is_free_version" in source
+    assert "window.showAlert(msg, title)" in source
 
 
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
@@ -1821,7 +2022,7 @@ async def test_zmq_agent_to_main_push_pull(monkeypatch):
 
 def test_emit_main_event_sends_via_bridge():
     """_emit_main_event calls agent_bridge.emit_to_main when bridge is available."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -1835,7 +2036,7 @@ def test_emit_main_event_sends_via_bridge():
 
 def test_emit_main_event_no_http_fallback():
     """_emit_main_event must NOT contain any httpx or HTTP fallback code."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
@@ -1854,7 +2055,7 @@ def test_emit_main_event_no_http_fallback():
 
 def test_on_session_event_dispatches_ack_and_analyze():
     """_on_session_event creates tasks for ack emission and background analysis."""
-    source = Path("agent_server.py").read_text(encoding="utf-8")
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):

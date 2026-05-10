@@ -4790,6 +4790,10 @@ async function closeCatgirlPanel() {
     overlay.dataset.closing = 'true';
 
     const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._voiceSelectCleanup) {
+        currentForm._voiceSelectCleanup();
+        delete currentForm._voiceSelectCleanup;
+    }
     if (currentForm && currentForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
@@ -4850,6 +4854,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const previousForm = container && typeof container.querySelector === 'function'
         ? container.querySelector('form')
         : null;
+    if (previousForm && previousForm._voiceSelectCleanup) {
+        previousForm._voiceSelectCleanup();
+    }
     if (previousForm && previousForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
     }
@@ -5267,7 +5274,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.maxWidth = '300px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
-    voiceSelect.className = 'form-control';
+    voiceSelect.className = 'form-control voice-native-select';
+    voiceSelect.tabIndex = -1;
+    voiceSelect.setAttribute('aria-hidden', 'true');
     voiceSelect.style.flex = '0 0 auto';
     voiceSelect.style.width = '100%';
     voiceSelect.style.position = 'relative';
@@ -5281,6 +5290,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
+    const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
+    voiceRow.appendChild(voiceSelectUi.container);
+    form._voiceSelectCleanup = voiceSelectUi.destroy;
     voiceWrapper.appendChild(voiceRow);
 
     // 注册新声音按钮
@@ -5425,7 +5437,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
+        voiceSelectUi.refresh();
+    }, () => {
+        voiceSelectUi.refresh();
+    });
     form._voicesLoadPromise = voicesLoadPromise;
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
@@ -5540,6 +5556,247 @@ function _panelAttachTextareaAutoResize(textarea) {
     textarea.addEventListener('input', resize);
     textarea.addEventListener('focus', resize);
     resize();
+}
+
+// 创建音色自定义单选下拉，原生 select 只负责表单值。
+function _panelCreateVoiceSelectUi(selectEl) {
+    const container = document.createElement('div');
+    container.className = 'voice-custom-select';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'voice-select-header';
+    header.setAttribute('aria-haspopup', 'listbox');
+    header.setAttribute('aria-expanded', 'false');
+
+    const selectedText = document.createElement('span');
+    selectedText.className = 'voice-select-selected';
+    selectedText.textContent = selectEl.options[selectEl.selectedIndex]?.textContent || '';
+    header.appendChild(selectedText);
+
+    const options = document.createElement('div');
+    options.className = 'voice-select-options';
+    options.id = 'voice-select-options-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    options.setAttribute('role', 'listbox');
+    header.setAttribute('aria-controls', options.id);
+
+    container.appendChild(header);
+    container.appendChild(options);
+
+    function getItems() {
+        return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
+    }
+
+    function updateScrollbarState() {
+        requestAnimationFrame(() => {
+            options.classList.toggle('has-scrollbar', options.scrollHeight > options.clientHeight);
+        });
+    }
+
+    function setOptionTabbability(isTabbable) {
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            if (item.classList.contains('disabled')) {
+                item.setAttribute('tabindex', '-1');
+                return;
+            }
+            item.setAttribute('tabindex', isTabbable ? '0' : '-1');
+        });
+    }
+
+    function applyDropdownDirection() {
+        const maxHeight = 250;
+        const gap = 8;
+        const headerRect = header.getBoundingClientRect();
+        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight);
+        const spaceBelow = window.innerHeight - headerRect.bottom - gap;
+        const spaceAbove = headerRect.top - gap;
+        let placement = 'open-down';
+        let computedMaxHeight = maxHeight;
+
+        if (spaceBelow >= optionHeight) {
+            placement = 'open-down';
+        } else if (spaceAbove >= optionHeight) {
+            placement = 'open-up';
+        } else if (spaceAbove > spaceBelow) {
+            placement = 'open-up';
+            computedMaxHeight = Math.max(80, Math.floor(spaceAbove));
+        } else {
+            computedMaxHeight = Math.max(80, Math.floor(spaceBelow));
+        }
+
+        container.classList.toggle('open-up', placement === 'open-up');
+        container.classList.toggle('open-down', placement === 'open-down');
+        options.style.maxHeight = computedMaxHeight + 'px';
+        updateScrollbarState();
+    }
+
+    function closeDropdown(restoreFocus = false) {
+        const wasActive = container.classList.contains('active');
+        container.classList.remove('active', 'open-up', 'open-down');
+        header.setAttribute('aria-expanded', 'false');
+        setOptionTabbability(false);
+        if (restoreFocus && wasActive && header.isConnected) {
+            header.focus();
+        }
+    }
+
+    function openDropdown() {
+        document.querySelectorAll('.voice-custom-select.active').forEach(activeSelect => {
+            if (activeSelect === container) return;
+            activeSelect.classList.remove('active', 'open-up', 'open-down');
+            const activeHeader = activeSelect.querySelector('.voice-select-header');
+            if (activeHeader) activeHeader.setAttribute('aria-expanded', 'false');
+            activeSelect.querySelectorAll('.voice-select-option:not(.disabled)').forEach(item => {
+                item.setAttribute('tabindex', '-1');
+            });
+        });
+
+        container.classList.add('active');
+        header.setAttribute('aria-expanded', 'true');
+        setOptionTabbability(true);
+        applyDropdownDirection();
+
+        const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+        if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    function toggleDropdown() {
+        if (container.classList.contains('active')) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    }
+
+    function syncSelectionState() {
+        const selectedOption = selectEl.options[selectEl.selectedIndex] || selectEl.querySelector('option');
+        const displayText = selectedOption ? selectedOption.textContent : '';
+        selectedText.textContent = displayText;
+        header.title = selectedOption ? (selectedOption.title || displayText) : '';
+
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            const isSelected = item.dataset.value === selectEl.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+    }
+
+    function selectOptionValue(value) {
+        if (selectEl.value === value) {
+            closeDropdown(true);
+            return;
+        }
+        selectEl.value = value;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        closeDropdown(true);
+    }
+
+    function focusItemByOffset(currentItem, offset) {
+        const items = getItems();
+        if (items.length === 0) return;
+        const currentIndex = items.indexOf(currentItem);
+        const nextIndex = currentIndex >= 0
+            ? (currentIndex + offset + items.length) % items.length
+            : 0;
+        items[nextIndex].focus();
+    }
+
+    function appendOptionItem(option) {
+        const item = document.createElement('div');
+        item.className = 'voice-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('tabindex', '-1');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent || option.value;
+        item.title = option.title || item.textContent;
+
+        if (option.disabled) {
+            item.classList.add('disabled');
+            item.setAttribute('aria-disabled', 'true');
+        } else {
+            item.addEventListener('click', () => selectOptionValue(option.value));
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    selectOptionValue(option.value);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    focusItemByOffset(item, 1);
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    focusItemByOffset(item, -1);
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeDropdown(true);
+                }
+            });
+        }
+
+        options.appendChild(item);
+    }
+
+    function refresh() {
+        options.innerHTML = '';
+        Array.from(selectEl.children).forEach(child => {
+            if (child.tagName === 'OPTGROUP') {
+                const groupOptions = Array.from(child.children).filter(option => option.tagName === 'OPTION');
+                if (groupOptions.length > 0) {
+                    const groupLabel = document.createElement('div');
+                    groupLabel.className = 'voice-select-group-label';
+                    groupLabel.textContent = child.label || '';
+                    options.appendChild(groupLabel);
+                    groupOptions.forEach(appendOptionItem);
+                }
+            } else if (child.tagName === 'OPTION') {
+                appendOptionItem(child);
+            }
+        });
+        syncSelectionState();
+        setOptionTabbability(container.classList.contains('active'));
+        updateScrollbarState();
+    }
+
+    function handleDocumentClick(event) {
+        if (!container.contains(event.target)) {
+            closeDropdown();
+        }
+    }
+
+    function handleDocumentKeydown(event) {
+        if (event.key === 'Escape' && container.classList.contains('active')) {
+            closeDropdown(true);
+        }
+    }
+
+    header.addEventListener('click', toggleDropdown);
+    header.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!container.classList.contains('active')) openDropdown();
+            const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+            (selectedItem || getItems()[0])?.focus();
+        }
+    });
+    selectEl.addEventListener('change', syncSelectionState);
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleDocumentKeydown);
+
+    refresh();
+
+    return {
+        container,
+        refresh,
+        destroy() {
+            closeDropdown();
+            selectEl.removeEventListener('change', syncSelectionState);
+            document.removeEventListener('click', handleDocumentClick);
+            document.removeEventListener('keydown', handleDocumentKeydown);
+            container.remove();
+        }
+    };
 }
 
 // 加载音色列表（完整复制原版逻辑）

@@ -7,7 +7,7 @@
 - Mixed-script ASCII keyword（好happy啊 / 超annoyed欸）
 - Filler 防双重计分（haha haha haha 不应过度刷分触发 override）
 
-后续若改动 config/prompts_emotion.py 里的 token 表 / blocklist / contrast
+后续若改动 config/prompts/prompts_emotion.py 里的 token 表 / blocklist / contrast
 conjunctions，或 main_routers/system_router.py 里的 _has_heuristic_negation_before、
 _count_keyword_hits、_is_ascii_word_keyword，应跑此测试确认无 silent regression。
 """

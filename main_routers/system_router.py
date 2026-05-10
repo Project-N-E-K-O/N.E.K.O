@@ -89,8 +89,8 @@ from config import (
     PROACTIVE_SOURCE_FORGET_P,
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
-from config.prompts_sys import _loc
-from config.prompts_emotion import (
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_emotion import (
     get_outward_emotion_analysis_prompt,
     get_emotion_keywords_flat,
     get_angry_attack_patterns_flat,
@@ -102,8 +102,8 @@ from config.prompts_emotion import (
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
-from config.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
-from config.prompts_proactive import (
+from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
+from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
@@ -652,7 +652,7 @@ async def get_system_status(response: Response):
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
-# 多语言关键词/别名表统一在 config/prompts_emotion.py 维护，此处只做扁平索引。
+# 多语言关键词/别名表统一在 config/prompts/prompts_emotion.py 维护，此处只做扁平索引。
 _EMOTION_LABEL_ALIASES = get_emotion_label_aliases_flat()
 
 _EMOTION_CANONICAL_LABELS = ("happy", "sad", "angry", "surprised", "neutral")
@@ -744,7 +744,7 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
 
     return False
 
-# 启发式关键词/patterns 全部在 config/prompts_emotion.py 按语种维护，此处只做扁平化。
+# 启发式关键词/patterns 全部在 config/prompts/prompts_emotion.py 按语种维护，此处只做扁平化。
 _EMOTION_KEYWORDS = get_emotion_keywords_flat()
 _SAD_VULNERABLE_PATTERNS = get_sad_vulnerable_patterns_flat()
 _ANGRY_ATTACK_PATTERNS = get_angry_attack_patterns_flat()
@@ -867,7 +867,7 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
     return max(0.0, min(1.0, confidence))
 
 
-# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts_emotion.py 按语种维护。
+# 启发式打分时的否定回看 token / 转折连词表统一在 config/prompts/prompts_emotion.py 按语种维护。
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 _HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
@@ -2365,7 +2365,7 @@ def _render_work_break_prompt(
     pinned to the snapshot) so consecutive failed-then-retried
     deliveries naturally rotate the suggested action.
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         WORK_BREAK_REMINDER_PROMPT, WORK_BREAK_SEED_HINTS,
         WORK_BREAK_GENERIC_WORK_LABEL,
     )
@@ -2398,7 +2398,7 @@ def _render_anti_slack_prompt(
     No seed slot — single behaviour, variation comes from prev/new app
     names + minute count + AI persona. Returns the system prompt text.
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         ANTI_SLACK_REMINDER_PROMPT,
         WORK_BREAK_GENERIC_WORK_LABEL, WORK_BREAK_GENERIC_LEISURE_LABEL,
     )
@@ -2428,7 +2428,7 @@ def _render_work_break_game_invite_prompt(
     the given game_type (caller falls back to the regular water-break
     branch).
     """
-    from config.prompts_activity import (
+    from config.prompts.prompts_activity import (
         WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME, WORK_BREAK_GENERIC_WORK_LABEL,
     )
     per_lang = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME.get(game_type)
@@ -5312,7 +5312,7 @@ async def proactive_chat(request: Request):
             if mgr.state.is_proactive_preempted():
                 return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_llm")))
             try:
-                from config.prompts_proactive import build_unified_phase1_prompt
+                from config.prompts.prompts_proactive import build_unified_phase1_prompt
                 unified_prompt = build_unified_phase1_prompt(
                     proactive_lang,
                     merged_content=merged_web_content if has_web_task else None,

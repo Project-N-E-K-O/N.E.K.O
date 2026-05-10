@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from config.prompts_proactive import build_proactive_action_note
+from config.prompts.prompts_proactive import build_proactive_action_note
 from main_logic.core import LLMSessionManager
 from main_logic.session_state import SessionStateMachine
 

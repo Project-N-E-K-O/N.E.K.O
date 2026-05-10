@@ -9,7 +9,7 @@ import platform
 import uuid
 from types import MappingProxyType
 
-from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
@@ -1340,7 +1340,7 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
-  config.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
+  config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
 - 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
   分发逻辑无须改动。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""

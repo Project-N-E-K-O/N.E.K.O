@@ -8,7 +8,7 @@ import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_memory import (
+from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
     get_further_summarize_prompt, get_history_review_prompt,
 )
@@ -393,7 +393,7 @@ class CompressedRecentHistoryManager:
                             continue
                         if not isinstance(summary, str):
                             summary = json.dumps(summary, ensure_ascii=False)
-                    from config.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
+                    from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
                     memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
                     # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持
                     # 一致——之前用 raw 摘要会出现"用户看到的 memo 用了 stage-2
@@ -417,7 +417,7 @@ class CompressedRecentHistoryManager:
                 # 如果解析失败，重试
                 retries += 1
         # 如果所有重试都失败，返回None
-        from config.prompts_sys import _loc, MEMORY_MEMO_EMPTY
+        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_EMPTY
         return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):

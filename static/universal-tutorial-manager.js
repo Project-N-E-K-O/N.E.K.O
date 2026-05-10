@@ -78,6 +78,12 @@ class UniversalTutorialManager {
         this._teardownPromise = null;
         this._tutorialViewportPlacementResizeHandler = null;
         this._tutorialViewportPlacementResizeTimer = null;
+        this._tutorialScrollBlockHandler = this.blockTutorialScrollEvent.bind(this);
+        this._tutorialScrollBlockOptions = { capture: true, passive: false };
+        this._isTutorialScrollBlocked = false;
+        this._tutorialPointerBlockHandler = this.blockTutorialPointerEvent.bind(this);
+        this._tutorialPointerBlockOptions = { capture: true, passive: false };
+        this._isTutorialPointerBlocked = false;
         this._isDestroyed = false;
 
         // 刷新延迟常量
@@ -1559,7 +1565,7 @@ class UniversalTutorialManager {
         }
 
         // 角色管理
-        if (path.includes('chara_manager')) {
+        if (path.includes('character_card_manager') || path.includes('chara_manager')) {
             return 'chara_manager';
         }
 
@@ -2703,24 +2709,45 @@ class UniversalTutorialManager {
     getCharaManagerSteps() {
         return [
             {
-                element: '#master-section',
+                element: '#master-profile-section',
                 popover: {
                     title: this.t('tutorial.chara_manager.step1.title', '👤 主人档案'),
-                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。填写您的信息后，猫娘会根据这些信息来称呼您。'),
+                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。'),
                 }
             },
             {
-                element: '#catgirl-section',
+                element: '#character-cards-content',
                 popover: {
                     title: this.t('tutorial.chara_manager.step6.title', '🐱 猫娘档案'),
-                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格设定。'),
+                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。'),
                 }
             },
             {
-                element: '.catgirl-block:first-child button[id^="switch-btn-"]',
+                element: '.chara-add-btn',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step7.title', '➕ 新增猫娘'),
+                    description: this.t('tutorial.chara_manager.step7.desc', '点击这个按钮创建一个新的猫娘角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。'),
+                }
+            },
+            {
+                element: '.chara-card-item:first-child, .chara-list-item:first-child',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step8.title', '📋 猫娘卡片'),
+                    description: this.t('tutorial.chara_manager.step8.desc', '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。'),
+                }
+            },
+            {
+                element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn',
                 popover: {
                     title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
                     description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页会使用该角色的形象和性格。'),
+                }
+            },
+            {
+                element: '#api-key-settings-btn',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step5.title', '🔑 API Key 设置'),
+                    description: this.t('tutorial.chara_manager.step5.desc', '点击这里配置 AI 服务的 API Key。这是猫娘能够进行对话的必要配置。'),
                 }
             }
         ];
@@ -3232,16 +3259,79 @@ class UniversalTutorialManager {
         if (this._isBodyLocked) return;
         this._originalBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
+        this.blockTutorialScroll();
+        this.blockTutorialPointerEvents();
         this._isBodyLocked = true;
         console.log('[Tutorial] 禁用页面滚动');
     }
 
     unlockBodyScroll() {
         if (!this._isBodyLocked) return;
+        this.unblockTutorialPointerEvents();
+        this.unblockTutorialScroll();
         document.body.style.overflow = this._originalBodyOverflow ?? '';
         this._originalBodyOverflow = undefined;
         this._isBodyLocked = false;
         console.log('[Tutorial] 恢复页面滚动');
+    }
+
+    blockTutorialScrollEvent(event) {
+        if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
+    }
+
+    blockTutorialScroll() {
+        if (this._isTutorialScrollBlocked) return;
+        window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._isTutorialScrollBlocked = true;
+    }
+
+    unblockTutorialScroll() {
+        if (!this._isTutorialScrollBlocked) return;
+        window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._isTutorialScrollBlocked = false;
+    }
+
+    isTutorialControlEventTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        return !!target.closest('.driver-popover, #neko-tutorial-skip-btn');
+    }
+
+    blockTutorialPointerEvent(event) {
+        if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
+        if (this.isTutorialControlEventTarget(event && event.target)) return;
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
+        if (event && typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        } else if (event && typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+        }
+    }
+
+    blockTutorialPointerEvents() {
+        if (this._isTutorialPointerBlocked) return;
+        window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._isTutorialPointerBlocked = true;
+    }
+
+    unblockTutorialPointerEvents() {
+        if (!this._isTutorialPointerBlocked) return;
+        window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._isTutorialPointerBlocked = false;
     }
 
     restoreTutorialInteractionState() {
@@ -3999,8 +4089,8 @@ class UniversalTutorialManager {
             const startTime = Date.now();
 
             const checkCatgirlCards = () => {
-                const catgirlList = document.getElementById('catgirl-list');
-                const firstCatgirl = document.querySelector('.catgirl-block:first-child');
+                const catgirlList = document.getElementById('chara-cards-container');
+                const firstCatgirl = document.querySelector('.chara-card-item, .chara-list-item');
 
                 if (catgirlList && firstCatgirl) {
                     console.log('[Tutorial] 猫娘卡片已创建');
@@ -4027,7 +4117,7 @@ class UniversalTutorialManager {
      * 优先选择第一个，如果不存在则返回 null
      */
     getTargetCatgirlBlock() {
-        const catgirlBlocks = document.querySelectorAll('.catgirl-block');
+        const catgirlBlocks = document.querySelectorAll('.chara-card-item, .chara-list-item');
         if (catgirlBlocks.length === 0) {
             console.warn('[Tutorial] 没有找到任何猫娘卡片');
             return null;
@@ -4044,26 +4134,8 @@ class UniversalTutorialManager {
     async ensureCatgirlExpanded(catgirlBlock) {
         if (!catgirlBlock) return false;
 
-        const expandBtn = catgirlBlock.querySelector('.catgirl-expand');
-        const detailsDiv = catgirlBlock.querySelector('.catgirl-details');
-
-        if (!expandBtn || !detailsDiv) {
-            console.warn('[Tutorial] 猫娘卡片结构不完整');
-            return false;
-        }
-
-        // 检查是否已展开 - 通过检查 detailsDiv 的 display 样式
-        const isExpanded = detailsDiv.style.display === 'block';
-        console.log(`[Tutorial] 猫娘卡片展开状态: ${isExpanded}`);
-
-        if (!isExpanded) {
-            console.log('[Tutorial] 展开猫娘卡片');
-            expandBtn.click();
-            // 等待展开动画完成
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        return true;
+        // 当前角色管理页的卡片详情改为独立面板，不再有内联展开区域。
+        return this.isElementVisible(catgirlBlock);
     }
 
     /**
@@ -4134,19 +4206,10 @@ class UniversalTutorialManager {
             }
         });
 
-        // 2. 再关闭所有"猫娘卡片" (.catgirl-block)
-        const allCatgirlBlocks = document.querySelectorAll('.catgirl-block');
-        allCatgirlBlocks.forEach(block => {
-            const details = block.querySelector('.catgirl-details');
-            const expandBtn = block.querySelector('.catgirl-expand');
-
-            // 检查内容区域是否可见
-            if (details && expandBtn) {
-                const style = window.getComputedStyle(details);
-                if (style.display !== 'none') {
-                    console.log('[Tutorial] 检测到猫娘卡片已展开，正在关闭...');
-                    expandBtn.click(); // 点击折叠按钮关闭它
-                }
+        // 2. 当前角色管理页的卡片详情使用独立面板；教程只需要确认卡片列表处于可见稳定态。
+        document.querySelectorAll('.chara-card-item, .chara-list-item').forEach(block => {
+            if (!this.isElementVisible(block)) {
+                console.log('[Tutorial] 检测到不可见的猫娘卡片，跳过预处理');
             }
         });
 
@@ -4468,9 +4531,9 @@ class UniversalTutorialManager {
                 // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
                 if (this.currentPage === 'chara_manager') {
                     const needsAdvancedSettings = [
-                        '.catgirl-block:first-child .fold-toggle',
-                        '.catgirl-block:first-child .live2d-link',
-                        '.catgirl-block:first-child select[name="voice_id"]'
+                        '.chara-card-item:first-child .fold-toggle, .chara-list-item:first-child .fold-toggle',
+                        '.chara-card-item:first-child .live2d-link, .chara-list-item:first-child .live2d-link',
+                        '.chara-card-item:first-child select[name="voice_id"], .chara-list-item:first-child select[name="voice_id"]'
                     ].includes(currentStepConfig.element);
 
                     if (needsAdvancedSettings) {
@@ -4554,29 +4617,19 @@ class UniversalTutorialManager {
                                 console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
 
                                 // 1. 找到要点击的元素
-                                const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
+                                const innerTrigger = element.querySelector('.fold-toggle');
                                 const clickTarget = innerTrigger || element;
 
                                 // 2. 检查是否是折叠类元素，如果已展开则不点击
                                 let shouldClick = true;
                                 if (clickTarget.classList.contains('fold-toggle')) {
                                     // 检查进阶设定是否已展开
-                                    const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
+                                    const foldContainer = clickTarget.closest('.chara-card-item, .chara-list-item, .catgirl-panel-wrapper')?.querySelector('.fold');
                                     if (foldContainer) {
                                         const isExpanded = foldContainer.classList.contains('open') ||
                                             window.getComputedStyle(foldContainer).display !== 'none';
                                         if (isExpanded) {
                                             console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                            shouldClick = false;
-                                        }
-                                    }
-                                } else if (clickTarget.classList.contains('catgirl-expand')) {
-                                    // 检查猫娘卡片是否已展开
-                                    const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
-                                    if (details) {
-                                        const isExpanded = window.getComputedStyle(details).display !== 'none';
-                                        if (isExpanded) {
-                                            console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
                                             shouldClick = false;
                                         }
                                     }
@@ -5024,28 +5077,18 @@ class UniversalTutorialManager {
             console.log(`[Tutorial] _ensureCharaManagerExpanded: 尝试 ${attempts}/${maxAttempts}`);
 
             // 1. 找到第一个猫娘卡片
-            const targetBlock = document.querySelector('.catgirl-block:first-child');
+            const targetBlock = document.querySelector('.chara-card-item:first-child, .chara-list-item:first-child');
             if (!targetBlock) {
                 console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片，重试中...');
                 await this.sleep(300);
                 continue;
             }
 
-            // 2. 确保猫娘卡片详情区域已展开
-            const details = targetBlock.querySelector('.catgirl-details');
-            const expandBtn = targetBlock.querySelector('.catgirl-expand');
-            if (details && expandBtn) {
-                const detailsStyle = window.getComputedStyle(details);
-                if (detailsStyle.display === 'none') {
-                    console.log('[Tutorial] 猫娘卡片详情未展开，正在点击展开按钮...');
-                    expandBtn.click();
-                    // 等待卡片展开动画完成
-                    await this.sleep(600);
-                    continue; // 重新进入循环以验证展开结果
-                }
-            } else {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 猫娘卡片结构异常，缺少详情或展开按钮');
-                return false;
+            // 2. 当前角色管理页卡片详情是独立面板，不再需要展开内联详情区域。
+            if (!this.isElementVisible(targetBlock)) {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 目标猫娘卡片不可见，重试中...');
+                await this.sleep(300);
+                continue;
             }
 
             // 3. 确保“进阶设定”折叠区域已展开
@@ -5053,8 +5096,8 @@ class UniversalTutorialManager {
             const foldToggle = targetBlock.querySelector('.fold-toggle');
 
             if (!foldContainer || !foldToggle) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到进阶设定折叠区域或开关');
-                return false;
+                console.log('[Tutorial] _ensureCharaManagerExpanded: 当前卡片无内联进阶设定，跳过展开');
+                return true;
             }
 
             const isExpanded = foldContainer.classList.contains('open') ||

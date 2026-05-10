@@ -566,7 +566,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         constraints: str,
     ) -> str:
         try:
-            from config.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
             from utils.config_manager import get_config_manager
             from utils.language_utils import get_global_language
         except Exception as e:

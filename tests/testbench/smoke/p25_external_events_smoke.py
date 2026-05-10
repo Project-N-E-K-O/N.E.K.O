@@ -340,7 +340,7 @@ def check_a_happy_paths(client, mock) -> list[str]:
         # (2026-04-23 r3 polish).
         #
         # LESSONS_LEARNED §1.6 (语义契约 vs 运行时机制): 主程序
-        # ``config.prompts_avatar_interaction._build_avatar_interaction_
+        # ``config.prompts.prompts_avatar_interaction._build_avatar_interaction_
         # instruction`` 把 ``text_context`` / ``reward_drop`` / ``easter_egg``
         # 这类"上下文可选字段"拼进 instruction body 的指定 bullet 行
         # (见 `_AVATAR_INTERACTION_PROMPT_TEXT` 里的 ``reward_drop_line`` /

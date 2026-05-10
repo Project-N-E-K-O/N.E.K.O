@@ -1153,7 +1153,7 @@
             "select": "Select",
             "defaultClickAnim": "Default Click Animation"
         },
-        "emotionConfig": "Emotion Config",
+        "emotionConfig": "Emotions",
         "saveSettings": "Save Settings",
         "persistentExpression": "Persistent Expression (expression only):",
         "pleaseLoadModel": "Please load a model",
@@ -1161,8 +1161,8 @@
         "delete": "Delete",
         "savePersistent": "Save Persistent Expression",
         "persistentHint": "Persistent expressions will always be active.",
-        "backToMain": "Back to Main",
-        "importModel": "Import Model",
+        "backToMain": "Main",
+        "importModel": "Import",
         "motionPreview": "Motion Preview",
         "expressionPreview": "Expression Preview",
         "play": "Play",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "Exit Fullscreen",
         "modelType": "Model Type",
         "selectLive2DModel": "Select Live2D Model",
-        "selectVRMModel": "Select VRM Model",
+        "selectVRMModel": "VRM Model",
         "selectVRMFile": "Select VRM File",
         "vrmModelListLoaded": "VRM model list loaded successfully",
         "noVRMModelsFound": "No available VRM models found",
@@ -1251,7 +1251,7 @@
             "speed": "Speed:"
         },
         "mmdModel": {
-            "selectModel": "Select MMD Model",
+            "selectModel": "MMD Model",
             "deleteModel": "Delete Imported MMD Models",
             "deleteModelTitle": "Delete Imported MMD Models",
             "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "Delete Selected"
         },
         "mmdAnimation": {
-            "selectAnimation": "Select VMD Animation",
+            "selectAnimation": "VMD Animation",
             "noAnimation": "No Animation",
             "play": "Play",
-            "uploadAnimation": "Import VMD Animation",
+            "uploadAnimation": "Import VMD",
             "deleteAnimation": "Delete VMD Animation",
             "deleteAnimationTitle": "Delete Imported VMD Animations",
             "deleteAnimationWarning": "Below are all imported user VMD animation files. Select animations to delete.",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "Error: {{error}}",
         "parameterEditor": {
-            "title": "Face Editor",
+            "title": "Face Edit",
             "backToMain": "← Back to L2D Settings",
             "backToL2DManager": "Back",
             "selectModel": "Select Model",
@@ -2430,6 +2430,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API not configured",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui not installed",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use module not loaded",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",
             "AGENT_NOT_INITIALIZED": "NekoClaw initialization failed",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM unreachable",
             "AGENT_MODEL_NOT_CONFIGURED": "NekoClaw model not configured",

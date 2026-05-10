@@ -1,0 +1,531 @@
+gpt4_1_system = """## PERSISTENCE
+You are an agent - please keep going until the user's query is completely 
+resolved, before ending your turn and yielding back to the user. Only 
+terminate your turn when you are sure that the problem is solved.
+
+## TOOL CALLING
+If you are not sure about file content or codebase structure pertaining to 
+the user's request, use your tools to read files and gather the relevant 
+information: do NOT guess or make up an answer.
+
+## PLANNING
+You MUST plan extensively before each function call, and reflect 
+extensively on the outcomes of the previous function calls. DO NOT do this 
+entire process by making function calls only, as this can impair your 
+ability to solve the problem and think insightfully"""
+
+
+# =====================================================================
+# ======= 多语言注入片段（用于 LLM 上下文注入，供各模块引用）  =======
+# =====================================================================
+
+def _loc(d: dict, lang: str) -> str:
+    """从多语言 dict 按 lang 取值，缺失则回退 'en'。
+
+    对于已在 SUPPORTED_LANGUAGES 但未在某个 dict 里显式翻译的语言
+    （当前是 'es'、'pt'）静默回退到英文，不打 WARNING。
+    非本地化层的内部 LLM 系统 prompt 保持英文即可，LLM 能正确处理。
+    """
+    _SILENT_FALLBACK = {'es', 'pt'}
+    if lang not in d and lang not in _SILENT_FALLBACK:
+        print(f"WARNING: Unexpected lang code {lang}")
+    return d.get(lang, d['en'])
+
+
+
+# ---------- Agent 结果解析器 i18n ----------
+
+# 已知错误码映射
+RESULT_PARSER_ERROR_CODES = {
+    'AGENT_QUOTA_EXCEEDED': {
+        'zh': '配额已用完', 'en': 'Quota exceeded',
+        'ja': 'クォータ超過', 'ko': '할당량 초과', 'ru': 'Квота исчерпана',
+    },
+}
+
+# 已知错误子串映射（key=匹配子串，value=i18n dict）
+RESULT_PARSER_ERROR_SUBSTRINGS = {
+    'Task cancelled by user': {
+        'zh': '被用户取消', 'en': 'Cancelled by user',
+        'ja': 'ユーザーによりキャンセル', 'ko': '사용자가 취소함', 'ru': 'Отменено пользователем',
+    },
+    'timed out after': {
+        'zh': '超时', 'en': 'Timed out',
+        'ja': 'タイムアウト', 'ko': '시간 초과', 'ru': 'Превышено время ожидания',
+    },
+    'Browser disconnected': {
+        'zh': '浏览器窗口被关闭', 'en': 'Browser window closed',
+        'ja': 'ブラウザが切断されました', 'ko': '브라우저 연결 끊김', 'ru': 'Браузер отключён',
+    },
+    'CONTENT_FILTER': {
+        'zh': '内容安全过滤', 'en': 'Content filtered',
+        'ja': 'コンテンツフィルター', 'ko': '콘텐츠 필터링', 'ru': 'Фильтр контента',
+    },
+    'browser-use execution failed': {
+        'zh': '浏览器执行失败', 'en': 'Browser execution failed',
+        'ja': 'ブラウザ実行失敗', 'ko': '브라우저 실행 실패', 'ru': 'Ошибка выполнения браузера',
+    },
+    '未找到 Chrome': {
+        'zh': '未找到 Chrome 浏览器', 'en': 'Chrome browser not found',
+        'ja': 'Chrome ブラウザが見つかりません', 'ko': 'Chrome 브라우저를 찾을 수 없음',
+        'ru': 'Браузер Chrome не найден',
+    },
+}
+
+# 通用结果短语
+RESULT_PARSER_PHRASES = {
+    'no_result':          {'zh': '无结果', 'en': 'No result', 'ja': '結果なし', 'ko': '결과 없음', 'ru': 'Нет результата'},
+    'completed':          {'zh': '已完成', 'en': 'Completed', 'ja': '完了', 'ko': '완료', 'ru': 'Выполнено'},
+    'completed_with':     {'zh': '已完成: {detail}', 'en': 'Completed: {detail}', 'ja': '完了: {detail}', 'ko': '완료: {detail}', 'ru': 'Выполнено: {detail}'},
+    'steps_done':         {'zh': '{n}步完成', 'en': '{n} steps done', 'ja': '{n}ステップ完了', 'ko': '{n}단계 완료', 'ru': 'Выполнено за {n} шагов'},
+    'steps_done_with':    {'zh': '{n}步完成: {detail}', 'en': '{n} steps done: {detail}', 'ja': '{n}ステップ完了: {detail}', 'ko': '{n}단계 완료: {detail}', 'ru': 'Выполнено за {n} шагов: {detail}'},
+    'failed':             {'zh': '失败: {detail}', 'en': 'Failed: {detail}', 'ja': '失敗: {detail}', 'ko': '실패: {detail}', 'ru': 'Ошибка: {detail}'},
+    'exec_failed':        {'zh': '执行未成功', 'en': 'Execution unsuccessful', 'ja': '実行失敗', 'ko': '실행 실패', 'ru': 'Выполнение не удалось'},
+    'exec_error':         {'zh': '执行失败', 'en': 'Execution failed', 'ja': '実行エラー', 'ko': '실행 오류', 'ru': 'Ошибка выполнения'},
+    'exec_done':          {'zh': '执行完成', 'en': 'Execution completed', 'ja': '実行完了', 'ko': '실행 완료', 'ru': 'Выполнение завершено'},
+    'list_count':         {'zh': '({n}条)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)'},
+    'plugin_notification': {'zh': '收到插件通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина'},
+    'notification_received': {'zh': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление'},
+    # agent callback 注入 LLM 上下文的 detail 标签
+    # 状态信息（已完成/失败/取消等）由外层 SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE
+    # 表达，inner item 渲染时只需要可选的 detail label。
+    'detail_result':      {'zh': '详细结果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: '},
+    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}'},
+    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}'},
+    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}'},
+    'cu_done':            {'zh': '任务已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена'},
+    'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена'},
+    'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
+    'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
+    'openclaw_try':       {'zh': '我试试', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую'},
+    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...'},
+    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено'},
+    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено'},
+    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена'},
+    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)'},
+    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена'},
+    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена'},
+}
+
+# ---------- 语音会话初始 prompt ----------
+SESSION_INIT_PROMPT = {
+    'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
+    'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed.',
+    'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
+    'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
+    'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
+}
+
+SESSION_INIT_PROMPT_AGENT = {
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
+}
+
+SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
+    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
+    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
+    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
+    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
+}
+
+AGENT_CAPABILITY_COMPUTER_USE = {
+    'zh': '操纵电脑（键鼠控制、打开应用等）',
+    'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
+    'ja': 'コンピュータを操作する（マウス・キーボード操作、アプリ起動など）',
+    'ko': '컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)',
+    'ru': 'управлять компьютером (клавиатура/мышь, запуск приложений и т.д.)',
+}
+
+AGENT_CAPABILITY_BROWSER_USE = {
+    'zh': '浏览器自动化（网页搜索、填写表单等）',
+    'en': 'perform browser automation (web search, form filling, etc.)',
+    'ja': 'ブラウザ自動化を行う（Web検索、フォーム入力など）',
+    'ko': '브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)',
+    'ru': 'выполнять автоматизацию в браузере (поиск в сети, заполнение форм и т.д.)',
+}
+
+AGENT_CAPABILITY_USER_PLUGIN_USE = {
+    'zh': '调用已安装的插件来完成特定任务',
+    'en': 'use installed plugins to complete specific tasks',
+    'ja': 'インストール済みプラグインを使って特定のタスクを実行する',
+    'ko': '설치된 플러그인을 사용해 특정 작업을 수행하는 것',
+    'ru': 'использовать установленные плагины для выполнения конкретных задач',
+}
+
+AGENT_CAPABILITY_GENERIC = {
+    'zh': '执行各种操作',
+    'en': 'perform various operations',
+    'ja': 'さまざまな操作を実行する',
+    'ko': '다양한 작업을 수행하는 것',
+    'ru': 'выполнять различные операции',
+}
+
+AGENT_CAPABILITY_SEPARATOR = {
+    'zh': '、',
+    'en': ', ',
+    'ja': '、',
+    'ko': ', ',
+    'ru': ', ',
+}
+
+# ---------- Agent 任务状态标签 ----------
+AGENT_TASK_STATUS_RUNNING = {
+    'zh': '进行中',
+    'en': 'Running',
+    'ja': '実行中',
+    'ko': '진행 중',
+    'ru': 'Выполняется',
+}
+
+AGENT_TASK_STATUS_QUEUED = {
+    'zh': '排队中',
+    'en': 'Queued',
+    'ja': '待機中',
+    'ko': '대기 중',
+    'ru': 'В очереди',
+}
+
+# ---------- Agent 插件摘要 ----------
+AGENT_PLUGINS_HEADER = {
+    'zh': '\n【已安装的插件】\n',
+    'en': '\n[Installed Plugins]\n',
+    'ja': '\n[インストール済みプラグイン]\n',
+    'ko': '\n[설치된 플러그인]\n',
+    'ru': '\n[Установленные плагины]\n',
+}
+
+AGENT_PLUGINS_COUNT = {
+    'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
+    'en': '\n[Installed Plugins] {count} plugins are available.\n',
+    'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
+    'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
+    'ru': '\n[Установленные плагины] Доступно плагинов: {count}.\n',
+}
+
+AGENT_TASKS_HEADER = {
+    'zh': '\n[当前正在执行的Agent任务]\n',
+    'en': '\n[Active Agent Tasks]\n',
+    'ja': '\n[現在実行中のエージェントタスク]\n',
+    'ko': '\n[현재 실행 중인 에이전트 작업]\n',
+    'ru': '\n[Активные задачи агента]\n',
+}
+
+AGENT_TASKS_NOTICE = {
+    'zh': '\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。任务完成后系统会自动通知你真实结果，届时再据实回答。\n',
+    'en': '\nNote: The above tasks are running in the background. You may inform the user that they are being processed, but must never fabricate or guess results. You may also choose to wait silently until completed. The system will notify you of the real results when done.\n',
+    'ja': '\n注意：上記のタスクはバックグラウンドで実行中です。処理中であることをユーザーに伝えてもよいですが、結果を捏造・推測することは絶対に禁止です。タスク完了後、システムが自動的に本当の結果を通知しますので、その時点で正確に回答してください。\n',
+    'ko': '\n주의: 위 작업들은 백그라운드에서 실행 중입니다. 처리 중임을 사용자에게 알릴 수 있지만 결과를 꾸며내거나 추측해서는 안 됩니다. 작업 완료 후 시스템이 자동으로 실제 결과를 알려드리며, 그때 정확하게 답변하세요.\n',
+    'ru': '\nПримечание: вышеуказанные задачи выполняются в фоновом режиме. Вы можете сообщить пользователю, что они обрабатываются, но никогда не придумывайте и не угадывайте результаты. Система автоматически уведомит вас о реальных результатах по завершении.\n',
+}
+
+# ---------- 前情概要 + 语音就绪 ----------
+CONTEXT_SUMMARY_READY = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
+}
+
+# ---------- 来源描述符（agent_task_callback 渲染时按 user_language 动态拼装）----------
+# source_kind → 模板，``{name}`` 由 callback.source_name 填入。kind 缺失或未识别时
+# 走 'unknown'（按字面回显 source_name）。新增来源时只需往这里加一行。
+SOURCE_DESCRIPTORS = {
+    'plugin': {
+        'zh': '插件「{name}」', 'en': 'plugin "{name}"',
+        'ja': 'プラグイン「{name}」', 'ko': '플러그인 "{name}"',
+        'ru': 'плагина «{name}»',
+    },
+    'timer': {
+        'zh': '定时器', 'en': 'the timer',
+        'ja': 'タイマー', 'ko': '타이머', 'ru': 'таймера',
+    },
+    'mcp': {
+        'zh': 'MCP 服务「{name}」', 'en': 'MCP server "{name}"',
+        'ja': 'MCPサーバー「{name}」', 'ko': 'MCP 서버 "{name}"',
+        'ru': 'MCP-сервера «{name}»',
+    },
+    'system': {
+        'zh': '系统', 'en': 'the system',
+        'ja': 'システム', 'ko': '시스템', 'ru': 'системы',
+    },
+    'cu': {
+        'zh': '电脑操作任务', 'en': 'computer use',
+        'ja': 'コンピュータ操作', 'ko': '컴퓨터 조작', 'ru': 'управления компьютером',
+    },
+    'browser': {
+        'zh': '浏览器自动化任务', 'en': 'browser automation',
+        'ja': 'ブラウザ自動化', 'ko': '브라우저 자동화', 'ru': 'автоматизации браузера',
+    },
+    'agent': {
+        'zh': '子代理「{name}」', 'en': 'sub-agent "{name}"',
+        'ja': 'サブエージェント「{name}」', 'ko': '하위 에이전트 "{name}"',
+        'ru': 'субагента «{name}»',
+    },
+    'unknown': {
+        'zh': '{name}', 'en': '{name}',
+        'ja': '{name}', 'ko': '{name}', 'ru': '{name}',
+    },
+}
+
+# ---------- Task 状态短语（外层模板的 {status_phrase} 槽位）----------
+TASK_STATUS_PHRASES = {
+    'completed': {
+        'zh': '已完成', 'en': 'has completed',
+        'ja': '完了しました', 'ko': '완료되었습니다', 'ru': 'завершена',
+    },
+    'partial': {
+        'zh': '部分完成', 'en': 'partially completed',
+        'ja': '一部完了しました', 'ko': '부분 완료되었습니다', 'ru': 'частично завершена',
+    },
+    'blocked': {
+        'zh': '未执行', 'en': 'was not executed',
+        'ja': '実行されませんでした', 'ko': '실행되지 않았습니다', 'ru': 'не была выполнена',
+    },
+    'failed': {
+        'zh': '执行失败', 'en': 'has failed',
+        'ja': '失敗しました', 'ko': '실패했습니다', 'ru': 'не выполнена',
+    },
+    'cancelled': {
+        'zh': '已取消', 'en': 'was cancelled',
+        'ja': 'キャンセルされました', 'ko': '취소되었습니다', 'ru': 'отменена',
+    },
+}
+
+# ---------- Task 汇报动作短语（外层模板的 {action_phrase} 槽位，按 status 分化）----------
+TASK_ACTION_PHRASES = {
+    'completed': {
+        'zh': '汇报', 'en': 'report',
+        'ja': '報告', 'ko': '보고', 'ru': 'доложите',
+    },
+    'partial': {
+        'zh': '汇报情况', 'en': 'report the situation',
+        'ja': '状況を報告', 'ko': '상황을 보고', 'ru': 'опишите ситуацию',
+    },
+    'blocked': {
+        'zh': '说明未执行原因', 'en': 'explain why it was not executed',
+        'ja': '実行されなかった理由を説明', 'ko': '실행되지 않은 이유를 설명', 'ru': 'объясните, почему она не была выполнена',
+    },
+    'failed': {
+        'zh': '说明情况', 'en': 'explain what happened',
+        'ja': '状況を説明', 'ko': '상황을 설명', 'ru': 'объясните, что произошло',
+    },
+    'cancelled': {
+        'zh': '说明情况', 'en': 'explain the cancellation',
+        'ja': 'キャンセルを説明', 'ko': '취소를 설명', 'ru': 'объясните отмену',
+    },
+}
+
+# ---------- 系统通知：主动汇报型（task_result 默认走这条，要求 AI 立即起 turn）----------
+SYSTEM_NOTIFICATION_PROACTIVE = {
+    'zh': '======[系统通知] 来自{source}的任务{status_phrase}，请{name}先用自然、简洁的口吻向{master}{action_phrase}，再恢复正常对话======\n',
+    'en': '======[System Notice] A task from {source} {status_phrase}. Please have {name} briefly and naturally {action_phrase} to {master} first, then resume normal conversation.======\n',
+    'ja': '======[システム通知] {source}からのタスクが{status_phrase}。{name}はまず自然に簡潔な口調で{master}に{action_phrase}し、その後通常の会話に戻ってください。======\n',
+    'ko': '======[시스템 알림] {source}의 작업이 {status_phrase}. {name}은 먼저 자연스럽고 간결하게 {master}에게 {action_phrase}한 뒤 일반 대화로 돌아오세요.======\n',
+    'ru': '======[Системное уведомление] Задача от {source} {status_phrase}. Пожалуйста, {name} сначала кратко и естественно {action_phrase} {master}, затем возобновите обычный разговор.======\n',
+}
+
+# ---------- 系统通知：被动捎带型（push_message / delivery="passive" 走这条，
+# 仅写入上下文，不要求 AI 立即起 turn——下一次用户发言时被自然带入 prompt）----------
+SYSTEM_NOTIFICATION_PASSIVE = {
+    'zh': '======[系统通知] 来自{source}的消息======\n',
+    'en': '======[System Notice] Message from {source}======\n',
+    'ja': '======[システム通知] {source}からのメッセージ======\n',
+    'ko': '======[시스템 알림] {source}의 메시지======\n',
+    'ru': '======[Системное уведомление] Сообщение от {source}======\n',
+}
+
+# ---------- 前情概要 + 任务汇报 ----------
+CONTEXT_SUMMARY_TASK_HEADER = {
+    'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
+    'en': '\n======End of context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
+    'ja': '\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n',
+    'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n',
+    'ru': '\n======Конец краткого содержания. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n',
+}
+
+CONTEXT_SUMMARY_TASK_FOOTER = {
+    'zh': '\n完成上述汇报后，再恢复正常对话。======\n',
+    'en': '\nAfter the report, resume normal conversation.======\n',
+    'ja': '\n報告を終えたら、通常の会話に戻ってください。======\n',
+    'ko': '\n보고를 마친 후 일반 대화로 돌아오세요.======\n',
+    'ru': '\nПосле доклада возобновите обычный разговор.======\n',
+}
+
+# ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
+AVATAR_ANNOTATION_TEXT = {
+    'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-CN': ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),
+    'zh-TW': ('這是{name}在桌面上的虛擬形象,', '請{name}不要主動提及'),
+    'en':    ("This is {name}'s virtual avatar on the desktop,", "Please don't mention it, {name}"),
+    'ja':    ('これはデスクトップ上の{name}の仮想アバターです,', '{name}は自分から言及しないでください'),
+    'ko':    ('이것은 바탕화면의 {name} 가상 아바타입니다,', '{name}은(는) 스스로 언급하지 마세요'),
+    'ru':    ('Это виртуальный аватар {name} на рабочем столе,', 'Пожалуйста, {name}, не упоминай это'),
+}
+
+# ⚠ 与 AVATAR_ANNOTATION_TEXT 同步维护：原文片段直接嵌进 hint，方便 LLM 视觉对模式后忽略。
+AVATAR_ANNOTATION_IGNORE_HINT = {
+    'zh':    '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-CN': '注：截图上可能叠加了一段小字「这是<角色名>在桌面上的虚拟形象, 请<角色名>不要主动提及」。这只是用来标记桌面虚拟形象位置的系统元数据，不是用户屏幕的内容，请忽略，不要复述也不要主动提及。',
+    'zh-TW': '註：截圖上可能疊加了一段小字「這是<角色名>在桌面上的虛擬形象, 請<角色名>不要主動提及」。這只是用來標記桌面虛擬形象位置的系統元資料，不是使用者螢幕的內容，請忽略，不要複述也不要主動提及。',
+    'en':    'Note: the screenshot may carry a small overlaid annotation reading "This is <character>\'s virtual avatar on the desktop, Please don\'t mention it, <character>". It only marks the avatar position — system metadata, not part of the user\'s screen. Ignore it, do not repeat it, and do not bring it up.',
+    'ja':    '注：スクリーンショットには「これはデスクトップ上の<キャラクター名>の仮想アバターです, <キャラクター名>は自分から言及しないでください」という小さな注釈が重ねて描かれている場合があります。これはアバター位置を示すシステムメタデータであり、ユーザー画面の一部ではありません。無視し、復唱せず、自分から言及しないでください。',
+    'ko':    '주의: 스크린샷에는 "이것은 바탕화면의 <캐릭터명> 가상 아바타입니다, <캐릭터명>은(는) 스스로 언급하지 마세요" 라는 작은 주석이 겹쳐져 있을 수 있습니다. 아바타 위치를 표시하는 시스템 메타데이터일 뿐 사용자 화면의 내용이 아닙니다. 무시하고, 따라 말하거나 먼저 언급하지 마세요.',
+    'ru':    'Примечание: на скриншот может быть наложена небольшая надпись вида «Это виртуальный аватар <персонажа> на рабочем столе, Пожалуйста, <персонаж>, не упоминай это». Это только метка положения аватара — служебные метаданные, не часть экрана пользователя. Игнорируйте её, не пересказывайте и не упоминайте сами.',
+}
+
+
+def get_avatar_annotation_ignore_hint(lang: str = 'zh') -> str:
+    """Return the localized hint telling the LLM to ignore the avatar overlay on screenshots."""
+    return (AVATAR_ANNOTATION_IGNORE_HINT.get(lang)
+            or AVATAR_ANNOTATION_IGNORE_HINT.get(lang.split('-')[0])
+            or AVATAR_ANNOTATION_IGNORE_HINT['en'])
+
+# ---------- Vision 图像描述 prompt ----------
+# 安全水印前缀（所有语言固定不变，包括逗号和空格）
+VISION_WATERMARK = "你是一个图像描述助手, "
+
+# 长度限制策略：CJK（zh/ja/ko）使用"250字/文字/자"（字符），en/ru 使用"250 words/слов"（词）
+# 有窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_WITH_TITLE = {
+    'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
+    'en': 'Based on the user\'s screenshot and the current window title, briefly describe what the user is doing, the main content on screen, key details, and anything you find interesting. No more than 250 words.',
+    'ja': 'ユーザーのスクリーンショットと現在のウィンドウタイトルに基づき、ユーザーが何をしているか、画面の主な内容、重要な詳細、興味深い点を簡潔に説明してください。250文字以内。',
+    'ko': '사용자의 스크린샷과 현재 창 제목을 바탕으로, 사용자가 무엇을 하고 있는지, 화면의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 250자 이내.',
+    'ru': 'На основе скриншота пользователя и заголовка текущего окна кратко опишите, что делает пользователь, основное содержимое экрана, ключевые детали и интересные моменты. Не более 250 слов.',
+}
+
+# 无窗口标题时的 system prompt（水印后拼接）
+VISION_SYSTEM_NO_TITLE = {
+    'zh': '请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。',
+    'en': 'Briefly describe the main content, key details, and anything you find interesting in the image. Your response should not exceed 250 words.',
+    'ja': '画像の主な内容、重要な詳細、興味深い点を簡潔に説明してください。回答は250文字以内にしてください。',
+    'ko': '이미지의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 답변은 250자를 넘지 마세요.',
+    'ru': 'Кратко опишите основное содержимое изображения, ключевые детали и интересные моменты. Ответ не должен превышать 250 слов.',
+}
+
+# 有窗口标题时的 user prompt（{window_title} 占位符，水印包裹）
+VISION_USER_WITH_TITLE = {
+    'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n请描述截图内容。',
+    'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nPlease describe the screenshot.',
+    'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nスクリーンショットの内容を説明してください。',
+    'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n스크린샷 내용을 설명해 주세요.',
+    'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nОпишите содержимое скриншота.',
+}
+
+# 无窗口标题时的 user prompt
+VISION_USER_NO_TITLE = {
+    'zh': '请描述这张图片的内容。',
+    'en': 'Please describe the content of this image.',
+    'ja': 'この画像の内容を説明してください。',
+    'ko': '이 이미지의 내용을 설명해 주세요.',
+    'ru': 'Опишите содержимое этого изображения.',
+}
+
+# ---------- 翻译服务 prompt ----------
+# 安全水印（所有语言固定中文）
+TRANSLATION_WATERMARK_START = "======以下为要求======"
+TRANSLATION_WATERMARK_END = "======以上为要求======"
+
+# 翻译指令行（{source_name} 和 {target_name} 为占位符）
+TRANSLATION_INSTRUCTION = {
+    'zh': '请根据要求将用户提供的文本从{source_name}翻译成{target_name}。',
+    'en': 'Please translate the user\'s text from {source_name} to {target_name} as required.',
+    'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
+    'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
+    'ru': 'Переведите текст пользователя с {source_name} на {target_name} согласно требованиям.',
+    'es': 'Traduce el texto del usuario de {source_name} a {target_name} según los requisitos.',
+    'pt': 'Traduza o texto do usuário de {source_name} para {target_name} conforme os requisitos.',
+}
+
+# 翻译要求（水印包裹部分）
+TRANSLATION_REQUIREMENTS = {
+    'zh': '1. 保持原文的语气和风格\n2. 准确传达原文的意思\n3. 只输出翻译结果，不要添加任何解释或说明\n4. 如果文本包含emoji或特殊符号，请保留它们',
+    'en': '1. Maintain the tone and style of the original text\n2. Convey the meaning accurately\n3. Output only the translation, without any explanations or notes\n4. Preserve any emoji or special symbols in the text',
+    'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
+    'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
+    'ru': '1. Сохраняйте тон и стиль оригинала\n2. Точно передавайте смысл исходного текста\n3. Выводите только перевод, без пояснений и примечаний\n4. Сохраняйте эмодзи и специальные символы из текста',
+    'es': '1. Mantén el tono y el estilo del texto original\n2. Transmite el significado con precisión\n3. Devuelve solo la traducción, sin explicaciones ni notas\n4. Conserva los emojis y símbolos especiales del texto',
+    'pt': '1. Mantenha o tom e o estilo do texto original\n2. Transmita o significado com precisão\n3. Retorne apenas a tradução, sem explicações ou notas\n4. Preserve emojis e símbolos especiais do texto',
+}
+
+# 语言名称（外层 key=UI 语言，内层 key=语言代码）
+TRANSLATION_LANG_NAMES = {
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},
+}
+
+# ---------- 对话备忘录注入 LLM 上下文 ----------
+MEMORY_MEMO_WITH_SUMMARY = {
+    'zh': '先前对话的备忘录: {summary}',
+    'en': 'Memo from prior conversations: {summary}',
+    'ja': '以前の会話のメモ: {summary}',
+    'ko': '이전 대화의 메모: {summary}',
+    'ru': 'Заметки из предыдущих разговоров: {summary}',
+    'es': 'Notas de conversaciones previas: {summary}',
+    'pt': 'Notas de conversas anteriores: {summary}',
+}
+
+MEMORY_MEMO_EMPTY = {
+    'zh': '先前对话的备忘录: 无。',
+    'en': 'Memo from prior conversations: None.',
+    'ja': '以前の会話のメモ: なし。',
+    'ko': '이전 대화의 메모: 없음.',
+    'ru': 'Заметки из предыдущих разговоров: нет.',
+    'es': 'Notas de conversaciones previas: ninguna.',
+    'pt': 'Notas de conversas anteriores: nenhuma.',
+}
+
+# ---------- 搜索关键词生成 prompt ----------
+# prompt 与搜索引擎无关；china_region 时使用 'zh'，否则按 get_global_language() 选择
+# 安全水印（所有语言固定中文，包裹窗口标题数据）
+SEARCH_KEYWORD_WATERMARK_START = "======以下为窗口标题======"
+SEARCH_KEYWORD_WATERMARK_END = "======以上为窗口标题======"
+
+SEARCH_KEYWORD_SYSTEM = {
+    'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
+    'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse search keywords from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
+    'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
+    'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
+    'ru': 'Сгенерируйте ключевые слова для поиска на основе заголовка окна.\n\nТребования:\n1. Сгенерируйте 3 разнообразных ключевых слова для поиска с разных сторон\n2. Каждое ключевое слово — кратко, около 2-6 слов\n3. Ключевые слова должны быть разнообразными\n4. Выведите ровно 3 строки, по одному ключевому слову, без номеров, пунктуации и пояснений',
+    'es': 'Generas palabras clave de búsqueda a partir del título de una ventana.\n\nRequisitos:\n1. Genera 3 palabras clave diversas desde distintos ángulos\n2. Cada palabra clave debe ser concisa, de 2 a 6 palabras\n3. Mantén las palabras clave variadas\n4. Devuelve exactamente 3 líneas, una palabra clave por línea, sin números, puntuación, explicaciones ni texto adicional',
+    'pt': 'Você gera palavras-chave de busca a partir do título de uma janela.\n\nRequisitos:\n1. Gere 3 palavras-chave diversas de ângulos distintos\n2. Cada palavra-chave deve ser concisa, com 2 a 6 palavras\n3. Mantenha as palavras-chave variadas\n4. Retorne exatamente 3 linhas, uma palavra-chave por linha, sem números, pontuação, explicações ou texto adicional',
+}
+
+SEARCH_KEYWORD_USER = {
+    'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n请输出 3 个搜索关键词。',
+    'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nPlease output 3 search keywords.',
+    'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n検索キーワードを 3 つ出力してください。',
+    'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n검색 키워드 3개를 출력하세요.',
+    'ru': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nВыведите 3 ключевых слова для поиска.',
+    'es': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nDevuelve 3 palabras clave de búsqueda.',
+    'pt': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nRetorne 3 palavras-chave de busca.',
+}
+
+# =====================================================================
+# backward compat re-exports
+# =====================================================================
+from config.prompts import prompts_memory as _prompts_memory
+from config.prompts import prompts_proactive as _prompts_proactive
+
+
+def _re_export_public(module):
+    names = getattr(module, "__all__", None)
+    if names is None:
+        names = [name for name in dir(module) if not name.startswith("_")]
+    for name in names:
+        globals()[name] = getattr(module, name)
+
+
+_re_export_public(_prompts_memory)
+_re_export_public(_prompts_proactive)
+del _re_export_public, _prompts_memory, _prompts_proactive

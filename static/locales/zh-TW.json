@@ -1153,7 +1153,7 @@
             "select": "選擇",
             "defaultClickAnim": "默認點擊動畫"
         },
-        "emotionConfig": "情感配置",
+        "emotionConfig": "情感",
         "saveSettings": "保存設置",
         "persistentExpression": "常駐錶情（僅expression）:",
         "pleaseLoadModel": "請先加載模型",
@@ -1161,8 +1161,8 @@
         "delete": "刪除",
         "savePersistent": "保存常駐錶情",
         "persistentHint": "常駐錶情會一直生效。",
-        "backToMain": "返迴主頁",
-        "importModel": "導入模型",
+        "backToMain": "主頁",
+        "importModel": "導入",
         "motionPreview": "動作預覽",
         "expressionPreview": "錶情預覽",
         "play": "播放",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "退齣全屏",
         "modelType": "模型類型",
         "selectLive2DModel": "選擇Live2D模型",
-        "selectVRMModel": "選擇VRM模型",
+        "selectVRMModel": "VRM模型",
         "selectVRMFile": "選擇VRM文件",
         "vrmModelListLoaded": "VRM 模型列錶加載成功",
         "noVRMModelsFound": "未找到可用 VRM 模型",
@@ -1251,7 +1251,7 @@
             "speed": "速度:"
         },
         "mmdModel": {
-            "selectModel": "選擇MMD模型",
+            "selectModel": "MMD模型",
             "deleteModel": "刪除已匯入MMD模型",
             "deleteModelTitle": "刪除已匯入MMD模型",
             "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "刪除選中"
         },
         "mmdAnimation": {
-            "selectAnimation": "選擇VMD動畫",
+            "selectAnimation": "VMD動畫",
             "noAnimation": "無動畫",
             "play": "播放",
-            "uploadAnimation": "匯入VMD動畫",
+            "uploadAnimation": "匯入VMD",
             "deleteAnimation": "刪除VMD動畫",
             "deleteAnimationTitle": "刪除已匯入VMD動畫",
             "deleteAnimationWarning": "以下列出了所有已匯入的使用者VMD動畫檔案。選擇要刪除的動畫檔案。",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "錯誤: {{error}}",
         "parameterEditor": {
-            "title": "捏臉係統",
+            "title": "捏臉",
             "backToMain": "← 返迴L2D設置",
             "backToL2DManager": "返迴",
             "selectModel": "選擇模型",
@@ -2430,6 +2430,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安裝",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安裝",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模組未載入",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模組未載入",
             "AGENT_NOT_INITIALIZED": "貓爪初始化失敗",
             "AGENT_LLM_UNREACHABLE": "貓爪 LLM 連接失敗",
             "AGENT_MODEL_NOT_CONFIGURED": "貓爪模型未配置",

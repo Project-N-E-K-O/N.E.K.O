@@ -38,7 +38,7 @@ a footgun: testers would silently burn their real budget when they
 meant to test an offline endpoint.
 
 So this runner owns the LLM call path: it imports the same prompts
-(``config.prompts_memory``) and the same ``create_chat_llm`` factory,
+(``config.prompts.prompts_memory``) and the same ``create_chat_llm`` factory,
 but resolves base_url / api_key / model from ``session.model_config``
 via :func:`chat_runner.resolve_group_config` — identical to how the
 chat turn does it. Disk writes still go through the sandboxed
@@ -455,7 +455,7 @@ async def _preview_recent_compress(
     summarizer ate) as a read-only list so the tester can verify the
     cut-point visually.
     """
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         get_detailed_recent_history_manager_prompt,
         get_recent_history_manager_prompt,
     )
@@ -549,7 +549,7 @@ async def _preview_recent_compress(
     # Build the "replacement memo" — exactly the same rendering upstream
     # applies (`MEMORY_MEMO_WITH_SUMMARY` template), so commit can just
     # drop this into recent.json as a single system message.
-    from config.prompts_sys import MEMORY_MEMO_EMPTY, MEMORY_MEMO_WITH_SUMMARY, _loc
+    from config.prompts.prompts_sys import MEMORY_MEMO_EMPTY, MEMORY_MEMO_WITH_SUMMARY, _loc
     if summary_text:
         memo_content = _loc(MEMORY_MEMO_WITH_SUMMARY, lang).format(summary=summary_text)
     else:
@@ -658,7 +658,7 @@ async def _preview_facts_extract(
     SHA-256 dedup pass (protects against the tester clicking Commit
     twice or another tab writing a duplicate).
     """
-    from config.prompts_memory import get_fact_extraction_prompt
+    from config.prompts.prompts_memory import get_fact_extraction_prompt
     from utils.language_utils import get_global_language
 
     character = _require_character(session)
@@ -890,7 +890,7 @@ async def _preview_reflect(
     Commit appends ``reflection`` to reflections.json and marks every
     id in ``source_fact_ids`` as ``absorbed=True`` in facts.json.
     """
-    from config.prompts_memory import get_reflection_prompt
+    from config.prompts.prompts_memory import get_reflection_prompt
     from utils.language_utils import get_global_language
 
     # Lazy import to avoid pulling MIN_FACTS_FOR_REFLECTION constant via
@@ -1192,7 +1192,7 @@ async def _preview_persona_resolve_corrections(
     keep_both`` — direct mirror of the correction prompt schema. Tester
     can tweak ``action`` / ``text`` per row before commit.
     """
-    from config.prompts_memory import persona_correction_prompt
+    from config.prompts.prompts_memory import persona_correction_prompt
     from memory.persona import PersonaManager
 
     character = _require_character(session)
@@ -1591,7 +1591,7 @@ async def _build_recent_compress_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         get_detailed_recent_history_manager_prompt,
         get_recent_history_manager_prompt,
     )
@@ -1646,7 +1646,7 @@ async def _build_facts_extract_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import get_fact_extraction_prompt
+    from config.prompts.prompts_memory import get_fact_extraction_prompt
     from utils.language_utils import get_global_language
 
     character = _require_character(session)
@@ -1697,7 +1697,7 @@ async def _build_reflect_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import get_reflection_prompt
+    from config.prompts.prompts_memory import get_reflection_prompt
     from memory.reflection import MIN_FACTS_FOR_REFLECTION
     from utils.language_utils import get_global_language
 
@@ -1749,7 +1749,7 @@ async def _build_persona_resolve_corrections_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import persona_correction_prompt
+    from config.prompts.prompts_memory import persona_correction_prompt
     from memory.persona import PersonaManager
 
     character = _require_character(session)

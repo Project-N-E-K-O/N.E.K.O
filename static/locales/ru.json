@@ -1153,7 +1153,7 @@
             "select": "Выбрать",
             "defaultClickAnim": "Анимация клика по умолчанию"
         },
-        "emotionConfig": "Настройка эмоций",
+        "emotionConfig": "Эмоции",
         "saveSettings": "Сохранить настройки",
         "persistentExpression": "Постоянное выражение (только выражение):",
         "pleaseLoadModel": "Загрузите модель",
@@ -1161,8 +1161,8 @@
         "delete": "Удалить",
         "savePersistent": "Сохранить постоянное выражение",
         "persistentHint": "Постоянные выражения всегда активны.",
-        "backToMain": "Вернуться на главную",
-        "importModel": "Импорт модели",
+        "backToMain": "На главную",
+        "importModel": "Импорт",
         "motionPreview": "Предпросмотр анимации",
         "expressionPreview": "Предпросмотр выражений",
         "play": "Воспроизвести",
@@ -1217,7 +1217,7 @@
         "exitFullscreen": "Выйти из полноэкранного режима",
         "modelType": "Тип модели",
         "selectLive2DModel": "Выбрать модель Live2D",
-        "selectVRMModel": "Выбрать модель VRM",
+        "selectVRMModel": "Модель VRM",
         "selectVRMFile": "Выбрать файл VRM",
         "vrmModelListLoaded": "Список моделей VRM загружен успешно",
         "noVRMModelsFound": "Доступные модели VRM не найдены",
@@ -1251,7 +1251,7 @@
             "speed": "Скорость:"
         },
         "mmdModel": {
-            "selectModel": "Выбрать MMD модель",
+            "selectModel": "Модель MMD",
             "deleteModel": "Удалить импортированные MMD модели",
             "deleteModelTitle": "Удалить импортированные MMD модели",
             "deleteWarning": "Ниже перечислены все импортированные пользовательские MMD модели. Выберите модели для удаления (папка модели и текстуры будут удалены).",
@@ -1260,10 +1260,10 @@
             "deleteSelected": "Удалить выбранные"
         },
         "mmdAnimation": {
-            "selectAnimation": "Выбрать VMD анимацию",
+            "selectAnimation": "VMD анимация",
             "noAnimation": "Без анимации",
             "play": "Воспроизвести",
-            "uploadAnimation": "Импортировать VMD анимацию",
+            "uploadAnimation": "Импорт VMD",
             "deleteAnimation": "Удалить VMD анимацию",
             "deleteAnimationTitle": "Удалить импортированные VMD анимации",
             "deleteAnimationWarning": "Ниже перечислены все импортированные пользовательские файлы VMD анимации. Выберите анимации для удаления.",
@@ -1322,7 +1322,7 @@
         },
         "loadError": "Ошибка: {{error}}",
         "parameterEditor": {
-            "title": "Редактор лица",
+            "title": "Ред. лица",
             "backToMain": "← Назад к настройкам L2D",
             "backToL2DManager": "Назад",
             "selectModel": "Выбрать модель",
@@ -2430,6 +2430,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API не настроен",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui не установлен",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use не установлен",
+            "AGENT_CU_MODULE_NOT_LOADED": "модуль Computer Use не загружен",
+            "AGENT_BU_MODULE_NOT_LOADED": "модуль Browser Use не загружен",
             "AGENT_NOT_INITIALIZED": "Ошибка инициализации Лапки Неко",
             "AGENT_LLM_UNREACHABLE": "LLM Лапки Неко недоступен",
             "AGENT_MODEL_NOT_CONFIGURED": "Модель Лапки Неко не настроена",

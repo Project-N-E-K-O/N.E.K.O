@@ -229,7 +229,7 @@ P21+ 新增 **11 个 `pipeline/` 模块**, 加上 P20 前已有的 6 个, 共 17
 | (A') | 主程序新增 11 个 `@property cloudsave_*_dir` (PR #681) | `rg 'def cloudsave_' utils/config_manager.py` | 走 `return self.app_docs_dir / "..."` 动态计算, `app_docs_dir` 已在 `_PATCHED_ATTRS` 里被沙盒重定向, **云存档路径天然跟随**, 无需扩白名单; testbench `rg cloudsave` 零命中未激活 | 零行动, 归 **L23 元教训** (@property 设计比直赋属性健壮) |
 | (B) | memory schema (`memory/{persona,facts,recent,reflection,timeindex,settings}.py`) | `git log --since='2026-04-01' memory/` | 近期改动 `176ded9 perf(async)` + `998eb44` + `5170bcf` + `eefbca1` 全是 "sync 方法包装成 `async def asave_*`" + 竞态修复 + Windows SQLite URI 反斜杠, **同步版本 (`save_*`) 全保留**; testbench 走同步公共 API 未调任何私有方法 | 零行动, 向前兼容 100% |
 | (C) | `utils/llm_client.py` provider 变更 | `git log --since='2026-04-01' utils/llm_client.py` | 近期唯一实质改动是 `ee5b04f` **testbench 自己 P08/P09 时加的** `temperature: float | None` 兼容 o1/o3/Claude extended-thinking; 主程序未加新 provider | 零行动 |
-| (D) | 道具交互 (PR #769 4b504d4) — 二轮评估翻转 | 读 PR diff + 用户二轮澄清 | 一轮结论 "三重架构不兼容 (testbench 无 prompt_ephemeral / 无 sync_connector_process / 无 contextvar race guard) → out-of-scope" **被翻转**; 二轮: testbench 定位 = "**新系统对对话/记忆影响测试生态**", 架构不兼容 ≠ OOS, **pure helper 层必须接入** (`config/prompts_avatar_interaction` 全部 9 helper + 7 常量表 + `_should_persist_avatar_interaction_memory` 纯函数); 同族发现 agent callback (`AGENT_CALLBACK_NOTIFICATION`) + proactive (`prompts_proactive.py`) 两个类似系统 | **本 phase 零行动, 立项 P25 外部事件注入** (蓝图 `P25_BLUEPRINT.md`) |
+| (D) | 道具交互 (PR #769 4b504d4) — 二轮评估翻转 | 读 PR diff + 用户二轮澄清 | 一轮结论 "三重架构不兼容 (testbench 无 prompt_ephemeral / 无 sync_connector_process / 无 contextvar race guard) → out-of-scope" **被翻转**; 二轮: testbench 定位 = "**新系统对对话/记忆影响测试生态**", 架构不兼容 ≠ OOS, **pure helper 层必须接入** (`config/prompts/prompts_avatar_interaction` 全部 9 helper + 7 常量表 + `_should_persist_avatar_interaction_memory` 纯函数); 同族发现 agent callback (`AGENT_CALLBACK_NOTIFICATION`) + proactive (`prompts_proactive.py`) 两个类似系统 | **本 phase 零行动, 立项 P25 外部事件注入** (蓝图 `P25_BLUEPRINT.md`) |
 | (E) | 静态回归 | — | Day 9 无代码变动, smoke 套件不重跑 (Day 8 已绿); Day 10 再跑一轮 9 份全绿 | 零行动 |
 
 **关键元教训** (LESSONS_LEARNED §1.6 + §2.9A):
@@ -249,7 +249,7 @@ P21+ 新增 **11 个 `pipeline/` 模块**, 加上 P20 前已有的 6 个, 共 17
 
 | # | 项 | 规格出处 | 落地规格 | P25 预计 |
 |---|---|---|---|---|
-| 1 | **avatar interaction 接入 testbench** | Day 9 用户二轮澄清 / PR #769 | 复用 `config/prompts_avatar_interaction` 全部 9 helper + 7 常量表 + `cross_server._should_persist_avatar_interaction_memory` (8000ms 去重 + rank-upgrade). 新增 `pipeline/external_events.py` 薄 adapter + 统一 router `POST /api/session/external-event` | **P25 主交付项**, 估 1 天 |
+| 1 | **avatar interaction 接入 testbench** | Day 9 用户二轮澄清 / PR #769 | 复用 `config/prompts/prompts_avatar_interaction` 全部 9 helper + 7 常量表 + `cross_server._should_persist_avatar_interaction_memory` (8000ms 去重 + rank-upgrade). 新增 `pipeline/external_events.py` 薄 adapter + 统一 router `POST /api/session/external-event` | **P25 主交付项**, 估 1 天 |
 | 2 | **agent callback 接入** | Day 9 同族盘点 | 复用 `prompts_sys.AGENT_CALLBACK_NOTIFICATION` + `main_logic.core::drain_agent_callbacks_for_llm` | P25 主交付项, 估 0.5 天 |
 | 3 | **proactive chat 接入** | Day 9 同族盘点 | 复用 `prompts_proactive.py` 全部 getter + 常量 | P25 主交付项, 估 0.5 天 |
 | 4 | **dual_mode 记忆写入开关** | Day 9 用户决策录 (iv) | 默认 session_only 对齐 tester-driven, 可选 mirror recent.json | P25 配套, 估 0.5 天 |

@@ -862,7 +862,7 @@ def test_memory_review_prompt_protects_game_module_archive_records():
     _build_game_archive_memory_summary_text). The previous design used
     Chinese-literal tags; the project standardised on English-only tags so
     every review-LLM in any UI locale matches the same string."""
-    from config.prompts_memory import get_history_review_prompt
+    from config.prompts.prompts_memory import get_history_review_prompt
 
     expected_tags = (
         "Game Module Memory Record",

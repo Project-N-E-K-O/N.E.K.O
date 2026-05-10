@@ -26,7 +26,7 @@ _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
 
 from fastapi import APIRouter, Request
 
-from config.prompts_game import (
+from config.prompts.prompts_game import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -36,7 +36,7 @@ from config.prompts_game import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from config.prompts_game_route import (
+from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,

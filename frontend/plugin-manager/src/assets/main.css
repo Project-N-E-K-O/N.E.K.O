@@ -39,3 +39,7 @@ html, body {
   margin: 0;
   padding: 0;
 }
+
+.el-message {
+  z-index: 10050 !important;
+}

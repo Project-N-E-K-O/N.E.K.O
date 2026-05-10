@@ -75,6 +75,38 @@ function resolveBackendErrorMsg(data, status) {
     return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
 }
 
+function normalizeVoicePreviewLanguage(rawLanguage) {
+    const current = String(rawLanguage || '').trim().toLowerCase();
+    if (!current || current === 'auto') return 'zh-CN';
+    if (current === 'tchinese' || current.startsWith('zh-tw') || current.startsWith('zh-hk') || current.includes('hant')) return 'zh-TW';
+    if (current === 'schinese' || current.startsWith('zh')) return 'zh-CN';
+    if (current === 'english' || current.startsWith('en')) return 'en';
+    if (current === 'japanese' || current.startsWith('ja')) return 'ja';
+    if (current === 'koreana' || current === 'korean' || current.startsWith('ko')) return 'ko';
+    if (current === 'russian' || current.startsWith('ru')) return 'ru';
+    if (current === 'spanish' || current === 'latam' || current.startsWith('es')) return 'es';
+    if (current === 'portuguese' || current === 'brazilian' || current.startsWith('pt')) return 'pt';
+    return 'en';
+}
+
+function getVoicePreviewLanguage() {
+    const candidates = [
+        window.i18n && window.i18n.language,
+        window.localStorage && window.localStorage.getItem('i18nextLng'),
+        document.documentElement && document.documentElement.lang,
+        navigator.language,
+        window.localStorage && window.localStorage.getItem('locale')
+    ];
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = String(candidates[index] || '').trim();
+        if (candidate && candidate.toLowerCase() !== 'auto') {
+            return normalizeVoicePreviewLanguage(candidate);
+        }
+    }
+    return 'zh-CN';
+}
+
 function appendVoiceApplyStatus(resultDiv, message, className = '') {
     if (!resultDiv) return;
     if (resultDiv.textContent || resultDiv.childNodes.length) {
@@ -981,11 +1013,31 @@ async function playPreview(voiceId, btn) {
 
     try {
         const storageKey = `voice_preview_${voiceId}`;
-        let audioSrc = localStorage.getItem(storageKey);
+        const previewLanguage = getVoicePreviewLanguage();
+        const cachedPreview = localStorage.getItem(storageKey);
+        let audioSrc = '';
+        if (cachedPreview) {
+            try {
+                const cachedData = JSON.parse(cachedPreview);
+                if (
+                    cachedData
+                    && cachedData.version === 2
+                    && cachedData.language === previewLanguage
+                    && typeof cachedData.audioSrc === 'string'
+                    && cachedData.audioSrc
+                ) {
+                    audioSrc = cachedData.audioSrc;
+                }
+            } catch (_) {
+                // 旧版缓存没有语言信息，忽略并重新生成，避免切换语言后继续播放旧试听。
+            }
+        }
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
+            const response = await fetch(
+                `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
+            );
             const { data, nonJson, text } = await safeReadResponse(response);
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
@@ -1001,7 +1053,11 @@ async function playPreview(voiceId, btn) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
                 // 保存到 localStorage
                 try {
-                    localStorage.setItem(storageKey, audioSrc);
+                    localStorage.setItem(storageKey, JSON.stringify({
+                        version: 2,
+                        language: previewLanguage,
+                        audioSrc
+                    }));
                 } catch (e) {
                     console.warn('Failed to save preview to localStorage:', e);
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
@@ -1237,7 +1293,25 @@ async function loadVoices() {
                 idDiv.textContent = `ID: ${voiceId}`;
                 infoDiv.appendChild(idDiv);
 
+                const voiceActions = document.createElement('div');
+                voiceActions.className = 'voice-actions';
+
+                const previewBtn = document.createElement('button');
+                previewBtn.className = 'voice-preview-btn';
+                const previewText = window.t ? window.t('voice.preview') : '预览';
+                const previewImg = document.createElement('img');
+                previewImg.src = '/static/icons/sound.png';
+                previewImg.alt = '';
+                previewBtn.appendChild(previewImg);
+                previewBtn.appendChild(document.createTextNode(previewText));
+                previewBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    playPreview(voiceId, previewBtn);
+                };
+                voiceActions.appendChild(previewBtn);
+
                 item.appendChild(infoDiv);
+                item.appendChild(voiceActions);
                 item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
                 item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
                 item.addEventListener('keydown', (event) => {
@@ -1247,8 +1321,6 @@ async function loadVoices() {
                         applyVoiceToCurrentCharacter(voiceId, displayName, item);
                     }
                 });
-
-                // 免费预设音色：不支持预览和删除，但支持点击应用到当前角色
 
                 container.appendChild(item);
             });

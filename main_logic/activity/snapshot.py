@@ -66,7 +66,7 @@ Propensity = Literal[
 # can adapt voice without changing source filtering.
 #
 # Six tones, deliberately vivid (one-line prompt hint each, see
-# ``ACTIVITY_TONE_HINTS`` in ``config/prompts_activity.py``):
+# ``ACTIVITY_TONE_HINTS`` in ``config/prompts/prompts_activity.py``):
 #   * ``terse``   — competitive games, rhythm games: short, low-intrusion
 #   * ``hushed``  — horror games: deliberately quiet, atmospheric
 #   * ``mellow``  — immersive RPG / story-driven: relaxed in-the-moment
@@ -237,7 +237,7 @@ class ActivitySnapshot:
     game_genre: GameGenre | None = None
     # Structured reasons: each entry is ``(code, params)`` where ``code``
     # is a reason key looked up in ``ACTIVITY_REASON_TEMPLATES`` (in
-    # ``config/prompts_activity.py``) and ``params`` is a dict
+    # ``config/prompts/prompts_activity.py``) and ``params`` is a dict
     # substituted into that template at format time. Keeps the snapshot
     # language-agnostic — localization happens in
     # ``format_activity_state_section``.
@@ -486,15 +486,15 @@ def derive_skip_probability(
 
 # ── Localized strings for prompt injection ─────────────────────────
 #
-# All multi-language string tables live in ``config/prompts_activity``
+# All multi-language string tables live in ``config/prompts/prompts_activity``
 # per the project i18n convention: every translatable string must sit
-# under ``config/prompts_*`` so that adding a new language is a single
+# under ``config/prompts/prompts_*`` so that adding a new language is a single
 # pass over that directory. The prompt-hygiene linter only catches
 # *flat* ``{lang_code: str}`` dicts, but the rule applies to nested
 # ``{lang: {key: str}}`` tables too — they just have to be moved by
 # hand. ``snapshot.py`` keeps only the formatter; the strings are
 # imported below.
-from config.prompts_activity import (
+from config.prompts.prompts_activity import (
     ACTIVITY_PROPENSITY_DIRECTIVES,
     ACTIVITY_REASON_TEMPLATES,
     ACTIVITY_STATE_LABELS,
