@@ -714,7 +714,7 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "style_hint": "Puede sentirse un poco más rápido y continuo sin perder ligereza.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "Este toque ligero también activa una recompensa caída.",
+                    "reaction_focus": "Este toque ligero también soltó una recompensa.",
                     "style_hint": "Recibe primero el toque y luego menciona la caída de pasada.",
                 },
             }
@@ -776,7 +776,7 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
                     "style_hint": "Pode parecer um pouco mais rápido e contínuo, mantendo a leveza.",
                 },
                 "reward_drop": {
-                    "reaction_focus": "Este toque leve também aciona uma recompensa caída.",
+                    "reaction_focus": "Este toque leve também gerou uma recompensa.",
                     "style_hint": "Receba primeiro o toque e depois mencione a queda de passagem.",
                 },
             }
@@ -1138,7 +1138,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
         "event_fact_field": "Hecho del evento",
         "expression_field": "Tendencia expresiva",
         "touch_area_field": "Área de toque",
-        "reward_drop_line": "- Resultado adicional: esta interacción también activó una recompensa caída.",
+        "reward_drop_line": "- Resultado adicional: esta interacción también soltó una recompensa.",
         "easter_egg_line": "- Resultado adicional: esta interacción activó el efecto easter egg ampliado.",
         "text_context_line": "- Borrador en la caja de entrada: {text_context} (solo contexto, no mensaje formal del usuario)",
         "requirements_header": "Requisitos:",
@@ -1161,7 +1161,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
         "event_fact_field": "Fato do evento",
         "expression_field": "Tendência de expressão",
         "touch_area_field": "Área de toque",
-        "reward_drop_line": "- Resultado adicional: esta interação também acionou uma recompensa caída.",
+        "reward_drop_line": "- Resultado adicional: esta interação também gerou uma recompensa.",
         "easter_egg_line": "- Resultado adicional: esta interação acionou o efeito easter egg ampliado.",
         "text_context_line": "- Rascunho na caixa de entrada: {text_context} (apenas contexto, não é mensagem formal do usuário)",
         "requirements_header": "Requisitos:",
