@@ -327,6 +327,13 @@ class AgentTaskTracker:
                 has_later_user_turn = latest_user_ts > cancelled_at
             else:
                 trigger_fp = record.get("trigger_user_fingerprint")
+                if not trigger_fp:
+                    # Async cancellation paths can add a second cancelled
+                    # record without trigger metadata. In timestamp-less
+                    # payloads, that record cannot prove the user did not ask
+                    # again later, so keep looking for an older authoritative
+                    # cancel record instead of blocking the retry.
+                    continue
                 has_later_user_turn = bool(
                     trigger_fp
                     and latest_user_fingerprint
