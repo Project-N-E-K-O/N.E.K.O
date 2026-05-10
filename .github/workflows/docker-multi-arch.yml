@@ -38,11 +38,21 @@ jobs:
     outputs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
       skip_dockerhub: ${{ steps.calc_skip.outputs.SKIP_DOCKERHUB }}
+      is_main_commit: ${{ steps.calc_is_main.outputs.IS_MAIN_COMMIT }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Calculate is_main_commit flag
+        id: calc_is_main
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/main ]] && [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "IS_MAIN_COMMIT=true" >> $GITHUB_OUTPUT
+          else
+            echo "IS_MAIN_COMMIT=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Calculate skip_dockerhub flag
         id: calc_skip
@@ -73,7 +83,12 @@ jobs:
             PR_NUMBER=${{ github.event.pull_request.number }}
             VERSION="pr-${PR_NUMBER}-ci"
             echo "版本号来源于PR编号: $VERSION"
-          # 策略4: 默认情况，生成基于日期和提交哈希的版本号
+          # 策略4: 如果是 main 分支 commit，使用 ci-{commit hash} 格式
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            VERSION="ci-${COMMIT_SHORT}"
+            echo "版本号来源于main分支commit: $VERSION"
+          # 策略5: 其他情况，生成基于日期和提交哈希的版本号
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
@@ -293,7 +308,7 @@ jobs:
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
 
       - name: Create and push latest manifests (GHCR)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -312,7 +327,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
 
       - name: Create and push latest manifests (DockerHub)
-        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
