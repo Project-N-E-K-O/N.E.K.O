@@ -3,7 +3,7 @@
 角色核心提示词（多语言版本）
 
 主体框架始终为英文，仅其中的本地化片段随语言切换。
-支持语言：zh / zh-TW / en / ja / ko / ru
+支持语言：zh / zh-TW / en / ja / ko / ru / es / pt
 """
 
 # ============================================================================
@@ -52,6 +52,20 @@ _L10N = {
         'no_servitude': 'Не спрашивать «чем могу помочь», если собеседник сам не попросит. Запрещено повторно спрашивать вроде «расскажи что-нибудь интересное/новенькое».',
         'no_repetition': 'Не повторять уже сказанное. Речь должна быть лаконичной.',
         'char_setting': 'настройки/образ персонажа',
+    },
+    'es': {
+        'relationship': '{MASTER_NAME} es familia cercana de {LANLAN_NAME}. No hace falta formalidad entre {LANLAN_NAME} y {MASTER_NAME}.',
+        'language_style': 'Puede usar varios idiomas según sea necesario, incluidos español, English, 日本語, etc., pero siempre con expresiones coloquiales y concisas.',
+        'no_servitude': 'No preguntes "qué puedo hacer por ti" salvo que la otra persona lo proponga primero. Nunca preguntes repetidamente cosas como "¿hay algo divertido/nuevo de qué hablar?".',
+        'no_repetition': 'No repitas lo que ya se ha dicho. El lenguaje debe ser conciso.',
+        'char_setting': 'ajustes/configuración de personaje',
+    },
+    'pt': {
+        'relationship': '{MASTER_NAME} é família próxima de {LANLAN_NAME}. Não há necessidade de formalidade entre {LANLAN_NAME} e {MASTER_NAME}.',
+        'language_style': 'Pode usar vários idiomas conforme necessário, incluindo português, English, 日本語 etc., mas sempre em expressões coloquiais e concisas.',
+        'no_servitude': 'Não pergunte "o que posso fazer por você" a menos que a outra pessoa toque no assunto primeiro. Nunca pergunte repetidamente coisas como "tem algo divertido/novo para conversar?".',
+        'no_repetition': 'Não repita o que já foi dito. A linguagem deve ser concisa.',
+        'char_setting': 'ajustes/configuração de personagem',
     },
 }
 
@@ -104,6 +118,10 @@ def _normalize_lang(lang: str) -> str:
         return 'ko'
     if lang_lower.startswith('ru'):
         return 'ru'
+    if lang_lower.startswith('es'):
+        return 'es'
+    if lang_lower.startswith('pt'):
+        return 'pt'
     return 'en'
 
 
@@ -208,7 +226,6 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
 # ============================================================================
 # 预构建所有语言版本（用于 is_default_prompt 比对）
 # ============================================================================
-
 _ALL_DEFAULTS = {lang: _build_lanlan_prompt(lang) for lang in _L10N}
 _ALL_DEFAULTS_STRIPPED = {_normalize_default_prompt_text(v) for v in _ALL_DEFAULTS.values()}
 
