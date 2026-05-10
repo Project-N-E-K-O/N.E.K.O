@@ -81,7 +81,11 @@
 
     function applyGalgameBodyClass(enabled) {
         if (typeof document === 'undefined' || !document.body) return;
-        document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+        // composer 隐藏（请她离开）时强制视为 OFF：保留 state.galgameModeEnabled，
+        // 但摘掉 body class，让 chat.html / preload-chat-react 里依赖该 class 的
+        // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
+        var effectiveEnabled = !!enabled && !state.composerHidden;
+        document.body.classList.toggle('galgame-mode-enabled', effectiveEnabled);
     }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
@@ -1697,7 +1701,21 @@
     }
 
     function setComposerHidden(hidden) {
-        state.composerHidden = !!hidden;
+        var next = !!hidden;
+        var changed = state.composerHidden !== next;
+        state.composerHidden = next;
+        if (changed) {
+            // composer 隐藏/显示切换会改变 effective galgame body class（参见
+            // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
+            // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
+            // 窗口底部一片空白，被用户感知为"输入框没隐藏"。
+            applyGalgameBodyClass(state.galgameModeEnabled);
+            // 复用现有 change 事件通知 chat.html 的 syncWindowToGalgameMin 等监听器
+            // 重新评估窗口最小高度；effective OFF 时它会跳过撑高（b.height >= minH 兜底）。
+            dispatchHostEvent('galgame-mode-change', {
+                enabled: !!state.galgameModeEnabled && !state.composerHidden
+            });
+        }
         renderWindow();
     }
 
