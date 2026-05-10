@@ -142,8 +142,14 @@ jobs:
         with:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard
-            type=raw,value=latest-standard,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            # PR builds: pr-{number}-ci-standard AND pr-ci-standard
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            # CI builds: ci-{hash}-standard AND ci-standard
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            # Other builds (manual/tag): use version as-is
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
@@ -154,8 +160,14 @@ jobs:
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard
-            type=raw,value=latest-standard,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            # PR builds: pr-{number}-ci-standard AND pr-ci-standard
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            # CI builds: ci-{hash}-standard AND ci-standard
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            # Other builds (manual/tag): use version as-is
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Build and push standard image
         uses: docker/build-push-action@v5
@@ -214,8 +226,14 @@ jobs:
         with:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full
-            type=raw,value=latest-full,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            # PR builds: pr-{number}-ci-full AND pr-ci-full
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            # CI builds: ci-{hash}-full AND ci-full
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            # Other builds (manual/tag): use version as-is
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true'
@@ -226,8 +244,14 @@ jobs:
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           tags: |
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full
-            type=raw,value=latest-full,enable=${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            # PR builds: pr-{number}-ci-full AND pr-ci-full
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            # CI builds: ci-{hash}-full AND ci-full
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            # Other builds (manual/tag): use version as-is
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Build and push full image
         uses: docker/build-push-action@v5
@@ -306,6 +330,57 @@ jobs:
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
+
+      - name: Create and push CI short tags (GHCR)
+        if: needs.calculate-version.outputs.is_main_commit == 'true'
+        run: |
+          # GHCR - ci-standard (without hash)
+          docker manifest create \
+            ghcr.io/${{ env.IMAGE_NAME }}:ci-standard \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-standard
+
+          # GHCR - ci-full (without hash)
+          docker manifest create \
+            ghcr.io/${{ env.IMAGE_NAME }}:ci-full \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-full
+
+      - name: Create and push CI short tags (DockerHub)
+        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true'
+        run: |
+          # DockerHub - ci-standard (without hash)
+          docker manifest create \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard
+
+          # DockerHub - ci-full (without hash)
+          docker manifest create \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full
+
+      - name: Create and push PR short tags (GHCR)
+        if: github.event_name == 'pull_request'
+        run: |
+          # GHCR - pr-ci-standard (without PR number)
+          docker manifest create \
+            ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard
+
+          # GHCR - pr-ci-full (without PR number)
+          docker manifest create \
+            ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full
 
       - name: Create and push latest manifests (GHCR)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
