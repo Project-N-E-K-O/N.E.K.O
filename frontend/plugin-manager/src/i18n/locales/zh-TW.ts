@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: '此外掛沒有可用的下載網址',
     pairRequired: '需要配對 Bridge Token',
     recommended: '推薦',
+    allPlugins: '全部外掛',
     noDescription: '暫無說明',
-    unknownAuthor: '未知'
+    unknownAuthor: '未知',
+    filterRules: '篩選規則',
+    filterRulesTitle: '搜尋語法',
+    filterRulesHint: '點擊規則插入搜尋框，支援 key:value 組合，加 - 前綴表示排除',
+    filterGroups: {
+      state: '狀態',
+      zone: '專區',
+      meta: '元資料'
+    },
+    filterLabels: {
+      recommended: '推薦外掛',
+      installed: '已安裝',
+      uninstalled: '未安裝',
+      tag: '標籤',
+      author: '作者',
+      name: '名稱',
+      versionGte: '版本 ≥',
+      hasRepo: '含倉庫',
+      hasTags: '含標籤'
+    },
+    zones: {
+      game: '遊戲',
+      companion: '夥伴',
+      function: '功能',
+      entertainment: '娛樂',
+      tool: '工具'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: '下載量',
+    sortTopRated: '評分',
+    sortName: '名稱'
   },
   auth: {
     unauthorized: '未授權存取',
@@ -188,6 +219,10 @@ export default {
     typePlugin: '外掛',
     typeAdapter: '適配器',
     typeExtension: '擴充功能',
+    layoutList: '列表',
+    layoutSingle: '單排',
+    layoutDouble: '雙排',
+    layoutCompact: '緊湊',
     openPackageManager: '包管理',
     closePackageManager: '收起包管理',
     packageManagerOpened: '包管理已展開',

@@ -32,6 +32,12 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      // Market Bridge 端点（/market/status, /market/bridge-token, /market/install, /market/tasks/*, /market/installed, /market/token-exchange）
+      '/market': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       // 只代理精确匹配 /plugins 的 API 请求（不带路径参数）
       // 使用 bypass 函数区分 API 请求和前端路由
       // 只代理带有 Accept: application/json 的请求（API 请求）

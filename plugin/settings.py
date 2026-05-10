@@ -206,8 +206,9 @@ PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 0.5
 # ========== 插件市场配置 ==========
 
 # 插件市场 URL。配置后插件管理面板会显示"插件市场"入口。
-# Env: NEKO_MARKET_URL, default="" (空则不显示入口)
-MARKET_URL = os.getenv("NEKO_MARKET_URL", "").strip()
+# Env: NEKO_MARKET_URL, default="http://localhost:8000"（本地开发默认值）
+# 生产部署时通过环境变量覆盖为线上 Market 地址；设为空字符串则隐藏市场入口。
+MARKET_URL = os.getenv("NEKO_MARKET_URL", "http://localhost:8000").strip()
 
 # 允许的 Market CORS 来源（逗号分隔）。
 # 用于允许 Market 前端跨域调用本地 /market/* 端点。

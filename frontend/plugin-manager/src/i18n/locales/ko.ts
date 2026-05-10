@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: '다운로드 URL을 사용할 수 없음',
     pairRequired: 'Bridge Token 페어링이 필요합니다',
     recommended: '추천',
+    allPlugins: '전체 플러그인',
     noDescription: '설명 없음',
-    unknownAuthor: '알 수 없음'
+    unknownAuthor: '알 수 없음',
+    filterRules: '필터',
+    filterRulesTitle: '검색 구문',
+    filterRulesHint: '규칙을 클릭하여 삽입. key:value 지원, -로 제외.',
+    filterGroups: {
+      state: '상태',
+      zone: '존',
+      meta: '메타'
+    },
+    filterLabels: {
+      recommended: '추천',
+      installed: '설치됨',
+      uninstalled: '미설치',
+      tag: '태그',
+      author: '작성자',
+      name: '이름',
+      versionGte: '버전 ≥',
+      hasRepo: '저장소 있음',
+      hasTags: '태그 있음'
+    },
+    zones: {
+      game: '게임',
+      companion: '컴패니언',
+      function: '기능',
+      entertainment: '엔터테인먼트',
+      tool: '도구'
+    },
+    sortNewest: '최신순',
+    sortMostDownloads: '다운로드 수',
+    sortTopRated: '평점',
+    sortName: '이름'
   },
   auth: {
     unauthorized: '인증되지 않은 접근',
@@ -188,6 +219,10 @@ export default {
     typePlugin: '플러그인',
     typeAdapter: '어댑터',
     typeExtension: '확장 기능',
+    layoutList: '목록',
+    layoutSingle: '1열',
+    layoutDouble: '2열',
+    layoutCompact: '컴팩트',
     openPackageManager: '패키지 관리',
     closePackageManager: '패키지 관리 닫기',
     packageManagerOpened: '패키지 관리가 열려 있음',

@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: 'No hay URL de descarga disponible',
     pairRequired: 'Se requiere emparejar Bridge Token',
     recommended: 'Recomendado',
+    allPlugins: 'Todos los plugins',
     noDescription: 'Sin descripción',
-    unknownAuthor: 'Desconocido'
+    unknownAuthor: 'Desconocido',
+    filterRules: 'Filtros',
+    filterRulesTitle: 'Sintaxis de búsqueda',
+    filterRulesHint: 'Haz clic para insertar. Admite key:value, prefijo - para excluir.',
+    filterGroups: {
+      state: 'Estado',
+      zone: 'Zona',
+      meta: 'Metadatos'
+    },
+    filterLabels: {
+      recommended: 'Recomendado',
+      installed: 'Instalado',
+      uninstalled: 'No instalado',
+      tag: 'Etiqueta',
+      author: 'Autor',
+      name: 'Nombre',
+      versionGte: 'Versión ≥',
+      hasRepo: 'Con repo',
+      hasTags: 'Con etiquetas'
+    },
+    zones: {
+      game: 'Juego',
+      companion: 'Compañero',
+      function: 'Función',
+      entertainment: 'Entretenimiento',
+      tool: 'Herramienta'
+    },
+    sortNewest: 'Más nuevo',
+    sortMostDownloads: 'Descargas',
+    sortTopRated: 'Mejor valorado',
+    sortName: 'Nombre'
   },
   auth: {
     unauthorized: 'Acceso no autorizado',
@@ -188,6 +219,10 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adaptador',
     typeExtension: 'Extensión',
+    layoutList: 'Lista',
+    layoutSingle: 'Una columna',
+    layoutDouble: 'Dos columnas',
+    layoutCompact: 'Compacto',
     openPackageManager: 'Gestor de paquetes',
     closePackageManager: 'Ocultar gestor de paquetes',
     packageManagerOpened: 'Gestor de paquetes abierto',

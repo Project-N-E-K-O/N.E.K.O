@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: '该插件没有可用的下载地址',
     pairRequired: '需要配对 Bridge Token',
     recommended: '推荐',
+    allPlugins: '全部插件',
     noDescription: '暂无描述',
-    unknownAuthor: '未知'
+    unknownAuthor: '未知',
+    filterRules: '筛选规则',
+    filterRulesTitle: '搜索语法',
+    filterRulesHint: '点击规则插入到搜索框，支持 key:value 组合，加 - 前缀为排除',
+    filterGroups: {
+      state: '状态',
+      zone: '专区',
+      meta: '元数据'
+    },
+    filterLabels: {
+      recommended: '推荐插件',
+      installed: '已安装',
+      uninstalled: '未安装',
+      tag: '标签',
+      author: '作者',
+      name: '名称',
+      versionGte: '版本 ≥',
+      hasRepo: '含仓库',
+      hasTags: '含标签'
+    },
+    zones: {
+      game: '游戏',
+      companion: '伴侣',
+      function: '功能',
+      entertainment: '娱乐',
+      tool: '工具'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: '下载量',
+    sortTopRated: '评分',
+    sortName: '名称'
   },
   auth: {
     unauthorized: '未授权访问',
@@ -188,6 +219,10 @@ export default {
     typePlugin: '插件',
     typeAdapter: '适配器',
     typeExtension: '扩展',
+    layoutList: '列表',
+    layoutSingle: '单排',
+    layoutDouble: '双排',
+    layoutCompact: '紧凑',
     openPackageManager: '包管理',
     closePackageManager: '收起包管理',
     packageManagerOpened: '包管理已展开',

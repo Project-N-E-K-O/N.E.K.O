@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: 'URL загрузки недоступен',
     pairRequired: 'Требуется сопряжение Bridge Token',
     recommended: 'Рекомендуется',
+    allPlugins: 'Все плагины',
     noDescription: 'Без описания',
-    unknownAuthor: 'Неизвестно'
+    unknownAuthor: 'Неизвестно',
+    filterRules: 'Фильтры',
+    filterRulesTitle: 'Синтаксис поиска',
+    filterRulesHint: 'Клик — вставить. Поддержка key:value, префикс - для исключения.',
+    filterGroups: {
+      state: 'Состояние',
+      zone: 'Зона',
+      meta: 'Метаданные'
+    },
+    filterLabels: {
+      recommended: 'Рекомендуемые',
+      installed: 'Установлены',
+      uninstalled: 'Не установлены',
+      tag: 'Тег',
+      author: 'Автор',
+      name: 'Название',
+      versionGte: 'Версия ≥',
+      hasRepo: 'С репозиторием',
+      hasTags: 'С тегами'
+    },
+    zones: {
+      game: 'Игры',
+      companion: 'Компаньон',
+      function: 'Функции',
+      entertainment: 'Развлечения',
+      tool: 'Инструменты'
+    },
+    sortNewest: 'Новые',
+    sortMostDownloads: 'По загрузкам',
+    sortTopRated: 'По рейтингу',
+    sortName: 'По названию'
   },
   auth: {
     unauthorized: 'Неавторизованный доступ',
@@ -188,6 +219,10 @@ export default {
     typePlugin: 'Плагин',
     typeAdapter: 'Адаптер',
     typeExtension: 'Расширение',
+    layoutList: 'Список',
+    layoutSingle: 'Один столбец',
+    layoutDouble: 'Два столбца',
+    layoutCompact: 'Компактно',
     openPackageManager: 'Менеджер пакетов',
     closePackageManager: 'Скрыть менеджер пакетов',
     packageManagerOpened: 'Менеджер пакетов открыт',

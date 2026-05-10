@@ -19,7 +19,25 @@
     </template>
 
     <div class="plugin-card-body">
-      <p class="plugin-description">{{ plugin.description || t('market.noDescription') }}</p>
+      <p class="plugin-description">
+        {{ plugin.short_description || plugin.description || t('market.noDescription') }}
+      </p>
+
+      <div v-if="plugin.tags?.length" class="plugin-tags">
+        <el-tag
+          v-for="tag in plugin.tags.slice(0, 4)"
+          :key="tag"
+          size="small"
+          type="info"
+          effect="plain"
+          class="plugin-tag"
+        >
+          {{ tag }}
+        </el-tag>
+        <span v-if="plugin.tags.length > 4" class="plugin-tags__more">
+          +{{ plugin.tags.length - 4 }}
+        </span>
+      </div>
 
       <div class="plugin-meta">
         <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
@@ -135,6 +153,26 @@ function formatCount(count: number): string {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.plugin-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.plugin-tag {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-tags__more {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
 }
 
 .plugin-meta {

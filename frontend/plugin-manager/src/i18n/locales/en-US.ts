@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: 'No download URL available',
     pairRequired: 'Bridge Token pairing required',
     recommended: 'Recommended',
+    allPlugins: 'All plugins',
     noDescription: 'No description',
-    unknownAuthor: 'Unknown'
+    unknownAuthor: 'Unknown',
+    filterRules: 'Filters',
+    filterRulesTitle: 'Search syntax',
+    filterRulesHint: 'Click a rule to append it. Supports key:value tokens, prefix with - to exclude.',
+    filterGroups: {
+      state: 'State',
+      zone: 'Zone',
+      meta: 'Metadata'
+    },
+    filterLabels: {
+      recommended: 'Recommended',
+      installed: 'Installed',
+      uninstalled: 'Not installed',
+      tag: 'Tag',
+      author: 'Author',
+      name: 'Name',
+      versionGte: 'Version ≥',
+      hasRepo: 'Has repo',
+      hasTags: 'Has tags'
+    },
+    zones: {
+      game: 'Game',
+      companion: 'Companion',
+      function: 'Function',
+      entertainment: 'Entertainment',
+      tool: 'Tool'
+    },
+    sortNewest: 'Newest',
+    sortMostDownloads: 'Downloads',
+    sortTopRated: 'Top rated',
+    sortName: 'Name'
   },
   auth: {
     unauthorized: 'Unauthorized access',
@@ -188,6 +219,10 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adapter',
     typeExtension: 'Extension',
+    layoutList: 'List',
+    layoutSingle: 'Single',
+    layoutDouble: 'Double',
+    layoutCompact: 'Compact',
     openPackageManager: 'Package Manager',
     closePackageManager: 'Hide Package Manager',
     packageManagerOpened: 'Package manager open',

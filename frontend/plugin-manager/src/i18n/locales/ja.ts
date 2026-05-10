@@ -61,8 +61,39 @@ export default {
     noDownloadUrl: 'ダウンロードURLがありません',
     pairRequired: 'Bridge Token のペアリングが必要です',
     recommended: 'おすすめ',
+    allPlugins: 'すべてのプラグイン',
     noDescription: '説明なし',
-    unknownAuthor: '不明'
+    unknownAuthor: '不明',
+    filterRules: 'フィルタ',
+    filterRulesTitle: '検索構文',
+    filterRulesHint: 'ルールをクリックで挿入。key:value に対応、- で除外。',
+    filterGroups: {
+      state: '状態',
+      zone: 'ゾーン',
+      meta: 'メタ'
+    },
+    filterLabels: {
+      recommended: 'おすすめ',
+      installed: 'インストール済み',
+      uninstalled: '未インストール',
+      tag: 'タグ',
+      author: '作者',
+      name: '名前',
+      versionGte: 'バージョン ≥',
+      hasRepo: 'リポジトリあり',
+      hasTags: 'タグあり'
+    },
+    zones: {
+      game: 'ゲーム',
+      companion: 'コンパニオン',
+      function: '機能',
+      entertainment: 'エンタメ',
+      tool: 'ツール'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: 'ダウンロード数',
+    sortTopRated: '評価',
+    sortName: '名前'
   },
   auth: {
     unauthorized: '未認証のアクセス',
@@ -188,6 +219,10 @@ export default {
     typePlugin: 'プラグイン',
     typeAdapter: 'アダプター',
     typeExtension: '拡張機能',
+    layoutList: 'リスト',
+    layoutSingle: '1列',
+    layoutDouble: '2列',
+    layoutCompact: 'コンパクト',
     openPackageManager: 'パッケージ管理',
     closePackageManager: 'パッケージ管理を閉じる',
     packageManagerOpened: 'パッケージ管理を表示中',

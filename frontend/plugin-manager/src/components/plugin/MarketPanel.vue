@@ -20,7 +20,7 @@
         <button
           v-if="marketBaseUrl"
           class="market-panel__icon-btn"
-          :title="t('market.openInBrowser', '在浏览器打开')"
+          :title="t('market.openInBrowser')"
           @click="openMarketExternal"
         >
           <el-icon><Link /></el-icon>
@@ -31,28 +31,48 @@
       </div>
     </div>
 
-    <div class="market-panel__toolbar">
-      <el-input
-        v-model="searchQuery"
-        :placeholder="t('market.searchPlaceholder')"
-        clearable
-        class="market-panel__search"
-        @keyup.enter="handleSearch"
-        @clear="handleSearch"
-      >
-        <template #prefix>
-          <el-icon><Search /></el-icon>
-        </template>
-      </el-input>
-      <button
-        class="market-panel__btn"
-        :disabled="loading"
-        @click="handleRefresh"
-      >
-        <el-icon :class="{ 'is-spinning': loading }"><Refresh /></el-icon>
-        <span>{{ t('common.refresh') }}</span>
-      </button>
-    </div>
+    <WorkbenchFilterBar
+      v-model:filter-text="filterText"
+      v-model:use-regex="useRegex"
+      v-model:filter-mode="filterMode"
+      :regex-error="regexError"
+      :rule-groups="filterRuleGroups"
+      :placeholder="t('market.searchPlaceholder')"
+      :rules-trigger-label="t('market.filterRules')"
+      :rules-title="t('market.filterRulesTitle')"
+      :rules-hint="t('market.filterRulesHint')"
+      :whitelist-label="t('plugins.filterWhitelist')"
+      :blacklist-label="t('plugins.filterBlacklist')"
+      :invalid-regex-label="t('plugins.invalidRegex')"
+    />
+
+    <WorkbenchToolbar class="market-panel__toolbar">
+      <WorkbenchGroupFilter
+        v-model:selected-ids="selectedGroupIds"
+        :choices="groupChoices"
+        :counts="groupCounts"
+        selection-mode="single"
+      />
+      <div class="market-panel__toolbar-right">
+        <el-select
+          v-model="sortBy"
+          size="small"
+          class="market-panel__sort"
+          @change="onSortChange"
+        >
+          <el-option
+            v-for="opt in sortOptions"
+            :key="opt.value"
+            :value="opt.value"
+            :label="opt.label"
+          />
+        </el-select>
+        <WorkbenchLayoutSwitcher
+          v-model:layout-mode="layoutMode"
+          :choices="layoutChoices"
+        />
+      </div>
+    </WorkbenchToolbar>
 
     <div class="market-panel__content">
       <EmptyState
@@ -61,9 +81,7 @@
       >
         <template #description>
           <p>{{ t('market.notConfigured') }}</p>
-          <p class="market-panel__empty-hint">
-            {{ t('market.configHint') }}
-          </p>
+          <p class="market-panel__empty-hint">{{ t('market.configHint') }}</p>
         </template>
       </EmptyState>
 
@@ -74,26 +92,30 @@
       />
 
       <EmptyState
-        v-else-if="plugins.length === 0"
+        v-else-if="filteredItems.length === 0"
         :description="t('market.noResults')"
       />
 
       <template v-else>
-        <div class="market-panel__grid">
-          <div
-            v-for="plugin in plugins"
-            :key="plugin.id"
-            class="market-panel__grid-item"
-          >
+        <GridSection
+          :title="activeGroupLabel"
+          :items="filteredItems"
+          :layout-mode="layoutMode"
+          :multi-select-enabled="false"
+          :selected-ids="[]"
+          variant="default"
+          guide-prefix="market-panel"
+        >
+          <template #item="{ item }">
             <MarketPluginCard
-              :plugin="plugin"
-              :installed="installedIds.has(String(plugin.id))"
-              :installing="installingId === plugin.id"
-              @click="handlePluginClick(plugin)"
-              @install="handleInstall(plugin)"
+              :plugin="item"
+              :installed="isInstalled(item)"
+              :installing="installingId === item.id"
+              @click="handlePluginClick(item)"
+              @install="handleInstall(item)"
             />
-          </div>
-        </div>
+          </template>
+        </GridSection>
 
         <div v-if="totalPages > 1" class="market-panel__pagination">
           <el-pagination
@@ -111,20 +133,32 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ShoppingCart, Search, Refresh, Close, Link } from '@element-plus/icons-vue'
+import { ShoppingCart, Close, Link } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
+import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
+import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
+import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
+import GridSection from '@/components/common/GridSection.vue'
 import {
   fetchMarketPlugins,
   fetchMarketPluginVersions,
   getMarketUrl,
   isMarketAvailable,
   type MarketPlugin,
+  type FetchMarketPluginsParams,
 } from '@/api/market'
+import { useMarketWorkbench, type MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
+import type {
+  FilterRuleGroupDescriptor,
+  GroupChoiceDescriptor,
+  LayoutChoiceDescriptor,
+} from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 
 interface Props {
@@ -138,9 +172,7 @@ const props = withDefaults(defineProps<Props>(), {
   active: true,
 })
 
-defineEmits<{
-  close: []
-}>()
+defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 const pluginStore = usePluginStore()
@@ -149,20 +181,127 @@ const loading = ref(false)
 const marketAvailable = ref(false)
 const marketBaseUrl = ref<string | null>(null)
 const plugins = ref<MarketPlugin[]>([])
-const searchQuery = ref('')
 const currentPage = ref(1)
 const pageSize = props.embedded ? 8 : 12
 const totalCount = ref(0)
-const installingId = ref<string | number | null>(null)
+const installingId = ref<string | null>(null)
 const bridgeToken = ref('')
+const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
+const sortOrder = ref<'asc' | 'desc'>('desc')
 
-const installedIds = computed(() => {
-  const ids = new Set<string>()
-  for (const p of pluginStore.pluginsWithStatus) ids.add(String(p.id))
-  return ids
+// ─── 本地插件对比：用 slug/id/name 三路兜底 ────────────────────────
+const localPluginKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const p of pluginStore.pluginsWithStatus) {
+    const id = String(p.id || '').toLowerCase()
+    const name = String(p.name || '').toLowerCase()
+    if (id) keys.add(id)
+    if (name) keys.add(name)
+  }
+  return keys
 })
 
+function isInstalled(plugin: { slug?: string; name?: string; id: string | number }): boolean {
+  const candidates = [plugin.slug, plugin.name, String(plugin.id)]
+    .filter(Boolean)
+    .map((v) => String(v).toLowerCase())
+  return candidates.some((c) => localPluginKeys.value.has(c))
+}
+
+// ─── 工作台：过滤 + 分组 + 布局 ───────────────────────────────────
+const {
+  filterText,
+  useRegex,
+  filterMode,
+  selectedGroupIds,
+  layoutMode,
+  regexError,
+  groupCounts,
+  filteredItems,
+} = useMarketWorkbench(plugins, { isInstalled })
+
+const activeGroupId = computed(() => selectedGroupIds.value[0] || 'all')
+const activeGroupLabel = computed(() =>
+  activeGroupId.value === 'recommended'
+    ? t('market.recommended')
+    : t('market.allPlugins'),
+)
+
+// ─── UI 描述符 ────────────────────────────────────────────────────
+const groupChoices = computed<GroupChoiceDescriptor[]>(() => [
+  { id: 'recommended', label: t('market.recommended') },
+  { id: 'all', label: t('market.allPlugins') },
+])
+
+const layoutChoices = computed<LayoutChoiceDescriptor[]>(() => [
+  { value: 'list', label: t('plugins.layoutList') },
+  { value: 'single', label: t('plugins.layoutSingle') },
+  { value: 'double', label: t('plugins.layoutDouble') },
+  { value: 'compact', label: t('plugins.layoutCompact') },
+])
+
+const sortOptions = computed(() => [
+  { value: 'created_at', label: t('market.sortNewest') },
+  { value: 'download_count', label: t('market.sortMostDownloads') },
+  { value: 'rating_average', label: t('market.sortTopRated') },
+  { value: 'name', label: t('market.sortName') },
+])
+
+const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
+  {
+    key: 'state',
+    title: t('market.filterGroups.state'),
+    rules: [
+      { token: 'is:recommended', label: t('market.filterLabels.recommended') },
+      { token: 'is:installed', label: t('market.filterLabels.installed') },
+      { token: 'is:uninstalled', label: t('market.filterLabels.uninstalled') },
+    ],
+  },
+  {
+    key: 'zone',
+    title: t('market.filterGroups.zone'),
+    rules: [
+      { token: 'zone:game', label: t('market.zones.game') },
+      { token: 'zone:companion', label: t('market.zones.companion') },
+      { token: 'zone:function', label: t('market.zones.function') },
+      { token: 'zone:entertainment', label: t('market.zones.entertainment') },
+      { token: 'zone:tool', label: t('market.zones.tool') },
+    ],
+  },
+  {
+    key: 'meta',
+    title: t('market.filterGroups.meta'),
+    rules: [
+      { token: 'tag:', label: t('market.filterLabels.tag') },
+      { token: 'author:', label: t('market.filterLabels.author') },
+      { token: 'name:', label: t('market.filterLabels.name') },
+      { token: 'v:>=', label: t('market.filterLabels.versionGte') },
+      { token: 'has:repo', label: t('market.filterLabels.hasRepo') },
+      { token: 'has:tags', label: t('market.filterLabels.hasTags') },
+    ],
+  },
+])
+
 const totalPages = computed(() => Math.ceil(totalCount.value / pageSize))
+
+// ─── 后端查询：提取纯关键词，qualifier 和 regex 留给前端 ────────
+/** 从用户输入里抽取可以直传给后端 q= 的"裸 term"。 */
+function extractServerQuery(input: string): string {
+  if (!input.trim()) return ''
+  if (useRegex.value) return ''
+  const tokens = input.match(/"[^"]+"|\S+/g) || []
+  const terms = tokens
+    .map((raw) => {
+      const negated = raw.startsWith('-')
+      const body = negated ? raw.slice(1) : raw
+      const unquoted = body.replace(/^"(.*)"$/, '$1').trim()
+      if (!unquoted || unquoted.includes(':')) return ''
+      if (negated) return ''
+      return unquoted
+    })
+    .filter(Boolean)
+  return terms.join(' ').trim()
+}
 
 async function ensureBridgeToken(): Promise<string> {
   if (bridgeToken.value) return bridgeToken.value
@@ -184,14 +323,26 @@ async function ensureBridgeToken(): Promise<string> {
   return bridgeToken.value
 }
 
+let loadSeq = 0
+
 async function loadPlugins() {
+  if (!marketAvailable.value) return
+  const mySeq = ++loadSeq
   loading.value = true
   try {
-    const result = await fetchMarketPlugins({
+    const params: FetchMarketPluginsParams = {
       page: currentPage.value,
       page_size: pageSize,
-      search: searchQuery.value || undefined,
-    })
+      sort_by: sortBy.value,
+      sort_order: sortOrder.value,
+    }
+    const q = extractServerQuery(filterText.value)
+    if (q) params.search = q
+    if (activeGroupId.value === 'recommended') params.featured_only = true
+
+    const result = await fetchMarketPlugins(params)
+    // 只接受最新一次请求的返回值，避免乱序覆盖
+    if (mySeq !== loadSeq) return
     if (result) {
       plugins.value = result.items
       totalCount.value = result.total
@@ -200,18 +351,38 @@ async function loadPlugins() {
       marketAvailable.value = false
     }
   } catch {
-    marketAvailable.value = false
+    if (mySeq === loadSeq) marketAvailable.value = false
   } finally {
-    loading.value = false
+    if (mySeq === loadSeq) loading.value = false
   }
 }
 
-function handleSearch() {
+// ─── 交互：分页、搜索 debounce、排序、分组切换 ────────────────────
+
+let searchDebounceTimer: number | null = null
+
+watch(filterText, () => {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = window.setTimeout(() => {
+    currentPage.value = 1
+    loadPlugins()
+  }, 400)
+})
+
+watch(useRegex, () => {
   currentPage.value = 1
   loadPlugins()
-}
+})
 
-function handleRefresh() {
+watch(activeGroupId, () => {
+  currentPage.value = 1
+  loadPlugins()
+})
+
+function onSortChange() {
+  // name 字段默认升序，其他字段默认降序
+  sortOrder.value = sortBy.value === 'name' ? 'asc' : 'desc'
+  currentPage.value = 1
   loadPlugins()
 }
 
@@ -220,9 +391,10 @@ function handlePageChange(page: number) {
   loadPlugins()
 }
 
-function handlePluginClick(plugin: MarketPlugin) {
+function handlePluginClick(plugin: MarketWorkbenchItem): void {
   if (marketBaseUrl.value) {
-    window.open(`${marketBaseUrl.value}/plugin/${plugin.id}`, '_blank')
+    const path = plugin.slug ? `/plugin/${plugin.slug}` : `/plugin/${plugin.rawId}`
+    window.open(`${marketBaseUrl.value}${path}`, '_blank')
   } else if (plugin.github_repo) {
     window.open(plugin.github_repo, '_blank')
   }
@@ -232,6 +404,8 @@ function openMarketExternal() {
   if (marketBaseUrl.value) window.open(marketBaseUrl.value, '_blank')
 }
 
+// ─── 安装流程（与之前一致，换成新的 MarketPlugin id 类型） ───────
+
 interface ResolvedInstallPayload {
   package_url: string
   package_sha256: string | null
@@ -239,7 +413,9 @@ interface ResolvedInstallPayload {
   version: string
 }
 
-async function resolveInstallPayload(plugin: MarketPlugin): Promise<ResolvedInstallPayload | null> {
+async function resolveInstallPayload(
+  plugin: MarketWorkbenchItem,
+): Promise<ResolvedInstallPayload | null> {
   const fallbackUrl = plugin.download_url || plugin.github_repo || ''
   let packageUrl = fallbackUrl
   let packageSha256: string | null = null
@@ -247,7 +423,7 @@ async function resolveInstallPayload(plugin: MarketPlugin): Promise<ResolvedInst
   let version = plugin.version
 
   try {
-    const versions = await fetchMarketPluginVersions(plugin.id)
+    const versions = await fetchMarketPluginVersions(plugin.rawId)
     if (versions && versions.length > 0) {
       const matched = versions.find((v) => v.version === plugin.version) ?? versions[0]
       if (matched) {
@@ -275,7 +451,8 @@ async function pollInstallTask(taskId: string, pluginName: string): Promise<bool
         const task = await res.json()
         if (task.status === 'completed') {
           ElMessage.success(t('market.installSuccess', { name: pluginName }))
-          pluginStore.fetchPlugins().catch(() => {})
+          // 安装后同步本地注册表，让 isInstalled 立即生效
+          pluginStore.syncRegistryAndFetch().catch(() => {})
           return true
         }
         if (task.status === 'failed') {
@@ -292,7 +469,7 @@ async function pollInstallTask(taskId: string, pluginName: string): Promise<bool
   return false
 }
 
-async function handleInstall(plugin: MarketPlugin) {
+async function handleInstall(plugin: MarketWorkbenchItem) {
   const payload = await resolveInstallPayload(plugin)
   if (!payload) {
     ElMessage.warning(t('market.noDownloadUrl'))
@@ -310,7 +487,7 @@ async function handleInstall(plugin: MarketPlugin) {
         package_url: payload.package_url,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
-        plugin_id: String(plugin.id),
+        plugin_id: String(plugin.rawId),
         version: payload.version,
         on_conflict: 'rename',
       }),
@@ -348,9 +525,17 @@ async function initialize() {
   }
 }
 
-// 首次挂载时初始化；当 `active` 从 false 变 true 且尚未加载时也初始化。
 onMounted(() => {
   if (props.active !== false) initialize()
+})
+
+onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  // 让在途 loadPlugins 的 mySeq 全部失效
+  loadSeq++
 })
 
 watch(
@@ -376,7 +561,7 @@ watch(
   height: 100%;
   padding: 18px 18px 24px;
   background: var(--el-bg-color);
-  border-radius: var(--radius-card, 16px);
+  border-radius: 16px;
   border: 1px solid var(--el-border-color-lighter);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.04);
 }
@@ -424,7 +609,7 @@ watch(
   width: 32px;
   height: 32px;
   border: none;
-  border-radius: var(--radius-control, 10px);
+  border-radius: 10px;
   background: transparent;
   color: var(--el-text-color-secondary);
   cursor: pointer;
@@ -437,39 +622,18 @@ watch(
 }
 
 .market-panel__toolbar {
+  margin-top: 0;
+}
+
+.market-panel__toolbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
-.market-panel__search {
-  flex: 1 1 220px;
-  min-width: 180px;
-}
-
-.market-panel__btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border: 1px solid var(--el-border-color);
-  border-radius: var(--radius-control, 10px);
-  background: var(--el-bg-color);
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.market-panel__btn:hover:not(:disabled) {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
-}
-
-.market-panel__btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.market-panel__sort {
+  width: 140px;
 }
 
 .market-panel__content {
@@ -478,20 +642,6 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.market-panel__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
-}
-
-.market-panel--embedded .market-panel__grid {
-  grid-template-columns: 1fr;
-}
-
-.market-panel__grid-item {
-  min-width: 0;
 }
 
 .market-panel__pagination {
@@ -504,13 +654,5 @@ watch(
   font-size: 13px;
   color: var(--el-text-color-secondary);
   margin-top: 8px;
-}
-
-.is-spinning {
-  animation: market-panel-spin 1s linear infinite;
-}
-
-@keyframes market-panel-spin {
-  to { transform: rotate(360deg); }
 }
 </style>
