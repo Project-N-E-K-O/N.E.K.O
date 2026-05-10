@@ -158,6 +158,7 @@ from utils.tutorial_prompt_state import (
     record_tutorial_prompt_decision,
     record_tutorial_started,
     record_tutorial_completed,
+    reset_tutorial_prompt_state,
 )
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
 from utils.config_manager import get_config_manager as get_runtime_config_manager
@@ -1095,6 +1096,16 @@ async def post_tutorial_prompt_decision(request: Request):
         return record_tutorial_prompt_decision(payload, config_manager=get_config_manager())
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+
+
+@router.post("/tutorial-prompt/reset")
+async def post_tutorial_prompt_reset(request: Request):
+    """重置主页新手引导状态，供记忆浏览的手动重置入口调用。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    return reset_tutorial_prompt_state(config_manager=get_config_manager())
 
 
 @router.get("/autostart-prompt/state")
