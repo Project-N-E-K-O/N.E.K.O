@@ -39,6 +39,7 @@ from utils.native_voice_registry import (
     is_native_voice,
 )
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
+from utils.steam_state import get_steamworks
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
@@ -2553,7 +2554,6 @@ class ConfigManager:
         if ConfigManager._steam_check_cache is not None:
             return ConfigManager._steam_check_cache
         try:
-            from main_routers.shared_state import get_steamworks
             steamworks = get_steamworks()
             if steamworks is None:
                 return None

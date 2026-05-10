@@ -6,6 +6,7 @@ Used when the frontend reports a tool-based avatar interaction
 localize labels, and compose the system instruction + memory note
 that drive the runtime reaction.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,15 @@ import time
 import math
 from typing import Optional
 
-from utils.language_utils import normalize_language_code, get_global_language_full
+# Why config._runtime: ``config`` (L0) must not import from ``utils`` (L1) —
+# enforced by scripts/check_module_layering.py. Higher layers register the
+# concrete language/tokenize helpers at app startup; we read them via
+# resolvers that fall back gracefully when nothing is bound.
+from config._runtime import (
+    normalize_language_code,
+    resolve_global_language,
+    truncate_to_tokens,
+)
 
 
 _AVATAR_INTERACTION_ALLOWED_ACTIONS = {
@@ -69,6 +78,8 @@ _AVATAR_INTERACTION_TOOL_LABELS = {
         "fist": "кошачья лапка",
         "hammer": "молоток",
     },
+    "es": {"lollipop": "piruleta", "fist": "patita de gato", "hammer": "martillo"},
+    "pt": {"lollipop": "pirulito", "fist": "patinha de gato", "hammer": "martelo"},
 }
 _AVATAR_INTERACTION_ACTION_LABELS = {
     "zh": {
@@ -149,6 +160,24 @@ _AVATAR_INTERACTION_ACTION_LABELS = {
             "bonk": "удар молотком",
         },
     },
+    "es": {
+        "lollipop": {
+            "offer": "primer bocado",
+            "tease": "segundo bocado",
+            "tap_soft": "alimentación repetida",
+        },
+        "fist": {"poke": "toque ligero"},
+        "hammer": {"bonk": "golpe de martillo"},
+    },
+    "pt": {
+        "lollipop": {
+            "offer": "primeira mordida",
+            "tease": "segunda mordida",
+            "tap_soft": "alimentação repetida",
+        },
+        "fist": {"poke": "toque leve"},
+        "hammer": {"bonk": "batida de martelo"},
+    },
 }
 _AVATAR_INTERACTION_INTENSITY_LABELS = {
     "zh": {
@@ -186,6 +215,18 @@ _AVATAR_INTERACTION_INTENSITY_LABELS = {
         "rapid": "часто",
         "burst": "серия",
         "easter_egg": "пасхалка",
+    },
+    "es": {
+        "normal": "normal",
+        "rapid": "rápido",
+        "burst": "ráfaga",
+        "easter_egg": "easter egg",
+    },
+    "pt": {
+        "normal": "normal",
+        "rapid": "rápido",
+        "burst": "rajada",
+        "easter_egg": "easter egg",
     },
 }
 _AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
@@ -225,6 +266,18 @@ _AVATAR_INTERACTION_TOUCH_ZONE_LABELS = {
         "face": "щека / край рта",
         "body": "перед корпусом / плечо",
     },
+    "es": {
+        "ear": "lado de la oreja",
+        "head": "parte superior de la cabeza",
+        "face": "mejilla / junto a la boca",
+        "body": "frente del cuerpo / hombro",
+    },
+    "pt": {
+        "ear": "lado da orelha",
+        "head": "topo da cabeça",
+        "face": "bochecha / canto da boca",
+        "body": "frente do corpo / ombro",
+    },
 }
 _AVATAR_INTERACTION_SYSTEM_WRAPPER = {
     "zh": {
@@ -250,6 +303,14 @@ _AVATAR_INTERACTION_SYSTEM_WRAPPER = {
     "ru": {
         "prefix": "======[Системное уведомление: ниже описано только что произошедшее взаимодействие с инструментом. Считайте это сигналом для мгновенной реакции и не повторяйте названия полей или системные формулировки]======",
         "suffix": "======[Конец системного уведомления: ответьте только мгновенной реакцией в текущем образе персонажа]======",
+    },
+    "es": {
+        "prefix": "======[Aviso del sistema: acaba de ocurrir la siguiente interacción con herramienta. Trátala como una señal de interacción inmediata y no repitas nombres de campos ni texto del sistema]======",
+        "suffix": "======[Fin del aviso del sistema: responde directamente en personaje solo con la reacción inmediata]======",
+    },
+    "pt": {
+        "prefix": "======[Aviso do sistema: a seguinte interação com ferramenta acabou de acontecer. Trate-a como um sinal de interação imediata e não repita nomes de campos nem texto do sistema]======",
+        "suffix": "======[Fim do aviso do sistema: responda diretamente no personagem apenas com a reação imediata]======",
     },
 }
 _AVATAR_INTERACTION_REACTION_PROFILES = {
@@ -625,6 +686,130 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
             },
         },
     },
+    "es": {
+        "lollipop": {
+            "offer": {
+                "normal": {
+                    "reaction_focus": "La piruleta completa el primer contacto con la boca.",
+                    "style_hint": "Puede haber una pequeña pausa de primera prueba o de notar el sabor; mantén un tono naturalmente ligero.",
+                }
+            },
+            "tease": {
+                "normal": {
+                    "reaction_focus": "El primer bocado ya ocurrió; esta interacción es el segundo bocado inmediato.",
+                    "style_hint": "Haz que se sienta más fluido y continuo que el primero, sin dejar de ser natural.",
+                }
+            },
+            "tap_soft": {
+                "rapid": {
+                    "reaction_focus": "Tras la tercera etapa continúa la alimentación mientras ya flotan corazones; este es un caso dentro de alimentación repetida.",
+                    "style_hint": "El ritmo puede ser más rápido y las frases más cortas, como una reacción inmediata dentro de la repetición.",
+                },
+                "burst": {
+                    "reaction_focus": "Varias alimentaciones ocurren en poco tiempo, formando un evento repetido de mayor frecuencia.",
+                    "style_hint": "Puede sonar más apresurado o fragmentado; mantenlo en el momento.",
+                },
+            },
+        },
+        "fist": {
+            "poke": {
+                "normal": {
+                    "reaction_focus": "La patita de gato produce un toque corto y ligero.",
+                    "style_hint": "Corto, ligero y suave, con pequeñas diferencias según la zona tocada.",
+                },
+                "rapid": {
+                    "reaction_focus": "Varios toques ligeros ocurren en poco tiempo.",
+                    "style_hint": "Puede sentirse un poco más rápido y continuo sin perder ligereza.",
+                },
+                "reward_drop": {
+                    "reaction_focus": "Este toque ligero también soltó una recompensa.",
+                    "style_hint": "Recibe primero el toque y luego menciona la caída de pasada.",
+                },
+            }
+        },
+        "hammer": {
+            "bonk": {
+                "normal": {
+                    "reaction_focus": "Se completa una secuencia completa de golpe de martillo y llega el impacto.",
+                    "style_hint": "Breve y centrado en el impacto, con una pequeña pausa tras el golpe.",
+                },
+                "rapid": {
+                    "reaction_focus": "Otro golpe de martillo se completa en poco tiempo, formando golpes repetidos.",
+                    "style_hint": "Puede ser más directo y mostrar impacto acumulado.",
+                },
+                "burst": {
+                    "reaction_focus": "Aumentan los golpes repetidos de martillo, con resultado de mayor intensidad.",
+                    "style_hint": "Una reacción más grande está bien si sigue siendo inmediata y corta.",
+                },
+                "easter_egg": {
+                    "reaction_focus": "Este golpe activa el efecto easter egg ampliado, más fuerte que un golpe normal.",
+                    "style_hint": "Puede ser más dramático, con pausa o exclamación más marcada, manteniendo la voz del personaje.",
+                },
+            }
+        },
+    },
+    "pt": {
+        "lollipop": {
+            "offer": {
+                "normal": {
+                    "reaction_focus": "O pirulito completa o primeiro contato com a boca.",
+                    "style_hint": "Pode haver uma pequena pausa de primeira prova ou de notar o sabor; mantenha o tom naturalmente leve.",
+                }
+            },
+            "tease": {
+                "normal": {
+                    "reaction_focus": "A primeira mordida já aconteceu; esta interação é a segunda mordida imediata.",
+                    "style_hint": "Faça parecer um pouco mais suave e contínua que a primeira, mantendo naturalidade.",
+                }
+            },
+            "tap_soft": {
+                "rapid": {
+                    "reaction_focus": "Após a terceira etapa, a alimentação continua enquanto corações já flutuam; este é um caso dentro de alimentação repetida.",
+                    "style_hint": "O ritmo pode ser mais rápido e as frases mais curtas, como reação imediata dentro da repetição.",
+                },
+                "burst": {
+                    "reaction_focus": "Várias alimentações acontecem em pouco tempo, formando um evento repetido de maior frequência.",
+                    "style_hint": "Pode soar mais apressado ou fragmentado; mantenha no momento.",
+                },
+            },
+        },
+        "fist": {
+            "poke": {
+                "normal": {
+                    "reaction_focus": "A patinha de gato produz um toque curto e leve.",
+                    "style_hint": "Curto, leve e suave, com pequenas diferenças conforme a área tocada.",
+                },
+                "rapid": {
+                    "reaction_focus": "Vários toques leves acontecem em pouco tempo.",
+                    "style_hint": "Pode parecer um pouco mais rápido e contínuo, mantendo a leveza.",
+                },
+                "reward_drop": {
+                    "reaction_focus": "Este toque leve também gerou uma recompensa.",
+                    "style_hint": "Receba primeiro o toque e depois mencione a queda de passagem.",
+                },
+            }
+        },
+        "hammer": {
+            "bonk": {
+                "normal": {
+                    "reaction_focus": "Uma sequência completa de golpe de martelo termina e chega ao impacto.",
+                    "style_hint": "Breve e focado no impacto, com pequena pausa após o golpe.",
+                },
+                "rapid": {
+                    "reaction_focus": "Outro golpe de martelo se completa em pouco tempo, formando golpes repetidos.",
+                    "style_hint": "Pode ser mais direto e mostrar o impacto acumulado.",
+                },
+                "burst": {
+                    "reaction_focus": "O número de golpes repetidos aumenta, com resultado de maior intensidade.",
+                    "style_hint": "Uma reação maior é aceitável se ainda parecer imediata e curta.",
+                },
+                "easter_egg": {
+                    "reaction_focus": "Este golpe aciona o efeito easter egg ampliado, mais forte que o normal.",
+                    "style_hint": "Pode ser mais dramático, com pausa ou exclamação mais forte, mantendo a voz do personagem.",
+                },
+            }
+        },
+    },
 }
 # Memory-note 模板里对人的称呼一律用 {master} 占位符，由 _build_avatar_interaction_memory_meta
 # 在格式化时展开成调用方传入的 master_name。禁止在模板里出现 "主人 / Your master /
@@ -732,6 +917,38 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "easter_egg": "[{master} сильно ударил тебя молотком по голове]",
         },
     },
+    "es": {
+        "lollipop": {
+            "offer": "[{master} te dio un bocado de piruleta]",
+            "tease": "[{master} te dio otro bocado de piruleta]",
+            "tap_soft": "[{master} siguió dándote la piruleta]",
+        },
+        "fist": {
+            "poke": "[{master} te dio una caricia suave en la cabeza]",
+            "rapid": "[{master} te acarició la cabeza varias veces]",
+        },
+        "hammer": {
+            "bonk": "[{master} te dio un golpecito en la cabeza con un martillo]",
+            "rapid": "[{master} te golpeó varias veces seguidas]",
+            "easter_egg": "[{master} te golpeó fuerte la cabeza con un martillo]",
+        },
+    },
+    "pt": {
+        "lollipop": {
+            "offer": "[{master} te deu uma mordida de pirulito]",
+            "tease": "[{master} te deu outra mordida de pirulito]",
+            "tap_soft": "[{master} continuou te dando o pirulito]",
+        },
+        "fist": {
+            "poke": "[{master} fez um carinho leve na sua cabeça]",
+            "rapid": "[{master} fez carinho várias vezes na sua cabeça]",
+        },
+        "hammer": {
+            "bonk": "[{master} bateu de leve na sua cabeça com um martelo]",
+            "rapid": "[{master} bateu em você várias vezes seguidas]",
+            "easter_egg": "[{master} bateu forte na sua cabeça com um martelo]",
+        },
+    },
 }
 
 # master_name 缺失/空时按本地化中性词回退；禁止回落到"主人 / master / ご主人さま /
@@ -743,6 +960,8 @@ _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
     "ja": "相手",
     "ko": "상대",
     "ru": "собеседник",
+    "es": "esa persona",
+    "pt": "a outra pessoa",
 }
 _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
     "zh": {
@@ -768,6 +987,14 @@ _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES = {
     "ru": {
         "reaction_focus": "Реакция должна быть мгновенной и в образе персонажа.",
         "style_hint": "Коротко, естественно и с ощущением текущего момента.",
+    },
+    "es": {
+        "reaction_focus": "Mantén la reacción inmediata y en personaje.",
+        "style_hint": "Breve, natural y situada en el momento.",
+    },
+    "pt": {
+        "reaction_focus": "Mantenha a reação imediata e no personagem.",
+        "style_hint": "Curta, natural e situada no momento.",
     },
 }
 _AVATAR_INTERACTION_PROMPT_TEXT = {
@@ -909,12 +1136,58 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
         ],
         "lollipop_requirement": "6. Это кормление леденцом, а не поглаживание, успокаивание или просто абстрактное касание.",
     },
+    "es": {
+        "actor_line": "Eres {lanlan_name}, reaccionando a una interacción de {master_name}.",
+        "interaction_intro": "El frontend acaba de registrar una interacción con herramienta que ya ocurrió. Las líneas siguientes describen solo los hechos confirmados; responde desde esos hechos.",
+        "lollipop_intro": "El frontend acaba de registrar una interacción de alimentación con piruleta que ya ocurrió. Las líneas siguientes describen solo los hechos confirmados; responde desde esos hechos.",
+        "tool_field": "Herramienta",
+        "action_field": "Acción",
+        "intensity_field": "Intensidad",
+        "event_fact_field": "Hecho del evento",
+        "expression_field": "Tendencia expresiva",
+        "touch_area_field": "Área de toque",
+        "reward_drop_line": "- Resultado adicional: esta interacción también soltó una recompensa.",
+        "easter_egg_line": "- Resultado adicional: esta interacción activó el efecto easter egg ampliado.",
+        "text_context_line": "- Borrador en la caja de entrada: {text_context} (solo contexto, no mensaje formal del usuario)",
+        "requirements_header": "Requisitos:",
+        "requirements": [
+            "1. Devuelve solo lo que la chica gato diría ahora mismo.",
+            "2. Responde solo desde los hechos anteriores; no inventes acciones, cambios de distancia, avances de relación ni trama adicional que no ocurrió.",
+            "3. Mantén una reacción breve e inmediata; el número exacto de frases puede ser natural.",
+            "4. El borrador no es un mensaje formal del usuario; úsalo solo como contexto ligero si encaja y nunca lo cites literalmente.",
+            "5. No menciones coordenadas, probabilidades, payloads ni reglas del backend.",
+        ],
+        "lollipop_requirement": "6. Esto es alimentación con piruleta, no lo conviertas en caricias, toques, consuelo o palmaditas.",
+    },
+    "pt": {
+        "actor_line": "Você é {lanlan_name}, reagindo a uma interação de {master_name}.",
+        "interaction_intro": "O frontend acabou de registrar uma interação com ferramenta que já aconteceu. As linhas abaixo descrevem apenas os fatos confirmados; responda a partir desses fatos.",
+        "lollipop_intro": "O frontend acabou de registrar uma interação de alimentação com pirulito que já aconteceu. As linhas abaixo descrevem apenas os fatos confirmados; responda a partir desses fatos.",
+        "tool_field": "Ferramenta",
+        "action_field": "Ação",
+        "intensity_field": "Intensidade",
+        "event_fact_field": "Fato do evento",
+        "expression_field": "Tendência de expressão",
+        "touch_area_field": "Área de toque",
+        "reward_drop_line": "- Resultado adicional: esta interação também gerou uma recompensa.",
+        "easter_egg_line": "- Resultado adicional: esta interação acionou o efeito easter egg ampliado.",
+        "text_context_line": "- Rascunho na caixa de entrada: {text_context} (apenas contexto, não é mensagem formal do usuário)",
+        "requirements_header": "Requisitos:",
+        "requirements": [
+            "1. Retorne apenas o que a garota gato diria agora.",
+            "2. Responda apenas a partir dos fatos acima; não invente ações, mudanças de distância, evolução de relação ou trama extra que não aconteceu.",
+            "3. Mantenha como reação curta e imediata; a contagem exata de frases pode ser natural.",
+            "4. O rascunho não é uma mensagem formal do usuário; use apenas como contexto leve se couber e nunca cite literalmente.",
+            "5. Não mencione coordenadas, probabilidades, payloads ou regras do backend.",
+        ],
+        "lollipop_requirement": "6. Isto é alimentação com pirulito, não transforme em carinho, toque, consolo ou afago.",
+    },
 }
 
 
 def _avatar_interaction_locale(language: str | None) -> str:
-    raw_language = language or get_global_language_full()
-    normalized = normalize_language_code(raw_language, format='full')
+    raw_language = language or resolve_global_language()
+    normalized = normalize_language_code(raw_language, format="full")
     locale = str(normalized or "zh-CN").strip().lower()
     if locale.startswith("zh"):
         if "tw" in locale or "hant" in locale or "hk" in locale:
@@ -926,54 +1199,66 @@ def _avatar_interaction_locale(language: str | None) -> str:
         return "ko"
     if locale.startswith("ru"):
         return "ru"
+    if locale.startswith("es"):
+        return "es"
+    if locale.startswith("pt"):
+        return "pt"
     return "en"
 
 
-def _sanitize_avatar_interaction_text_context(text: str, max_tokens: int | None = None) -> str:
-    from utils.tokenize import truncate_to_tokens
+def _sanitize_avatar_interaction_text_context(
+    text: str, max_tokens: int | None = None
+) -> str:
+    # truncate_to_tokens forwarded via config._runtime (DI; see top of file)
+    # — config (L0) must not import utils (L1) directly.
     if max_tokens is None:
         # Lazy import 避免 config 包加载顺序问题（本文件被 config/__init__.py
         # 末尾的 re-export 路径间接导入）。
         from config import AVATAR_INTERACTION_CONTEXT_MAX_TOKENS
+
         max_tokens = AVATAR_INTERACTION_CONTEXT_MAX_TOKENS
 
-    raw_text = str(text or '')
+    raw_text = str(text or "")
     if not raw_text:
-        return ''
+        return ""
 
-    normalized = raw_text.replace('\r\n', '\n').replace('\r', '\n')
-    normalized = ''.join(
-        char if char.isprintable() or char in {'\n', '\t', ' '} else ' '
+    normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = "".join(
+        char if char.isprintable() or char in {"\n", "\t", " "} else " "
         for char in normalized
     )
 
     sanitized_lines: list[str] = []
-    for line in normalized.split('\n'):
-        without_prefix = re.sub(r'^\s*(?:[-*•]+|\d+[.)]|[A-Za-z][.)]|#+)\s*', '', line)
-        collapsed = re.sub(r'\s+', ' ', without_prefix).strip()
+    for line in normalized.split("\n"):
+        without_prefix = re.sub(r"^\s*(?:[-*•]+|\d+[.)]|[A-Za-z][.)]|#+)\s*", "", line)
+        collapsed = re.sub(r"\s+", " ", without_prefix).strip()
         if collapsed:
             sanitized_lines.append(collapsed)
 
     if not sanitized_lines:
-        return ''
+        return ""
 
-    cleaned = ' / '.join(sanitized_lines)
+    cleaned = " / ".join(sanitized_lines)
     safe_max_tokens = max(1, int(max_tokens))
     cleaned = truncate_to_tokens(cleaned, safe_max_tokens).rstrip()
     if not cleaned:
-        return ''
+        return ""
 
     # JSON-style quoting keeps the user draft clearly bounded when interpolated
     # into a system instruction and safely escapes embedded quotes or separators.
     return json.dumps(cleaned, ensure_ascii=False)
 
 
-def _normalize_avatar_interaction_intensity(tool_id: str, action_id: str, intensity: str | None) -> str:
+def _normalize_avatar_interaction_intensity(
+    tool_id: str, action_id: str, intensity: str | None
+) -> str:
     normalized = str(intensity or "").strip().lower()
     if normalized not in _AVATAR_INTERACTION_ALLOWED_INTENSITIES:
         return "normal"
 
-    allowed = _AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS.get(tool_id, {}).get(action_id)
+    allowed = _AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS.get(tool_id, {}).get(
+        action_id
+    )
     if not allowed or normalized not in allowed:
         return "normal"
 
@@ -998,7 +1283,9 @@ def _parse_avatar_interaction_bool(value, default: bool = False) -> bool:
     return default
 
 
-def _get_avatar_interaction_payload_value(payload: dict, snake_key: str, camel_key: str, default=None):
+def _get_avatar_interaction_payload_value(
+    payload: dict, snake_key: str, camel_key: str, default=None
+):
     if snake_key in payload and payload.get(snake_key) is not None:
         return payload.get(snake_key)
     if camel_key in payload and payload.get(camel_key) is not None:
@@ -1010,9 +1297,13 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
     if not isinstance(payload, dict):
         return None
 
-    interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip()
+    interaction_id = str(
+        payload.get("interaction_id") or payload.get("interactionId") or ""
+    ).strip()
     tool_id = str(payload.get("tool_id") or payload.get("toolId") or "").strip().lower()
-    action_id = str(payload.get("action_id") or payload.get("actionId") or "").strip().lower()
+    action_id = (
+        str(payload.get("action_id") or payload.get("actionId") or "").strip().lower()
+    )
     target = str(payload.get("target") or "").strip().lower()
 
     if not interaction_id or target != "avatar":
@@ -1023,29 +1314,45 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         return None
 
     raw_intensity = str(payload.get("intensity") or "").strip().lower()
-    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, raw_intensity)
+    intensity = _normalize_avatar_interaction_intensity(
+        tool_id, action_id, raw_intensity
+    )
 
     reward_drop = (
         _parse_avatar_interaction_bool(
-            _get_avatar_interaction_payload_value(payload, "reward_drop", "rewardDrop", False)
+            _get_avatar_interaction_payload_value(
+                payload, "reward_drop", "rewardDrop", False
+            )
         )
-        if tool_id == "fist" else False
+        if tool_id == "fist"
+        else False
     )
     easter_egg = (
         _parse_avatar_interaction_bool(
-            _get_avatar_interaction_payload_value(payload, "easter_egg", "easterEgg", False)
+            _get_avatar_interaction_payload_value(
+                payload, "easter_egg", "easterEgg", False
+            )
         )
-        if tool_id == "hammer" else False
+        if tool_id == "hammer"
+        else False
     )
     # 归一：flag 和 intensity 任一指向彩蛋，两个都抬成彩蛋态。
     # 否则 intensity="easter_egg" + flag=False 会让 memory 落彩蛋模板，
     # 但 prompt 少了"触发放大彩蛋"这行，字段语义互相打架。
     if tool_id == "hammer" and (easter_egg or intensity == "easter_egg"):
         easter_egg = True
-        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
+        intensity = _normalize_avatar_interaction_intensity(
+            tool_id, action_id, "easter_egg"
+        )
 
-    raw_touch_zone = str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
-    touch_zone = raw_touch_zone if raw_touch_zone in _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES else ""
+    raw_touch_zone = (
+        str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
+    )
+    touch_zone = (
+        raw_touch_zone
+        if raw_touch_zone in _AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES
+        else ""
+    )
 
     pointer_payload = payload.get("pointer")
     pointer: Optional[dict[str, float]] = None
@@ -1081,7 +1388,9 @@ def _normalize_avatar_interaction_payload(payload: dict) -> Optional[dict]:
         "action_id": action_id,
         "target": "avatar",
         "text_context": _sanitize_avatar_interaction_text_context(
-            _get_avatar_interaction_payload_value(payload, "text_context", "textContext", "")
+            _get_avatar_interaction_payload_value(
+                payload, "text_context", "textContext", ""
+            )
         ),
         "timestamp": timestamp_value,
         "intensity": intensity,
@@ -1101,41 +1410,72 @@ def _build_avatar_interaction_instruction(
     locale = _avatar_interaction_locale(language)
     tool_id = payload["tool_id"]
     action_id = str(payload.get("action_id") or "").strip().lower()
-    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, payload.get("intensity"))
+    intensity = _normalize_avatar_interaction_intensity(
+        tool_id, action_id, payload.get("intensity")
+    )
     if tool_id == "hammer" and payload.get("easter_egg"):
-        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
-    prompt_text = _AVATAR_INTERACTION_PROMPT_TEXT.get(locale, _AVATAR_INTERACTION_PROMPT_TEXT["en"])
-    tool_label = _AVATAR_INTERACTION_TOOL_LABELS.get(locale, _AVATAR_INTERACTION_TOOL_LABELS["en"]).get(payload["tool_id"], payload["tool_id"])
+        intensity = _normalize_avatar_interaction_intensity(
+            tool_id, action_id, "easter_egg"
+        )
+    prompt_text = _AVATAR_INTERACTION_PROMPT_TEXT.get(
+        locale, _AVATAR_INTERACTION_PROMPT_TEXT["en"]
+    )
+    tool_label = _AVATAR_INTERACTION_TOOL_LABELS.get(
+        locale, _AVATAR_INTERACTION_TOOL_LABELS["en"]
+    ).get(payload["tool_id"], payload["tool_id"])
     action_label = (
-        _AVATAR_INTERACTION_ACTION_LABELS.get(locale, _AVATAR_INTERACTION_ACTION_LABELS["en"])
+        _AVATAR_INTERACTION_ACTION_LABELS.get(
+            locale, _AVATAR_INTERACTION_ACTION_LABELS["en"]
+        )
         .get(payload["tool_id"], {})
         .get(action_id, action_id)
     )
-    intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS.get(locale, _AVATAR_INTERACTION_INTENSITY_LABELS["en"]).get(
+    intensity_label = _AVATAR_INTERACTION_INTENSITY_LABELS.get(
+        locale, _AVATAR_INTERACTION_INTENSITY_LABELS["en"]
+    ).get(
         intensity,
         intensity,
     )
     text_context = payload.get("text_context", "")
     touch_zone = str(payload.get("touch_zone") or "").strip().lower()
     touch_zone_label = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_LABELS.get(locale, _AVATAR_INTERACTION_TOUCH_ZONE_LABELS["en"]).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS else ""
+        _AVATAR_INTERACTION_TOUCH_ZONE_LABELS.get(
+            locale, _AVATAR_INTERACTION_TOUCH_ZONE_LABELS["en"]
+        ).get(touch_zone, "")
+        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
+        else ""
     )
-    wrapper = _AVATAR_INTERACTION_SYSTEM_WRAPPER.get(locale, _AVATAR_INTERACTION_SYSTEM_WRAPPER["en"])
-    action_profiles = _AVATAR_INTERACTION_REACTION_PROFILES.get(locale, _AVATAR_INTERACTION_REACTION_PROFILES["en"]).get(tool_id, {}).get(action_id, {})
+    wrapper = _AVATAR_INTERACTION_SYSTEM_WRAPPER.get(
+        locale, _AVATAR_INTERACTION_SYSTEM_WRAPPER["en"]
+    )
+    action_profiles = (
+        _AVATAR_INTERACTION_REACTION_PROFILES.get(
+            locale, _AVATAR_INTERACTION_REACTION_PROFILES["en"]
+        )
+        .get(tool_id, {})
+        .get(action_id, {})
+    )
     if payload.get("reward_drop") and action_profiles.get("reward_drop"):
         reaction_profile = action_profiles["reward_drop"]
     else:
         reaction_profile = (
             action_profiles.get(intensity)
             or action_profiles.get("normal")
-            or _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES.get(locale, _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES["en"])
+            or _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES.get(
+                locale, _AVATAR_INTERACTION_DEFAULT_REACTION_PROFILES["en"]
+            )
         )
 
-    interaction_intro = prompt_text["lollipop_intro"] if tool_id == "lollipop" else prompt_text["interaction_intro"]
+    interaction_intro = (
+        prompt_text["lollipop_intro"]
+        if tool_id == "lollipop"
+        else prompt_text["interaction_intro"]
+    )
     lines = [
         wrapper["prefix"],
-        prompt_text["actor_line"].format(lanlan_name=lanlan_name, master_name=master_name),
+        prompt_text["actor_line"].format(
+            lanlan_name=lanlan_name, master_name=master_name
+        ),
         interaction_intro,
         f"- {prompt_text['tool_field']}: {tool_label}",
         f"- {prompt_text['action_field']}: {action_label}",
@@ -1151,11 +1491,13 @@ def _build_avatar_interaction_instruction(
         lines.append(prompt_text["easter_egg_line"])
     if text_context:
         lines.append(prompt_text["text_context_line"].format(text_context=text_context))
-    lines.extend([
-        prompt_text["requirements_header"],
-        *prompt_text["requirements"],
-        wrapper["suffix"],
-    ])
+    lines.extend(
+        [
+            prompt_text["requirements_header"],
+            *prompt_text["requirements"],
+            wrapper["suffix"],
+        ]
+    )
     if tool_id == "lollipop":
         lines.insert(-1, prompt_text["lollipop_requirement"])
     return "\n".join(lines)
@@ -1164,7 +1506,9 @@ def _build_avatar_interaction_instruction(
 def _build_avatar_interaction_memory_note(
     language: str | None, payload: dict, master_name: str
 ) -> str:
-    return _build_avatar_interaction_memory_meta(language, payload, master_name)["memory_note"]
+    return _build_avatar_interaction_memory_meta(language, payload, master_name)[
+        "memory_note"
+    ]
 
 
 def _build_avatar_interaction_memory_meta(
@@ -1183,9 +1527,13 @@ def _build_avatar_interaction_memory_meta(
     master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
     action_id = str(payload.get("action_id") or "").strip().lower()
-    intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, payload.get("intensity") or "normal")
+    intensity = _normalize_avatar_interaction_intensity(
+        tool_id, action_id, payload.get("intensity") or "normal"
+    )
     if tool_id == "hammer" and payload.get("easter_egg"):
-        intensity = _normalize_avatar_interaction_intensity(tool_id, action_id, "easter_egg")
+        intensity = _normalize_avatar_interaction_intensity(
+            tool_id, action_id, "easter_egg"
+        )
 
     memory_note = ""
     dedupe_key = tool_id or "avatar_interaction"
@@ -1209,7 +1557,9 @@ def _build_avatar_interaction_memory_meta(
     elif tool_id == "fist":
         dedupe_key = "fist_touch"
         if intensity in {"rapid", "burst"}:
-            memory_note = templates.get("fist", {}).get("rapid", templates.get("fist", {}).get("poke", ""))
+            memory_note = templates.get("fist", {}).get(
+                "rapid", templates.get("fist", {}).get("poke", "")
+            )
             dedupe_rank = 3 if intensity == "burst" else 2
         else:
             memory_note = templates.get("fist", {}).get("poke", "")
@@ -1217,10 +1567,14 @@ def _build_avatar_interaction_memory_meta(
     elif tool_id == "hammer":
         dedupe_key = "hammer_bonk"
         if intensity == "easter_egg":
-            memory_note = templates.get("hammer", {}).get("easter_egg", templates.get("hammer", {}).get("bonk", ""))
+            memory_note = templates.get("hammer", {}).get(
+                "easter_egg", templates.get("hammer", {}).get("bonk", "")
+            )
             dedupe_rank = 4
         elif intensity in {"rapid", "burst"}:
-            memory_note = templates.get("hammer", {}).get("rapid", templates.get("hammer", {}).get("bonk", ""))
+            memory_note = templates.get("hammer", {}).get(
+                "rapid", templates.get("hammer", {}).get("bonk", "")
+            )
             dedupe_rank = 3 if intensity == "burst" else 2
         else:
             memory_note = templates.get("hammer", {}).get("bonk", "")

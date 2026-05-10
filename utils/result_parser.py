@@ -5,6 +5,15 @@ Agent 结果解析器 — 将 ComputerUse / BrowserUse / Plugin 的返回 dict
 
 所有函数均为纯函数，不依赖 LLM、不抛异常。
 所有面向模型的字符串均通过 prompts_sys i18n 字典输出。
+
+历史
+----
+本模块原位于 ``brain/result_parser.py``。这些函数其实是纯格式化器
+（输入 dict → 输出字符串），唯一依赖是 ``config.prompts.prompts_sys``，
+没有任何 brain 运行时耦合。``plugin/server/messaging/proactive_bridge.py``
+也合理地需要复用 ``parse_push_message_content``，但 plugin (L4) 不允许
+依赖 brain (L5)（见 ``scripts/check_module_layering.py``）。把模块下沉
+到 ``utils`` 后所有消费方都用允许的方向：app/plugin/brain → utils。
 """
 from __future__ import annotations
 
