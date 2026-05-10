@@ -1,18 +1,14 @@
-"""Provider-agnostic registry for core API native voice catalogs.
+"""跨 Provider 的原生音色注册表。
 
-Each `core_api_type` that ships built-in TTS voices (e.g. Gemini's Puck/Leda,
-future OpenAI/Qwen native voices) registers a `NativeVoiceProvider` here.
-Cross-cutting code (config validation, character UI, TTS worker dispatch,
-realtime voice routing) consults the registry instead of hard-coding
-`if core_api_type == 'gemini'` branches, so adding a second provider is one
-adapter file plus one worker registration — not edits in five places.
+带内置 TTS 音色的 core_api_type（例如 Gemini、StepFun，以及后续可能接入的
+OpenAI/Qwen 原生音色）会在这里注册 NativeVoiceProvider。
+配置校验、角色 UI、TTS worker 分发和实时语音路由都通过这个注册表查询，
+避免到处硬编码 core_api_type 判断。
 
-Two-phase registration avoids circular imports:
-  1. The provider metadata module (e.g. `utils/gemini_tts_voices.py`) creates
-     and registers a `NativeVoiceProvider` at import time — pure data.
-  2. The TTS worker module (`main_logic/tts_client.py`) registers the worker
-     callable + api-key resolver after defining the worker, since the worker
-     pulls in heavy deps (httpx, soxr, etc.) the metadata module must not.
+注册分两层，避免循环导入：
+  1. Provider 元数据模块只在 import 时创建并注册 NativeVoiceProvider。
+  2. TTS worker 模块等 worker 定义完之后再注册 worker 与鉴权解析函数，
+     避免元数据模块提前加载 httpx、soxr 等重依赖。
 """
 
 from __future__ import annotations
@@ -31,13 +27,11 @@ TTSWorkerResolver = Callable[["ConfigManager"], "tuple[Callable[..., Any], str]"
 
 @dataclass(frozen=True)
 class NativeVoiceProvider:
-    """Metadata for one core API's built-in TTS voice catalog.
+    """单个 core API 内置 TTS 音色目录的元数据。
 
-    `key` matches the `core_api_type` / realtime `api_type` string used
-    elsewhere in the codebase (e.g. "gemini"). `catalog` maps canonical voice
-    names (case-sensitive as the upstream API expects) to a gender label;
-    `aliases` maps casefolded user-friendly inputs (e.g. "中文男", "female")
-    to canonical voice names so users can type either form.
+    key 对应代码里的 core_api_type / realtime api_type。catalog 的 key 是上游
+    API 接收的规范音色名，value 默认作为补充标签；aliases 用于把用户友好的
+    输入映射回规范音色名。
     """
 
     key: str
@@ -46,6 +40,7 @@ class NativeVoiceProvider:
     default_voice: str
     default_male_voice: str
     catalog_prefix: str
+    catalog_value_is_display_name: bool = False
     _voice_lookup: dict[str, str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -56,11 +51,10 @@ class NativeVoiceProvider:
         )
 
     def normalize(self, voice_id: str | None) -> tuple[str, bool]:
-        """Return (canonical_voice_name, recognized).
+        """返回 (规范音色名, 是否识别)。
 
-        Empty / whitespace input is treated as unrecognized so callers can
-        tell "user explicitly chose a native voice" apart from "we picked the
-        default."
+        空值按未识别处理，方便调用方区分“用户明确选择了原生音色”和
+        “系统使用默认值”。
         """
         normalized = (voice_id or "").strip()
         if not normalized:
@@ -80,11 +74,17 @@ class NativeVoiceProvider:
         return self.normalize(voice_id)[1]
 
     def voice_catalog_for_ui(self) -> dict[str, dict[str, str | bool]]:
-        """Return the voice list in the shape the character UI expects."""
+        """返回角色 UI 需要的音色列表结构。"""
+        def format_prefix(voice_name: str, label: str) -> str:
+            if self.catalog_value_is_display_name:
+                return label
+            return f"{self.catalog_prefix} {voice_name} ({label})"
+
         return {
             voice_name: {
-                "prefix": f"{self.catalog_prefix} {voice_name} ({gender})",
+                "prefix": format_prefix(voice_name, gender),
                 "provider": self.key,
+                "provider_label": self.catalog_prefix,
                 "gender": gender,
                 "builtin": True,
             }
@@ -96,21 +96,13 @@ class NativeVoiceProvider:
         voice_id: str | None,
         voice_id_exists: VoiceIdExists | None = None,
     ) -> tuple[str, bool]:
-        """Return (voice, use_native).
+        """返回 (音色, 是否使用原生音色)。
 
-        When the input is not in this provider's catalog, the returned
-        `voice` is the caller's stripped input verbatim — symmetric with
-        the module-level `resolve_native_voice_for_routing` helper (which
-        returns the input as-is when no native provider matches the
-        `core_api_type`). That keeps the "use_native=False" contract
-        consistent: callers that inspect `voice` in the False branch see
-        the original id, not a fallback default they never asked for.
+        输入未命中当前 Provider 目录时，返回 strip 后的原始输入，避免把用户自定义
+        音色悄悄替换成默认原生音色。
 
-        Collision branch behaves differently on purpose: when the input
-        canonicalizes to a voice the user has cloned, we return the
-        canonical name with use_native=False, so callers can route to that
-        clone by canonical id (e.g. user typed alias "中文男", clone is
-        stored as "Puck" — caller wants "Puck", not "中文男").
+        如果规范音色名和用户克隆音色冲突，则返回规范音色名但禁用原生路由，
+        让调用方按自定义音色处理。
         """
         normalized_voice, recognized = self.normalize(voice_id)
         if not recognized:
@@ -229,6 +221,7 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
 
 _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
+    "utils.stepfun_tts_voices",
 )
 
 

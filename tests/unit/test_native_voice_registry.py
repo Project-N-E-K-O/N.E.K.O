@@ -214,7 +214,10 @@ def test_builtin_providers_auto_loaded_on_registry_import():
                 "list_providers, is_native_voice; "
                 "providers = list_providers(); "
                 "assert 'gemini' in providers, providers; "
+                "assert 'step' in providers, providers; "
+                "assert 'free' in providers, providers; "
                 "assert is_native_voice('Puck') is True; "
+                "assert is_native_voice('qingchunshaonv') is True; "
                 "print('OK')"
             ),
         ],

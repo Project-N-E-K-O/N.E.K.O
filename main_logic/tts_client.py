@@ -27,6 +27,7 @@ from utils.native_voice_registry import (
     get_native_tts_worker,
     register_tts_worker_resolver,
 )
+from utils.stepfun_tts_voices import STEPFUN_TTS_DEFAULT_VOICE
 
 logger = get_module_logger(__name__, "Main")
 
@@ -789,7 +790,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
-        voice_id: 音色ID，默认使用"qingchunshaonv"
+        voice_id: 音色ID，默认读取 api_providers.json 的 StepFun 配置
     """
     # free + livestream 子模式：voice_id 优先取 api_providers.json 的
     # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
@@ -806,14 +807,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 直播音色已生效却实际还在用 caller 传入或默认 preset
                     logger.warning(
                         "livestream_config.enabled=true 但 voice_id 为空，"
-                        f"继续使用 caller 传入或默认音色: {voice_id or 'qingchunshaonv'}"
+                        f"继续使用 caller 传入或默认音色: {voice_id or STEPFUN_TTS_DEFAULT_VOICE}"
                     )
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
 
-    # 使用默认音色 "qingchunshaonv"
+    # 使用配置中的默认 StepFun 音色
     if not voice_id:
-        voice_id = "qingchunshaonv"
+        voice_id = STEPFUN_TTS_DEFAULT_VOICE
     
     async def async_worker():
         """异步TTS worker主循环"""
@@ -1236,6 +1237,22 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     except Exception as e:
         logger.error(f"StepFun实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
+
+
+def _resolve_step_native_tts_worker(cm):
+    """解析阶跃原生音色使用的 TTS worker 与鉴权。"""
+    cfg = cm.get_model_api_config('tts_default')
+    return step_realtime_tts_worker, cfg.get('api_key', '')
+
+
+def _resolve_free_stepfun_native_tts_worker(cm):
+    """解析国内免费 API 原生音色使用的 TTS worker 与鉴权。"""
+    cfg = cm.get_model_api_config('tts_default')
+    return partial(step_realtime_tts_worker, free_mode=True), cfg.get('api_key', '')
+
+
+register_tts_worker_resolver('step', _resolve_step_native_tts_worker)
+register_tts_worker_resolver('free', _resolve_free_stepfun_native_tts_worker)
 
 
 def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):

@@ -27,6 +27,7 @@ from config import (
 )
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
+from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
 from utils.gemini_tts_voices import normalize_gemini_tts_voice
@@ -47,6 +48,21 @@ except Exception as e:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+
+def _get_native_default_voice(provider_key: str) -> str:
+    """读取实时 Provider 的默认原生音色。"""
+    try:
+        cfg = get_native_tts_voice_provider_config(provider_key)
+        default_voice = str(cfg.get('default_voice') or '').strip()
+        if default_voice:
+            return default_voice
+        if provider_key != 'step':
+            step_cfg = get_native_tts_voice_provider_config('step')
+            return str(step_cfg.get('default_voice') or '').strip()
+    except Exception as exc:
+        logger.warning(f"读取 {provider_key} 默认原生音色失败: {exc}")
+    return ''
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
 _PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"
@@ -776,10 +792,11 @@ class OmniRealtimeClient:
                 gpt_session["tool_choice"] = "auto"
             await self.update_session(gpt_session)
         elif "step" in self._model_lower:
+            default_voice = _get_native_default_voice('step')
             step_session = {
                 "instructions": instructions,
                 "modalities": ['text', 'audio'], # Step API只支持这一个模式
-                "voice": self.voice if self.voice else "qingchunshaonv",
+                "voice": self.voice if self.voice else default_voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
@@ -820,10 +837,11 @@ class OmniRealtimeClient:
             # client events to Vertex Live (see _has_server_vad gate
             # at __init__ — lanlan.app+free is already treated as
             # client-side VAD only).
+            default_voice = _get_native_default_voice('free')
             free_session = {
                 "instructions": instructions,
                 "modalities": ['text', 'audio'],
-                "voice": self.voice if self.voice else "qingchunshaonv",
+                "voice": self.voice if self.voice else default_voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
