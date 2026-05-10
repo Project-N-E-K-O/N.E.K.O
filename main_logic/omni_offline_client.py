@@ -1164,6 +1164,10 @@ class OmniOfflineClient:
                 # "已关闭（生产）"两种情况。
                 if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
                     logger.info("OmniOfflineClient.stream_text: client 已 close 或响应已被取消，终止 retry")
+                    # 标记 status_reported 抑制 finally 的 LLM_NO_RESPONSE 兜底：
+                    # 这是用户主动 cancel / close，不是 LLM 故障，前端不该看到
+                    # 红条错误。这里没有 status 要发，仅占位让 finally 跳过。
+                    status_reported = True
                     break
                 try:
                     assistant_message = ""
