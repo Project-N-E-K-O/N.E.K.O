@@ -19,6 +19,7 @@ import uuid
 import logging
 import time
 import hashlib
+import re
 from typing import Dict, Any, Optional, ClassVar, List
 from datetime import datetime, timezone
 import httpx
@@ -165,6 +166,39 @@ _task_registry_last_cleanup: float = 0.0
 # ---------------------------------------------------------------------------
 from config import AGENT_TASK_TRACKER_MAX_RECORDS as TASK_TRACKER_MAX_RECORDS
 TASK_TRACKER_TTL: float = 600.0     # 记录保留时长（秒）
+CANCELLED_TASK_BLACKLIST_TTL: float = TASK_TRACKER_TTL
+
+
+def _task_blacklist_desc_keys(desc: Any) -> set[str]:
+    text = str(desc or "").strip()
+    if not text:
+        return set()
+
+    def _norm(value: str) -> str:
+        return re.sub(r"\s+", "", value.casefold())
+
+    keys = {_norm(text)}
+    # User-plugin tracker descriptions include "plugin.entry: task".
+    # Keep a suffix key so a later analyzer result with only the natural
+    # language task text still hits the same cancelled task.
+    if ":" in text:
+        keys.add(_norm(text.split(":", 1)[1]))
+    return {key for key in keys if key}
+
+
+def _task_desc_matches_blacklist(candidate: Any, cancelled_desc: Any) -> bool:
+    candidate_keys = _task_blacklist_desc_keys(candidate)
+    cancelled_keys = _task_blacklist_desc_keys(cancelled_desc)
+    if not candidate_keys or not cancelled_keys:
+        return False
+    for left in candidate_keys:
+        for right in cancelled_keys:
+            if left == right:
+                return True
+            shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+            if len(shorter) >= 16 and shorter in longer:
+                return True
+    return False
 
 
 class AgentTaskTracker:
@@ -177,6 +211,8 @@ class AgentTaskTracker:
       - desc: 任务简述
       - detail: 可选的结果摘要
       - task_id: 对应 task_registry 的 id
+      - trigger_user_fingerprint / trigger_user_ts: 触发该任务的用户 turn，
+        用于判断取消之后是否已有新的用户消息
 
     当 analyzer 收到 messages 时，调用 inject() 方法把这些记录以
     role=system 消息的形式插入到 messages 副本中（按时间序），使 LLM
@@ -222,6 +258,8 @@ class AgentTaskTracker:
         detail: str = "",
         success: bool = True,
         cancelled: bool = False,
+        trigger_user_fingerprint: Optional[str] = None,
+        trigger_user_ts: Optional[float] = None,
     ) -> None:
         key = _normalize_lanlan_key(lanlan_name)
         records = self._ensure_key(key)
@@ -240,8 +278,80 @@ class AgentTaskTracker:
             # "tool/task result detail" 200-token group），而不是 char-slice
             "detail": _tt(detail, TASK_DETAIL_MAX_TOKENS) if detail else "",
             "task_id": task_id,
+            "trigger_user_fingerprint": trigger_user_fingerprint,
+            "trigger_user_ts": trigger_user_ts,
         })
         self._trim(records)
+
+    def find_cancelled_blacklist(
+        self,
+        lanlan_name: Optional[str],
+        *,
+        method: str,
+        desc: str,
+        latest_user_fingerprint: Optional[str] = None,
+        latest_user_ts: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Return a matching cancelled task that should suppress redispatch.
+
+        A manual cancel blacklists the same task only until a later user turn
+        exists. Prefer message timestamps when present; when the frontend does
+        not provide them, fall back to the user-turn fingerprint recorded on
+        the cancelled task.
+        """
+        key = _normalize_lanlan_key(lanlan_name)
+        records = self._records.get(key)
+        if not records or not desc:
+            return None
+
+        now = time.time()
+        records[:] = [
+            r for r in records
+            if now - float(r.get("ts") or 0.0) < TASK_TRACKER_TTL
+        ]
+        if not records:
+            return None
+
+        method = str(method or "").strip()
+        for record in reversed(records):
+            if record.get("kind") != "cancelled":
+                continue
+            cancelled_at = float(record.get("ts") or 0.0)
+            if now - cancelled_at >= CANCELLED_TASK_BLACKLIST_TTL:
+                continue
+            if not _task_desc_matches_blacklist(desc, record.get("desc", "")):
+                continue
+
+            trigger_fp = record.get("trigger_user_fingerprint")
+            has_later_user_turn = False
+            if latest_user_ts is not None:
+                if trigger_fp and latest_user_fingerprint == trigger_fp:
+                    has_later_user_turn = False
+                else:
+                    has_later_user_turn = latest_user_ts > cancelled_at
+            else:
+                if not trigger_fp:
+                    # Async cancellation paths can add a second cancelled
+                    # record without trigger metadata. In timestamp-less
+                    # payloads, that record cannot prove the user did not ask
+                    # again later, so keep looking for an older authoritative
+                    # cancel record instead of blocking the retry.
+                    continue
+                has_later_user_turn = bool(
+                    trigger_fp
+                    and latest_user_fingerprint
+                    and latest_user_fingerprint != trigger_fp
+                )
+            if has_later_user_turn:
+                continue
+
+            if method and record.get("method") != method:
+                logger.info(
+                    "[AgentTaskTracker] Cancel blacklist matched across methods: cancelled=%s new=%s",
+                    record.get("method"), method,
+                )
+            return record
+        return None
 
     def inject(self, messages: list, lanlan_name: Optional[str]) -> list:
         """返回一份新的 messages 列表，其中按时序插入了任务跟踪记录。
@@ -296,7 +406,10 @@ class AgentTaskTracker:
                 if detail:
                     line += f" | result: {detail}"
             elif kind == "cancelled":
-                line = f"[CANCELLED] method={method} | {desc} | DO NOT retry this task unless user explicitly requests again"
+                line = (
+                    f"[CANCELLED] ts={r.get('ts')} method={method} | {desc} | "
+                    "TEMPORARY BLACKLIST: do not retry unless a later user message explicitly asks to redo"
+                )
             else:
                 line = f"[FAILED] method={method} | {desc}"
                 if detail:
@@ -422,6 +535,17 @@ async def _cancel_openclaw_tasks_for_stop(
         info["error"] = "Cancelled by user"
         info["end_time"] = _now_iso()
         cancelled_task_ids.append(task_id)
+        _task_tracker.record_completed(
+            info.get("lanlan_name"),
+            task_id=task_id,
+            method="openclaw",
+            desc=_tracker_desc_for_task_info(info),
+            detail="Cancelled by user",
+            success=False,
+            cancelled=True,
+            trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
+            trigger_user_ts=info.get("_trigger_user_ts"),
+        )
 
         # Let the task coroutine emit the cancelled update when it is still
         # alive; only emit here when there is no active background handle.
@@ -1369,6 +1493,41 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _coerce_message_timestamp(raw_ts: Any) -> Optional[float]:
+    if raw_ts is None:
+        return None
+    if isinstance(raw_ts, (int, float)):
+        ts = float(raw_ts)
+        return ts / 1000.0 if ts > 1_000_000_000_000 else ts
+    text = str(raw_ts).strip()
+    if not text:
+        return None
+    try:
+        ts = float(text)
+        return ts / 1000.0 if ts > 1_000_000_000_000 else ts
+    except ValueError:
+        pass
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def _latest_user_message_ts(messages: Any) -> Optional[float]:
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        for key in ("timestamp", "ts", "created_at"):
+            ts = _coerce_message_timestamp(message.get(key))
+            if ts is not None:
+                return ts
+        return None
+    return None
+
+
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
         # 先检查超时的 deferred 任务并发送 task_update 通知
@@ -1493,6 +1652,35 @@ def _get_internal_correction_context(task_info: Dict[str, Any]) -> Optional[Dict
             }
 
     return None
+
+
+def _tracker_desc_for_task_info(task_info: Dict[str, Any]) -> str:
+    task_type = str(task_info.get("type") or "")
+    params = task_info.get("params") if isinstance(task_info.get("params"), dict) else {}
+    if task_type == "user_plugin":
+        plugin_id = str(params.get("plugin_id") or "").strip()
+        entry_id = str(params.get("entry_id") or "").strip()
+        desc = str(params.get("description") or params.get("instruction") or params.get("query") or "").strip()
+        prefix = ".".join(part for part in (plugin_id, entry_id) if part)
+        return f"{prefix}: {desc}" if prefix and desc else (prefix or desc)
+    return str(
+        params.get("description")
+        or params.get("instruction")
+        or params.get("query")
+        or task_info.get("task_description")
+        or ""
+    ).strip()
+
+
+def _tracker_desc_for_result(result: Any) -> str:
+    method = str(getattr(result, "execution_method", "") or "")
+    desc = str(getattr(result, "task_description", "") or "").strip()
+    if method == "user_plugin":
+        plugin_id = str(getattr(result, "tool_name", "") or "").strip()
+        entry_id = str(getattr(result, "entry_id", "") or "").strip()
+        prefix = ".".join(part for part in (plugin_id, entry_id) if part)
+        return f"{prefix}: {desc}" if prefix and desc else (prefix or desc)
+    return desc
 
 
 def _public_task_info(task_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -1752,6 +1940,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
+        trigger_user_fingerprint = _build_user_turn_fingerprint(messages)
+        trigger_user_ts = _latest_user_message_ts(messages)
 
         # 注入任务跟踪记录，让 analyzer 知道哪些任务已经 assign / 完成，避免重复分派
         enriched_messages = _task_tracker.inject(messages, lanlan_name)
@@ -1794,6 +1984,25 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             getattr(result, "entry_id", None),
             (getattr(result, "reason", "") or "")[:120],
         )
+
+        if result.execution_method in {"computer_use", "browser_use", "user_plugin", "openclaw", "openfang"}:
+            tracker_desc = _tracker_desc_for_result(result)
+            blocked = _task_tracker.find_cancelled_blacklist(
+                lanlan_name,
+                method=result.execution_method,
+                desc=tracker_desc,
+                latest_user_fingerprint=trigger_user_fingerprint,
+                latest_user_ts=trigger_user_ts,
+            )
+            if blocked:
+                logger.info(
+                    "[TaskExecutor] Suppressed redispatch of manually cancelled task: "
+                    "new_method=%s cancelled_task=%s cancelled_method=%s",
+                    result.execution_method,
+                    blocked.get("task_id"),
+                    blocked.get("method"),
+                )
+                return
         
         # 处理 MCP 任务（已在 DirectTaskExecutor 中执行完成）
         if result.execution_method == 'mcp':
@@ -1849,6 +2058,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
                     ti["session_id"] = cu_session.session_id
+                    ti["_trigger_user_fingerprint"] = trigger_user_fingerprint
+                    ti["_trigger_user_ts"] = trigger_user_ts
                     _set_internal_correction_context(ti, result)
                     _task_tracker.record_assigned(
                         lanlan_name, task_id=ti["id"], method="computer_use",
@@ -1906,6 +2117,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "lanlan_name": lanlan_name,
                     "result": None,
                     "error": None,
+                    "_trigger_user_fingerprint": trigger_user_fingerprint,
+                    "_trigger_user_ts": trigger_user_ts,
                 }
                 # 记录任务分派（供后续 analyzer 去重）
                 _task_tracker.record_assigned(
@@ -2273,6 +2486,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "conversation_id": conversation_id,
                     "result": None,
                     "error": None,
+                    "_trigger_user_fingerprint": trigger_user_fingerprint,
+                    "_trigger_user_ts": trigger_user_ts,
                 }
                 _task_tracker.record_assigned(
                     lanlan_name, task_id=result.task_id, method="openclaw",
@@ -2374,6 +2589,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             lanlan_name, task_id=result.task_id, method="openclaw",
                             desc=result.task_description or instruction or "",
                             detail=cancel_msg[:TASK_TRACKER_DETAIL_MAX_CHARS], success=False, cancelled=True,
+                            trigger_user_fingerprint=(_reg or {}).get("_trigger_user_fingerprint"),
+                            trigger_user_ts=(_reg or {}).get("_trigger_user_ts"),
                         )
                         try:
                             await _emit_task_result(
@@ -2473,6 +2690,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "session_id": bu_session.session_id,
                     "result": None,
                     "error": None,
+                    "_trigger_user_fingerprint": trigger_user_fingerprint,
+                    "_trigger_user_ts": trigger_user_ts,
                 }
                 _set_internal_correction_context(bu_info, result)
                 Modules.task_registry[bu_task_id] = bu_info
@@ -2640,6 +2859,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         "session_id": of_session.session_id,
                         "result": None,
                         "error": None,
+                        "_trigger_user_fingerprint": trigger_user_fingerprint,
+                        "_trigger_user_ts": trigger_user_ts,
                     }
                     Modules.task_registry[of_task_id] = of_info
                     _task_tracker.record_assigned(
@@ -3551,6 +3772,18 @@ async def cancel_task(task_id: str):
     # terminal guards).
     info["status"] = "cancelled"
     info["error"] = "Cancelled by user"
+    lanlan_name = info.get("lanlan_name")
+    _task_tracker.record_completed(
+        lanlan_name,
+        task_id=task_id,
+        method=str(task_type or ""),
+        desc=_tracker_desc_for_task_info(info),
+        detail="Cancelled by user",
+        success=False,
+        cancelled=True,
+        trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
+        trigger_user_ts=info.get("_trigger_user_ts"),
+    )
 
     bg = Modules.task_async_handles.get(task_id)
     if bg and not bg.done():
@@ -3599,7 +3832,6 @@ async def cancel_task(task_id: str):
                 label=f"openclaw:{task_id}",
             )
 
-    lanlan_name = info.get("lanlan_name")
     try:
         await _emit_main_event(
             "task_update", lanlan_name,
