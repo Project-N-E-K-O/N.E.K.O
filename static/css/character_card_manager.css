@@ -1150,7 +1150,8 @@ min-height: 0;
     overflow: hidden;
     line-height: 1.2;
     text-align: center;
-    word-break: break-word;
+    word-break: normal;
+    overflow-wrap: anywhere;
 }
 
 .character-card-buttons-row .btn-wrapper .btn img {
@@ -1161,8 +1162,8 @@ min-height: 0;
     flex: 1 1 auto;
     min-width: 0;
     white-space: normal;
-    overflow-wrap: break-word;
-    word-break: break-word;
+    overflow-wrap: anywhere;
+    word-break: normal;
     text-align: center;
     line-height: 1.2;
 }
