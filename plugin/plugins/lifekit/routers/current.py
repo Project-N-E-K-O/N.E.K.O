@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import daily_val
+from .._chat import push_lifekit_content
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -97,7 +98,7 @@ class CurrentWeatherRouter(PluginRouter):
         ]
         if forecast_lines:
             blocks.append({"type": "text", "text": "\n".join(forecast_lines)})
-        plugin.push_chat_content(blocks)
+        push_lifekit_content(plugin, blocks)
 
         return Ok({
             "city": loc["city"],

@@ -11,6 +11,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _recipe as recipe_api
+from .._chat import push_lifekit_content
 
 
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
@@ -139,7 +140,7 @@ class RecipeRouter(PluginRouter):
         if first.thumbnail:
             blocks.append({"type": "image", "url": first.thumbnail, "alt": first.name})
 
-        self.main_plugin.push_chat_content(blocks)
+        push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
             "summary": summary,
@@ -181,7 +182,7 @@ class RecipeRouter(PluginRouter):
         if meal.thumbnail:
             blocks.append({"type": "image", "url": meal.thumbnail, "alt": meal.name})
 
-        self.main_plugin.push_chat_content(blocks)
+        push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
             "summary": summary,
