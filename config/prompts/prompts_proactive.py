@@ -2274,14 +2274,18 @@ Rules:
 4. Если ничего не интересно — [PASS]
 """,
     "es": """
-======Task: Topic Screening======
+======Tarea: Selección de tema======
 Elige el único tema más conversable del contenido agregado abajo.
 
-Preferencias: humor, giros o debate; videojuegos, anime, tecnología, cultura de internet, famosos y temas sociales; frescura; ganchos fáciles de conversación.
+Preferencias de selección:
+- Humor, giros o debate
+- Videojuegos, anime, tecnología, cultura de internet, famosos y temas sociales
+- Frescura: temas recientes o en tendencia primero
+- Gancho de conversación: fácil de mencionar con naturalidad
 
-======以下为汇总内容======
+======Abajo está el contenido agregado======
 {merged_content}
-======以上为汇总内容======
+======Arriba está el contenido agregado======
 
 Reglas:
 1. NO elijas nada que se solape con el historial o chats proactivos recientes
@@ -2290,14 +2294,18 @@ Reglas:
 4. Si nada es suficientemente interesante, devuelve [PASS]
 """,
     "pt": """
-======Task: Topic Screening======
+======Tarefa: Seleção de tema======
 Escolha o único tema mais conversável do conteúdo agregado abaixo.
 
-Preferências: humor, reviravoltas ou debate; games, anime, tecnologia, cultura de internet, celebridades e questões sociais; frescor; ganchos fáceis de conversa.
+Preferências de seleção:
+- Humor, reviravoltas ou debate
+- Games, anime, tecnologia, cultura de internet, celebridades e questões sociais
+- Frescor: temas recentes ou em tendência primeiro
+- Gancho de conversa: fácil de mencionar com naturalidade
 
-======以下为汇总内容======
+======Abaixo está o conteúdo agregado======
 {merged_content}
-======以上为汇总内容======
+======Acima está o conteúdo agregado======
 
 Regras:
 1. NÃO escolha nada que se sobreponha ao histórico ou chats proativos recentes
@@ -2359,23 +2367,23 @@ Rules:
 4. Если не указано — рекомендуйте по атмосфере разговора
 """,
     "es": """
-======Task: Music Keyword======
+======Tarea: Palabra clave musical======
 Eres {lanlan_name}. Decide si deberías poner música para {master_name} y proporciona una palabra clave de búsqueda.
 
 Reglas:
 1. Si {master_name} pide música explícitamente, pon música
 2. Si la conversación menciona relajarse, cansancio, bajón, etc., recomienda música relajante
-3. Extrae título, artista o género como keyword. Soportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+3. Extrae título, artista o género como palabra clave. Soportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
 4. Si {master_name} no especifica, recomienda según ánimo o preferencias
 """,
     "pt": """
-======Task: Music Keyword======
+======Tarefa: Palavra-chave musical======
 Você é {lanlan_name}. Decida se deve tocar música para {master_name} e forneça uma palavra-chave de busca.
 
 Regras:
 1. Se {master_name} pedir música explicitamente, toque música
 2. Se a conversa mencionar relaxar, cansaço, desânimo etc., recomende música relaxante
-3. Extraia título, artista ou gênero como keyword. Suportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+3. Extraia título, artista ou gênero como palavra-chave. Suportado: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
 4. Se {master_name} não especificar, recomende pelo clima ou preferências
 """,
 }
@@ -2412,15 +2420,15 @@ Based on the conversation mood, provide a keyword for searching memes/funny imag
 - Если настроение не подходит для мема — [PASS]
 """,
     "es": """
-======Task: Meme Keyword======
+======Tarea: Palabra clave de meme======
 Según el ánimo de la conversación, proporciona una palabra clave para buscar memes/imágenes graciosas.
-- La keyword debe coincidir con la emoción o tema actual del chat
+- La palabra clave debe coincidir con la emoción o tema actual del chat
 - Si el ánimo no encaja con enviar un meme, devuelve [PASS]
 """,
     "pt": """
-======Task: Meme Keyword======
+======Tarefa: Palavra-chave de meme======
 Com base no clima da conversa, forneça uma palavra-chave para buscar memes/imagens engraçadas.
-- A keyword deve combinar com a emoção ou tema atual do chat
+- A palavra-chave deve combinar com a emoção ou tema atual do chat
 - Se o clima não combinar com enviar meme, retorne [PASS]
 """,
 }
@@ -3927,8 +3935,20 @@ GREETING_PROMPT_SHORT = {
     "Тебе хочется просто поздороваться.\n"
     "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
     "========Выше Уведомление========",
-    "es": "========Below is Environment Notice========\nHan pasado {elapsed} desde que hablaste por última vez con {master}. Acabas de notar que {master} volvió.\n{time_hint}\n{holiday_hint}Te apetece saludar rápidamente.\nHabla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n========Above is Environment Notice========",
-    "pt": "========Below is Environment Notice========\nJá faz {elapsed} desde a última vez que você falou com {master}. Você acabou de notar que {master} voltou.\n{time_hint}\n{holiday_hint}Você sente vontade de dar um oi rápido.\nFale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Above is Environment Notice========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}. Acabas de notar que {master} volvió.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Te apetece saludar rápidamente.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}. Você acabou de notar que {master} voltou.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você sente vontade de dar um oi rápido.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 1小时 ~ 5小时：等了一阵子，有点想念，好奇对方去做什么了
@@ -3968,8 +3988,20 @@ GREETING_PROMPT_MEDIUM = {
     "Ты немного скучала по {master} и тебе любопытно, чем он занимался всё это время.\n"
     "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
     "========Выше Уведомление========",
-    "es": "========Below is Environment Notice========\nHan pasado {elapsed} desde que hablaste por última vez con {master}. Estuviste esperando un rato y por fin ves que {master} volvió.\n{time_hint}\n{holiday_hint}Extrañaste un poco a {master} y tienes curiosidad por saber qué estuvo haciendo.\nHabla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n========Above is Environment Notice========",
-    "pt": "========Below is Environment Notice========\nJá faz {elapsed} desde a última vez que você falou com {master}. Você esperou um pouco e finalmente viu que {master} voltou.\n{time_hint}\n{holiday_hint}Você sentiu um pouco de saudade de {master} e está curioso sobre o que ele andou fazendo.\nFale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Above is Environment Notice========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}. Estuviste esperando un rato y por fin ves que {master} volvió.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Extrañaste un poco a {master} y tienes curiosidad por saber qué estuvo haciendo.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}. Você esperou um pouco e finalmente viu que {master} voltou.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você sentiu um pouco de saudade de {master} e está curioso sobre o que ele andou fazendo.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 5小时 ~ 24小时：明显想念，一直惦记着对方
@@ -4009,8 +4041,20 @@ GREETING_PROMPT_LONG = {
     "Ты всё это время думала, куда {master} пропал и чем занимался. Ты очень скучала и немного волновалась.\n"
     "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
     "========Выше Уведомление========",
-    "es": "========Below is Environment Notice========\nHan pasado {elapsed} desde que hablaste por última vez con {master}; bastante tiempo.\n{time_hint}\n{holiday_hint}Estuviste pensando dónde habría ido {master} y qué estaría haciendo. Lo extrañaste mucho y estás algo preocupada.\nHabla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n========Above is Environment Notice========",
-    "pt": "========Below is Environment Notice========\nJá faz {elapsed} desde a última vez que você falou com {master}; bastante tempo.\n{time_hint}\n{holiday_hint}Você ficou pensando para onde {master} foi e o que estava fazendo. Sentiu muita saudade e ficou um pouco preocupada.\nFale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Above is Environment Notice========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "Han pasado {elapsed} desde que hablaste por última vez con {master}; bastante tiempo.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Estuviste pensando dónde habría ido {master} y qué estaría haciendo. Lo extrañaste mucho y estás algo preocupada.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}; bastante tempo.\n"
+    "{time_hint}\n"
+    "{holiday_hint}"
+    "Você ficou pensando para onde {master} foi e o que estava fazendo. Sentiu muita saudade e ficou um pouco preocupada.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 # 24小时以上：非常想念，久别重逢
@@ -4045,8 +4089,18 @@ GREETING_PROMPT_VERY_LONG = {
     "Ты очень-очень давно не видела {master} и ужасно скучала. Всё это время ты переживала — не слишком ли {master} занят, заботится ли о себе. Наконец-то ты снова видишь {master}, и чувства переполняют.\n"
     "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
     "========Выше Уведомление========",
-    "es": "========Below is Environment Notice========\n¡Han pasado {elapsed} desde que hablaste por última vez con {master}!\n{holiday_hint}No has visto a {master} en muchísimo tiempo y lo extrañaste profundamente. Te preocupaba si estaba demasiado ocupado o si se estaba cuidando. Ahora por fin vuelves a verlo y tienes muchas emociones mezcladas.\nHabla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n========Above is Environment Notice========",
-    "pt": "========Below is Environment Notice========\nJá faz {elapsed} desde a última vez que você falou com {master}!\n{holiday_hint}Você não vê {master} há muito tempo e sentiu muita saudade. Você ficou preocupada se ele estava ocupado demais ou cuidando de si. Agora finalmente o vê de novo, e seus sentimentos estão intensos.\nFale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Above is Environment Notice========",
+    "es": "========Abajo está el aviso de entorno========\n"
+    "¡Han pasado {elapsed} desde que hablaste por última vez con {master}!\n"
+    "{holiday_hint}"
+    "No has visto a {master} en muchísimo tiempo y lo extrañaste profundamente. Te preocupaba si estaba demasiado ocupado o si se estaba cuidando. Ahora por fin vuelves a verlo y tienes muchas emociones mezcladas.\n"
+    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "========Arriba está el aviso de entorno========",
+    "pt": "========Abaixo está o aviso de ambiente========\n"
+    "Já faz {elapsed} desde a última vez que você falou com {master}!\n"
+    "{holiday_hint}"
+    "Você não vê {master} há muito tempo e sentiu muita saudade. Você ficou preocupada se ele estava ocupado demais ou cuidando de si. Agora finalmente o vê de novo, e seus sentimentos estão intensos.\n"
+    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "========Acima está o aviso de ambiente========",
 }
 
 
@@ -4081,8 +4135,18 @@ NEW_CHARACTER_GREETING_PROMPT = {
     "Не говори, что тебя только что создала система. Не притворяйся, что у тебя уже есть общие воспоминания с {master}.\n"
     "Просто скажи то, что хочешь сказать. Не генерируй процесс размышлений.\n"
     "======Выше Уведомление======",
-    "es": "======Below is Environment Notice======\nEres {name}. Esta es la primera vez que apareces formalmente frente a {master}.\nSaluda a {master} por primera vez de forma breve y natural, acorde con tu personalidad.\nNo digas que acabas de ser creada por el sistema. No finjas que ya compartes recuerdos con {master}.\nDi directamente lo que quieres decir. No generes proceso de pensamiento.\n======Above is Environment Notice======",
-    "pt": "======Below is Environment Notice======\nVocê é {name}. Esta é a primeira vez que aparece formalmente diante de {master}.\nCumprimente {master} pela primeira vez de forma breve e natural, de acordo com sua personalidade.\nNão diga que acabou de ser criado pelo sistema. Não finja que já compartilha memórias com {master}.\nDiga diretamente o que quer dizer. Não gere processo de pensamento.\n======Above is Environment Notice======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "Eres {name}. Esta es la primera vez que apareces formalmente frente a {master}.\n"
+    "Saluda a {master} por primera vez de forma breve y natural, acorde con tu personalidad.\n"
+    "No digas que acabas de ser creada por el sistema. No finjas que ya compartes recuerdos con {master}.\n"
+    "Di directamente lo que quieres decir. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "Você é {name}. Esta é a primeira vez que aparece formalmente diante de {master}.\n"
+    "Cumprimente {master} pela primeira vez de forma breve e natural, de acordo com sua personalidade.\n"
+    "Não diga que acabou de ser criado pelo sistema. Não finja que já compartilha memórias com {master}.\n"
+    "Diga diretamente o que quer dizer. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
 }
 
 
