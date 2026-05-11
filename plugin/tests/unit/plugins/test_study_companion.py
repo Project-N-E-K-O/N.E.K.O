@@ -313,6 +313,16 @@ if (!explainRun || explainRun.args.text !== 'Explain derivative') {
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+
+    assert "ENTRY_TIMEOUT_MS" in source
+    assert "study_explain_text: 60000" in source
+    assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
+    assert "for (let i = 0; i < 40; i += 1)" not in source
+
+
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is not installed")

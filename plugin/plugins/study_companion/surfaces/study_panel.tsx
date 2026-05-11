@@ -8,6 +8,14 @@ type StudyStatus = {
   last_ocr_text?: string;
 };
 
+const RUN_POLL_INITIAL_DELAY_MS = 300;
+const RUN_POLL_MAX_DELAY_MS = 2000;
+const ENTRY_TIMEOUT_MS: Record<string, number> = {
+  study_status: 15000,
+  study_ocr_snapshot: 60000,
+  study_explain_text: 60000,
+};
+
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
@@ -20,6 +28,10 @@ function delay(ms: number, signal?: AbortSignal) {
       reject(new DOMException('Aborted', 'AbortError'));
     }, { once: true });
   });
+}
+
+function timeoutForEntry(entryId: string) {
+  return ENTRY_TIMEOUT_MS[entryId] || 60000;
 }
 
 async function callPlugin(entryId: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -39,8 +51,11 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
     throw new Error('run_id_missing');
   }
   let failureCount = 0;
-  for (let i = 0; i < 40; i += 1) {
-    await delay(300, signal);
+  let pollDelay = RUN_POLL_INITIAL_DELAY_MS;
+  const deadline = Date.now() + timeoutForEntry(entryId);
+  while (Date.now() < deadline) {
+    await delay(Math.min(pollDelay, Math.max(0, deadline - Date.now())), signal);
+    pollDelay = Math.min(Math.round(pollDelay * 1.5), RUN_POLL_MAX_DELAY_MS);
     const runResp = await fetch(`/runs/${runId}`, { signal });
     if (!runResp.ok) {
       failureCount += 1;
