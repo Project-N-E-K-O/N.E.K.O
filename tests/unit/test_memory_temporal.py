@@ -503,6 +503,102 @@ async def test_arecheck_one_legacy_fact_no_self_deadlock(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arecheck_one_legacy_fact_skips_malformed_head(tmp_path):
+    """Regression for Codex review on PR #1316 P2: malformed head must
+    not starve later valid v1 entries. Seed [malformed, valid] in that
+    order — recheck must skip malformed and migrate valid.
+    """
+    import json
+    from memory.facts import FactStore
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        fs = FactStore()
+        fs._config_manager = cm
+
+    fs._facts.setdefault("小天", []).extend([
+        # malformed: missing created_at + id present but empty string
+        {"id": "", "text": "破损条目", "importance": 5, "entity": "master",
+         "tags": [], "hash": "h-bad", "created_at": "", "absorbed": False},
+        # valid v1 (FIFO order would normally pick this second)
+        {"id": "f-good", "text": "用户喜欢咖啡", "importance": 6, "entity": "master",
+         "tags": [], "hash": "h-good", "created_at": "2026-05-01T00:00:00",
+         "absorbed": False},
+    ])
+    await fs.asave_facts("小天")
+
+    resp = MagicMock()
+    resp.content = json.dumps({"event_when": None})
+    async def _ainvoke(*_a, **_k):
+        return resp
+    async def _aclose():
+        return None
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = _ainvoke
+    fake_llm.aclose = _aclose
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        result = await fs.arecheck_one_legacy_fact("小天")
+    assert result is True
+    facts = await fs.aload_facts("小天")
+    # malformed entry left untouched (schema_version not set)
+    bad = next(f for f in facts if f.get('hash') == 'h-bad')
+    good = next(f for f in facts if f.get('hash') == 'h-good')
+    assert (bad.get('schema_version') or 1) == 1
+    assert good.get('schema_version') == 2
+
+
+@pytest.mark.asyncio
+async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
+    """Same starvation guard for reflection.arecheck_one_legacy_reflection."""
+    import json
+    from memory.event_log import EventLog
+    from memory.facts import FactStore
+    from memory.persona import PersonaManager
+    from memory.reflection import ReflectionEngine
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.facts.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.reflection.get_config_manager", return_value=cm):
+        evl = EventLog(); evl._config_manager = cm
+        fs = FactStore(); fs._config_manager = cm
+        pm = PersonaManager(event_log=evl); pm._config_manager = cm
+        re = ReflectionEngine(fs, pm, event_log=evl); re._config_manager = cm
+
+    bad = {
+        "id": "", "text": "破损 reflection", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "",  # malformed
+        "feedback": None, "reinforcement": 1.0, "disputation": 0.0,
+    }
+    good = {
+        "id": "r-good", "text": "用户喜欢咖啡 (v1)", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "2026-05-01T00:00:00",
+        "feedback": None, "reinforcement": 1.0, "disputation": 0.0,
+    }
+    await re.asave_reflections("小天", [bad, good])
+
+    resp = MagicMock()
+    resp.content = json.dumps({"temporal_scope": "pattern", "event_when": None})
+    async def _ainvoke(*_a, **_k):
+        return resp
+    async def _aclose():
+        return None
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = _ainvoke
+    fake_llm.aclose = _aclose
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        result = await re.arecheck_one_legacy_reflection("小天")
+    assert result is True
+    reflections = await re.aload_reflections("小天", include_archived=True)
+    g = next(r for r in reflections if r.get('id') == 'r-good')
+    assert g.get('schema_version') == 2
+    assert g.get('temporal_scope') == 'pattern'
+
+
+@pytest.mark.asyncio
 async def test_followup_weighted_enabled_varies_picks(tmp_path):
     """REFLECTION_FOLLOWUP_WEIGHTED=True + 候选 > TOP_K → 多轮采样应出现
     不同组合（不再雷同）。"""

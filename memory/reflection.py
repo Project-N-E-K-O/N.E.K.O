@@ -2026,10 +2026,27 @@ class ReflectionEngine:
             return False
         # 最老优先（FIFO 迁移），id 兜底排序保稳定
         candidates.sort(key=lambda r: (r.get('created_at', ''), r.get('id', '')))
-        target = candidates[0]
-        rid = target.get('id')
-        created_at_iso = target.get('created_at', '')
-        if not rid or not created_at_iso:
+        # Skip malformed candidates (missing id / created_at) instead of
+        # aborting the whole call — otherwise a single bad legacy entry at
+        # head of FIFO order would starve every later v1 reflection forever
+        # (Codex review on PR #1316 P2 catch).
+        target: dict | None = None
+        rid = ''
+        created_at_iso = ''
+        for c in candidates:
+            cid = c.get('id')
+            cts = c.get('created_at', '')
+            if not cid or not cts:
+                logger.debug(
+                    f"[Recheck-Reflection] {lanlan_name}: skip malformed legacy "
+                    f"reflection (id={cid!r} created_at={cts!r})"
+                )
+                continue
+            target = c
+            rid = cid
+            created_at_iso = cts
+            break
+        if target is None:
             return False
 
         # 拉 source facts 上下文（最多 5 条文本，太多 prompt 太长）

@@ -1042,10 +1042,27 @@ class FactStore:
         if not candidates:
             return False
         candidates.sort(key=lambda f: (f.get('created_at', ''), f.get('id', '')))
-        target = candidates[0]
-        fid = target.get('id')
-        created_at_iso = target.get('created_at', '')
-        if not fid or not created_at_iso:
+        # Skip malformed candidates (missing id / created_at) instead of
+        # aborting the whole call — otherwise a single bad legacy entry at
+        # head of FIFO order would starve every later v1 fact forever
+        # (Codex review on PR #1316 P2 catch).
+        target: dict | None = None
+        fid = ''
+        created_at_iso = ''
+        for c in candidates:
+            cid = c.get('id')
+            cts = c.get('created_at', '')
+            if not cid or not cts:
+                logger.debug(
+                    f"[Recheck-Fact] {name}: skip malformed legacy fact "
+                    f"(id={cid!r} created_at={cts!r})"
+                )
+                continue
+            target = c
+            fid = cid
+            created_at_iso = cts
+            break
+        if target is None:
             return False
 
         prompt = MEMORY_RECHECK_FACT_PROMPT.format(
