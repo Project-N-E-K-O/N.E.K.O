@@ -43,6 +43,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loading, WarningFilled, InfoFilled } from '@element-plus/icons-vue'
 import { get } from '@/api'
+import { buildPluginStaticUiUrl } from '@/components/plugin/staticUiUrl'
 
 const props = defineProps<{
   pluginId: string
@@ -55,7 +56,7 @@ const emit = defineEmits<{
   (e: 'message', data: any): void
 }>()
 
-const { t } = useI18n()
+const { locale, t } = useI18n()
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const iframeKey = ref(0)
@@ -72,7 +73,7 @@ const uiUrl = computed(() => {
   // This component is the original static UI iframe path. New entry points
   // should consume PluginUiSurface and render static panels through the
   // surface container, while this remains as compatibility renderer.
-  return `/plugin/${encodeURIComponent(props.pluginId)}/ui/?_ui=${uiCacheBust.value}`
+  return buildPluginStaticUiUrl(props.pluginId, uiCacheBust.value, String(locale.value))
 })
 
 async function checkUIAvailability() {

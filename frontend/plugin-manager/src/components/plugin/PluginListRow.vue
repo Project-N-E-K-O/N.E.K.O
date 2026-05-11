@@ -10,7 +10,7 @@
         <div class="plugin-list-row-card__headline">
           <div class="plugin-list-row-card__heading-main">
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
-            <h3 class="plugin-list-row-card__name">{{ plugin.name }}</h3>
+            <h3 class="plugin-list-row-card__name">{{ pluginName }}</h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
             <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
               {{ t('plugins.disabled') }}
@@ -22,7 +22,7 @@
         </div>
 
         <p class="plugin-list-row-card__description">
-          {{ plugin.description || t('common.noData') }}
+          {{ pluginDescription }}
         </p>
 
         <PluginMetricsInline
@@ -61,6 +61,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
+import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
 import type { PluginMeta } from '@/types/api'
 
 interface Props {
@@ -79,9 +80,27 @@ defineEmits<{
   contextmenu: [event: MouseEvent]
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const entryCount = computed(() => props.plugin.entries?.length || 0)
+
+const pluginName = computed(() => {
+  return resolvePluginI18nMessage(
+    props.plugin.i18n,
+    'plugin.name',
+    locale.value,
+    props.plugin.name || props.plugin.id,
+  )
+})
+
+const pluginDescription = computed(() => {
+  return resolvePluginI18nMessage(
+    props.plugin.i18n,
+    'plugin.description',
+    locale.value,
+    props.plugin.description || t('common.noData'),
+  )
+})
 
 const typeLabel = computed(() => {
   if (props.plugin.type === 'adapter') return t('plugins.typeAdapter')

@@ -6,6 +6,7 @@ QQ 客户端封装（基于 OneBot 协议）
 
 import asyncio
 import json
+import secrets
 from typing import Any, Dict, Optional
 import websockets
 
@@ -21,6 +22,7 @@ class QQClient:
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._receive_task: Optional[asyncio.Task] = None
         self._closing = False
+        self._pending_actions: dict[str, asyncio.Future] = {}
 
     async def connect(self):
         """连接到 OneBot 服务"""
@@ -56,6 +58,11 @@ class QQClient:
             except asyncio.CancelledError:
                 pass
             self._receive_task = None
+
+        for future in list(self._pending_actions.values()):
+            if not future.done():
+                future.cancel()
+        self._pending_actions.clear()
 
         if self.ws:
             await self.ws.close()
@@ -100,6 +107,13 @@ class QQClient:
                 if self.logger:
                     self.logger.debug(f"Received raw message: {message}")
 
+                echo = message.get("echo")
+                if echo and echo in self._pending_actions:
+                    future = self._pending_actions.pop(str(echo), None)
+                    if future and not future.done():
+                        future.set_result(message)
+                    continue
+
                 if message.get("post_type") == "message":
                     msg_type = message.get("message_type")
                     if msg_type in {"private", "group"}:
@@ -129,6 +143,10 @@ class QQClient:
                 self.ws = None
                 if self._closing:
                     break
+                for echo, future in list(self._pending_actions.items()):
+                    if not future.done():
+                        future.set_exception(RuntimeError("WebSocket disconnected before action response"))
+                    self._pending_actions.pop(echo, None)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 30.0)
 
@@ -171,6 +189,44 @@ class QQClient:
                     if str(at_qq) == str(raw_msg.get("self_id")):
                         return True
         return False
+
+    async def call_action(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Dict[str, Any]:
+        if not self.ws:
+            raise RuntimeError("Not connected to OneBot")
+
+        echo = secrets.token_hex(8)
+        future = asyncio.get_running_loop().create_future()
+        self._pending_actions[echo] = future
+        payload = {
+            "action": action,
+            "params": params or {},
+            "echo": echo,
+        }
+        try:
+            await self.ws.send(json.dumps(payload))
+        except Exception:
+            self._pending_actions.pop(echo, None)
+            if not future.done():
+                future.cancel()
+            raise
+        try:
+            response = await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self._pending_actions.pop(echo, None)
+        if response.get("status") == "failed":
+            raise RuntimeError(response.get("wording") or f"OneBot action failed: {action}")
+        return response.get("data") or {}
+
+    async def get_login_info(self) -> Dict[str, Any]:
+        return await self.call_action("get_login_info", timeout=5.0)
+
+    async def get_friend_list(self) -> list[Dict[str, Any]]:
+        data = await self.call_action("get_friend_list", timeout=10.0)
+        return data if isinstance(data, list) else []
+
+    async def get_group_list(self) -> list[Dict[str, Any]]:
+        data = await self.call_action("get_group_list", timeout=10.0)
+        return data if isinstance(data, list) else []
 
     async def send_message(self, user_id: str, message: str):
         """发送私聊消息"""

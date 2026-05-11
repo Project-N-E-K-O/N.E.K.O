@@ -20,7 +20,7 @@ from utils.llm_client import AIMessage, HumanMessage
 def _install_fresh_memory_state(tmpdir: str):
     """Replace memory_server's outbox / config_manager with fresh instances backed by tmpdir."""
     from memory.outbox import Outbox
-    import memory_server
+    from app import memory_server
 
     mock_cm = MagicMock()
     mock_cm.memory_dir = tmpdir
@@ -44,7 +44,7 @@ def _install_fresh_memory_state(tmpdir: str):
 async def test_spawn_outbox_happy_path_marks_done(tmp_path):
     """Handler 成功完成 → outbox pending_ops 为空。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
 
     calls: list[tuple[str, dict]] = []
@@ -77,7 +77,7 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
 async def test_handler_failure_keeps_op_pending(tmp_path):
     """Handler raises → op stays pending (next startup replays it)."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
 
     async def _bad_handler(name: str, payload: dict):
@@ -102,7 +102,7 @@ async def test_handler_failure_keeps_op_pending(tmp_path):
 async def test_replay_reinvokes_pending_handler(tmp_path):
     """模拟进程重启场景：上一跑 outbox 里有 pending，启动 replay 应重跑 handler。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
     from utils.llm_client import messages_to_dict
 
@@ -137,7 +137,7 @@ async def test_replay_skips_unknown_op_type(tmp_path):
     """未注册的 op type 不应让 replay 崩溃，该 op 静默跳过但 append_done
     不会被调用 → 保持 pending，等升级后兼容 handler 补跑。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
 
     op_id = await ob.aappend_pending("小天", "future_op_type_v2", {"x": 1})
 
@@ -157,7 +157,7 @@ async def test_replay_skips_unknown_op_type(tmp_path):
 async def test_replay_respects_concurrency_semaphore(tmp_path):
     """启动补跑不应无限 fan-out：_REPLAY_CONCURRENCY=4 应限制同时在飞 handler 数。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
 
     # 登记 10 个 pending op
@@ -193,7 +193,7 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
 async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
     """Codex PR#905 P2: 角色从 config 移除但 outbox 还有 pending → 必须仍补跑。"""
     ob, mock_cm = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
 
     # 登记一条 pending op（在 "小天" 的 outbox 里）
@@ -227,7 +227,7 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
     """端到端：handler 把 fact 写入假 FactStore 但在 append_done 前"崩溃"，
     新进程加载 outbox → 重跑 → side effect 最终落盘。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.outbox import OP_EXTRACT_FACTS
 
     # 第一跑：handler 写"fact"到 side-effect 状态但在 append_done 前进程死
@@ -276,7 +276,7 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
 async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
     """Outbox 写失败 → 降级为传统内存任务；主流程不应崩溃。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
-    import memory_server
+    from app import memory_server
 
     # 强制 aappend_pending 抛异常
     async def _boom(*a, **kw):
@@ -286,7 +286,7 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
 
     # 同时 patch _extract_facts_and_check_feedback 成 noop，避免真 LLM 调用
     noop = AsyncMock(return_value=None)
-    with patch("memory_server._extract_facts_and_check_feedback", noop):
+    with patch("app.memory_server._extract_facts_and_check_feedback", noop):
         task = await memory_server._spawn_outbox_extract_facts(
             "小天", [HumanMessage(content="hi")]
         )

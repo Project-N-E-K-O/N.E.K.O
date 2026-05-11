@@ -66,7 +66,7 @@ Propensity = Literal[
 # can adapt voice without changing source filtering.
 #
 # Six tones, deliberately vivid (one-line prompt hint each, see
-# ``ACTIVITY_TONE_HINTS`` in ``config/prompts_activity.py``):
+# ``ACTIVITY_TONE_HINTS`` in ``config/prompts/prompts_activity.py``):
 #   * ``terse``   — competitive games, rhythm games: short, low-intrusion
 #   * ``hushed``  — horror games: deliberately quiet, atmospheric
 #   * ``mellow``  — immersive RPG / story-driven: relaxed in-the-moment
@@ -131,6 +131,40 @@ class WindowObservation:
     is_browser: bool
     intensity: str | None = None  # GameIntensity-shaped, only when category='gaming' subcategory='game'
     genre: str | None = None      # GameGenre-shaped, same gating
+
+
+@dataclass(frozen=True, slots=True)
+class WorkBreakPending:
+    """A water-break reminder is ready to fire on the next proactive turn.
+
+    Set by the tracker when its focused_work accumulator crosses
+    ``work_break_minutes`` (default 30) AND the live state is
+    ``focused_work``. Cleared by ``mark_work_break_used`` once the
+    reminder is delivered (which also resets the accumulator).
+
+    The seed for *what* to suggest (drink water / stretch / rest eyes /
+    etc.) is picked at delivery time in the router — not pinned here —
+    so consecutive failed-then-retried deliveries naturally rotate copy.
+    """
+    minutes: int                # Accumulated focused-work minutes
+    app: str                    # Canonical app the user is focused in (or generic fallback)
+
+
+@dataclass(frozen=True, slots=True)
+class AntiSlackPending:
+    """A "back to work" reminder is queued by a recent focused→leisure transition.
+
+    Set by the tracker when state transitions
+    ``focused_work → casual_browsing | gaming`` after at least
+    ``anti_slack_min_focus_minutes`` (default 5) of focused work and
+    while the per-character anti-slack cooldown has elapsed (default
+    15 min). Cleared by ``mark_anti_slack_used``, by the pending
+    window expiring (default 5 min), or by the user returning to
+    focused_work / a non-leisure state.
+    """
+    minutes: int                # How long the just-ended focused_work session was
+    prev_app: str               # Canonical name of the work app they left
+    new_app: str                # Canonical name of the leisure app they switched to
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +237,7 @@ class ActivitySnapshot:
     game_genre: GameGenre | None = None
     # Structured reasons: each entry is ``(code, params)`` where ``code``
     # is a reason key looked up in ``ACTIVITY_REASON_TEMPLATES`` (in
-    # ``config/prompts_activity.py``) and ``params`` is a dict
+    # ``config/prompts/prompts_activity.py``) and ``params`` is a dict
     # substituted into that template at format time. Keeps the snapshot
     # language-agnostic — localization happens in
     # ``format_activity_state_section``.
@@ -266,6 +300,17 @@ class ActivitySnapshot:
     # the question-mark heuristic misses (AI promises, abandoned user
     # threads, etc.). Cache invalidates on the next user message.
     open_threads: list[str] = field(default_factory=list)
+
+    # --- Break-reminder pending flags (must-fire over normal proactive) ---
+    # When either is non-None on a snapshot fetched at proactive_chat
+    # entry, the router takes the dedicated minimal-Phase-2 delivery
+    # branch (skipping Phase 1 source fetching, propensity gating, and
+    # skip_probability rolls). Anti-slack outranks water-break — the
+    # transition trigger is more time-sensitive than the cumulative one.
+    # Populated/cleared exclusively by ``main_logic/activity/tracker.py``;
+    # see WorkBreakPending / AntiSlackPending docstrings for lifecycle.
+    work_break_pending: WorkBreakPending | None = None
+    anti_slack_pending: AntiSlackPending | None = None
 
 
 # ── State → propensity mapping ──────────────────────────────────────
@@ -372,11 +417,17 @@ def derive_tone(
             return 'playful'
         # game_intensity in {'varied', None}
         return 'concise'
-    if state in ('casual_browsing',):
+    if state in ('casual_browsing', 'idle'):
+        # Idle while the desk pet is foreground = the user is around but
+        # not driving any task. Pairing it with ``concise`` reads as
+        # businesslike when the natural register is light banter — same
+        # as casual_browsing. ``transitioning`` and ``away`` stay on
+        # ``concise`` deliberately: the former is mid-context-switch
+        # (short reactive lines fit), the latter doesn't render anyway.
         return 'playful'
     if state in ('chatting', 'stale_returning'):
         return 'warm'
-    # focused_work / idle / transitioning / away
+    # focused_work / transitioning / away
     return 'concise'
 
 
@@ -435,15 +486,15 @@ def derive_skip_probability(
 
 # ── Localized strings for prompt injection ─────────────────────────
 #
-# All multi-language string tables live in ``config/prompts_activity``
+# All multi-language string tables live in ``config/prompts/prompts_activity``
 # per the project i18n convention: every translatable string must sit
-# under ``config/prompts_*`` so that adding a new language is a single
+# under ``config/prompts/prompts_*`` so that adding a new language is a single
 # pass over that directory. The prompt-hygiene linter only catches
 # *flat* ``{lang_code: str}`` dicts, but the rule applies to nested
 # ``{lang: {key: str}}`` tables too — they just have to be moved by
 # hand. ``snapshot.py`` keeps only the formatter; the strings are
 # imported below.
-from config.prompts_activity import (
+from config.prompts.prompts_activity import (
     ACTIVITY_PROPENSITY_DIRECTIVES,
     ACTIVITY_REASON_TEMPLATES,
     ACTIVITY_STATE_LABELS,

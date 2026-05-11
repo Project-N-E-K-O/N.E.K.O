@@ -129,8 +129,11 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert "RapidOCR" in response.text
     assert "依赖安装" in response.text
     assert "DXcam" in response.text
-    assert "一键安装 Tesseract" in response.text
     assert "Textractor" in response.text
+    assert 'id="rapidocrCard"' in response.text
+    assert 'id="dxcamCard"' in response.text
+    assert 'id="tesseractCard"' in response.text
+    assert 'id="textractorCard"' in response.text
     assert "OCR 截图校准" in response.text
     assert 'id="primaryDiagnosisPanel"' in response.text
     assert 'id="firstRunGuide"' in response.text
@@ -188,6 +191,34 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "function uiT(" in response.text
     assert "getInstallUIConfig" in response.text
     assert "i18n-ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+) -> None:
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/main.js")
+
+    assert response.status_code == 200
+    script = response.text
+    assert "function canApplyRestoredInstallTaskState" in script
+    assert "function shouldOfferRapidOcrModelsDownload" in script
+    assert "generation: 0" in script
+    assert "const restoreGeneration = Number((runtime && runtime.generation) || 0);" in script
+    assert "state.generation = Number(state.generation || 0) + 1;" in script
+    assert "state.currentTaskId = null;" in script
+    assert "clearPersistedInstallTaskId(kind);" in script
+    assert "function shouldRestoreRapidOcrModelsFailure" in script
+    assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
+    assert "ui.install.rapidocr.missing_models_manual_body" in script
+    assert "{ allowRefresh: true }" in script
+    assert "showTerminalFlash: false" in script
+    assert "clearPersistedInstallTaskId('rapidocr_models');" in script
+    assert script.index("function canApplyRestoredInstallTaskState") < script.index("applyInstallTaskState(kind, restoredState")
+    assert script.index("applyRapidOcrModelsGate(rapidocr);") < script.index(
+        "const lastTask = installRuntime.rapidocr_models.state;"
+    )
 
 
 @pytest.mark.asyncio
@@ -276,7 +307,7 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
         del client_host
         assert payload.plugin_id == "galgame_plugin"
         assert payload.entry_id == "galgame_install_textractor"
-        assert payload.args == {"force": True}
+        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 600.0}}
         return RunCreateResponse(run_id="run-textractor-1", status="queued")
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
@@ -307,7 +338,7 @@ async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seed
         del client_host
         assert payload.plugin_id == "galgame_plugin"
         assert payload.entry_id == "galgame_install_tesseract"
-        assert payload.args == {"force": True}
+        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 300.0}}
         return RunCreateResponse(run_id="run-tesseract-1", status="queued")
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)

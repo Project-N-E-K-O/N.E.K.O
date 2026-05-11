@@ -29,6 +29,7 @@ from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
+from utils.gemini_tts_voices import normalize_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
 
@@ -865,6 +866,14 @@ class OmniRealtimeClient:
             if self.has_tools():
                 gemini_tools.extend(self._tools_for_gemini_live())
 
+            gemini_voice, voice_recognized = normalize_gemini_tts_voice(self.voice)
+            if self.voice and not voice_recognized:
+                logger.warning(
+                    "Gemini Live voice '%s' is not in the supported catalog; falling back to '%s'",
+                    self.voice,
+                    gemini_voice,
+                )
+
             config = {
                 "response_modalities": ["AUDIO"],
                 "system_instruction": instructions,
@@ -875,7 +884,7 @@ class OmniRealtimeClient:
                 "output_audio_transcription": {},
                 "speech_config": types.SpeechConfig(
                     voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Leda")
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=gemini_voice)
                     )
                 ),
             }

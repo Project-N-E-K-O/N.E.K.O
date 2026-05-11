@@ -74,9 +74,9 @@ uv run python agent_server.py
 - macOS でソース実行したときに「Apple は `SteamworksPy.dylib` を検証できません」と表示される場合、通常は Gatekeeper がローカルの未公証 Steamworks ライブラリをブロックしています。まずプロジェクトのルートディレクトリから起動していることを確認してください。まだブロックされる場合は、リポジトリルートで次を実行します:
 
 ```bash
-xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
-codesign --force --sign - libsteam_api.dylib
-codesign --force --sign - SteamworksPy.dylib
+xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
 - その後、`uv run python launcher.py` または `uv run python main_server.py` を再実行してください。

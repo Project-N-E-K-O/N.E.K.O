@@ -9,7 +9,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-from config.prompts_galgame import get_galgame_fallback_options
+from config.prompts.prompts_galgame import get_galgame_fallback_options
 from main_routers import galgame_router
 
 

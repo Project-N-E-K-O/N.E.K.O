@@ -697,12 +697,22 @@ function openCardMakerFromModelManager(lanlanName, options = {}) {
             if (typeof window.opener.openManagedPopup === 'function') {
                 return window.opener.openManagedPopup(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
             }
-            return window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            if (typeof window.opener.openOrFocusWindow === 'function') {
+                return window.opener.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            }
+            const openedByParent = window.opener.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+            if (openedByParent && typeof window.opener.requestOpenedWindowRestore === 'function') {
+                window.opener.requestOpenedWindowRestore(openedByParent);
+            }
+            return openedByParent;
         } catch (error) {
             console.warn('[模型管理] 通过父窗口打开卡面制作页失败，回退当前窗口打开:', error);
         }
     }
 
+    if (typeof window.openOrFocusWindow === 'function') {
+        return window.openOrFocusWindow(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
+    }
     return window.open(url, MODEL_MANAGER_CARD_MAKER_WINDOW_NAME, features);
 }
 
@@ -7793,11 +7803,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const height = 800;
             const left = (screen.width - width) / 2;
             const top = (screen.height - height) / 2;
-            window.open(
-                '/live2d_emotion_manager',
-                'emotionManager',
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow('/live2d_emotion_manager', 'emotionManager', features);
+            } else {
+                window.open('/live2d_emotion_manager', 'emotionManager', features);
+            }
         });
     }
 
@@ -7823,11 +7834,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            window.open(
-                url,
-                winName,
-                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-            );
+            const features = `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+            if (typeof window.openOrFocusWindow === 'function') {
+                window.openOrFocusWindow(url, winName, features);
+            } else {
+                window.open(url, winName, features);
+            }
         });
     }
 
@@ -8415,16 +8427,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                             await new Promise(resolve => requestAnimationFrame(resolve));
                         }
 
-                        // 检测并修正朝向（会自动保存到preferences）
+                        // 保存加载管线处理后的朝向到 preferences
                         if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
                             const vrm = window.vrmManager.currentModel.vrm;
 
-                            // 检测朝向
-                            const needsRotation = window.VRMOrientationDetector.detectNeedsRotation(vrm);
+                            // loadModel 已经完成 VRM0.x 版本兼容和启发式朝向处理。
+                            // 这里保存最终旋转，避免上传流程再次用旧启发式覆盖加载结果。
                             const detectedRotation = {
-                                x: 0,
-                                y: needsRotation ? Math.PI : 0,
-                                z: 0
+                                x: vrm.scene.rotation.x,
+                                y: vrm.scene.rotation.y,
+                                z: vrm.scene.rotation.z
                             };
 
                             // 应用旋转

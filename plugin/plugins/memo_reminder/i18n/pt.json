@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Lembrete",
+  "plugin.description": "Plugin de memorando e alarme programado que avisa o mestre no horário definido. Suporta lembretes únicos e recorrentes"
+}

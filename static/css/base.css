@@ -39,6 +39,7 @@ button img,
 
 img,
 svg,
+a[href],
 [aria-hidden="true"] img {
     -webkit-user-drag: none;
     -khtml-user-drag: none;

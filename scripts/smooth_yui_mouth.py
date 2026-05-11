@@ -29,10 +29,18 @@ ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
 
 TARGET_IDS = ("ParamMouthForm", "ParamMouthOpenY")
 NEUTRAL = {"ParamMouthForm": 0.0, "ParamMouthOpenY": 0.0}
-SIGMA_S = 3.0       # Gaussian width
 SAMPLE_HZ = 60      # internal sampling rate for smoothing
+
+# Default profile for non-idle motions.
+SIGMA_S = 3.0       # Gaussian width
 OUT_HZ = 2          # Linear-segment output rate
 FADE_S = 1.0        # boundary fade window (smoothstep)
+
+# Idle motions (filename prefix `idle`) need stricter filtering: long loops
+# in the background, no lipsync, want near-flat mouth.
+IDLE_SIGMA_S = 6.0
+IDLE_OUT_HZ = 1
+IDLE_FADE_S = 1.5
 
 PAY = {0: 2, 1: 6, 2: 2, 3: 2}
 POINTS_PER_CMD = {0: 1, 1: 3, 2: 1, 3: 1}
@@ -94,7 +102,7 @@ def fade_weight(t, duration, fade_s):
     return x * x * (3 - 2 * x)
 
 
-def smooth_curve(keys, neutral):
+def smooth_curve(keys, neutral, sigma_s, out_hz, fade_s):
     if len(keys) < 2:
         return keys
     t_start, _ = keys[0]
@@ -108,7 +116,7 @@ def smooth_curve(keys, neutral):
     dt = duration / (n_samples - 1)
     raw = [piecewise_linear(keys, t_start + i * dt) for i in range(n_samples)]
 
-    sigma_samples = SIGMA_S / dt
+    sigma_samples = sigma_s / dt
     kernel, radius = gaussian_kernel(sigma_samples)
     smoothed = []
     for i in range(n_samples):
@@ -122,7 +130,7 @@ def smooth_curve(keys, neutral):
             acc += w * raw[idx]
         smoothed.append(acc)
 
-    n_out = max(2, int(round(duration * OUT_HZ)) + 1)
+    n_out = max(2, int(round(duration * out_hz)) + 1)
     out = []
     for i in range(n_out):
         t = t_start + i * (duration / (n_out - 1))
@@ -131,7 +139,7 @@ def smooth_curve(keys, neutral):
         hi = min(lo + 1, n_samples - 1)
         frac = f_idx - lo
         v = smoothed[lo] * (1 - frac) + smoothed[hi] * frac
-        w = fade_weight(t - t_start, duration, FADE_S)
+        w = fade_weight(t - t_start, duration, fade_s)
         v = neutral + w * (v - neutral)
         out.append((t, v))
     out[0] = (t_start, neutral)
@@ -165,15 +173,23 @@ def walk_curve(seg):
     return segments, points
 
 
+def profile_for(path: Path):
+    """idle* motions get the stricter profile; everything else uses defaults."""
+    if path.name.lower().startswith("idle"):
+        return IDLE_SIGMA_S, IDLE_OUT_HZ, IDLE_FADE_S
+    return SIGMA_S, OUT_HZ, FADE_S
+
+
 def process(path: Path):
     data = json.loads(path.read_text(encoding="utf-8"))
+    sigma_s, out_hz, fade_s = profile_for(path)
     stats = {}
     for curve in data["Curves"]:
         cid = curve.get("Id")
         if cid not in TARGET_IDS:
             continue
         before = extract_keys(curve["Segments"])
-        after = smooth_curve(before, neutral=NEUTRAL[cid])
+        after = smooth_curve(before, NEUTRAL[cid], sigma_s, out_hz, fade_s)
         curve["Segments"] = keys_to_linear_segments(after)
         stats[cid] = (len(before), len(after))
 
@@ -192,10 +208,13 @@ def process(path: Path):
 
 
 def main():
-    print(f"sigma={SIGMA_S}s  sample={SAMPLE_HZ}Hz  out={OUT_HZ}Hz  fade={FADE_S}s")
+    print(f"default: sigma={SIGMA_S}s  out={OUT_HZ}Hz  fade={FADE_S}s")
+    print(f"idle*:   sigma={IDLE_SIGMA_S}s  out={IDLE_OUT_HZ}Hz  fade={IDLE_FADE_S}s")
+    print(f"sample={SAMPLE_HZ}Hz")
     for f in sorted(ROOT.glob("*.motion3.json")):
         s = process(f)
-        line = f"{f.name:<28}"
+        tag = "[idle]" if f.name.lower().startswith("idle") else "      "
+        line = f"{tag} {f.name:<28}"
         for tid in TARGET_IDS:
             b, a = s.get(tid, (0, 0))
             line += f" {tid.replace('Param', '')[:6]}: {b:>3} -> {a:<3}   "

@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Galgame 플레이 어시스턴트",
+  "plugin.description": "고양이 소녀가 함께 Galgame 플레이를 도와줍니다.",
   "entries.galgame_get_status.name": "갈게임 플러그인 상태 조회",
   "entries.galgame_get_status.description": "현재 브리지 연결 상태, 바인딩된 게임, 최근 오류, 모드를 반환한다.",
   "entries.galgame_install_textractor.name": "Textractor 설치",

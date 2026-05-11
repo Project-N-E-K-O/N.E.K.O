@@ -9,7 +9,7 @@ import platform
 import uuid
 from types import MappingProxyType
 
-from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
@@ -242,6 +242,15 @@ AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
     extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
 )
 
+# ----------------------------------------------------------------------
+# Debug flags（打包给用户调试时在源码里 flip，重新打包即可生效）
+# ----------------------------------------------------------------------
+# LLM prompt 审计：打开后每次发给 LLM 的请求体（messages、token 数、limit
+# 字段）会写到 logs/llm_prompt_audit/YYYY-MM-DD.jsonl，用于诊断 prompt
+# budget 占比。env var NEKO_LLM_PROMPT_AUDIT=1 同样可启用（任一为真即开）。
+# 生产默认 False。
+LLM_PROMPT_AUDIT_ENABLED = False
+
 # tfLink 文件上传服务配置
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
 # tfLink 允许的主机名白名单（用于 SSRF 防护）
@@ -307,6 +316,12 @@ DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 # 用户自定义模型配置（可选，暂未使用）
 DEFAULT_REALTIME_MODEL = "qwen3-omni-flash-realtime"  # 全模态模型(语音+文字+图片)，与 api_providers.json 对齐
 DEFAULT_TTS_MODEL = "qwen3-omni-flash-realtime"   # 与Realtime对应的TTS模型(Native TTS)，与 api_providers.json 对齐
+
+# Hide likely assistant/proactive speech that leaks back through microphone STT.
+# Conservative by design: the runtime only suppresses non-empty voice transcripts
+# that closely match recently displayed AI text; unrelated user barge-in remains
+# visible and enters memory normally.
+HIDE_DIRTY_VOICE_TRANSCRIPTS = True
 
 
 CONFIG_FILES = [
@@ -528,8 +543,12 @@ def get_localized_default_characters(language: str | None = None) -> dict:
     # 获取语言代码
     if language is None:
         try:
-            from utils.language_utils import _get_steam_language, normalize_language_code
-            steam_lang = _get_steam_language()
+            # Forwarded via config._runtime → utils.language_utils
+            # (DI registered in app/runtime_bindings.py). When unbound (e.g.
+            # cold tooling), resolve_steam_language returns None and we
+            # default to zh-CN, matching the prior except branch.
+            from config._runtime import resolve_steam_language, normalize_language_code
+            steam_lang = resolve_steam_language()
             language = normalize_language_code(steam_lang, format='full') if steam_lang else 'zh-CN'
         except Exception as e:
             logger.warning(f"获取 Steam 语言失败: {e}，使用默认中文")
@@ -916,7 +935,7 @@ RECENT_HISTORY_MAX_ITEMS = 10
 - 互动：和 RECENT_COMPRESS_THRESHOLD_ITEMS 配对——压缩后保留 N 条 +
   Stage-1 summary 1 条 = N+1 条进入下次压缩计数。"""
 
-RECENT_COMPRESS_THRESHOLD_ITEMS = 15
+RECENT_COMPRESS_THRESHOLD_ITEMS = 20
 """触发 LLM 压缩的条数阈值。
 - 用途：当某 lanlan 的 user_histories 累积到 > 此值时调一次
   compress_history。
@@ -1318,7 +1337,7 @@ MINI_GAME_INVITE_ENABLED = True
   退化回纯 source-driven。
 - 上游：main_routers/system_router._maybe_deliver_mini_game_invite。"""
 
-MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.1
+MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.12
 """每次 eligible 主动搭话进入 mini-game 邀请短路的概率。
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
@@ -1344,7 +1363,7 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
-  config.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
+  config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
 - 当前只有 soccer；后续接入新 mini-game 时把对应 key 加进来即可，short-circuit
   分发逻辑无须改动。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
@@ -1576,6 +1595,7 @@ __all__ = [
     'DEFAULT_AGENT_MODEL',
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
+    'HIDE_DIRTY_VOICE_TRANSCRIPTS',
     # 用户自定义模型配置的 URL/API_KEY
     'DEFAULT_CONVERSATION_MODEL_URL',
     'DEFAULT_CONVERSATION_MODEL_API_KEY',

@@ -7,9 +7,14 @@ from playwright.sync_api import Page
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _open_subtitle_harness(mock_page: Page, body_class: str, body_html: str) -> None:
+def _open_subtitle_harness(
+    mock_page: Page,
+    body_class: str,
+    body_html: str,
+    path: str = "/subtitle-harness",
+) -> None:
     mock_page.route(
-        "**/subtitle-harness",
+        f"**{path}",
         lambda route: route.fulfill(
             status=200,
             content_type="text/html",
@@ -19,7 +24,7 @@ def _open_subtitle_harness(mock_page: Page, body_class: str, body_html: str) -> 
             ),
         ),
     )
-    mock_page.goto("http://neko.test/subtitle-harness")
+    mock_page.goto(f"http://neko.test{path}")
 
 
 @pytest.mark.frontend
@@ -87,6 +92,77 @@ def test_subtitle_incremental_translation_starts_when_sentence_punctuation_arriv
 
     assert result["text"] == "你好世界。"
     assert [request["text"] for request in result["requests"]] == ["Hello world."]
+
+
+@pytest.mark.frontend
+def test_electron_chat_window_does_not_start_subtitle_translation_requests(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="hidden">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+        path="/chat",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__translateRequests = [];
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.nekoChatWindow = {};
+            window.fetch = async (url, options) => {
+                const requestUrl = String(url);
+                const body = options && options.body ? JSON.parse(options.body) : {};
+                if (requestUrl === '/api/config/user_language') {
+                    return new Response(JSON.stringify({ success: true, language: 'zh' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (requestUrl === '/api/translate') {
+                    window.__translateRequests.push(body);
+                    return new Response(JSON.stringify({
+                        success: true,
+                        translated_text: '你好世界。',
+                        source_lang: 'en',
+                        target_lang: body.target_lang || 'zh',
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error('Unexpected request: ' + requestUrl);
+            };
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'zh');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.beginSubtitleTurn();
+            window.subtitleBridge.setSubtitleEnabled(true);
+            window.updateSubtitleStreamingText('Hello world.');
+            await window.translateAndShowSubtitle('Hello world.');
+            await new Promise((resolve) => setTimeout(resolve, 450));
+            return {
+                text: document.getElementById('subtitle-text').textContent,
+                requests: window.__translateRequests,
+            };
+        }
+        """
+    )
+
+    assert result["text"] == ""
+    assert result["requests"] == []
 
 
 @pytest.mark.frontend

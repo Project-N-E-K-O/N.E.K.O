@@ -125,6 +125,15 @@ for json_file in config_json_files:
     # 使用绝对路径，目标路径为 'config'
     datas.append((json_file, 'config'))
 
+# 本地化角色种子模板（config/characters/<lang>.json）— 首次创建 characters.json 时
+# 由 ConfigManager._get_localized_characters_source 按语言挑选拷贝；不进 config/*.json
+# 顶层 glob，所以单独打包到 config/characters/ 子目录。
+config_characters_files = glob.glob(os.path.join(PROJECT_ROOT, 'config/characters/*.json'))
+print(f"[Build] Packing {len(config_characters_files)} localized character templates:")
+for json_file in config_characters_files:
+    print(f"  - {json_file}")
+    datas.append((json_file, 'config/characters'))
+
 # 添加项目目录和文件（使用绝对路径）
 # 受版权保护的 live2d 模型打包到 _internal（用户不可见）
 def add_data(src, dest):
@@ -170,26 +179,26 @@ add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
 add_data('steam_appid.txt', '.')
 
-# 添加 Steam 相关的 DLL 和库文件（必须放在根目录）
+# 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）
 # macOS 上使用 dylib，Windows 上使用 dll
 if sys.platform == 'darwin':
     # macOS (Apple Silicon) 使用 .dylib
-    libsteam_api = os.path.join(PROJECT_ROOT, 'libsteam_api.dylib')
-    libSteamworksPy = os.path.join(PROJECT_ROOT, 'SteamworksPy.dylib')
+    libsteam_api = os.path.join(PROJECT_ROOT, 'steamworks', 'libsteam_api.dylib')
+    libSteamworksPy = os.path.join(PROJECT_ROOT, 'steamworks', 'SteamworksPy.dylib')
     if os.path.exists(libsteam_api):
         binaries.append((libsteam_api, '.'))
     if os.path.exists(libSteamworksPy):
         binaries.append((libSteamworksPy, '.'))
 elif sys.platform == 'win32':
     # Windows 使用 .dll
-    steam_api_dll = os.path.join(PROJECT_ROOT, 'steam_api64.dll')
-    steamworks_dll = os.path.join(PROJECT_ROOT, 'SteamworksPy64.dll')
+    steam_api_dll = os.path.join(PROJECT_ROOT, 'steamworks', 'steam_api64.dll')
+    steamworks_dll = os.path.join(PROJECT_ROOT, 'steamworks', 'SteamworksPy64.dll')
     if os.path.exists(steam_api_dll):
         binaries.append((steam_api_dll, '.'))
     if os.path.exists(steamworks_dll):
         binaries.append((steamworks_dll, '.'))
     # 添加 steam_api64.lib（如果存在，供编译时使用）
-    steam_lib = os.path.join(PROJECT_ROOT, 'steam_api64.lib')
+    steam_lib = os.path.join(PROJECT_ROOT, 'steamworks', 'steam_api64.lib')
     if os.path.exists(steam_lib):
         binaries.append((steam_lib, '.'))
 
@@ -252,17 +261,19 @@ hiddenimports += [
     'requests',
     'cachetools',
     
-    # 项目主模块
-    'main_server',
-    'memory_server',
-    'agent_server',
-    'monitor',
-    
+    # 项目主模块（统一在 app/ 子包下）
+    'app',
+    'app.main_server',
+    'app.memory_server',
+    'app.agent_server',
+    'app.monitor',
+
     # config 子模块
     'config',
     'config.api',
-    'config.prompts_sys',
-    'config.prompts_chara',
+    'config.prompts',
+    'config.prompts.prompts_sys',
+    'config.prompts.prompts_chara',
     
     # brain 子模块
     'brain',

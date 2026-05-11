@@ -1260,7 +1260,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         
         # 检测区域并使用适当的提示词
         # china_region → 'zh'（百度），否则按用户语言选择（Google）
-        from config.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
+        from config.prompts.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
         from utils.language_utils import get_global_language
         china_region = is_china_region()
         keyword_lang = 'zh' if china_region else get_global_language()

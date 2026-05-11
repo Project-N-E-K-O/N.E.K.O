@@ -221,15 +221,114 @@ def _get_app_version_from_changelog() -> str:
         return "unknown"
 
 
-def _get_anonymous_device_id() -> str:
-    """生成匿名设备指纹。
+_MACHINE_ID_PLACEHOLDERS = {
+    # systemd 在 first-boot 前的占位
+    "uninitialized",
+    # 全零/全 F：VM 镜像克隆未重置、sysprep 异常、虚拟主板默认值的常见非真实 ID
+    "00000000000000000000000000000000",
+    "ffffffffffffffffffffffffffffffff",
+    "00000000-0000-0000-0000-000000000000",
+    "ffffffff-ffff-ffff-ffff-ffffffffffff",
+}
 
-    算法：SHA256(machine_uuid + install_salt)
-    - uuid.getnode(): MAC 地址整数（稳定的硬件标识）
-    - install_salt: 安装目录路径的哈希（防跨应用关联）
-    - 结果为 64 字符十六进制字符串，不可逆
 
-    参考 vLLM: 只用硬件/系统信息生成匿名 ID，不含用户 PII。
+def _is_valid_machine_id(value: Optional[str]) -> bool:
+    """合理性校验 OS 机器 ID，防止占位值或镜像克隆未重置的非真实 ID 把多台
+    机器折叠到同一个 device_id。
+
+    要求去掉 GUID 分隔符后正好 32 位十六进制，且不在已知占位符黑名单里。
+    校验失败时调用方应 fallback 到 legacy 算法，而不是把无效值当指纹用。
+    """
+    if not value:
+        return False
+    normalized = value.strip().lower()
+    if normalized in _MACHINE_ID_PLACEHOLDERS:
+        return False
+    hex_only = normalized.replace("-", "")
+    if len(hex_only) != 32:
+        return False
+    return all(c in "0123456789abcdef" for c in hex_only)
+
+
+def _read_os_machine_id() -> Optional[str]:
+    """读取操作系统级稳定机器标识。
+
+    - Windows: HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid
+    - macOS:   IOPlatformUUID（ioreg -rd1 -c IOPlatformExpertDevice）
+    - Linux:   /etc/machine-id 或 /var/lib/dbus/machine-id
+
+    这些 ID 由系统安装时生成，绑定到主板/系统而非网络配置，不会因为
+    网卡变化（VPN / Docker / 外接 NIC）或安装路径变化（Steam 库迁移、
+    源码版 / 打包版切换）漂移。
+
+    每个来源的返回值都会过 _is_valid_machine_id 合理性校验，避免占位值
+    （systemd `uninitialized`、全零/全 F GUID）被当成有效指纹。读取失败
+    或校验不通过返回 None，调用方需 fallback 到 legacy 算法。
+    """
+    import sys
+
+    try:
+        if sys.platform == "win32":
+            import winreg
+            try:
+                key = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Microsoft\Cryptography",
+                    0,
+                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                )
+                try:
+                    value, _ = winreg.QueryValueEx(key, "MachineGuid")
+                finally:
+                    winreg.CloseKey(key)
+                candidate = value.strip() if isinstance(value, str) else None
+                if _is_valid_machine_id(candidate):
+                    return candidate
+            except OSError:
+                return None
+
+        elif sys.platform == "darwin":
+            import re
+            import subprocess
+            try:
+                out = subprocess.run(
+                    ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return None
+            if out.returncode == 0:
+                m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out.stdout)
+                if m:
+                    candidate = m.group(1).strip()
+                    if _is_valid_machine_id(candidate):
+                        return candidate
+
+        else:
+            for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        value = f.read().strip()
+                except (FileNotFoundError, PermissionError, OSError):
+                    continue
+                if _is_valid_machine_id(value):
+                    return value
+    except Exception:
+        return None
+
+    return None
+
+
+def _get_legacy_device_id() -> str:
+    """旧版 device_id 算法（保留用于迁移期 fold）。
+
+    SHA256(uuid.getnode() | install_dir | "neko-telemetry")。getnode 在多网卡
+    机器上不稳定（VPN / Docker / 外接网卡 enumeration order 变化），install_dir
+    随安装位置变化，所以这个 ID 容易"漂"，长期 retention 数据会被打散。新版本
+    保留它仅用于 server 端 fold 历史数据：客户端在 payload 中同时上报新旧两个
+    ID，server 后续可通过 events 表里的 device_id_legacy 字段建立 mapping。
     """
     import uuid as _uuid
     import platform
@@ -239,10 +338,26 @@ def _get_anonymous_device_id() -> str:
     except Exception:
         machine_id = platform.node()
 
-    # 用安装路径作为 salt，同一机器不同安装目录会产生不同 ID
     install_salt = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     raw = f"{machine_id}|{install_salt}|neko-telemetry"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _get_anonymous_device_id() -> str:
+    """生成稳定的匿名设备指纹。
+
+    优先使用 OS 级稳定标识（_read_os_machine_id），失败时回退到 legacy 算法
+    保证不会写入空值。结果为 64 字符十六进制 SHA256，不可逆，不含 PII。
+
+    与 legacy 算法的命名空间用 "neko-telemetry-v2" 区分，确保新旧 ID 不会
+    在哈希空间相撞。
+
+    参考 vLLM: 只用硬件/系统信息生成匿名 ID，不含用户 PII。
+    """
+    os_id = _read_os_machine_id()
+    if os_id:
+        return hashlib.sha256(f"{os_id}|neko-telemetry-v2".encode("utf-8")).hexdigest()
+    return _get_legacy_device_id()
 
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
@@ -742,6 +857,12 @@ class TokenTracker:
 
             payload = {
                 "device_id": self._device_id,
+                # 迁移期同时带旧算法 ID，便于 server 在 events.payload 里
+                # 留底，将来可建 legacy→new 映射 fold 历史 cohort。server
+                # 当前 Pydantic model 不声明此字段，会被默认 ignore；HMAC
+                # 签名是基于完整 payload dict 的 canonical JSON 计算的，所以
+                # server 端验签会自动覆盖到，不需要任何调整。
+                "device_id_legacy": _get_legacy_device_id(),
                 "app_version": app_version,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
@@ -751,7 +872,20 @@ class TokenTracker:
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
-            batch_id = hashlib.sha256(payload_json.encode()).hexdigest()[:32]
+            # batch_id 用于 server seen_batches 幂等去重，必须在"同一份重试数据"
+            # 上稳定。device_id_legacy 依赖 uuid.getnode()，在多网卡机器上枚举
+            # 顺序不保证，重试期间可能漂；如果把它纳入 batch_id 计算，原本应该
+            # 被 dedupe 的重发会变成新 batch 被累加，daily_aggregates 双倍计数。
+            # 因此 batch_id 只覆盖核心幂等字段，签名仍覆盖完整 payload。
+            batch_core = {
+                "device_id": payload["device_id"],
+                "app_version": payload["app_version"],
+                "daily_stats": payload["daily_stats"],
+                "recent_records": payload["recent_records"],
+            }
+            batch_id = hashlib.sha256(
+                json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest()[:32]
             submission = {
                 "timestamp": ts,
                 "signature": sig,

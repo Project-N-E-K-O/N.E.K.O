@@ -37,6 +37,13 @@ let subtitleEnabled = initialSubtitleSettings
         ? window.appState.subtitleEnabled
         : localStorage.getItem('subtitleEnabled') === 'true');
 
+function isSubtitleTranslationOwner() {
+    return !(window.__NEKO_MULTI_WINDOW__ &&
+             window.nekoChatWindow &&
+             window.location &&
+             window.location.pathname === '/chat');
+}
+
 function applySharedSubtitleSettings(patch, options) {
     if (!SubtitleShared || typeof SubtitleShared.updateSettings !== 'function') {
         if (Object.prototype.hasOwnProperty.call(patch, 'subtitleEnabled')) {
@@ -357,6 +364,7 @@ async function processIncrementalTranslationQueue(requestSnapId) {
     if (incrementalTranslationActive) return;
     if (!incrementalTranslationQueue.length) return;
     if (!subtitleEnabled) return;
+    if (!isSubtitleTranslationOwner()) return;
     if (requestSnapId !== incrementalRequestId) return;
 
     var textToTranslate = incrementalTranslationQueue.shift();
@@ -448,6 +456,7 @@ function updateSubtitleStreamingText(text) {
     currentTurnOriginalText = cleaned;
 
     if (!subtitleEnabled) return;
+    if (!isSubtitleTranslationOwner()) return;
     if (userLanguage === null) getUserLanguage();
 
     var splitResult = splitSubtitleSentences(cleaned);
@@ -593,6 +602,9 @@ async function translateAndShowSubtitle(text) {
     currentTurnOriginalText = text;
 
     if (!subtitleEnabled) {
+        return;
+    }
+    if (!isSubtitleTranslationOwner()) {
         return;
     }
 

@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Galgame 游玩助手",
+  "plugin.description": "让猫娘陪伴你一起玩 Galgame",
   "entries.galgame_get_status.name": "获取 galgame 插件状态",
   "entries.galgame_get_status.description": "返回当前 bridge 连接状态、绑定游戏、最近错误与模式。",
   "entries.galgame_install_textractor.name": "安装 Textractor",

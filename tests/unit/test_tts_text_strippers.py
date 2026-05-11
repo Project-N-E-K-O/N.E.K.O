@@ -1,7 +1,8 @@
 """TtsBracketStripper / TtsMarkdownStripper：流式剥离行为与跨 chunk 边界。
 
 覆盖：
-- 括号：所有半角/全角类型、嵌套、跨 chunk、未闭合 flush 处理、落单 close
+- 括号：常见半角/全角类型、嵌套、跨 chunk、未闭合 flush 处理、落单 close；
+  书名号 ``《》`` 豁免并透传
 - markdown：bold/italic/strike/code/link/image/heading/list/quote、跨 chunk
   边界（marker 被切开时延后 emit）、pending 上限兜底、flush 残留清理
 """
@@ -39,8 +40,8 @@ def _feed_chunks(stripper, chunks):
         ("她（笑了笑）说道", "她说道"),
         # 全角方括号
         ("话题【打断】继续", "话题继续"),
-        # 全角书名号
-        ("看《三体》了吗", "看了吗"),
+        # 书名号豁免：标题内容应进入 TTS
+        ("看《三体》了吗", "看《三体》了吗"),
         # 直角引号 / 双重直角引号
         ("「话语」与『内容』", "与"),
         # 角括号
@@ -75,6 +76,13 @@ def test_bracket_split_across_chunks():
     s = TtsBracketStripper()
     out = _feed_chunks(s, ["她（", "笑", "）说"])
     assert out == "她说"
+
+
+def test_bracket_book_title_marks_passthrough_across_chunks():
+    """书名号不是 TTS 旁白括号，跨 chunk 也不能吞标题内容。"""
+    s = TtsBracketStripper()
+    out = _feed_chunks(s, ["看《三", "体》了吗"])
+    assert out == "看《三体》了吗"
 
 
 def test_bracket_open_only_chunk():

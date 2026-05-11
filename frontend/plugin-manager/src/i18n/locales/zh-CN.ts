@@ -326,6 +326,107 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已发送取消请求'
   },
+  packageManager: {
+    resultDialog: {
+      title: '包管理结果记录',
+      subtitle: '保留最近 {count} 条执行结果',
+      empty: '执行包管理操作后，这里会显示记录',
+      viewDetails: '查看详情',
+      detailTitle: '结果详情',
+      summaryTitle: '明细',
+      notesTitle: '注意',
+      rawJsonTitle: '原始结果 JSON',
+      kinds: {
+        pack: '打包',
+        inspect: '检查',
+        verify: '校验',
+        unpack: '解包',
+        analyze: '分析',
+      },
+      inspect: {
+        packageId: '包 ID',
+        packageType: '类型',
+        version: '版本',
+        schemaVersion: 'Schema',
+        hashCheck: 'Hash 校验',
+        profiles: 'Profiles',
+        packageTypes: {
+          bundle: '整合包',
+          plugin: '插件包',
+        },
+        hashStatus: {
+          notChecked: '未校验',
+          passed: '通过',
+          failed: '失败',
+        },
+      },
+      metrics: {
+        pack: {
+          type: '类型',
+          succeeded: '成功',
+          failed: '失败',
+          containsPlugins: '包含插件',
+          status: '状态',
+          complete: '完成',
+          partialFailed: '部分失败',
+        },
+        inspect: {
+          pluginCount: '插件数',
+          profileCount: 'Profiles',
+          hash: 'Hash',
+        },
+        unpack: {
+          processedPlugins: '已处理插件',
+          conflictStrategy: '冲突策略',
+          hash: 'Hash',
+        },
+        analyze: {
+          pluginCount: '插件数',
+          commonDependencies: '共同依赖',
+          sharedDependencies: '共享依赖',
+        },
+      },
+      highlights: {
+        pack: {
+          bundlePluginId: '整合包 ID',
+          bundleName: '整合包名称',
+          bundleVersion: '整合包版本',
+          outputPath: '输出路径',
+          firstPlugin: '第一个插件',
+          latestPackagePath: '最新包路径',
+        },
+        inspect: {
+          packageId: '包 ID',
+          packageType: '包类型',
+          version: '版本',
+        },
+        unpack: {
+          packageId: '包 ID',
+          pluginsRoot: '插件目录',
+          profilesRoot: 'Profiles 目录',
+        },
+        analyze: {
+          currentSdk: '当前 SDK 支持',
+          supported: '全部支持',
+          unsupported: '存在不兼容',
+          matchingVersions: '推荐组合',
+        },
+      },
+      list: {
+        pluginPrefix: '插件：',
+        profilePrefix: '配置：',
+        renamedSuffix: '（重命名）',
+        arrow: '→',
+      },
+      warnings: {
+        bundleNeedsTwoPlugins: '整合包通常应至少包含两个插件',
+        verifyFailed: '包未通过 hash 校验，请不要直接导入运行环境',
+        inspectHashFailed: '当前包 hash 校验失败，内容可能已被修改',
+        analyzeSdkMismatch: '当前 SDK 版本不被所有插件共同支持',
+        analyzeSharedDependencies: '检测到 {count} 个共享依赖，整合时需要重点检查版本约束',
+      },
+    },
+  },
   status: {
     running: '运行中',
     stopped: '已停止',
@@ -428,19 +529,19 @@ export default {
       },
       lines: {
         introActivationHint: '点一下这里，我就能开始说话啦～',
-        introGreetingReply: '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。',
-        introBasic: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
-        takeoverCaptureCursor: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
-        takeoverPluginPreviewHome: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
-        takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
-        takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
-        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
-        takeoverSettingsPeekDetailPart1: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
-        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
-        takeoverReturnControl: '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
-        interruptResistLight1: '喂！不要拽我啦，还没轮到你的回合呢！',
-        interruptResistLight3: '等一下啦！还没结束呢，不要随便打断我啦！',
-        interruptAngryExit: '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
+        introGreetingReply: '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！',
+        introBasic: '这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+        takeoverCaptureCursor: '超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
+        takeoverPluginPreviewHome: '还没完呢！你快看快看，这里还有超多好玩的插件呢！',
+        takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！',
+        takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天，也不是不行啦。给我多准备点小鱼干吧，嘿嘿。好了，不逗你啦，设置都在这个齿轮里。',
+        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+        takeoverSettingsPeekDetailPart1: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？',
+        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+        takeoverReturnControl: '好啦好啦，不霸占你的电脑啦！控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵！',
+        interruptResistLight1: '喂！不要拽我啦，现在还没轮到你的回合呢！',
+        interruptResistLight3: '等一下啦！还没结束呢，不要这么随便打断我啦！',
+        interruptAngryExit: '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
         introPractice: '现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～',
       },
     }
@@ -455,79 +556,79 @@ export default {
     steps: {
       start: {
         title: '从这里开始',
-        body: '点这个按钮就可以随时重新播放插件管理器的教程，不会自动打扰你喵。'
+        body: '点这个按钮可以随时重播插件管理器巡览；切换界面语言时，正在播放的教程也会同步换成新语言。'
       },
       stats: {
         title: '插件总览',
-        body: '这里会显示插件总数、运行中、已停止和崩溃数量，让你一眼看出当前状态。'
+        body: '这里汇总插件总数、运行中、已停止和崩溃数量，先判断插件系统整体是否正常。'
       },
       metrics: {
         title: '性能监控',
-        body: '这里展示插件服务整体的 CPU、内存、线程和活跃插件情况，排查问题时很有用。'
+        body: '这里展示插件服务整体 CPU、内存、线程和活跃插件数。galgame OCR 或 Agent 卡顿时，可以先看这里。'
       },
       server: {
         title: '服务器信息',
-        body: '这里可以看到 SDK 版本、插件数量和更新时间，用来确认当前插件服务是否正常。'
+        body: '这里显示 SDK 版本、插件数量和更新时间，用来确认当前后端插件服务是否处于可用状态。'
       },
       plugins: {
         title: '插件列表入口',
-        body: '要启动、停止、配置插件，或者查看单个插件日志，就从左侧的插件管理进入。'
+        body: '进入插件管理后，可以启动、停止、重载、配置插件，也可以打开 galgame_plugin 的界面和教程。'
       },
       pluginWorkbench: {
         title: '插件管理工作台',
-        body: '这里集中展示插件、适配器和扩展，是日常管理插件的主要页面。'
+        body: '这里集中展示普通插件、适配器和扩展。galgame_plugin、B站弹幕、MCP 等插件都在这里管理。'
       },
       pluginFilters: {
         title: '筛选和搜索',
-        body: '可以按名称、状态、类型或高级规则筛选插件，插件很多时会特别好用。'
+        body: '可以按名称、状态、类型或高级规则筛选插件。要快速找到 galgame_plugin，可以直接搜索 galgame。'
       },
       pluginLayout: {
         title: '视图布局',
-        body: '这里可以切换列表、单排、双排和紧凑布局，按你的屏幕空间调整显示方式。'
+        body: '这里切换列表、单排、双排和紧凑布局。插件很多时，用双排或紧凑布局能减少滚动。'
       },
       pluginContextMenu: {
         title: '右键操作',
-        body: '对插件右键可以快速打开详情、配置、日志，也能执行启停、重载等常用操作。'
+        body: '右键插件可以快速打开详情、配置、日志、界面或教程，也能执行启动、停止、重载等操作。'
       },
       packageManager: {
         title: '包管理侧栏',
-        body: '包管理会复用当前筛选和选择结果，用来打包、检查、校验或解包插件包。'
+        body: '包管理会复用当前筛选和多选结果，用来把插件打成单插件包或整合包，也能处理本地包。'
       },
       packageOperations: {
         title: '包管理操作区',
-        body: '这里可以选择打包模式、检查插件包、解包或分析整合包；本指南不会自动执行危险操作。'
+        body: '这里支持打包选中/单个/全部插件、打包整合包、检查与校验包、解包，以及分析整合包依赖。'
       },
       pluginDetail: {
         title: '插件详情页',
-        body: '进入详情页后可以查看插件元信息、入口点、性能、配置和日志。'
+        body: '详情页会显示插件界面、教程、基础信息、入口、性能、配置和日志。galgame_plugin 的主面板就在“界面”标签。'
       },
       pluginDetailActions: {
         title: '详情页操作',
-        body: '右上角保留了针对当前插件的快捷操作，适合在确认详情后再启动、停止或重载。'
+        body: '右上角是当前插件的快捷操作。调试 galgame_plugin 前，通常先确认它已启动，再进入界面或查看日志。'
       },
       runs: {
         title: '运行记录',
-        body: '运行记录会展示插件入口任务的执行历史和实时状态。'
+        body: '运行记录会展示插件入口任务的执行历史和实时状态，例如安装 OCR 依赖、解释台词或总结场景。'
       },
       runsList: {
         title: '运行列表',
-        body: '左侧列表用于选择某次运行，刷新按钮可以重新同步最新记录。'
+        body: '左侧列表用于选择某次任务运行。安装、分析或 Agent 入口执行后，可以在这里回看结果。'
       },
       runsDetail: {
         title: '运行详情',
-        body: '右侧会显示阶段、进度、错误和导出物；取消按钮只对可取消任务出现。'
+        body: '右侧显示阶段、进度、错误和导出物；可取消任务才会出现取消按钮，适合排查长任务。'
       },
       logs: {
         title: '服务器日志',
-        body: '服务器日志可以帮助你查看插件服务本身的输出和错误。'
+        body: '服务器日志用于查看插件服务整体输出。galgame_plugin 专属日志也可以从插件详情页进入。'
       },
       logToolbar: {
         title: '日志筛选工具',
-        body: '这里可以按级别、关键词和行数筛选日志，也可以控制是否自动滚动。'
+        body: '这里可以按级别、关键词和行数筛选日志，也能切换自动滚动。排查时建议用插件 ID 做关键词。'
       },
       logList: {
         title: '日志列表',
-        body: '日志列表按时间展示来源、级别和消息，是排查插件问题的第一站。'
+        body: '日志列表按时间展示来源、级别和消息。OCR、Memory Reader、Agent 或包管理报错都可以先从这里定位。'
       }
     }
   }

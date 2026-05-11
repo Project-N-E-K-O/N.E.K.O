@@ -15,6 +15,12 @@
     let currentCharaName = '';
     let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd'
     let isModelLoaded = false;
+    let isModelLoading = false;
+    let primaryActionBusy = false;
+    const MODEL_LOADING_CLOSE_FALLBACK_MS = 8000;
+    let modelLoadingStartedAt = 0;
+    let allowCloseWhileLoading = false;
+    let loadingCloseFallbackTimer = null;
     let previewLoopId = null;     // requestAnimationFrame ID
     let lastPreviewTime = 0;      // 上次预览渲染时间戳
 
@@ -80,6 +86,7 @@
     document.addEventListener('DOMContentLoaded', async () => {
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
+        showLoading(true);
 
         // 设置标题和按钮（maker 模式与导出模式使用不同文案）
         const titleEl = document.querySelector('.page-title-bar h2');
@@ -120,6 +127,8 @@
                 pendingFallbackDefaultSave = false;
                 await doAutoSaveDefaultCardFace();
             }
+        } else {
+            showLoading(false);
         }
     });
 
@@ -154,6 +163,10 @@
         backBtn.addEventListener('click', () => {
             closeCardMakerPage();
         });
+        window.nekoBeforeWindowClose = async () => {
+            const handled = await closeCardMakerPage();
+            return handled ? { handled: true } : undefined;
+        };
 
         // 标签页切换
         document.querySelectorAll('.panel-tab').forEach(tab => {
@@ -237,6 +250,11 @@
     }
 
     async function closeCardMakerPage() {
+        if (isModelLoading && !canCloseWhileLoading()) return false;
+        if (isModelLoading) {
+            closeCardMakerWindow();
+            return true;
+        }
         try {
             await saveModelSaveFallbackDefaultCardFace('card-maker-close', {
                 maxWait: 1200,
@@ -245,10 +263,14 @@
             });
         } catch (error) {
             console.error('[CardMaker] 关闭前默认卡面兜底失败:', error);
-        } finally {
-            if (window.opener) { window.close(); }
-            else { window.history.back(); }
         }
+        closeCardMakerWindow();
+        return true;
+    }
+
+    function closeCardMakerWindow() {
+        if (window.opener) { window.close(); }
+        else { window.history.back(); }
     }
 
     function shouldSaveFallbackDefaultCardFace() {
@@ -411,6 +433,7 @@
         currentCharaName = name;
         cardName.textContent = name;
 
+        isModelLoaded = false;
         showLoading(true);
         resetComposition();
 
@@ -445,6 +468,7 @@
         } catch (e) {
             console.error('[CardExport] 加载角色模型失败:', e);
             showLoading(false);
+            updatePrimaryActionAvailability();
         }
     }
 
@@ -484,6 +508,7 @@
         } catch (e) {
             console.error('[CardExport] 模型加载异常:', e);
             showLoading(false);
+            updatePrimaryActionAvailability();
         }
     }
 
@@ -823,11 +848,16 @@
     // ====== 导出 ======
     async function doExport(type) {
         if (!currentCharaName) return;
+        if (!isModelLoaded) {
+            alert(t('cardExport.modelStillLoading', '模型仍在加载，请稍后再保存'));
+            return;
+        }
 
         try {
             let response;
 
-            exportFullBtn.disabled = true;
+            primaryActionBusy = true;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exporting', '导出中...');
 
             // 用调整后的构图参数渲染最终立绘
@@ -849,7 +879,8 @@
                 );
             }
 
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exportFull', '导出角色卡');
 
             if (!response.ok) {
@@ -863,7 +894,8 @@
         } catch (e) {
             console.error('[CardExport] 导出失败:', e);
             alert(t('cardExport.exportError', '导出失败: ') + e.message);
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.exportFull', '导出角色卡');
         }
     }
@@ -871,9 +903,17 @@
     // ====== 保存卡面（maker 模式专用） ======
     async function doSaveCardFace(options = {}) {
         if (!currentCharaName) return;
+        if (!isModelLoaded) {
+            const message = t('cardExport.modelStillLoading', '模型仍在加载，请稍后再保存');
+            if (!options.silent) {
+                alert(message);
+            }
+            throw new Error(message);
+        }
 
         try {
-            exportFullBtn.disabled = true;
+            primaryActionBusy = true;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = options.statusText || t('cardExport.savingCardFace', '保存中...');
 
             const cardBlob = await renderFullCard(options.renderOptions || {});
@@ -897,7 +937,8 @@
             const respJson = await response.json().catch(() => ({}));
             if (respJson.partial_success) {
                 exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
-                exportFullBtn.disabled = false;
+                primaryActionBusy = false;
+                updatePrimaryActionAvailability();
                 cardFaceSaved = true;
                 notifyCardFaceUpdated(currentCharaName);
                 return { status: 'partial', error: respJson.error || '' };
@@ -913,7 +954,8 @@
                 return saveResult;
             }
             setTimeout(() => {
-                exportFullBtn.disabled = false;
+                primaryActionBusy = false;
+                updatePrimaryActionAvailability();
                 exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             }, 1500);
             return saveResult;
@@ -922,7 +964,8 @@
             if (!options.silent) {
                 alert(t('cardExport.saveCardFaceFailed', '保存失败: ' + e.message, { error: e.message }));
             }
-            exportFullBtn.disabled = false;
+            primaryActionBusy = false;
+            updatePrimaryActionAvailability();
             exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             throw e;
         }
@@ -932,8 +975,6 @@
         try {
             resetComposition();
             clearAllStickers();
-            exportFullBtn.disabled = true;
-            exportFullBtn.textContent = t('cardExport.autoSavingDefaultCardFace', '正在生成默认卡面...');
             await waitForCondition(() => isModelLoaded, 10000, '模型加载');
             await new Promise(resolve => setTimeout(resolve, 300));
             await doSaveCardFace({
@@ -943,7 +984,6 @@
             });
         } catch (e) {
             console.error('[CardMaker] 自动生成默认卡面失败:', e);
-            exportFullBtn.disabled = false;
             exportFullBtn.textContent = t('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败');
         }
     }
@@ -1591,12 +1631,75 @@
         return Math.min(max, Math.max(min, v));
     }
 
+    function updatePrimaryActionAvailability() {
+        if (!exportFullBtn) return;
+        exportFullBtn.disabled = primaryActionBusy || isModelLoading || !isModelLoaded;
+    }
+
+    function canCloseWhileLoading() {
+        if (!isModelLoading) return true;
+        if (allowCloseWhileLoading) return true;
+        return modelLoadingStartedAt > 0 &&
+            Date.now() - modelLoadingStartedAt >= MODEL_LOADING_CLOSE_FALLBACK_MS;
+    }
+
+    function scheduleLoadingCloseFallback() {
+        if (loadingCloseFallbackTimer) {
+            window.clearTimeout(loadingCloseFallbackTimer);
+        }
+        loadingCloseFallbackTimer = window.setTimeout(() => {
+            loadingCloseFallbackTimer = null;
+            if (!isModelLoading) return;
+            allowCloseWhileLoading = true;
+            updateCardMakerInteractivity(true);
+        }, MODEL_LOADING_CLOSE_FALLBACK_MS);
+    }
+
+    function clearLoadingCloseFallback() {
+        if (loadingCloseFallbackTimer) {
+            window.clearTimeout(loadingCloseFallbackTimer);
+            loadingCloseFallbackTimer = null;
+        }
+        modelLoadingStartedAt = 0;
+        allowCloseWhileLoading = false;
+    }
+
+    function updateCardMakerInteractivity(locked) {
+        const isLocked = !!locked;
+        const allowLoadingClose = isLocked && canCloseWhileLoading();
+        document.body?.classList.toggle('card-maker-loading', isLocked);
+
+        const controls = document.querySelectorAll(
+            '#control-panel button, #control-panel input, #control-panel select, #control-panel textarea, ' +
+            '.page-title-bar button, [data-neko-window-control]'
+        );
+        controls.forEach(control => {
+            if (control === exportFullBtn) return;
+            const isCloseControl = control === backBtn ||
+                control.getAttribute('data-neko-window-control') === 'close';
+            const shouldDisable = isLocked && !(allowLoadingClose && isCloseControl);
+            control.disabled = shouldDisable;
+            control.setAttribute('aria-disabled', shouldDisable ? 'true' : 'false');
+        });
+        updatePrimaryActionAvailability();
+    }
+
     function showLoading(show) {
+        const nextLoading = !!show;
+        if (nextLoading && !isModelLoading) {
+            modelLoadingStartedAt = Date.now();
+            allowCloseWhileLoading = false;
+            scheduleLoadingCloseFallback();
+        } else if (!nextLoading) {
+            clearLoadingCloseFallback();
+        }
+        isModelLoading = nextLoading;
         if (show) {
             loadingOverlay.classList.remove('hidden');
         } else {
             loadingOverlay.classList.add('hidden');
         }
+        updateCardMakerInteractivity(show);
     }
 
     function resetComposition() {

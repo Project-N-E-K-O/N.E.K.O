@@ -56,7 +56,7 @@ Allowed exceptions
 
 Scope
 -----
-Default scan: ``main_routers/`` + ``*_server.py`` at the repo root +
+Default scan: ``main_routers/`` + ``app/*_server.py`` +
 ``plugin/server/routes/``. Pass paths explicitly to scan elsewhere.
 
 Suppression
@@ -85,9 +85,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_PATHS: list[str] = [
     "main_routers",
-    "main_server.py",
-    "memory_server.py",
-    "agent_server.py",
+    "app/main_server.py",
+    "app/memory_server.py",
+    "app/agent_server.py",
     "plugin/server/routes",
 ]
 
@@ -427,8 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         "paths",
         nargs="*",
         help=(
-            "Files/directories to scan (default: main_routers/ + *_server.py "
-            "at repo root + plugin/server/routes/)."
+            "Files/directories to scan (default: main_routers/ + app/*_server.py "
+            "+ plugin/server/routes/)."
         ),
     )
     args = parser.parse_args(argv)

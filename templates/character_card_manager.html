@@ -22,7 +22,8 @@
             -webkit-app-region: no-drag;
         }
 
-        /* 最大化/恢复按钮 - 样式与关闭按钮统一 */
+        /* 最小化、最大化/恢复按钮 - 样式与关闭按钮统一 */
+        .minimize-btn,
         .maximize-btn {
             background: transparent;
             border: none;
@@ -40,15 +41,27 @@
             -webkit-app-region: no-drag;
         }
 
+        .minimize-btn:hover,
         .maximize-btn:hover {
             background: rgba(255, 255, 255, 0.2);
             transform: translateY(-1px);
         }
 
+        .minimize-btn:active,
         .maximize-btn:active {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(1px) scale(0.95);
             opacity: 0.9;
+        }
+
+        /* 最小化图标：横线 */
+        .minimize-icon {
+            display: block;
+            width: 16px;
+            height: 2px;
+            background: #fff;
+            border-radius: 2px;
+            transform: translateY(5px);
         }
 
         /* 最大化图标：实心方框 */
@@ -112,14 +125,6 @@
             -webkit-appearance: none;
             width: 100%;
             text-align: left;
-        }
-        .master-profile-header .arrow {
-            transition: transform 0.2s ease;
-            width: 20px;
-            height: 20px;
-        }
-        .master-profile-header.open .arrow {
-            transform: rotate(90deg);
         }
         .master-profile-content {
             position: absolute;
@@ -405,7 +410,10 @@
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
         <div class="title-bar-buttons">
-            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" title="最大化">
+            <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="minimize-icon"></span>
+            </button>
+            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
                 <span class="maximize-icon"></span>
             </button>
             <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
@@ -439,7 +447,9 @@
 <p data-i18n="steam.pageDescription">通过此页面，您可以浏览、修改、上传、导入导出角色卡和管理Steam创意工坊中的Live2D模型和声音</p>
 </div>
 <button type="button" class="btn sm sidebar-cloudsave-btn" id="open-cloudsave-manager-btn" data-i18n-title="character.openCloudsaveManager" title="云存档管理">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/><path d="M8 16l4 4 4-4"/><path d="M12 12v8"/></svg>
+    <span class="sidebar-cloudsave-icon" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 17.5A4.5 4.5 0 0 0 18 8.8h-1.2A7 7 0 1 0 4.5 16.6"/><path d="M12 12.5v6"/><path d="m9.5 16 2.5 2.5 2.5-2.5"/></svg>
+    </span>
     <span data-i18n="character.openCloudsaveManager">云存档管理</span>
 </button>
 </div>
@@ -447,7 +457,9 @@
 <!-- 主人档案区域 -->
 <div class="menu-section master-profile-section" id="master-profile-section">
     <button type="button" class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()" aria-expanded="false">
-        <img src="/static/icons/dropdown_arrow.png" class="arrow" alt="" style="width:20px;height:20px;">
+        <span class="master-profile-arrow-bubble" aria-hidden="true">
+            <span class="master-profile-arrow-symbol"></span>
+        </span>
         <span data-i18n="character.masterProfileTitle">主人档案</span>
     </button>
     <div class="master-profile-content" id="master-profile-content" style="display:none;">
@@ -869,6 +881,17 @@
 
     <!-- 初始化 -->
     <script>
+        // 最小化按钮逻辑
+        async function minimizeWindow() {
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.minimize !== 'function') return;
+            try {
+                await api.minimize();
+            } catch (e) {
+                // 忽略非 Electron 环境
+            }
+        }
+
         // 最大化/恢复按钮逻辑
         async function toggleMaximize() {
             const api = window.nekoWindowControl;
@@ -886,14 +909,21 @@
         function updateMaximizeIcon(isMaximized) {
             const icon = document.querySelector('.maximize-icon');
             if (!icon) return;
+            const btn = document.getElementById('maximizeBtn');
+            const labelKey = isMaximized ? 'common.restore' : 'common.maximize';
+            const fallbackLabel = isMaximized ? '恢复' : '最大化';
+            const translated = typeof window.t === 'function' ? window.t(labelKey) : null;
+            const label = translated && translated !== labelKey ? translated : fallbackLabel;
             if (isMaximized) {
                 icon.classList.add('restored');
-                const btn = document.getElementById('maximizeBtn');
-                if (btn) btn.setAttribute('title', '恢复');
             } else {
                 icon.classList.remove('restored');
-                const btn = document.getElementById('maximizeBtn');
-                if (btn) btn.setAttribute('title', '最大化');
+            }
+            if (btn) {
+                btn.setAttribute('data-i18n-title', labelKey);
+                btn.setAttribute('data-i18n-aria', labelKey);
+                btn.setAttribute('title', label);
+                btn.setAttribute('aria-label', label);
             }
         }
 

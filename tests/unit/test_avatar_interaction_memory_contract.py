@@ -1,6 +1,6 @@
 import pytest
 
-from config.prompts_avatar_interaction import (
+from config.prompts.prompts_avatar_interaction import (
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
     _build_avatar_interaction_memory_meta,
 )

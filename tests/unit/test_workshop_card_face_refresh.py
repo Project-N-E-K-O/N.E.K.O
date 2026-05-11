@@ -9,7 +9,9 @@ from main_routers import workshop_router
 
 def _write_image(path: Path, size: tuple[int, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGBA", size, (80, 160, 220, 255)).save(path)
+    mode = "RGB" if path.suffix.lower() in {".jpg", ".jpeg"} else "RGBA"
+    color = (80, 160, 220) if mode == "RGB" else (80, 160, 220, 255)
+    Image.new(mode, size, color).save(path)
 
 
 def _write_meta(path: Path, origin: str) -> None:
@@ -161,3 +163,42 @@ def test_ensure_workshop_card_face_meta_skips_user_owned_png_without_marker(tmp_
 
     assert created is False
     assert config_mgr.card_face_meta_path("demo").exists() is False
+
+
+@pytest.mark.unit
+def test_find_preview_image_uses_top_level_character_image_when_standard_preview_missing(tmp_path: Path):
+    item_dir = tmp_path / "workshop_item"
+    model_dir = item_dir / "独角兽-天使的 My Night"
+
+    item_dir.mkdir(parents=True, exist_ok=True)
+    (item_dir / "独角兽.chara.json").write_text("{}", encoding="utf-8")
+    _write_image(model_dir / "textures" / "texture_00.png", (2048, 2048))
+    _write_image(item_dir / "独角兽.png", (1024, 1024))
+
+    assert workshop_router.find_preview_image_in_folder(str(item_dir)) == str(item_dir / "独角兽.png")
+
+
+@pytest.mark.unit
+def test_find_preview_image_recognizes_standard_preview_jpeg_and_webp(tmp_path: Path):
+    item_dir = tmp_path / "workshop_item"
+
+    item_dir.mkdir(parents=True, exist_ok=True)
+    _write_image(item_dir / "zzz.png", (1024, 1024))
+    _write_image(item_dir / "preview.webp", (1024, 1024))
+
+    assert workshop_router.find_preview_image_in_folder(str(item_dir)) == str(item_dir / "preview.webp")
+
+
+@pytest.mark.unit
+def test_find_preview_image_accepts_character_file_stem_hint(tmp_path: Path):
+    item_dir = tmp_path / "workshop_item"
+
+    item_dir.mkdir(parents=True, exist_ok=True)
+    _write_image(item_dir / "zzz.png", (1024, 1024))
+    _write_image(item_dir / "CardA.png", (1024, 1024))
+
+    assert workshop_router.find_preview_image_in_folder(
+        str(item_dir),
+        "展示名A",
+        "CardA",
+    ) == str(item_dir / "CardA.png")

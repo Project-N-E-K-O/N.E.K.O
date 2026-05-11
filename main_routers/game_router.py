@@ -26,7 +26,7 @@ _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
 
 from fastapi import APIRouter, Request
 
-from config.prompts_game import (
+from config.prompts.prompts_game import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -36,7 +36,7 @@ from config.prompts_game import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from config.prompts_game_route import (
+from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
@@ -349,7 +349,9 @@ def _strip_json_fence(text: str) -> str:
 
 
 def _soccer_random_default_difficulty() -> str:
-    return str(random.choice(_SOCCER_DEFAULT_DIFFICULTIES))
+    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_game initialDifficulty 对齐；
+    # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
+    return "lv2"
 
 
 def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
@@ -723,7 +725,7 @@ def _default_soccer_pregame_context(*, initial_difficulty: str | None = None) ->
         "initialDifficulty": difficulty,
         "openingLine": "",
         "tonePolicy": "普通陪玩，轻松自然，不强行解释成哄开心或关系修复。",
-        "difficultyPolicy": "普通陪玩默认随机中等难度；后续由局内互动和游戏 AI 自然调整。",
+        "difficultyPolicy": "普通陪玩默认中等难度；后续由局内互动和游戏 AI 自然调整。",
         "moodPolicy": "沿用普通陪玩表现；不引入强情绪惯性。",
         "softeningSignals": [],
         "hardeningSignals": [],
@@ -1092,11 +1094,22 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     current_name = str(lanlan_name or characters.get('当前猫娘', '') or '').strip()
 
     master_data = characters.get('主人', {})
-    master_name = master_data.get('档案名', '玩家')
+    # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
+    # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
+    # 直接进入返回 dict 给下游消费，统一在源头收口。
+    master_name = str(master_data.get('档案名', '玩家') or '玩家')
 
     # 获取角色人格 prompt
+    # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
+    # 模板（普通会话路径在 main_server 写入 SessionManager 时才替换）。Game 流程
+    # 直接从 config_manager 拿，必须在源头补这一步替换，否则下游 _build_game_prompt
+    # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
+    # llm_prompt_leak_check 警告并污染人设。
+    # 模板本身也用 str() 兜底：极端情况下 lanlan_prompt_map 里的值可能是 None。
     _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
-    lanlan_prompt = lanlan_prompt_map.get(current_name, '')
+    lanlan_prompt = str(lanlan_prompt_map.get(current_name, '') or '') \
+        .replace('{LANLAN_NAME}', current_name) \
+        .replace('{MASTER_NAME}', master_name)
 
     # 获取对话模型配置
     conversation_config = config_manager.get_model_api_config('conversation')

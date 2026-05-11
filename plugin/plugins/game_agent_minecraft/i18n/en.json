@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Minecraft Game Agent",
+  "plugin.description": "Bridge a local Minecraft Agent (WebSocket) so the AI can issue commands through the minecraft_task tool and narrate gameplay in real time"
+}

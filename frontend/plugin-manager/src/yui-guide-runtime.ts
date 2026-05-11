@@ -69,12 +69,12 @@ const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
   interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
   interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-  interrupt_angry_exit: '人类~~~~！你真的.mp3',
+  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
 } as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
@@ -108,6 +108,7 @@ const GUIDE_AUDIO_BY_KEY = {
 } as const
 
 const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
+export const LOCAL_TUTORIAL_STATE_EVENT = 'neko:plugin-tutorial:state'
 
 export type PluginDashboardLocalTutorialMotion = 'point' | 'click' | 'ellipse'
 
@@ -130,6 +131,8 @@ type StartPluginDashboardTutorialOptions = {
     keyboardHint?: string
   }
 }
+
+type StartPluginDashboardTutorialOptionsFactory = () => StartPluginDashboardTutorialOptions
 
 function normalizeOrigin(value: string) {
   const normalizedValue = String(value || '').trim()
@@ -4078,16 +4081,41 @@ class PluginDashboardLocalTutorialRunner {
 }
 
 let activeLocalTutorialRunner: PluginDashboardLocalTutorialRunner | null = null
+let activeLocalTutorialOptionsFactory: StartPluginDashboardTutorialOptionsFactory | null = null
 
-export function startPluginDashboardTutorial(options: StartPluginDashboardTutorialOptions) {
+export function startPluginDashboardTutorial(
+  options: StartPluginDashboardTutorialOptions | StartPluginDashboardTutorialOptionsFactory,
+) {
+  const optionsFactory = typeof options === 'function' ? options : () => options
+  const resolvedOptions = optionsFactory()
   activeLocalTutorialRunner?.cleanup()
   const runner = new PluginDashboardLocalTutorialRunner()
   activeLocalTutorialRunner = runner
-  void runner.start(options).finally(() => {
+  activeLocalTutorialOptionsFactory = optionsFactory
+  window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_STATE_EVENT, {
+    detail: {
+      running: true,
+    },
+  }))
+  void runner.start(resolvedOptions).finally(() => {
     if (activeLocalTutorialRunner === runner) {
       activeLocalTutorialRunner = null
+      activeLocalTutorialOptionsFactory = null
+      window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_STATE_EVENT, {
+        detail: {
+          running: false,
+        },
+      }))
     }
   })
+}
+
+export function restartActivePluginDashboardTutorial() {
+  if (!activeLocalTutorialRunner || !activeLocalTutorialOptionsFactory) {
+    return false
+  }
+  startPluginDashboardTutorial(activeLocalTutorialOptionsFactory)
+  return true
 }
 
 export function initPluginDashboardYuiGuideRuntime() {

@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.prompts_galgame import (
+from config.prompts.prompts_galgame import (
     GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
     GALGAME_DEFAULT_MASTER_PLACEHOLDER,
     get_galgame_fallback_options,
@@ -28,7 +28,7 @@ from config.prompts_galgame import (
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
 )
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from utils.language_utils import detect_language, normalize_language_code
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
@@ -52,17 +52,17 @@ def _resolve_language(text_sample: str, request_lang: str | None) -> str:
     """Pick the best 'short' language code for the prompt."""
     if request_lang:
         try:
-            return normalize_language_code(request_lang, format='short') or 'zh'
+            return normalize_language_code(request_lang, format='short') or 'en'
         except Exception:
             # Bad language tag from the client — fall through to text-based detection.
             pass
     try:
         if text_sample.strip():
-            return normalize_language_code(detect_language(text_sample), format='short') or 'zh'
+            return normalize_language_code(detect_language(text_sample), format='short') or 'en'
     except Exception:
-        # detect_language can choke on emoji-only / very short strings — default to zh.
+        # detect_language can choke on emoji-only / very short strings — default to en.
         pass
-    return 'zh'
+    return 'en'
 
 
 def _coerce_messages(raw: Any) -> list[dict[str, str]]:

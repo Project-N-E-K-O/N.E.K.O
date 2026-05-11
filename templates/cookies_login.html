@@ -9,6 +9,8 @@
     <script src="/static/libs/purify.js"></script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/theme-manager.js"></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css">
+    <script src="/static/js/window_controls.js" defer></script>
     <style>
         :root { --primary: #4f46e5; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }
         
@@ -467,9 +469,17 @@
 <body>
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
-        <button class="close-btn" onclick="window.close()" title="关闭" aria-label="关闭" data-i18n-title="common.close" data-i18n-aria="common.close">
-            <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
-        </button>
+        <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon"></span>
+            </button>
+            <button class="close-btn" onclick="window.close()" title="关闭" aria-label="关闭" data-i18n-title="common.close" data-i18n-aria="common.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close" draggable="false">
+            </button>
+        </div>
     </div>
     <div class="dashboard-wrapper">
     <div class="dashboard">
