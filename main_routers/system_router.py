@@ -6041,6 +6041,12 @@ async def proactive_chat(request: Request):
 
             # regen 输出可能仍带 "主动搭话\n[TAG]\n" 前缀；轻量剥一下。失败就
             # 用原文（mismatch 不至于致命）。
+            # ⚠️ 必须同时更新 source_tag：regen 可能改变话题意图（MUSIC → CHAT
+            # 等），否则下游 ``is_music_used = ... and source_tag == 'MUSIC'``、
+            # ``should_try_music_fallback``、``build_proactive_response`` 仍用
+            # 第一次 draft 解析出来的过期 tag 来选 channel / 决定音乐推荐，导致
+            # 误路由或误 drop（codex P1）。regen 没带 tag 时保留原 source_tag
+            # 兜底——下面有"无 tag + 非空 → CHAT"的二次兜底足够稳。
             _cleaned = (regen_text or "").strip()
             _m = re.search(r"主动搭话\s*\n", _cleaned)
             if _m:
@@ -6049,6 +6055,7 @@ async def proactive_chat(request: Request):
                 r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _cleaned, re.IGNORECASE,
             )
             if _tag_m:
+                source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文
             if not _cleaned.strip() or "[PASS]" in _cleaned.upper():
