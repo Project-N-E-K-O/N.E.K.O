@@ -1389,8 +1389,22 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     continue
 
                 if sid is None:
-                    # 当前 speech 文本流结束 — 先尝试 flush 同 sid 的缓冲，再发 text.done。
-                    # 无论 flush 成败，utterance 已经结束，pending 必须清空，避免泄漏到下一轮。
+                    # 当前 speech 文本流结束。如果 ws 还死着（reconnect 持续失败）
+                    # 但缓冲里有同 sid 的内容（典型场景：单 chunk 短消息首次 reconnect
+                    # 失败，pending 缓冲了那一条，下一个进来就是 sid=None 结束信号），
+                    # 做一次 last-chance reconnect，把 pending 发出去再 text.done。
+                    # 失败就放弃，避免短消息被 transient 网络故障吞掉。
+                    if ws is None and pending_text and pending_text_sid is not None:
+                        try:
+                            ws = await websockets.connect(tts_url, additional_headers=headers)
+                            receive_task = asyncio.create_task(receive_messages())
+                            current_speech_id = pending_text_sid
+                            text_done_sent = False
+                            resampler.clear()
+                            logger.info("xAI TTS last-chance reconnect on utterance end succeeded")
+                        except Exception as e:
+                            logger.warning(f"xAI TTS last-chance reconnect 失败，pending 丢弃: {e}")
+
                     if ws and current_speech_id is not None and not text_done_sent:
                         if pending_text and pending_text_sid == current_speech_id:
                             try:
@@ -3280,7 +3294,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     elif core_api_type == 'openai':
         return openai_tts_worker, None, 'openai'
     elif core_api_type == 'grok':
-        return grok_streaming_tts_worker, None, 'grok'
+        # default 段 fallthrough（has_custom=True + free preset voice 时也会到这里）
+        # 也必须显式给 CORE_API_KEY override —— has_custom=True 时 _start_tts_thread
+        # 默认从 tts_custom 槽取凭证，对 xAI 是错的鉴权 key（往往是 cosyvoice 或
+        # qwen 的 ASSIST key）。与 _resolve_grok_native_tts_worker / cosyvoice 上面
+        # 的 grok short-circuit 同源。
+        grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        return grok_streaming_tts_worker, grok_api_key, 'grok'
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker, None, None
