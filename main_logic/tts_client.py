@@ -2964,6 +2964,10 @@ def _parse_elevenlabs_pcm_sample_rate(output_format: str | None) -> int:
         return 24000
 
 
+def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
+    return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
+
+
 def _get_elevenlabs_options(base_url=None):
     cm = get_config_manager()
     core_cfg = cm.get_core_config()
@@ -3093,6 +3097,16 @@ async def _elevenlabs_stream_synthesize(
         "Accept": "audio/pcm",
     }
     output_format = output_format or ELEVENLABS_DEFAULT_OUTPUT_FORMAT
+    if not _is_elevenlabs_pcm_output_format(output_format):
+        _enqueue_error(response_queue, {
+            "code": "ELEVENLABS_OUTPUT_FORMAT_UNSUPPORTED",
+            "provider": "elevenlabs",
+            "message": (
+                "ElevenLabs streaming currently supports PCM output only; "
+                f"got {output_format!r}"
+            ),
+        })
+        return
     params = {"output_format": output_format}
     if optimize_streaming_latency:
         params["optimize_streaming_latency"] = str(max(0, min(4, int(optimize_streaming_latency))))

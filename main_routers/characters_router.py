@@ -3088,14 +3088,18 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
         _config_manager = get_config_manager()
 
         core_config = await _config_manager.aget_core_config()
+        requested_provider = (provider or '').strip().lower()
         # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
         tts_config = _config_manager.get_model_api_config('tts_custom')
-        provider = (provider or core_config.get('TTS_PROVIDER') or '').strip()
+        core_provider = (core_config.get('TTS_PROVIDER') or '').strip().lower()
         base_url = (tts_config.get('base_url') or '').rstrip('/')
-        if (
-            provider == 'elevenlabs'
-            or core_config.get('ELEVENLABS_ENABLED')
-            or 'elevenlabs.io' in base_url
+        if requested_provider == 'elevenlabs' or (
+            not requested_provider
+            and (
+                core_provider == 'elevenlabs'
+                or core_config.get('ELEVENLABS_ENABLED')
+                or 'elevenlabs.io' in base_url
+            )
         ):
             base_url = (
                 core_config.get('ELEVENLABS_BASE_URL')
@@ -3110,20 +3114,21 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
                 'voices': voices,
                 'api_url': base_url
             })
-        if not core_config.get('GPTSOVITS_ENABLED', False):
-            return JSONResponse({
-                'success': False,
-                'error': 'GPTSOVITS_NOT_ENABLED',
-                'code': 'GPTSOVITS_NOT_ENABLED',
-                'voices': []
-            }, status_code=400)
-        if not tts_config.get('is_custom'):
-            return JSONResponse({
-                'success': False,
-                'error': 'CUSTOM_API_NOT_ENABLED',
-                'code': 'CUSTOM_API_NOT_ENABLED',
-                'voices': []
-            }, status_code=400)
+        if requested_provider == 'gptsovits' or not requested_provider or core_provider == 'gptsovits':
+            if not core_config.get('GPTSOVITS_ENABLED', False):
+                return JSONResponse({
+                    'success': False,
+                    'error': 'GPTSOVITS_NOT_ENABLED',
+                    'code': 'GPTSOVITS_NOT_ENABLED',
+                    'voices': []
+                }, status_code=400)
+            if not tts_config.get('is_custom'):
+                return JSONResponse({
+                    'success': False,
+                    'error': 'CUSTOM_API_NOT_ENABLED',
+                    'code': 'CUSTOM_API_NOT_ENABLED',
+                    'voices': []
+                }, status_code=400)
         if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
             return JSONResponse({
                 'success': False,

@@ -1547,7 +1547,10 @@ function loadElevenlabsConfig(data) {
 
     setInputValue('elevenlabsBaseUrl', data.elevenlabsBaseUrl || 'https://api.elevenlabs.io');
     setInputValue('elevenlabsModel', data.elevenlabsModel || 'eleven_flash_v2_5');
-    setInputValue('elevenlabsOutputFormat', data.elevenlabsOutputFormat || 'pcm_24000');
+    const elevenlabsOutputFormat = typeof data.elevenlabsOutputFormat === 'string' && /^pcm_\d+$/.test(data.elevenlabsOutputFormat.trim())
+        ? data.elevenlabsOutputFormat.trim()
+        : 'pcm_24000';
+    setInputValue('elevenlabsOutputFormat', elevenlabsOutputFormat);
     setInputValue('elevenlabsOptimizeStreamingLatency', data.elevenlabsOptimizeStreamingLatency ?? 0);
     _setSliderValue('elevenlabsStability', data.elevenlabsStability, 0.5);
     _setSliderValue('elevenlabsSimilarityBoost', data.elevenlabsSimilarityBoost, 0.75);
