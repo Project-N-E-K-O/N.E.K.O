@@ -382,6 +382,36 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
 }
 
 
+# GSV worker 的"句标点"白名单。判据：
+# - 含字母 / 数字（Unicode 字母含 CJK / 假名 / 韩文 / 希腊 / 西里尔 /
+#   阿拉伯 letter）→ 真内容，放行
+# - 无字母数字但全是白名单标点（不限个数）→ LLM 真实标点 chunk（`，` `。`
+#   `？` 等，可能也含罕见的 `。。。` `？！`），放行让 server TextBuffer 切句
+# - 无字母数字且含任何非白名单符号 → kaomoji（`=。=` `(╯°□°）╯` `^_^`），丢
+#
+# 标点集刻意覆盖多语言（CJK / ASCII / Arabic / Spanish），但**不放** `(` `)`
+# `[` `]` `{` `}` `「」` `《》` `"` `'` `~` `^` `*` `_` `-` 等 kaomoji 高发字符。
+_GSV_ALLOWED_PUNCT = frozenset('。！？；：，、…—．.!?;:,¿¡،؟؛')
+
+
+def _gsv_should_drop_chunk(text: str) -> bool:
+    """True = chunk 是 kaomoji / 怪符号堆，丢；False = 放行。
+
+    扫完所有字符再判：任何 alnum 都让 chunk 立刻放行（含 letter 的 kaomoji
+    如 `T_T` / `\\(^o^)/` 走这条路过——server clean 完还有字母，不会触发
+    empty error）；无 alnum 时只看有没有非白名单符号。
+    """
+    has_unsanctioned = False
+    for c in text:
+        if c.isspace():
+            continue
+        if c.isalnum():
+            return False
+        if c not in _GSV_ALLOWED_PUNCT:
+            has_unsanctioned = True
+    return has_unsanctioned
+
+
 # ─── 非流式输入 TTS 公共基础设施 ───────────────────────────────────────────
 
 
@@ -2923,7 +2953,10 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if not tts_text or not tts_text.strip():
                     continue
 
-                if not re.sub(r'\W+', '', tts_text.strip()):
+                # kaomoji / 颜文字兜底：见 _GSV_ALLOWED_PUNCT 注释。
+                # `=。=` `(╯°□°）╯` `^_^` 这类丢；单标点 `，` `。` `？` 放过让
+                # server TextBuffer 触发切句。
+                if _gsv_should_drop_chunk(tts_text):
                     continue
 
                 # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理
