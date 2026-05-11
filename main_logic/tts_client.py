@@ -2477,6 +2477,22 @@ def _resolve_gemini_native_tts_worker(cm):
 register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
 
 
+def _resolve_grok_native_tts_worker(cm):
+    """Native voice registry resolver for xAI Grok streaming TTS worker.
+
+    Grok's built-in voices (eve/ara/leo/rex/sal) bill against CORE_API_KEY,
+    same as the realtime endpoint. Without this registration, a non-empty
+    user-selected voice_id makes core._has_custom_tts() return True and
+    get_tts_worker() routes to cosyvoice_vc_tts_worker before the
+    `core_api_type == 'grok'` default-voice branch — silent synthesis or
+    auth failure. See PR #1306 Codex review.
+    """
+    return grok_streaming_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+
+
+register_tts_worker_resolver('grok', _resolve_grok_native_tts_worker)
+
+
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """OpenAI TTS worker — 按句切分合成，流式接收音频。"""
     try:
