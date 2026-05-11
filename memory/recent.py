@@ -334,9 +334,19 @@ class CompressedRecentHistoryManager:
     # 刷一次 past block"的稳定节奏。这里改记"上次 hint 真正注入的时刻"，
     # 即"上次 LLM 实际更新 past block 的时刻"——只有那种 turn 才推进锚点。
     def _summary_meta_path(self, lanlan_name: str) -> str:
-        """side meta file per character: <memory>/<name>/recent_meta.json
-        with {"last_past_block_update_at": ISO}. 跟 recent.json 共目录，
-        恢复时易于与会话快照对齐。"""
+        """Side meta file per character, co-located with recent.json
+        ({"last_past_block_update_at": ISO}).
+
+        优先沿用 ``self.log_file_path[lanlan_name]`` 的目录——这是该类所有
+        recent.json 读写的实际路径来源（character_data 第 9 元组项）。如果
+        用户配置把某个角色的 recent.json 移到了 memory_dir 之外，meta 文件
+        仍跟它在同一目录，不会跑去无关位置（CodeRabbit review on PR #1316
+        catch）。在 update_history 跑过之前 log_file_path 可能为空——这种
+        情况下 fall back 到 memory_dir-based 推导。
+        """
+        recent_path = (self.log_file_path or {}).get(lanlan_name)
+        if recent_path:
+            return os.path.join(os.path.dirname(recent_path), 'recent_meta.json')
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, lanlan_name),

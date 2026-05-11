@@ -1749,7 +1749,7 @@ REFLECTION_PROMPT = {
 要求：
 - 紧扣单一观察或模式，不要罗列事实，也不要把多个无关事实混在一起
 - 简洁清晰，不得超过 150 字
-- **不要在 reflection 文本里使用"今天/刚刚/最近/这周"等相对时间词** —— 具体时间靠 event_when 字段记录，文本保持中性叙事（例如"某次"、"那段时间"、"近期"）
+- **不要在 reflection 文本里使用"今天/刚刚/最近/这周/近期"等相对时间词** —— 具体时间靠 event_when 字段记录，文本保持中性叙事（例如"某次"、"那段时间"、"当时"）
 
 请以 JSON 格式返回，字段顺序保持如下：
 {"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "你的反思洞察", "temporal_scope": "pattern", "event_when": null}""",
@@ -1791,7 +1791,7 @@ Step 5: Write the reflection around the chosen entity / relation_type / temporal
 Requirements:
 - Stay focused on a single observation or pattern; do not list facts, and do not mix unrelated facts
 - Be concise and clear; the reflection MUST NOT exceed 150 words
-- **Do NOT use relative time words like "today / just now / recently / this week" in the reflection text** — specific timing lives in event_when; keep the prose neutral (e.g. "on one occasion", "during that period", "in recent times")
+- **Do NOT use relative time words like "today / just now / recently / this week" in the reflection text** — specific timing lives in event_when; keep the prose neutral (e.g. "on one occasion", "during that period", "at that time")
 
 Return JSON with fields in this exact order:
 {"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "your reflective insight", "temporal_scope": "pattern", "event_when": null}""",
