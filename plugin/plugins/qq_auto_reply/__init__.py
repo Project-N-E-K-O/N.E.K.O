@@ -565,7 +565,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 resolved_qq,
                 is_group=False,
                 user_nickname=matched_nickname,
-                use_memory_context=True,
+                use_memory_context=permission_level == "admin",
                 persist_memory=False,
                 ephemeral_session=True,
             )
@@ -655,6 +655,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if stop_napcat:
             await self._stop_managed_napcat()
         self._session_locks.clear()
+
+    def _track_handler_task(self, task: asyncio.Task) -> None:
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._on_handler_task_done)
+
+    def _on_handler_task_done(self, task: asyncio.Task) -> None:
+        self._handler_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self.logger.error(f"Message handler task failed: {exc}")
 
     async def _process_messages(self):
         while self._running:
