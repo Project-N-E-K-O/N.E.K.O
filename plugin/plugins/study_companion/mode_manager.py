@@ -73,6 +73,16 @@ _MODE_INTENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+_EXPLAIN_INTENT_RULES: tuple[str, ...] = (
+    "解释",
+    "解释下",
+    "解释一下",
+    "说明",
+    "explain",
+    "explain this",
+    "please explain",
+)
+
 
 def _json_copy(value: Any) -> Any:
     if isinstance(value, dict):
@@ -94,7 +104,7 @@ def _meaningful_length(text: str) -> int:
 
 def _is_english_language(language: str | None) -> bool:
     language_tag = str(language or "").strip().lower().replace("_", "-")
-    primary = language_tag.split("-", 1)[0]
+    primary = re.split(r"[-]", language_tag, maxsplit=1)[0]
     return primary == "en" or primary == "eng"
 
 
@@ -169,6 +179,25 @@ def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
                 "normalized_text": normalized_text,
                 "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
             }
+    for keyword in _EXPLAIN_INTENT_RULES:
+        keyword_folded = keyword.casefold()
+        if keyword_folded not in folded:
+            continue
+        remainder = normalized_text
+        remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
+        remainder = _strip_noise(remainder)
+        if _meaningful_length(remainder) < 4:
+            remainder = ""
+        return {
+            "matched": True,
+            "kind": "concept_explain",
+            "mode": MODE_CONCEPT_EXPLAIN,
+            "keyword": keyword,
+            "pure_switch": False,
+            "remaining_text": remainder,
+            "normalized_text": normalized_text,
+            "transition_phrase": "",
+        }
     return {
         "matched": False,
         "kind": "",

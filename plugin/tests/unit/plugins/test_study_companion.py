@@ -197,9 +197,16 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
 
 def test_study_mode_manager_intent_switch_rules() -> None:
     assert normalize_mode("concept_explain") == MODE_COMPANION
+    assert "already in" in build_transition_phrase(MODE_COMPANION, language="en-GB", outcome="same")
+    assert "already in" in build_transition_phrase(MODE_COMPANION, language="eng", outcome="same")
     pure = handle_user_intent("教我")
     assert pure["mode"] == MODE_TEACHING
     assert pure["pure_switch"] is True
+
+    explained = handle_user_intent("解释光合作用")
+    assert explained["kind"] == "concept_explain"
+    assert explained["mode"] == "concept_explain"
+    assert explained["remaining_text"] == "光合作用"
 
     with_text = handle_user_intent("教我光合作用")
     assert with_text["mode"] == MODE_TEACHING
@@ -700,6 +707,12 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert pure.value["new_mode"] == MODE_TEACHING
         assert pure.value["reply"]
         assert "教学模式" in pure.value["reply"]
+
+        explain_only = await plugin.study_explain_text("解释光合作用")
+        assert isinstance(explain_only, Ok)
+        assert explain_only.value["intent"]["kind"] == "concept_explain"
+        assert "mode_switch" not in explain_only.value
+        assert explain_only.value["reply"] == "explained[teaching]: 光合作用"
 
         with plugin._lock:
             plugin._state.active_mode = MODE_COMPANION
