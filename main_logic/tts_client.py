@@ -1295,8 +1295,13 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
         # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
         # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
-        # 短回复（utterance 只有 1 个 chunk）尤其需要这条保险。interrupt 时清空。
+        # 短回复（utterance 只有 1 个 chunk）尤其需要这条保险。
+        # `pending_text_sid` 把缓冲绑定到产生它的 sid：跨 utterance 时（sid 切换、
+        # interrupt、当前 utterance 结束 flush 不出）必须丢弃旧 pending，否则
+        # 上一轮的残文会被拼进下一轮的首条 text.delta —— 用户层会听到"上一轮内容
+        # 串进新回复"的内容污染。
         pending_text: list[str] = []
+        pending_text_sid: str | None = None
 
         async def receive_messages():
             # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
@@ -1380,15 +1385,16 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     current_speech_id = None
                     text_done_sent = False
                     pending_text.clear()
+                    pending_text_sid = None
                     continue
 
                 if sid is None:
-                    # 当前 speech 文本流结束 — 先尝试 flush 缓冲，再发 text.done
+                    # 当前 speech 文本流结束 — 先尝试 flush 同 sid 的缓冲，再发 text.done。
+                    # 无论 flush 成败，utterance 已经结束，pending 必须清空，避免泄漏到下一轮。
                     if ws and current_speech_id is not None and not text_done_sent:
-                        if pending_text:
+                        if pending_text and pending_text_sid == current_speech_id:
                             try:
                                 await ws.send(json.dumps({"type": "text.delta", "delta": "".join(pending_text)}))
-                                pending_text.clear()
                             except Exception as e:
                                 logger.warning(f"flush pending_text 失败: {e}")
                         try:
@@ -1396,6 +1402,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             text_done_sent = True
                         except Exception as e:
                             logger.warning(f"发送 text.done 失败: {e}")
+                    pending_text.clear()
+                    pending_text_sid = None
                     continue
 
                 # 新 speech_id — 关旧开新（对偶 step worker 的重连策略）
@@ -1427,9 +1435,15 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         # 缓冲当前 chunk —— 否则 continue 后这条文本永远丢失，
-                        # 短消息（utterance 只有 1 个 chunk）会整段静音。
+                        # 短消息（utterance 只有 1 个 chunk）会整段静音。绑 sid，
+                        # 后续如果切换到别的 sid 而旧 pending 还在，能在发送前丢掉
+                        # 避免跨 utterance 内容污染。
                         if tts_text and tts_text.strip():
+                            if pending_text_sid != sid:
+                                # 上一个失败的 utterance 残留，丢弃后重新绑定到当前 sid
+                                pending_text.clear()
                             pending_text.append(tts_text)
+                            pending_text_sid = sid
                         await asyncio.sleep(1.0)
                         # 不更新 current_speech_id —— 下次同 sid 进来会重新尝试重连
                         continue
@@ -1445,12 +1459,21 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 if not ws:
                     continue
 
-                # 如果之前 reconnect 失败缓冲了文本，先拼上一起发出去，
-                # 维持 utterance 内 chunk 的原顺序。
-                if pending_text:
+                # 如果之前 reconnect 失败缓冲了同 sid 的文本，先拼上一起发出去，
+                # 维持 utterance 内 chunk 的原顺序；如果 pending 属于别的 sid（跨
+                # utterance 残留），直接丢掉防止内容污染。
+                if pending_text and pending_text_sid == current_speech_id:
                     payload_text = "".join(pending_text) + tts_text
                     pending_text.clear()
+                    pending_text_sid = None
                 else:
+                    if pending_text:
+                        logger.debug(
+                            "xAI TTS 丢弃跨 utterance 的残留 pending_text (sid=%s, current=%s, len=%d)",
+                            pending_text_sid, current_speech_id, sum(len(x) for x in pending_text),
+                        )
+                        pending_text.clear()
+                        pending_text_sid = None
                     payload_text = tts_text
 
                 try:
@@ -1461,8 +1484,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     _record_tts_telemetry("grok", payload_text)
                 except Exception as e:
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
-                    # send 失败时把内容放回 pending，等下次重连后重发，避免丢失。
+                    # send 失败时把内容放回 pending（绑定当前 sid），等下次重连后重发。
                     pending_text.append(payload_text)
+                    pending_text_sid = current_speech_id
                     ws = None
                     current_speech_id = None
                     # 与 step / qwen worker 对偶：send 失败时同步 cancel 旧
