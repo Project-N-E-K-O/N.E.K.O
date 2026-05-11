@@ -278,7 +278,8 @@ def test_ngrams_basic_cjk():
 
 def test_ngrams_empty_returns_empty():
     assert _ngrams("") == []
-    assert _ngrams(None or "") == []  # type: ignore[arg-type]
+    # None 走 ``text or ""`` 兜底，等价于空串；显式传 None 验证容错。
+    assert _ngrams(None) == []  # type: ignore[arg-type]
 
 
 # ── 7. prompt 渲染 (recent topics + regen avoid) ─────────────

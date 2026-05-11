@@ -74,36 +74,52 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
 
     历史兼容：早期可能只有 ``term`` 和 ``created_at``——这里补齐
     ``last_seen_at`` / ``expire_at`` / ``hit_count`` / ``kind`` / ``locale``。
+
+    ⚠️ 容错：单条脏数据（如 ``created_at: "abc"``）不应该让整份文件 load 失败、
+    把所有合法 directive 一起重置成空。整个函数包在一个 try/except 里，本条
+    返回 None 让 caller 丢弃但保留其它条目（CodeRabbit Minor）。
     """
     if not isinstance(raw, dict):
         return None
-    term = raw.get("term")
-    if not isinstance(term, str) or not term:
-        return None
-    kind = raw.get("kind") or "ban_topic"
-    if not isinstance(kind, str):
-        kind = "ban_topic"
-    locale = raw.get("locale") if isinstance(raw.get("locale"), str) else "und"
-    created_at = float(raw.get("created_at") or 0) or _now()
-    last_seen_at = float(raw.get("last_seen_at") or created_at)
-    # 历史文件可能没写 expire_at；按 last_seen + TTL 补
-    expire_at = float(raw.get("expire_at") or 0) or (
-        last_seen_at + USER_DIRECTIVE_TTL_SECONDS
-    )
     try:
-        hit_count = int(raw.get("hit_count") or 1)
-    except (TypeError, ValueError):
-        hit_count = 1
-    return {
-        "term": term,
-        "kind": kind,
-        "locale": locale,
-        "created_at": created_at,
-        "last_seen_at": last_seen_at,
-        "expire_at": expire_at,
-        "hit_count": max(1, hit_count),
-        "source": raw.get("source") or "regex",
-    }
+        term = raw.get("term")
+        if not isinstance(term, str) or not term:
+            return None
+        kind = raw.get("kind") or "ban_topic"
+        if not isinstance(kind, str):
+            kind = "ban_topic"
+        locale = raw.get("locale") if isinstance(raw.get("locale"), str) else "und"
+        try:
+            created_at = float(raw.get("created_at") or 0) or _now()
+        except (TypeError, ValueError):
+            created_at = _now()
+        try:
+            last_seen_at = float(raw.get("last_seen_at") or created_at)
+        except (TypeError, ValueError):
+            last_seen_at = created_at
+        # 历史文件可能没写 expire_at；按 last_seen + TTL 补
+        try:
+            expire_at = float(raw.get("expire_at") or 0) or (
+                last_seen_at + USER_DIRECTIVE_TTL_SECONDS
+            )
+        except (TypeError, ValueError):
+            expire_at = last_seen_at + USER_DIRECTIVE_TTL_SECONDS
+        try:
+            hit_count = int(raw.get("hit_count") or 1)
+        except (TypeError, ValueError):
+            hit_count = 1
+        return {
+            "term": term,
+            "kind": kind,
+            "locale": locale,
+            "created_at": created_at,
+            "last_seen_at": last_seen_at,
+            "expire_at": expire_at,
+            "hit_count": max(1, hit_count),
+            "source": raw.get("source") or "regex",
+        }
+    except Exception:
+        return None
 
 
 class UserDirectivesManager:

@@ -56,6 +56,21 @@ _TRIM_TRAIL_TOKENS = (
 )
 
 
+def _norm_lang(lang: str) -> str:
+    """归一化 lang code（``zh-CN`` → ``zh``、``pt-BR`` → ``pt`` 等）。
+
+    本模块的 3 个 render 函数都靠 dict 精确 key 取模板；如果上游把
+    ``user_language`` 直接传过来（带 region 后缀），会全部走英文兜底——这是
+    用户可见的回归。在边界归一化一次，比要求所有调用方都先 normalize 更稳。
+    """
+    try:
+        from config._runtime import normalize_language_code as _nlc
+        out = _nlc(lang, format='short')
+        return out or 'en'
+    except Exception:
+        return lang or 'en'
+
+
 def _trim_term(term: str) -> str:
     """裁剪 term：先剥尾部 particle / 修饰词，再剥两端标点 + 空白。"""
     if not term:
@@ -179,10 +194,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"|[,.!?;]|$)"),
     # о X + больше + не говори
     ("ru", "ban_topic",
-     r"о[бо]?\s+(.{1,30}?)\s+больше\s+не\s+(?:говори|упоминай)"),
+     r"(?:обо|об|о)\s+(.{1,30}?)\s+больше\s+не\s+(?:говори|упоминай)"),
     # я не хочу + (говорить|слышать) + о X
     ("ru", "ban_topic",
-     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+о[бо]?\s+(.{1,40}?)(?:[\s,.!?;]|$)"),
+     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+(?:обо|об|о)\s+(.{1,40}?)(?:[\s,.!?;]|$)"),
 
     # ---------- es ----------
     # no hables / no menciones / deja de hablar + (de|sobre) + X
@@ -317,10 +332,12 @@ def render_directives_block(terms: List[str], lang: str) -> str:
     """把 active term 列表渲染成一段 system-prompt 文本（含 leading newlines）。
 
     空列表 → 返回 ""（调用方直接 concat，不需要判空）。
+    ``lang`` 接受完整 locale（``zh-CN`` 等），内部归一化为 short code。
     """
     if not terms:
         return ""
-    template = USER_DIRECTIVES_PROMPT_BLOCK.get(lang) or USER_DIRECTIVES_PROMPT_BLOCK['en']
+    short = _norm_lang(lang)
+    template = USER_DIRECTIVES_PROMPT_BLOCK.get(short) or USER_DIRECTIVES_PROMPT_BLOCK['en']
     items = "\n".join(f"- {t}" for t in terms)
     return template.format(items=items, n=len(terms))
 
@@ -386,7 +403,8 @@ def render_recent_topics_block(terms: List[str], lang: str) -> str:
     """把"最近 topic 词"列表渲染成 system-prompt 片段；空列表 → ""。"""
     if not terms:
         return ""
-    template = RECENT_TOPIC_HINT_PROMPT_BLOCK.get(lang) or RECENT_TOPIC_HINT_PROMPT_BLOCK['en']
+    short = _norm_lang(lang)
+    template = RECENT_TOPIC_HINT_PROMPT_BLOCK.get(short) or RECENT_TOPIC_HINT_PROMPT_BLOCK['en']
     items = "\n".join(f"- {t}" for t in terms)
     return template.format(items=items, n=len(terms))
 
@@ -439,7 +457,8 @@ def render_regen_avoid_instruction(terms: List[str], lang: str) -> str:
     """把 regen 用的 "避开 X / Y" 指令渲染成单行文本。空列表 → ""。"""
     if not terms:
         return ""
-    template = PROACTIVE_REGEN_AVOID_INSTRUCTION.get(lang) or PROACTIVE_REGEN_AVOID_INSTRUCTION['en']
+    short = _norm_lang(lang)
+    template = PROACTIVE_REGEN_AVOID_INSTRUCTION.get(short) or PROACTIVE_REGEN_AVOID_INSTRUCTION['en']
     # 用各 locale 的"、/、/ , / etc" 列表分隔符
-    sep = "、" if lang in ("zh", "ja") else ", "
+    sep = "、" if short in ("zh", "ja") else ", "
     return template.format(terms=sep.join(terms))

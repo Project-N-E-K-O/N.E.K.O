@@ -74,6 +74,9 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
+    ANTI_REPEAT_DROP_THRESHOLD,
+    ANTI_REPEAT_INJECT_TOP_K,
+    ANTI_REPEAT_REGEN_THRESHOLD,
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
@@ -103,6 +106,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_label_aliases_flat,
 )
 from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
+from config.prompts.prompts_directives import render_regen_avoid_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -5974,20 +5978,18 @@ async def proactive_chat(request: Request):
         # avoidance 指令）；纠正后仍 >= DROP 则放弃本次投递。
         # corpus 在 ``mgr.finish_proactive_delivery`` 里写入；首次调用 / 新角色
         # 时 corpus 为空，score_draft 直接返回 0，整段无副作用。
+        # 常量 + render helper 走模块顶部 import（``ANTI_REPEAT_*`` /
+        # ``PROACTIVE_PHASE2_GENERATE_MAX_TOKENS`` / ``render_regen_avoid_instruction``）；
+        # 这里 try 仅包 corpus 单例与评分本身——若把常量 import 也塞进 try，
+        # except 后下面的 ``>= ANTI_REPEAT_DROP_THRESHOLD`` 会 NameError（codex P1）。
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
-            from config import (
-                ANTI_REPEAT_DROP_THRESHOLD,
-                ANTI_REPEAT_INJECT_TOP_K,
-                ANTI_REPEAT_REGEN_THRESHOLD,
-                PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-            )
-            from config.prompts.prompts_directives import render_regen_avoid_instruction
             _ar_corpus = get_anti_repeat_corpus()
             _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
         except Exception as _ar_exc:  # pragma: no cover - defensive
             logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
             _bm25_total, _bm25_terms = 0.0, {}
+            _ar_corpus = None
 
         if _bm25_total >= ANTI_REPEAT_DROP_THRESHOLD:
             logger.info(
@@ -6085,6 +6087,27 @@ async def proactive_chat(request: Request):
                     "action": "pass",
                     "message": "BM25 regen 后仍超阈值，已 drop",
                     "bm25_score": _regen_total,
+                }))
+            # regen 文本也跑一次字面相似度检查——BM25 抓"换种说法但同 topic"，
+            # 字面相似度抓"几乎一字不差"，两条独立信号；regen 在 BM25 上过关
+            # 不代表没撞上最近原话（model 偶尔会沿用语序）。CodeRabbit Major
+            # 指出。
+            _regen_dup, _regen_sim = _is_similar_to_recent_proactive_chat(
+                lanlan_name, _cleaned,
+            )
+            if _regen_dup:
+                logger.info(
+                    "[%s] proactive BM25 regen still literal-dup (similarity=%.3f)",
+                    lanlan_name, _regen_sim,
+                )
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 后字面相似度仍超阈值，已 drop",
+                    "similarity": _regen_sim,
+                    "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
                 }))
             # 采用 regen 文本接着走下游 source_tag / TTS 投递
             response_text = _cleaned
