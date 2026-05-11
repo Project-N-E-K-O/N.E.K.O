@@ -155,7 +155,8 @@ class NekoPluginBase:
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         del wrap_with_hooks
         entries: dict[str, EventHandler] = {}
-        for attr_name, class_value in inspect.getmembers_static(type(self)):
+        getmembers_static = getattr(inspect, "getmembers_static", inspect.getmembers)
+        for attr_name, class_value in getmembers_static(type(self)):
             if attr_name.startswith("_"):
                 continue
             target = class_value.__func__ if isinstance(class_value, (staticmethod, classmethod)) else class_value

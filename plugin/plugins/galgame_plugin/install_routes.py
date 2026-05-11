@@ -28,7 +28,7 @@ router = APIRouter(tags=["galgame-install"])
 logger = get_logger("galgame.install_routes")
 run_service = RunService()
 
-_INSTALL_PLUGIN_IDS = {"galgame_plugin"}
+_INSTALL_PLUGIN_IDS = {"galgame_plugin", "study_companion"}
 _STALE_INSTALL_STATUS = "failed"
 _STALE_INSTALL_PHASE = "failed"
 _UI_I18N_DIR = Path(__file__).resolve().parent / "i18n" / "ui"
@@ -80,8 +80,20 @@ def _normalize_ui_locale(locale: str) -> str:
     return "zh-CN"
 
 
-def _get_install_kind_spec(kind: str) -> dict[str, Any]:
+def _install_entry_id(plugin_id: str, galgame_entry_id: str) -> str:
+    if plugin_id == "study_companion":
+        mapping = {
+            "galgame_install_tesseract": "study_install_tesseract",
+            "galgame_download_rapidocr_models": "study_download_rapidocr_models",
+        }
+        return mapping.get(galgame_entry_id, galgame_entry_id)
+    return galgame_entry_id
+
+
+def _get_install_kind_spec(kind: str, *, plugin_id: str = "galgame_plugin") -> dict[str, Any]:
     normalized = str(kind or "").strip().lower()
+    if plugin_id == "study_companion" and normalized == "textractor":
+        raise HTTPException(status_code=404, detail="Textractor install is not supported by study_companion")
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
     # galgame). textractor + tesseract still need runtime install. rapidocr_models
@@ -90,21 +102,21 @@ def _get_install_kind_spec(kind: str) -> dict[str, Any]:
     mapping = {
         "textractor": {
             "kind": "textractor",
-            "entry_id": "galgame_install_textractor",
+            "entry_id": _install_entry_id(plugin_id, "galgame_install_textractor"),
             "label": "Textractor",
             "queued_message": "Textractor install queued",
             "entry_timeout": 600.0,
         },
         "tesseract": {
             "kind": "tesseract",
-            "entry_id": "galgame_install_tesseract",
+            "entry_id": _install_entry_id(plugin_id, "galgame_install_tesseract"),
             "label": "Tesseract",
             "queued_message": "Tesseract install queued",
             "entry_timeout": 300.0,
         },
         "rapidocr_models": {
             "kind": "rapidocr_models",
-            "entry_id": "galgame_download_rapidocr_models",
+            "entry_id": _install_entry_id(plugin_id, "galgame_download_rapidocr_models"),
             "label": "RapidOCR Models",
             "queued_message": "RapidOCR model download queued",
             "entry_timeout": 600.0,
@@ -307,7 +319,7 @@ async def _start_install_task(
     request: Request,
 ) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     try:
         client_host = request.client.host if request.client is not None else None
         args: dict[str, object] = {"force": bool(payload.force)}
@@ -357,7 +369,7 @@ async def _start_install_task(
 
 def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     payload = load_latest_install_task_state(kind=spec["kind"])
     if payload is None:
         raise HTTPException(status_code=404, detail=f"No {spec['label']} install task found")
@@ -369,7 +381,7 @@ def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
 
 def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     return JSONResponse(
         _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
     )
@@ -377,7 +389,7 @@ def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSO
 
 def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request: Request) -> StreamingResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
 
     async def _event_stream():

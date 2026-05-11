@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Study Companion</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="study-shell">
+      <section class="study-toolbar" aria-label="Study companion controls">
+        <div>
+          <h1>Study Companion</h1>
+          <p id="statusLine">Starting...</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshBtn" type="button">Refresh</button>
+          <button id="ocrBtn" type="button">OCR</button>
+        </div>
+      </section>
+
+      <section class="study-workspace">
+        <label class="input-label" for="studyInput">Text</label>
+        <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here."></textarea>
+        <div class="action-row">
+          <button id="explainBtn" type="button">Explain</button>
+        </div>
+      </section>
+
+      <section class="reply-panel" aria-live="polite">
+        <h2>Reply</h2>
+        <pre id="replyText"></pre>
+      </section>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>
