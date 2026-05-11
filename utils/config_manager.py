@@ -3011,10 +3011,25 @@ class ConfigManager:
                 #   follow_core   → 从核心 API Key 派生
                 #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
                 #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #
+                # GSV 启用 + prefix='tts' + ttsModelProvider 默认 'follow_*' 时跳过派生：
+                # 派生会把 TTS_MODEL_API_KEY 写成 OPENROUTER_API_KEY / CORE_API_KEY（这俩是
+                # LLM key，可能是 Gemini / DeepSeek 等），随后 get_model_api_config('tts_custom')
+                # 的 is_gsv_url 分支会原样返回这个无关 key；get_tts_api_key('cosyvoice') 因此
+                # 拿到错的 key，CosyVoice clone 鉴权失败。跳过后 TTS_MODEL_API_KEY 保留其持久化
+                # 值（用户开 GSV 一般不会同时填这个字段，留空即可），让下游 is_gsv_url 分支的
+                # ASSIST_API_KEY_QWEN fallback 接手。
+                skip_key_for_follow_gsv = (
+                    is_follow
+                    and prefix == 'tts'
+                    and gsv_enabled_for_url
+                )
                 if provider == 'follow_core':
-                    config[apikey_key] = config.get('CORE_API_KEY', '')
+                    if not skip_key_for_follow_gsv:
+                        config[apikey_key] = config.get('CORE_API_KEY', '')
                 elif provider == 'follow_assist':
-                    config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                    if not skip_key_for_follow_gsv:
+                        config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
                 else:
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     if cfg_key is not None:
