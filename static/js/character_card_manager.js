@@ -5951,9 +5951,11 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             }
         }
 
-        // 加载 GPT-SoVITS 声音列表
-        await _loadPanelGsvVoices(selectEl, currentVoiceId);
-        await _loadPanelElevenlabsVoices(selectEl, currentVoiceId);
+        // 加载 GPT-SoVITS / ElevenLabs 声音列表
+        await Promise.allSettled([
+            _loadPanelGsvVoices(selectEl, currentVoiceId),
+            _loadPanelElevenlabsVoices(selectEl, currentVoiceId)
+        ]);
 
         // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
         // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
@@ -6108,7 +6110,7 @@ async function _loadPanelElevenlabsVoices(selectEl, currentVoiceId) {
         let elevenGroup = selectEl.querySelector('optgroup[data-elevenlabs-group="true"]');
         if (!elevenGroup) {
             elevenGroup = document.createElement('optgroup');
-            const elevenLabel = window.t ? window.t('character.elevenlabsVoices') : 'ElevenLabs 声音';
+            const elevenLabel = (window.t && window.t('character.elevenlabsVoices')) || 'ElevenLabs 声音';
             elevenGroup.label = '── ' + elevenLabel + ' ──';
             elevenGroup.dataset.elevenlabsGroup = 'true';
             selectEl.appendChild(elevenGroup);
@@ -6129,7 +6131,7 @@ async function _loadPanelElevenlabsVoices(selectEl, currentVoiceId) {
         const result = await resp.json();
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const elevenGroup = document.createElement('optgroup');
-            const elevenLabel = window.t ? window.t('character.elevenlabsVoices') : 'ElevenLabs 声音';
+            const elevenLabel = (window.t && window.t('character.elevenlabsVoices')) || 'ElevenLabs 声音';
             elevenGroup.label = '── ' + elevenLabel + ' ──';
             elevenGroup.dataset.elevenlabsGroup = 'true';
             result.voices.forEach(function (v) {

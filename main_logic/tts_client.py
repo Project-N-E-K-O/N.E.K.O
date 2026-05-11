@@ -126,14 +126,7 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
 
 
 def _resolve_elevenlabs_api_key(cm) -> str:
-    api_key = cm.get_tts_api_key('elevenlabs')
-    if api_key:
-        return api_key
-    try:
-        tts_config = cm.get_model_api_config('tts_custom')
-    except Exception:
-        tts_config = {}
-    return (tts_config.get('api_key') or '').strip()
+    return (cm.get_tts_api_key('elevenlabs') or '').strip()
 
 
 async def _get_elevenlabs_voices(base_url: str):
@@ -3341,6 +3334,20 @@ def _config_value_is_enabled(value) -> bool:
     return bool(value)
 
 
+def _is_elevenlabs_enabled(core_cfg: dict | None) -> bool:
+    core_cfg = core_cfg or {}
+    tts_provider = (
+        core_cfg.get('TTS_PROVIDER')
+        or core_cfg.get('ttsProvider')
+        or ''
+    )
+    return (
+        _config_value_is_enabled(core_cfg.get('ELEVENLABS_ENABLED'))
+        or _config_value_is_enabled(core_cfg.get('elevenlabsEnabled'))
+        or str(tts_provider).strip().lower() == 'elevenlabs'
+    )
+
+
 def _get_elevenlabs_options(base_url=None):
     cm = get_config_manager()
     core_cfg = cm.get_core_config()
@@ -3879,18 +3886,26 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
           不支持原生 TTS 时为 None
     """
     cm = get_config_manager()
+    try:
+        core_cfg = cm.get_core_config() or {}
+    except Exception:
+        core_cfg = {}
+    elevenlabs_enabled = _is_elevenlabs_enabled(core_cfg)
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
     # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
     voice_meta = None
 
     if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
-        elevenlabs_options = _get_elevenlabs_options()
-        return (
-            partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
-            _resolve_elevenlabs_api_key(cm),
-            'elevenlabs',
-        )
+        if not elevenlabs_enabled:
+            logger.info("ElevenLabs voice_id detected but provider is disabled; skipping ElevenLabs TTS Worker")
+        else:
+            elevenlabs_options = _get_elevenlabs_options()
+            return (
+                partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
+                _resolve_elevenlabs_api_key(cm),
+                'elevenlabs',
+            )
 
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
@@ -3928,26 +3943,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
-        core_cfg = cm.get_core_config()
-        tts_provider = (
-            core_cfg.get('TTS_PROVIDER')
-            or core_cfg.get('ttsProvider')
-            or ''
-        )
-        elevenlabs_enabled = (
-            _config_value_is_enabled(core_cfg.get('ELEVENLABS_ENABLED'))
-            or _config_value_is_enabled(core_cfg.get('elevenlabsEnabled'))
-            or str(tts_provider).strip().lower() == 'elevenlabs'
-        )
         if elevenlabs_enabled:
-            elevenlabs_base_url = (
-                core_cfg.get('ELEVENLABS_BASE_URL')
-                or core_cfg.get('elevenlabsBaseUrl')
-                or base_url
-                or None
-            )
+            elevenlabs_options = _get_elevenlabs_options()
             return (
-                partial(elevenlabs_tts_worker, base_url=elevenlabs_base_url),
+                partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
                 _resolve_elevenlabs_api_key(cm),
                 'elevenlabs',
             )

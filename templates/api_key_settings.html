@@ -684,14 +684,15 @@
 
                                             <div class="field-row">
                                                 <label for="elevenlabsOptimizeStreamingLatency">
-                                                    <span>流式延迟优化</span>
+                                                    <span data-i18n="api.elevenlabsOptimizeStreamingLatency">流式延迟优化</span>
                                                 </label>
-                                                <select id="elevenlabsOptimizeStreamingLatency" style="max-width: 600px;">
-                                                    <option value="0">0 - 默认质量</option>
-                                                    <option value="1">1 - 轻度降低延迟</option>
-                                                    <option value="2">2 - 推荐低延迟</option>
-                                                    <option value="3">3 - 更低延迟</option>
-                                                    <option value="4">4 - 最低延迟</option>
+                                                <select id="elevenlabsOptimizeStreamingLatency" style="max-width: 600px;"
+                                                    aria-label="流式延迟优化" data-i18n-aria="api.elevenlabsOptimizeStreamingLatency">
+                                                    <option value="0" data-i18n="api.elevenlabsLatency0">0 - 默认质量</option>
+                                                    <option value="1" data-i18n="api.elevenlabsLatency1">1 - 轻度降低延迟</option>
+                                                    <option value="2" data-i18n="api.elevenlabsLatency2">2 - 推荐低延迟</option>
+                                                    <option value="3" data-i18n="api.elevenlabsLatency3">3 - 更低延迟</option>
+                                                    <option value="4" data-i18n="api.elevenlabsLatency4">4 - 最低延迟</option>
                                                 </select>
                                             </div>
 
@@ -742,7 +743,8 @@
                                                         data-i18n="api.elevenlabsRefreshVoices">刷新列表</button>
                                                 </div>
                                                 <input type="hidden" id="elevenlabsVoiceId" value="">
-                                                <div id="elevenlabs-voices-grid" class="gsv-voices-grid" role="radiogroup" aria-label="ElevenLabs voice list">
+                                                <div id="elevenlabs-voices-grid" class="gsv-voices-grid" role="radiogroup"
+                                                    aria-label="ElevenLabs voice list" data-i18n-aria="api.elevenlabsVoiceListAria">
                                                     <div class="gsv-voices-empty" data-i18n="api.elevenlabsVoiceIdEmpty">-- 请先刷新获取 ElevenLabs 声音列表 --</div>
                                                 </div>
                                             </div>
