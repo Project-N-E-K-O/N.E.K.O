@@ -80,6 +80,8 @@
         resetGeneration: 0,
         resetBroadcastChannel: null,
         pendingResetAfterHeartbeatReason: '',
+        pendingResetAfterCompletionReason: '',
+        inFlightCompletionLifecycleCount: 0,
         userCohort: 'unknown',
         mobileResizeRetryBound: false,
         featureSuppression: {
@@ -827,9 +829,19 @@
         }
     }
 
+    function isHomeTutorialCompletionLifecycle(url, payload) {
+        return url === '/api/tutorial-prompt/tutorial-completed'
+            && payload
+            && payload.page === 'home';
+    }
+
     async function persistTutorialLifecycle(url, payload, flowStep, options) {
         const requestOptions = options || {};
         const requestResetGeneration = state.resetGeneration;
+        const isCompletionLifecycle = isHomeTutorialCompletionLifecycle(url, payload);
+        if (isCompletionLifecycle) {
+            state.inFlightCompletionLifecycleCount += 1;
+        }
         try {
             const response = requestOptions.fireAndForget
                 ? await fireAndForgetJson(url, payload)
@@ -842,6 +854,11 @@
                 logFlow('lifecycle-stale-ignored', {
                     source: flowStep || 'unknown',
                 });
+                if (isCompletionLifecycle && state.pendingResetAfterCompletionReason) {
+                    const resetReason = state.pendingResetAfterCompletionReason;
+                    state.pendingResetAfterCompletionReason = '';
+                    await persistResetAfterStaleMutation(resetReason, 'reset-after-stale-completion');
+                }
                 return response;
             }
             if (response && response.state) {
@@ -868,6 +885,13 @@
         } catch (error) {
             console.warn('[TutorialPrompt] failed to persist lifecycle event:', error);
             return null;
+        } finally {
+            if (isCompletionLifecycle) {
+                state.inFlightCompletionLifecycleCount = Math.max(
+                    0,
+                    state.inFlightCompletionLifecycleCount - 1
+                );
+            }
         }
     }
 
@@ -1028,6 +1052,9 @@
         ) {
             state.pendingResetAfterHeartbeatReason = resetReason;
         }
+        if (state.inFlightCompletionLifecycleCount > 0) {
+            state.pendingResetAfterCompletionReason = resetReason;
+        }
         if (snapshot) {
             snapshot.homeTutorialCompleted = false;
             snapshot.manualHomeTutorialViewed = false;
@@ -1125,7 +1152,8 @@
         state.resetBroadcastChannel = null;
     }
 
-    async function persistResetAfterStaleHeartbeat(reason) {
+    async function persistResetAfterStaleMutation(reason, flowStep) {
+        const source = flowStep || 'reset-after-stale-mutation';
         const requestResetGeneration = state.resetGeneration;
         try {
             const response = await requestJson('/api/tutorial-prompt/reset', {
@@ -1135,13 +1163,13 @@
                 },
             });
             if (response && response.state) {
-                applyServerState(response.state, 'reset-after-stale-heartbeat', requestResetGeneration);
+                applyServerState(response.state, source, requestResetGeneration);
             }
-            logFlow('reset-after-stale-heartbeat', {
+            logFlow(source, {
                 reason: reason || 'manual_home_tutorial_reset',
             });
         } catch (error) {
-            console.warn('[TutorialPrompt] failed to re-apply reset after stale heartbeat:', error);
+            console.warn('[TutorialPrompt] failed to re-apply reset after stale mutation:', error);
         }
     }
 
@@ -1220,7 +1248,7 @@
             }
             state.requestInFlight = false;
             if (shouldReapplyReset) {
-                await persistResetAfterStaleHeartbeat(resetReason);
+                await persistResetAfterStaleMutation(resetReason, 'reset-after-stale-heartbeat');
             }
             if (state.pendingHeartbeatAfterFlight) {
                 state.pendingHeartbeatAfterFlight = false;
