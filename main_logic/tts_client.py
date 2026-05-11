@@ -1292,6 +1292,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         receive_task = None
         text_done_sent = False
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
+        # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
+        # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
+        # 短回复（utterance 只有 1 个 chunk）尤其需要这条保险。interrupt 时清空。
+        pending_text: list[str] = []
 
         async def receive_messages():
             # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
@@ -1374,11 +1379,18 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         receive_task = None
                     current_speech_id = None
                     text_done_sent = False
+                    pending_text.clear()
                     continue
 
                 if sid is None:
-                    # 当前 speech 文本流结束 — 发 text.done 触发服务端 flush 剩余音频
+                    # 当前 speech 文本流结束 — 先尝试 flush 缓冲，再发 text.done
                     if ws and current_speech_id is not None and not text_done_sent:
+                        if pending_text:
+                            try:
+                                await ws.send(json.dumps({"type": "text.delta", "delta": "".join(pending_text)}))
+                                pending_text.clear()
+                            except Exception as e:
+                                logger.warning(f"flush pending_text 失败: {e}")
                         try:
                             await ws.send(json.dumps({"type": "text.done"}))
                             text_done_sent = True
@@ -1414,6 +1426,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        # 缓冲当前 chunk —— 否则 continue 后这条文本永远丢失，
+                        # 短消息（utterance 只有 1 个 chunk）会整段静音。
+                        if tts_text and tts_text.strip():
+                            pending_text.append(tts_text)
                         await asyncio.sleep(1.0)
                         # 不更新 current_speech_id —— 下次同 sid 进来会重新尝试重连
                         continue
@@ -1429,14 +1445,24 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 if not ws:
                     continue
 
+                # 如果之前 reconnect 失败缓冲了文本，先拼上一起发出去，
+                # 维持 utterance 内 chunk 的原顺序。
+                if pending_text:
+                    payload_text = "".join(pending_text) + tts_text
+                    pending_text.clear()
+                else:
+                    payload_text = tts_text
+
                 try:
                     # 字段名用 'delta'（OpenAI Realtime 标准；xAI 文档把消息体叫
                     # "deltas"——"Individual deltas are capped at 15,000 characters"）。
                     # 用 'text' 时服务端 silently 当空字符串处理，合成 0 字节后直接 audio.done。
-                    await ws.send(json.dumps({"type": "text.delta", "delta": tts_text}))
-                    _record_tts_telemetry("grok", tts_text)
+                    await ws.send(json.dumps({"type": "text.delta", "delta": payload_text}))
+                    _record_tts_telemetry("grok", payload_text)
                 except Exception as e:
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
+                    # send 失败时把内容放回 pending，等下次重连后重发，避免丢失。
+                    pending_text.append(payload_text)
                     ws = None
                     current_speech_id = None
                     # 与 step / qwen worker 对偶：send 失败时同步 cancel 旧
