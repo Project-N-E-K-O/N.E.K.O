@@ -269,14 +269,15 @@ def test_action_note_localizes_template_per_language():
 
 
 def test_action_note_unknown_language_falls_back_to_english():
-    """_loc 静默回退：未翻译语言（如 'es'）走英文模板。
+    """_loc 静默回退：未翻译语言走英文模板。
 
     断言与 'en' 输出**完全等价**（不只是 master_name/title/artist 包含），
-    否则误回退到别的本地化也能 pass。"""
+    否则误回退到别的本地化也能 pass。用 'fr' 这种真正未翻译的码触发回退；
+    'es' / 'pt' 现在已经有完整翻译，不再适合做回退测试样本。"""
     links = [{'title': 'X', 'artist': 'Y', 'source': '音乐推荐', 'type': 'music'}]
-    note_es = build_proactive_action_note('music', links, 'es', master_name=MASTER)
+    note_fr = build_proactive_action_note('music', links, 'fr', master_name=MASTER)
     note_en = build_proactive_action_note('music', links, 'en', master_name=MASTER)
-    assert note_es == note_en
+    assert note_fr == note_en
 
 
 def test_action_note_normalizes_region_language_codes():

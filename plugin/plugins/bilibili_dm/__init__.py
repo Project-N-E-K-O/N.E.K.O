@@ -766,7 +766,7 @@ class BiliDMPlugin(NekoPluginBase):
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
             short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
+            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["en"]),
         )
 
         system_prompt_parts = [
@@ -788,7 +788,7 @@ class BiliDMPlugin(NekoPluginBase):
                             from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY
                             context_ready_template = CONTEXT_SUMMARY_READY.get(
                                 short_language,
-                                CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),
+                                CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["en"]),
                             )
                             system_prompt_parts.append(
                                 memory_context + context_ready_template.format(

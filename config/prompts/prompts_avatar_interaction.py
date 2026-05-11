@@ -1188,7 +1188,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
 def _avatar_interaction_locale(language: str | None) -> str:
     raw_language = language or resolve_global_language()
     normalized = normalize_language_code(raw_language, format="full")
-    locale = str(normalized or "zh-CN").strip().lower()
+    locale = str(normalized or "en").strip().lower()
     if locale.startswith("zh"):
         if "tw" in locale or "hant" in locale or "hk" in locale:
             return "zh-TW"

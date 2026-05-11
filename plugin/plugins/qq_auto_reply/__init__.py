@@ -731,8 +731,8 @@ class QQAutoReplyPlugin(NekoPluginBase):
         template = get_greeting_prompt(gap_seconds, lang)
         if not template and force:
             from config.prompts.prompts_proactive import GREETING_PROMPT_SHORT
-            lang_key = lang if lang in GREETING_PROMPT_SHORT else 'zh'
-            template = GREETING_PROMPT_SHORT.get(lang_key, GREETING_PROMPT_SHORT['zh'])
+            lang_key = lang if lang in GREETING_PROMPT_SHORT else 'en'
+            template = GREETING_PROMPT_SHORT.get(lang_key, GREETING_PROMPT_SHORT['en'])
         if not template:
             self.logger.info("主动问候条件未满足，跳过发送")
             return False
@@ -997,7 +997,7 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
             # 构建转述提示词
             user_language = get_global_language()
-            init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT['zh'])
+            init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT['en'])
             init_prompt = init_prompt.format(name=her_name)
 
             system_prompt_parts = [
@@ -1097,11 +1097,11 @@ class QQAutoReplyPlugin(NekoPluginBase):
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
             short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT['zh'])
+            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT['en'])
         )
         context_ready_template = CONTEXT_SUMMARY_READY.get(
             short_language,
-            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY['zh'])
+            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY['en'])
         )
 
         system_prompt_parts = [

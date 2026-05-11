@@ -140,9 +140,9 @@ async def plugin_ui_api_locale(plugin_id: str) -> JSONResponse:
     try:
         from utils.language_utils import get_global_language_full
 
-        locale = str(get_global_language_full() or "zh-CN")
+        locale = str(get_global_language_full())
     except Exception:
-        locale = "zh-CN"
+        locale = "en"
     return JSONResponse(
         {"locale": locale},
         headers={"Cache-Control": "no-cache"},

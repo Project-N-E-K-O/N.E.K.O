@@ -45,9 +45,9 @@ async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
     try:
         from utils.language_utils import get_global_language_full
 
-        locale = _normalize_ui_locale(str(get_global_language_full() or "zh-CN"))
+        locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
-        locale = "zh-CN"
+        locale = "en"
     return JSONResponse({"locale": locale})
 
 

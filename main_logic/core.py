@@ -4035,7 +4035,7 @@ class LLMSessionManager:
             "lanlan_name": self.lanlan_name,
             "messages": messages,
             "conversation_id": uuid4().hex,
-            "lang": normalize_language_code(self.user_language, format='short') or "zh",
+            "lang": normalize_language_code(self.user_language, format='short') or "en",
         }
 
         try:
@@ -4111,7 +4111,7 @@ class LLMSessionManager:
         if self.is_hot_swap_imminent:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
-        _lang = normalize_language_code(self.user_language, format='short') or 'zh'
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
         delivered = await self.session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)

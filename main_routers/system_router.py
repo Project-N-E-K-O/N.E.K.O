@@ -1726,8 +1726,8 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     if not recent:
         return ""
 
-    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['zh'])
-    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['zh'])
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['en'])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['en'])
 
     def _rel(ts):
         """
@@ -2117,7 +2117,7 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
         normalized = normalize_language_code(session_lang, format='short')
         if normalized:
             return normalized
-    return get_global_language() or 'zh'
+    return get_global_language() or 'en'
 
 
 async def _maybe_deliver_mini_game_invite(
@@ -2920,7 +2920,7 @@ def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
     if not music_content.get('success'):
         return ""
     
-    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['zh'])
+    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['en'])
     
     output_lines = [t['title']]
     tracks = music_content.get('data', [])
@@ -5110,7 +5110,7 @@ async def proactive_chat(request: Request):
                 if remaining_total <= 0:
                     break
                 src = sources[m]
-                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
+                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['en'])
                 label = label_map.get(m, m)
                 links = src.get('links', []) or []
 
@@ -5243,7 +5243,7 @@ async def proactive_chat(request: Request):
                         src = sources.get(m)
                         if not src:
                             continue
-                        label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
+                        label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['en'])
                         label = label_map.get(m, m)
                         links = src.get('links', []) or []
                         selected_links_2: list[dict] = []

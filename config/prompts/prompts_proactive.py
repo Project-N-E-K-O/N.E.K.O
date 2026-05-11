@@ -1260,7 +1260,7 @@ proactive_generate_ru = """Ваша роль:
 
 def _normalize_prompt_language(lang: str) -> str:
     if not lang:
-        return "zh"
+        return "en"
     lang_lower = lang.lower()
     if lang_lower.startswith("zh"):
         return "zh"
