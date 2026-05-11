@@ -1379,20 +1379,24 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
 
                 # 新 speech_id — 关旧开新（对偶 step worker 的重连策略）
                 if current_speech_id != sid:
-                    current_speech_id = sid
-                    text_done_sent = False
-                    resampler.clear()
+                    # 关旧连接 / cancel 旧 receive_task 无条件做（避免泄漏），但
+                    # current_speech_id / text_done_sent / resampler 状态切换必须
+                    # 推迟到 connect 成功之后再 commit。否则一次瞬态 connect 失败会
+                    # 把 sid 提前推进，后续同 sid 的 chunks 走到 `if not ws: continue`
+                    # 被静默丢弃，直到出现新 sid 才重试 —— 当轮 utterance 静音。
                     if ws:
                         try:
                             await ws.close()
                         except Exception:
                             pass
+                        ws = None
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
                         try:
                             await receive_task
                         except asyncio.CancelledError:
                             pass
+                        receive_task = None
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)
                         receive_task = asyncio.create_task(receive_messages())
@@ -1402,7 +1406,12 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                         await asyncio.sleep(1.0)
+                        # 不更新 current_speech_id —— 下次同 sid 进来会重新尝试重连
                         continue
+                    # connect 成功后再 commit sid 切换 + 状态 reset
+                    current_speech_id = sid
+                    text_done_sent = False
+                    resampler.clear()
 
                 if not tts_text or not tts_text.strip():
                     continue
