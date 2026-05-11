@@ -5,9 +5,9 @@ from typing import Any
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
     path = f"/plugin/{plugin_id}/ui/" if available else ""
-    message = "UI 已注册" if available else "UI 未注册"
+    message_key = "ui.open.available" if available else "ui.open.unavailable"
     return {
         "available": available,
         "path": path,
-        "message": message,
+        "message_key": message_key,
     }

@@ -29,7 +29,7 @@ const I18n = {
         candidates.push(value);
       }
     };
-    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') {
+    if (lower.startsWith('zh-hant') || lower.startsWith('zh-hk') || lower.startsWith('zh-tw')) {
       add('zh-TW');
     } else if (lower === 'zh' || lower.startsWith('zh-')) {
       add('zh-CN');
@@ -68,7 +68,7 @@ const I18n = {
       const raw = String(lang || '').trim();
       const lower = raw.toLowerCase().replace('_', '-');
       if (!lower) continue;
-      if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+      if (lower.startsWith('zh-hant') || lower.startsWith('zh-hk') || lower.startsWith('zh-tw')) return 'zh-TW';
       if (lower === 'zh' || lower.startsWith('zh-')) return 'zh-CN';
       if (lower.startsWith('en')) return 'en';
       if (lower.startsWith('ja')) return 'ja';

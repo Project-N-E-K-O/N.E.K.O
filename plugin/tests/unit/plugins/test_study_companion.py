@@ -31,6 +31,7 @@ from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
+from plugin.plugins.study_companion.ui_api import build_open_ui_payload
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Ok
 
@@ -203,6 +204,11 @@ def test_study_mode_manager_intent_switch_rules() -> None:
     assert pure["mode"] == MODE_TEACHING
     assert pure["pure_switch"] is True
 
+    short_with_text = handle_user_intent("教我微分")
+    assert short_with_text["mode"] == MODE_TEACHING
+    assert short_with_text["pure_switch"] is False
+    assert short_with_text["remaining_text"] == "微分"
+
     explained = handle_user_intent("解释光合作用")
     assert explained["kind"] == "concept_explain"
     assert explained["mode"] == "concept_explain"
@@ -212,6 +218,11 @@ def test_study_mode_manager_intent_switch_rules() -> None:
     assert with_text["mode"] == MODE_TEACHING
     assert with_text["pure_switch"] is False
     assert with_text["remaining_text"] == "光合作用"
+
+    english = handle_user_intent(r"\teaching mode photosynthesis", language="en")
+    assert english["mode"] == MODE_TEACHING
+    assert english["keyword"] == "teaching mode"
+    assert english["remaining_text"] == "photosynthesis"
 
     manager = ModeManager(current_mode=MODE_COMPANION)
     first = manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)
@@ -241,6 +252,9 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert legacy.mode == MODE_COMPANION
     assert legacy.default_mode == MODE_COMPANION
 
+    llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
+    assert llm_timeout.llm_call_timeout_seconds == 42
+
     interactive = build_config({"study": {"default_mode": MODE_INTERACTIVE}})
     assert interactive.mode == MODE_INTERACTIVE
     assert interactive.default_mode == MODE_INTERACTIVE
@@ -263,6 +277,14 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         store.close()
 
 
+def test_study_open_ui_payload_returns_message_key() -> None:
+    payload = build_open_ui_payload(plugin_id="study_companion", available=True)
+    assert payload["available"] is True
+    assert payload["path"] == "/plugin/study_companion/ui/"
+    assert payload["message_key"] == "ui.open.available"
+    assert "message" not in payload
+
+
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
@@ -279,6 +301,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "status.mode.teaching" in bundle
         assert "ui.status.mode_switching" in bundle
         assert "ui.error.mode_switch_failed" in bundle
+
+    en_bundle = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
+    ko_bundle = json.loads((plugin_dir / "i18n" / "ko.json").read_text(encoding="utf-8"))
+    assert set(ko_bundle) == set(en_bundle)
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
@@ -532,6 +558,20 @@ eval(source);
   if (!bundleRequests[0] || !bundleRequests[0].endsWith('/zh-TW.json')) {
     throw new Error(`unexpected browser locale request order: ${JSON.stringify(bundleRequests)}`);
   }
+
+  bundleRequests = [];
+  window.I18n._bundle = {};
+  window.I18n.setLang('zh-CN');
+  location.search = '?locale=zh-Hant-HK';
+  navigator.languages = ['zh-Hant-HK', 'zh-CN'];
+  navigator.language = 'zh-Hant-HK';
+  await window.I18n.init('study_companion');
+  if (window.I18n.lang() !== 'zh-TW') {
+    throw new Error(`unexpected hant lang: ${window.I18n.lang()}`);
+  }
+  if (!bundleRequests[0] || !bundleRequests[0].endsWith('/zh-TW.json')) {
+    throw new Error(`unexpected hant locale request order: ${JSON.stringify(bundleRequests)}`);
+  }
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -742,6 +782,16 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
             {"source": "manual", "mode": MODE_TEACHING, "mode_switch": True},
             MODE_TEACHING,
         )
+
+        short_explained = await plugin.study_explain_text("教我微分")
+        assert isinstance(short_explained, Ok)
+        assert short_explained.value["intent"]["pure_switch"] is False
+        assert short_explained.value["reply"] == "explained[teaching]: 微分"
+        assert plugin._agent.inputs[-1] == (
+            "微分",
+            {"source": "manual", "mode": MODE_TEACHING, "mode_switch": False},
+            MODE_TEACHING,
+        )
     finally:
         await plugin.shutdown()
 
@@ -858,6 +908,15 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert fallback.degraded is True
     assert "llm unavailable" in fallback.diagnostic
     assert "photosynthesis converts light" in fallback.reply
+
+    zh_agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
+    zh_empty = await zh_agent.concept_explain(" ")
+    assert zh_empty.diagnostic == "empty_input"
+    assert "请先提供文本" in zh_empty.reply
+
+    zh_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    zh_fallback = await zh_agent.concept_explain("光合作用")
+    assert "关键文本：光合作用" in zh_fallback.reply
 
 
 @pytest.mark.asyncio

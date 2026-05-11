@@ -95,11 +95,7 @@ def _json_copy(value: Any) -> Any:
 
 
 def _strip_noise(text: str) -> str:
-    return re.sub(r"^[\s,，。.!！？?:：;；—~·-]+|[\s,，。.!！？?:：;；—~·-]+$", "", str(text or "").strip())
-
-
-def _meaningful_length(text: str) -> int:
-    return sum(1 for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")
+    return re.sub(r"^[\s,，。.!！？?:：;；—~·\-\\]+|[\s,，。.!！？?:：;；—~·\-\\]+$", "", str(text or "").strip())
 
 
 def _is_english_language(language: str | None) -> bool:
@@ -147,28 +143,25 @@ def build_transition_phrase(
             if is_english
             else "当前模式刚切换不久，请先停留 3 分钟再切换。"
         )
-    if normalized := normalize_mode(mode):
-        if normalized == MODE_TEACHING and not is_english:
-            return "教学模式已开启。"
-        if is_english:
-            return f"{mode_label(normalized, language=language).capitalize()} enabled."
-        return f"已切换到{label}。"
-    return "Mode updated." if is_english else "模式已更新。"
+    normalized = normalize_mode(mode)
+    if normalized == MODE_TEACHING and not is_english:
+        return "教学模式已开启。"
+    if is_english:
+        return f"{mode_label(normalized, language=language).capitalize()} enabled."
+    return f"已切换到{label}。"
 
 
 def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
     normalized_text = str(text or "").strip()
     folded = normalized_text.casefold()
     for mode, keywords in _MODE_INTENT_RULES:
-        for keyword in keywords:
+        for keyword in sorted(keywords, key=len, reverse=True):
             keyword_folded = keyword.casefold()
             if keyword_folded not in folded:
                 continue
             remainder = normalized_text
             remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
             remainder = _strip_noise(remainder)
-            if _meaningful_length(remainder) < 4:
-                remainder = ""
             return {
                 "matched": True,
                 "kind": "mode_switch",
@@ -179,15 +172,13 @@ def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
                 "normalized_text": normalized_text,
                 "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
             }
-    for keyword in _EXPLAIN_INTENT_RULES:
+    for keyword in sorted(_EXPLAIN_INTENT_RULES, key=len, reverse=True):
         keyword_folded = keyword.casefold()
         if keyword_folded not in folded:
             continue
         remainder = normalized_text
         remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
         remainder = _strip_noise(remainder)
-        if _meaningful_length(remainder) < 4:
-            remainder = ""
         return {
             "matched": True,
             "kind": "concept_explain",

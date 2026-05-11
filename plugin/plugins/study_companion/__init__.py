@@ -78,10 +78,10 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "session_suggestions": self._state.session_suggestions,
                         "mode_lock_until": self._state.mode_lock_until,
                     }
-                )
+            )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
-            self._refresh_dependency_status()
+            await asyncio.to_thread(self._refresh_dependency_status)
             self.register_static_ui("static")
             self.set_list_actions(
                 [
@@ -94,7 +94,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                 ]
             )
             await self._persist_state()
-            return Ok({"status": STATUS_READY, "result": self._status_payload()})
+            status_payload = await asyncio.to_thread(self._status_payload)
+            return Ok({"status": STATUS_READY, "result": status_payload})
         except Exception as exc:
             with self._lock:
                 self._state.status = STATUS_ERROR
@@ -207,7 +208,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         name=tr("entries.open_ui.name", default="Open Study Companion UI"),
         description=tr("entries.open_ui.description", default="Return the static UI path for study_companion."),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["message"],
+        llm_result_fields=["available", "path", "message_key"],
     )
     async def study_open_ui(self, **_):
         return Ok(build_open_ui_payload(plugin_id=self.plugin_id, available=self.get_static_ui_config() is not None))
@@ -220,7 +221,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["status", "active_mode"],
     )
     async def study_status(self, **_):
-        return Ok(self._status_payload())
+        payload = await asyncio.to_thread(self._status_payload)
+        return Ok(payload)
 
     @plugin_entry(
         id="study_detect_mode_intent",
