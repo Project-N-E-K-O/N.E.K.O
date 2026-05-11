@@ -67,7 +67,7 @@ from utils.config_manager import (
     strip_generated_persona_selection_prompt,
 )
 from utils.native_voice_registry import (
-    get_active_realtime_native_provider,
+    get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
     normalize_native_voice,
     resolve_native_voice_for_routing,
@@ -286,7 +286,7 @@ def _get_active_native_preview_provider(config_manager, voice_id: object) -> str
     normalized = str(voice_id or "").strip()
     if not normalized:
         return None
-    active_provider = get_active_realtime_native_provider(config_manager)
+    active_provider = get_active_realtime_native_provider_for_ui(config_manager)
     if not active_provider:
         return None
     _, uses_provider_native_voice = resolve_native_voice_for_routing(
@@ -3171,7 +3171,7 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
     
     core_config = await _config_manager.aget_core_config()
-    active_native_provider = get_active_realtime_native_provider(_config_manager)
+    active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
     if active_native_provider:
         result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
 

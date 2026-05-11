@@ -123,6 +123,24 @@ def test_validate_gemini_voice_uses_active_realtime_provider():
     assert ConfigManager.validate_voice_id(gemini_realtime_mgr, "中文男") is True
 
 
+def test_validate_keeps_free_native_voice_on_lanlan_app_route():
+    """回归：lanlan.app/free 路由下 validate_voice_id 仍认 Step/free 原生音色合法，
+    避免 cleanup_invalid_voice_ids 在用户切线路时把 characters.json 里保存的
+    qingchunshaonv 等 voice_id 静默清空（PR #1290 Codex P1）。"""
+    mgr = object.__new__(ConfigManager)
+    mgr.get_voices_for_current_api = lambda for_listing=False: {}
+    mgr.get_model_api_config = lambda model_type: {
+        "api_type": "free",
+        "base_url": "wss://lanlan.app/realtime",
+    }
+    mgr.get_core_config = lambda: {
+        "CORE_API_TYPE": "free",
+        "CORE_URL": "wss://lanlan.app/realtime",
+    }
+
+    assert ConfigManager.validate_voice_id(mgr, "qingchunshaonv") is True
+
+
 def test_new_catgirl_default_voice_id_keeps_legacy_fallback(monkeypatch):
     monkeypatch.setattr("utils.api_config_loader.get_free_voices", lambda: {})
 

@@ -296,33 +296,51 @@ def resolve_native_voice_for_route(
 
 
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
-    """Return provider key when the active realtime API ships native voices.
+    """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
 
-    Falls back to core_api_type when realtime config is unavailable, matching
-    the behavior of the previous `is_gemini_realtime_api_active` helper.
-    Returns None when neither realtime nor core api type is a registered
-    native-voice provider.
+    没有路由屏蔽 —— 仅看 api_type 是否对应已注册 provider。validate_voice_id
+    / cleanup_invalid_voice_ids 等校验链路用这一版：哪怕当前在 lanlan.app
+    海外免费路由（runtime 会被服务端覆盖成 Leda），也认 Step/free 原生音色
+    为合法保存值，避免用户切线路时 characters.json 里保存的 voice_id 被
+    silently 清空。
+
+    UI / preview 路径要"该路由下不展示不可用音色"语义的，用
+    `get_active_realtime_native_provider_for_ui`。
     """
-    base_url = ""
     try:
         realtime_config = cm.get_model_api_config('realtime')
         api_type = realtime_config.get('api_type')
+    except Exception:
+        api_type = (cm.get_core_config() or {}).get('CORE_API_TYPE')
+    return api_type if api_type in _PROVIDERS else None
+
+
+def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | None:
+    """同 get_active_realtime_native_provider，但屏蔽 lanlan.app 海外免费路由。
+
+    /voices 端点和原生音色 preview 路径用这一版：lanlan.app 边缘会把
+    Step/free voice_id 映射为固定 Leda，UI 不应让用户选这些音色，preview
+    也不该走原生合成。
+    """
+    provider = get_active_realtime_native_provider(cm)
+    if provider is None:
+        return None
+
+    base_url = ""
+    try:
+        realtime_config = cm.get_model_api_config('realtime')
         base_url = str(realtime_config.get('base_url') or '')
     except Exception:
-        core_config = cm.get_core_config() or {}
-        api_type = core_config.get('CORE_API_TYPE')
-        base_url = str(core_config.get('CORE_URL') or '')
-
+        base_url = ""
     if not base_url:
         try:
             base_url = str((cm.get_core_config() or {}).get('CORE_URL') or '')
         except Exception:
             base_url = ""
 
-    # lanlan.app 的免费路由会把 Step/free voice_id 映射为固定音色，不能展示原生目录。
-    if is_free_lanlan_app_route(api_type, base_url):
+    if is_free_lanlan_app_route(provider, base_url):
         return None
-    return api_type if api_type in _PROVIDERS else None
+    return provider
 
 
 _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (

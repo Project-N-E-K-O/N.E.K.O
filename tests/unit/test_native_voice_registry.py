@@ -15,6 +15,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from utils.native_voice_registry import (
     NativeVoiceProvider,
     get_active_realtime_native_provider,
+    get_active_realtime_native_provider_for_ui,
     get_native_tts_worker,
     get_native_voice_catalog_for_ui,
     get_provider,
@@ -161,7 +162,9 @@ def test_active_realtime_returns_none_for_unregistered_provider():
     assert get_active_realtime_native_provider(_CM()) is None
 
 
-def test_active_realtime_hides_free_provider_on_lanlan_app_route():
+def test_active_realtime_base_is_route_agnostic_on_lanlan_app():
+    """base 函数不做路由屏蔽 —— 给校验链路用，保留 lanlan.app 下的 free 原生音色合法性。"""
+
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -170,10 +173,22 @@ def test_active_realtime_hides_free_provider_on_lanlan_app_route():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider(_CM()) is None
+    assert get_active_realtime_native_provider(_CM()) == "free"
 
 
-def test_active_realtime_hides_free_provider_on_lanlan_app_subdomain():
+def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_route():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://lanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+
+
+def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_subdomain():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -182,10 +197,10 @@ def test_active_realtime_hides_free_provider_on_lanlan_app_subdomain():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://edge.lanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider(_CM()) is None
+    assert get_active_realtime_native_provider_for_ui(_CM()) is None
 
 
-def test_active_realtime_does_not_match_lanlan_app_substring():
+def test_active_realtime_for_ui_does_not_match_lanlan_app_substring():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -194,10 +209,10 @@ def test_active_realtime_does_not_match_lanlan_app_substring():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://notlanlan.app/realtime"}
 
-    assert get_active_realtime_native_provider(_CM()) == "free"
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free"
 
 
-def test_active_realtime_keeps_free_provider_on_lanlan_tech_route():
+def test_active_realtime_for_ui_keeps_free_provider_on_lanlan_tech_route():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
@@ -206,7 +221,7 @@ def test_active_realtime_keeps_free_provider_on_lanlan_tech_route():
         def get_core_config(self):
             return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.tech/realtime"}
 
-    assert get_active_realtime_native_provider(_CM()) == "free"
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free"
 
 
 def test_get_native_tts_worker_requires_voice_match_and_resolver():
