@@ -35,17 +35,13 @@ function setReply(text) {
   replyText.textContent = text || '';
 }
 
-function normalizeMode(mode) {
-  const value = String(mode || 'companion');
-  return value === 'concept_explain' ? 'companion' : value;
-}
-
 function modeLabel(mode) {
-  return t(`status.mode.${mode}`, mode);
+  const known = ['companion', 'interactive', 'teaching'].includes(mode);
+  return known ? t(`status.mode.${mode}`, mode) : mode;
 }
 
 function setModeButtons(mode, disabled = false) {
-  currentMode = normalizeMode(mode);
+  currentMode = String(mode || 'companion');
   modeButtons.forEach((button) => {
     const pressed = button.getAttribute('data-mode') === currentMode;
     button.disabled = disabled;
@@ -56,7 +52,7 @@ function setModeButtons(mode, disabled = false) {
 
 function setStatusLine(data) {
   const statusValue = data.status || 'unknown';
-  const modeValue = normalizeMode(data.active_mode || data.mode || 'companion');
+  const modeValue = String(data.active_mode || data.mode || 'companion');
   const statusLabel = t(`status.state.${statusValue}`, statusValue);
   setStatus(`${statusLabel} / ${modeLabel(modeValue)}`);
   setModeButtons(modeValue, false);

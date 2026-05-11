@@ -5,13 +5,7 @@ import re
 import time
 from typing import Any
 
-
-MODE_COMPANION = "companion"
-MODE_INTERACTIVE = "interactive"
-MODE_TEACHING = "teaching"
-MODE_CONCEPT_EXPLAIN = "concept_explain"
-
-SUPPORTED_MODES = frozenset({MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING})
+from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
 
 MODE_MIN_DWELL_SECONDS = 180.0
 MODE_SWITCH_WINDOW_SECONDS = 180.0
@@ -225,6 +219,12 @@ def _meaningful_length(text: str) -> int:
     return sum(1 for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")
 
 
+def _is_english_language(language: str | None) -> bool:
+    language_tag = str(language or "").strip().lower().replace("_", "-")
+    primary = language_tag.split("-", 1)[0]
+    return primary == "en" or primary == "eng"
+
+
 def normalize_mode(mode: str | None) -> str:
     candidate = str(mode or "").strip().lower()
     if candidate == MODE_CONCEPT_EXPLAIN:
@@ -236,7 +236,7 @@ def normalize_mode(mode: str | None) -> str:
 
 def mode_label(mode: str, *, language: str = "zh-CN") -> str:
     normalized = normalize_mode(mode)
-    language_key = "en" if str(language or "").lower().startswith("en") else "zh"
+    language_key = "en" if _is_english_language(language) else "zh"
     return _MODE_LABELS.get(language_key, _MODE_LABELS["zh"]).get(normalized, normalized)
 
 
@@ -248,7 +248,7 @@ def build_transition_phrase(
     lock_until: float = 0.0,
 ) -> str:
     label = mode_label(mode, language=language)
-    is_english = str(language or "").lower().startswith("en")
+    is_english = _is_english_language(language)
     if outcome == "same":
         return f"You are already in {label}." if is_english else f"当前已经是{label}。"
     if outcome == "locked":
@@ -464,10 +464,3 @@ class ModeManager:
             "lock_until": float(self.mode_lock_until or 0.0),
             "checkpoint": checkpoint_after,
         }
-
-
-default_mode_manager = ModeManager()
-
-
-def switch_to(mode: str, reason: str, now: float | None = None) -> dict[str, Any]:
-    return default_mode_manager.switch_to(mode, reason, now=now)
