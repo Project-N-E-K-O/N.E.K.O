@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 try:
@@ -11,11 +13,12 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
+from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
-from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
-from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, build_concept_explain_messages
+from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
+from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Ok
 
@@ -115,6 +118,16 @@ class _FakeOcrBackend:
         return self.result
 
 
+class _FakeCaptureBackend:
+    def __init__(self, image):
+        self.image = image
+        self.calls: list[tuple[object, object]] = []
+
+    def capture_frame(self, target, profile):
+        self.calls.append((target, profile))
+        return self.image
+
+
 def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -174,10 +187,149 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     assert "I18n.init" in main_js
 
 
+def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
+const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
+const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
+const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
+
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+document.write(html);
+document.close();
+
+const runEntries = new Map();
+window.fetch = async (rawUrl, options = {}) => {
+  const url = String(rawUrl);
+  if (url === '/plugin/study_companion/ui-api/i18n/en.json') {
+    return Response.json(enBundle);
+  }
+  if (url === '/runs' && options.method === 'POST') {
+    const body = JSON.parse(String(options.body || '{}'));
+    const runId = body.entry_id === 'study_explain_text' ? 'run-explain' : 'run-status';
+    runEntries.set(runId, body);
+    return Response.json({ run_id: runId, status: 'queued' });
+  }
+  if (url === '/runs/run-status') {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (url === '/runs/run-explain') {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (url === '/runs/run-status/export') {
+    return Response.json({
+      items: [{ type: 'json', json: { success: true, data: { status: 'ready', active_mode: 'concept_explain' } } }],
+    });
+  }
+  if (url === '/runs/run-explain/export') {
+    return Response.json({
+      items: [{ type: 'json', json: { success: true, data: { reply: 'A derivative is slope at one point.', degraded: false } } }],
+    });
+  }
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+
+window.eval(i18nJs);
+window.eval(mainJs);
+
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+await waitFor(() => document.getElementById('statusLine').textContent.includes('ready'), 'ready status');
+if (document.title !== 'Study Companion') {
+  throw new Error(`unexpected title: ${document.title}`);
+}
+
+document.getElementById('studyInput').value = 'Explain derivative';
+document.getElementById('explainBtn').click();
+await waitFor(() => document.getElementById('replyText').textContent === 'A derivative is slope at one point.', 'explain reply');
+
+const explainRun = runEntries.get('run-explain');
+if (!explainRun || explainRun.args.text !== 'Explain derivative') {
+  throw new Error(`explain run args mismatch: ${JSON.stringify(explainRun)}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
+        "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_ocr_pipeline_uses_local_capture_profile() -> None:
+    capture = _FakeCaptureBackend(image=object())
+    ocr = _FakeOcrBackend("captured text")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            ocr_left_inset_ratio=0.11,
+            ocr_right_inset_ratio=0.12,
+            ocr_top_ratio=0.13,
+            ocr_bottom_inset_ratio=0.14,
+        ),
+        ocr_backend=ocr,
+        capture_backend=capture,
+    )
+
+    snapshot = pipeline.capture_snapshot(target=object())
+
+    assert snapshot.status == "ok"
+    assert snapshot.text == "captured text"
+    assert len(capture.calls) == 1
+    profile = capture.calls[0][1]
+    assert isinstance(profile, StudyCaptureProfile)
+    assert profile.left_inset_ratio == 0.11
+    assert profile.right_inset_ratio == 0.12
+    assert profile.top_ratio == 0.13
+    assert profile.bottom_inset_ratio == 0.14
+
+
+def test_study_companion_does_not_import_galgame_ocr_reader_directly() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    for path in plugin_dir.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert "plugin.plugins.galgame_plugin.ocr_reader" not in source
+
+
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     cfg = StudyConfig()
     empty = StudyOcrPipeline(logger=_Logger(), config=cfg, ocr_backend=_FakeOcrBackend(""))
     assert empty.snapshot_from_image(object()).status == "empty"
+    assert empty.snapshot_from_image(None).diagnostic == "no image supplied"
+
+    disabled = StudyOcrPipeline(logger=_Logger(), config=StudyConfig(ocr_enabled=False))
+    disabled_snapshot = disabled.capture_snapshot()
+    assert disabled_snapshot.status == "disabled"
 
     repeated = StudyOcrPipeline(
         logger=_Logger(),
@@ -196,6 +348,19 @@ def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     failed = broken.snapshot_from_image(object())
     assert failed.status == "ocr_failed"
     assert "ocr boom" in failed.diagnostic
+
+
+def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _capture_boom():
+        raise RuntimeError("capture boom")
+
+    monkeypatch.setattr(StudyOcrPipeline, "_capture_fullscreen", staticmethod(_capture_boom))
+    pipeline = StudyOcrPipeline(logger=_Logger(), config=StudyConfig())
+
+    snapshot = pipeline.capture_snapshot()
+
+    assert snapshot.status == "capture_failed"
+    assert "capture boom" in snapshot.diagnostic
 
 
 @pytest.mark.asyncio
@@ -219,6 +384,25 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
     assert reply.operation == "concept_explain"
     assert reply.reply == "A derivative is the slope at one point."
     assert reply.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_tutor_agent_handles_empty_and_model_failures() -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    empty = await agent.concept_explain(" ")
+    assert empty.degraded is True
+    assert empty.diagnostic == "empty_input"
+
+    async def _broken_call_model(_messages):
+        raise RuntimeError("llm unavailable")
+
+    agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    fallback = await agent.concept_explain("photosynthesis converts light")
+
+    assert fallback.degraded is True
+    assert "llm unavailable" in fallback.diagnostic
+    assert "photosynthesis converts light" in fallback.reply
 
 
 @pytest.mark.asyncio

@@ -358,6 +358,50 @@ async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seed
 
 
 @pytest.mark.asyncio
+async def test_study_companion_install_routes_map_to_study_entries(
+    plugin_ui_async_client: AsyncClient,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    async def _fake_create_run(payload, *, client_host):
+        del client_host
+        seen.append((payload.plugin_id, payload.entry_id, dict(payload.args or {})))
+        return RunCreateResponse(run_id=f"run-{payload.entry_id}", status="queued")
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
+
+    tesseract_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/tesseract/install",
+        json={"force": True},
+    )
+    rapidocr_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/rapidocr-models",
+        json={"force": False},
+    )
+    textractor_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/textractor/install",
+        json={"force": True},
+    )
+
+    assert tesseract_response.status_code == 200
+    assert rapidocr_response.status_code == 200
+    assert textractor_response.status_code == 404
+    assert seen == [
+        ("study_companion", "study_install_tesseract", {"force": True, "_ctx": {"entry_timeout": 300.0}}),
+        ("study_companion", "study_download_rapidocr_models", {"force": False, "_ctx": {"entry_timeout": 600.0}}),
+    ]
+    assert tesseract_response.json()["state"]["kind"] == "tesseract"
+    assert rapidocr_response.json()["state"]["kind"] == "rapidocr_models"
+    assert install_task_module.load_install_task_state("run-study_install_tesseract", kind="tesseract") is not None
+    assert install_task_module.load_install_task_state(
+        "run-study_download_rapidocr_models",
+        kind="rapidocr_models",
+    ) is not None
+
+
+@pytest.mark.asyncio
 async def test_galgame_plugin_textractor_install_status_route_reads_persisted_state(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,

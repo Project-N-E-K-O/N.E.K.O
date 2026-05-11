@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from typing import Any
 
@@ -10,6 +11,14 @@ CAPTURE_BACKEND_DXCAM = "dxcam"
 CAPTURE_BACKEND_MSS = "mss"
 CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
 CAPTURE_BACKEND_PYAUTOGUI = "pyautogui"
+
+
+@dataclass(slots=True)
+class StudyCaptureProfile:
+    left_inset_ratio: float = 0.03
+    right_inset_ratio: float = 0.03
+    top_ratio: float = 0.0
+    bottom_inset_ratio: float = 0.0
 
 
 class StudyOcrPipeline:
@@ -50,9 +59,7 @@ class StudyOcrPipeline:
                 )
             return self._extract_image(frame, backend_name=self._config.ocr_backend_selection)
         try:
-            from plugin.plugins.galgame_plugin.ocr_reader import OcrCaptureProfile
-
-            profile = OcrCaptureProfile(
+            profile = StudyCaptureProfile(
                 left_inset_ratio=self._config.ocr_left_inset_ratio,
                 right_inset_ratio=self._config.ocr_right_inset_ratio,
                 top_ratio=self._config.ocr_top_ratio,
