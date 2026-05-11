@@ -210,13 +210,13 @@ jobs:
             suffix=-${{ matrix.platform }}
           tags: |
             # PR builds: pr-{number}-ci-standard-linux-amd64/arm64 AND pr-ci-standard-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             # CI builds: ci-{hash}-standard-linux-amd64/arm64 AND ci-standard-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
         if: steps.check-dockerfile.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -230,13 +230,13 @@ jobs:
             suffix=-${{ matrix.platform }}
           tags: |
             # PR builds: pr-{number}-ci-standard-linux-amd64/arm64 AND pr-ci-standard-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             # CI builds: ci-{hash}-standard-linux-amd64/arm64 AND ci-standard-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Build and push standard image
         if: steps.check-dockerfile.outputs.skipped != 'true'
@@ -314,13 +314,13 @@ jobs:
             suffix=-${{ matrix.platform }}
           tags: |
             # PR builds: pr-{number}-ci-full-linux-amd64/arm64 AND pr-ci-full-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             # CI builds: ci-{hash}-full-linux-amd64/arm64 AND ci-full-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -334,13 +334,13 @@ jobs:
             suffix=-${{ matrix.platform }}
           tags: |
             # PR builds: pr-{number}-ci-full-linux-amd64/arm64 AND pr-ci-full-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             # CI builds: ci-{hash}-full-linux-amd64/arm64 AND ci-full-linux-amd64/arm64
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
-            type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
+            type=raw,value=${{ needs.calculate-version.outputs.image_version }}-full,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Build and push full image
         uses: docker/build-push-action@v5
