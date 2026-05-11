@@ -80,6 +80,36 @@ class TutorLLMAgent:
         except BaseException:
             pass
 
+    @staticmethod
+    def _is_english_language(language: str | None) -> bool:
+        language_tag = str(language or "").strip().lower().replace("_", "-")
+        primary = language_tag.split("-", 1)[0]
+        return primary == "en" or primary == "eng"
+
+    def _localize_reply(self, language: str | None, key: str, **values: Any) -> str:
+        is_english = self._is_english_language(language)
+        if key == "empty_input":
+            return (
+                "Please provide text or capture a readable screen first."
+                if is_english
+                else "请先提供文本，或者先截取一张可读屏幕。"
+            )
+        if key == "fallback_explanation":
+            first_line = str(values.get("first_line") or "").strip()
+            if is_english:
+                return (
+                    f"Key text: {first_line}\n\n"
+                    "Explanation: I could not reach the configured model, so this is a local fallback. "
+                    "Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\n"
+                    "Check question: What is the main term or relationship you need to remember from this text?"
+                )
+            return (
+                f"关键文本：{first_line}\n\n"
+                "说明：我无法连接到已配置模型，因此这是本地降级结果。先通读语句并找出定义，再识别原因、结果，以及会改变结论的公式或术语。\n\n"
+                "检查问题：这段文字里你需要记住的核心术语或关系是什么？"
+            )
+        return str(values.get("default") or "")
+
     async def concept_explain(
         self,
         text: str,
@@ -92,7 +122,7 @@ class TutorLLMAgent:
             return TutorReply(
                 operation=MODE_CONCEPT_EXPLAIN,
                 input_text="",
-                reply="Please provide text or capture a readable screen first.",
+                reply=self._localize_reply(self._config.language, "empty_input"),
                 degraded=True,
                 diagnostic="empty_input",
                 created_at=utc_now_iso(),
@@ -124,7 +154,11 @@ class TutorLLMAgent:
                 created_at=utc_now_iso(),
             )
         except Exception as exc:
-            fallback_reply = self._fallback_explanation(normalized)
+            fallback_reply = self._localize_reply(
+                self._config.language,
+                "fallback_explanation",
+                first_line=next((line.strip() for line in normalized.splitlines() if line.strip()), normalized[:120]),
+            )
             if teaching_prefix and not fallback_reply.startswith(teaching_prefix):
                 fallback_reply = f"{teaching_prefix}\n\n{fallback_reply}"
             return TutorReply(
@@ -186,13 +220,3 @@ class TutorLLMAgent:
             return ("empty", "")
         digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         return ("sha256", digest)
-
-    @staticmethod
-    def _fallback_explanation(text: str) -> str:
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), text[:120])
-        return (
-            f"Key text: {first_line}\n\n"
-            "Explanation: I could not reach the configured model, so this is a local fallback. "
-            "Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\n"
-            "Check question: What is the main term or relationship you need to remember from this text?"
-        )

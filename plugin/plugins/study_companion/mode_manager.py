@@ -51,7 +51,6 @@ _MODE_INTENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "一起想",
             "一起思考",
             "interactive mode",
-            "discussion mode",
             "interactive",
             "discussion",
             "discuss",
@@ -75,45 +74,13 @@ _MODE_INTENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _EXPLAIN_INTENT_RULES: tuple[str, ...] = (
-    "解释一下",
-    "解释下",
     "解释",
+    "解释下",
+    "解释一下",
     "说明",
+    "explain",
     "explain this",
     "please explain",
-    "explain",
-)
-
-_MODE_SWITCH_PREFIXES: tuple[str, ...] = (
-    "set mode to",
-    "switch into",
-    "switch to",
-    "change into",
-    "change to",
-    "turn on",
-    "set to",
-    "go to",
-    "enter",
-    "enable",
-    "use",
-    "please",
-    "teach me",
-    "study with me",
-    "请教我",
-    "切换到",
-    "切到",
-    "切换",
-    "设置成",
-    "改成",
-    "设为",
-    "进入",
-    "开启",
-    "打开",
-    "启用",
-    "使用",
-    "教我",
-    "用",
-    "请",
 )
 
 
@@ -131,97 +98,9 @@ def _strip_noise(text: str) -> str:
     return re.sub(r"^[\s,，。.!！？?:：;；—~·\-\\]+|[\s,，。.!！？?:：;；—~·\-\\]+$", "", str(text or "").strip())
 
 
-def _is_ascii_keyword(keyword: str) -> bool:
-    return all(ord(char) < 128 for char in keyword)
-
-
-def _previous_char_is_word(text: str, start: int) -> bool:
-    if start <= 0:
-        return False
-    previous = text[start - 1]
-    return bool(re.fullmatch(r"[0-9A-Za-z_]", previous) or re.fullmatch(r"[\u3400-\u9fff\uf900-\ufaff]", previous))
-
-
-def _ends_with_mode_switch_prefix(prefix: str) -> bool:
-    folded = _strip_noise(prefix).casefold()
-    return any(folded.endswith(item) for item in _MODE_SWITCH_PREFIXES)
-
-
-def _mode_command_span_start(text: str, match_start: int) -> int:
-    prefix = text[:match_start]
-    for item in sorted(_MODE_SWITCH_PREFIXES, key=len, reverse=True):
-        pattern = rf"{re.escape(item)}[\s,，。.!！？?:：;；—~·\-\\]*$"
-        match = re.search(pattern, prefix, flags=re.IGNORECASE)
-        if match:
-            return match.start()
-    return match_start
-
-
-def _keyword_pattern(keyword: str) -> str:
-    parts = [re.escape(part) for part in str(keyword or "").strip().split()]
-    body = r"\s+".join(parts) if parts else re.escape(str(keyword or ""))
-    if _is_ascii_keyword(keyword):
-        return rf"(?<![0-9A-Za-z_]){body}(?![0-9A-Za-z_])"
-    return body
-
-
-def _find_mode_keyword_match(text: str, keyword: str) -> re.Match[str] | None:
-    keyword_folded = keyword.casefold()
-    command_required = keyword_folded in {
-        "teach",
-        "interactive",
-        "discussion",
-        "discuss",
-        "companion",
-        "教学",
-        "互动",
-        "讨论",
-        "问答",
-        "陪我",
-        "陪学",
-        "陪读",
-        "讲解",
-        "讲讲",
-        "讲一下",
-    }
-    direct_command = keyword_folded in {
-        "教我",
-        "teach me",
-        "study with me",
-        "陪我学",
-        "一起想",
-        "一起思考",
-    }
-    is_mode_label = "mode" in keyword_folded or "模式" in keyword
-
-    for match in re.finditer(_keyword_pattern(keyword), text, flags=re.IGNORECASE):
-        if _is_ascii_keyword(keyword) and _previous_char_is_word(text, match.start()):
-            continue
-        prefix_allows_command = _ends_with_mode_switch_prefix(text[: match.start()])
-        starts_cleanly = match.start() == 0 or not _previous_char_is_word(text, match.start())
-        if command_required:
-            if prefix_allows_command:
-                return match
-            continue
-        if direct_command or is_mode_label or prefix_allows_command or starts_cleanly:
-            return match
-    return None
-
-
-def _find_explain_keyword_match(text: str, keyword: str) -> re.Match[str] | None:
-    for match in re.finditer(_keyword_pattern(keyword), text, flags=re.IGNORECASE):
-        if match.start() == 0 or not _previous_char_is_word(text, match.start()):
-            return match
-    return None
-
-
-def _meaningful_length(text: str) -> int:
-    return sum(1 for char in text if char.isalnum() or "\u4e00" <= char <= "\u9fff")
-
-
 def _is_english_language(language: str | None) -> bool:
     language_tag = str(language or "").strip().lower().replace("_", "-")
-    primary = language_tag.split("-", 1)[0]
+    primary = re.split(r"[-]", language_tag, maxsplit=1)[0]
     return primary == "en" or primary == "eng"
 
 
@@ -264,46 +143,41 @@ def build_transition_phrase(
             if is_english
             else "当前模式刚切换不久，请先停留 3 分钟再切换。"
         )
-    if normalized := normalize_mode(mode):
-        if normalized == MODE_TEACHING and not is_english:
-            return "教学模式已开启。"
-        if is_english:
-            return f"{mode_label(normalized, language=language).capitalize()} enabled."
-        return f"已切换到{label}。"
-    return "Mode updated." if is_english else "模式已更新。"
+    normalized = normalize_mode(mode)
+    if normalized == MODE_TEACHING and not is_english:
+        return "教学模式已开启。"
+    if is_english:
+        return f"{mode_label(normalized, language=language).capitalize()} enabled."
+    return f"已切换到{label}。"
 
 
 def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
     normalized_text = str(text or "").strip()
-    best_mode_match: tuple[int, str, str, re.Match[str]] | None = None
+    folded = normalized_text.casefold()
     for mode, keywords in _MODE_INTENT_RULES:
-        for keyword in keywords:
-            match = _find_mode_keyword_match(normalized_text, keyword)
-            if match is None:
+        for keyword in sorted(keywords, key=len, reverse=True):
+            keyword_folded = keyword.casefold()
+            if keyword_folded not in folded:
                 continue
-            score = match.end() - match.start()
-            if best_mode_match is None or score > best_mode_match[0]:
-                best_mode_match = (score, mode, keyword, match)
-    if best_mode_match is not None:
-        _, mode, keyword, match = best_mode_match
-        remove_start = _mode_command_span_start(normalized_text, match.start())
-        remainder = f"{normalized_text[:remove_start]}{normalized_text[match.end() :]}"
-        remainder = _strip_noise(remainder)
-        return {
-            "matched": True,
-            "kind": "mode_switch",
-            "mode": mode,
-            "keyword": keyword,
-            "pure_switch": not remainder,
-            "remaining_text": remainder,
-            "normalized_text": normalized_text,
-            "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
-        }
+            remainder = normalized_text
+            remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
+            remainder = _strip_noise(remainder)
+            return {
+                "matched": True,
+                "kind": "mode_switch",
+                "mode": mode,
+                "keyword": keyword,
+                "pure_switch": not remainder,
+                "remaining_text": remainder,
+                "normalized_text": normalized_text,
+                "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
+            }
     for keyword in sorted(_EXPLAIN_INTENT_RULES, key=len, reverse=True):
-        match = _find_explain_keyword_match(normalized_text, keyword)
-        if match is None:
+        keyword_folded = keyword.casefold()
+        if keyword_folded not in folded:
             continue
-        remainder = f"{normalized_text[: match.start()]}{normalized_text[match.end() :]}"
+        remainder = normalized_text
+        remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
         remainder = _strip_noise(remainder)
         return {
             "matched": True,

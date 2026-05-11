@@ -62,12 +62,38 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createRun(entryId, args = {}) {
-  const response = await fetch(RUNS_URL, {
+function timeLeft(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+function isAbortError(error) {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS) {
+  if (timeoutMs <= 0) {
+    throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
+  }
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function createRun(entryId, args = {}, deadline = Date.now() + RUN_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(RUNS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
-  });
+  }, timeLeft(deadline));
   if (!response.ok) {
     throw new Error(tf('ui.error.run_create_failed', 'Run create failed: HTTP {status}', { status: response.status }));
   }
@@ -79,10 +105,10 @@ async function createRun(entryId, args = {}) {
   return runId;
 }
 
-async function exportRunResult(runId) {
+async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS) {
   let lastStatus = 0;
   for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
-    const response = await fetch(`${RUNS_URL}/${runId}/export`);
+    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}/export`, {}, timeLeft(deadline));
     lastStatus = response.status;
     if (response.ok) {
       const payload = await response.json();
@@ -98,26 +124,34 @@ async function exportRunResult(runId) {
       return pluginResponse.data || {};
     }
     if (attempt < RUN_EXPORT_RETRY_COUNT - 1) {
-      await sleep(RUN_EXPORT_RETRY_DELAY_MS * (attempt + 1));
+      const waitMs = Math.min(RUN_EXPORT_RETRY_DELAY_MS * (attempt + 1), timeLeft(deadline));
+      if (waitMs <= 0) {
+        throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
+      }
+      await sleep(waitMs);
     }
   }
   throw new Error(tf('ui.error.run_export_failed', 'Run export failed: HTTP {status}', { status: lastStatus }));
 }
 
 async function callPlugin(entryId, args = {}) {
-  const runId = await createRun(entryId, args);
   const deadline = Date.now() + RUN_TIMEOUT_MS;
+  const runId = await createRun(entryId, args, deadline);
   let delay = 250;
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    const waitMs = Math.min(delay, timeLeft(deadline));
+    if (waitMs <= 0) {
+      break;
+    }
+    await sleep(waitMs);
     delay = Math.min(Math.round(delay * 1.5), 2000);
-    const response = await fetch(`${RUNS_URL}/${runId}`);
+    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}`, {}, timeLeft(deadline));
     if (!response.ok) {
       continue;
     }
     const record = await response.json();
     if (record.status === 'succeeded') {
-      return await exportRunResult(runId);
+      return await exportRunResult(runId, deadline);
     }
     if (['failed', 'canceled', 'timeout'].includes(record.status)) {
       throw new Error(record.error?.message || record.message || record.status);

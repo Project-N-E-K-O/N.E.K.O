@@ -1,41 +1,38 @@
 const I18n = {
   _bundle: {},
   _lang: 'zh-CN',
-  _lastResolvedLocale: '',
 
   lang() {
     return this._lang;
   },
 
+  _syncDocumentLang() {
+    if (document?.documentElement) {
+      document.documentElement.lang = this._lang || 'zh-CN';
+    }
+  },
+
   setLang(locale) {
     this._lang = String(locale || '').trim() || 'zh-CN';
-    if (document.documentElement) {
-      document.documentElement.lang = this._lang;
+    this._syncDocumentLang();
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('i18n-lang-changed', { detail: { locale: this._lang } }));
     }
   },
 
   _localeCandidates(locale) {
     const raw = String(locale || '').trim() || 'zh-CN';
-    const normalized = raw.replace(/_/g, '-');
-    const lower = normalized.toLowerCase();
+    const lower = raw.toLowerCase().replace('_', '-');
     const candidates = [];
     const add = (value) => {
       if (value && !candidates.includes(value)) {
         candidates.push(value);
       }
     };
-    add(normalized);
-    if (lower === 'zh' || lower.startsWith('zh-')) {
-      if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-mo' || lower.includes('-hant')) {
-        add('zh-TW');
-        add('zh-CN');
-      } else if (lower === 'zh-cn' || lower === 'zh-sg' || lower.includes('-hans')) {
-        add('zh-CN');
-        add('zh-TW');
-      } else {
-        add('zh-CN');
-        add('zh-TW');
-      }
+    if (lower.startsWith('zh-hant') || lower.startsWith('zh-hk') || lower.startsWith('zh-tw')) {
+      add('zh-TW');
+    } else if (lower === 'zh' || lower.startsWith('zh-')) {
+      add('zh-CN');
     } else if (lower.startsWith('en')) {
       add('en');
     } else if (lower.startsWith('ja')) {
@@ -49,59 +46,71 @@ const I18n = {
     } else if (lower.startsWith('pt')) {
       add('pt');
     }
+    add(raw);
     add('zh-CN');
-    add('en');
+    add('zh-TW');
     return candidates;
   },
 
-  _browserLocale() {
-    const languages = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language];
-    return String(languages.find(Boolean) || 'zh-CN');
+  _queryLocale() {
+    try {
+      return new URLSearchParams(location.search).get('locale') || '';
+    } catch (err) {
+      return '';
+    }
   },
 
-  async _resolveLocale(pluginId) {
+  _browserLocale() {
+    const languages = (navigator.languages && navigator.languages.length)
+      ? navigator.languages
+      : [navigator.language];
+    for (const lang of languages) {
+      const raw = String(lang || '').trim();
+      const lower = raw.toLowerCase().replace('_', '-');
+      if (!lower) continue;
+      if (lower.startsWith('zh-hant') || lower.startsWith('zh-hk') || lower.startsWith('zh-tw')) return 'zh-TW';
+      if (lower === 'zh' || lower.startsWith('zh-')) return 'zh-CN';
+      if (lower.startsWith('en')) return 'en';
+      if (lower.startsWith('ja')) return 'ja';
+      if (lower.startsWith('ko')) return 'ko';
+      if (lower.startsWith('ru')) return 'ru';
+      if (lower.startsWith('es')) return 'es';
+      if (lower.startsWith('pt')) return 'pt';
+    }
+    return 'zh-CN';
+  },
+
+  _storageLocale() {
     try {
-      const queryLocale = new URLSearchParams(location.search).get('locale');
-      if (queryLocale) {
-        return queryLocale;
-      }
-    } catch (error) {
-      console.warn('[study_companion] locale query read failed', error);
+      const value = String(localStorage.getItem('locale') || '').trim();
+      if (!value) return '';
+      return value === 'auto' ? this._browserLocale() : value;
+    } catch (err) {
+      return '';
     }
-    try {
-      const response = await fetch(`/plugin/${encodeURIComponent(pluginId)}/ui-api/locale`, { cache: 'no-store' });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.locale) {
-          return data.locale;
-        }
-      }
-    } catch (error) {
-      console.warn('[study_companion] locale api failed', error);
-    }
-    if (this._lastResolvedLocale) {
-      return this._lastResolvedLocale;
-    }
-    return this._browserLocale();
   },
 
   async init(pluginId) {
-    const locale = await this._resolveLocale(pluginId);
-    this.setLang(locale);
-    for (const candidate of this._localeCandidates(locale)) {
+    const encodedPluginId = encodeURIComponent(pluginId || 'study_companion');
+    const queryLocale = this._queryLocale();
+    const storageLocale = this._storageLocale();
+    const resolvedLocale = queryLocale || storageLocale || this._browserLocale();
+    this.setLang(resolvedLocale);
+
+    for (const locale of this._localeCandidates(this._lang)) {
       try {
-        const response = await fetch(`/plugin/${encodeURIComponent(pluginId)}/ui-api/i18n/${encodeURIComponent(candidate)}.json`, { cache: 'no-store' });
-        if (response.ok) {
-          this._bundle = await response.json();
-          this.setLang(candidate);
-          this._lastResolvedLocale = candidate;
+        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
+        if (resp.ok) {
+          this._bundle = await resp.json();
+          this.setLang(locale);
           return;
         }
-      } catch (error) {
-        console.warn('[study_companion] locale bundle failed', candidate, error);
+      } catch (err) {
+        // Fallback below keeps the page usable.
       }
     }
     this._bundle = {};
+    this._syncDocumentLang();
   },
 
   t(key, fallback) {
@@ -119,7 +128,13 @@ const I18n = {
     root.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
       if (key) {
-        el.textContent = this.t(key, el.textContent || '');
+        el.textContent = this.t(key, el.textContent);
+      }
+    });
+    root.querySelectorAll('[data-i18n-title]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-title');
+      if (key) {
+        el.setAttribute('title', this.t(key, el.getAttribute('title') || ''));
       }
     });
     root.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {

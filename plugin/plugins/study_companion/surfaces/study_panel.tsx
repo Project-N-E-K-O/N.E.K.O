@@ -124,6 +124,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const explainControllerRef = useRef<AbortController | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
+  function beginStudyRequest() {
+    explainControllerRef.current?.abort();
+    const controller = new AbortController();
+    explainControllerRef.current = controller;
+    return controller;
+  }
+
+  function endStudyRequest(controller: AbortController) {
+    if (explainControllerRef.current === controller) {
+      explainControllerRef.current = null;
+    }
+  }
+
   function modeLabel(mode: string) {
     const entry = MODE_ORDER.find((candidate) => candidate.id === mode);
     return entry ? t(entry.labelKey, entry.fallback) : String(mode || MODE_ORDER[0].id);
@@ -143,18 +156,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (updateReply) {
       setReply(data.last_reply || '');
     }
-    if (!text.trim() && data.last_ocr_text) {
-      setText(data.last_ocr_text);
-    }
+    setText((prev) => (prev.trim() || !data.last_ocr_text ? prev : data.last_ocr_text));
   }
 
   async function setMode(mode: StudyMode) {
     if (busy || mode === currentMode) {
       return;
     }
-    const controller = new AbortController();
-    explainControllerRef.current?.abort();
-    explainControllerRef.current = controller;
+    const controller = beginStudyRequest();
     setBusy(true);
     try {
       setReply('');
@@ -188,9 +197,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (!controller.signal.aborted) {
         setBusy(false);
       }
-      if (explainControllerRef.current === controller) {
-        explainControllerRef.current = null;
-      }
+      endStudyRequest(controller);
     }
   }
 
@@ -198,9 +205,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (busy) {
       return;
     }
-    const controller = new AbortController();
-    explainControllerRef.current?.abort();
-    explainControllerRef.current = controller;
+    const controller = beginStudyRequest();
     setBusy(true);
     try {
       const data = await callPlugin('study_explain_text', { text }, controller.signal) as {
@@ -230,14 +235,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (!controller.signal.aborted) {
         setBusy(false);
       }
-      if (explainControllerRef.current === controller) {
-        explainControllerRef.current = null;
-      }
+      endStudyRequest(controller);
     }
   }
 
   useEffect(() => {
-    const controller = new AbortController();
+    const controller = beginStudyRequest();
     refresh(controller.signal).catch((error) => {
       if (controller.signal.aborted) {
         return;
@@ -252,6 +255,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     return () => {
       controller.abort();
       explainControllerRef.current?.abort();
+      explainControllerRef.current = null;
     };
   }, []);
 

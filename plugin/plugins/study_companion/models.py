@@ -185,7 +185,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         rapidocr_model_type=_str(rapidocr, "model_type", "mobile", "rapidocr_model_type"),
         rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"),
         llm_call_timeout_seconds=_clamp(
-            _float(llm, "llm_call_timeout_seconds", 30.0, "llm_call_timeout_seconds"),
+            _float(llm, "call_timeout_seconds", 30.0, "llm_call_timeout_seconds"),
             1.0,
             3600.0,
             30.0,
