@@ -9,9 +9,11 @@ budget 占比是否合理。
     2) 设置环境变量 NEKO_LLM_PROMPT_AUDIT=1（适合开发期临时打开）
 
 输出：
-    logs/llm_prompt_audit/YYYY-MM-DD.jsonl  （每行一条 JSON，可能含用户原文摘要）
+    logs/llm_prompt_audit/YYYY-MM-DD.jsonl
+    每行一条 JSON，messages[*].text 字段含**完整原文**（不截断），
+    图片 part 会替换成字面值 "[image]" 占位以免 base64 撑爆 log。
 
-不要在生产默认启用——log 含 prompt 文本预览，属于隐私敏感数据。
+不要在生产默认启用——log 含完整 prompt 原文，属于隐私敏感数据。
 """
 from __future__ import annotations
 
@@ -69,7 +71,9 @@ def _content_to_text(content: Any) -> str:
             elif ptype in ("image_url", "input_image"):
                 out.append("[image]")
             else:
-                out.append(json.dumps(part, ensure_ascii=False)[:200])
+                # 未知 part 类型：完整 json dump，不截断（审计需要全文）。
+                # 注意 image_url/input_image 已在上面分支拦截，落不到这里。
+                out.append(json.dumps(part, ensure_ascii=False))
         return "\n".join(out)
     if isinstance(content, dict):
         # 镜像 list 分支的类型分流：上游偶尔直接传单个 part dict（不是
@@ -81,9 +85,9 @@ def _content_to_text(content: Any) -> str:
         if ptype in ("image_url", "input_image"):
             return "[image]"
         try:
-            return json.dumps(content, ensure_ascii=False)[:200]
+            return json.dumps(content, ensure_ascii=False)
         except Exception:
-            return str(content)[:200]
+            return str(content)
     return str(content) if content is not None else ""
 
 
@@ -168,13 +172,12 @@ def record_llm_request(
             role = str(m.get("role") or "unknown")
             text = _content_to_text(m.get("content"))
             tok = _safe_count_tokens(text)
-            preview = text[:160]
             per_message.append({
                 "idx": idx,
                 "role": role,
                 "tokens": tok,
                 "chars": len(text),
-                "preview": preview,
+                "text": text,
             })
             total += tok
             by_role[role] = by_role.get(role, 0) + tok
