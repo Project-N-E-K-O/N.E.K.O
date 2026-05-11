@@ -82,16 +82,30 @@ _TRIM_TRAIL_TOKENS = (
 def _norm_lang(lang: str) -> str:
     """归一化 lang code（``zh-CN`` → ``zh``、``pt-BR`` → ``pt`` 等）。
 
-    本模块的 3 个 render 函数都靠 dict 精确 key 取模板；如果上游把
+    本模块的 render 函数 / scan 函数都靠 dict 精确 key 取模板；如果上游把
     ``user_language`` 直接传过来（带 region 后缀），会全部走英文兜底——这是
     用户可见的回归。在边界归一化一次，比要求所有调用方都先 normalize 更稳。
+
+    实现策略：
+    1. 优先走 ``config._runtime.normalize_language_code``（app 启动注册了
+       ``utils.language_utils.normalize_language_code``，能识别 Steam literal
+       如 ``schinese`` → ``zh``）
+    2. 如果 runtime 没装好（partial entrypoint / pytest 直接跑模块）resolver
+       会**原样返回**输入；这种情况下手动 split 一次 ``-`` / ``_`` 兜底，
+       保证 ``en-US`` → ``en`` 这种基础归一化在测试环境也能工作。
     """
+    if not lang:
+        return 'en'
     try:
         from config._runtime import normalize_language_code as _nlc
-        out = _nlc(lang, format='short')
-        return out or 'en'
+        out = _nlc(lang, format='short') or lang
     except Exception:
-        return lang or 'en'
+        out = lang
+    # Defensive split: resolver 未绑定时 ``_nlc`` 会原样返回 ``en-US``；这里
+    # 手动拆一道。已经是短码（``zh``）则 split 等于 no-op，无副作用。
+    if '-' in out or '_' in out:
+        out = out.split('-', 1)[0].split('_', 1)[0]
+    return out or 'en'
 
 
 def _trim_term(term: str) -> str:
