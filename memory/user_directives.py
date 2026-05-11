@@ -69,6 +69,23 @@ def _default_payload() -> Dict[str, Any]:
     return {"version": _SCHEMA_VERSION, "directives": []}
 
 
+# term 入库 / 出库共用的不变量：``str.strip()`` 后长度 ∈ [2, 40]。
+# 读盘与 ``record()`` 写入两侧都走这条 helper，磁盘态始终干净——历史文件里
+# 残留的过短 / 过长 / 非 str term 在下次 load 时被丢弃（CodeRabbit Minor）。
+_TERM_MIN_LEN = 2
+_TERM_MAX_LEN = 40
+
+
+def _normalize_term(raw: Any) -> Optional[str]:
+    """归一化 term：``str.strip()`` 后强制长度 ∈ [2, 40]，否则 None。"""
+    if not isinstance(raw, str):
+        return None
+    term = raw.strip()
+    if not (_TERM_MIN_LEN <= len(term) <= _TERM_MAX_LEN):
+        return None
+    return term
+
+
 def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
     """把磁盘读上来的一条记录归一化为 dict；非法/缺字段 → None（丢弃）。
 
@@ -82,8 +99,8 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
     try:
-        term = raw.get("term")
-        if not isinstance(term, str) or not term:
+        term = _normalize_term(raw.get("term"))
+        if term is None:
             return None
         kind = raw.get("kind") or "ban_topic"
         if not isinstance(kind, str):
@@ -212,18 +229,16 @@ class UserDirectivesManager:
         返回最终存盘的 dict（含合并/刷新后的字段）；输入不合法（term 不是 str /
         trim 后空 / 长度越界）返回空 dict。
 
-        ⚠️ 在持久化边界再做一遍 ``str(term).strip()`` + ``[2, 40]`` 长度校验。
-        主路径 ``record_from_text`` → ``extract_directives`` 已经过 ``_trim_term``
-        + 长度过滤；但 ``record()`` 也是 public API（测试、未来调用方可能绕过
-        抽取器），保险起见把不变量从 boundary 处也卡住（CodeRabbit Minor）。
+        ⚠️ 写盘 boundary 也走 ``_normalize_term`` —— 与 ``_normalize_entry`` 的
+        读盘校验共享同一份长度不变量，磁盘态始终满足 [_TERM_MIN_LEN, _TERM_MAX_LEN]
+        （CodeRabbit Minor）。
         """
         if not name:
             return {}
-        if not isinstance(term, str):
+        term_norm = _normalize_term(term)
+        if term_norm is None:
             return {}
-        term = term.strip()
-        if not (2 <= len(term) <= 40):
-            return {}
+        term = term_norm
         ts = float(now if now is not None else _now())
         expire = ts + USER_DIRECTIVE_TTL_SECONDS
         key = (kind, term.casefold())
