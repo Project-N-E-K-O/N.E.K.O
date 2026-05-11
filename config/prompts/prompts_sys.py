@@ -461,6 +461,31 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
     'pt': '\nDepois do relato, retome a conversa normal.======\n',
 }
 
+# ---------- 前情概要 + 事件回应（voice hot-swap 用 origin="event" 路径）----------
+# 跟 CONTEXT_SUMMARY_TASK_HEADER/FOOTER 对偶：voice mode 热切换时如果
+# pending_extra_replies 里有 origin="event" 的条目（push_message 推过来的弹幕 /
+# 礼物 / 外部事件等），就用这一组 wrapper 而不是任务汇报版——措辞强调"按内容自然
+# 回应"，不出现"任务"/"汇报"字样，避免兰兰把观众弹幕误读成"我刚才执行的任务"。
+CONTEXT_SUMMARY_EVENT_HEADER = {
+    'zh': '\n======以上为前情概要。请{name}先用自然、简洁的口吻根据下方新消息回应{master}：\n',
+    'en': '\n======End of context summary. Please have {name} first respond to {master} naturally and briefly based on the new messages below:\n',
+    'ja': '\n======以上が前回までのあらすじです。{name}はまず自然に簡潔な口調で、下記の新しいメッセージに応じて{master}に返答してください：\n',
+    'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 자연스럽고 간결한 어조로 아래의 새 메시지에 따라 {master}에게 답변하세요：\n',
+    'ru': '\n======Конец краткого содержания. Пожалуйста, {name} сначала кратко и естественно ответьте {master} на новые сообщения ниже:\n',
+    'es': '\n======Fin del resumen de contexto. Haz que {name} primero responda a {master} de forma breve y natural según los nuevos mensajes a continuación:\n',
+    'pt': '\n======Fim do resumo de contexto. Faça {name} primeiro responder a {master} de forma breve e natural conforme as novas mensagens abaixo:\n',
+}
+
+CONTEXT_SUMMARY_EVENT_FOOTER = {
+    'zh': '\n完成上述回应后，再恢复正常对话。======\n',
+    'en': '\nAfter responding, resume normal conversation.======\n',
+    'ja': '\n返答を終えたら、通常の会話に戻ってください。======\n',
+    'ko': '\n응답을 마친 후 일반 대화로 돌아오세요.======\n',
+    'ru': '\nПосле ответа возобновите обычный разговор.======\n',
+    'es': '\nDespués de responder, vuelve a la conversación normal.======\n',
+    'pt': '\nDepois de responder, retome a conversa normal.======\n',
+}
+
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------
 AVATAR_ANNOTATION_TEXT = {
     'zh':    ('这是{name}在桌面上的虚拟形象,', '请{name}不要主动提及'),

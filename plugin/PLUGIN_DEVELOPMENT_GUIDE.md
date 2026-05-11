@@ -516,7 +516,7 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 
 #### "任务汇报"vs"事件回应"：宿主自动分类
 
-主 AI 在被通知时会被套上一层外层 prompt。**外层 prompt 的措辞分两类**——
+主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**——
 插件作者**不能也无需指定**，宿主根据你调用的 SDK 方法自动判定：
 
 | 你调用 | 宿主分类 | AI 收到的外层 prompt 大意 |

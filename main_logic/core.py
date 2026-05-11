@@ -66,6 +66,7 @@ from config.prompts.prompts_sys import (
     TASK_STATUS_PHRASES,
     TASK_ACTION_PHRASES,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
+    CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
 )
 
@@ -270,6 +271,67 @@ def _build_callback_instruction(
             # the joined output is clean.
             parts.append(header.rstrip())
     return "\n\n".join(parts)
+
+
+def _render_pending_extra_replies_by_origin(
+    entries,
+    *,
+    lang: str,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    """Render voice-mode ``pending_extra_replies`` into the hot-swap injection
+    string, grouped by ``origin``.
+
+    Each entry should be ``{"origin": "task_result"|"event", "text": str}``.
+    Legacy plain-string elements (from pre-migration code paths) are tolerated
+    and treated as ``origin="event"`` — the safer default since "汇报先前执行
+    的任务的结果" framing on what may actually be an event push is the bug
+    this refactor fixes.
+
+    Returns a single string suitable for appending to ``final_prime_text``.
+    Order: task block first (if any), then event block — matches the original
+    single-block placement where everything followed the cache dump.
+    """
+    if not entries:
+        return ""
+
+    task_items: list[str] = []
+    event_items: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            txt = (entry.get("text") or "").strip()
+            if not txt:
+                continue
+            origin = entry.get("origin")
+            if origin == "task_result":
+                task_items.append(txt)
+            else:
+                # event, missing, or unknown — group as event (fail-safe).
+                event_items.append(txt)
+        elif isinstance(entry, str):
+            stripped = entry.strip()
+            if stripped:
+                event_items.append(stripped)
+
+    blocks: list[str] = []
+    if task_items:
+        items_text = "\n".join(f"- {t}" for t in task_items)
+        blocks.append(
+            _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
+            + items_text
+            + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
+        )
+    if event_items:
+        items_text = "\n".join(f"- {t}" for t in event_items)
+        blocks.append(
+            _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
+            + items_text
+            + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
+        )
+    return "".join(blocks)
+
+
 from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
@@ -558,8 +620,15 @@ class LLMSessionManager:
         self.final_swap_task = None
         self.receive_task = None
         self.message_handler_task = None
-        # 任务完成后的额外回复队列（将在下一次切换时统一汇报，语音模式使用）
-        self.pending_extra_replies = []
+        # Voice-mode-only callback queue, drained on hot-swap via
+        # ``_perform_final_swap_sequence`` into ``prime_context`` for the new
+        # session. Each element is a dict ``{"origin": "task_result"|"event",
+        # "text": str}`` — swap-time rendering groups by origin so event-stream
+        # pushes (push_message) get the EVENT hot-swap wrapper, not the TASK
+        # one. Kept independent from ``pending_agent_callbacks``: the two are
+        # consumed at different lifecycle points (text mode = next stream_text,
+        # voice mode = next hot-swap) and must not share state.
+        self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -5001,12 +5070,28 @@ class LLMSessionManager:
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
         Voice mode: also appended to pending_extra_replies for hot-swap
         injection via prime_context().
+
+        Each pending_extra_replies element carries ``origin`` so the hot-swap
+        renderer can pick TASK vs EVENT wrapper at drain time — without this
+        the voice-mode path would wrap event-stream pushes (push_message) in
+        the "请汇报先前执行的任务的结果" template that only applies to real
+        task completions. The two queues stay independent (text-mode drain
+        and voice-mode hot-swap fire at different lifecycle points).
         """
         try:
             self.pending_agent_callbacks.append(callback)
             text = (callback.get("summary") or callback.get("detail") or "").strip()
             if text:
-                self.pending_extra_replies.append(text)
+                origin = callback.get("origin")
+                if origin not in ("task_result", "event"):
+                    # Fail-safe: missing/unknown origin defaults to event so
+                    # the hot-swap renderer does not fabricate "我完成了任务"
+                    # for what may actually be an external event push.
+                    origin = "event"
+                self.pending_extra_replies.append({
+                    "origin": origin,
+                    "text": text,
+                })
         except Exception:
             pass
 
@@ -5077,15 +5162,12 @@ class LLMSessionManager:
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
-                try:
-                    items = "\n".join([f"- {txt}" for txt in self.pending_extra_replies if isinstance(txt, str) and txt.strip()])
-                except Exception:
-                    items = ""
                 _lang = normalize_language_code(self.user_language, format='short')
-                final_prime_text += (
-                    _loc(CONTEXT_SUMMARY_TASK_HEADER, _lang).format(name=self.lanlan_name, master=self.master_name)
-                    + items
-                    + _loc(CONTEXT_SUMMARY_TASK_FOOTER, _lang)
+                final_prime_text += _render_pending_extra_replies_by_origin(
+                    self.pending_extra_replies,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
                 )
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()

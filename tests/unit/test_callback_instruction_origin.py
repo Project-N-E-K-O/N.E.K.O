@@ -16,8 +16,14 @@ These tests pin both the active/passive split and the cross-axis
 guarantees:
 - TASK ACTIVE renders status_phrase + action_phrase ("已完成 / 汇报").
 - EVENT ACTIVE renders neutral wording with no "任务"/"汇报".
-- Missing origin falls back to "event" + emits a warning (fail-safe:
-  better to omit the "汇报" framing than fabricate "I did a task").
+- Missing origin silently falls back to "event" (pre-migration compat).
+- Explicitly unknown origin values fall back to "event" + warn (signals
+  a typo or a producer using an unsupported value, worth surfacing).
+
+Also covers the voice-mode hot-swap renderer
+(``_render_pending_extra_replies_by_origin``): the swap path bypasses
+``_build_callback_instruction`` entirely and uses CONTEXT_SUMMARY_*
+wrappers, so the origin routing must be re-asserted there.
 """
 from __future__ import annotations
 
@@ -291,3 +297,112 @@ def test_passive_drain_path_forces_passive_for_all_origins():
     # But each origin still picks its own passive wrapper.
     assert "任务结果" in out
     assert "消息" in out
+
+
+# ---------------------------------------------------------------------------
+# Voice-mode hot-swap renderer
+# ---------------------------------------------------------------------------
+#
+# In voice mode, callbacks are not drained through ``_build_callback_instruction``
+# — they sit in ``pending_extra_replies`` until the next session hot-swap, then
+# get rendered into ``prime_context`` via ``_render_pending_extra_replies_by_origin``.
+# This is a SECOND rendering path that has to honor the same origin distinction;
+# otherwise event-stream pushes get the "汇报先前执行的任务的结果" framing.
+
+
+def _render_swap(entries):
+    from main_logic.core import _render_pending_extra_replies_by_origin
+
+    return _render_pending_extra_replies_by_origin(
+        entries,
+        lang="zh",
+        lanlan_name="兰兰",
+        master_name="主人",
+    )
+
+
+def test_voice_swap_event_entries_use_event_wrapper():
+    """The bilidanmu voice-mode fix anchor. push_message events queued via
+    ``enqueue_agent_callback`` end up in ``pending_extra_replies`` with
+    ``origin="event"``. The hot-swap renderer must wrap them with
+    CONTEXT_SUMMARY_EVENT_HEADER/FOOTER — NOT the task wrapper.
+    """
+    out = _render_swap(
+        [
+            {"origin": "event", "text": "💬 [大佬]观众A: 好可爱"},
+            {"origin": "event", "text": "🎁 观众B 送了 1个 小心心"},
+        ]
+    )
+    # Event wrapper: "请...根据下方新消息回应..."
+    assert "新消息" in out
+    assert "回应" in out
+    # Critical: NO "汇报先前执行的任务" framing.
+    assert "汇报" not in out
+    assert "先前执行的任务" not in out
+    # Content carried.
+    assert "好可爱" in out
+    assert "小心心" in out
+
+
+def test_voice_swap_task_entries_use_task_wrapper():
+    """Real task completions (e.g. finish(delivery="proactive") from
+    pomodoro / sts2) keep the "汇报" framing — this is the pre-existing
+    behavior the refactor must preserve."""
+    out = _render_swap(
+        [
+            {"origin": "task_result", "text": "番茄钟到点了"},
+        ]
+    )
+    assert "汇报" in out
+    assert "番茄钟到点了" in out
+    # Should not pick up the event wrapper.
+    assert "新消息" not in out
+
+
+def test_voice_swap_mixed_origins_render_separate_blocks():
+    """Task and event entries in the same drain produce TWO blocks, each
+    with its own wrapper — they do not collapse into one.
+    """
+    out = _render_swap(
+        [
+            {"origin": "task_result", "text": "搜索完成"},
+            {"origin": "event", "text": "弹幕来了"},
+            {"origin": "task_result", "text": "音乐播放完毕"},
+        ]
+    )
+    # Both wrappers present.
+    assert "汇报" in out  # TASK_HEADER
+    assert "回应" in out  # EVENT_HEADER
+    # All content carried.
+    assert "搜索完成" in out
+    assert "弹幕来了" in out
+    assert "音乐播放完毕" in out
+    # Task block precedes event block (matches helper docstring).
+    assert out.index("搜索完成") < out.index("弹幕来了")
+
+
+def test_voice_swap_legacy_string_entries_treated_as_event():
+    """Defensive: if any old code path enqueues a plain string (pre-
+    migration shape), treat it as event — the safer fallback, since
+    fabricating "我刚才执行了任务" for what may actually be a push event
+    is exactly the bug this PR fixes.
+    """
+    out = _render_swap(["遗留字符串条目"])
+    assert "新消息" in out
+    assert "汇报" not in out
+    assert "遗留字符串条目" in out
+
+
+def test_voice_swap_missing_origin_falls_back_to_event():
+    """Dict entries without ``origin`` key — same fail-safe as
+    ``_build_callback_instruction``: render as event."""
+    out = _render_swap([{"text": "无 origin 条目"}])
+    assert "新消息" in out
+    assert "汇报" not in out
+    assert "无 origin 条目" in out
+
+
+def test_voice_swap_empty_input_returns_empty_string():
+    assert _render_swap([]) == ""
+    assert _render_swap([{"origin": "event", "text": ""}]) == ""  # all blank
+    assert _render_swap([{"origin": "event", "text": "   "}]) == ""
