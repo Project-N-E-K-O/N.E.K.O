@@ -706,17 +706,23 @@ async def update_core_config(request: Request):
             existing_core_cfg = {}
         core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
         
+        def _is_masked_secret(value) -> bool:
+            if not isinstance(value, str):
+                return False
+            stripped = value.strip()
+            return not stripped or '***' in stripped or set(stripped) == {'*'}
+
         # 只有在启用自定义API时，才允许不设置coreApiKey
         if enable_custom_api:
             # 启用自定义API时，coreApiKey是可选的
             if 'coreApiKey' in data:
                 api_key = data['coreApiKey']
-                if api_key is not None and isinstance(api_key, str):
+                if not _is_masked_secret(api_key):
                     core_cfg['coreApiKey'] = api_key.strip()
         else:
             # 未启用自定义API时，必须设置coreApiKey
             api_key = data.get('coreApiKey', '')
-            if api_key is not None and isinstance(api_key, str):
+            if not _is_masked_secret(api_key):
                 core_cfg['coreApiKey'] = api_key.strip()
         if 'coreApi' in data:
             core_cfg['coreApi'] = data['coreApi']

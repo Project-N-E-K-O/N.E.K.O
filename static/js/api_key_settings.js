@@ -1646,6 +1646,22 @@ async function fetchElevenlabsVoices(silent = false) {
                         if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
                             selectElevenlabsVoice(v.voice_id);
+                            return;
+                        }
+
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            const cards = Array.from(grid.querySelectorAll('.gsv-voice-card'));
+                            const currentIndex = cards.indexOf(card);
+                            if (currentIndex === -1 || cards.length === 0) return;
+
+                            const step = (event.key === 'ArrowRight' || event.key === 'ArrowDown') ? 1 : -1;
+                            const nextIndex = (currentIndex + step + cards.length) % cards.length;
+                            const nextCard = cards[nextIndex];
+                            if (nextCard) {
+                                selectElevenlabsVoice(nextCard.dataset.voiceId || '');
+                                nextCard.focus();
+                            }
                         }
                     });
                     grid.appendChild(card);
@@ -2058,7 +2074,7 @@ async function save_button_down(e) {
 
     if (elevenlabsEnabled) {
         ttsModelUrl = elevenlabsConfigForSave.baseUrl;
-        ttsVoiceId = elevenlabsConfigForSave.voiceId || ttsVoiceId;
+        ttsVoiceId = elevenlabsConfigForSave.voiceId || (ttsVoiceId.startsWith('eleven:') ? ttsVoiceId : '');
     } else if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;

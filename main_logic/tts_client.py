@@ -4,6 +4,7 @@ TTS Helper模块
 """
 import numpy as np
 import soxr
+import hashlib
 import time
 import json
 import re
@@ -440,11 +441,11 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
     ),
     "elevenlabs": TTSProviderMeta(
         name="elevenlabs",
-        category="http_sentence",
-        protocol="HTTP POST + streaming response",
-        input_streaming=False,
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input)",
+        input_streaming=True,
         output_streaming=True,
-        client_sentence_split=True,
+        client_sentence_split=False,
         audio_format="PCM 24kHz -> resample 48kHz",
         notes="ElevenLabs text-to-speech stream with Flash v2.5 by default",
     ),
@@ -3426,7 +3427,7 @@ _ELEVENLABS_WS_CHUNK_SCHEDULES = {
     1: [100, 140, 200, 260],
     2: [80, 120, 160, 220],
     3: [60, 90, 130, 180],
-    4: [40, 60, 90, 120],
+    4: [50, 80, 110, 150],
 }
 
 
@@ -3515,7 +3516,7 @@ async def _elevenlabs_stream_synthesize(
     pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
     resampler = soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32') if pcm_sample_rate != 48000 else None
     emitted_pcm_samples = 0
-    sentence_text_for_log = _compact_tts_text_for_log(text, 180)
+    sentence_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
     try:
         async with client.stream(
@@ -3577,7 +3578,7 @@ async def _elevenlabs_stream_synthesize(
                     else None
                 )
                 logger.info(
-                    "ElevenLabs TTS chunk: chunk=%d, gap=%dms(%s), elapsed=%dms, bytes=%d, audio=%.3fs, chunk_rtf=%s, stream_rtf=%s, text_len=%d, model=%s, format=%s, sentence=%s",
+                    "ElevenLabs TTS chunk: chunk=%d, gap=%dms(%s), elapsed=%dms, bytes=%d, audio=%.3fs, chunk_rtf=%s, stream_rtf=%s, text_len=%d, model=%s, format=%s, sentence_hash=%s",
                     chunk_index,
                     chunk_gap_ms,
                     chunk_gap_label,
@@ -3589,13 +3590,13 @@ async def _elevenlabs_stream_synthesize(
                     len(text),
                     model_name or ELEVENLABS_DEFAULT_MODEL,
                     output_format,
-                    sentence_text_for_log,
+                    sentence_hash,
                 )
                 if first_audio_ms is None:
                     first_audio_ms = int((time.perf_counter() - start_time) * 1000)
                     first_audio_after_headers_ms = max(0, first_audio_ms - headers_ms)
                     logger.info(
-                        "ElevenLabs TTS first audio: first_audio=%dms, after_headers=%dms, headers=%dms, text_len=%d, model=%s, format=%s, latency_opt=%s, sentence=%s",
+                        "ElevenLabs TTS first audio: first_audio=%dms, after_headers=%dms, headers=%dms, text_len=%d, model=%s, format=%s, latency_opt=%s, sentence_hash=%s",
                         first_audio_ms,
                         first_audio_after_headers_ms,
                         headers_ms,
@@ -3603,13 +3604,13 @@ async def _elevenlabs_stream_synthesize(
                         model_name or ELEVENLABS_DEFAULT_MODEL,
                         output_format,
                         optimize_streaming_latency,
-                        sentence_text_for_log,
+                        sentence_hash,
                     )
             total_ms = int((time.perf_counter() - start_time) * 1000)
             audio_seconds = emitted_pcm_samples / float(pcm_sample_rate) if pcm_sample_rate > 0 else 0.0
             rtf = (total_ms / 1000.0) / audio_seconds if audio_seconds > 0 else None
             logger.info(
-                "ElevenLabs TTS stream complete: total=%dms, audio=%.3fs, rtf=%s, first_audio=%s, text_len=%d, model=%s, format=%s, sentence=%s",
+                "ElevenLabs TTS stream complete: total=%dms, audio=%.3fs, rtf=%s, first_audio=%s, text_len=%d, model=%s, format=%s, sentence_hash=%s",
                 total_ms,
                 audio_seconds,
                 f"{rtf:.3f}" if rtf is not None else "n/a",
@@ -3617,7 +3618,7 @@ async def _elevenlabs_stream_synthesize(
                 len(text),
                 model_name or ELEVENLABS_DEFAULT_MODEL,
                 output_format,
-                sentence_text_for_log,
+                sentence_hash,
             )
     except Exception as exc:
         _enqueue_error(response_queue, {
@@ -3914,13 +3915,14 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             await ws.send(json.dumps(payload))
             text_chunk_index += 1
             session_text_chars += len(text)
+            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
             logger.info(
-                "ElevenLabs WS text: speech_id=%s chunk=%d len=%d final=%s text=%s",
+                "ElevenLabs WS text: speech_id=%s chunk=%d len=%d final=%s text_hash=%s",
                 speech_id,
                 text_chunk_index,
                 len(text),
                 final,
-                _compact_tts_text_for_log(text, 180),
+                text_hash,
             )
 
         async def _ensure_session(speech_id: str) -> None:
@@ -3939,6 +3941,22 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 await _open_ws(speech_id)
 
         try:
+            if not normalized_voice_id:
+                _enqueue_error(response_queue, {
+                    "code": "TTS_VOICE_ID_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs voice_id is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
+            if not audio_api_key:
+                _enqueue_error(response_queue, {
+                    "code": "API_KEY_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs API key is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
             response_queue.put(("__ready__", True))
             logger.info("ElevenLabs WS worker ready")
             loop = asyncio.get_running_loop()
@@ -4190,24 +4208,33 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url') or ''
+        core_cfg = cm.get_core_config()
+        tts_provider = (
+            core_cfg.get('TTS_PROVIDER')
+            or core_cfg.get('ttsProvider')
+            or ''
+        )
+        elevenlabs_enabled = bool(
+            core_cfg.get('ELEVENLABS_ENABLED')
+            or core_cfg.get('elevenlabsEnabled')
+            or tts_provider == 'elevenlabs'
+        )
+        if elevenlabs_enabled:
+            elevenlabs_base_url = (
+                core_cfg.get('ELEVENLABS_BASE_URL')
+                or core_cfg.get('elevenlabsBaseUrl')
+                or base_url
+                or None
+            )
+            return (
+                partial(elevenlabs_tts_worker, base_url=elevenlabs_base_url),
+                cm.get_tts_api_key('elevenlabs'),
+                'elevenlabs',
+            )
         if tts_config.get('is_custom'):
-            base_url = tts_config.get('base_url') or ''
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
-            core_cfg = cm.get_core_config()
-            tts_provider = (
-                core_cfg.get('TTS_PROVIDER')
-                or core_cfg.get('ttsProvider')
-                or ''
-            )
-            elevenlabs_enabled = bool(
-                core_cfg.get('ELEVENLABS_ENABLED')
-                or core_cfg.get('elevenlabsEnabled')
-                or tts_provider == 'elevenlabs'
-                or 'elevenlabs.io' in base_url
-            )
-            if elevenlabs_enabled:
-                return partial(elevenlabs_tts_worker, base_url=base_url or None), cm.get_tts_api_key('elevenlabs'), 'elevenlabs'
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'

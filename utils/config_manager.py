@@ -2130,8 +2130,6 @@ class ConfigManager:
             key = (core_config.get('ASSIST_API_KEY_ELEVENLABS') or '').strip()
             if not key:
                 key = (core_config.get('ELEVENLABS_API_KEY') or '').strip()
-            if not key:
-                key = (core_config.get('TTS_MODEL_API_KEY') or '').strip()
             if '***' in key:
                 return None
             return key or None
@@ -2390,8 +2388,20 @@ class ConfigManager:
              _should_block_free_preset_voice 根据线路 (lanlan.tech / lanlan.app)
              动态决定是否实际启用（lanlan.app 海外节点不支持预设音色）
         """
+        voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if voice_id.startswith('eleven:'):
+            core_config = self.get_core_config()
+            elevenlabs_enabled = bool(
+                core_config.get('ELEVENLABS_ENABLED')
+                or core_config.get('elevenlabsEnabled')
+                or core_config.get('TTS_PROVIDER') == 'elevenlabs'
+                or core_config.get('ttsProvider') == 'elevenlabs'
+            )
+            if elevenlabs_enabled:
+                return True
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -2415,8 +2425,20 @@ class ConfigManager:
 
     def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
         """校验 voice_id 是否在指定 API Key 下有效"""
+        voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if voice_id.startswith('eleven:'):
+            core_config = self.get_core_config()
+            elevenlabs_enabled = bool(
+                core_config.get('ELEVENLABS_ENABLED')
+                or core_config.get('elevenlabsEnabled')
+                or core_config.get('TTS_PROVIDER') == 'elevenlabs'
+                or core_config.get('ttsProvider') == 'elevenlabs'
+            )
+            if elevenlabs_enabled:
+                return True
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:

@@ -815,6 +815,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'kimi': 'ASSIST_API_KEY_KIMI',
     'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
     'minimax': 'ASSIST_API_KEY_MINIMAX',
+    'elevenlabs': 'ASSIST_API_KEY_ELEVENLABS',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
     'grok': 'ASSIST_API_KEY_GROK',
