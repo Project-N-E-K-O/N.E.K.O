@@ -1014,9 +1014,14 @@ REFLECTION_FOLLOWUP_WEIGHT_BASE = 0.5
 
 # ---- Memory: summary stale prompt (memory/recent.py) ─
 RECENT_SUMMARY_STALE_HOURS = 1
-"""距上次 summary 超过此小时数，/process 时给 summary 附加"时间已过 X"
-提示，让 LLM 主动把过时片段挪进 summary 内部的过时 block。
-- 上游：recent.json 里新增的 last_summary_at meta。
+"""距上次"LLM 实际更新 past block 的时刻"超过此小时数，下一次 compress
+时在 prompt 头部附加"时间已过 X"提示，让 LLM 主动把过时片段挪进 summary
+内部的过时 block。
+- 锚点：不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
+  stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时刷一次
+  past block"的稳定节奏。改记"上次 hint 真正注入的时刻"，即 LLM 实际
+  被要求更新 past block 的那一刻。
+- 上游：recent_meta.json 里的 last_past_block_update_at 字段。
 - 注意：summary 的过时 block 只在当前 session 临时降级，不持久化到
   reflection / persona。"""
 

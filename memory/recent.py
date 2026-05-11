@@ -327,19 +327,23 @@ class CompressedRecentHistoryManager:
             logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
 
 
-    # ── Summary 时间衰减 meta（恶搞防止"几天前的事还在 summary 里被反复
-    #    带出来"——见 config.RECENT_SUMMARY_STALE_HOURS 注释）。
+    # ── Past block 更新 meta（防止"几天前的事还在 summary 里被反复带出来"
+    #    ——见 config.RECENT_SUMMARY_STALE_HOURS 注释）。
+    # 锚点不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
+    # stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时
+    # 刷一次 past block"的稳定节奏。这里改记"上次 hint 真正注入的时刻"，
+    # 即"上次 LLM 实际更新 past block 的时刻"——只有那种 turn 才推进锚点。
     def _summary_meta_path(self, lanlan_name: str) -> str:
         """side meta file per character: <memory>/<name>/recent_meta.json
-        with {"last_summary_at": ISO}. 跟 recent.json 共目录，恢复时易于
-        与会话快照对齐。"""
+        with {"last_past_block_update_at": ISO}. 跟 recent.json 共目录，
+        恢复时易于与会话快照对齐。"""
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, lanlan_name),
             'recent_meta.json',
         )
 
-    async def _aread_last_summary_at(self, lanlan_name: str) -> datetime | None:
+    async def _aread_last_past_block_update_at(self, lanlan_name: str) -> datetime | None:
         path = self._summary_meta_path(lanlan_name)
         if not await asyncio.to_thread(os.path.exists, path):
             return None
@@ -351,20 +355,24 @@ class CompressedRecentHistoryManager:
             data = robust_json_loads(raw)
             if not isinstance(data, dict):
                 return None
-            ts = data.get('last_summary_at')
+            # 兼容 PR #1316 早期 in-progress 版本的旧 key（last_summary_at）。
+            # 用 OR 兜底——已合并版本不会写 last_summary_at，本兼容仅服务
+            # 在我本机跑过该 PR 中间 commit 的开发者，下次写 meta 会用新 key
+            # 覆盖旧文件。
+            ts = data.get('last_past_block_update_at') or data.get('last_summary_at')
             if not ts:
                 return None
             return datetime.fromisoformat(ts)
         except Exception:
             return None
 
-    async def _awrite_last_summary_at(self, lanlan_name: str) -> None:
+    async def _awrite_last_past_block_update_at(self, lanlan_name: str) -> None:
         path = self._summary_meta_path(lanlan_name)
         try:
             await asyncio.to_thread(os.makedirs, os.path.dirname(path), exist_ok=True)
             await atomic_write_json_async(
                 path,
-                {'last_summary_at': datetime.now().isoformat()},
+                {'last_past_block_update_at': datetime.now().isoformat()},
                 indent=2,
                 ensure_ascii=False,
             )
@@ -409,16 +417,26 @@ class CompressedRecentHistoryManager:
         else:
             prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
 
-        # Summary 时间衰减：距上次压缩 > RECENT_SUMMARY_STALE_HOURS 小时时，
-        # 在 prompt 头部加一段提醒，让 LLM 把明显过时的内容挪到 summary 末尾的
-        # "较久前"段落（仅影响本次 summary 文本，不持久化到 reflection/persona）。
+        # Past block 时间衰减：距上次"实际更新 past block"超过
+        # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加一段提醒让 LLM 把
+        # 明显过时的内容挪到 summary 末尾的"较久前"段落。锚点只在 hint 真正
+        # 注入时推进（见下方 stale_hint_injected）——这样 hint 形成"每 N 小时
+        # 触发一次"的节奏，而不是"每次 compress 都看一眼"。
+        # 仅影响本次 summary 文本，不持久化到 reflection / persona。
+        stale_hint_injected = False
+        first_time_baseline = False
         try:
-            last_summary_at = await self._aread_last_summary_at(lanlan_name)
-            if last_summary_at is not None:
-                gap_hours = (datetime.now() - last_summary_at).total_seconds() / 3600.0
+            last_past_update = await self._aread_last_past_block_update_at(lanlan_name)
+            if last_past_update is None:
+                # 第一次为该角色 compress——先建立 baseline 锚点，本轮不注入
+                # hint（首次会话还没有什么"过时"内容值得拎走）。
+                first_time_baseline = True
+            else:
+                gap_hours = (datetime.now() - last_past_update).total_seconds() / 3600.0
                 if gap_hours >= RECENT_SUMMARY_STALE_HOURS:
                     hint = get_summary_stale_hint(lang, gap_hours)
                     prompt = hint + "\n\n" + prompt
+                    stale_hint_injected = True
         except Exception as e:
             # 时间衰减提醒是 best-effort；失败不能挡 summary 主流程
             logger.debug(f"[RecentHistory] {lanlan_name}: stale hint 注入失败: {e}")
@@ -457,9 +475,13 @@ class CompressedRecentHistoryManager:
                             summary = json.dumps(summary, ensure_ascii=False)
                     from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
                     memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
-                    # 写 last_summary_at meta（best-effort）。下一次 compress
-                    # 时按这个时间算 gap 决定是否注入 stale hint。
-                    await self._awrite_last_summary_at(lanlan_name)
+                    # 推进 past-block 更新锚点（best-effort）：
+                    # - 第一次 compress：建立 baseline，让后续按 gap 触发
+                    # - 注入过 stale hint：表示 LLM 本轮真的更新了 past block
+                    # 中间没有 hint 注入的常规压缩不动锚点——这样 hint 形成稳定
+                    # 的"每 N 小时一次"节奏，而不是被频繁压缩冲掉。
+                    if first_time_baseline or stale_hint_injected:
+                        await self._awrite_last_past_block_update_at(lanlan_name)
                     # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持
                     # 一致——之前用 raw 摘要会出现"用户看到的 memo 用了 stage-2
                     # 摘要、缓存却存了 stage-1 原文"的诡异不一致。
