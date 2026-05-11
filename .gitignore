@@ -35,7 +35,6 @@ utils/cache/
 config/api.py
 config/*.json
 !config/api_providers.json
-!config/characters.*.json
 env/*
 lanlan_frd.exe
 
