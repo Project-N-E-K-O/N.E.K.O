@@ -229,6 +229,7 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
 
 _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
+    "utils.grok_tts_voices",
 )
 
 

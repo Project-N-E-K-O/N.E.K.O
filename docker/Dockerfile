@@ -21,6 +21,13 @@ WORKDIR /src
 COPY frontend/plugin-manager /src/frontend/plugin-manager
 COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 
+# Shared static assets bundled into plugin-manager at build time.
+# yui-guide-runtime.ts imports tutorial PNGs and shared icons via
+# `../../../static/...`; keep these COPY paths in sync with that file
+# (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+COPY static/assets/tutorial /src/static/assets/tutorial
+COPY static/icons /src/static/icons
+
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
 
@@ -104,8 +111,11 @@ RUN mkdir -p /root/.config/uv && \
 COPY --chown=neko:neko . /app
 
 # 7. Copy frontend build artifacts
+# Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
+# (relative to its package root), so the actual build output lives at
+# /src/static/react/neko-chat — NOT /src/frontend/react-neko-chat/dist.
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
-COPY --from=frontend-builder /src/frontend/react-neko-chat/dist /app/static/react/neko-chat
+COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 7b. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \

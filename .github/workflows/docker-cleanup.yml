@@ -1,0 +1,51 @@
+name: Docker Image Cleanup
+
+# 定期清理 GHCR 上的旧 container 版本，避免 ci-{hash}-* / pr-{N}-ci-* 标签
+# 长期堆积。保留：浮动别名（latest, ci-standard 等）+ release 版本 + 最近 N 个版本。
+#
+# 触发方式：
+#   - 每周日 03:00 UTC 定时跑
+#   - 也可通过 Actions 页面手动 dispatch，调整 min_versions_to_keep
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      min_versions_to_keep:
+        description: '保留最近 N 个版本（按上传时间），其他不在 ignore-versions 里的版本会被删'
+        required: false
+        default: '30'
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  cleanup-ghcr:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old container versions
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: project-n-e-k-o
+          package-name: 'n.e.k.o'
+          package-type: 'container'
+          min-versions-to-keep: ${{ github.event.inputs.min_versions_to_keep || 30 }}
+          # 保护：浮动别名 + release 版本号 + standard/full 主版本族，
+          # 以及它们的 per-arch 子 manifest（`-linux-{amd64,arm64}` 后缀）。
+          # 匹配 version 的任一 tag 命中即保留整个 version。
+          #
+          # 关键点：multi-arch manifest list（如 `latest-standard`、`0.8.0-full`、
+          # `ci-standard`）通过 digest 引用 per-arch 子 manifest（如
+          # `0.8.0-standard-linux-amd64`）。如果只保护 manifest list 而让
+          # 子 manifest 被回收，list 会指向不存在的 digest，pull 会挂在某个架构上。
+          # 所以下面的正则结尾允许可选的 `-linux-(amd64|arm64)` 后缀。
+          #
+          # 覆盖（含 per-arch 变体）：
+          #   latest, latest-standard, latest-full
+          #   v1.2.3 / 1.2.3 / 1.2.3-standard / 1.2.3-full
+          #   ci-standard, ci-full
+          #   pr-ci-standard, pr-ci-full（PR 触发若未来恢复时仍会浮动）
+          ignore-versions: '^(latest(-(standard|full))?|v?\d+\.\d+\.\d+(-(standard|full))?|(pr-)?ci-(standard|full))(-linux-(amd64|arm64))?$'

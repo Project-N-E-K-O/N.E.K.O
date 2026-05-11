@@ -675,6 +675,10 @@ DEFAULT_CORE_API_PROFILES = {
         # Gemini 使用 google-genai SDK，而非原生 WebSocket
         'CORE_MODEL': "gemini-2.5-flash-native-audio-preview-12-2025",
     },
+    'grok': {
+        'CORE_URL': "wss://api.x.ai/v1/realtime",
+        'CORE_MODEL': "grok-voice-fast-1.0",
+    },
 }
 
 DEFAULT_ASSIST_API_PROFILES = {

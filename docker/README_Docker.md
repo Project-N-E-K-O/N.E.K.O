@@ -96,6 +96,49 @@ docker/
 }
 ```
 
+## 📦 镜像版本选择
+
+N.E.K.O. 镜像发布到两个 registry：
+
+- **GHCR**：`ghcr.io/project-n-e-k-o/n.e.k.o:<tag>` — 所有 tag 都在（含主线 `ci-*` 滚动版）
+- **Docker Hub**：`projectneko/n.e.k.o:<tag>` — **仅 release**（`latest`、`0.8.0-*` 等），避免主线 commit 污染对外 channel
+- **镜像代理**（中国大陆建议优先）：`docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:<tag>`
+
+### tag 流向一览
+
+| tag | 何时更新 | 发到哪 | 适用场景 |
+|---|---|---|---|
+| `latest` / `latest-full` | 仅在 git tag `v*` push 时移动 | GHCR + Docker Hub | **默认推荐**，跟最新 release |
+| `0.8.0-standard` / `0.8.0-full` | 该 release 打 tag 后定型 | GHCR + Docker Hub | 钉死某个 release，最稳 |
+| `ci-standard` / `ci-full` | 每次 main commit 都会移动 | 仅 GHCR | 跟主线，**内测专用** |
+| `ci-{commit}-standard` / `-full` | 该 main commit 打完后定型 | 仅 GHCR | 复现某个历史 main 版本 |
+| `pr-{N}-ci-standard` / `-full` | （当前 PR 触发已关，仅在 workflow_dispatch 中可手动产） | 仅 GHCR | reviewer 拉下来手验产物 |
+| `pr-ci-standard` / `-full` | 同上，且**任意** PR 触发都会被覆盖 | 仅 GHCR | 不要用，会被随便哪个 PR 顶掉 |
+
+`standard`（~1.5GB）首次启动时下载 Chromium；`full`（~2.5GB）构建时已包含，开箱即用。
+
+> 📦 **GHCR 自动清理**：[docker-cleanup.yml](../.github/workflows/docker-cleanup.yml) 每周清理一次，保留最近 30 个版本 + 上述浮动别名 + 所有 release 版本。`ci-{hash}-*` 和 `pr-{N}-ci-*` 这些一次性 tag 会被陆续回收。
+
+### 推荐拉取方式
+
+```bash
+# 99% 的用户：跟最新 release（standard 版）
+docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
+
+# 要预装 Chromium 的 full 版
+docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full
+
+# 钉死某个 release（生产环境推荐）
+docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:0.8.0-standard
+
+# 跟主线（开发者 / 内测）
+docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:ci-standard
+```
+
+`docker-compose up` 默认就是 `latest`（即最新 release），不会被 main commit 或 PR 影响。要跟主线，在 `.env` 里设 `NEKO_IMAGE_VERSION=ci-standard` 或 `ci-full`。
+
+> ⚠️ **警告**：`ci-*` 和 `pr-*` 是滚动 tag，每次合并 main / 推 PR 都会被覆盖。生产环境一律用 `latest` 或具体的 `{version}-*`。
+
 ## 🚀 快速开始
 
 ### 1. 使用 docker-compose（推荐）
