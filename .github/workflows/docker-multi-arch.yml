@@ -471,6 +471,13 @@ jobs:
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
+          # GHCR - latest (traditional alias pointing to standard)
+          docker manifest create \
+            ghcr.io/${{ env.IMAGE_NAME }}:latest \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest
+
           # GHCR - latest-standard
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:latest-standard \
@@ -489,6 +496,13 @@ jobs:
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
+
+          # DockerHub - latest (traditional alias pointing to standard)
+          docker manifest create \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
+          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest
 
           # DockerHub - latest-standard
           docker manifest create \
