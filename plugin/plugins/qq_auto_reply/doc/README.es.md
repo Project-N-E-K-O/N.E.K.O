@@ -95,7 +95,8 @@ Notas:
 - Se reutilizan la personalidad del personaje y la configuración del modelo existentes.
 - En mensajes privados proactivos puede leerse el contexto de memoria, pero este envío no se vuelve a escribir en la memoria.
 - Los envíos proactivos a grupos no se escriben en memoria.
-- `qq_number` / `group_id` deben ser cadenas numéricas puras.
+- La entrada privada usa `target`: puede ser un ID numérico de QQ o un apodo ya configurado en la lista de usuarios de confianza.
+- `group_id` debe ser una cadena numérica.
 - `message` no puede estar vacío.
 - La respuesta automática debe estar ya iniciada y OneBot debe estar conectado; de lo contrario, la entrada fallará inmediatamente.
 

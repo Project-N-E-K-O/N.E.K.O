@@ -37,11 +37,11 @@ class QQAutoReplyPromptingMixin:
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
             short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["en"]),
+            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
         )
         context_ready_template = CONTEXT_SUMMARY_READY.get(
             short_language,
-            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["en"]),
+            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),
         )
 
         system_prompt_parts = [
@@ -415,7 +415,7 @@ class QQAutoReplyPromptingMixin:
                 return ai_reply
 
             self.logger.warning("AI 未生成回复")
-            return f"收到你的消息: {message}"
+            return None
 
         except asyncio.TimeoutError:
             self.logger.warning(f"会话 {session_key} 处理超时，关闭并丢弃该会话")
@@ -429,7 +429,7 @@ class QQAutoReplyPromptingMixin:
             return None
         except Exception as e:
             self.logger.exception(f"AI 生成回复失败: {e}")
-            return f"收到你的消息: {message}"
+            return None
         finally:
             if ephemeral_session:
                 user_data = self._user_sessions.pop(session_key, None)
