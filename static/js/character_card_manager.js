@@ -5879,30 +5879,34 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     });
                     selectEl.appendChild(nativeGroup);
                 }
-
-                // 保底：currentVoiceId 是 Gemini 别名（"中文男"、"male" 等）或本轮 catalog 没暴露
-                // 该 ID 时，下拉里没有匹配项 select 会回到首项；下次保存表单会被误判为
-                // "已清空"走 unregister_voice 分支，把用户保存的音色丢掉。这里仿 GSV 兜底，
-                // 给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
-                if (currentVoiceId
-                    && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
-                    const fallbackGroup = document.createElement('optgroup');
-                    const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
-                    fallbackGroup.label = '── ' + fallbackLabel + ' ──';
-                    fallbackGroup.dataset.geminiFallbackGroup = 'true';
-                    const fallbackOption = document.createElement('option');
-                    fallbackOption.value = currentVoiceId;
-                    fallbackOption.textContent = currentVoiceId + ' (?)';
-                    fallbackOption.title = currentVoiceId;
-                    fallbackOption.selected = true;
-                    fallbackGroup.appendChild(fallbackOption);
-                    selectEl.appendChild(fallbackGroup);
-                }
             }
         }
 
         // 加载 GPT-SoVITS 声音列表
         await _loadPanelGsvVoices(selectEl, currentVoiceId);
+
+        // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
+        // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
+        // 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
+        // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+        // 必须放在所有 loader（含 _loadPanelGsvVoices）之后才能正确判断是否已渲染；
+        // gsv: 前缀 ID 由 _loadPanelGsvVoices.ensureGsvFallback 自行兜底，跳过避免双插。
+        if (currentVoiceId
+            && !currentVoiceId.startsWith(GSV_PREFIX)
+            && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            const fallbackGroup = document.createElement('optgroup');
+            const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+            fallbackGroup.label = '── ' + fallbackLabel + ' ──';
+            fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = currentVoiceId;
+            fallbackOption.textContent = currentVoiceId + ' (?)';
+            fallbackOption.title = currentVoiceId;
+            fallbackOption.selected = true;
+            fallbackGroup.appendChild(fallbackOption);
+            selectEl.appendChild(fallbackGroup);
+            selectEl.value = currentVoiceId;
+        }
     } catch (e) {
         console.warn('加载音色列表失败:', e);
     }
