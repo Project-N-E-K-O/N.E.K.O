@@ -381,27 +381,12 @@ def get_emotion_keywords_flat() -> dict:
     merged: dict = {}
     for lang_map in EMOTION_KEYWORDS_BY_LANG.values():
         for emotion, words in lang_map.items():
-            existing = list(merged.get(emotion, ()))
-            seen = set(existing)
-            for word in words:
-                if word in seen:
-                    continue
-                existing.append(word)
-                seen.add(word)
-            merged[emotion] = tuple(existing)
+            merged[emotion] = merged.get(emotion, ()) + tuple(words)
     return merged
 
 
 def _flatten_lang_tuples(by_lang: dict) -> tuple:
-    flattened = []
-    seen = set()
-    for words in by_lang.values():
-        for item in words:
-            if item in seen:
-                continue
-            flattened.append(item)
-            seen.add(item)
-    return tuple(flattened)
+    return tuple(item for words in by_lang.values() for item in words)
 
 
 def get_angry_attack_patterns_flat() -> tuple:

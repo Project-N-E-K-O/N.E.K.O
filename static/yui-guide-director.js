@@ -170,23 +170,6 @@
         return 'zh-CN';
     }
 
-    function isGuideElementVisible(element) {
-        if (!element || element.hidden) {
-            return false;
-        }
-        try {
-            const style = window.getComputedStyle(element);
-            if (
-                style.display === 'none'
-                || style.visibility === 'hidden'
-                || Number.parseFloat(style.opacity || '1') <= 0
-            ) {
-                return false;
-            }
-        } catch (_) {}
-        return true;
-    }
-
     const DEFAULT_INTERRUPT_DISTANCE = 32;
     const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09;
@@ -2147,7 +2130,6 @@
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.activeGuideEmotion = '';
-            this.avatarSpeechSeq = 0;
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -2177,7 +2159,11 @@
                 ? capabilityApi.create()
                 : createHomeTutorialPlatformCapabilities();
             this.experienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
-            this.avatarStage = this.createAvatarStage();
+            this.wakeup = window.YuiGuideWakeup && typeof window.YuiGuideWakeup.create === 'function'
+                ? window.YuiGuideWakeup.create({
+                    metrics: this.experienceMetrics
+                })
+                : null;
             this.tutorialFaceForwardLockSnapshot = null;
             this.enableTutorialFaceForwardLock();
 
@@ -2224,107 +2210,6 @@
             return pageOrder.filter(function (sceneId) {
                 return typeof sceneId === 'string' && sceneId.indexOf('intro_') === 0;
             });
-        }
-
-        createAvatarStage() {
-            if (this.page !== 'home') {
-                return null;
-            }
-            if (!window.YuiGuideAvatarStage || typeof window.YuiGuideAvatarStage.create !== 'function') {
-                return null;
-            }
-            try {
-                return window.YuiGuideAvatarStage.create({
-                    logger: console
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 模型演出模块初始化失败，降级为原教程表现:', error);
-                return null;
-            }
-        }
-
-        callAvatarStage(methodName) {
-            if (!this.avatarStage || typeof this.avatarStage[methodName] !== 'function') {
-                return Promise.resolve(false);
-            }
-            const args = Array.prototype.slice.call(arguments, 1);
-            try {
-                return Promise.resolve(this.avatarStage[methodName].apply(this.avatarStage, args)).catch((error) => {
-                    console.warn('[YuiGuide] 模型演出异步调用失败:', methodName, error);
-                    return false;
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 模型演出调用失败:', methodName, error);
-                return Promise.resolve(false);
-            }
-        }
-
-        createAvatarStageContext(stepId, step, performance, meta) {
-            const normalizedStep = step || this.getStep(stepId) || null;
-            const normalizedPerformance = performance || (normalizedStep && normalizedStep.performance) || {};
-            const emotion = typeof normalizedPerformance.emotion === 'string'
-                ? normalizedPerformance.emotion.trim()
-                : '';
-            const anchorSelector = normalizedStep && normalizedStep.anchor ? normalizedStep.anchor : '';
-            const cursorTargetSelector = normalizedPerformance.cursorTarget || anchorSelector;
-            const anchorElement = this.resolveElement(anchorSelector);
-            const cursorTargetElement = this.resolveElement(cursorTargetSelector);
-            return {
-                stepId: stepId || '',
-                page: this.page || '',
-                source: meta && meta.source ? meta.source : '',
-                emotion: emotion,
-                voiceKey: normalizedPerformance.voiceKey || '',
-                anchor: anchorSelector,
-                cursorTarget: cursorTargetSelector,
-                targets: {
-                    anchor: anchorElement,
-                    cursorTarget: cursorTargetElement,
-                    spotlight: cursorTargetElement || anchorElement
-                }
-            };
-        }
-
-        revealPreparedTutorialLive2D(reason) {
-            try {
-                if (typeof document !== 'undefined' && document.body) {
-                    document.body.classList.remove('yui-guide-live2d-preparing');
-                }
-                if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
-                    window.dispatchEvent(new CustomEvent('neko:yui-guide:live2d-prepared-revealed', {
-                        detail: {
-                            reason: reason || '',
-                            timestamp: Date.now()
-                        }
-                    }));
-                }
-            } catch (_) {}
-        }
-
-        isStorageLocationOverlayVisible() {
-            if (typeof document === 'undefined' || typeof document.querySelector !== 'function') {
-                return false;
-            }
-            return isGuideElementVisible(document.querySelector('#storage-location-overlay'));
-        }
-
-        callAvatarTimelineAction(stepId, action, target, meta) {
-            const step = this.getStep(stepId);
-            const context = this.createAvatarStageContext(
-                stepId,
-                step,
-                step && step.performance,
-                Object.assign({ source: 'timeline-action' }, meta || {})
-            );
-            if (target) {
-                context.target = target;
-                context.targets = Object.assign({}, context.targets || {}, {
-                    actionTarget: target,
-                    spotlight: target
-                });
-            }
-            context.action = action || '';
-            return this.callAvatarStage('onTimelineAction', stepId, action, context);
         }
 
         enableTutorialFaceForwardLock() {
@@ -2636,28 +2521,6 @@
             }
 
             this.activeGuideEmotion = normalizedEmotion;
-            if (
-                this.page === 'home'
-                && this.avatarStage
-                && typeof this.avatarStage.applyEmotion === 'function'
-                && this.emotionBridge
-                && typeof this.emotionBridge.getActiveModelType === 'function'
-                && this.emotionBridge.getActiveModelType() === 'live2d'
-            ) {
-                const stepId = this.currentSceneId || '';
-                const step = this.getStep(stepId);
-                this.callAvatarStage('applyEmotion', normalizedEmotion, this.createAvatarStageContext(
-                    stepId,
-                    step,
-                    step && step.performance,
-                    { source: 'emotion-bridge' }
-                )).then((handled) => {
-                    if (!handled) {
-                        this.emotionBridge.apply(normalizedEmotion);
-                    }
-                });
-                return;
-            }
             this.emotionBridge.apply(normalizedEmotion);
         }
 
@@ -2697,28 +2560,7 @@
                 return;
             }
 
-            const normalizedOptions = options || {};
-            const stepId = normalizedOptions.stepId || this.currentSceneId || '';
-            const step = this.getStep(stepId);
-            const speechId = 'guide-speech-' + (++this.avatarSpeechSeq);
-            const avatarContext = Object.assign(
-                this.createAvatarStageContext(stepId, step, step && step.performance, {
-                    source: normalizedOptions.source || 'speech'
-                }),
-                {
-                    speechId: speechId,
-                    voiceKey: normalizedOptions.voiceKey || (step && step.performance ? step.performance.voiceKey : ''),
-                    minDurationMs: Number.isFinite(normalizedOptions.minDurationMs) ? normalizedOptions.minDurationMs : 0
-                }
-            );
-
-            const avatarSpeechStartPromise = this.callAvatarStage('onSpeechStart', stepId, avatarContext);
-            try {
-                await this.speakLineAndWait(content, normalizedOptions);
-            } finally {
-                await avatarSpeechStartPromise;
-                await this.callAvatarStage('onSpeechEnd', stepId, avatarContext);
-            }
+            await this.speakLineAndWait(content, options || {});
         }
 
         resolvePerformanceBubbleText(performance) {
@@ -4475,13 +4317,6 @@
         async playManagedScene(stepId, meta) {
             const startedAt = Date.now();
             this.setCurrentScene(stepId, meta && meta.context ? meta.context : null);
-            const step = this.getStep(stepId);
-            const avatarEnterPromise = this.callAvatarStage('enterStep', stepId, this.createAvatarStageContext(
-                stepId,
-                step,
-                step && step.performance,
-                meta || {}
-            ));
             this.recordExperienceMetric('scene_start', {
                 sceneId: stepId || '',
                 source: meta && meta.source ? meta.source : '',
@@ -4503,9 +4338,6 @@
                     reason: error && error.message ? error.message : 'unknown'
                 });
                 throw error;
-            } finally {
-                await avatarEnterPromise;
-                await this.callAvatarStage('exitStep', stepId);
             }
         }
 
@@ -5882,9 +5714,6 @@
                 geometry: 'circle'
             });
             this.overlay.activateSpotlight(voiceControlButton);
-            this.callAvatarTimelineAction('intro_basic', 'highlightVoiceControl', voiceControlButton, {
-                voiceKey: voiceKey || ''
-            });
 
             if (!this.cursor.hasPosition()) {
                 const introTarget = this.getChatInputTarget() || this.getChatWindowTarget();
@@ -5952,7 +5781,6 @@
                 geometry: 'circle'
             });
             this.addRetainedExtraSpotlight(catPawButton);
-            this.callAvatarTimelineAction('takeover_capture_cursor', 'highlightCatPaw', catPawButton);
 
             const openedAgentPanel = await this.performHighlightedApiClick({
                 target: catPawButton,
@@ -5973,7 +5801,6 @@
             }
             const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
             this.addRetainedExtraSpotlight(agentMasterSpotlight);
-            this.callAvatarTimelineAction('takeover_capture_cursor', 'enableAgentMaster', agentMasterSpotlight);
 
             const enabledAgentMaster = await this.performHighlightedApiClick({
                 target: agentMasterSpotlight,
@@ -6005,7 +5832,6 @@
             const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
             this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
             this.removeRetainedExtraSpotlight(agentMasterSpotlight);
-            this.callAvatarTimelineAction('takeover_capture_cursor', 'enableKeyboardControl', keyboardToggleSpotlight);
 
             const enabledKeyboardControl = await this.performHighlightedApiClick({
                 target: keyboardToggleSpotlight,
@@ -6054,7 +5880,6 @@
             if (!pluginToggle || guardFailed()) {
                 return null;
             }
-            this.callAvatarTimelineAction('takeover_plugin_preview', 'enableUserPlugin', pluginToggle);
 
             const enabledUserPlugin = await this.performHighlightedApiClick({
                 target: pluginToggle,
@@ -6099,7 +5924,6 @@
             const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
 
             this.overlay.activateSpotlight(managementSpotlightTarget);
-            this.callAvatarTimelineAction('takeover_plugin_preview', 'openManagementPanel', managementSpotlightTarget);
             if (!(await this.waitForSceneDelay(scaleSceneMs(60, 40, 180))) || guardFailed()) {
                 return null;
             }
@@ -6135,7 +5959,6 @@
                 keepMainUIVisible: true
             });
             const guideTriggeredPluginDashboardOpen = !!agentPanelActionOpened;
-            this.callAvatarTimelineAction('takeover_plugin_preview', 'handoffPluginDashboard', managementSpotlightTarget);
 
             let pluginDashboardWindow = null;
             if (hadPluginDashboard) {
@@ -7023,7 +6846,6 @@
                     action: () => this.openSettingsPanel()
                 })
                 : await this.openSettingsPanel();
-            this.callAvatarTimelineAction('takeover_settings_peek', 'openSettingsPanel', settingsSpotlightTarget || settingsButton);
             if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
                 if (!openedSettings) {
                     this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
@@ -7151,7 +6973,6 @@
                 }
 
                 settingsDetailSecondLineDisplayed = true;
-                this.callAvatarTimelineAction('takeover_settings_peek', 'showSecondLine', characterMenu);
                 this.appendGuideChatMessage(detailTextPart2, {
                     textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
                     voiceKey: detailVoiceKey,
@@ -7328,12 +7149,8 @@
                 this._introActivationResolve();
                 this._introActivationResolve = null;
             }
-            if (this.avatarStage && typeof this.avatarStage.release === 'function') {
-                try {
-                    this.avatarStage.release('termination');
-                } catch (error) {
-                    console.warn('[YuiGuide] 终止时释放模型演出模块失败:', error);
-                }
+            if (this.wakeup && typeof this.wakeup.cancel === 'function') {
+                this.wakeup.cancel('termination');
             }
             this.clearIntroFlow();
             this.voiceQueue.stop();
@@ -7913,53 +7730,24 @@
         }
 
         async runWakeupPrelude() {
-            if (this.page !== 'home' || this.isStopping()) {
+            if (this.page !== 'home' || this.isStopping() || !this.wakeup || typeof this.wakeup.run !== 'function') {
                 if (typeof document !== 'undefined' && document.body) {
                     document.body.classList.remove('yui-guide-live2d-preparing');
                 }
-                return;
-            }
-
-            if (this.isStorageLocationOverlayVisible()) {
-                this.revealPreparedTutorialLive2D('storage_overlay_visible');
-                this.recordExperienceMetric('wakeup_result', {
-                    result: 'skipped',
-                    reason: 'storage_overlay_visible'
-                });
                 return;
             }
 
             this.applyTutorialFaceForwardLock();
             try {
-                const takeover = await this.callAvatarStage('runWakeup', {
-                    onInitialPose: (detail) => {
-                        this.revealPreparedTutorialLive2D(
-                            detail && detail.reason ? detail.reason : 'wakeup_initial_pose'
-                        );
-                    }
-                });
-                const result = takeover && takeover.result
-                    ? takeover.result
-                    : {
-                        result: 'failed',
-                        reason: 'avatar_performance_unavailable'
-                    };
-                if (!takeover || takeover.handled !== true) {
-                    if (typeof document !== 'undefined' && document.body) {
-                        document.body.classList.remove('yui-guide-live2d-preparing');
-                    }
-                }
+                const result = await this.wakeup.run();
                 this.recordExperienceMetric('wakeup_result', {
                     result: result && result.result ? result.result : '',
                     reason: result && result.reason ? result.reason : ''
                 });
             } catch (error) {
-                console.warn('[YuiGuide] wakeup AvatarPerformance takeover failed:', error);
-                if (typeof document !== 'undefined' && document.body) {
-                    document.body.classList.remove('yui-guide-live2d-preparing');
-                }
+                console.warn('[YuiGuide] 入场苏醒播放失败，继续教程:', error);
                 this.recordExperienceMetric('wakeup_result', {
-                    result: 'failed',
+                    result: 'fallback',
                     reason: 'exception'
                 });
             }
@@ -7984,24 +7772,16 @@
 
             this.introFlowStarted = true;
             this.setCurrentScene('intro_basic', null);
-            this.callAvatarStage('enterStep', 'intro_basic', this.createAvatarStageContext(
-                'intro_basic',
-                introStep,
-                introStep.performance,
-                {
-                    source: 'intro-prelude'
-                }
-            ));
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             await this.ensureChatVisible();
             if (this.isStopping()) {
                 return;
             }
-            const inputTarget = this.getChatInputTarget();
-            this.focusAndHighlightChatInput(inputTarget);
+            this.focusAndHighlightChatInput(this.getChatInputTarget());
 
             // Ghost cursor 出现 + 气泡引导用户点击输入框（解锁 autoplay）
+            const inputTarget = this.getChatInputTarget();
             const inputRect = this.getElementRect(inputTarget);
             if (inputRect) {
                 const cx = inputRect.left + inputRect.width / 2;
@@ -8071,7 +7851,6 @@
                 return;
             }
 
-            await this.callAvatarStage('exitStep', 'intro_basic');
             const introScenesCompleted = await this.playRemainingIntroPreludeScenes('intro_basic');
             if (!introScenesCompleted) {
                 return;
@@ -8091,14 +7870,6 @@
         async runChatIntroPreludeExternalized(introStep) {
             this.introFlowStarted = true;
             this.setCurrentScene('intro_basic', null);
-            this.callAvatarStage('enterStep', 'intro_basic', this.createAvatarStageContext(
-                'intro_basic',
-                introStep,
-                introStep.performance,
-                {
-                    source: 'intro-prelude-externalized'
-                }
-            ));
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             this.setExternalizedChatSpotlight('window');
@@ -8133,7 +7904,6 @@
                 return;
             }
 
-            await this.callAvatarStage('exitStep', 'intro_basic');
             const introScenesCompleted = await this.playRemainingIntroPreludeScenes('intro_basic');
             if (!introScenesCompleted) {
                 return;
@@ -8197,7 +7967,6 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.customSecondarySpotlightTarget = null;
-            this.callAvatarStage('exitStep', stepId);
             this.clearPreciseHighlights();
             this.clearSceneExtraSpotlights();
 
@@ -8489,7 +8258,6 @@
             }
 
             if (stepId === 'takeover_return_control') {
-                this.callAvatarTimelineAction('takeover_return_control', 'returnControl', null);
                 await this.closeManagedPanels();
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
@@ -8924,14 +8692,6 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
-            if (this.avatarStage && typeof this.avatarStage.destroy === 'function') {
-                try {
-                    this.avatarStage.destroy('director-destroy');
-                } catch (error) {
-                    console.warn('[YuiGuide] 销毁模型演出模块失败:', error);
-                }
-            }
-            this.avatarStage = null;
             this.releaseTutorialFaceForwardLock();
             this.resumeCurrentSceneAfterResistance();
             this.clearExternalizedChatFx();
@@ -8950,6 +8710,9 @@
             this.clearIntroFlow();
             this.clearSceneTimers();
             this.clearGuideChatStreamTimers();
+            if (this.wakeup && typeof this.wakeup.destroy === 'function') {
+                this.wakeup.destroy();
+            }
             this.disableInterrupts();
             if (this.voiceQueue && typeof this.voiceQueue.destroy === 'function') {
                 this.voiceQueue.destroy();
