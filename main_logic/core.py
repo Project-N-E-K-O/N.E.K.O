@@ -58,17 +58,20 @@ from config.prompts.prompts_sys import (
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
-    SYSTEM_NOTIFICATION_PROACTIVE,
-    SYSTEM_NOTIFICATION_PASSIVE,
+    SYSTEM_NOTIFICATION_TASK_ACTIVE,
+    SYSTEM_NOTIFICATION_TASK_PASSIVE,
+    SYSTEM_NOTIFICATION_EVENT_ACTIVE,
+    SYSTEM_NOTIFICATION_EVENT_PASSIVE,
     SOURCE_DESCRIPTORS,
     TASK_STATUS_PHRASES,
     TASK_ACTION_PHRASES,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
+    CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
 )
 
 
-# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_PROACTIVE
+# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
 # 表达，emoji 仅作快速视觉识别用。
 _STATUS_EMOJI = {
     "completed": "✅",
@@ -169,9 +172,36 @@ def _build_callback_instruction(
 ) -> str:
     """Render a list of agent_task_callbacks into the LLM injection string.
 
-    Groups by ``(delivery_mode/passive flag, status, source_kind, source_name)``
-    so each group can pick the right outer template (PROACTIVE vs PASSIVE)
-    and slot in the right status/action phrases.
+    Each callback carries an ``origin`` tag stamped by the host at the
+    EventBus → callback boundary:
+      - ``"task_result"`` — real task completion (agent_server._emit_task_result),
+        e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
+      - ``"event"`` — plugin push_message stream (proactive_bridge),
+        e.g. danmaku / gift / external notification.
+
+    Plugin authors cannot set ``origin``; it is derived structurally from
+    which SDK method they called (``finish()`` vs ``push_message()``) by
+    way of the event_type the upstream producer emitted.
+
+    Two axes (origin × passive) pick one of four outer templates:
+
+    +--------------+----------------------+-----------------------------+
+    | origin       | active (proactive)   | passive                     |
+    +==============+======================+=============================+
+    | task_result  | TASK_ACTIVE          | TASK_PASSIVE                |
+    |              | ("已完成，请汇报")   | ("任务结果")                |
+    +--------------+----------------------+-----------------------------+
+    | event        | EVENT_ACTIVE         | EVENT_PASSIVE               |
+    |              | ("新消息，请回应")   | ("消息")                    |
+    +--------------+----------------------+-----------------------------+
+
+    Unknown origin defaults to ``"event"`` + warning. Rationale: rather
+    have the AI naturally react than fabricate "I completed a task".
+
+    Callbacks are grouped by (passive, origin, status, source) so each
+    group can pick the right outer template and (for task_result+active)
+    slot in the right status/action phrases. Event templates ignore
+    status/action — the concept doesn't apply to passive event streams.
     """
     if not callbacks:
         return ""
@@ -182,8 +212,18 @@ def _build_callback_instruction(
         # passive=True call = drain path; treat all as passive regardless
         # of per-callback delivery_mode.
         cb_passive = passive or (cb.get("delivery_mode") == "passive")
+        origin = cb.get("origin")
+        if origin not in ("task_result", "event"):
+            if origin:
+                logger.warning(
+                    "[callback_instruction] unknown origin=%r, falling back to 'event'; "
+                    "source=%s/%s",
+                    origin, cb.get("source_kind"), cb.get("source_name"),
+                )
+            origin = "event"
         key = (
             cb_passive,
+            origin,
             cb.get("status") or "completed",
             cb.get("source_kind") or "unknown",
             (cb.get("source_name") or ""),
@@ -191,26 +231,36 @@ def _build_callback_instruction(
         grouped.setdefault(key, []).append(cb)
 
     parts: list[str] = []
-    for (cb_passive, status, _src_kind, _src_name), cbs in grouped.items():
+    for (cb_passive, origin, status, _src_kind, _src_name), cbs in grouped.items():
         source_text = _format_callback_source(cbs[0], lang)
-        if cb_passive:
-            header = _loc(SYSTEM_NOTIFICATION_PASSIVE, lang).format(source=source_text)
-        else:
-            status_phrase = _loc(
-                TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
-                lang,
-            )
-            action_phrase = _loc(
-                TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
-                lang,
-            )
-            header = _loc(SYSTEM_NOTIFICATION_PROACTIVE, lang).format(
-                source=source_text,
-                status_phrase=status_phrase,
-                action_phrase=action_phrase,
-                name=lanlan_name,
-                master=master_name,
-            )
+        if origin == "task_result":
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_TASK_PASSIVE, lang).format(source=source_text)
+            else:
+                status_phrase = _loc(
+                    TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+                    lang,
+                )
+                action_phrase = _loc(
+                    TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
+                    lang,
+                )
+                header = _loc(SYSTEM_NOTIFICATION_TASK_ACTIVE, lang).format(
+                    source=source_text,
+                    status_phrase=status_phrase,
+                    action_phrase=action_phrase,
+                    name=lanlan_name,
+                    master=master_name,
+                )
+        else:  # origin == "event"
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_PASSIVE, lang).format(source=source_text)
+            else:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_ACTIVE, lang).format(
+                    source=source_text,
+                    name=lanlan_name,
+                    master=master_name,
+                )
         items = [_render_callback_inner_item(cb, lang) for cb in cbs]
         items = [s for s in items if s]
         if items:
@@ -221,6 +271,124 @@ def _build_callback_instruction(
             # the joined output is clean.
             parts.append(header.rstrip())
     return "\n\n".join(parts)
+
+
+def _format_voice_swap_item(entry: dict, lang: str) -> str:
+    """Render a single voice-mode pending_extra_replies entry to a bulleted
+    line for the hot-swap injection.
+
+    Priority: ``summary`` → ``detail`` → synthesized "{status_phrase} from
+    {source}[: error_message]" placeholder. The placeholder path matters for
+    failure callbacks whose body is empty — without it, "执行失败 / 来自插件
+    X / Connection refused" header information would be silently dropped
+    (the voice-mode equivalent of the header-only branch in
+    ``_build_callback_instruction``).
+
+    Returns ``""`` when the entry is genuinely empty (no body, no error, and
+    a benign ``completed`` status) — caller filters those out.
+    """
+    summary = (entry.get("summary") or "").strip()
+    detail = (entry.get("detail") or "").strip()
+    text = summary or detail
+    status = entry.get("status") or "completed"
+    emoji = _STATUS_EMOJI.get(status, "•")
+
+    if text:
+        return f"- {emoji} {text}"
+
+    # No body text — synthesize from header info so the failure status
+    # doesn't disappear silently.
+    error_message = (entry.get("error_message") or "").strip()
+    source_name = (entry.get("source_name") or "").strip()
+    if not error_message and not source_name and status == "completed":
+        # Truly nothing to convey; drop. (enqueue_agent_callback already
+        # filters these out, but be defensive against legacy entries.)
+        return ""
+
+    source_text = _format_callback_source(entry, lang)
+    status_phrase = _loc(
+        TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+        lang,
+    )
+    line = f"- {emoji} {source_text} {status_phrase}"
+    if error_message:
+        line += f"：{error_message}"
+    return line
+
+
+def _render_pending_extra_replies_by_origin(
+    entries,
+    *,
+    lang: str,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    """Render voice-mode ``pending_extra_replies`` into the hot-swap injection
+    string, grouped by ``origin``.
+
+    Each entry should be a structured dict with at least ``origin``;
+    ``summary``/``detail``/``status``/``source_kind``/``source_name``/
+    ``error_message`` are consumed by :func:`_format_voice_swap_item`. Legacy
+    plain-string entries (pre-migration code paths) are tolerated and
+    treated as ``origin="event"`` event-stream content — the safer default,
+    since "汇报先前执行的任务的结果" framing on what may actually be a push
+    event is the bug this refactor fixes.
+
+    Returns a single string suitable for appending to ``final_prime_text``.
+    Order: task block first (if any), then event block — matches the original
+    single-block placement where everything followed the cache dump.
+    """
+    if not entries:
+        return ""
+
+    task_entries: list[dict] = []
+    event_entries: list[dict] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            normalized = dict(entry)
+            origin = normalized.get("origin")
+            if origin not in ("task_result", "event"):
+                normalized["origin"] = "event"  # fail-safe
+                origin = "event"
+            if origin == "task_result":
+                task_entries.append(normalized)
+            else:
+                event_entries.append(normalized)
+        elif isinstance(entry, str):
+            stripped = entry.strip()
+            if stripped:
+                event_entries.append({
+                    "origin": "event",
+                    "summary": stripped,
+                    "detail": "",
+                    "status": "completed",
+                    "source_kind": "unknown",
+                    "source_name": "",
+                    "error_message": "",
+                })
+
+    blocks: list[str] = []
+    if task_entries:
+        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
+            )
+    if event_entries:
+        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
+            )
+    return "".join(blocks)
+
+
 from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
@@ -509,8 +677,15 @@ class LLMSessionManager:
         self.final_swap_task = None
         self.receive_task = None
         self.message_handler_task = None
-        # 任务完成后的额外回复队列（将在下一次切换时统一汇报，语音模式使用）
-        self.pending_extra_replies = []
+        # Voice-mode-only callback queue, drained on hot-swap via
+        # ``_perform_final_swap_sequence`` into ``prime_context`` for the new
+        # session. Each element is a dict ``{"origin": "task_result"|"event",
+        # "text": str}`` — swap-time rendering groups by origin so event-stream
+        # pushes (push_message) get the EVENT hot-swap wrapper, not the TASK
+        # one. Kept independent from ``pending_agent_callbacks``: the two are
+        # consumed at different lifecycle points (text mode = next stream_text,
+        # voice mode = next hot-swap) and must not share state.
+        self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -4952,12 +5127,58 @@ class LLMSessionManager:
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
         Voice mode: also appended to pending_extra_replies for hot-swap
         injection via prime_context().
+
+        Voice queue element shape is structured (not flat text) so the
+        hot-swap renderer can:
+          1. Pick TASK vs EVENT wrapper from ``origin``.
+          2. Recover status / source phrasing when both ``summary`` and
+             ``detail`` are empty — typical for failure callbacks where
+             the meaning lives in the header (e.g. ``status="failed"`` +
+             ``error_message="Connection refused"``).
+
+        ``summary`` and ``detail`` are normalized **independently** (strip
+        each, then prefer summary → detail), so a blank-whitespace
+        ``summary`` doesn't shadow a real ``detail`` via the legacy
+        ``summary or detail`` chain.
+
+        The two queues stay independent (text-mode drain and voice-mode
+        hot-swap fire at different lifecycle points).
         """
         try:
+            summary = str(callback.get("summary") or "").strip()
+            detail = str(callback.get("detail") or "").strip()
+            error_message = str(callback.get("error_message") or "").strip()
+            source_name = str(callback.get("source_name") or "").strip()
+            status = callback.get("status") or "completed"
+            origin = callback.get("origin")
+            if origin not in ("task_result", "event"):
+                # Fail-safe: missing/unknown origin defaults to event so the
+                # hot-swap renderer does not fabricate "我完成了任务" for what
+                # may actually be an external event push.
+                origin = "event"
+            # Skip enqueue (BOTH queues) only when there is *truly* nothing
+            # to convey: no body text, no error context, no identifiable
+            # source, and a benign completed status. Anything else
+            # (failed/cancelled/blocked, an error message, or a named source)
+            # carries meaning even with empty summary/detail and must survive
+            # into the hot-swap output.
+            #
+            # The two queues must filter consistently — otherwise text mode
+            # (which drains pending_agent_callbacks) would inject a garbage
+            # header-only block for callbacks the voice mode already
+            # discarded.
+            if not summary and not detail and not error_message and not source_name and status == "completed":
+                return
             self.pending_agent_callbacks.append(callback)
-            text = (callback.get("summary") or callback.get("detail") or "").strip()
-            if text:
-                self.pending_extra_replies.append(text)
+            self.pending_extra_replies.append({
+                "origin": origin,
+                "summary": summary,
+                "detail": detail,
+                "status": status,
+                "source_kind": callback.get("source_kind") or "unknown",
+                "source_name": source_name,
+                "error_message": error_message,
+            })
         except Exception:
             pass
 
@@ -5028,15 +5249,12 @@ class LLMSessionManager:
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
-                try:
-                    items = "\n".join([f"- {txt}" for txt in self.pending_extra_replies if isinstance(txt, str) and txt.strip()])
-                except Exception:
-                    items = ""
                 _lang = normalize_language_code(self.user_language, format='short')
-                final_prime_text += (
-                    _loc(CONTEXT_SUMMARY_TASK_HEADER, _lang).format(name=self.lanlan_name, master=self.master_name)
-                    + items
-                    + _loc(CONTEXT_SUMMARY_TASK_FOOTER, _lang)
+                final_prime_text += _render_pending_extra_replies_by_origin(
+                    self.pending_extra_replies,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
                 )
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()

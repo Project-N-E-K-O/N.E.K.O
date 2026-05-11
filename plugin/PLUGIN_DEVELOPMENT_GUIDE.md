@@ -514,6 +514,31 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 > 两条独立轴（见上面 `push_message(**kwargs) -> object` 节）。旧 `delivery=`
 > / `reply=` 仍能用但会 emit DeprecationWarning，v0.9 移除。
 
+#### "任务汇报"vs"事件回应"：宿主自动分类
+
+主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**——
+插件作者**不能也无需指定**，宿主根据你调用的 SDK 方法自动判定：
+
+| 你调用 | 宿主分类 | AI 收到的外层 prompt 大意 |
+|---|---|---|
+| `await self.finish(...)` | `task_result` | "来自{你的插件}的任务已完成，请向主人**汇报**..." |
+| `self.push_message(...)` | `event` | "来自{你的插件}的**新消息**，请按内容**回应**主人..." |
+
+设计原因——"任务汇报"和"事件流"是两种完全不同的语义：
+- 任务汇报：插件被调用后跑完，AI 应该告诉主人"我做了什么、结果怎样"
+- 事件流：插件持续监听外部事件（弹幕、IM 消息、定时器），AI 应该**回应这个事件本身**，
+  而不是叙述成"我刚刚处理了一下…"
+
+旧版本曾经把所有 `ai_behavior="respond"` 的 push 也套上"任务已完成"模板，导致
+弹幕插件让兰兰用"我刚才处理了一下弹幕"这种汇报型口吻回观众——这是 bug，已修复。
+
+> **关键**：宿主从 `event_type`（`task_result` 还是 `proactive_message`）派生
+> 这个分类，源头在 `agent_server._emit_task_result()` vs `proactive_bridge` 两条
+> 入站路径。插件作者既不会，也无法把"事件流"伪装成"任务完成"。
+>
+> `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
+> 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
+
 #### LLM 结果字段过滤
 
 通过 `llm_result_fields` 控制主 LLM 能看到结果中的哪些字段：
