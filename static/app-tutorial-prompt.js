@@ -79,6 +79,7 @@
         pendingTutorialStartPayload: null,
         resetGeneration: 0,
         resetBroadcastChannel: null,
+        pendingResetAfterHeartbeatReason: '',
         userCohort: 'unknown',
         mobileResizeRetryBound: false,
         featureSuppression: {
@@ -1019,6 +1020,14 @@
     function resetHomeTutorialClientState(reason) {
         state.resetGeneration += 1;
         const snapshot = state.inFlightHeartbeatSnapshot;
+        const resetReason = reason || 'manual_home_tutorial_reset';
+        if (
+            state.requestInFlight
+            && snapshot
+            && (snapshot.homeTutorialCompleted || snapshot.manualHomeTutorialViewed)
+        ) {
+            state.pendingResetAfterHeartbeatReason = resetReason;
+        }
         if (snapshot) {
             snapshot.homeTutorialCompleted = false;
             snapshot.manualHomeTutorialViewed = false;
@@ -1037,7 +1046,7 @@
         state.pendingTutorialStartPayload = null;
         clearHomeTutorialStorageSeen();
         logFlow('home-tutorial-reset', {
-            reason: reason || 'unknown',
+            reason: resetReason,
         });
     }
 
@@ -1116,6 +1125,26 @@
         state.resetBroadcastChannel = null;
     }
 
+    async function persistResetAfterStaleHeartbeat(reason) {
+        const requestResetGeneration = state.resetGeneration;
+        try {
+            const response = await requestJson('/api/tutorial-prompt/reset', {
+                method: 'POST',
+                json: {
+                    reason: reason || 'manual_home_tutorial_reset',
+                },
+            });
+            if (response && response.state) {
+                applyServerState(response.state, 'reset-after-stale-heartbeat', requestResetGeneration);
+            }
+            logFlow('reset-after-stale-heartbeat', {
+                reason: reason || 'manual_home_tutorial_reset',
+            });
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to re-apply reset after stale heartbeat:', error);
+        }
+    }
+
     async function sendHeartbeat() {
         if (!state.initialized) return;
         if (state.requestInFlight) {
@@ -1180,10 +1209,19 @@
         } catch (error) {
             console.warn('[TutorialPrompt] failed to render tutorial prompt:', error);
         } finally {
+            const shouldReapplyReset = isStaleAfterClientReset(requestResetGeneration)
+                && !!state.pendingResetAfterHeartbeatReason;
+            const resetReason = state.pendingResetAfterHeartbeatReason;
+            if (shouldReapplyReset) {
+                state.pendingResetAfterHeartbeatReason = '';
+            }
             if (state.inFlightHeartbeatSnapshot === snapshot) {
                 state.inFlightHeartbeatSnapshot = null;
             }
             state.requestInFlight = false;
+            if (shouldReapplyReset) {
+                await persistResetAfterStaleHeartbeat(resetReason);
+            }
             if (state.pendingHeartbeatAfterFlight) {
                 state.pendingHeartbeatAfterFlight = false;
                 scheduleFastHeartbeat();

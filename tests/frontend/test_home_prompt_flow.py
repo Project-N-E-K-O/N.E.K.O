@@ -1304,6 +1304,101 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
 
 
 @pytest.mark.frontend
+def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(mock_page: Page):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        setup_js="""
+            window.__heartbeatBodies = [];
+            window.__resetBodies = [];
+            window.__resolveHeartbeat = null;
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        completed_at: 1234,
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                window.__heartbeatBodies.push(body);
+                return new Promise((resolve) => {
+                    window.__resolveHeartbeat = () => resolve(jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        prompt_reason: '',
+                        prompt_token: null,
+                        state: {
+                            status: 'completed',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: true,
+                        },
+                    }));
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/reset') {
+                window.__resetBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: false,
+                        home_tutorial_completed: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__heartbeatBodies.length >= 1 && typeof window.__resolveHeartbeat === 'function'",
+        timeout=5000,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
+                detail: { page: 'home', source: 'manual_home_tutorial_reset' },
+            }));
+            window.__resolveHeartbeat();
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.__resetBodies.length >= 1",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            staleHeartbeat: window.__heartbeatBodies[0],
+            resetBodies: window.__resetBodies.slice(),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
+            legacySeen: localStorage.getItem('neko_tutorial_home'),
+            suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
+        })
+        """
+    )
+
+    assert result["staleHeartbeat"]["home_tutorial_completed"] is True
+    assert result["staleHeartbeat"]["manual_home_tutorial_viewed"] is True
+    assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
+    assert result["versionedSeen"] is None
+    assert result["legacySeen"] is None
+    assert result["suppressAutoStart"] is False
+
+
+@pytest.mark.frontend
 def test_home_tutorial_reset_event_ignores_stale_initial_state_response(mock_page: Page):
     _bootstrap_tutorial_prompt_page(
         mock_page,
@@ -1386,6 +1481,9 @@ def test_home_tutorial_reset_event_clears_seen_prompt_token(mock_page: Page):
     _bootstrap_tutorial_prompt_page(
         mock_page,
         include_common_dialogs=True,
+        setup_js="""
+            window.__heartbeatCount = 0;
+        """,
         fetch_js="""
             if (requestUrl === '/api/tutorial-prompt/state') {
                 return jsonResponse({
@@ -1399,6 +1497,22 @@ def test_home_tutorial_reset_event_clears_seen_prompt_token(mock_page: Page):
                 });
             }
             if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                window.__heartbeatCount += 1;
+                if (window.__heartbeatCount > 1) {
+                    return jsonResponse({
+                        ok: true,
+                        should_prompt: false,
+                        prompt_reason: '',
+                        prompt_token: null,
+                        state: {
+                            status: 'started',
+                            never_remind: false,
+                            deferred_until: 0,
+                            manual_home_tutorial_viewed: true,
+                            home_tutorial_completed: false,
+                        },
+                    });
+                }
                 return jsonResponse({
                     ok: true,
                     should_prompt: true,
@@ -1434,21 +1548,6 @@ def test_home_tutorial_reset_event_clears_seen_prompt_token(mock_page: Page):
                         never_remind: false,
                         deferred_until: 0,
                         manual_home_tutorial_viewed: false,
-                        home_tutorial_completed: false,
-                    },
-                });
-            }
-            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
-                return jsonResponse({
-                    ok: true,
-                    should_prompt: false,
-                    prompt_reason: '',
-                    prompt_token: null,
-                    state: {
-                        status: 'started',
-                        never_remind: false,
-                        deferred_until: 0,
-                        manual_home_tutorial_viewed: true,
                         home_tutorial_completed: false,
                     },
                 });
