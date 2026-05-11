@@ -90,8 +90,12 @@ def _ngrams(text: str) -> List[str]:
             stop_names = []
         return list(_extract_keywords(text or "", stop_names=stop_names))
     except Exception:
-        # 兜底：persona 模块在某些 entrypoint（memory-only test）可能没加载
-        return [t for t in (text or "").split() if len(t) >= 2]
+        # 兜底：persona 模块在某些 entrypoint（memory-only test）可能没加载。
+        # 主路径的 ``_extract_keywords`` 返回 set（同一 doc 内 ngram 去重），下游
+        # bm25_score 的 ``doc.count(term)`` 因此始终是 0/1。兜底也必须维持同款
+        # "每 doc 至多 1 次" 语义，否则 ``bug bug bug`` 在 fallback 入口下被算
+        # 成 TF=3，BM25 阈值会比主路径敏感得多——同一段文本走两条路径分数差几倍。
+        return list({t for t in (text or "").split() if len(t) >= 2})
 
 
 # ── 持久化 schema ────────────────────────────────────────────────
@@ -261,6 +265,13 @@ class AntiRepeatCorpus:
                     name, exc,
                 )
                 window = []
+        # 立刻按当前 BG_WINDOW 裁掉过老条目——磁盘上的文件可能是旧配置下写的
+        # （ANTI_REPEAT_BG_WINDOW 后续调低过），或者 record_output 写入时
+        # 中途被 crash 切断没来得及裁。否则首次 score_draft / top_recent_topics
+        # 会吃到过期历史拉偏 BM25。
+        if len(window) > ANTI_REPEAT_BG_WINDOW:
+            window.sort(key=lambda e: float(e.get("ts", 0)))
+            window = window[-ANTI_REPEAT_BG_WINDOW:]
         self._cache[name] = window
         return window
 
