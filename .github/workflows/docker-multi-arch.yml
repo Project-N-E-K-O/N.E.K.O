@@ -138,6 +138,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      skipped: ${{ steps.check-dockerfile.outputs.skipped }}
     strategy:
       matrix:
         platform: [linux/amd64, linux/arm64]
@@ -147,13 +149,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check if Dockerfile exists
+        id: check-dockerfile
+        run: |
+          if [ -f "./docker/Dockerfile" ]; then
+            echo "skipped=false" >> $GITHUB_OUTPUT
+            echo "✅ docker/Dockerfile found, proceeding with standard build"
+          else
+            echo "skipped=true" >> $GITHUB_OUTPUT
+            echo "⚠️ docker/Dockerfile not found, skipping standard build"
+          fi
+
       - name: Set up QEMU
+        if: steps.check-dockerfile.outputs.skipped != 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: steps.check-dockerfile.outputs.skipped != 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.check-dockerfile.outputs.skipped != 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -162,7 +178,7 @@ jobs:
 
       - name: Check Docker Hub credentials
         id: check_dockerhub
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true'
+        if: steps.check-dockerfile.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true'
         run: |
           if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             echo "has_credentials=true" >> $GITHUB_OUTPUT
@@ -174,14 +190,14 @@ jobs:
           fi
 
       - name: Log in to Docker Hub
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+        if: steps.check-dockerfile.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for Docker (GHCR only)
-        if: needs.calculate-version.outputs.skip_dockerhub == 'true' || (needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials != 'true')
+        if: steps.check-dockerfile.outputs.skipped != 'true' && (needs.calculate-version.outputs.skip_dockerhub == 'true' || (needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials != 'true'))
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
@@ -199,7 +215,7 @@ jobs:
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Extract metadata for Docker (both registries)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+        if: steps.check-dockerfile.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         id: meta_both
         uses: docker/metadata-action@v5
         with:
@@ -219,6 +235,7 @@ jobs:
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ !startsWith(needs.calculate-version.outputs.image_version, 'pr-') && !startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
 
       - name: Build and push standard image
+        if: steps.check-dockerfile.outputs.skipped != 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -336,6 +353,7 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
+    if: always() && needs.build-full.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -368,6 +386,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Create and push multi-arch manifest for standard version (GHCR)
+        if: needs.build-standard.outputs.skipped != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -378,7 +397,7 @@ jobs:
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard
 
       - name: Create and push multi-arch manifest for standard version (DockerHub)
-        if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+        if: needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -409,8 +428,8 @@ jobs:
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
 
-      - name: Create and push CI short tags (GHCR)
-        if: needs.calculate-version.outputs.is_main_commit == 'true'
+      - name: Create and push CI short tags - standard (GHCR)
+        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.build-standard.outputs.skipped != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -421,6 +440,11 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-standard
 
+      - name: Create and push CI short tags - full (GHCR)
+        if: needs.calculate-version.outputs.is_main_commit == 'true'
+        run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # GHCR - ci-full (without hash)
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:ci-full \
@@ -428,8 +452,8 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-full
 
-      - name: Create and push CI short tags (DockerHub)
-        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+      - name: Create and push CI short tags - standard (DockerHub)
+        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -440,6 +464,11 @@ jobs:
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard
 
+      - name: Create and push CI short tags - full (DockerHub)
+        if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+        run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # DockerHub - ci-full (without hash)
           docker manifest create \
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full \
@@ -447,8 +476,8 @@ jobs:
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full
 
-      - name: Create and push PR short tags (GHCR)
-        if: github.event_name == 'pull_request'
+      - name: Create and push PR short tags - standard (GHCR)
+        if: github.event_name == 'pull_request' && needs.build-standard.outputs.skipped != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -459,6 +488,11 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard
 
+      - name: Create and push PR short tags - full (GHCR)
+        if: github.event_name == 'pull_request'
+        run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # GHCR - pr-ci-full (without PR number)
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full \
@@ -466,8 +500,8 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full
 
-      - name: Create and push latest manifests (GHCR)
-        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
+      - name: Create and push latest manifests - standard (GHCR)
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -485,6 +519,11 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-standard
 
+      - name: Create and push latest manifests - full (GHCR)
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
+        run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # GHCR - latest-full
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:latest-full \
@@ -492,8 +531,8 @@ jobs:
             --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
           docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
 
-      - name: Create and push latest manifests (DockerHub)
-        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+      - name: Create and push latest manifests - standard (DockerHub)
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
@@ -510,6 +549,11 @@ jobs:
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
             --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
           docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard
+
+      - name: Create and push latest manifests - full (DockerHub)
+        if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
+        run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - latest-full
           docker manifest create \
