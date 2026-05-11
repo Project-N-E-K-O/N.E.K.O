@@ -613,7 +613,7 @@
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         intro_basic: Object.freeze({
-            zh: 12957,
+            zh: 15020,
             ja: 19418,
             en: 12957,
             ko: 20297,
