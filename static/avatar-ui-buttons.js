@@ -296,6 +296,7 @@ const AvatarButtonMixin = {
                     } else {
                         if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
                         if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                        if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
                     }
                     panel.remove();
                 });
@@ -1024,6 +1025,7 @@ const AvatarButtonMixin = {
                 } else {
                     if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
                     if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
                 }
                 panel.remove();
             });
