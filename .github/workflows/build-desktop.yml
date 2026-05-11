@@ -276,8 +276,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_chara.py=config/prompts_chara.py"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_sys.py=config/prompts_sys.py"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
 
           # Data directories
@@ -361,19 +359,21 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
           NUITKA_OPTS="$NUITKA_OPTS --assume-yes-for-downloads"
 
-          # Steam files (include if present in repo)
+          # Steam files (include if present in repo).
+          # PR #1264 moved native libs into steamworks/; runtime still loads them
+          # from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
-          if [ -f "libsteam_api.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.dylib=libsteam_api.dylib"
+          if [ -f "steamworks/libsteam_api.dylib" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.dylib=libsteam_api.dylib"
           fi
-          if [ -f "SteamworksPy.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.dylib=SteamworksPy.dylib"
+          if [ -f "steamworks/SteamworksPy.dylib" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.dylib=SteamworksPy.dylib"
           fi
-          if [ -f "libsteam_api.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.so=libsteam_api.so"
+          if [ -f "steamworks/libsteam_api.so" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.so=libsteam_api.so"
           fi
-          if [ -f "SteamworksPy.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.so=SteamworksPy.so"
+          if [ -f "steamworks/SteamworksPy.so" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.so=SteamworksPy.so"
           fi
 
           echo "=== Nuitka options ==="
@@ -402,8 +402,6 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_chara.py=config/prompts_chara.py
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_sys.py=config/prompts_sys.py
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
@@ -430,9 +428,13 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.dll=steam_api64.dll
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.lib=steam_api64.lib
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=SteamworksPy64.dll=SteamworksPy64.dll
+          rem PR #1264 moved native libs into steamworks/; runtime still loads them
+          rem from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
+          rem Guard with `if exist` to mirror the Unix branch — keeps the build
+          rem soft on incidental missing libs instead of fataling in Nuitka.
+          if exist "steamworks\steam_api64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.dll=steam_api64.dll
+          if exist "steamworks\steam_api64.lib" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.lib=steam_api64.lib
+          if exist "steamworks\SteamworksPy64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/SteamworksPy64.dll=SteamworksPy64.dll
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_appid.txt=steam_appid.txt
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=audiolab
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pyrnnoise

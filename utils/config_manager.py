@@ -1616,11 +1616,15 @@ class ConfigManager:
             suffix = 'ko'
         elif lang_lower.startswith('ru'):
             suffix = 'ru'
+        elif lang_lower.startswith('es'):
+            suffix = 'es'
+        elif lang_lower.startswith('pt'):
+            suffix = 'pt'
         else:
             # 未知语言，回退
             return None
-        
-        localized_path = self.project_config_dir / f"characters.{suffix}.json"
+
+        localized_path = self.project_config_dir / 'characters' / f"{suffix}.json"
         return localized_path if localized_path.exists() else None
     
     def migrate_config_files(self):

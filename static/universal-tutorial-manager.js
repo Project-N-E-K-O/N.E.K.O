@@ -29,6 +29,61 @@ function logTutorialPromptFlow(step, details = {}) {
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
 }
 
+async function getTutorialMutationHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const helper = window.nekoLocalMutationSecurity;
+    if (helper && typeof helper.getMutationHeaders === 'function') {
+        try {
+            return Object.assign(headers, await helper.getMutationHeaders());
+        } catch (error) {
+            console.warn('[Tutorial] 获取本地写入安全头失败，尝试直接读取页面配置:', error);
+        }
+    }
+
+    try {
+        const response = await fetch('/api/config/page_config', { cache: 'no-store' });
+        if (!response.ok) {
+            return headers;
+        }
+        const data = await response.json();
+        if (data && typeof data.autostart_csrf_token === 'string' && data.autostart_csrf_token) {
+            headers['X-CSRF-Token'] = data.autostart_csrf_token;
+        }
+    } catch (error) {
+        console.warn('[Tutorial] 读取页面配置失败，继续使用基础请求头:', error);
+    }
+    return headers;
+}
+
+async function postTutorialPromptReset(reason) {
+    const body = JSON.stringify({ reason });
+    const sendResetRequest = async () => fetch('/api/tutorial-prompt/reset', {
+        method: 'POST',
+        headers: await getTutorialMutationHeaders(),
+        body,
+    });
+
+    let response = await sendResetRequest();
+    if (response.status === 403 && window.nekoLocalMutationSecurity &&
+        typeof window.nekoLocalMutationSecurity.refreshToken === 'function') {
+        let shouldRetry = false;
+        try {
+            const payload = await response.clone().json();
+            shouldRetry = payload && payload.error_code === 'csrf_validation_failed';
+        } catch (_) {
+            shouldRetry = false;
+        }
+        if (shouldRetry) {
+            await window.nekoLocalMutationSecurity.refreshToken();
+            response = await sendResetRequest();
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`tutorial prompt reset failed: ${response.status}`);
+    }
+    return response.json();
+}
+
 window.getTutorialStorageKeyForPage = getTutorialStorageKeyForPage;
 window.getTutorialManualIntentKeyForPage = getTutorialManualIntentKeyForPage;
 window.logTutorialPromptFlow = logTutorialPromptFlow;
@@ -4735,6 +4790,24 @@ class UniversalTutorialManager {
 
         this._teardownTutorialUI();
 
+        if (endMeta.reason === 'destroy') {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason
+                }
+            }));
+            this.logPromptFlow('tutorial-ended-without-completion', {
+                page: this.currentPage,
+                source: completedSource,
+                reason: endMeta.reason,
+                rawReason: endMeta.rawReason
+            });
+            console.log('[Tutorial] 引导未完成即结束，页面:', this.currentPage, 'reason:', endMeta.rawReason);
+            return;
+        }
+
         // 标记用户已看过该页面的引导
         const storageKey = this.getStorageKey();
         localStorage.setItem(storageKey, 'true');
@@ -4742,6 +4815,24 @@ class UniversalTutorialManager {
             const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
             localStorage.setItem(commonStorageKey, 'true');
             console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
+        }
+
+        if (endMeta.reason === 'skip') {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason
+                }
+            }));
+            this.logPromptFlow('tutorial-skipped', {
+                page: this.currentPage,
+                source: completedSource,
+                reason: endMeta.reason,
+                rawReason: endMeta.rawReason
+            });
+            console.log('[Tutorial] 引导已跳过并标记看过，页面:', this.currentPage);
+            return;
         }
 
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
@@ -5145,7 +5236,12 @@ class UniversalTutorialManager {
     /** 
      * 重置所有页面的引导状态 
      */ 
-    resetAllTutorials() {
+    async resetHomeTutorialPromptState(reason = 'manual_home_tutorial_reset') {
+        return postTutorialPromptReset(reason);
+    }
+
+    async resetAllTutorials() {
+        await this.resetHomeTutorialPromptState('manual_all_tutorial_reset');
         TUTORIAL_PAGES.forEach(page => {
             this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
@@ -5157,10 +5253,14 @@ class UniversalTutorialManager {
     /**
      * 重置指定页面的引导状态
      */
-    resetPageTutorial(pageKey) {
+    async resetPageTutorial(pageKey) {
         if (pageKey === 'all') {
-            this.resetAllTutorials();
+            await this.resetAllTutorials();
             return;
+        }
+
+        if (pageKey === 'home') {
+            await this.resetHomeTutorialPromptState('manual_home_tutorial_reset');
         }
 
         this.getStorageKeysForPage(pageKey).forEach((storageKey) => {
@@ -5295,11 +5395,12 @@ async function initUniversalTutorialManager() {
  * 全局函数：重置所有引导
  * 供 HTML 按钮调用
  */
-function resetAllTutorials() {
+async function resetAllTutorials() {
     if (window.universalTutorialManager) {
-        window.universalTutorialManager.resetAllTutorials();
+        await window.universalTutorialManager.resetAllTutorials();
     } else {
         // 如果管理器未初始化，直接清除 localStorage
+        await postTutorialPromptReset('manual_all_tutorial_reset');
         TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(getTutorialStorageKeyForPage(page)); });
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
     }
@@ -5310,12 +5411,12 @@ function resetAllTutorials() {
  * 全局函数：重置指定页面的引导
  * 供下拉菜单调用
  */
-function resetTutorialForPage(pageKey) {
+async function resetTutorialForPage(pageKey) {
     if (!pageKey) return;
     console.log('%c[Tutorial] resetTutorialForPage 被调用, pageKey:', 'color: red; font-weight: bold', pageKey);
 
     if (pageKey === 'all') {
-        resetAllTutorials();
+        await resetAllTutorials();
         return;
     }
 
@@ -5351,8 +5452,11 @@ function resetTutorialForPage(pageKey) {
     }
 
     if (window.universalTutorialManager) {
-        window.universalTutorialManager.resetPageTutorial(pageKey);
+        await window.universalTutorialManager.resetPageTutorial(pageKey);
     } else {
+        if (pageKey === 'home') {
+            await postTutorialPromptReset('manual_home_tutorial_reset');
+        }
         if (pageKey === 'model_manager') {
             localStorage.removeItem(getTutorialStorageKeyForPage('model_manager'));
             localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_live2d'));
