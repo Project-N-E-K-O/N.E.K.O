@@ -828,12 +828,16 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
 
     Returns True if the message contains any negation keyword for the given
     language; if lang is unknown, falls back to zh.
+
+    ``lang`` 走 ``_norm_lang``——``en-US`` / ``pt-BR`` 这类完整 locale 之前
+    会直接查不到 key 然后退回 zh 词表，扫错语言（CodeRabbit Major）。同模块
+    其他 render 函数都做过这一步，搬迁时漏了，现在补齐。
     """
     if not message:
         return False
     # `zh` is always non-empty in the dict, so the fallback is guaranteed
     # to yield a frozenset (CodeRabbit PR #929 dead-code cleanup).
-    kws = NEGATIVE_KEYWORDS_I18N.get(lang, NEGATIVE_KEYWORDS_I18N["zh"])
+    kws = NEGATIVE_KEYWORDS_I18N.get(_norm_lang(lang), NEGATIVE_KEYWORDS_I18N["zh"])
     lower = message.lower()
     for kw in kws:
         if kw.lower() in lower:
