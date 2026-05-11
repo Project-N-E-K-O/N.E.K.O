@@ -44,6 +44,8 @@
   "status.mode.interactive": "互動",
   "status.mode.teaching": "教學",
   "status.mode.concept_explain": "伴學",
+  "reply.empty_input": "請先提供文字，或先截取一張可讀螢幕。",
+  "reply.fallback_explanation": "關鍵文字：{first_line}\n\n說明：我無法連線到已設定模型，因此這是本機降級結果。先通讀語句並找出定義，再識別原因、結果，以及會改變結論的公式或術語。\n\n檢查問題：這段文字裡你需要記住的核心術語或關係是什麼？",
   "ui.label.mode": "模式",
   "ui.label.text": "文字",
   "ui.label.reply": "回覆",

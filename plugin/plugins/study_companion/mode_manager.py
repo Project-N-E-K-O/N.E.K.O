@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 import re
 import time
 from typing import Any
+
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_dir
 
 from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
 
@@ -104,6 +108,21 @@ def _is_english_language(language: str | None) -> bool:
     return primary == "en" or primary == "eng"
 
 
+def _is_chinese_language(language: str | None) -> bool:
+    language_tag = str(language or "").strip().lower().replace("_", "-")
+    primary = re.split(r"[-]", language_tag, maxsplit=1)[0]
+    return primary in {"zh", "zho", "chi"}
+
+
+@lru_cache(maxsize=1)
+def _study_i18n():
+    return load_plugin_i18n_from_dir(Path(__file__).resolve().parent / "i18n", default_locale="en")
+
+
+def study_i18n_t(language: str | None, key: str, *, default: str = "", **params: object) -> str:
+    return _study_i18n().t(key, locale=language, default=default, **params)
+
+
 def normalize_mode(mode: str | None) -> str:
     candidate = str(mode or "").strip().lower()
     if candidate == MODE_CONCEPT_EXPLAIN:
@@ -115,8 +134,8 @@ def normalize_mode(mode: str | None) -> str:
 
 def mode_label(mode: str, *, language: str = "zh-CN") -> str:
     normalized = normalize_mode(mode)
-    language_key = "en" if _is_english_language(language) else "zh"
-    return _MODE_LABELS.get(language_key, _MODE_LABELS["zh"]).get(normalized, normalized)
+    fallback = _MODE_LABELS["en"].get(normalized, normalized)
+    return study_i18n_t(language, f"status.mode.{normalized}", default=fallback)
 
 
 def build_transition_phrase(
@@ -128,25 +147,26 @@ def build_transition_phrase(
 ) -> str:
     label = mode_label(mode, language=language)
     is_english = _is_english_language(language)
+    is_chinese = _is_chinese_language(language)
     if outcome == "same":
-        return f"You are already in {label}." if is_english else f"当前已经是{label}。"
+        return f"当前已经是{label}。" if is_chinese else f"You are already in {label}."
     if outcome == "locked":
         if lock_until:
             remaining = max(1, int(round(lock_until - time.time())))
-            if is_english:
-                return f"Mode switching is temporarily locked for {remaining} second(s)."
-            return f"模式切换已进入温和锁定，还要再等约 {remaining} 秒。"
-        return "Mode switching is temporarily locked." if is_english else "模式切换已进入温和锁定。"
+            if is_chinese:
+                return f"模式切换已进入温和锁定，还要再等约 {remaining} 秒。"
+            return f"Mode switching is temporarily locked for {remaining} second(s)."
+        return "模式切换已进入温和锁定。" if is_chinese else "Mode switching is temporarily locked."
     if outcome == "dwell":
         return (
-            f"Please keep the current mode for 3 minutes before switching again."
-            if is_english
-            else "当前模式刚切换不久，请先停留 3 分钟再切换。"
+            "当前模式刚切换不久，请先停留 3 分钟再切换。"
+            if is_chinese
+            else "Please keep the current mode for 3 minutes before switching again."
         )
     normalized = normalize_mode(mode)
-    if normalized == MODE_TEACHING and not is_english:
+    if normalized == MODE_TEACHING and is_chinese:
         return "教学模式已开启。"
-    if is_english:
+    if is_english or not is_chinese:
         return f"{mode_label(normalized, language=language).capitalize()} enabled."
     return f"已切换到{label}。"
 
@@ -154,24 +174,30 @@ def build_transition_phrase(
 def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
     normalized_text = str(text or "").strip()
     folded = normalized_text.casefold()
+    best_mode_match: tuple[int, str, str] | None = None
     for mode, keywords in _MODE_INTENT_RULES:
-        for keyword in sorted(keywords, key=len, reverse=True):
+        for keyword in keywords:
             keyword_folded = keyword.casefold()
             if keyword_folded not in folded:
                 continue
-            remainder = normalized_text
-            remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
-            remainder = _strip_noise(remainder)
-            return {
-                "matched": True,
-                "kind": "mode_switch",
-                "mode": mode,
-                "keyword": keyword,
-                "pure_switch": not remainder,
-                "remaining_text": remainder,
-                "normalized_text": normalized_text,
-                "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
-            }
+            score = len(keyword_folded)
+            if best_mode_match is None or score > best_mode_match[0]:
+                best_mode_match = (score, mode, keyword)
+    if best_mode_match is not None:
+        _, mode, keyword = best_mode_match
+        remainder = normalized_text
+        remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
+        remainder = _strip_noise(remainder)
+        return {
+            "matched": True,
+            "kind": "mode_switch",
+            "mode": mode,
+            "keyword": keyword,
+            "pure_switch": not remainder,
+            "remaining_text": remainder,
+            "normalized_text": normalized_text,
+            "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
+        }
     for keyword in sorted(_EXPLAIN_INTENT_RULES, key=len, reverse=True):
         keyword_folded = keyword.casefold()
         if keyword_folded not in folded:

@@ -327,15 +327,24 @@ class StudyCompanionPlugin(NekoPluginBase):
                     }
                 )
         # Phase 2: resolve the text to explain.
-        source_text = str(intent.get("remaining_text") or raw_text).strip()
+        intent_kind = str(intent.get("kind") or "")
+        source_text = str(intent.get("remaining_text") or "").strip()
+        if not source_text and intent_kind != "concept_explain":
+            source_text = raw_text
+        used_ocr_fallback = False
         if not source_text:
             with self._lock:
                 source_text = self._state.last_ocr_text
+            used_ocr_fallback = bool(source_text.strip())
         # Phase 3: explain with the active mode selected above.
         reply = await self._agent.concept_explain(
             source_text,
             mode=active_mode,
-            context={"source": "manual" if raw_text else "ocr_snapshot", "mode": active_mode, "mode_switch": bool(mode_switch.get("changed"))},
+            context={
+                "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
+                "mode": active_mode,
+                "mode_switch": bool(mode_switch.get("changed")),
+            },
         )
         with self._lock:
             self._state.last_reply = reply.reply

@@ -24,6 +24,7 @@ from plugin.plugins.study_companion.mode_manager import (
     ModeManager,
     build_transition_phrase,
     handle_user_intent,
+    mode_label,
     normalize_mode,
 )
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
@@ -224,6 +225,13 @@ def test_study_mode_manager_intent_switch_rules() -> None:
     assert english["keyword"] == "teaching mode"
     assert english["remaining_text"] == "photosynthesis"
 
+    cross_mode = handle_user_intent("教我互动模式 光合作用")
+    assert cross_mode["mode"] == MODE_INTERACTIVE
+    assert cross_mode["keyword"] == "互动模式"
+    assert mode_label(MODE_TEACHING, language="ja") == "指導"
+    assert mode_label(MODE_TEACHING, language="pt-BR") == "Ensino"
+    assert "教学" not in build_transition_phrase(MODE_TEACHING, language="ja", outcome="changed")
+
     manager = ModeManager(current_mode=MODE_COMPANION)
     first = manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)
     assert first["changed"] is True
@@ -254,6 +262,8 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
+    llm_section_legacy_timeout = build_config({"llm": {"llm_call_timeout_seconds": 84}})
+    assert llm_section_legacy_timeout.llm_call_timeout_seconds == 84
 
     interactive = build_config({"study": {"default_mode": MODE_INTERACTIVE}})
     assert interactive.mode == MODE_INTERACTIVE
@@ -755,6 +765,20 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert explain_only.value["reply"] == "explained[teaching]: 光合作用"
 
         with plugin._lock:
+            plugin._state.last_ocr_text = "细胞呼吸"
+            plugin._state.last_ocr_at = "2026-05-12T00:00:00Z"
+        explain_latest_ocr = await plugin.study_explain_text("解释一下")
+        assert isinstance(explain_latest_ocr, Ok)
+        assert explain_latest_ocr.value["intent"]["kind"] == "concept_explain"
+        assert explain_latest_ocr.value["input_text"] == "细胞呼吸"
+        assert explain_latest_ocr.value["reply"] == "explained[teaching]: 细胞呼吸"
+        assert plugin._agent.inputs[-1] == (
+            "细胞呼吸",
+            {"source": "ocr_snapshot", "mode": MODE_TEACHING, "mode_switch": False},
+            MODE_TEACHING,
+        )
+
+        with plugin._lock:
             plugin._state.active_mode = MODE_COMPANION
             plugin._state.mode_started_at = 0.0
             plugin._state.mode_lock_until = 0.0
@@ -792,6 +816,36 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
             {"source": "manual", "mode": MODE_TEACHING, "mode_switch": False},
             MODE_TEACHING,
         )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_explain_intent_without_content_keeps_empty_input_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        with plugin._lock:
+            plugin._state.last_ocr_text = ""
+        explain_empty = await plugin.study_explain_text("explain")
+        assert isinstance(explain_empty, Ok)
+        assert explain_empty.value["input_text"] == ""
+        assert explain_empty.value["diagnostic"] == "empty_input"
+        assert explain_empty.value["intent"]["kind"] == "concept_explain"
     finally:
         await plugin.shutdown()
 
@@ -917,6 +971,14 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     zh_agent._call_model = _broken_call_model  # type: ignore[method-assign]
     zh_fallback = await zh_agent.concept_explain("光合作用")
     assert "关键文本：光合作用" in zh_fallback.reply
+
+    ja_agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="ja"))
+    ja_empty = await ja_agent.concept_explain(" ")
+    assert "テキスト" in ja_empty.reply
+
+    ja_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    ja_fallback = await ja_agent.concept_explain("微分")
+    assert "重要なテキスト：微分" in ja_fallback.reply
 
 
 @pytest.mark.asyncio

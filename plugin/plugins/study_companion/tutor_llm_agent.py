@@ -9,7 +9,7 @@ from plugin.sdk.plugin import SdkError
 
 from .llm_prompts import build_concept_explain_messages
 from .constants import MODE_COMPANION, MODE_TEACHING
-from .mode_manager import build_transition_phrase, normalize_mode
+from .mode_manager import build_transition_phrase, normalize_mode, study_i18n_t
 from .models import MODE_CONCEPT_EXPLAIN, StudyConfig, TutorReply, utc_now_iso
 
 
@@ -87,26 +87,19 @@ class TutorLLMAgent:
         return primary == "en" or primary == "eng"
 
     def _localize_reply(self, language: str | None, key: str, **values: Any) -> str:
-        is_english = self._is_english_language(language)
         if key == "empty_input":
-            return (
-                "Please provide text or capture a readable screen first."
-                if is_english
-                else "请先提供文本，或者先截取一张可读屏幕。"
+            return study_i18n_t(
+                language,
+                "reply.empty_input",
+                default=str(values.get("default") or "Please provide text or capture a readable screen first."),
             )
         if key == "fallback_explanation":
             first_line = str(values.get("first_line") or "").strip()
-            if is_english:
-                return (
-                    f"Key text: {first_line}\n\n"
-                    "Explanation: I could not reach the configured model, so this is a local fallback. "
-                    "Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\n"
-                    "Check question: What is the main term or relationship you need to remember from this text?"
-                )
-            return (
-                f"关键文本：{first_line}\n\n"
-                "说明：我无法连接到已配置模型，因此这是本地降级结果。先通读语句并找出定义，再识别原因、结果，以及会改变结论的公式或术语。\n\n"
-                "检查问题：这段文字里你需要记住的核心术语或关系是什么？"
+            return study_i18n_t(
+                language,
+                "reply.fallback_explanation",
+                default=str(values.get("default") or ""),
+                first_line=first_line,
             )
         return str(values.get("default") or "")
 
@@ -157,6 +150,12 @@ class TutorLLMAgent:
             fallback_reply = self._localize_reply(
                 self._config.language,
                 "fallback_explanation",
+                default=(
+                    "Key text: {first_line}\n\n"
+                    "Explanation: I could not reach the configured model, so this is a local fallback. "
+                    "Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\n"
+                    "Check question: What is the main term or relationship you need to remember from this text?"
+                ),
                 first_line=next((line.strip() for line in normalized.splitlines() if line.strip()), normalized[:120]),
             )
             if teaching_prefix and not fallback_reply.startswith(teaching_prefix):
