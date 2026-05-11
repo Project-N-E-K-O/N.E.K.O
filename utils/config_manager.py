@@ -2177,11 +2177,13 @@ class ConfigManager:
         返回的每个 voice_data 都保证包含 ``provider`` 字段
         （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
 
-        ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过主分区加载，
-        因为阿里 CosyVoice 克隆音色需付费 API Key 鉴权（运行时走
+        ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过 *云端* 主分区
+        （CosyVoice / Qwen），因为这些音色需付费 API Key 鉴权（运行时走
         step_realtime_tts_worker free_mode 也无法实际使用），列出来只会让 UI
-        误导用户。MiniMax 与 GSV 走独立配置/路由，免费版仍可用，所以保留下方
-        MiniMax 合并 + 不影响 /custom_tts_voices 的 GSV。
+        误导用户。``__LOCAL_TTS__`` 走 WebSocket 本地推理，免费版仍可用，所以
+        即便 for_listing+free 也必须展示。MiniMax 与 GSV 走独立配置/路由，
+        免费版同样可用，所以保留下方 MiniMax 合并 + 不影响 /custom_tts_voices
+        的 GSV。
 
         默认 ``for_listing=False`` 保留全量视图——``validate_voice_id`` /
         ``cleanup_invalid_voice_ids`` 等校验链路必须见到 storage 中真实存在的
@@ -2192,34 +2194,35 @@ class ConfigManager:
         storage_key = ''
         result: dict = {}
 
-        if not (for_listing and self.is_free_version()):
-            tts_config = self.get_model_api_config('tts_custom')
-            base_url = tts_config.get('base_url', '')
-            is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        tts_config = self.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url', '')
+        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        hide_cloud_main = for_listing and self.is_free_version()
 
-            if is_local_tts:
-                storage_key = '__LOCAL_TTS__'
+        if is_local_tts:
+            # 本地 WebSocket TTS：免费版仍可用，列表必须可见
+            storage_key = '__LOCAL_TTS__'
+            all_voices = voice_storage.get(storage_key, {})
+            result = dict(all_voices)
+        elif not hide_cloud_main:
+            tts_api_key = tts_config.get('api_key', '')
+            if tts_api_key:
+                storage_key = tts_api_key
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                tts_api_key = tts_config.get('api_key', '')
-                if tts_api_key:
-                    storage_key = tts_api_key
+                core_config = self.get_core_config()
+                audio_api_key = core_config.get('AUDIO_API_KEY', '')
+                if audio_api_key:
+                    storage_key = audio_api_key
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
-                else:
-                    core_config = self.get_core_config()
-                    audio_api_key = core_config.get('AUDIO_API_KEY', '')
-                    if audio_api_key:
-                        storage_key = audio_api_key
-                        all_voices = voice_storage.get(storage_key, {})
-                        result = dict(all_voices)
 
-            # 确保主分区音色有 provider 字段
-            default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
-            for vdata in result.values():
-                if isinstance(vdata, dict) and 'provider' not in vdata:
-                    vdata['provider'] = default_provider
+        # 确保主分区音色有 provider 字段
+        default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+        for vdata in result.values():
+            if isinstance(vdata, dict) and 'provider' not in vdata:
+                vdata['provider'] = default_provider
 
         # 合并 MiniMax 音色，并确保 provider 字段
         for mk in self._get_minimax_storage_keys():
@@ -3156,9 +3159,17 @@ class ConfigManager:
 
             # 自定义配置完整时使用自定义配置
             if (custom_model and custom_url) or is_gsv_url:
+                resolved_api_key = custom_key
+                # 仅勾选 GSV、未填 TTS_MODEL_API_KEY 时，tts_custom slot 仍会被
+                # CosyVoice clone 路径复用 (register_voice → get_tts_api_key('cosyvoice')
+                # → 这里取 api_key)。直接返回空 key 会让 CosyVoice 报
+                # TTS_AUDIO_API_KEY_MISSING，回退到 ASSIST_API_KEY_QWEN 才能保住用户
+                # 在 GSV 开启前就在用的 CosyVoice 克隆能力。
+                if is_gsv_url and not resolved_api_key and model_type == 'tts_custom':
+                    resolved_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
                 return {
                     'model': custom_model,
-                    'api_key': custom_key,
+                    'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
