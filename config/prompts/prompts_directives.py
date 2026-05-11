@@ -82,17 +82,18 @@ _TRIM_TRAIL_TOKENS = (
 def _norm_lang(lang: str) -> str:
     """归一化 lang code（``zh-CN`` → ``zh``、``pt-BR`` → ``pt`` 等）。
 
-    本模块的 render 函数 / scan 函数都靠 dict 精确 key 取模板；如果上游把
+    本模块的 render 函数都靠 dict 精确 key 取模板；如果上游把
     ``user_language`` 直接传过来（带 region 后缀），会全部走英文兜底——这是
     用户可见的回归。在边界归一化一次，比要求所有调用方都先 normalize 更稳。
 
-    实现策略：
-    1. 优先走 ``config._runtime.normalize_language_code``（app 启动注册了
-       ``utils.language_utils.normalize_language_code``，能识别 Steam literal
-       如 ``schinese`` → ``zh``）
-    2. 如果 runtime 没装好（partial entrypoint / pytest 直接跑模块）resolver
-       会**原样返回**输入；这种情况下手动 split 一次 ``-`` / ``_`` 兜底，
-       保证 ``en-US`` → ``en`` 这种基础归一化在测试环境也能工作。
+    策略：优先走 ``config._runtime.normalize_language_code``（app 启动注册了
+    ``utils.language_utils.normalize_language_code``，能识别 Steam literal
+    如 ``schinese`` → ``zh``，未知语言归 ``en``——render 函数用英文兜底）；
+    resolver 未绑定时退化为本地 split 兜底。
+
+    ⚠️ 该 helper 服务于 i18n **template rendering** 路径（未知 → en）。如果
+    需要"未知 → 中文"的兜底（比如 ``scan_negative_keywords`` 的契约），不要
+    复用此 helper，自己写本地 strip——见该函数实现。
     """
     if not lang:
         return 'en'
@@ -101,8 +102,9 @@ def _norm_lang(lang: str) -> str:
         out = _nlc(lang, format='short') or lang
     except Exception:
         out = lang
-    # Defensive split: resolver 未绑定时 ``_nlc`` 会原样返回 ``en-US``；这里
-    # 手动拆一道。已经是短码（``zh``）则 split 等于 no-op，无副作用。
+    # Defensive split: resolver 未绑定（partial entrypoint / 测试直跑）时
+    # ``_nlc`` 会**原样**返回输入；这里手动剥 region 后缀，保 zh-CN → zh
+    # 这种基础归一化在测试环境也能工作。已是短码则 split 是 no-op。
     if '-' in out or '_' in out:
         out = out.split('-', 1)[0].split('_', 1)[0]
     return out or 'en'
@@ -843,15 +845,19 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     Returns True if the message contains any negation keyword for the given
     language; if lang is unknown, falls back to zh.
 
-    ``lang`` 走 ``_norm_lang``——``en-US`` / ``pt-BR`` 这类完整 locale 之前
-    会直接查不到 key 然后退回 zh 词表，扫错语言（CodeRabbit Major）。同模块
-    其他 render 函数都做过这一步，搬迁时漏了，现在补齐。
+    ⚠️ 不走 ``_norm_lang``——那个 helper 服务于 i18n template rendering，未知
+    语言归 ``en``（英文是 lingua franca，模板渲染默认英文合理）。本函数的契约
+    是"语言识别不出就当中文用户"（codex P2 / scan-only policy），与 render
+    路径策略不同。所以这里只做最小归一化：strip region 后缀（``en-US`` →
+    ``en`` / ``zh-CN`` → ``zh``），未识别的短码留给 ``.get(..., zh)`` 兜底。
     """
     if not message:
         return False
+    # 只剥 region 后缀（zh-CN/zh_CN/en-US/pt-BR ...），保留契约："未知 → zh"
+    short = (lang or "").split('-', 1)[0].split('_', 1)[0]
     # `zh` is always non-empty in the dict, so the fallback is guaranteed
     # to yield a frozenset (CodeRabbit PR #929 dead-code cleanup).
-    kws = NEGATIVE_KEYWORDS_I18N.get(_norm_lang(lang), NEGATIVE_KEYWORDS_I18N["zh"])
+    kws = NEGATIVE_KEYWORDS_I18N.get(short, NEGATIVE_KEYWORDS_I18N["zh"])
     lower = message.lower()
     for kw in kws:
         if kw.lower() in lower:
