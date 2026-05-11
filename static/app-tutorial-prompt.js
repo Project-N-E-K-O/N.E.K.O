@@ -5,9 +5,14 @@
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const HOME_TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
     const HOME_TUTORIAL_STORAGE_KEY_FALLBACK = 'neko_tutorial_home';
+    const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
+    const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
+    const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
+    const HOME_TUTORIAL_PROMPT_SEEN_FLAG = '__nekoHomeTutorialPromptSeenInTab';
     const HEARTBEAT_ENDPOINT = '/api/tutorial-prompt/heartbeat';
     const TUTORIAL_PROMPT_COORDINATION_KEY = 'home-tutorial-prompt';
     const TUTORIAL_PROMPT_PRIORITY = 200;
+    const LOCAL_PROMPT_LATER_SUPPRESS_MS = 60 * 60 * 1000;
     const HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY = 'neko.homeTutorial.agentRestoreSnapshot.v1';
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
@@ -66,11 +71,14 @@
         tutorialStarted: false,
         neverRemind: false,
         deferredUntil: 0,
+        localPromptSuppressedUntil: 0,
         lastPromptTokenSeen: null,
         promptDrivenTutorialToken: null,
         tutorialRunToken: null,
         pendingTutorialStartPersistence: null,
         pendingTutorialStartPayload: null,
+        resetGeneration: 0,
+        resetBroadcastChannel: null,
         userCohort: 'unknown',
         mobileResizeRetryBound: false,
         featureSuppression: {
@@ -633,6 +641,12 @@
         });
     }
 
+    function clearHomeTutorialStorageSeen() {
+        getHomeTutorialStorageKeys().forEach(function (storageKey) {
+            localStorage.removeItem(storageKey);
+        });
+    }
+
     function isHomeTutorialSeen() {
         return getHomeTutorialStorageKeys().some(function (storageKey) {
             return localStorage.getItem(storageKey) === 'true';
@@ -678,8 +692,29 @@
         return locked;
     }
 
+    function isPromptSuppressedInThisTab() {
+        const now = Date.now();
+        return state.deferredUntil > now || state.localPromptSuppressedUntil > now;
+    }
+
+    function hasPromptBeenSeenInThisTab() {
+        return window[HOME_TUTORIAL_PROMPT_SEEN_FLAG] === true || !!state.lastPromptTokenSeen;
+    }
+
     mod.isHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
     mod.isHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
+    mod.shouldSuppressAutomaticHomeTutorialStart = function () {
+        return !!(
+            state.promptDisplayPending
+            || state.promptOpen
+            || state.tutorialStartRequested
+            || state.tutorialRunning
+            || hasPromptBeenSeenInThisTab()
+            || state.homeTutorialCompleted
+            || state.neverRemind
+            || isPromptSuppressedInThisTab()
+        );
+    };
     window.isNekoHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
     window.isNekoHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
 
@@ -689,9 +724,20 @@
         }
     }
 
-    function applyServerState(serverState, source) {
+    function isStaleAfterClientReset(requestResetGeneration) {
+        return typeof requestResetGeneration === 'number'
+            && requestResetGeneration !== state.resetGeneration;
+    }
+
+    function applyServerState(serverState, source, requestResetGeneration) {
         if (!serverState || typeof serverState !== 'object') {
-            return;
+            return false;
+        }
+        if (isStaleAfterClientReset(requestResetGeneration)) {
+            logFlow('state-sync-stale-ignored', {
+                source: source || 'unknown',
+            });
+            return false;
         }
 
         const previous = {
@@ -720,7 +766,15 @@
         if (serverState.never_remind === true) {
             state.neverRemind = true;
         }
-        state.deferredUntil = deferredUntil;
+        const preserveLocalDeferred = (source === 'heartbeat' || source === 'shown')
+            && previous.deferredUntil > Date.now()
+            && deferredUntil <= Date.now()
+            && status !== 'deferred'
+            && status !== 'never'
+            && status !== 'completed';
+        if (!preserveLocalDeferred) {
+            state.deferredUntil = deferredUntil;
+        }
         if (status === 'started' || status === 'completed' || startedAt > 0 || completedAt > 0) {
             state.tutorialStarted = true;
         }
@@ -755,15 +809,17 @@
                 meaningfulActionTaken: state.meaningfulActionTaken,
             });
         }
+        return true;
     }
 
     async function loadInitialServerState() {
+        const requestResetGeneration = state.resetGeneration;
         try {
             const response = await requestJson('/api/tutorial-prompt/state', {
                 cache: 'no-store',
             });
             if (response && response.state) {
-                applyServerState(response.state, 'initial-state');
+                applyServerState(response.state, 'initial-state', requestResetGeneration);
             }
         } catch (error) {
             console.warn('[TutorialPrompt] failed to load initial state:', error);
@@ -772,6 +828,7 @@
 
     async function persistTutorialLifecycle(url, payload, flowStep, options) {
         const requestOptions = options || {};
+        const requestResetGeneration = state.resetGeneration;
         try {
             const response = requestOptions.fireAndForget
                 ? await fireAndForgetJson(url, payload)
@@ -780,8 +837,14 @@
                     json: payload,
                     keepalive: !!requestOptions.keepalive,
                 });
+            if (isStaleAfterClientReset(requestResetGeneration)) {
+                logFlow('lifecycle-stale-ignored', {
+                    source: flowStep || 'unknown',
+                });
+                return response;
+            }
             if (response && response.state) {
-                applyServerState(response.state, flowStep);
+                applyServerState(response.state, flowStep, requestResetGeneration);
             }
             if (response && response.tutorial_run_token) {
                 state.tutorialRunToken = response.tutorial_run_token;
@@ -808,13 +871,14 @@
     }
 
     async function postDecision(payload) {
+        const requestResetGeneration = state.resetGeneration;
         try {
             const response = await requestJson('/api/tutorial-prompt/decision', {
                 method: 'POST',
                 json: payload,
             });
             if (response && response.state) {
-                applyServerState(response.state, 'decision');
+                applyServerState(response.state, 'decision', requestResetGeneration);
             }
             logFlow('decision', {
                 decision: payload && payload.decision,
@@ -829,13 +893,14 @@
 
     async function postShownAck(promptToken) {
         if (!promptToken) return;
+        const requestResetGeneration = state.resetGeneration;
         try {
             const response = await requestJson('/api/tutorial-prompt/shown', {
                 method: 'POST',
                 json: { prompt_token: promptToken },
             });
             if (response && response.state) {
-                applyServerState(response.state, 'shown');
+                applyServerState(response.state, 'shown', requestResetGeneration);
             }
             logFlow('shown', {
                 token: shortPromptToken(promptToken),
@@ -951,6 +1016,40 @@
             || snapshot.manualHomeTutorialViewed;
     }
 
+    function resetHomeTutorialClientState(reason) {
+        state.resetGeneration += 1;
+        const snapshot = state.inFlightHeartbeatSnapshot;
+        if (snapshot) {
+            snapshot.homeTutorialCompleted = false;
+            snapshot.manualHomeTutorialViewed = false;
+        }
+
+        state.homeTutorialCompleted = false;
+        state.manualHomeTutorialViewed = false;
+        state.tutorialStarted = false;
+        state.neverRemind = false;
+        state.deferredUntil = 0;
+        state.localPromptSuppressedUntil = 0;
+        state.lastPromptTokenSeen = null;
+        window[HOME_TUTORIAL_PROMPT_SEEN_FLAG] = false;
+        state.promptDrivenTutorialToken = null;
+        state.tutorialRunToken = null;
+        state.pendingTutorialStartPayload = null;
+        clearHomeTutorialStorageSeen();
+        logFlow('home-tutorial-reset', {
+            reason: reason || 'unknown',
+        });
+    }
+
+    function handleHomeTutorialResetDetail(detail) {
+        const payload = detail && typeof detail === 'object' ? detail : {};
+        const page = String(payload.page || '').trim();
+        if (page && page !== 'home' && page !== 'all') {
+            return;
+        }
+        resetHomeTutorialClientState(String(payload.source || payload.reason || '').trim());
+    }
+
     function buildHeartbeatPayload(snapshot) {
         const payload = {
             heartbeat_token: snapshot.heartbeatToken,
@@ -1007,6 +1106,16 @@
         snapshotsToFlush.forEach(queueHeartbeatSnapshotForUnload);
     }
 
+    function closeResetBroadcastChannel() {
+        if (!state.resetBroadcastChannel) {
+            return;
+        }
+        try {
+            state.resetBroadcastChannel.close();
+        } catch (_) {}
+        state.resetBroadcastChannel = null;
+    }
+
     async function sendHeartbeat() {
         if (!state.initialized) return;
         if (state.requestInFlight) {
@@ -1015,6 +1124,7 @@
         }
 
         state.requestInFlight = true;
+        const requestResetGeneration = state.resetGeneration;
         const snapshot = takeHeartbeatSnapshot();
         const payload = buildHeartbeatPayload(snapshot);
         state.inFlightHeartbeatSnapshot = snapshot;
@@ -1045,7 +1155,7 @@
                 keepalive: true,
             });
             if (data && data.state) {
-                applyServerState(data.state, 'heartbeat');
+                applyServerState(data.state, 'heartbeat', requestResetGeneration);
             }
             logFlow('heartbeat', {
                 foregroundMsDelta: snapshot.foregroundMsDelta,
@@ -1064,7 +1174,7 @@
         }
 
         try {
-            if (data && data.should_prompt) {
+            if (!isStaleAfterClientReset(requestResetGeneration) && data && data.should_prompt) {
                 await maybeShowPrompt(data.prompt_token);
             }
         } catch (error) {
@@ -1095,8 +1205,9 @@
             || state.tutorialStarted
             || state.homeTutorialCompleted
             || state.manualHomeTutorialViewed
+            || hasPromptBeenSeenInThisTab()
             || state.neverRemind
-            || state.deferredUntil > Date.now()
+            || isPromptSuppressedInThisTab()
             || state.userCohort === 'existing';
     }
 
@@ -1219,9 +1330,11 @@
     }
 
     async function showPrompt(promptToken) {
+        const promptResetGeneration = state.resetGeneration;
         state.promptOpen = true;
         emitHomeTutorialLockIfChanged('prompt-open');
         state.lastPromptTokenSeen = promptToken;
+        window[HOME_TUTORIAL_PROMPT_SEEN_FLAG] = true;
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({
@@ -1258,15 +1371,48 @@
                     }
                 ]
             });
+            if (isStaleAfterClientReset(promptResetGeneration)) {
+                logFlow('prompt-decision-stale-ignored', {
+                    token: shortPromptToken(promptToken),
+                    decision: decision || null,
+                });
+                return;
+            }
 
             if (decision === 'never') {
+                const decisionResetGeneration = state.resetGeneration;
                 state.promptDrivenTutorialToken = null;
+                state.neverRemind = true;
+                state.deferredUntil = 0;
+                state.localPromptSuppressedUntil = 0;
+                emitHomeTutorialLockIfChanged('prompt-never-local');
                 await postDecision({ decision: 'never', prompt_token: promptToken });
+                if (isStaleAfterClientReset(decisionResetGeneration)) {
+                    return;
+                }
+                state.neverRemind = true;
+                state.deferredUntil = 0;
+                state.localPromptSuppressedUntil = 0;
+                emitHomeTutorialLockIfChanged('prompt-never-local-confirmed');
                 return;
             }
             if (decision === 'later') {
+                const decisionResetGeneration = state.resetGeneration;
                 state.promptDrivenTutorialToken = null;
+                const localSuppressUntil = Date.now() + LOCAL_PROMPT_LATER_SUPPRESS_MS;
+                state.deferredUntil = localSuppressUntil;
+                state.localPromptSuppressedUntil = localSuppressUntil;
+                emitHomeTutorialLockIfChanged('prompt-later-local');
                 await postDecision({ decision: 'later', prompt_token: promptToken });
+                if (isStaleAfterClientReset(decisionResetGeneration)) {
+                    return;
+                }
+                if (!isPromptSuppressedInThisTab()) {
+                    const confirmedSuppressUntil = Date.now() + LOCAL_PROMPT_LATER_SUPPRESS_MS;
+                    state.deferredUntil = confirmedSuppressUntil;
+                    state.localPromptSuppressedUntil = confirmedSuppressUntil;
+                    emitHomeTutorialLockIfChanged('prompt-later-local-confirmed');
+                }
                 return;
             }
             if (decision === 'accept') {
@@ -1454,6 +1600,37 @@
             }
         });
 
+        window.addEventListener(HOME_TUTORIAL_RESET_EVENT, function (event) {
+            handleHomeTutorialResetDetail(event && event.detail ? event.detail : {});
+        });
+
+        window.addEventListener('storage', function (event) {
+            if (!event || event.key !== HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY || !event.newValue) {
+                return;
+            }
+            try {
+                handleHomeTutorialResetDetail(JSON.parse(event.newValue));
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to parse home tutorial reset storage event:', error);
+            }
+        });
+
+        if (typeof BroadcastChannel === 'function') {
+            try {
+                state.resetBroadcastChannel = new BroadcastChannel(HOME_TUTORIAL_RESET_CHANNEL);
+                state.resetBroadcastChannel.addEventListener('message', function (event) {
+                    const message = event && event.data ? event.data : {};
+                    if (!message || message.type !== HOME_TUTORIAL_RESET_EVENT) {
+                        return;
+                    }
+                    handleHomeTutorialResetDetail(message.detail || {});
+                });
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to listen for home tutorial reset broadcasts:', error);
+            }
+        }
+
+        window.addEventListener('beforeunload', closeResetBroadcastChannel);
         window.addEventListener('beforeunload', flushHeartbeatOnUnload);
     }
 

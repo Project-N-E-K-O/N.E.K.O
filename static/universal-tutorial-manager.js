@@ -12,6 +12,9 @@ const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
 const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
 const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
+const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
+const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
+const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -21,12 +24,63 @@ function getTutorialManualIntentKeyForPage(pageKey) {
     return getTutorialStorageKeyForPage(pageKey) + '_manual_intent';
 }
 
+function getTutorialStorageKeysForPageFallback(pageKey) {
+    if (pageKey === 'model_manager') {
+        return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
+            .map(getTutorialStorageKeyForPage);
+    }
+
+    if (pageKey === 'home') {
+        return [
+            getTutorialStorageKeyForPage('home_yui_v1'),
+            getTutorialStorageKeyForPage('home'),
+        ];
+    }
+
+    return [getTutorialStorageKeyForPage(pageKey)];
+}
+
 function logTutorialPromptFlow(step, details = {}) {
     // 默认关闭高频引导流程日志，避免 heartbeat 等调试信息刷屏。
     if (localStorage.getItem('neko_tutorial_prompt_flow_debug') !== '1') {
         return;
     }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
+}
+
+function dispatchHomeTutorialResetEvent(pageKey, source) {
+    if (pageKey !== 'home' && pageKey !== 'all') {
+        return;
+    }
+    const detail = {
+        page: pageKey,
+        source: source || 'manual_home_tutorial_reset',
+        nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent(HOME_TUTORIAL_RESET_EVENT, { detail }));
+    }
+
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            const channel = new BroadcastChannel(HOME_TUTORIAL_RESET_CHANNEL);
+            channel.postMessage({
+                type: HOME_TUTORIAL_RESET_EVENT,
+                detail,
+            });
+            channel.close();
+        } catch (error) {
+            console.warn('[Tutorial] 广播首页教程重置事件失败:', error);
+        }
+    }
+
+    try {
+        localStorage.setItem(HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY, JSON.stringify(detail));
+        localStorage.removeItem(HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY);
+    } catch (error) {
+        console.warn('[Tutorial] 写入首页教程重置同步事件失败:', error);
+    }
 }
 
 async function getTutorialMutationHeaders() {
@@ -771,6 +825,13 @@ class UniversalTutorialManager {
         const launchTutorial = () => {
             setTimeout(() => {
                 this._pendingI18nStart = false;
+                if (this.shouldSkipAutomaticHomeTutorialStart()) {
+                    this.logPromptFlow('home-auto-start-skipped', {
+                        page: this.currentPage,
+                        reason: 'prompt-flow-active',
+                    });
+                    return;
+                }
                 this.startTutorial();
             }, delayMs);
         };
@@ -813,6 +874,26 @@ class UniversalTutorialManager {
             cleanup();
             launchTutorial();
         }, 5000);
+    }
+
+    shouldSkipAutomaticHomeTutorialStart() {
+        if (this.currentPage !== 'home') {
+            return false;
+        }
+        const source = this.peekTutorialStartSource('home') || 'auto';
+        if (source !== 'auto') {
+            return false;
+        }
+        const prompt = window.appTutorialPrompt || null;
+        if (!prompt || typeof prompt.shouldSuppressAutomaticHomeTutorialStart !== 'function') {
+            return false;
+        }
+        try {
+            return prompt.shouldSuppressAutomaticHomeTutorialStart() === true;
+        } catch (error) {
+            console.warn('[Tutorial] 检查主页自动教程启动抑制状态失败:', error);
+            return false;
+        }
     }
 
     /**
@@ -1920,6 +2001,13 @@ class UniversalTutorialManager {
         }
 
         return Array.from(new Set(pageKeys)).map(getTutorialStorageKeyForPage);
+    }
+
+    getResetStorageKeysForPage(page) {
+        return Array.from(new Set([
+            ...this.getStorageKeysForPage(page),
+            ...getTutorialStorageKeysForPageFallback(page),
+        ]));
     }
 
     getManualStartIntentKey(page = null) {
@@ -5243,9 +5331,10 @@ class UniversalTutorialManager {
     async resetAllTutorials() {
         await this.resetHomeTutorialPromptState('manual_all_tutorial_reset');
         TUTORIAL_PAGES.forEach(page => {
-            this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
+            this.getResetStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
         this.markTutorialManualStartIntent('home');
+        dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
         console.log('[Tutorial] 已重置所有页面引导');
         this.notifyTutorialResetForCurrentPageIfNeeded('all');
     } 
@@ -5263,7 +5352,7 @@ class UniversalTutorialManager {
             await this.resetHomeTutorialPromptState('manual_home_tutorial_reset');
         }
 
-        this.getStorageKeysForPage(pageKey).forEach((storageKey) => {
+        this.getResetStorageKeysForPage(pageKey).forEach((storageKey) => {
             const oldVal = localStorage.getItem(storageKey);
             localStorage.removeItem(storageKey);
             if (oldVal) console.log('[Tutorial] 重置: 移除', storageKey, '(旧值:', oldVal, ')');
@@ -5271,6 +5360,7 @@ class UniversalTutorialManager {
 
         if (pageKey === 'home') {
             this.markTutorialManualStartIntent('home');
+            dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
@@ -5401,8 +5491,11 @@ async function resetAllTutorials() {
     } else {
         // 如果管理器未初始化，直接清除 localStorage
         await postTutorialPromptReset('manual_all_tutorial_reset');
-        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(getTutorialStorageKeyForPage(page)); });
+        TUTORIAL_PAGES.forEach(page => {
+            getTutorialStorageKeysForPageFallback(page).forEach(key => localStorage.removeItem(key));
+        });
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
+        dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
@@ -5439,8 +5532,8 @@ async function resetTutorialForPage(pageKey) {
             }
 
             const successMessage = window.t
-                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的人格重选请求，请回到主页刷新后继续。')
-                : '已记录当前角色的人格重选请求，请回到主页刷新后继续。';
+                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的性格重选请求，请回到主页刷新后继续。')
+                : '已记录当前角色的性格重选请求，请回到主页刷新后继续。';
             alert(successMessage);
         }).catch(() => {
             const fallbackError = window.t
@@ -5458,16 +5551,13 @@ async function resetTutorialForPage(pageKey) {
             await postTutorialPromptReset('manual_home_tutorial_reset');
         }
         if (pageKey === 'model_manager') {
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_live2d'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_vrm'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_mmd'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_common'));
+            getTutorialStorageKeysForPageFallback('model_manager').forEach(key => localStorage.removeItem(key));
         } else {
-            localStorage.removeItem(getTutorialStorageKeyForPage(pageKey));
+            getTutorialStorageKeysForPageFallback(pageKey).forEach(key => localStorage.removeItem(key));
         }
         if (pageKey === 'home') {
             localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
+            dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
     }
 
