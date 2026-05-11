@@ -3825,15 +3825,15 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
 
                 if tts_text and tts_text.strip():
                     payload_text = tts_text
-                    if pending_text and pending_text_sid == current_speech_id:
+                    if pending_text and pending_text_sid == sid:
                         payload_text = "".join(pending_text) + tts_text
                         pending_text.clear()
                         pending_text_sid = None
-                    elif pending_text and pending_text_sid not in (None, current_speech_id):
+                    elif pending_text and pending_text_sid not in (None, sid):
                         logger.debug(
                             "ElevenLabs WS dropping cross-utterance pending text: pending_sid=%s current_sid=%s len=%d",
                             pending_text_sid,
-                            current_speech_id,
+                            sid,
                             sum(len(part) for part in pending_text),
                         )
                         pending_text.clear()
@@ -3852,7 +3852,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                     except Exception as exc:
                         logger.warning("ElevenLabs WS send text failed: %s", exc)
                         pending_text.append(payload_text)
-                        pending_text_sid = current_speech_id
+                        pending_text_sid = sid
                         await _close_ws(send_final_empty=False, wait_for_final=False)
                         current_speech_id = None
 

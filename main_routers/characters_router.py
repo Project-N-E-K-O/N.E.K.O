@@ -688,6 +688,20 @@ async def _get_elevenlabs_base_url(config_manager) -> str:
     ).strip().rstrip('/')
 
 
+def _config_value_is_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off', ''}:
+            return False
+    return bool(value)
+
+
 def _prefixed_elevenlabs_voice_id(raw_voice_id: str) -> str:
     raw = (raw_voice_id or '').strip()
     if raw.startswith(ELEVENLABS_VOICE_PREFIX):
@@ -3084,6 +3098,7 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
     并填入下拉，``validate_voice_id`` 也会在保存阶段拒绝 ``gsv:`` 前缀，导致
     "列表能选但保存失败" 的不对称体验。
     """
+    resolved_provider = (provider or '').strip().lower()
     try:
         _config_manager = get_config_manager()
 
@@ -3091,30 +3106,42 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
         requested_provider = (provider or '').strip().lower()
         # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
         tts_config = _config_manager.get_model_api_config('tts_custom')
-        core_provider = (core_config.get('TTS_PROVIDER') or '').strip().lower()
+        core_provider = (
+            core_config.get('TTS_PROVIDER')
+            or core_config.get('ttsProvider')
+            or ''
+        ).strip().lower()
         base_url = (tts_config.get('base_url') or '').rstrip('/')
-        if requested_provider == 'elevenlabs' or (
-            not requested_provider
-            and (
-                core_provider == 'elevenlabs'
-                or core_config.get('ELEVENLABS_ENABLED')
+        elevenlabs_enabled = (
+            _config_value_is_enabled(core_config.get('ELEVENLABS_ENABLED'))
+            or _config_value_is_enabled(core_config.get('elevenlabsEnabled'))
+        )
+        resolved_provider = requested_provider or core_provider
+        if not resolved_provider:
+            if elevenlabs_enabled or 'elevenlabs.io' in base_url:
+                resolved_provider = 'elevenlabs'
+            else:
+                resolved_provider = 'gptsovits'
+
+        if resolved_provider == 'elevenlabs':
+            allow_tts_base_url_fallback = (
+                (not requested_provider and (core_provider == 'elevenlabs' or elevenlabs_enabled))
                 or 'elevenlabs.io' in base_url
             )
-        ):
-            base_url = (
+            elevenlabs_base_url = (
                 core_config.get('ELEVENLABS_BASE_URL')
                 or core_config.get('elevenlabsBaseUrl')
-                or base_url
-                or 'https://api.elevenlabs.io'
+                or (base_url if allow_tts_base_url_fallback else '')
+                or ELEVENLABS_DEFAULT_BASE_URL
             ).rstrip('/')
-            voices = await get_custom_tts_voices(base_url, provider='elevenlabs')
+            voices = await get_custom_tts_voices(elevenlabs_base_url, provider='elevenlabs')
             return JSONResponse({
                 'success': True,
                 'provider': 'elevenlabs',
                 'voices': voices,
-                'api_url': base_url
+                'api_url': elevenlabs_base_url
             })
-        if requested_provider == 'gptsovits' or not requested_provider or core_provider == 'gptsovits':
+        if resolved_provider == 'gptsovits':
             if not core_config.get('GPTSOVITS_ENABLED', False):
                 return JSONResponse({
                     'success': False,
@@ -3154,11 +3181,12 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
         
         return JSONResponse({
             'success': True,
+            'provider': 'gptsovits',
             'voices': voices,
             'api_url': base_url
         })
     except (CustomTTSVoiceFetchError, ValueError) as e:
-        provider_label = 'ElevenLabs' if (provider or '').strip().lower() == 'elevenlabs' else 'GPT-SoVITS'
+        provider_label = 'ElevenLabs' if resolved_provider == 'elevenlabs' else 'GPT-SoVITS'
         error_text = str(e)
         status_code = 400 if provider_label == 'ElevenLabs' and 'api key' in error_text.lower() else 502
         error_code = 'ELEVENLABS_API_KEY_MISSING' if status_code == 400 else None
@@ -3171,7 +3199,7 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
             payload['code'] = error_code
         return JSONResponse(payload, status_code=status_code)
     except Exception as e:
-        provider_label = 'ElevenLabs' if (provider or '').strip().lower() == 'elevenlabs' else 'GPT-SoVITS'
+        provider_label = 'ElevenLabs' if resolved_provider == 'elevenlabs' else 'GPT-SoVITS'
         return JSONResponse({
             'success': False,
             'error': f'获取 {provider_label} 声音列表失败: {str(e)}',
