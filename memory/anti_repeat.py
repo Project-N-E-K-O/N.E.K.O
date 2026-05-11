@@ -65,6 +65,19 @@ logger = get_module_logger(__name__, "Memory")
 
 _SCHEMA_VERSION = 1
 
+# 空 / None 角色名归一化到这个 key。与 ``memory/user_directives.py`` 的
+# sink fallback + ``main_logic/core.py`` 的 ``_directives_key`` 保持一致：
+# lanlan_name 缺失时，proactive corpus 仍然要落地（否则 BM25 regen / soft
+# hint 在该 session 静默失效，codex P2）。
+_DEFAULT_KEY = "default"
+
+
+def _resolve_name(name: Optional[str]) -> Optional[str]:
+    """空 / None 角色名归一化到 ``_DEFAULT_KEY``；其它情况按原样返回。"""
+    if not name:
+        return _DEFAULT_KEY
+    return name
+
 
 def _now() -> float:
     return time.time()
@@ -301,9 +314,12 @@ class AntiRepeatCorpus:
         - 太短的 text（ngram < ``ANTI_REPEAT_MIN_DRAFT_TOKENS``）不入库——免得
           把"嗯"、"好"这类发言摊薄 DF
         - 入库后若窗口长度 > ``ANTI_REPEAT_BG_WINDOW`` 弹出最老
+        - 空 name 归一化到 ``_DEFAULT_KEY``（与 user_directives sink / 注入路径
+          一致），否则空 lanlan_name 配置下 BM25 / soft hint 整段失效（codex P2）
         """
-        if not name or not text or not text.strip():
+        if not text or not text.strip():
             return
+        name = _resolve_name(name)
         ngrams = _ngrams(text)
         if len(ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
             return
@@ -336,9 +352,11 @@ class AntiRepeatCorpus:
         - 太短的 draft / 空 corpus → ``(0.0, {})``
         - 不读 BG corpus 的"前 N - fg"段——那部分只贡献 DF，不直接参与评分；
           但 DF 仍然是基于 BG 整窗算的，让"长期未出现"的 unique 词得到更高 IDF
+        - 空 name → 归一化到 ``_DEFAULT_KEY``（与 record_output 对齐）
         """
-        if not name or not draft_text or not draft_text.strip():
+        if not draft_text or not draft_text.strip():
             return 0.0, {}
+        name = _resolve_name(name)
         draft_ngrams = _ngrams(draft_text)
         if len(draft_ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
             return 0.0, {}
@@ -368,9 +386,12 @@ class AntiRepeatCorpus:
         效果是"最近 5 条里频繁出现 + 整体 corpus 里不常见"的 ngram 排前面。
 
         实现：把 FG 窗自己当 draft 求 BM25 自评分。
+
+        空 name 归一化到 ``_DEFAULT_KEY`` 与 record_output / score_draft 对齐。
         """
-        if not name or k <= 0:
+        if k <= 0:
             return []
+        name = _resolve_name(name)
         with self._get_lock(name):
             window = self._load_unlocked(name)
             if not window:
@@ -390,8 +411,7 @@ class AntiRepeatCorpus:
         return list(per_term.keys())[:k]
 
     def clear(self, name: str) -> None:
-        if not name:
-            return
+        name = _resolve_name(name)
         with self._get_lock(name):
             self._cache[name] = []
             self._save_unlocked(name)
