@@ -1248,6 +1248,21 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         response_queue.put(("__ready__", False))
 
 
+# xAI 文档：'Individual deltas are capped at 15,000 characters'。
+# pending_text 累积 + 长 utterance 合并下可能超过这个上限，需要切片发送。
+_XAI_TTS_DELTA_CAP = 15000
+
+
+def _grok_chunk_text_delta(text: str, cap: int = _XAI_TTS_DELTA_CAP) -> list[str]:
+    """把可能超过 xAI text.delta 上限的文本切成顺序发送的多段。
+    返回的每段长度 ≤ cap；空输入返回空列表。"""
+    if not text:
+        return []
+    if len(text) <= cap:
+        return [text]
+    return [text[i:i + cap] for i in range(0, len(text), cap)]
+
+
 def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     xAI Grok 流式 TTS worker（wss://api.x.ai/v1/tts）
@@ -1411,7 +1426,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     if ws and current_speech_id is not None and not text_done_sent:
                         if pending_text and pending_text_sid == current_speech_id:
                             try:
-                                await ws.send(json.dumps({"type": "text.delta", "delta": "".join(pending_text)}))
+                                for delta in _grok_chunk_text_delta("".join(pending_text)):
+                                    await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                             except Exception as e:
                                 logger.warning(f"flush pending_text 失败: {e}")
                         try:
@@ -1497,7 +1513,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # 字段名用 'delta'（OpenAI Realtime 标准；xAI 文档把消息体叫
                     # "deltas"——"Individual deltas are capped at 15,000 characters"）。
                     # 用 'text' 时服务端 silently 当空字符串处理，合成 0 字节后直接 audio.done。
-                    await ws.send(json.dumps({"type": "text.delta", "delta": payload_text}))
+                    # 长 buffer 合并可能超 15k 上限，按 cap 切片顺序发；xAI 流式合成
+                    # 按到达顺序处理，多 delta 等价单 delta。
+                    for delta in _grok_chunk_text_delta(payload_text):
+                        await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                     _record_tts_telemetry("grok", payload_text)
                 except Exception as e:
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
