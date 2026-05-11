@@ -1269,6 +1269,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             自定义 8 位 id，不认 alias。
     """
     from utils.grok_tts_voices import normalize_grok_tts_voice
+    # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
+    # 判定通不过，残留的空白会被透传到 xAI 的 voice query param 引发合成失败。
+    voice_id = (voice_id or "").strip()
     canonical_voice, recognized = normalize_grok_tts_voice(voice_id)
     if recognized or not voice_id:
         # 识别出 native id / alias → 用归一化后的 canonical；
@@ -3194,10 +3197,16 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
     None（用户存的是 canonical 'leo'，不是 alias 'male'）。如果直接路由到 grok
     worker，worker 会把 alias normalize 回内置 'leo'，悄悄绕过用户的克隆。
 
-    这里把 voice_id 归一化后再查 voice_meta：normalize 识别（grok native id 或
+    这里把 voice_id 归一化后查 collision：normalize 识别（grok native id 或
     alias）且 canonical 在 voice_storage 中存在 → 是 alias-collision 场景，
     不算 xAI custom，返回 False 让调用方路由到 cosyvoice clone 路径；否则
     （voice_id 不是 grok 词表 / 是词表但 canonical 没被克隆）视为 xAI custom。
+
+    与 ``core._has_custom_tts()`` 的 collision 检测对齐：那边用
+    ``voice_id_exists_in_any_storage`` 跨所有 API-key 槽位查找，因为用户可能
+    在 qwen 槽克隆了 'leo' 而当前 session 是 grok。这里也必须跨槽查，否则
+    ``_get_voice_meta``（只看 current api）会漏掉非当前槽里的克隆，让 alias
+    悄悄走 grok 内置 voice，浪费用户已经做的 clone。
     """
     if not voice_id:
         return False
@@ -3208,7 +3217,16 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
     canonical, recognized = normalize_grok_tts_voice(voice_id)
     if not recognized:
         return True  # voice_id 不是 grok 词表内容 → 必为 xAI custom 8-char id
-    return _get_voice_meta(canonical) is None
+    # current api 槽 + 所有 storage 槽都要查；前者快路径，后者跟 _has_custom_tts
+    # 用同一套探针避免遗漏。
+    if _get_voice_meta(canonical) is not None:
+        return False
+    try:
+        if get_config_manager().voice_id_exists_in_any_storage(canonical):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
