@@ -3139,22 +3139,18 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     cm = get_config_manager()
 
+    # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
+    # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
+    voice_meta = None
+
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
             # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
-            # 也可能是远端 clone 成功但本地保存失败，
-            # 或 core_api_type=='grok' 时 xAI 的自定义 voice（8-char lowercase
-            # alphanumeric，POST /v1/custom-voices 返回的 id，本地不存）。
-            # 只有 grok 路径要 short-circuit 到 grok_streaming_tts_worker 并显式
-            # 传 CORE_API_KEY；其他场景 fallthrough 让后续分支处理 cosyvoice/
-            # gptsovits/free preset。把 grok short-circuit 放在 voice_meta is None
-            # 分支里很关键：voice_meta 非 None 时说明是本地已保存的 clone（cosyvoice
-            # / minimax / ...），grok session 下也应保留原 clone 路径，不能劫持。
-            if core_api_type == 'grok':
-                grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
-                return grok_streaming_tts_worker, grok_api_key, 'grok'
+            # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
+            # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
+            # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
             logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
         elif voice_meta.get('provider', '').startswith('minimax'):
             provider = voice_meta['provider']
@@ -3202,9 +3198,20 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
-        if voice_id not in set(get_free_voices().values()):
+        if voice_id in set(get_free_voices().values()):
+            logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
+        elif core_api_type == 'grok' and voice_meta is None:
+            # grok session + voice 不是已存 clone（voice_meta=None）+ 不是 free preset
+            # → 必然是 xAI 自定义 voice（8-char lowercase alphanumeric，
+            # POST /v1/custom-voices 返回的 id）。走 grok worker 用 xAI 端点合成，
+            # api_key 显式给 CORE_API_KEY（has_custom=True 默认从 tts_custom 槽取凭证，
+            # 对 xAI 是错凭证）。voice_meta 非 None 的 cosyvoice clone 不进这分支，
+            # 即使 core_api='grok' 也保留 cosyvoice 路径。tts_custom (GPT-SoVITS /
+            # local CosyVoice) 已经在前面的 try 块里短路返回，到不了这里。
+            grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+            return grok_streaming_tts_worker, grok_api_key, 'grok'
+        else:
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
-        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
