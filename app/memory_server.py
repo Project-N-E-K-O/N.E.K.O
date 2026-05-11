@@ -60,6 +60,11 @@ from config.prompts.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+)
+# Negative-intent prompts/scanner 已迁到 ``prompts_directives``（与 ban-topic
+# regex 同源——同是"用户负面 / 回避指令"的语义层）。``prompts_memory`` 保留
+# fact/persona/reflection/summary 等纯 memory-业务 prompt。
+from config.prompts.prompts_directives import (
     get_negative_target_check_prompt,
     scan_negative_keywords,
 )
