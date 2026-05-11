@@ -147,15 +147,15 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-#创建nginx用户和应用用户
+#创建nginx用户和应用用户，以及Playwright缓存目录
 RUN groupadd -r nginx && \
     useradd -r -g nginx nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
     groupadd -r neko && \
     useradd -r -g neko -d /app -s /bin/bash neko && \
-    mkdir -p /app/logs /app/N.E.K.O /root/ssl && \
-    chown -R neko:neko /app
+    mkdir -p /app/logs /app/N.E.K.O /root/ssl /opt/ms-playwright && \
+    chown -R neko:neko /app /opt/ms-playwright
 
 # 3. 创建 Python 符号链接
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
@@ -172,8 +172,8 @@ RUN mkdir -p /root/.config/uv && \
     echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
-# 6. Copy N.E.K.O. project from local build context
-COPY . /app
+# 6. Copy N.E.K.O. project from local build context (with correct ownership)
+COPY --chown=neko:neko . /app
 
 # 7. Copy frontend build artifacts
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
@@ -192,12 +192,16 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
+# 8b. Fix ownership after root operations (uv sync creates files as root)
+RUN chown -R neko:neko /app
+
 # 9. Set Playwright environment variable BEFORE installing browsers
-ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 # 10. Install Playwright Chromium browser during build (FULL version includes this)
 RUN uv run python -m playwright install chromium --with-deps && \
-    chmod -R 755 ${PLAYWRIGHT_BROWSERS_PATH}
+    chown -R neko:neko /opt/ms-playwright && \
+    chmod -R 755 /opt/ms-playwright
 
 # 11. Set remaining environment variables
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
