@@ -1430,6 +1430,13 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
                     ws = None
                     current_speech_id = None
+                    # 与 step / qwen worker 对偶：send 失败时同步 cancel 旧
+                    # receive_task，避免短暂窗口内僵尸 receive 协程把残音频写
+                    # 进 response_queue。connection 已死，receive 会自然拿到
+                    # ConnectionClosed，cancel 只是加速清理。
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                    receive_task = None
 
         except Exception as e:
             logger.error(f"xAI Grok TTS Worker 错误: {type(e).__name__}: {e!r}", exc_info=True)

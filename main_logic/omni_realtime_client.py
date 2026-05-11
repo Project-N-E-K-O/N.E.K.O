@@ -405,7 +405,7 @@ class OmniRealtimeClient:
         #   qwen  → no custom tool calling per Aliyun docs (only enable_search)
         #   gemini → genai SDK config.tools, response.tool_call.function_calls
         # The provider-side flags below let event handlers cheaply route.
-        self._supports_tools_wire = self._api_type.lower() in ('gpt', 'glm', 'qwen', 'step', 'free', 'gemini')
+        self._supports_tools_wire = self._api_type.lower() in ('gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok')
         # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments
         # keyed by call_id. cleared on response.done.
         self._inflight_tool_args: Dict[str, Dict[str, Any]] = {}
@@ -485,6 +485,12 @@ class OmniRealtimeClient:
             tools_payload.extend(self._tools_for_step())
             await self.update_session({"tools": tools_payload})
         elif api == 'gpt':
+            payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
+            if self.has_tools():
+                payload["tool_choice"] = "auto"
+            await self.update_session(payload)
+        elif api == 'grok':
+            # xAI Grok 走 OpenAI Realtime 协议，schema 与 GPT 同构。
             payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
             if self.has_tools():
                 payload["tool_choice"] = "auto"
