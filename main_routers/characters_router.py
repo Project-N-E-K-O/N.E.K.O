@@ -3238,11 +3238,15 @@ async def get_voice_preview(
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
             try:
                 if native_preview_provider in ('step', 'free'):
+                    # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
+                    # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
+                    # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
+                    # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
                     try:
                         native_tts_config = _config_manager.get_model_api_config('tts_default')
-                        native_audio_api_key = native_tts_config.get('api_key', '') or audio_api_key
+                        native_audio_api_key = native_tts_config.get('api_key', '') or ''
                     except Exception:
-                        native_audio_api_key = audio_api_key
+                        native_audio_api_key = ''
                     if native_preview_provider == 'step' and not native_audio_api_key:
                         return JSONResponse({
                             'success': False,
@@ -3253,7 +3257,7 @@ async def get_voice_preview(
                         voice_id=native_voice_id,
                         preview_line=text,
                         preview_language=preview_language,
-                        audio_api_key=native_audio_api_key or '',
+                        audio_api_key=native_audio_api_key,
                         free_mode=(native_preview_provider == 'free'),
                     )
                 elif native_preview_provider == 'gemini':
