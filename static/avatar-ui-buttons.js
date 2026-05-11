@@ -695,6 +695,11 @@ const AvatarButtonMixin = {
             };
 
             container.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    return;
+                }
                 if (container.contains(e.target)) {
                     e.preventDefault();
                     handleStart(e.clientX, e.clientY);
