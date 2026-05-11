@@ -36,7 +36,6 @@ ELEVENLABS_DEFAULT_BASE_URL = "https://api.elevenlabs.io"
 ELEVENLABS_DEFAULT_MODEL = "eleven_flash_v2_5"
 ELEVENLABS_DEFAULT_OUTPUT_FORMAT = "pcm_24000"
 ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY = 0
-ELEVENLABS_STREAM_CHUNK_SIZE = 2048
 
 # 关闭哨兵：core.py 通过 request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
 # 通知 worker 退出主循环。不能复用 (None, None)，因为它已被用作"本轮 utterance
@@ -67,18 +66,6 @@ def _record_tts_telemetry(model_name: str, text: str):
         )
     except Exception:
         pass
-
-
-def _compact_tts_text_for_log(text: str, limit: int = 160) -> str:
-    """Compact sentence text for logs without losing the meaning."""
-    if not text:
-        return ""
-    compact = " ".join(text.split())
-    if len(compact) <= limit:
-        return compact
-    if limit <= 3:
-        return compact[:limit]
-    return compact[: limit - 3] + "..."
 
 
 class CustomTTSVoiceFetchError(Exception):
@@ -139,13 +126,21 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
     return voices
 
 
+def _resolve_elevenlabs_api_key(cm) -> str:
+    api_key = cm.get_tts_api_key('elevenlabs')
+    if api_key:
+        return api_key
+    try:
+        tts_config = cm.get_model_api_config('tts_custom')
+    except Exception:
+        tts_config = {}
+    return (tts_config.get('api_key') or '').strip()
+
+
 async def _get_elevenlabs_voices(base_url: str):
     """Fetch and normalize ElevenLabs voices for NEKO voice selectors."""
     cm = get_config_manager()
-    api_key = cm.get_tts_api_key('elevenlabs')
-    if not api_key:
-        tts_config = cm.get_model_api_config('tts_custom')
-        api_key = (tts_config.get('api_key') or '').strip()
+    api_key = _resolve_elevenlabs_api_key(cm)
     if not api_key:
         raise CustomTTSVoiceFetchError("ElevenLabs API key is not configured")
 
@@ -3410,18 +3405,6 @@ def _get_elevenlabs_options(base_url=None):
     }
 
 
-def _elevenlabs_error_code(status_code: int) -> str:
-    if status_code in (401, 403):
-        return "API_AUTH_INVALID"
-    if status_code == 429:
-        return "API_RATE_LIMITED"
-    if status_code == 422:
-        return "API_BAD_REQUEST"
-    if status_code >= 500:
-        return "API_SERVER_ERROR"
-    return "API_REQUEST_FAILED"
-
-
 _ELEVENLABS_WS_CHUNK_SCHEDULES = {
     0: [120, 160, 250, 290],
     1: [100, 140, 200, 260],
@@ -3447,187 +3430,6 @@ def _elevenlabs_ws_base_url(base_url: str | None) -> str:
     return "wss://" + raw
 
 
-async def _elevenlabs_stream_synthesize(
-    client,
-    *,
-    base_url: str,
-    api_key: str,
-    model_name: str,
-    output_format: str,
-    voice_id: str,
-    text: str,
-    response_queue,
-    stability: float,
-    similarity_boost: float,
-    style: float,
-    use_speaker_boost: bool,
-    optimize_streaming_latency: int = ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
-) -> None:
-    if not text or not text.strip():
-        return
-    if not api_key:
-        _enqueue_error(response_queue, {
-            "code": "API_KEY_MISSING",
-            "provider": "elevenlabs",
-            "message": "ElevenLabs API key is not configured",
-        })
-        return
-    if not voice_id:
-        _enqueue_error(response_queue, {
-            "code": "TTS_VOICE_ID_MISSING",
-            "provider": "elevenlabs",
-            "message": "ElevenLabs voice_id is not configured",
-        })
-        return
-
-    url = f"{base_url.rstrip('/')}/v1/text-to-speech/{voice_id}/stream"
-    headers = {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json",
-        "Accept": "audio/pcm",
-    }
-    output_format = output_format or ELEVENLABS_DEFAULT_OUTPUT_FORMAT
-    if not _is_elevenlabs_pcm_output_format(output_format):
-        _enqueue_error(response_queue, {
-            "code": "ELEVENLABS_OUTPUT_FORMAT_UNSUPPORTED",
-            "provider": "elevenlabs",
-            "message": (
-                "ElevenLabs streaming currently supports PCM output only; "
-                f"got {output_format!r}"
-            ),
-        })
-        return
-    params = {"output_format": output_format}
-    if optimize_streaming_latency:
-        params["optimize_streaming_latency"] = str(max(0, min(4, int(optimize_streaming_latency))))
-    payload = {
-        "text": text,
-        "model_id": model_name or ELEVENLABS_DEFAULT_MODEL,
-        "voice_settings": {
-            "stability": stability,
-            "similarity_boost": similarity_boost,
-            "style": style,
-            "use_speaker_boost": use_speaker_boost,
-        },
-    }
-
-    start_time = time.perf_counter()
-    first_audio_ms = None
-    pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
-    resampler = soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32') if pcm_sample_rate != 48000 else None
-    emitted_pcm_samples = 0
-    sentence_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-    try:
-        async with client.stream(
-            "POST",
-            url,
-            headers=headers,
-            params=params,
-            json=payload,
-        ) as resp:
-            headers_ms = int((time.perf_counter() - start_time) * 1000)
-            if resp.status_code >= 400:
-                error_bytes = await resp.aread()
-                try:
-                    error_text = error_bytes.decode("utf-8", errors="replace")
-                except Exception:
-                    error_text = repr(error_bytes[:300])
-                _enqueue_error(response_queue, {
-                    "code": _elevenlabs_error_code(resp.status_code),
-                    "provider": "elevenlabs",
-                    "message": f"ElevenLabs TTS API error ({resp.status_code}): {error_text[:300]}",
-                })
-                return
-
-            _record_tts_telemetry(model_name or ELEVENLABS_DEFAULT_MODEL, text)
-            pending = b""
-            chunk_index = 0
-            last_audio_chunk_time = None
-            async for chunk in resp.aiter_bytes(chunk_size=ELEVENLABS_STREAM_CHUNK_SIZE):
-                if not chunk:
-                    continue
-                chunk_received_at = time.perf_counter()
-                if pending:
-                    chunk = pending + chunk
-                    pending = b""
-                usable_len = len(chunk) - (len(chunk) % 2)
-                if usable_len <= 0:
-                    pending = chunk
-                    continue
-                if usable_len < len(chunk):
-                    pending = chunk[usable_len:]
-                audio_array = np.frombuffer(chunk[:usable_len], dtype=np.int16)
-                emitted_pcm_samples += len(audio_array)
-                response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
-                chunk_index += 1
-                chunk_audio_seconds = len(audio_array) / float(pcm_sample_rate) if pcm_sample_rate > 0 else 0.0
-                if last_audio_chunk_time is None:
-                    chunk_gap_ms = int((chunk_received_at - start_time) * 1000)
-                    chunk_gap_label = "from_start"
-                else:
-                    chunk_gap_ms = int((chunk_received_at - last_audio_chunk_time) * 1000)
-                    chunk_gap_label = "from_prev"
-                last_audio_chunk_time = chunk_received_at
-                chunk_rtf = (chunk_gap_ms / 1000.0) / chunk_audio_seconds if chunk_audio_seconds > 0 else None
-                cumulative_audio_seconds = emitted_pcm_samples / float(pcm_sample_rate) if pcm_sample_rate > 0 else 0.0
-                elapsed_ms = int((chunk_received_at - start_time) * 1000)
-                stream_rtf = (
-                    (elapsed_ms / 1000.0) / cumulative_audio_seconds
-                    if cumulative_audio_seconds > 0
-                    else None
-                )
-                logger.info(
-                    "ElevenLabs TTS chunk: chunk=%d, gap=%dms(%s), elapsed=%dms, bytes=%d, audio=%.3fs, chunk_rtf=%s, stream_rtf=%s, text_len=%d, model=%s, format=%s, sentence_hash=%s",
-                    chunk_index,
-                    chunk_gap_ms,
-                    chunk_gap_label,
-                    elapsed_ms,
-                    usable_len,
-                    chunk_audio_seconds,
-                    f"{chunk_rtf:.3f}" if chunk_rtf is not None else "n/a",
-                    f"{stream_rtf:.3f}" if stream_rtf is not None else "n/a",
-                    len(text),
-                    model_name or ELEVENLABS_DEFAULT_MODEL,
-                    output_format,
-                    sentence_hash,
-                )
-                if first_audio_ms is None:
-                    first_audio_ms = int((time.perf_counter() - start_time) * 1000)
-                    first_audio_after_headers_ms = max(0, first_audio_ms - headers_ms)
-                    logger.info(
-                        "ElevenLabs TTS first audio: first_audio=%dms, after_headers=%dms, headers=%dms, text_len=%d, model=%s, format=%s, latency_opt=%s, sentence_hash=%s",
-                        first_audio_ms,
-                        first_audio_after_headers_ms,
-                        headers_ms,
-                        len(text),
-                        model_name or ELEVENLABS_DEFAULT_MODEL,
-                        output_format,
-                        optimize_streaming_latency,
-                        sentence_hash,
-                    )
-            total_ms = int((time.perf_counter() - start_time) * 1000)
-            audio_seconds = emitted_pcm_samples / float(pcm_sample_rate) if pcm_sample_rate > 0 else 0.0
-            rtf = (total_ms / 1000.0) / audio_seconds if audio_seconds > 0 else None
-            logger.info(
-                "ElevenLabs TTS stream complete: total=%dms, audio=%.3fs, rtf=%s, first_audio=%s, text_len=%d, model=%s, format=%s, sentence_hash=%s",
-                total_ms,
-                audio_seconds,
-                f"{rtf:.3f}" if rtf is not None else "n/a",
-                first_audio_ms,
-                len(text),
-                model_name or ELEVENLABS_DEFAULT_MODEL,
-                output_format,
-                sentence_hash,
-            )
-    except Exception as exc:
-        _enqueue_error(response_queue, {
-            "code": "API_REQUEST_FAILED",
-            "provider": "elevenlabs",
-            "message": f"ElevenLabs TTS synthesis failed: {exc}",
-        })
-
-
 def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """ElevenLabs TTS worker - WebSocket stream-input PCM output."""
     from urllib.parse import urlencode
@@ -3636,10 +3438,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
     options = _get_elevenlabs_options(base_url)
     output_format = options['output_format']
     if not _is_elevenlabs_pcm_output_format(output_format):
-        logger.error(
-            "ElevenLabs TTS worker requires PCM output, got %s; worker will not start",
-            output_format,
-        )
+        _enqueue_error(response_queue, {
+            "code": "ELEVENLABS_OUTPUT_FORMAT_UNSUPPORTED",
+            "provider": "elevenlabs",
+            "message": f"ElevenLabs TTS worker requires PCM output, got {output_format!r}",
+        })
         response_queue.put(("__ready__", False))
         return
 
@@ -3676,6 +3479,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         text_chunk_index = 0
         session_text_chars = 0
         text_done_sent = False
+        resampler = None
         pending_text: list[str] = []
         pending_text_sid: str | None = None
 
@@ -3683,6 +3487,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             nonlocal response_finished, session_started_at, connect_ms, first_audio_ms
             nonlocal last_audio_chunk_time, emitted_pcm_samples, audio_chunk_index
             nonlocal text_chunk_index, session_text_chars, text_done_sent
+            nonlocal resampler
             response_finished = asyncio.Event()
             session_started_at = time.perf_counter()
             first_audio_ms = None
@@ -3692,6 +3497,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             text_chunk_index = 0
             session_text_chars = 0
             text_done_sent = False
+            resampler = (
+                soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32')
+                if pcm_sample_rate != 48000
+                else None
+            )
 
         async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
             nonlocal ws, receive_task, text_done_sent
@@ -3822,7 +3632,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             audio_bytes = audio_bytes[:usable_len]
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         emitted_pcm_samples += len(audio_array)
-                        response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000))
+                        response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
                         audio_chunk_index += 1
                         if last_audio_chunk_time is None:
                             chunk_gap_ms = int((received_at - session_started_at) * 1000)
@@ -3993,13 +3803,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             continue
                         pending_text.clear()
                         pending_text_sid = None
-                    if ws is not None and current_speech_id is not None:
-                        try:
-                            await _send_text("", current_speech_id, final=True)
-                            text_done_sent = True
-                        except Exception as exc:
-                            logger.warning("ElevenLabs WS final empty send failed: %s", exc)
-                    await _close_ws(send_final_empty=False, wait_for_final=True)
+                    await _close_ws(send_final_empty=True, wait_for_final=True)
                     current_speech_id = None
                     pending_text.clear()
                     pending_text_sid = None
@@ -4171,7 +3975,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
         logger.info("Detected ElevenLabs voice_id, using ElevenLabs TTS Worker")
-        return elevenlabs_tts_worker, cm.get_tts_api_key('elevenlabs'), 'elevenlabs'
+        return elevenlabs_tts_worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
 
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
@@ -4229,7 +4033,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             )
             return (
                 partial(elevenlabs_tts_worker, base_url=elevenlabs_base_url),
-                cm.get_tts_api_key('elevenlabs'),
+                _resolve_elevenlabs_api_key(cm),
                 'elevenlabs',
             )
         if tts_config.get('is_custom'):

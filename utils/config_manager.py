@@ -2990,7 +2990,22 @@ class ConfigManager:
         # GPT-SoVITS 配置映射
         config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
 
-        config['ELEVENLABS_ENABLED'] = core_cfg.get('elevenlabsEnabled', False)
+        def _as_bool(value, default=False):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ('true', '1', 'yes', 'on'):
+                    return True
+                if lowered in ('false', '0', 'no', 'off', ''):
+                    return False
+            if value is None:
+                return default
+            return bool(value)
+
+        config['ELEVENLABS_ENABLED'] = _as_bool(core_cfg.get('elevenlabsEnabled', False), False)
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ELEVENLABS_BASE_URL'] = core_cfg.get('elevenlabsBaseUrl', 'https://api.elevenlabs.io')
         config['ELEVENLABS_MODEL'] = core_cfg.get('elevenlabsModel', 'eleven_flash_v2_5')
@@ -2999,7 +3014,7 @@ class ConfigManager:
         config['ELEVENLABS_STABILITY'] = core_cfg.get('elevenlabsStability', 0.5)
         config['ELEVENLABS_SIMILARITY_BOOST'] = core_cfg.get('elevenlabsSimilarityBoost', 0.75)
         config['ELEVENLABS_STYLE'] = core_cfg.get('elevenlabsStyle', 0.0)
-        config['ELEVENLABS_USE_SPEAKER_BOOST'] = core_cfg.get('elevenlabsUseSpeakerBoost', True)
+        config['ELEVENLABS_USE_SPEAKER_BOOST'] = _as_bool(core_cfg.get('elevenlabsUseSpeakerBoost', True), True)
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
         # 禁用TTS

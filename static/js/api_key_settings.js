@@ -34,6 +34,17 @@ function markTtsConfigDirty() {
     _ttsConfigDirty = true;
 }
 
+function setInputValue(elementId, value, placeholder) {
+    const element = document.getElementById(elementId);
+    if (value != null && element) {
+        const stringValue = String(value);
+        element.value = stringValue;
+        if (placeholder !== undefined) {
+            element.placeholder = stringValue || placeholder;
+        }
+    }
+}
+
 function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelApiKey = '') {
     const normalizedUrl = (ttsModelUrl || '').trim();
     if (!/^https?:\/\//i.test(normalizedUrl)) return false;
@@ -1046,7 +1057,7 @@ async function loadCurrentApiKey() {
             }
 
             // 辅助函数：设置输入框的值和占位符
-            function setInputValue(elementId, value, placeholder) {
+            function setInputValueLocal(elementId, value, placeholder) {
                 const element = document.getElementById(elementId);
                 if (typeof value === 'string' && element) {
                     element.value = value;
@@ -1525,17 +1536,6 @@ function loadElevenlabsConfig(data) {
     if (enabledCheckbox) enabledCheckbox.checked = enabled;
 
     const apiKeyInput = document.getElementById('elevenlabsApiKey');
-    // Keep this helper local so ElevenLabs does not depend on
-    // loadCurrentApiKey()'s inner helper scope.
-    const setInputValue = (elementId, value, placeholder) => {
-        const element = document.getElementById(elementId);
-        if (typeof value === 'string' && element) {
-            element.value = value;
-            if (placeholder !== undefined) {
-                element.placeholder = value || placeholder;
-            }
-        }
-    };
     if (apiKeyInput) {
         const savedKey = data.assistApiKeyElevenlabs || '';
         setMaskedInput(apiKeyInput, savedKey);
