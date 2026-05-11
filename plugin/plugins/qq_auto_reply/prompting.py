@@ -415,7 +415,9 @@ class QQAutoReplyPromptingMixin:
                 return ai_reply
 
             self.logger.warning("AI 未生成回复")
-            return None
+            if ephemeral_session:
+                return None
+            return self.i18n.t("messages.default_no_reply", default="我看到了喵，但是暂时无法回复哦")
 
         except asyncio.TimeoutError:
             self.logger.warning(f"会话 {session_key} 处理超时，关闭并丢弃该会话")

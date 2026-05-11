@@ -25,7 +25,7 @@ from .permission import PermissionManager
 from .prompting import QQAutoReplyPromptingMixin
 from .qq_client import QQClient
 from .session import QQAutoReplySessionMixin
-from .targets import QQAutoReplyTargetsMixin
+from .targets import QQAutoReplyTargetsMixin, QQAutoReplyValidationError
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict[str, Any]:
@@ -580,14 +580,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "message_prompt": prompt_message,
                 "generated_message": reply_text,
             })
-        except ValueError as e:
+        except QQAutoReplyValidationError as e:
+            code = e.code
             message_text = str(e)
-            if message_text.startswith(("NICKNAME_NOT_FOUND:", "NICKNAME_AMBIGUOUS:")):
-                return Err(SdkError(message_text))
-            prefix = "INVALID_TARGET" if "target" in message_text or "昵称" in message_text else "INVALID_MESSAGE"
-            error_key = 'errors.proactive_invalid_target' if prefix == 'INVALID_TARGET' else 'errors.proactive_invalid_message'
-            default_text = message_text if prefix == 'INVALID_TARGET' else 'message 不能为空'
-            return Err(SdkError(f"{prefix}: {self.i18n.t(error_key, default=default_text)}"))
+            if code in ("NICKNAME_NOT_FOUND", "NICKNAME_AMBIGUOUS"):
+                return Err(SdkError(f"{code}: {message_text}"))
+            if code == "INVALID_TARGET":
+                return Err(SdkError(f"INVALID_TARGET: {self.i18n.t('errors.proactive_invalid_target', default=message_text)}"))
+            if code == "INVALID_MESSAGE":
+                return Err(SdkError(f"INVALID_MESSAGE: {self.i18n.t('errors.proactive_invalid_message', default=message_text)}"))
+            return Err(SdkError(f"INVALID_TARGET: {message_text}"))
         except RuntimeError as e:
             return Err(SdkError(f"NOT_READY: {self.i18n.t('errors.proactive_not_ready', default='{error}', error=str(e))}"))
         except Exception as e:
@@ -620,12 +622,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "message_prompt": prompt_message,
                 "generated_message": reply_text,
             })
-        except ValueError as e:
+        except QQAutoReplyValidationError as e:
+            code = e.code
             message_text = str(e)
-            prefix = "INVALID_GROUP_ID" if "group_id" in message_text else "INVALID_MESSAGE"
-            error_key = 'errors.proactive_invalid_group_id' if prefix == 'INVALID_GROUP_ID' else 'errors.proactive_invalid_message'
-            default_text = message_text if prefix == 'INVALID_GROUP_ID' else 'message 不能为空'
-            return Err(SdkError(f"{prefix}: {self.i18n.t(error_key, default=default_text)}"))
+            if code == "INVALID_GROUP_ID":
+                return Err(SdkError(f"INVALID_GROUP_ID: {self.i18n.t('errors.proactive_invalid_group_id', default=message_text)}"))
+            if code == "INVALID_MESSAGE":
+                return Err(SdkError(f"INVALID_MESSAGE: {self.i18n.t('errors.proactive_invalid_message', default=message_text)}"))
+            return Err(SdkError(f"INVALID_GROUP_ID: {message_text}"))
         except RuntimeError as e:
             return Err(SdkError(f"NOT_READY: {self.i18n.t('errors.proactive_not_ready', default='{error}', error=str(e))}"))
         except Exception as e:
