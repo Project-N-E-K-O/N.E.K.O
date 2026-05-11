@@ -5935,6 +5935,8 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
 
     // GSV 不可用时把后端给的 code 翻成一行人话塞到下拉里——以前是静默丢，
     // 用户连"为啥没出现"都看不到，只能猜是 server 没起还是开关没勾。
+    const _gsvT = (key, fallback) => (window.t && typeof window.t === 'function' && window.t(key)) || fallback;
+
     function _appendGsvDiagnosticOption(message) {
         const diagGroup = document.createElement('optgroup');
         diagGroup.label = '── GPT-SoVITS ──';
@@ -5950,21 +5952,22 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     function _diagnoseFailure(result, status) {
         const code = result && result.code;
         if (code === 'GPTSOVITS_NOT_ENABLED') {
-            return 'GPT-SoVITS 未启用 (请在 API 设置勾选)';
+            return _gsvT('character.gsvDiagNotEnabled', 'GPT-SoVITS 未启用 (请在 API 设置勾选)');
         }
         if (code === 'CUSTOM_API_NOT_ENABLED') {
-            return 'GPT-SoVITS URL 未配置 (请在 API 设置填写)';
+            return _gsvT('character.gsvDiagUrlMissing', 'GPT-SoVITS URL 未配置 (请在 API 设置填写)');
         }
         if (code === 'TTS_CUSTOM_URL_NOT_CONFIGURED') {
-            return 'GPT-SoVITS URL 未配置或不是 http(s)';
+            return _gsvT('character.gsvDiagUrlInvalid', 'GPT-SoVITS URL 未配置或不是 http(s)');
         }
         if (code === 'TTS_CUSTOM_URL_LOCALHOST_ONLY') {
-            return 'GPT-SoVITS URL 必须是 localhost';
+            return _gsvT('character.gsvDiagUrlLocalhostOnly', 'GPT-SoVITS URL 必须是 localhost');
         }
         if (status === 502 || (result && /连接 GPT-SoVITS API 失败/.test(result.error || ''))) {
-            return 'GPT-SoVITS server 未运行或不可达';
+            return _gsvT('character.gsvDiagUnreachable', 'GPT-SoVITS server 未运行或不可达');
         }
-        return 'GPT-SoVITS 加载失败' + (result && result.error ? ': ' + result.error : '');
+        const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+        return base + (result && result.error ? ': ' + result.error : '');
     }
 
     const controller = new AbortController();
@@ -5973,7 +5976,9 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     try {
         const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
         clearTimeout(timeoutId);
-        const result = await resp.json();
+        // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
+        // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。
+        const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
@@ -5998,7 +6003,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
                 selectEl.value = currentVoiceId;
             }
         } else if (result && result.success && Array.isArray(result.voices) && result.voices.length === 0) {
-            _appendGsvDiagnosticOption('GPT-SoVITS server 没有任何声音 (空列表)');
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagEmpty', 'GPT-SoVITS server 没有任何声音 (空列表)'));
         } else {
             _appendGsvDiagnosticOption(_diagnoseFailure(result, resp.status));
         }
@@ -6007,9 +6012,10 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         clearTimeout(timeoutId);
         console.debug('GPT-SoVITS voices not available:', e.message);
         if (e.name === 'AbortError') {
-            _appendGsvDiagnosticOption('GPT-SoVITS server 响应超时 (>3s)');
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagTimeout', 'GPT-SoVITS server 响应超时 (>3s)'));
         } else {
-            _appendGsvDiagnosticOption('GPT-SoVITS 加载失败: ' + (e.message || String(e)));
+            const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+            _appendGsvDiagnosticOption(base + (e && e.message ? ': ' + e.message : ''));
         }
         ensureGsvFallback();
     }

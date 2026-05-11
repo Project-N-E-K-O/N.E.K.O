@@ -2165,7 +2165,7 @@ class ConfigManager:
             return 'minimax'
         return 'cosyvoice'
 
-    def get_voices_for_current_api(self):
+    def get_voices_for_current_api(self, for_listing: bool = False):
         """获取当前 TTS 配置对应的所有音色
 
         根据实际使用的 TTS 配置返回音色：
@@ -2177,16 +2177,22 @@ class ConfigManager:
         返回的每个 voice_data 都保证包含 ``provider`` 字段
         （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
 
-        免费版下跳过主分区加载：阿里 CosyVoice 克隆音色需要付费 API Key 鉴权，
-        在 IS_FREE_VERSION 下选中也无法实际使用（运行时走 step_realtime_tts_worker
-        free_mode），列出来只会让 UI 误导用户。MiniMax 与 GSV 走独立配置/路由，
-        免费版仍可用，所以保留下方 MiniMax 合并 + 不影响 /custom_tts_voices 的 GSV。
+        ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过主分区加载，
+        因为阿里 CosyVoice 克隆音色需付费 API Key 鉴权（运行时走
+        step_realtime_tts_worker free_mode 也无法实际使用），列出来只会让 UI
+        误导用户。MiniMax 与 GSV 走独立配置/路由，免费版仍可用，所以保留下方
+        MiniMax 合并 + 不影响 /custom_tts_voices 的 GSV。
+
+        默认 ``for_listing=False`` 保留全量视图——``validate_voice_id`` /
+        ``cleanup_invalid_voice_ids`` 等校验链路必须见到 storage 中真实存在的
+        所有音色，否则免费版会把用户在付费期保存的 voice_id 误判为不存在并
+        在清理流程中直接清空。
         """
         voice_storage = self.load_voice_storage()
         storage_key = ''
         result: dict = {}
 
-        if not self.is_free_version():
+        if not (for_listing and self.is_free_version()):
             tts_config = self.get_model_api_config('tts_custom')
             base_url = tts_config.get('base_url', '')
             is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))

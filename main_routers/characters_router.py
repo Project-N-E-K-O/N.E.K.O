@@ -2974,7 +2974,7 @@ async def list_custom_tts_voices_for_characters():
     try:
         _config_manager = get_config_manager()
 
-        core_config = _config_manager.get_core_config()
+        core_config = await _config_manager.aget_core_config()
         if not core_config.get('GPTSOVITS_ENABLED', False):
             return JSONResponse({
                 'success': False,
@@ -3081,7 +3081,7 @@ async def get_microphone():
 async def get_voices():
     """获取当前API key对应的所有已注册音色"""
     _config_manager = get_config_manager()
-    result = {"voices": _config_manager.get_voices_for_current_api()}
+    result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
     
     core_config = await _config_manager.aget_core_config()
     active_native_provider = get_active_realtime_native_provider(_config_manager)
