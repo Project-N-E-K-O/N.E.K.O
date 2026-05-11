@@ -362,18 +362,23 @@ jobs:
           # Steam files (include if present in repo).
           # PR #1264 moved native libs into steamworks/; runtime still loads them
           # from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
+          # Gate by RUNNER_OS: all platforms' libs are checked into the repo, but
+          # feeding a Linux ELF .so to a macOS Nuitka build trips an arch-mismatch FATAL.
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
-          if [ -f "steamworks/libsteam_api.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.dylib=libsteam_api.dylib"
-          fi
-          if [ -f "steamworks/SteamworksPy.dylib" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.dylib=SteamworksPy.dylib"
-          fi
-          if [ -f "steamworks/libsteam_api.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.so=libsteam_api.so"
-          fi
-          if [ -f "steamworks/SteamworksPy.so" ]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.so=SteamworksPy.so"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            if [ -f "steamworks/libsteam_api.dylib" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.dylib=libsteam_api.dylib"
+            fi
+            if [ -f "steamworks/SteamworksPy.dylib" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.dylib=SteamworksPy.dylib"
+            fi
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            if [ -f "steamworks/libsteam_api.so" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.so=libsteam_api.so"
+            fi
+            if [ -f "steamworks/SteamworksPy.so" ]; then
+              NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.so=SteamworksPy.so"
+            fi
           fi
 
           echo "=== Nuitka options ==="
