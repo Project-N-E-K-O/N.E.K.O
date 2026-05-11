@@ -367,8 +367,9 @@ def test_user_utterance_sink_records(tmp_path, monkeypatch):
 
 
 def test_user_utterance_sink_skips_default_bucket(tmp_path, monkeypatch):
-    """``"default"`` bucket 在同一次 dispatch 里也会派；只能在角色名 bucket
-    上入库，避免重复。"""
+    """``"default"`` bucket 在同一次 dispatch 里也会派；当 event["lanlan"]
+    指向真角色时，"default" 视为重复，skip。否则（lanlan 为空 / 缺失 /
+    literal "default"）必须落地，避免整段消息漏抽（codex P1）。"""
     from memory import user_directives as ud_module
     mgr = ud_module.get_user_directives_manager()
     cm = MagicMock()
@@ -376,12 +377,45 @@ def test_user_utterance_sink_skips_default_bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "_config_manager", cm)
     monkeypatch.setattr(mgr, "_cache", {})
 
+    # 真角色场景：event["lanlan"] = "Neko"，bucket="default" 被 skip
+    ud_module._on_user_utterance("default", {
+        "type": "user_message",
+        "content": "别再提小明了",
+        "lanlan": "Neko",
+    })
+    # 不应该有任何目录被建（Neko bucket 由另一次 dispatch 投递，本测试不触发）
+    assert not os.listdir(str(tmp_path))
+
+
+def test_user_utterance_sink_records_default_when_no_character(tmp_path, monkeypatch):
+    """character 未配置 / lanlan_name == "default" / lanlan 字段缺失时，
+    dispatch 只会派 "default" 一份；sink 必须处理它，否则用户的 ban-topic
+    会整段丢失（codex P1）。"""
+    from memory import user_directives as ud_module
+    mgr = ud_module.get_user_directives_manager()
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+    monkeypatch.setattr(mgr, "_config_manager", cm)
+    monkeypatch.setattr(mgr, "_cache", {})
+
+    # 场景 1：缺失 lanlan 字段
     ud_module._on_user_utterance("default", {
         "type": "user_message",
         "content": "别再提小明了",
     })
-    # 应该没写到任何角色目录
-    assert not os.listdir(str(tmp_path))
+    active = mgr.get_active("default")
+    assert {e["term"] for e in active} == {"小明"}
+
+    monkeypatch.setattr(mgr, "_cache", {})
+
+    # 场景 2：lanlan == "default" literal
+    ud_module._on_user_utterance("default", {
+        "type": "user_message",
+        "content": "别再提股票了",
+        "lanlan": "default",
+    })
+    active = mgr.get_active("default")
+    assert any("股票" in e["term"] for e in active)
 
 
 def test_user_utterance_sink_handles_multimodal_content(tmp_path, monkeypatch):

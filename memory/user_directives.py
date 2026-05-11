@@ -346,32 +346,50 @@ def _on_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
     """user_utterance sink：抽取并落盘。错误吞掉（main_logic 已经在 dispatch
     内部做了 per-sink try/except，这里再加一层防御）。
 
-    bucket = lanlan_name（dispatch 时 ``"default"`` 与角色名都会派一遍；用
-    angle name 这一份）。
+    Dedup 规则：``dispatch_user_utterance`` 同次 dispatch 会向 ``"default"``
+    与角色名两个 bucket 都派一遍（见 ``main_logic/core.py`` 的
+    ``dict.fromkeys(("default", self.lanlan_name))`` 循环）。规则：
+      - event["lanlan"] 非空且非 "default" → 是真角色，"default" bucket 视
+        为重复，skip；只在 bucket == event["lanlan"] 时入库
+      - event["lanlan"] 为空 / 是 "default" → 整个 dispatch 只发了 "default"
+        一份（角色未配 / 角色名 literal 就是 "default"），bucket=="default"
+        进入正常处理，避免整段消息漏抽（codex P1）
     """
-    if not bucket or bucket == "default":
-        # 角色名 bucket 在同一次 dispatch 里也会派；只处理一次避免重复入库
+    if not isinstance(event, dict):
         return
+    canonical = event.get("lanlan")
+    if not isinstance(canonical, str):
+        canonical = ""
+    if canonical and canonical != "default":
+        # 真角色：跳过 default 的重复分发，只处理角色 bucket
+        if bucket != canonical:
+            return
+        record_key = canonical
+    else:
+        # 无 character 或 character literal == "default"：dispatch 只发了
+        # "default"，必须处理这一份
+        if not bucket:
+            return
+        record_key = bucket  # 当 lanlan_name 为空时只能落到 bucket（即 "default"）
     text = ""
-    if isinstance(event, dict):
-        raw = event.get("content")
-        if isinstance(raw, str):
-            text = raw
-        elif isinstance(raw, list):
-            # multimodal content list：拼 text 片段
-            parts: List[str] = []
-            for p in raw:
-                if isinstance(p, dict):
-                    t = p.get("text")
-                    if isinstance(t, str):
-                        parts.append(t)
-                elif isinstance(p, str):
-                    parts.append(p)
-            text = " ".join(parts)
+    raw = event.get("content")
+    if isinstance(raw, str):
+        text = raw
+    elif isinstance(raw, list):
+        # multimodal content list：拼 text 片段
+        parts: List[str] = []
+        for p in raw:
+            if isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(p, str):
+                parts.append(p)
+        text = " ".join(parts)
     if not text or not text.strip():
         return
     try:
-        get_user_directives_manager().record_from_text(bucket, text)
+        get_user_directives_manager().record_from_text(record_key, text)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("[UserDirectives] sink failed: %s", exc)
 
