@@ -2036,6 +2036,84 @@ reflection 文本（原文不要改动）：
 {{"temporal_scope": "pattern", "event_when": null}}"""
 
 
+# Past memory block (memory/persona.py `_compose_markdown_from_trimmed`) i18n。
+# 每条目前缀 [X 天前 / X 周前 / X 月前] 由 memory.temporal.time_since_label
+# 按 active language 生成；这里只管 block 整体的开头介绍 + 六等号 below/above
+# 对偶分隔符（参见 feedback_prompt_delimiters_above_below.md：内部禁冒号破折号）。
+#
+# 占位符：
+#   {AI_NAME}     —— 当前角色名（如 "小天"）
+#   {MASTER_NAME} —— 用户的 master_name
+PAST_MEMORY_BLOCK = {
+    "zh": (
+        "======以下为较久前的记忆======\n"
+        "说明：下列条目是 {AI_NAME} 较早之前形成的印象，仅作背景知识。"
+        "除非 {MASTER_NAME} 先主动提起，否则 {AI_NAME} 不要主动唤起或追问相关内容。\n"
+        "{ITEMS}\n"
+        "======以上为较久前的记忆======"
+    ),
+    "en": (
+        "======Below is older memory======\n"
+        "Note: the following items are impressions {AI_NAME} formed a while ago, included only as background. "
+        "Unless {MASTER_NAME} brings them up first, {AI_NAME} should not volunteer or probe these topics.\n"
+        "{ITEMS}\n"
+        "======Above is older memory======"
+    ),
+    "ja": (
+        "======以下は過去の記憶======\n"
+        "注：以下は {AI_NAME} が以前形成した印象であり、背景知識としてのみ提示します。"
+        "{MASTER_NAME} から先に話題に出さない限り、{AI_NAME} は自発的にこれらの内容を持ち出したり追及したりしてはいけません。\n"
+        "{ITEMS}\n"
+        "======以上は過去の記憶======"
+    ),
+    "ko": (
+        "======아래는 오래된 기억======\n"
+        "참고: 아래 항목들은 {AI_NAME}이(가) 예전에 형성한 인상으로, 배경 지식으로만 제시됩니다. "
+        "{MASTER_NAME}이(가) 먼저 꺼내지 않는 한 {AI_NAME}은(는) 스스로 이 내용을 꺼내거나 캐묻지 마세요.\n"
+        "{ITEMS}\n"
+        "======위는 오래된 기억======"
+    ),
+    "ru": (
+        "======Ниже давние воспоминания======\n"
+        "Примечание: следующие пункты — это впечатления, сформированные {AI_NAME} ранее, и приводятся только как фоновая информация. "
+        "Если {MASTER_NAME} не поднимет эти темы первым, {AI_NAME} не должен(на) сам(а) их затрагивать или расспрашивать.\n"
+        "{ITEMS}\n"
+        "======Выше давние воспоминания======"
+    ),
+    "es": (
+        "======Abajo recuerdos antiguos======\n"
+        "Nota: los siguientes elementos son impresiones que {AI_NAME} formó hace un tiempo y se incluyen solo como contexto de fondo. "
+        "A menos que {MASTER_NAME} los mencione primero, {AI_NAME} no debe sacarlos por iniciativa propia ni indagar sobre ellos.\n"
+        "{ITEMS}\n"
+        "======Arriba recuerdos antiguos======"
+    ),
+    "pt": (
+        "======Abaixo memórias antigas======\n"
+        "Nota: os itens a seguir são impressões que {AI_NAME} formou há algum tempo, incluídos apenas como contexto de fundo. "
+        "A menos que {MASTER_NAME} os mencione primeiro, {AI_NAME} não deve trazê-los por iniciativa própria nem investigá-los.\n"
+        "{ITEMS}\n"
+        "======Acima memórias antigas======"
+    ),
+}
+
+
+def render_past_memory_block(
+    lang: str,
+    ai_name: str,
+    master_name: str,
+    items_text: str,
+) -> str:
+    """Render the localized past-memory section. `items_text` is a pre-formatted
+    bullet list (each line ``- [time-label] reflection text``)."""
+    tmpl = _loc(PAST_MEMORY_BLOCK, lang)
+    return (
+        tmpl
+        .replace('{AI_NAME}', ai_name)
+        .replace('{MASTER_NAME}', master_name)
+        .replace('{ITEMS}', items_text)
+    )
+
+
 SUMMARY_STALE_HINT = {
     "zh": """======以下为时间衰减提醒======
 距上次记忆压缩已过去 {GAP} 小时。请在 summary 中，把已过时的内容（已结束的事件、已变化的状态、不再相关的近况）单独放到 summary 文末的"较久前"段落，用"X 时间前曾经..."的中性叙事；当前仍持续或重要的内容保留在 summary 主体。本提醒只影响本次 summary 生成，不进入长期记忆。

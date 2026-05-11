@@ -251,22 +251,27 @@ def _refl(text, scope, event_end_at=None, status='confirmed'):
 
 
 def test_render_outdated_block_uses_six_equals(tmp_path):
-    """过时 block 必须用六个等号包裹 below/above 对偶分隔符。"""
+    """过时 block 必须用六个等号包裹 below/above 对偶分隔符。
+
+    显式 pin lang='zh' 验证 zh locale 行为；其他 locale 由
+    test_render_past_block_localizes_to_active_language 覆盖。
+    """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    md = pm._compose_markdown_from_trimmed(
-        name='小天',
-        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
-        name_mapping={'human': '主人'},
-        protected_entries=[],
-        trimmed_non_protected=[],
-        non_protected_entity_index={},
-        trimmed_pending_reflections=[],
-        trimmed_confirmed_reflections=[
-            _refl('当下持续模式', 'pattern'),
-            _refl('过时状态', 'state', event_end_at=old_iso),
-        ],
-    )
+    with patch('utils.language_utils.get_global_language', return_value='zh'):
+        md = pm._compose_markdown_from_trimmed(
+            name='小天',
+            persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+            name_mapping={'human': '主人'},
+            protected_entries=[],
+            trimmed_non_protected=[],
+            non_protected_entity_index={},
+            trimmed_pending_reflections=[],
+            trimmed_confirmed_reflections=[
+                _refl('当下持续模式', 'pattern'),
+                _refl('过时状态', 'state', event_end_at=old_iso),
+            ],
+        )
     # active confirmed section stays
     assert '当下持续模式' in md
     assert '比较确定的印象' in md
@@ -327,6 +332,40 @@ def test_render_legacy_temporal_scope_not_past(tmp_path):
     assert 'legacy None 条目' in md
 
 
+def test_render_past_block_localizes_to_active_language(tmp_path):
+    """Past block 内容 + 时间标签必须跟随 get_global_language()。
+
+    Codex review on PR #1316 P2 regression guard：之前硬编码 zh，非 zh
+    locale 看到中文时间标签 + 中文 below/above 分隔符。
+    """
+    pm, _ = _persona_manager(str(tmp_path))
+    old_iso = (datetime.now() - timedelta(days=10)).isoformat()
+    with patch(
+        'utils.language_utils.get_global_language', return_value='en',
+    ), patch(
+        'memory.persona.get_global_language', return_value='en', create=True,
+    ):
+        md = pm._compose_markdown_from_trimmed(
+            name='Mio',
+            persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+            name_mapping={'human': 'Master'},
+            protected_entries=[],
+            trimmed_non_protected=[],
+            non_protected_entity_index={},
+            trimmed_pending_reflections=[],
+            trimmed_confirmed_reflections=[
+                _refl('an outdated state', 'state', event_end_at=old_iso),
+            ],
+        )
+    # English below/above pair, not 中文
+    assert '======Below is older memory======' in md
+    assert '======Above is older memory======' in md
+    assert '以下为较久前的记忆' not in md
+    # Time label localized to en (10 天前 → "1w ago" via 7-29d 周 bucket)
+    assert '[1w ago]' in md
+    assert '天前' not in md and '周前' not in md
+
+
 def test_render_past_block_no_temporal_scope_label(tmp_path):
     """过时 block 内不出现 temporal_scope 字面值（用户原话："不需要进任何 block"）。
 
@@ -336,18 +375,19 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    md = pm._compose_markdown_from_trimmed(
-        name='小天',
-        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
-        name_mapping={'human': '主人'},
-        protected_entries=[],
-        trimmed_non_protected=[],
-        non_protected_entity_index={},
-        trimmed_pending_reflections=[],
-        trimmed_confirmed_reflections=[
-            _refl('一条过时印象', 'state', event_end_at=old_iso),
-        ],
-    )
+    with patch('utils.language_utils.get_global_language', return_value='zh'):
+        md = pm._compose_markdown_from_trimmed(
+            name='小天',
+            persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+            name_mapping={'human': '主人'},
+            protected_entries=[],
+            trimmed_non_protected=[],
+            non_protected_entity_index={},
+            trimmed_pending_reflections=[],
+            trimmed_confirmed_reflections=[
+                _refl('一条过时印象', 'state', event_end_at=old_iso),
+            ],
+        )
     start = md.find('======以下为较久前的记忆======')
     end = md.find('======以上为较久前的记忆======')
     block = md[start:end]

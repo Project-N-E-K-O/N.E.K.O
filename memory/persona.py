@@ -2322,7 +2322,12 @@ class PersonaManager:
             # 过时 block — 用本项目六等号 below/above 对偶分隔符（参见
             # feedback_prompt_delimiters_above_below.md：分隔符内部禁冒号
             # 和破折号）。每条前缀 [X 天前 / X 周前 / X 月前] 由
-            # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。
+            # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。整段按
+            # get_global_language() 本地化（Codex review on PR #1316
+            # P2 catch：之前硬编码 zh 让非 zh locale 看到中文时间标签）。
+            from utils.language_utils import get_global_language
+            from config.prompts.prompts_memory import render_past_memory_block
+            lang = get_global_language()
             past_lines = []
             for r in past_confirmed:
                 anchor = (
@@ -2330,17 +2335,17 @@ class PersonaManager:
                     or r.get('event_start_at')
                     or r.get('created_at')
                 )
-                label = _time_label(anchor, now=now_for_past, lang='zh')
+                label = _time_label(anchor, now=now_for_past, lang=lang)
                 prefix = f"[{label}] " if label else ""
                 past_lines.append(f"- {prefix}{r.get('text', '')}")
-            section_md = (
-                "======以下为较久前的记忆======\n"
-                f"说明：下列条目是 {ai_name} 较早之前形成的印象，仅作背景知识。"
-                f"除非 {master_name} 先主动提起，否则 {ai_name} 不要主动唤起或追问相关内容。\n"
-                + "\n".join(past_lines)
-                + "\n======以上为较久前的记忆======"
+            sections.append(
+                render_past_memory_block(
+                    lang=lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                    items_text="\n".join(past_lines),
+                )
             )
-            sections.append(section_md)
 
         if suppressed_lines:
             sections.append(
