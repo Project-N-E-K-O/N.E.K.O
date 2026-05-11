@@ -239,6 +239,7 @@
                 const cleanup = () => {
                     window.removeEventListener('neko:tutorial-completed', handleCompleted);
                     window.removeEventListener('neko:tutorial-skipped', handleSkipped);
+                    window.removeEventListener('neko:tutorial-ended-without-completion', handleEndedWithoutCompletion);
                 };
                 const finish = () => {
                     if (settled) {
@@ -250,8 +251,10 @@
                 };
                 const handleCompleted = () => finish();
                 const handleSkipped = () => finish();
+                const handleEndedWithoutCompletion = () => finish();
                 window.addEventListener('neko:tutorial-completed', handleCompleted, { once: true });
                 window.addEventListener('neko:tutorial-skipped', handleSkipped, { once: true });
+                window.addEventListener('neko:tutorial-ended-without-completion', handleEndedWithoutCompletion, { once: true });
             });
         }
 
