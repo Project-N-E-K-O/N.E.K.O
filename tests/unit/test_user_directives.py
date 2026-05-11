@@ -233,11 +233,32 @@ def test_purge_expired_drops_entries(tmp_path):
 def test_get_active_sorted_by_last_seen(tmp_path):
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    mgr.record(name, locale="zh", kind="ban_topic", term="a", now=100.0)
-    mgr.record(name, locale="zh", kind="ban_topic", term="bb", now=200.0)
-    mgr.record(name, locale="zh", kind="ban_topic", term="ccc", now=150.0)
+    # term 必须 ≥ 2 字符（record 边界校验，CodeRabbit Minor）。
+    mgr.record(name, locale="zh", kind="ban_topic", term="aa", now=100.0)
+    mgr.record(name, locale="zh", kind="ban_topic", term="bbb", now=200.0)
+    mgr.record(name, locale="zh", kind="ban_topic", term="cccc", now=150.0)
     active = mgr.get_active(name, now=200.0)
-    assert [e["term"] for e in active] == ["bb", "ccc", "a"]
+    assert [e["term"] for e in active] == ["bbb", "cccc", "aa"]
+
+
+def test_record_rejects_invalid_term(tmp_path):
+    """``record()`` boundary 拒绝空白 / 过长 / 非 str term。"""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    # 空白
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="") == {}
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="   ") == {}
+    # 单字符
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="X") == {}
+    # 超长（> 40）
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="x" * 41) == {}
+    # 非 str
+    assert mgr.record(name, locale="zh", kind="ban_topic", term=None) == {}  # type: ignore[arg-type]
+    # 合法
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="OK")
+    # 两端 trim 后落库
+    e = mgr.record(name, locale="zh", kind="ban_topic", term="  ban-me  ")
+    assert e["term"] == "ban-me"
 
 
 def test_get_active_respects_limit(tmp_path):

@@ -230,7 +230,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("pt", "ban_topic",
      r"(?:não\s+(?:fale|mencione|diga|continue\s+falando|me\s+chame)|"
      r"pare\s+de\s+(?:falar|mencionar|me\s+chamar)|"
-     r"deixe?\s+de\s+(?:falar|mencionar))\s+"
+     r"deix[ea]\s+de\s+(?:falar|mencionar))\s+"  # deixe de / deixa de（codex P2）
      r"(?:de|sobre|a\s+respeito\s+de)?\s*(.{1,40}?)"
      r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
      r"|[,.!?;]|$)"),

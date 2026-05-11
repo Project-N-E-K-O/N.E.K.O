@@ -209,9 +209,20 @@ class UserDirectivesManager:
     ) -> Dict[str, Any]:
         """登记一条 directive；命中已有 ``(kind, term.casefold())`` 则刷新。
 
-        返回最终存盘的 dict（含合并/刷新后的字段）。
+        返回最终存盘的 dict（含合并/刷新后的字段）；输入不合法（term 不是 str /
+        trim 后空 / 长度越界）返回空 dict。
+
+        ⚠️ 在持久化边界再做一遍 ``str(term).strip()`` + ``[2, 40]`` 长度校验。
+        主路径 ``record_from_text`` → ``extract_directives`` 已经过 ``_trim_term``
+        + 长度过滤；但 ``record()`` 也是 public API（测试、未来调用方可能绕过
+        抽取器），保险起见把不变量从 boundary 处也卡住（CodeRabbit Minor）。
         """
-        if not name or not term:
+        if not name:
+            return {}
+        if not isinstance(term, str):
+            return {}
+        term = term.strip()
+        if not (2 <= len(term) <= 40):
             return {}
         ts = float(now if now is not None else _now())
         expire = ts + USER_DIRECTIVE_TTL_SECONDS

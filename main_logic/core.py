@@ -3645,6 +3645,12 @@ class LLMSessionManager:
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
+        # 记录 / 查询 key：lanlan_name 为空时落到 "default" 与 sink 端对齐
+        # （sink 在 lanlan 字段空 / "default" 时把 directive 写到 "default"
+        # bucket；这里读取也得用同一 key，否则用户的 ban-topic 永远进不来
+        # system prompt，codex P2）。
+        _directives_key = self.lanlan_name or "default"
+
         # ── 用户显式 ban-topic 注入 ─────────────────────────────────
         # 用户在过去 3 天里说过的 "别再提 X / stop saying X" 类指令，本轮 LLM
         # 在 context 里已经看过；下一次 session 重启时原话已被 compress_history
@@ -3654,7 +3660,7 @@ class LLMSessionManager:
         try:
             from memory.user_directives import get_user_directives_manager
             prompt += get_user_directives_manager().render_prompt_block(
-                self.lanlan_name, _lang,
+                _directives_key, _lang,
             )
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
@@ -3670,7 +3676,7 @@ class LLMSessionManager:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
-            topics = get_anti_repeat_corpus().top_recent_topics(self.lanlan_name)
+            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
             prompt += render_recent_topics_block(topics, _lang)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
