@@ -1262,10 +1262,19 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         request_queue: 多进程请求队列，接收 (speech_id, text) 元组
         response_queue: 多进程响应队列，发送音频数据和就绪信号
         audio_api_key: xAI API key
-        voice_id: 内置音色（eve/ara/leo/rex/sal）或自定义 8 位音色 id，默认 eve
+        voice_id: 内置音色（eve/ara/leo/rex/sal）/ alias（male / 女声 等）/ 自定义
+            8 位音色 id / 空。routing 层（native_voice_registry）会把 alias
+            识别为 native；worker 这里再归一化成 xAI canonical id，
+            因为 xAI 端点的 voice query param 只接受 canonical id 或
+            自定义 8 位 id，不认 alias。
     """
-    if not voice_id:
-        voice_id = "eve"
+    from utils.grok_tts_voices import normalize_grok_tts_voice
+    canonical_voice, recognized = normalize_grok_tts_voice(voice_id)
+    if recognized or not voice_id:
+        # 识别出 native id / alias → 用归一化后的 canonical；
+        # 空输入 → normalize 已经返回 default (eve)。
+        voice_id = canonical_voice
+    # else: 非空且不识别 → 视为用户自定义 8 位 voice_id，原样透传给 xAI
 
     async def async_worker():
         from urllib.parse import urlencode

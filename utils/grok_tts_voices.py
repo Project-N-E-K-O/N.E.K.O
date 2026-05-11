@@ -51,3 +51,16 @@ GROK_PROVIDER = NativeVoiceProvider(
 )
 
 register_provider(GROK_PROVIDER)
+
+
+def normalize_grok_tts_voice(voice_id: str | None) -> tuple[str, bool]:
+    """Wire-format helper: map any user-input voice (canonical id, alias,
+    or empty) to a canonical xAI voice id.
+
+    Mirrors `utils.gemini_tts_voices.normalize_gemini_tts_voice`. The
+    streaming TTS worker calls this before building the `voice` query
+    parameter, because the routing layer accepts aliases like ``male`` /
+    ``女声`` (via `NativeVoiceProvider.is_voice`) but xAI's endpoint only
+    accepts canonical ids (eve/ara/leo/rex/sal) or 8-char custom voice ids.
+    """
+    return GROK_PROVIDER.normalize(voice_id)
