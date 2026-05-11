@@ -241,6 +241,11 @@ def test_study_mode_manager_intent_switch_rules() -> None:
     dwell = manager.switch_to(MODE_TEACHING, "unit", now=1010.0)
     assert dwell["changed"] is False
     assert dwell["lock_reason"] == "minimum_dwell"
+    rate_limited = manager.switch_to(MODE_COMPANION, "unit", now=1020.0)
+    assert rate_limited["changed"] is False
+    assert rate_limited["lock_reason"] == "mode_lock"
+    assert rate_limited["new_mode"] == MODE_INTERACTIVE
+    assert rate_limited["lock_until"] > 1020.0
 
     manager = ModeManager(current_mode=MODE_COMPANION)
     assert manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)["changed"] is True

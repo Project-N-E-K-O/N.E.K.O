@@ -271,6 +271,17 @@ class ModeManager:
         raw_session = payload.get("session_suggestions")
         self.session_suggestions = [item for item in (_json_copy(raw_session) if isinstance(raw_session, list) else []) if isinstance(item, dict)]
 
+    def _prune_recent_mode_switches(self, now_ts: float) -> None:
+        self.recent_mode_switches = [
+            item
+            for item in self.recent_mode_switches
+            if now_ts - _coerce_timestamp(item.get("at"), now_ts) <= MODE_SWITCH_WINDOW_SECONDS
+        ]
+
+    def _record_mode_switch_attempt(self, *, mode: str, reason: str, at: float) -> None:
+        self._prune_recent_mode_switches(at)
+        self.recent_mode_switches.append({"mode": mode, "reason": reason, "at": at})
+
     def switch_to(
         self,
         mode: str,
@@ -318,7 +329,37 @@ class ModeManager:
                 "checkpoint": checkpoint_before,
             }
 
+        self._record_mode_switch_attempt(mode=requested_mode, reason=reason, at=now_ts)
+        checkpoint_after_attempt = self.snapshot()
         if self.mode_started_at and now_ts - self.mode_started_at < MODE_MIN_DWELL_SECONDS:
+            if len(self.recent_mode_switches) >= 3:
+                self.mode_lock_until = now_ts + MODE_LOCK_SECONDS
+                checkpoint_after_lock = self.snapshot()
+                checkpoint_after_lock.update(
+                    {
+                        "changed": False,
+                        "old_mode": current_mode,
+                        "new_mode": current_mode,
+                        "reason": reason,
+                        "transition_phrase": build_transition_phrase(
+                            current_mode,
+                            language=language,
+                            outcome="locked",
+                            lock_until=self.mode_lock_until,
+                        ),
+                    }
+                )
+                return {
+                    "changed": False,
+                    "old_mode": current_mode,
+                    "new_mode": current_mode,
+                    "transition_phrase": checkpoint_after_lock["transition_phrase"],
+                    "reason": reason,
+                    "locked": True,
+                    "lock_reason": "mode_lock",
+                    "lock_until": float(self.mode_lock_until or 0.0),
+                    "checkpoint": checkpoint_after_lock,
+                }
             return {
                 "changed": False,
                 "old_mode": current_mode,
@@ -328,21 +369,14 @@ class ModeManager:
                 "locked": True,
                 "lock_reason": "minimum_dwell",
                 "lock_until": float(self.mode_started_at + MODE_MIN_DWELL_SECONDS),
-                "checkpoint": checkpoint_before,
+                "checkpoint": checkpoint_after_attempt,
             }
 
         self.current_mode = requested_mode
         self.mode_started_at = now_ts
         self.mode_lock_until = 0.0
-        self.recent_mode_switches = [
-            item
-            for item in self.recent_mode_switches
-            if now_ts - _coerce_timestamp(item.get("at"), now_ts) <= MODE_SWITCH_WINDOW_SECONDS
-        ]
-        self.recent_mode_switches.append({"mode": requested_mode, "reason": reason, "at": now_ts})
         if len(self.recent_mode_switches) >= 3:
             self.mode_lock_until = now_ts + MODE_LOCK_SECONDS
-
         checkpoint_after = self.snapshot()
         checkpoint_after.update(
             {
