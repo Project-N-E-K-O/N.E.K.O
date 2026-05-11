@@ -4,7 +4,6 @@ TTS Helper模块
 """
 import numpy as np
 import soxr
-import hashlib
 import time
 import json
 import re
@@ -3484,32 +3483,14 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         receive_task = None
         current_speech_id = None
         response_finished = asyncio.Event()
-        session_started_at = 0.0
-        connect_ms = 0
-        first_audio_ms = None
-        last_audio_chunk_time = None
-        emitted_pcm_samples = 0
-        audio_chunk_index = 0
-        text_chunk_index = 0
-        session_text_chars = 0
         text_done_sent = False
         resampler = None
         pending_text: list[str] = []
         pending_text_sid: str | None = None
 
         def _reset_session_metrics() -> None:
-            nonlocal response_finished, session_started_at, connect_ms, first_audio_ms
-            nonlocal last_audio_chunk_time, emitted_pcm_samples, audio_chunk_index
-            nonlocal text_chunk_index, session_text_chars, text_done_sent
-            nonlocal resampler
+            nonlocal response_finished, text_done_sent, resampler
             response_finished = asyncio.Event()
-            session_started_at = time.perf_counter()
-            first_audio_ms = None
-            last_audio_chunk_time = None
-            emitted_pcm_samples = 0
-            audio_chunk_index = 0
-            text_chunk_index = 0
-            session_text_chars = 0
             text_done_sent = False
             resampler = (
                 soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32')
@@ -3545,12 +3526,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             receive_task = None
 
         async def _open_ws(speech_id: str) -> None:
-            nonlocal ws, receive_task, current_speech_id, connect_ms, session_started_at
+            nonlocal ws, receive_task, current_speech_id
             if not normalized_voice_id:
                 raise RuntimeError("ElevenLabs voice_id is not configured")
             if not audio_api_key:
                 raise RuntimeError("ElevenLabs API key is not configured")
-            connect_started_at = time.perf_counter()
             ws = await websockets.connect(
                 ws_url,
                 additional_headers={"xi-api-key": audio_api_key},
@@ -3558,9 +3538,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 close_timeout=0.5,
                 max_size=10 * 1024 * 1024,
             )
-            connect_ms = int((time.perf_counter() - connect_started_at) * 1000)
             _reset_session_metrics()
-            session_started_at = connect_started_at
             current_speech_id = speech_id
             receive_task = asyncio.create_task(_receive_ws_messages(speech_id))
             init_payload = {
@@ -3572,21 +3550,10 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 "xi_api_key": audio_api_key,
             }
             await ws.send(json.dumps(init_payload))
-            logger.info(
-                "ElevenLabs WS session open: speech_id=%s connect=%dms model=%s format=%s schedule=%s",
-                speech_id,
-                connect_ms,
-                options['model'],
-                output_format,
-                chunk_schedule,
-            )
 
         async def _receive_ws_messages(speech_id: str) -> None:
-            nonlocal first_audio_ms, last_audio_chunk_time, emitted_pcm_samples
-            nonlocal audio_chunk_index
             try:
                 async for message in ws:
-                    received_at = time.perf_counter()
                     audio_bytes = None
                     is_final = False
                     payload = None
@@ -3645,73 +3612,8 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         if usable_len < len(audio_bytes):
                             audio_bytes = audio_bytes[:usable_len]
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                        emitted_pcm_samples += len(audio_array)
                         response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
-                        audio_chunk_index += 1
-                        if last_audio_chunk_time is None:
-                            chunk_gap_ms = int((received_at - session_started_at) * 1000)
-                            chunk_gap_label = "from_start"
-                        else:
-                            chunk_gap_ms = int((received_at - last_audio_chunk_time) * 1000)
-                            chunk_gap_label = "from_prev"
-                        last_audio_chunk_time = received_at
-                        chunk_audio_seconds = len(audio_array) / float(pcm_sample_rate)
-                        elapsed_ms = int((received_at - session_started_at) * 1000)
-                        chunk_rtf = (
-                            (chunk_gap_ms / 1000.0) / chunk_audio_seconds
-                            if chunk_audio_seconds > 0
-                            else None
-                        )
-                        cumulative_audio_seconds = emitted_pcm_samples / float(pcm_sample_rate)
-                        stream_rtf = (
-                            (elapsed_ms / 1000.0) / cumulative_audio_seconds
-                            if cumulative_audio_seconds > 0
-                            else None
-                        )
-                        if first_audio_ms is None:
-                            first_audio_ms = elapsed_ms
-                            first_audio_after_connect_ms = max(0, first_audio_ms - connect_ms)
-                            logger.info(
-                                "ElevenLabs WS first audio: first_audio=%dms, after_connect=%dms, connect=%dms, text_chars=%d, model=%s, format=%s, latency_opt=%s, speech_id=%s",
-                                first_audio_ms,
-                                first_audio_after_connect_ms,
-                                connect_ms,
-                                session_text_chars,
-                                options['model'],
-                                output_format,
-                                options['optimize_streaming_latency'],
-                                speech_id,
-                            )
-                        logger.info(
-                            "ElevenLabs WS chunk: speech_id=%s chunk=%d, gap=%dms(%s), elapsed=%dms, bytes=%d, audio=%.3fs, chunk_rtf=%s, stream_rtf=%s, text_chars=%d, model=%s, format=%s",
-                            speech_id,
-                            audio_chunk_index,
-                            chunk_gap_ms,
-                            chunk_gap_label,
-                            elapsed_ms,
-                            usable_len,
-                            chunk_audio_seconds,
-                            f"{chunk_rtf:.3f}" if chunk_rtf is not None else "n/a",
-                            f"{stream_rtf:.3f}" if stream_rtf is not None else "n/a",
-                            session_text_chars,
-                            options['model'],
-                            output_format,
-                        )
                     if is_final:
-                        total_ms = int((received_at - session_started_at) * 1000)
-                        audio_seconds = emitted_pcm_samples / float(pcm_sample_rate)
-                        rtf = (total_ms / 1000.0) / audio_seconds if audio_seconds > 0 else None
-                        logger.info(
-                            "ElevenLabs WS stream complete: speech_id=%s total=%dms, audio=%.3fs, rtf=%s, first_audio=%s, text_chars=%d, model=%s, format=%s",
-                            speech_id,
-                            total_ms,
-                            audio_seconds,
-                            f"{rtf:.3f}" if rtf is not None else "n/a",
-                            first_audio_ms,
-                            session_text_chars,
-                            options['model'],
-                            output_format,
-                        )
                         response_finished.set()
                         break
             except websockets.exceptions.ConnectionClosed as exc:
@@ -3730,24 +3632,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 response_finished.set()
 
         async def _send_text(text: str, speech_id: str, *, final: bool = False) -> None:
-            nonlocal text_chunk_index, session_text_chars
             if ws is None:
                 raise RuntimeError("ElevenLabs WS is not connected")
             payload = {"text": text}
             if final and text:
                 payload["flush"] = True
             await ws.send(json.dumps(payload))
-            text_chunk_index += 1
-            session_text_chars += len(text)
-            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] if text else ""
-            logger.info(
-                "ElevenLabs WS text: speech_id=%s chunk=%d len=%d final=%s text_hash=%s",
-                speech_id,
-                text_chunk_index,
-                len(text),
-                final,
-                text_hash,
-            )
 
         async def _ensure_session(speech_id: str) -> None:
             nonlocal current_speech_id, pending_text_sid
@@ -3782,7 +3672,6 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 response_queue.put(("__ready__", False))
                 return
             response_queue.put(("__ready__", True))
-            logger.info("ElevenLabs WS worker ready")
             loop = asyncio.get_running_loop()
             while True:
                 try:
@@ -3996,7 +3885,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     voice_meta = None
 
     if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
-        logger.info("Detected ElevenLabs voice_id, using ElevenLabs TTS Worker")
         elevenlabs_options = _get_elevenlabs_options()
         return (
             partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),

@@ -3325,7 +3325,6 @@ async def get_voice_preview(
                         'error': error_code,
                         'code': error_code
                     }, status_code=400)
-                logger.info(f"ElevenLabs 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 return {
                     'success': True,
@@ -4353,7 +4352,6 @@ async def voice_clone_direct(request: Request):
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
             
         elif provider == 'elevenlabs':
-            logger.info(f"开始下载直链音频用于ElevenLabs: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024
 
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
@@ -4390,7 +4388,6 @@ async def voice_clone_direct(request: Request):
                     audio_buffer.seek(0)
                     audio_bytes = audio_buffer.getvalue()
 
-            logger.info(f"ElevenLabs 直链音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
