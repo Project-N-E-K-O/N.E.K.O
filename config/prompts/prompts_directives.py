@@ -142,9 +142,13 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"(.{1,30}?)\s+is\s+(?:off[\s\-]?limits|off\s+the\s+table|a\s+(?:no[\s\-]?go|forbidden)\s+topic)"
      r"(?:[\s,.!?;]|$)"),
     # I don't want to talk/hear about X
+    # X 是 NP 可能含空格（"my ex girlfriend"）。terminator 用 filler-word /
+    # 标点 / 句尾，否则 lazy ``.{1,40}?`` 在第一个空格就切断成 "my"（codex P1）。
     ("en", "ban_topic",
      r"i\s+(?:don'?t|do\s+not|really\s+don'?t)\s+(?:want\s+to|wanna)\s+"
-     r"(?:talk|hear|discuss|think)\s+(?:about|of)\s+(.{1,40}?)(?:[\s,.!?;]|$)"),
+     r"(?:talk|hear|discuss|think)\s+(?:about|of)\s+(.{1,40}?)"
+     r"(?:\s+(?:anymore|any\s+more|again|ever|already|right\s+now|today|tonight|please)"
+     r"|[,.!?;]|$)"),
     # drop the X / leave X alone (subject)
     ("en", "ban_topic",
      r"(?:drop|leave\s+alone)\s+(?:the\s+|that\s+)?(.{1,30}?)\s+"
@@ -195,9 +199,12 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # о X + больше + не говори
     ("ru", "ban_topic",
      r"(?:обо|об|о)\s+(.{1,30}?)\s+больше\s+не\s+(?:говори|упоминай)"),
-    # я не хочу + (говорить|слышать) + о X
+    # я не хочу + (говорить|слышать) + о X — 同 en 的 filler-word terminator，
+    # 支持 "моей бывшей" 这种多词短语。
     ("ru", "ban_topic",
-     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+(?:обо|об|о)\s+(.{1,40}?)(?:[\s,.!?;]|$)"),
+     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+(?:обо|об|о)\s+(.{1,40}?)"
+     r"(?:\s+(?:больше|никогда|пожалуйста|снова|опять|вообще|сегодня)"
+     r"|[,.!?;]|$)"),
 
     # ---------- es ----------
     # no hables / no menciones / deja de hablar + (de|sobre) + X
@@ -208,10 +215,12 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"(?:de|sobre|acerca\s+de)?\s*(.{1,40}?)"
      r"(?:\s+(?:más|nunca|jamás|otra\s+vez|de\s+nuevo|por\s+favor|porfa|hoy|ahora)"
      r"|[,.!?;]|$)"),
-    # no quiero + (oír|hablar|saber) + (de|nada de) + X
+    # no quiero + (oír|hablar|saber) + (de|nada de) + X — 同 en/ru
     ("es", "ban_topic",
      r"no\s+quiero\s+(?:oír|hablar|saber|escuchar)\s+(?:nada\s+)?(?:de|sobre)\s+"
-     r"(.{1,40}?)(?:[\s,.!?;]|$)"),
+     r"(.{1,40}?)"
+     r"(?:\s+(?:más|nunca|jamás|otra\s+vez|de\s+nuevo|por\s+favor|porfa|hoy|ahora)"
+     r"|[,.!?;]|$)"),
 
     # ---------- pt ----------
     # não fale / não mencione / pare de falar + (de|sobre) + X
@@ -222,10 +231,12 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"(?:de|sobre|a\s+respeito\s+de)?\s*(.{1,40}?)"
      r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
      r"|[,.!?;]|$)"),
-    # não quero + (ouvir|falar|saber) + (de|sobre|nada de) + X
+    # não quero + (ouvir|falar|saber) + (de|sobre|nada de) + X — 同 en/ru
     ("pt", "ban_topic",
      r"não\s+quero\s+(?:ouvir|falar|saber|escutar)\s+(?:nada\s+)?(?:de|sobre)\s+"
-     r"(.{1,40}?)(?:[\s,.!?;]|$)"),
+     r"(.{1,40}?)"
+     r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
+     r"|[,.!?;]|$)"),
 ]
 
 

@@ -6010,6 +6010,11 @@ async def proactive_chat(request: Request):
                 "bm25_score": _bm25_total,
             }))
         elif _bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+            # 记下进入 regen 前的初稿 source_tag，下面在改 tag 后判定是否要撤销
+            # 原 music 候选状态（CodeRabbit Major：MUSIC → CHAT regen 后，若不清
+            # selected_music_link / music_content，should_try_music_fallback 仍
+            # 会把刚避开的复读话题对应曲目塞回 source_links）。
+            _initial_source_tag = source_tag
             avoid_terms = list(_bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
             logger.info(
                 "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
@@ -6059,8 +6064,11 @@ async def proactive_chat(request: Request):
             if _tag_m:
                 source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
-            # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文
-            if not _cleaned.strip() or "[PASS]" in _cleaned.upper():
+            # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
+            # 显式把 ``source_tag == 'PASS'`` 也算 drop——前面剥过 [TAG] 前缀，
+            # 剩下的 _cleaned 已经不含 "[PASS]" 字面量，但 source_tag 已经记下
+            # 这是 PASS，应当与"内嵌 [PASS]"等价拦掉（CodeRabbit Minor）。
+            if source_tag == "PASS" or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
                 logger.info("[%s] proactive BM25 regen returned empty/PASS, drop", lanlan_name)
                 if not mgr.state.is_proactive_preempted(proactive_sid):
                     await mgr.handle_new_message()
@@ -6109,6 +6117,16 @@ async def proactive_chat(request: Request):
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
                 }))
+            # regen 把意图从 MUSIC 改成非音乐通道时，撤销原始 music 候选——
+            # 否则下面 ``should_try_music_fallback`` 仍可能把刚避开的复读话题
+            # 对应曲目重新塞回 source_links（CodeRabbit Major）。
+            if _initial_source_tag == "MUSIC" and source_tag != "MUSIC":
+                selected_music_link = None
+                music_content = None
+                logger.info(
+                    "[%s] proactive BM25 regen switched MUSIC → %s; cleared music candidate",
+                    lanlan_name, source_tag or "(none)",
+                )
             # 采用 regen 文本接着走下游 source_tag / TTS 投递
             response_text = _cleaned
             full_text = _cleaned
