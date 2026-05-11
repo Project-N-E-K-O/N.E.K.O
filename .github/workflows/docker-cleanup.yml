@@ -33,10 +33,19 @@ jobs:
           package-name: 'n.e.k.o'
           package-type: 'container'
           min-versions-to-keep: ${{ github.event.inputs.min_versions_to_keep || 30 }}
-          # 保护：浮动别名 + release 版本号 + standard/full 主版本族。
+          # 保护：浮动别名 + release 版本号 + standard/full 主版本族，
+          # 以及它们的 per-arch 子 manifest（`-linux-{amd64,arm64}` 后缀）。
           # 匹配 version 的任一 tag 命中即保留整个 version。
-          #   latest, latest-full
+          #
+          # 关键点：multi-arch manifest list（如 `latest-standard`、`0.8.0-full`、
+          # `ci-standard`）通过 digest 引用 per-arch 子 manifest（如
+          # `0.8.0-standard-linux-amd64`）。如果只保护 manifest list 而让
+          # 子 manifest 被回收，list 会指向不存在的 digest，pull 会挂在某个架构上。
+          # 所以下面的正则结尾允许可选的 `-linux-(amd64|arm64)` 后缀。
+          #
+          # 覆盖（含 per-arch 变体）：
+          #   latest, latest-standard, latest-full
           #   v1.2.3 / 1.2.3 / 1.2.3-standard / 1.2.3-full
           #   ci-standard, ci-full
           #   pr-ci-standard, pr-ci-full（PR 触发若未来恢复时仍会浮动）
-          ignore-versions: '^(latest(-full)?|v?\d+\.\d+\.\d+(-(standard|full))?|(pr-)?ci-(standard|full))$'
+          ignore-versions: '^(latest(-(standard|full))?|v?\d+\.\d+\.\d+(-(standard|full))?|(pr-)?ci-(standard|full))(-linux-(amd64|arm64))?$'
