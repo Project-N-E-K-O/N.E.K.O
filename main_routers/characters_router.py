@@ -49,7 +49,13 @@ from .shared_state import (
     get_remove_one_catgirl,
 )
 from .workshop_router import _ugc_sync_lock
-from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+from main_logic.tts_client import (
+    ELEVENLABS_DEFAULT_BASE_URL,
+    ELEVENLABS_DEFAULT_MODEL,
+    ELEVENLABS_VOICE_PREFIX,
+    get_custom_tts_voices,
+    CustomTTSVoiceFetchError,
+)
 from utils.character_memory import (
     delete_character_memory_storage,
     list_character_memory_paths,
@@ -489,6 +495,113 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
             safe_prefix,
         )
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
+
+
+def _get_elevenlabs_base_url(config_manager) -> str:
+    core_config = config_manager.get_core_config()
+    return (
+        core_config.get('ELEVENLABS_BASE_URL')
+        or core_config.get('elevenlabsBaseUrl')
+        or ELEVENLABS_DEFAULT_BASE_URL
+    ).strip().rstrip('/')
+
+
+def _prefixed_elevenlabs_voice_id(raw_voice_id: str) -> str:
+    raw = (raw_voice_id or '').strip()
+    if raw.startswith(ELEVENLABS_VOICE_PREFIX):
+        return raw
+    return f'{ELEVENLABS_VOICE_PREFIX}{raw}'
+
+
+def _raw_elevenlabs_voice_id(voice_id: str) -> str:
+    raw = (voice_id or '').strip()
+    if raw.startswith(ELEVENLABS_VOICE_PREFIX):
+        return raw[len(ELEVENLABS_VOICE_PREFIX):].strip()
+    return raw
+
+
+async def _elevenlabs_clone_voice(
+    *,
+    api_key: str,
+    base_url: str,
+    audio_buffer: io.BytesIO,
+    filename: str,
+    name: str,
+) -> str:
+    audio_buffer.seek(0)
+    safe_name = (name or 'NEKO Voice').strip()[:100] or 'NEKO Voice'
+    url = f"{base_url.rstrip('/')}/v1/voices/add"
+    headers = {"xi-api-key": api_key}
+    data = {
+        "name": safe_name,
+        "description": "Created from NEKO voice clone",
+        "labels": json.dumps({"source": "NEKO"}),
+    }
+    files = [("files", (filename or "voice.wav", audio_buffer, "application/octet-stream"))]
+    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, data=data, files=files)
+    if resp.status_code >= 400:
+        raise ValueError(f"ElevenLabs API error ({resp.status_code}): {resp.text[:300]}")
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise ValueError("ElevenLabs returned invalid JSON while adding voice") from exc
+    raw_voice_id = payload.get("voice_id") or payload.get("voiceId") or ""
+    if not raw_voice_id:
+        raise ValueError("ElevenLabs did not return voice_id")
+    return _prefixed_elevenlabs_voice_id(raw_voice_id)
+
+
+async def _elevenlabs_synthesize_preview(config_manager, voice_id: str, text: str) -> tuple[bytes, str]:
+    api_key = config_manager.get_tts_api_key('elevenlabs')
+    if not api_key:
+        return b'', 'ELEVENLABS_API_KEY_MISSING'
+    raw_voice_id = _raw_elevenlabs_voice_id(voice_id)
+    if not raw_voice_id:
+        return b'', 'TTS_VOICE_ID_MISSING'
+
+    core_config = config_manager.get_core_config()
+    base_url = _get_elevenlabs_base_url(config_manager)
+    model_id = (
+        core_config.get('ELEVENLABS_MODEL')
+        or core_config.get('elevenlabsModel')
+        or ELEVENLABS_DEFAULT_MODEL
+    )
+
+    def _float_opt(upper_key, lower_key, default):
+        try:
+            return float(core_config.get(upper_key, core_config.get(lower_key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _bool_opt(upper_key, lower_key, default):
+        value = core_config.get(upper_key, core_config.get(lower_key, default))
+        if isinstance(value, str):
+            return value.lower() in ('1', 'true', 'yes', 'on')
+        return bool(value)
+
+    payload = {
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": {
+            "stability": _float_opt('ELEVENLABS_STABILITY', 'elevenlabsStability', 0.5),
+            "similarity_boost": _float_opt('ELEVENLABS_SIMILARITY_BOOST', 'elevenlabsSimilarityBoost', 0.75),
+            "style": _float_opt('ELEVENLABS_STYLE', 'elevenlabsStyle', 0.0),
+            "use_speaker_boost": _bool_opt('ELEVENLABS_USE_SPEAKER_BOOST', 'elevenlabsUseSpeakerBoost', True),
+        },
+    }
+    url = f"{base_url}/v1/text-to-speech/{raw_voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+    }
+    params = {"output_format": "mp3_44100_128"}
+    async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
+        resp = await client.post(url, headers=headers, params=params, json=payload)
+    if resp.status_code >= 400:
+        raise ValueError(f"ElevenLabs preview API error ({resp.status_code}): {resp.text[:300]}")
+    return resp.content, ''
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -2767,17 +2880,37 @@ async def clear_voice_ids():
 
 
 @router.get('/custom_tts_voices')
-async def list_custom_tts_voices_for_characters():
+async def list_custom_tts_voices_for_characters(provider: str = ''):
     """获取自定义 TTS 可用声音列表（用于角色管理页面的音色选择）。
 
-    当前由适配层处理 GPT-SoVITS provider 的路径映射与 voice_id 前缀规则。
+    当前由适配层处理 GPT-SoVITS / ElevenLabs provider 的路径映射与 voice_id 前缀规则。
     """
     try:
         _config_manager = get_config_manager()
         
         # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
         tts_config = _config_manager.get_model_api_config('tts_custom')
+        core_config = _config_manager.get_core_config()
+        provider = (provider or core_config.get('TTS_PROVIDER') or '').strip()
         base_url = (tts_config.get('base_url') or '').rstrip('/')
+        if (
+            provider == 'elevenlabs'
+            or core_config.get('ELEVENLABS_ENABLED')
+            or 'elevenlabs.io' in base_url
+        ):
+            base_url = (
+                core_config.get('ELEVENLABS_BASE_URL')
+                or core_config.get('elevenlabsBaseUrl')
+                or base_url
+                or 'https://api.elevenlabs.io'
+            ).rstrip('/')
+            voices = await get_custom_tts_voices(base_url, provider='elevenlabs')
+            return JSONResponse({
+                'success': True,
+                'provider': 'elevenlabs',
+                'voices': voices,
+                'api_url': base_url
+            })
         if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
             return JSONResponse({
                 'success': False,
@@ -2807,15 +2940,23 @@ async def list_custom_tts_voices_for_characters():
             'api_url': base_url
         })
     except (CustomTTSVoiceFetchError, ValueError) as e:
-        return JSONResponse({
+        provider_label = 'ElevenLabs' if (provider or '').strip().lower() == 'elevenlabs' else 'GPT-SoVITS'
+        error_text = str(e)
+        status_code = 400 if provider_label == 'ElevenLabs' and 'api key' in error_text.lower() else 502
+        error_code = 'ELEVENLABS_API_KEY_MISSING' if status_code == 400 else None
+        payload = {
             'success': False,
-            'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
+            'error': f'连接 {provider_label} API 失败: {error_text}',
             'voices': []
-        }, status_code=502)
+        }
+        if error_code:
+            payload['code'] = error_code
+        return JSONResponse(payload, status_code=status_code)
     except Exception as e:
+        provider_label = 'ElevenLabs' if (provider or '').strip().lower() == 'elevenlabs' else 'GPT-SoVITS'
         return JSONResponse({
             'success': False,
-            'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
+            'error': f'获取 {provider_label} 声音列表失败: {str(e)}',
             'voices': []
         }, status_code=500)
 
@@ -2918,6 +3059,28 @@ async def get_voice_preview(voice_id: str):
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
         
         text = "喵喵喵～这里是neko～很高兴见到你～"
+        if provider == 'elevenlabs' or voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
+            try:
+                audio_data, error_code = await _elevenlabs_synthesize_preview(_config_manager, voice_id, text)
+                if error_code:
+                    return JSONResponse({
+                        'success': False,
+                        'error': error_code,
+                        'code': error_code
+                    }, status_code=400)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/mpeg'
+                }
+            except Exception as e:
+                logger.error(f"ElevenLabs 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs预览生成失败: {str(e)}'
+                }, status_code=500)
+
         if provider in ('minimax', 'minimax_intl'):
             minimax_api_key = _config_manager.get_tts_api_key(provider)
             if not minimax_api_key:
@@ -3506,6 +3669,17 @@ async def voice_clone(
         storage_key = api_key
         provider_label = '阿里云CosyVoice'
 
+    elif provider == 'elevenlabs':
+        if not api_key:
+            return JSONResponse({
+                'error': 'ELEVENLABS_API_KEY_MISSING',
+                'code': 'ELEVENLABS_API_KEY_MISSING',
+                'message': '未配置 ElevenLabs API Key，请先在设置中填写'
+            }, status_code=400)
+        base_url = _get_elevenlabs_base_url(_config_manager)
+        storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+        provider_label = 'ElevenLabs'
+
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
@@ -3564,6 +3738,25 @@ async def voice_clone(
                 'minimax_language': minimax_lang,
                 'provider': provider,
                 'minimax_base_url': base_url,
+                'created_at': datetime.now().isoformat()
+            }
+
+        elif provider == 'elevenlabs':
+            voice_id = await _elevenlabs_clone_voice(
+                api_key=api_key,
+                base_url=base_url,
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                name=prefix,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'elevenlabs',
+                'elevenlabs_base_url': base_url,
                 'created_at': datetime.now().isoformat()
             }
 
@@ -3632,7 +3825,7 @@ async def voice_clone_direct(request: Request):
     """
     直链语音克隆接口 - 跳过音频上传步骤，直接使用提供的直链URL注册音色
     
-    支持 CosyVoice 和 MiniMax 服务商：
+    支持 CosyVoice、MiniMax 和 ElevenLabs 服务商：
     - CosyVoice: 直接使用直链URL注册音色
     - MiniMax: 先下载音频文件，再上传到MiniMax服务器注册音色
     
@@ -3641,7 +3834,7 @@ async def voice_clone_direct(request: Request):
             "direct_link": "https://example.com/audio.wav",  // 音频直链URL
             "prefix": "custom_prefix",                        // 音色前缀名
             "ref_language": "ch",                             // 参考音频语言
-            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl
+            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl / elevenlabs
         }
     """
     try:
@@ -3705,7 +3898,7 @@ async def voice_clone_direct(request: Request):
         ref_language = 'ch'
 
     # 验证服务商参数
-    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice']
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'elevenlabs']
     if provider not in valid_providers:
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
@@ -3723,6 +3916,12 @@ async def voice_clone_direct(request: Request):
                 'error': 'MINIMAX_API_KEY_MISSING',
                 'code': 'MINIMAX_API_KEY_MISSING',
                 'message': '未配置 MiniMax API Key，请先在设置中填写'
+            }, status_code=400)
+        if provider == 'elevenlabs':
+            return JSONResponse({
+                'error': 'ELEVENLABS_API_KEY_MISSING',
+                'code': 'ELEVENLABS_API_KEY_MISSING',
+                'message': '未配置 ElevenLabs API Key，请先在设置中填写'
             }, status_code=400)
         else:
             return JSONResponse({
@@ -3744,6 +3943,10 @@ async def voice_clone_direct(request: Request):
         base_url = get_minimax_base_url(provider)
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
+    elif provider == 'elevenlabs':
+        base_url = _get_elevenlabs_base_url(_config_manager)
+        storage_key = f'__ELEVENLABS__{api_key[-8:]}'
+        provider_label = 'ElevenLabs'
     else:  # cosyvoice
         from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
         storage_key = api_key
@@ -3869,6 +4072,84 @@ async def voice_clone_direct(request: Request):
             
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
             
+        elif provider == 'elevenlabs':
+            logger.info(f"开始下载直链音频用于ElevenLabs: {direct_link}")
+            MAX_FILE_SIZE = 100 * 1024 * 1024
+
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
+                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
+                    if download_resp.status_code != 200:
+                        return JSONResponse({
+                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
+                            'code': 'DOWNLOAD_FAILED'
+                        }, status_code=400)
+
+                    filename = 'audio.wav'
+                    content_disposition = download_resp.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                        if match:
+                            filename = match.group(1)
+                    else:
+                        parsed = urlparse(direct_link)
+                        path_filename = parsed.path.split('/')[-1]
+                        if path_filename and '.' in path_filename:
+                            filename = path_filename
+
+                    audio_buffer = io.BytesIO()
+                    total_size = 0
+                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                        total_size += len(chunk)
+                        if total_size > MAX_FILE_SIZE:
+                            return JSONResponse({
+                                'error': '音频文件超过100MB限制',
+                                'code': 'FILE_TOO_LARGE'
+                            }, status_code=400)
+                        audio_buffer.write(chunk)
+
+                    audio_buffer.seek(0)
+                    audio_bytes = audio_buffer.getvalue()
+
+            logger.info(f"ElevenLabs 直链音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
+            audio_md5 = hashlib.md5(audio_bytes).hexdigest()
+
+            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                voice_id, voice_data = existing
+                logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'message': f'已复用现有{provider_label}音色，跳过注册',
+                    'reused': True,
+                    'provider': provider
+                })
+
+            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+                io.BytesIO(audio_bytes),
+                filename,
+            )
+            voice_id = await _elevenlabs_clone_voice(
+                api_key=api_key,
+                base_url=base_url,
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                name=prefix,
+            )
+            voice_data = {
+                'voice_id': voice_id,
+                'raw_voice_id': _raw_elevenlabs_voice_id(voice_id),
+                'prefix': prefix,
+                'direct_link': direct_link,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'provider': 'elevenlabs',
+                'elevenlabs_base_url': base_url,
+                'created_at': datetime.now().isoformat(),
+                'is_direct_link': True
+            }
+
+            logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
+
         else:  # cosyvoice
             # ========== CosyVoice 直链克隆流程 ==========
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）

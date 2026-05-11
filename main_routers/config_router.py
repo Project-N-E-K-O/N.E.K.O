@@ -621,6 +621,7 @@ async def get_core_config_api():
             # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
+            "assistApiKeyElevenlabs": core_cfg.get('assistApiKeyElevenlabs', ''),
             "assistApiKeyGrok": core_cfg.get('assistApiKeyGrok', '') or _fb('grok'),
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
@@ -637,6 +638,16 @@ async def get_core_config_api():
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
+            "elevenlabsEnabled": core_cfg.get('elevenlabsEnabled', False),
+            "elevenlabsBaseUrl": core_cfg.get('elevenlabsBaseUrl', 'https://api.elevenlabs.io'),
+            "elevenlabsModel": core_cfg.get('elevenlabsModel', 'eleven_flash_v2_5'),
+            "elevenlabsOutputFormat": core_cfg.get('elevenlabsOutputFormat', 'pcm_24000'),
+            "elevenlabsOptimizeStreamingLatency": core_cfg.get('elevenlabsOptimizeStreamingLatency', 0),
+            "elevenlabsStability": core_cfg.get('elevenlabsStability', 0.5),
+            "elevenlabsSimilarityBoost": core_cfg.get('elevenlabsSimilarityBoost', 0.75),
+            "elevenlabsStyle": core_cfg.get('elevenlabsStyle', 0.0),
+            "elevenlabsUseSpeakerBoost": core_cfg.get('elevenlabsUseSpeakerBoost', True),
+            "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
@@ -685,8 +696,15 @@ async def update_core_config(request: Request):
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         
-        # 构建配置对象
-        core_cfg = {}
+        # 构建配置对象：先加载旧配置，再按本次提交覆盖。
+        # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
+        try:
+            existing_core_cfg = await asyncio.to_thread(
+                config_manager.load_json_config, 'core_config.json', {}
+            )
+        except Exception:
+            existing_core_cfg = {}
+        core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
         
         # 只有在启用自定义API时，才允许不设置coreApiKey
         if enable_custom_api:
@@ -708,12 +726,15 @@ async def update_core_config(request: Request):
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
             'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyGrok',
+            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
             'assistApiKeyClaude', 'assistApiKeyOpenrouter',
         ]
         for field in _api_key_fields:
             if field in data:
-                core_cfg[field] = data[field]
+                value = data[field]
+                if isinstance(value, str) and '***' in value:
+                    continue
+                core_cfg[field] = value
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'openclawUrl' in data:
@@ -726,6 +747,20 @@ async def update_core_config(request: Request):
             core_cfg['enableCustomApi'] = data['enableCustomApi']
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
+        for field in (
+            'elevenlabsEnabled',
+            'elevenlabsBaseUrl',
+            'elevenlabsModel',
+            'elevenlabsOutputFormat',
+            'elevenlabsOptimizeStreamingLatency',
+            'elevenlabsStability',
+            'elevenlabsSimilarityBoost',
+            'elevenlabsStyle',
+            'elevenlabsUseSpeakerBoost',
+            'ttsProvider',
+        ):
+            if field in data:
+                core_cfg[field] = data[field]
         if 'disableTts' in data:
             if not isinstance(data['disableTts'], bool):
                 return {"success": False, "error": "disableTts must be a boolean"}
@@ -749,7 +784,6 @@ async def update_core_config(request: Request):
         await asyncio.to_thread(
             config_manager.save_json_config, 'core_config.json', core_cfg
         )
-
 
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")

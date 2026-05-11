@@ -2116,6 +2116,16 @@ class ConfigManager:
                 except ImportError:
                     logger.debug("utils.minimax_api_keys not found, no fallback MiniMax keys available")
             return key or None
+        if provider == 'elevenlabs':
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_ELEVENLABS') or '').strip()
+            if not key:
+                key = (core_config.get('ELEVENLABS_API_KEY') or '').strip()
+            if not key:
+                key = (core_config.get('TTS_MODEL_API_KEY') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         return None
 
     def _get_minimax_storage_keys(self) -> list[str]:
@@ -2145,11 +2155,25 @@ class ConfigManager:
 
         return result
 
+    def _get_elevenlabs_storage_keys(self) -> list[str]:
+        """返回当前 ElevenLabs API Key 对应的 voice_storage key 列表。"""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('elevenlabs')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'__ELEVENLABS__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__ELEVENLABS__'):
+            return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
             return 'minimax_intl'
         if storage_key.startswith('__MINIMAX__'):
@@ -2163,10 +2187,10 @@ class ConfigManager:
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
-        结果中同时合并 MiniMax 音色（__MINIMAX__ 下的音色）。
+        结果中同时合并 MiniMax 和 ElevenLabs 音色。
 
         返回的每个 voice_data 都保证包含 ``provider`` 字段
-        （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice``）。
         """
         voice_storage = self.load_voice_storage()
 
@@ -2209,6 +2233,15 @@ class ConfigManager:
                 if vid not in result:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
                         vdata['provider'] = mm_provider
+                    result[vid] = vdata
+
+        # 合并 ElevenLabs 音色，并确保 provider 字段
+        for ek in self._get_elevenlabs_storage_keys():
+            eleven_voices = voice_storage.get(ek, {})
+            for vid, vdata in eleven_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'elevenlabs'
                     result[vid] = vdata
 
         return result
@@ -2263,9 +2296,13 @@ class ConfigManager:
         """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查 MiniMax 存储（__MINIMAX__ / __MINIMAX_INTL__ 开头的 key）
+        # 先检查 MiniMax / ElevenLabs 存储
         for storage_key in list(voice_storage.keys()):
-            if (storage_key.startswith('__MINIMAX__') or storage_key.startswith('__MINIMAX_INTL__')) and voice_id in voice_storage.get(storage_key, {}):
+            if (
+                storage_key.startswith('__MINIMAX__')
+                or storage_key.startswith('__MINIMAX_INTL__')
+                or storage_key.startswith('__ELEVENLABS__')
+            ) and voice_id in voice_storage.get(storage_key, {}):
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
@@ -2766,6 +2803,7 @@ class ConfigManager:
         # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
@@ -2875,6 +2913,18 @@ class ConfigManager:
 
         # GPT-SoVITS 配置映射
         config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
+
+        config['ELEVENLABS_ENABLED'] = core_cfg.get('elevenlabsEnabled', False)
+        config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
+        config['ELEVENLABS_BASE_URL'] = core_cfg.get('elevenlabsBaseUrl', 'https://api.elevenlabs.io')
+        config['ELEVENLABS_MODEL'] = core_cfg.get('elevenlabsModel', 'eleven_flash_v2_5')
+        config['ELEVENLABS_OUTPUT_FORMAT'] = core_cfg.get('elevenlabsOutputFormat', 'pcm_24000')
+        config['ELEVENLABS_OPTIMIZE_STREAMING_LATENCY'] = core_cfg.get('elevenlabsOptimizeStreamingLatency', 0)
+        config['ELEVENLABS_STABILITY'] = core_cfg.get('elevenlabsStability', 0.5)
+        config['ELEVENLABS_SIMILARITY_BOOST'] = core_cfg.get('elevenlabsSimilarityBoost', 0.75)
+        config['ELEVENLABS_STYLE'] = core_cfg.get('elevenlabsStyle', 0.0)
+        config['ELEVENLABS_USE_SPEAKER_BOOST'] = core_cfg.get('elevenlabsUseSpeakerBoost', True)
+        config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)

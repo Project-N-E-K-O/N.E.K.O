@@ -5497,6 +5497,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
 
         // 加载 GPT-SoVITS 声音列表
         await _loadPanelGsvVoices(selectEl, currentVoiceId);
+        await _loadPanelElevenlabsVoices(selectEl, currentVoiceId);
     } catch (e) {
         console.warn('加载音色列表失败:', e);
     }
@@ -5531,7 +5532,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
-        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
         const result = await resp.json();
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
@@ -5563,6 +5564,70 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         clearTimeout(timeoutId);
         console.debug('GPT-SoVITS voices not available:', e.message);
         ensureGsvFallback();
+    }
+}
+
+// ElevenLabs 声音列表
+async function _loadPanelElevenlabsVoices(selectEl, currentVoiceId) {
+    const ELEVEN_PREFIX = 'eleven:';
+
+    function ensureElevenFallback() {
+        if (!currentVoiceId || !currentVoiceId.startsWith(ELEVEN_PREFIX)) return;
+        if (selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            selectEl.value = currentVoiceId;
+            return;
+        }
+        let elevenGroup = selectEl.querySelector('optgroup[data-elevenlabs-group="true"]');
+        if (!elevenGroup) {
+            elevenGroup = document.createElement('optgroup');
+            const elevenLabel = window.t ? window.t('character.elevenlabsVoices') : 'ElevenLabs 声音';
+            elevenGroup.label = '── ' + elevenLabel + ' ──';
+            elevenGroup.dataset.elevenlabsGroup = 'true';
+            selectEl.appendChild(elevenGroup);
+        }
+        const fallbackOpt = document.createElement('option');
+        fallbackOpt.value = currentVoiceId;
+        fallbackOpt.textContent = currentVoiceId.substring(ELEVEN_PREFIX.length) + ' (?)';
+        elevenGroup.appendChild(fallbackOpt);
+        selectEl.value = currentVoiceId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    try {
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=elevenlabs', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        const result = await resp.json();
+        if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
+            const elevenGroup = document.createElement('optgroup');
+            const elevenLabel = window.t ? window.t('character.elevenlabsVoices') : 'ElevenLabs 声音';
+            elevenGroup.label = '── ' + elevenLabel + ' ──';
+            elevenGroup.dataset.elevenlabsGroup = 'true';
+            result.voices.forEach(function (v) {
+                const option = document.createElement('option');
+                option.value = v.voice_id;
+                option.textContent = (v.name || v.raw_id || v.voice_id) + ' (ElevenLabs)';
+                if (v.description) option.title = v.description;
+                if (v.voice_id === currentVoiceId) option.selected = true;
+                elevenGroup.appendChild(option);
+            });
+            selectEl.appendChild(elevenGroup);
+            if (currentVoiceId && currentVoiceId.startsWith(ELEVEN_PREFIX) && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                const fallbackOpt = document.createElement('option');
+                fallbackOpt.value = currentVoiceId;
+                fallbackOpt.textContent = currentVoiceId.substring(ELEVEN_PREFIX.length) + ' (?)';
+                elevenGroup.appendChild(fallbackOpt);
+            }
+            if (currentVoiceId && currentVoiceId.startsWith(ELEVEN_PREFIX)) {
+                selectEl.value = currentVoiceId;
+            }
+        }
+        ensureElevenFallback();
+    } catch (e) {
+        clearTimeout(timeoutId);
+        console.debug('ElevenLabs voices not available:', e.message);
+        ensureElevenFallback();
     }
 }
 

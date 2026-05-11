@@ -611,6 +611,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGemini": "",
     "assistApiKeyQwenIntl": "",
     "assistApiKeyMinimax": "",
+    "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
@@ -622,6 +623,15 @@ DEFAULT_CORE_CONFIG = {
     "openclawTimeout": 300.0,
     "openclawDefaultSenderId": "neko_user",
     "textGuardMaxLength": 300,
+    "elevenlabsEnabled": False,
+    "elevenlabsBaseUrl": "https://api.elevenlabs.io",
+    "elevenlabsModel": "eleven_flash_v2_5",
+    "elevenlabsOutputFormat": "pcm_24000",
+    "elevenlabsOptimizeStreamingLatency": 0,
+    "elevenlabsStability": 0.5,
+    "elevenlabsSimilarityBoost": 0.75,
+    "elevenlabsStyle": 0.0,
+    "elevenlabsUseSpeakerBoost": True,
 }
 
 DEFAULT_USER_PREFERENCES = []

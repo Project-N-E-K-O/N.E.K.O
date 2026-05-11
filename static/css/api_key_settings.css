@@ -1368,6 +1368,23 @@ input:checked + .slider:before {
     font-size: 0.9em;
 }
 
+.elevenlabs-slider-row input[type="range"] {
+    padding: 0;
+    height: 28px;
+    accent-color: #40C5F1;
+}
+
+.elevenlabs-slider-row label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.elevenlabs-slider-row label em {
+    color: #24617d;
+    font-variant-numeric: tabular-nums;
+}
+
 .gsv-refresh-btn {
     padding: 6px 14px;
     border-radius: 6px;
