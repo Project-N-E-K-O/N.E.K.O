@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from 'react';
 
+type PluginSurfaceProps = {
+  t?: (key: string, defaultValue?: string) => string;
+};
+
 type StudyStatus = {
   status?: string;
   active_mode?: string;
@@ -35,10 +39,11 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
       throw new Error(run.error?.message || run.message || run.status);
     }
   }
-  throw new Error('Plugin call timed out');
+  throw new Error('plugin_call_timeout');
 }
 
-export default function StudyPanel() {
+export default function StudyPanel(props: PluginSurfaceProps) {
+  const t = props.t || ((_key: string, defaultValue?: string) => defaultValue || _key);
   const [status, setStatus] = useState<StudyStatus>({});
   const [text, setText] = useState('');
   const [reply, setReply] = useState('');
@@ -59,23 +64,43 @@ export default function StudyPanel() {
       const data = await callPlugin('study_explain_text', { text }) as { reply?: string; summary?: string };
       setReply(data.reply || data.summary || '');
       await refresh();
+    } catch (error) {
+      const message = error instanceof Error && error.message === 'plugin_call_timeout'
+        ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      setReply(message);
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    refresh().catch((error) => setReply(error instanceof Error ? error.message : String(error)));
+    refresh().catch((error) => {
+      const message = error instanceof Error && error.message === 'plugin_call_timeout'
+        ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      setReply(message);
+    });
   }, []);
 
   return (
     <div className="study-panel">
       <header>
-        <h1>Study Companion</h1>
+        <h1>{t('ui.title', 'Study Companion')}</h1>
         <span>{status.status || 'unknown'} / {status.active_mode || 'concept_explain'}</span>
       </header>
-      <textarea value={text} onChange={(event) => setText(event.target.value)} />
-      <button type="button" disabled={busy} onClick={explain}>Explain</button>
+      <textarea
+        aria-label={t('ui.label.text', 'Text')}
+        placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+      />
+      <button type="button" disabled={busy} onClick={explain}>{t('ui.button.explain', 'Explain')}</button>
+      <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
       <pre>{reply}</pre>
     </div>
   );

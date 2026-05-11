@@ -4,7 +4,7 @@ import asyncio
 import threading
 from typing import Any
 
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry
+from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
 from .models import (
     MODE_CONCEPT_EXPLAIN,
@@ -42,7 +42,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._state = build_initial_state(mode=MODE_CONCEPT_EXPLAIN)
         self._store = StudyStore(
             self.data_path("study_companion.db"),
-            self.data_path("study_seed.json"),
+            self.config_dir / "data" / "study_seed.json",
             self.logger,
         )
         self._ocr_pipeline: StudyOcrPipeline | None = None
@@ -144,8 +144,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_open_ui",
-        name="Open Study Companion UI",
-        description="Return the static UI path for study_companion.",
+        name=tr("entries.open_ui.name", default="Open Study Companion UI"),
+        description=tr("entries.open_ui.description", default="Return the static UI path for study_companion."),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["message"],
     )
@@ -154,8 +154,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_status",
-        name="Study Companion Status",
-        description="Return runtime status, dependencies, and recent study interactions.",
+        name=tr("entries.status.name", default="Study Companion Status"),
+        description=tr("entries.status.description", default="Return runtime status, dependencies, and recent study interactions."),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["status", "active_mode"],
     )
@@ -164,8 +164,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_dependency_status",
-        name="Study OCR Dependency Status",
-        description="Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion.",
+        name=tr("entries.dependency_status.name", default="Study OCR Dependency Status"),
+        description=tr("entries.dependency_status.description", default="Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion."),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["missing_installable"],
     )
@@ -176,8 +176,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_ocr_snapshot",
-        name="Study OCR Snapshot",
-        description="Run a minimal OCR snapshot. In Phase 1 this requires an injected image or returns no_target.",
+        name=tr("entries.ocr_snapshot.name", default="Study OCR Snapshot"),
+        description=tr("entries.ocr_snapshot.description", default="Run a lightweight OCR snapshot. Phase 1 attempts fullscreen capture and returns diagnostics on failure."),
         input_schema={"type": "object", "properties": {}},
         timeout=45.0,
         llm_result_fields=["summary", "status", "diagnostic"],
@@ -195,8 +195,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_explain_text",
-        name="Explain Study Text",
-        description="Explain a concept from supplied text, or use the latest OCR text if text is omitted.",
+        name=tr("entries.explain_text.name", default="Explain Study Text"),
+        description=tr("entries.explain_text.description", default="Explain a concept from supplied text, or use the latest OCR text if text is omitted."),
         input_schema={
             "type": "object",
             "properties": {
@@ -235,8 +235,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_install_tesseract",
-        name="Install Tesseract for Study OCR",
-        description="Install local Tesseract OCR for study_companion and refresh dependency status.",
+        name=tr("entries.install_tesseract.name", default="Install Tesseract for Study OCR"),
+        description=tr("entries.install_tesseract.description", default="Install local Tesseract OCR for study_companion and refresh dependency status."),
         input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
         timeout=300.0,
         llm_result_fields=["summary"],
@@ -269,8 +269,8 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_download_rapidocr_models",
-        name="Download RapidOCR Models for Study OCR",
-        description="Download missing RapidOCR model files for the configured study_companion OCR language.",
+        name=tr("entries.download_rapidocr_models.name", default="Download RapidOCR Models for Study OCR"),
+        description=tr("entries.download_rapidocr_models.description", default="Download missing RapidOCR model files for the configured study_companion OCR language."),
         input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
         timeout=600.0,
         llm_result_fields=["summary"],

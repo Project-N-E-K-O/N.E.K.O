@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 from plugin.sdk.shared.core.base_runtime import (
     resolve_db_config,
     resolve_effective_config,
-    resolve_plugin_dir,
+    resolve_plugin_data_dir,
     resolve_state_backend,
     resolve_store_enabled,
     setup_plugin_file_logging,
@@ -72,7 +72,7 @@ class NekoPluginBase:
         from plugin.sdk.shared.storage.state import PluginStatePersistence
         from plugin.sdk.shared.storage.store import PluginStore
 
-        plugin_dir = resolve_plugin_dir(self.ctx)
+        plugin_dir = resolve_plugin_data_dir(self.ctx)
         effective_cfg = resolve_effective_config(self.ctx)
         store_enabled = resolve_store_enabled(effective_cfg)
         db_enabled, db_name = resolve_db_config(effective_cfg)

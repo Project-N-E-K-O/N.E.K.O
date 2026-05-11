@@ -158,6 +158,7 @@ def _surface_from_mapping(
     plugin_meta: Mapping[str, object],
     kind: str,
     index: int,
+    locale: str | None = None,
 ) -> dict[str, object] | None:
     if not isinstance(raw_surface, Mapping):
         return None
@@ -171,6 +172,17 @@ def _surface_from_mapping(
     if not entry and mode != "auto":
         return None
     title_obj = surface.get("title")
+    resolved_title: str | None = None
+    if isinstance(title_obj, str) and title_obj.strip():
+        resolved_title = title_obj.strip()
+    elif isinstance(title_obj, Mapping):
+        resolved = resolve_i18n_refs(
+            title_obj,
+            load_plugin_i18n_from_meta(plugin_meta),
+            locale=locale or "en",
+        )
+        if isinstance(resolved, str) and resolved.strip():
+            resolved_title = resolved.strip()
     open_in_obj = surface.get("open_in")
     open_in = open_in_obj.strip().lower() if isinstance(open_in_obj, str) and open_in_obj.strip() else "iframe"
     permissions_obj = surface.get("permissions")
@@ -190,7 +202,7 @@ def _surface_from_mapping(
         id=surface_id,
         kind="docs" if kind == "docs" else kind,  # type: ignore[arg-type]
         mode=mode,  # type: ignore[arg-type]
-        title=title_obj.strip() if isinstance(title_obj, str) and title_obj.strip() else None,
+        title=resolved_title,
         entry=entry or None,
         url=static_surface_url(plugin_id, mode, entry) if entry else None,
         ui_path=static_surface_url(plugin_id, mode, entry) if entry else None,
@@ -204,7 +216,7 @@ def _surface_from_mapping(
     return normalized
 
 
-def _build_manifest_surfaces(plugin_id: str, plugin_meta: Mapping[str, object]) -> list[dict[str, object]]:
+def _build_manifest_surfaces(plugin_id: str, plugin_meta: Mapping[str, object], *, locale: str | None = None) -> list[dict[str, object]]:
     plugin_ui = _get_plugin_ui_config_from_meta(plugin_meta)
     if not plugin_ui or not _to_bool(plugin_ui.get("enabled"), default=True):
         return []
@@ -221,6 +233,7 @@ def _build_manifest_surfaces(plugin_id: str, plugin_meta: Mapping[str, object]) 
                 plugin_meta=plugin_meta,
                 kind=kind,
                 index=index,
+                locale=locale,
             )
             if normalized is not None:
                 surfaces.append(normalized)
@@ -248,8 +261,13 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
     ).model_dump(exclude_none=True)
 
 
-def _build_surfaces_sync(plugin_id: str, plugin_meta: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    surfaces = _build_manifest_surfaces(plugin_id, plugin_meta)
+def _build_surfaces_sync(
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+    *,
+    locale: str | None = None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    surfaces = _build_manifest_surfaces(plugin_id, plugin_meta, locale=locale)
     warnings = normalize_warnings(plugin_meta.get("plugin_ui", {}).get("warnings") if isinstance(plugin_meta.get("plugin_ui"), Mapping) else None)
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
@@ -519,7 +537,7 @@ def _build_plugin_list_actions_from_meta(
 
 
 class PluginUiQueryService:
-    async def get_surfaces(self, plugin_id: str) -> dict[str, object]:
+    async def get_surfaces(self, plugin_id: str, *, locale: str | None = None) -> dict[str, object]:
         try:
             plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
             if plugin_meta is None:
@@ -530,7 +548,7 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta, locale=locale)
 
             return {
                 "plugin_id": plugin_id,
@@ -571,7 +589,7 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta, locale=locale)
             surface = next(
                 (
                     item for item in surfaces
@@ -663,7 +681,7 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+            surfaces, warnings = _build_surfaces_sync(plugin_id, plugin_meta, locale=locale)
             surface = next(
                 (
                     item for item in surfaces

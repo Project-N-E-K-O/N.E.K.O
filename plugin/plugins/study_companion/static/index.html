@@ -10,28 +10,29 @@
     <main class="study-shell">
       <section class="study-toolbar" aria-label="Study companion controls">
         <div>
-          <h1>Study Companion</h1>
-          <p id="statusLine">Starting...</p>
+          <h1 data-i18n="ui.title">Study Companion</h1>
+          <p id="statusLine" data-i18n="ui.status.starting">Starting...</p>
         </div>
         <div class="toolbar-actions">
-          <button id="refreshBtn" type="button">Refresh</button>
-          <button id="ocrBtn" type="button">OCR</button>
+          <button id="refreshBtn" type="button" data-i18n="ui.button.refresh">Refresh</button>
+          <button id="ocrBtn" type="button" data-i18n="ui.button.ocr">OCR</button>
         </div>
       </section>
 
       <section class="study-workspace">
-        <label class="input-label" for="studyInput">Text</label>
-        <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here."></textarea>
+        <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
+        <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
         <div class="action-row">
-          <button id="explainBtn" type="button">Explain</button>
+          <button id="explainBtn" type="button" data-i18n="ui.button.explain">Explain</button>
         </div>
       </section>
 
       <section class="reply-panel" aria-live="polite">
-        <h2>Reply</h2>
+        <h2 data-i18n="ui.label.reply">Reply</h2>
         <pre id="replyText"></pre>
       </section>
     </main>
+    <script src="./i18n.js"></script>
     <script src="./main.js"></script>
   </body>
 </html>

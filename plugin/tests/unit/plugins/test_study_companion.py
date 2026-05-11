@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
 
+from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, build_concept_explain_messages
+from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Ok
 
 
@@ -129,6 +136,44 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+def test_study_companion_i18n_bundles_are_present() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
+    for locale in locales:
+        bundle_path = plugin_dir / "i18n" / f"{locale}.json"
+        assert bundle_path.is_file()
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        assert "plugin.name" in bundle
+        assert "ui.title" in bundle
+        assert "ui.surface.study_panel" in bundle
+        assert "ui.button.explain" in bundle
+
+    with (plugin_dir / "plugin.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+    plugin_ui = normalize_plugin_ui_manifest(config, plugin_id="study_companion")
+    assert plugin_ui is not None
+    meta = {
+        "id": "study_companion",
+        "config_path": str(plugin_dir / "plugin.toml"),
+        "plugin_ui": plugin_ui,
+        "i18n": config["plugin"]["i18n"],
+    }
+    zh_surfaces, zh_warnings = _build_surfaces_sync("study_companion", meta, locale="zh-CN")
+    en_surfaces, en_warnings = _build_surfaces_sync("study_companion", meta, locale="en")
+    assert zh_warnings == []
+    assert en_warnings == []
+    zh_study_panel = next(surface for surface in zh_surfaces if surface["id"] == "study-panel")
+    en_study_panel = next(surface for surface in en_surfaces if surface["id"] == "study-panel")
+    assert zh_study_panel["title"] == "伴学面板"
+    assert en_study_panel["title"] == "Study Panel"
+
+    index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    assert "./i18n.js" in index_html
+    assert "data-i18n=\"ui.title\"" in index_html
+    assert "I18n.init" in main_js
+
+
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     cfg = StudyConfig()
     empty = StudyOcrPipeline(logger=_Logger(), config=cfg, ocr_backend=_FakeOcrBackend(""))
@@ -177,7 +222,9 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_starts_and_collects_entries(tmp_path: Path) -> None:
+async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     ctx = _Ctx(
         tmp_path,
         {
@@ -197,4 +244,6 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path) -> None:
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
+    assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
+    assert not (tmp_path / "data" / "study_companion.db").exists()
     await plugin.shutdown()

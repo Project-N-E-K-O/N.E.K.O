@@ -9,6 +9,20 @@ const refreshBtn = document.getElementById('refreshBtn');
 const ocrBtn = document.getElementById('ocrBtn');
 const explainBtn = document.getElementById('explainBtn');
 
+function t(key, fallback) {
+  return window.I18n && typeof window.I18n.t === 'function'
+    ? window.I18n.t(key, fallback)
+    : (fallback || key);
+}
+
+function tf(key, fallback, values = {}) {
+  return window.I18n && typeof window.I18n.tf === 'function'
+    ? window.I18n.tf(key, fallback, values)
+    : (fallback || key).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+    ));
+}
+
 function setStatus(text) {
   statusLine.textContent = text;
 }
@@ -24,12 +38,12 @@ async function createRun(entryId, args = {}) {
     body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
   });
   if (!response.ok) {
-    throw new Error(`Run create failed: HTTP ${response.status}`);
+    throw new Error(tf('ui.error.run_create_failed', 'Run create failed: HTTP {status}', { status: response.status }));
   }
   const payload = await response.json();
   const runId = payload.run_id || payload.id;
   if (!runId) {
-    throw new Error('Run id missing');
+    throw new Error(t('ui.error.run_id_missing', 'Run id missing'));
   }
   return runId;
 }
@@ -44,7 +58,7 @@ async function exportRunResult(runId) {
   const item = items.find((candidate) => candidate.type === 'json' && candidate.json) || items[0];
   const pluginResponse = item ? (item.json || {}) : {};
   if (pluginResponse.success === false || pluginResponse.error) {
-    throw new Error(pluginResponse.error?.message || pluginResponse.message || 'Plugin call failed');
+    throw new Error(pluginResponse.error?.message || pluginResponse.message || t('ui.error.plugin_call_failed', 'Plugin call failed'));
   }
   return pluginResponse.data || {};
 }
@@ -68,11 +82,11 @@ async function callPlugin(entryId, args = {}) {
       throw new Error(record.error?.message || record.message || record.status);
     }
   }
-  throw new Error('Plugin call timed out');
+  throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
 }
 
 async function refreshStatus() {
-  setStatus('Refreshing...');
+  setStatus(t('ui.status.refreshing', 'Refreshing...'));
   const data = await callPlugin('study_status');
   setStatus(`${data.status || 'unknown'} / ${data.active_mode || 'concept_explain'}`);
   if (data.last_reply) {
@@ -84,9 +98,9 @@ async function refreshStatus() {
 }
 
 async function runOcr() {
-  setStatus('Capturing OCR...');
+  setStatus(t('ui.status.capturing_ocr', 'Capturing OCR...'));
   const data = await callPlugin('study_ocr_snapshot');
-  setStatus(`OCR ${data.status || 'unknown'}`);
+  setStatus(tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;
   }
@@ -95,9 +109,11 @@ async function runOcr() {
 
 async function explainText() {
   const text = studyInput.value.trim();
-  setStatus('Explaining...');
+  setStatus(t('ui.status.explaining', 'Explaining...'));
   const data = await callPlugin('study_explain_text', { text });
-  setStatus(data.degraded ? 'Reply ready (fallback)' : 'Reply ready');
+  setStatus(data.degraded
+    ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
+    : t('ui.status.reply_ready', 'Reply ready'));
   setReply(data.reply || data.summary || '');
 }
 
@@ -107,7 +123,7 @@ function bindButton(button, handler) {
     try {
       await handler();
     } catch (error) {
-      setStatus('Error');
+      setStatus(t('ui.status.error', 'Error'));
       setReply(error instanceof Error ? error.message : String(error));
     } finally {
       button.disabled = false;
@@ -115,11 +131,19 @@ function bindButton(button, handler) {
   });
 }
 
-bindButton(refreshBtn, refreshStatus);
-bindButton(ocrBtn, runOcr);
-bindButton(explainBtn, explainText);
+async function bootstrap() {
+  if (window.I18n && typeof window.I18n.init === 'function') {
+    await window.I18n.init(PLUGIN_ID);
+    window.I18n.scanDOM();
+    document.title = t('ui.title', 'Study Companion');
+  }
+  bindButton(refreshBtn, refreshStatus);
+  bindButton(ocrBtn, runOcr);
+  bindButton(explainBtn, explainText);
+  await refreshStatus();
+}
 
-refreshStatus().catch((error) => {
-  setStatus('Not ready');
+bootstrap().catch((error) => {
+  setStatus(t('ui.status.not_ready', 'Not ready'));
   setReply(error instanceof Error ? error.message : String(error));
 });

@@ -292,14 +292,14 @@ async def plugin_ui_info(plugin_id: str):
 
 
 @router.get("/plugin/{plugin_id}/surfaces")
-async def plugin_ui_surfaces(plugin_id: str):
+async def plugin_ui_surfaces(plugin_id: str, locale: str | None = None):
     """获取插件统一 UI Surface 列表。
 
     LEGACY_STATIC_UI_COMPAT:
     Existing static UI is normalized as a mode="static" panel surface.
     """
     try:
-        surfaces = await plugin_ui_query_service.get_surfaces(plugin_id)
+        surfaces = await plugin_ui_query_service.get_surfaces(plugin_id, locale=locale)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(surfaces)
