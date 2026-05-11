@@ -80,8 +80,8 @@
         resetGeneration: 0,
         resetBroadcastChannel: null,
         pendingResetAfterHeartbeatReason: '',
-        pendingResetAfterCompletionReason: '',
-        inFlightCompletionLifecycleCount: 0,
+        pendingResetAfterLifecycleReason: '',
+        inFlightResetSensitiveLifecycleCount: 0,
         userCohort: 'unknown',
         mobileResizeRetryBound: false,
         featureSuppression: {
@@ -829,8 +829,9 @@
         }
     }
 
-    function isHomeTutorialCompletionLifecycle(url, payload) {
-        return url === '/api/tutorial-prompt/tutorial-completed'
+    function isHomeTutorialResetSensitiveLifecycle(url, payload) {
+        return (url === '/api/tutorial-prompt/tutorial-started'
+                || url === '/api/tutorial-prompt/tutorial-completed')
             && payload
             && payload.page === 'home';
     }
@@ -838,9 +839,9 @@
     async function persistTutorialLifecycle(url, payload, flowStep, options) {
         const requestOptions = options || {};
         const requestResetGeneration = state.resetGeneration;
-        const isCompletionLifecycle = isHomeTutorialCompletionLifecycle(url, payload);
-        if (isCompletionLifecycle) {
-            state.inFlightCompletionLifecycleCount += 1;
+        const isResetSensitiveLifecycle = isHomeTutorialResetSensitiveLifecycle(url, payload);
+        if (isResetSensitiveLifecycle) {
+            state.inFlightResetSensitiveLifecycleCount += 1;
         }
         try {
             const response = requestOptions.fireAndForget
@@ -854,10 +855,10 @@
                 logFlow('lifecycle-stale-ignored', {
                     source: flowStep || 'unknown',
                 });
-                if (isCompletionLifecycle && state.pendingResetAfterCompletionReason) {
-                    const resetReason = state.pendingResetAfterCompletionReason;
-                    state.pendingResetAfterCompletionReason = '';
-                    await persistResetAfterStaleMutation(resetReason, 'reset-after-stale-completion');
+                if (isResetSensitiveLifecycle && state.pendingResetAfterLifecycleReason) {
+                    const resetReason = state.pendingResetAfterLifecycleReason;
+                    state.pendingResetAfterLifecycleReason = '';
+                    await persistResetAfterStaleMutation(resetReason, 'reset-after-stale-lifecycle');
                 }
                 return response;
             }
@@ -886,10 +887,10 @@
             console.warn('[TutorialPrompt] failed to persist lifecycle event:', error);
             return null;
         } finally {
-            if (isCompletionLifecycle) {
-                state.inFlightCompletionLifecycleCount = Math.max(
+            if (isResetSensitiveLifecycle) {
+                state.inFlightResetSensitiveLifecycleCount = Math.max(
                     0,
-                    state.inFlightCompletionLifecycleCount - 1
+                    state.inFlightResetSensitiveLifecycleCount - 1
                 );
             }
         }
@@ -1052,8 +1053,8 @@
         ) {
             state.pendingResetAfterHeartbeatReason = resetReason;
         }
-        if (state.inFlightCompletionLifecycleCount > 0) {
-            state.pendingResetAfterCompletionReason = resetReason;
+        if (state.inFlightResetSensitiveLifecycleCount > 0) {
+            state.pendingResetAfterLifecycleReason = resetReason;
         }
         if (snapshot) {
             snapshot.homeTutorialCompleted = false;
@@ -1063,6 +1064,8 @@
         state.homeTutorialCompleted = false;
         state.manualHomeTutorialViewed = false;
         state.tutorialStarted = false;
+        state.tutorialRunning = false;
+        state.tutorialStartRequested = false;
         state.neverRemind = false;
         state.deferredUntil = 0;
         state.localPromptSuppressedUntil = 0;
@@ -1071,6 +1074,8 @@
         state.promptDrivenTutorialToken = null;
         state.tutorialRunToken = null;
         state.pendingTutorialStartPayload = null;
+        endHomeTutorialFeatureSuppression('home-tutorial-reset');
+        emitHomeTutorialLockIfChanged('home-tutorial-reset');
         clearHomeTutorialStorageSeen();
         logFlow('home-tutorial-reset', {
             reason: resetReason,
