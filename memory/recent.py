@@ -422,10 +422,23 @@ class CompressedRecentHistoryManager:
             lines.append(line)
         messages_text = "\n".join(lines)
         lang = get_global_language()
+        # ``{master_name}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
+        # 占位符（与同 prompt 里既有的 ``%s`` 共存：``%s`` 走 Python 格式化，
+        # ``{master_name}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
+        # 看到 "%s 和 ai 的对话"+"用户的负面反馈" 时困惑（feedback_no_dehumanizing_terms）。
+        master_name = self.name_mapping['human']
         if not detailed:
-            prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+            prompt = (
+                get_recent_history_manager_prompt(lang)
+                .replace("{master_name}", master_name)
+                .replace("%s", messages_text)
+            )
         else:
-            prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+            prompt = (
+                get_detailed_recent_history_manager_prompt(lang)
+                .replace("{master_name}", master_name)
+                % messages_text
+            )
 
         # Past block 时间衰减：距上次"实际更新 past block"超过
         # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加一段提醒让 LLM 把
@@ -533,7 +546,9 @@ class CompressedRecentHistoryManager:
                 llm = self._get_llm()
                 try:
                     response_content = (await llm.ainvoke(
-                        get_further_summarize_prompt(get_global_language()) % initial_summary,
+                        get_further_summarize_prompt(get_global_language())
+                        .replace("{master_name}", self.name_mapping['human'])
+                        % initial_summary,
                         max_completion_tokens=stage2_cap,
                     )).content
                 finally:
@@ -696,7 +711,11 @@ class CompressedRecentHistoryManager:
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
-                prompt = get_history_review_prompt(get_global_language()) % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                prompt = (
+                    get_history_review_prompt(get_global_language())
+                    .replace("{master_name}", self.name_mapping['human'])
+                    % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                )
                 review_llm = self._get_review_llm()
                 try:
                     response_content = (await review_llm.ainvoke(prompt)).content
