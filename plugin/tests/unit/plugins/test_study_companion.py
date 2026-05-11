@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -303,6 +304,93 @@ if (!explainRun || explainRun.args.text !== 'Explain derivative') {
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
         cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    script = r"""
+const fs = require('node:fs');
+const source = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
+
+globalThis.window = globalThis;
+globalThis.document = { documentElement: { lang: '' } };
+globalThis.location = { search: '?locale=zh-TW', pathname: '/plugin/study_companion/ui/' };
+Object.defineProperty(globalThis, 'navigator', {
+  value: { languages: ['zh-TW', 'zh-CN'], language: 'zh-TW' },
+  configurable: true,
+});
+globalThis.console = console;
+
+let bundleRequests = [];
+globalThis.fetch = async (url) => {
+  const href = String(url);
+  if (href.includes('/ui-api/i18n/')) {
+    bundleRequests.push(href);
+  }
+  if (href.endsWith('/zh-TW.json')) {
+    return { ok: true, json: async () => ({ 'ui.title': '繁體中文' }) };
+  }
+  if (href.endsWith('/zh-CN.json')) {
+    return { ok: true, json: async () => ({ 'ui.title': '简体中文' }) };
+  }
+  return { ok: false, json: async () => ({}) };
+};
+
+eval(source);
+
+(async () => {
+  await window.I18n.init('study_companion');
+  if (window.I18n.lang() !== 'zh-TW') {
+    throw new Error(`unexpected lang: ${window.I18n.lang()}`);
+  }
+  if (document.documentElement.lang !== 'zh-TW') {
+    throw new Error(`unexpected document lang: ${document.documentElement.lang}`);
+  }
+  if (window.I18n.t('ui.title', 'fallback') !== '繁體中文') {
+    throw new Error(`unexpected bundle text: ${window.I18n.t('ui.title', 'fallback')}`);
+  }
+  if (!bundleRequests[0] || !bundleRequests[0].endsWith('/zh-TW.json')) {
+    throw new Error(`unexpected query locale request order: ${JSON.stringify(bundleRequests)}`);
+  }
+
+  bundleRequests = [];
+  window.I18n._bundle = {};
+  window.I18n.setLang('zh-CN');
+  location.search = '';
+  navigator.languages = ['zh-TW', 'zh-CN'];
+  navigator.language = 'zh-TW';
+  await window.I18n.init('study_companion');
+  if (window.I18n.lang() !== 'zh-TW') {
+    throw new Error(`unexpected browser lang: ${window.I18n.lang()}`);
+  }
+  if (window.I18n.t('ui.title', 'fallback') !== '繁體中文') {
+    throw new Error(`unexpected browser bundle text: ${window.I18n.t('ui.title', 'fallback')}`);
+  }
+  if (!bundleRequests[0] || !bundleRequests[0].endsWith('/zh-TW.json')) {
+    throw new Error(`unexpected browser locale request order: ${JSON.stringify(bundleRequests)}`);
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
+    }
+    completed = subprocess.run(
+        ["node", "-e", script],
+        cwd=plugin_dir,
         env=env,
         capture_output=True,
         text=True,

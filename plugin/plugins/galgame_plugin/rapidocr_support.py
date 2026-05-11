@@ -829,6 +829,7 @@ async def download_rapidocr_models(
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
+    plugin_id: str = "galgame_plugin",
     progress_callback: ProgressCallback | None = None,
     before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
@@ -872,6 +873,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message="No download needed for bundled ch + PP-OCRv4 models",
@@ -905,6 +907,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message=already_present_message,
@@ -945,6 +948,7 @@ async def download_rapidocr_models(
                 update_install_task_state(
                     task_id,
                     kind="rapidocr_models",
+                    plugin_id=plugin_id,
                     status="running",
                     phase="downloading",
                     message=running_message,
@@ -997,6 +1001,7 @@ async def download_rapidocr_models(
                                     update_install_task_state(
                                         task_id,
                                         kind="rapidocr_models",
+                                        plugin_id=plugin_id,
                                         status="running",
                                         phase="downloading",
                                         message=running_message,
@@ -1049,6 +1054,7 @@ async def download_rapidocr_models(
                         update_install_task_state(
                             task_id,
                             kind="rapidocr_models",
+                            plugin_id=plugin_id,
                             status="failed",
                             phase="failed",
                             message=err_message,
@@ -1088,6 +1094,7 @@ async def download_rapidocr_models(
         update_install_task_state(
             task_id,
             kind="rapidocr_models",
+            plugin_id=plugin_id,
             status="completed",
             phase="completed",
             message=f"Downloaded {len(downloaded)} model file(s)",

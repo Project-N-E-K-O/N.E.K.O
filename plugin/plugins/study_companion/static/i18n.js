@@ -1,6 +1,7 @@
 const I18n = {
   _bundle: {},
   _lang: 'zh-CN',
+  _lastResolvedLocale: '',
 
   lang() {
     return this._lang;
@@ -15,16 +16,26 @@ const I18n = {
 
   _localeCandidates(locale) {
     const raw = String(locale || '').trim() || 'zh-CN';
-    const lower = raw.toLowerCase().replace('_', '-');
+    const normalized = raw.replace(/_/g, '-');
+    const lower = normalized.toLowerCase();
     const candidates = [];
     const add = (value) => {
       if (value && !candidates.includes(value)) {
         candidates.push(value);
       }
     };
+    add(normalized);
     if (lower === 'zh' || lower.startsWith('zh-')) {
-      add('zh-CN');
-      add('zh-TW');
+      if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-mo' || lower.includes('-hant')) {
+        add('zh-TW');
+        add('zh-CN');
+      } else if (lower === 'zh-cn' || lower === 'zh-sg' || lower.includes('-hans')) {
+        add('zh-CN');
+        add('zh-TW');
+      } else {
+        add('zh-CN');
+        add('zh-TW');
+      }
     } else if (lower.startsWith('en')) {
       add('en');
     } else if (lower.startsWith('ja')) {
@@ -38,7 +49,6 @@ const I18n = {
     } else if (lower.startsWith('pt')) {
       add('pt');
     }
-    add(raw);
     add('zh-CN');
     add('en');
     return candidates;
@@ -69,6 +79,9 @@ const I18n = {
     } catch (error) {
       console.warn('[study_companion] locale api failed', error);
     }
+    if (this._lastResolvedLocale) {
+      return this._lastResolvedLocale;
+    }
     return this._browserLocale();
   },
 
@@ -81,6 +94,7 @@ const I18n = {
         if (response.ok) {
           this._bundle = await response.json();
           this.setLang(candidate);
+          this._lastResolvedLocale = candidate;
           return;
         }
       } catch (error) {

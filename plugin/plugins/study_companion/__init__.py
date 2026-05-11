@@ -258,6 +258,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 languages=self._cfg.ocr_languages,
                 force=bool(force),
                 task_id=run_id or None,
+                plugin_id=self.plugin_id,
                 progress_callback=self._resolve_install_progress_callback(run_id),
             )
             self._refresh_dependency_status()
@@ -291,6 +292,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 timeout_seconds=float(self._cfg.ocr_install_timeout_seconds or 180.0),
                 force=bool(force),
                 task_id=run_id or None,
+                plugin_id=self.plugin_id,
                 progress_callback=self._resolve_install_progress_callback(run_id),
                 before_completed_callback=lambda: None,
             )

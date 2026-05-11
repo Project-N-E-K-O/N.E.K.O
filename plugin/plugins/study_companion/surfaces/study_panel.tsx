@@ -1,4 +1,4 @@
-import { useEffect, useState } from '@neko/plugin-ui';
+import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
 type StudyStatus = {
@@ -34,6 +34,10 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
   }
   const created = await createResp.json();
   const runId = created.run_id || created.id;
+  if (!runId) {
+    console.error('study_companion run create response missing run id', created);
+    throw new Error('run_id_missing');
+  }
   let failureCount = 0;
   for (let i = 0; i < 40; i += 1) {
     await delay(300, signal);
@@ -62,11 +66,15 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
 }
 
 export default function StudyPanel(props: PluginSurfaceProps) {
-  const t = (key: string, defaultValue?: string) => props.t?.(key) || defaultValue || key;
+  const t = (key: string, defaultValue?: string) => {
+    const translated = props.t?.(key);
+    return translated && translated !== key ? translated : defaultValue || key;
+  };
   const [status, setStatus] = useState<StudyStatus>({});
   const [text, setText] = useState('');
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
+  const explainControllerRef = useRef<AbortController | null>(null);
 
   async function refresh(signal?: AbortSignal) {
     const data = await callPlugin('study_status', {}, signal) as StudyStatus;
@@ -81,20 +89,39 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function explain() {
+    if (busy) {
+      return;
+    }
+    const controller = new AbortController();
+    explainControllerRef.current?.abort();
+    explainControllerRef.current = controller;
     setBusy(true);
     try {
-      const data = await callPlugin('study_explain_text', { text }) as { reply?: string; summary?: string };
+      const data = await callPlugin('study_explain_text', { text }, controller.signal) as { reply?: string; summary?: string };
+      if (controller.signal.aborted) {
+        return;
+      }
       setReply(data.reply || data.summary || '');
-      await refresh();
+      await refresh(controller.signal);
     } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
       const message = error instanceof Error && error.message === 'plugin_call_timeout'
         ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
+        : error instanceof Error && error.message === 'run_id_missing'
+          ? t('ui.error.run_id_missing', 'Run id missing')
         : error instanceof Error
           ? error.message
           : String(error);
       setReply(message);
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) {
+        setBusy(false);
+      }
+      if (explainControllerRef.current === controller) {
+        explainControllerRef.current = null;
+      }
     }
   }
 
@@ -111,14 +138,23 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           : String(error);
       setReply(message);
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      explainControllerRef.current?.abort();
+    };
   }, []);
+
+  const stateValue = status.status || 'unknown';
+  const modeValue = status.active_mode || 'concept_explain';
+  const stateLabel = t(`status.state.${stateValue}`, stateValue);
+  const modeLabel = t(`status.mode.${modeValue}`, modeValue);
+  const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
 
   return (
     <div className="study-panel">
       <header>
         <h1>{t('ui.title', 'Study Companion')}</h1>
-        <span>{status.status || 'unknown'} / {status.active_mode || 'concept_explain'}</span>
+        <span>{stateLabel} / {modeLabel}</span>
       </header>
       <textarea
         aria-label={t('ui.label.text', 'Text')}
@@ -126,7 +162,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         value={text}
         onChange={(event) => setText(event.target.value)}
       />
-      <button type="button" disabled={busy} onClick={explain}>{t('ui.button.explain', 'Explain')}</button>
+      <button
+        type="button"
+        className={busy ? 'loading' : ''}
+        disabled={busy}
+        aria-busy={busy}
+        aria-label={explainLabel}
+        onClick={busy ? undefined : explain}
+      >
+        {explainLabel}
+      </button>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
       <pre>{reply}</pre>
     </div>

@@ -393,11 +393,19 @@ async def test_study_companion_install_routes_map_to_study_entries(
         ("study_companion", "study_download_rapidocr_models", {"force": False, "_ctx": {"entry_timeout": 600.0}}),
     ]
     assert tesseract_response.json()["state"]["kind"] == "tesseract"
+    assert tesseract_response.json()["state"]["plugin_id"] == "study_companion"
     assert rapidocr_response.json()["state"]["kind"] == "rapidocr_models"
-    assert install_task_module.load_install_task_state("run-study_install_tesseract", kind="tesseract") is not None
+    assert rapidocr_response.json()["state"]["plugin_id"] == "study_companion"
+    assert install_task_module.load_install_task_state("run-study_install_tesseract", kind="tesseract") is None
+    assert install_task_module.load_install_task_state(
+        "run-study_install_tesseract",
+        kind="tesseract",
+        plugin_id="study_companion",
+    ) is not None
     assert install_task_module.load_install_task_state(
         "run-study_download_rapidocr_models",
         kind="rapidocr_models",
+        plugin_id="study_companion",
     ) is not None
 
 
@@ -558,6 +566,48 @@ async def test_galgame_plugin_tesseract_install_latest_route_returns_latest_stat
     assert payload["task_id"] == "run-tesseract-latest"
     assert payload["kind"] == "tesseract"
     assert payload["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_install_latest_routes_are_namespaced_by_plugin_id(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+) -> None:
+    install_task_module.update_install_task_state(
+        "run-galgame-tesseract-latest",
+        kind="tesseract",
+        plugin_id="galgame_plugin",
+        run_id="run-galgame-tesseract-latest",
+        status="completed",
+        phase="completed",
+        message="Galgame Tesseract installation completed",
+        progress=1.0,
+    )
+    install_task_module.update_install_task_state(
+        "run-study-tesseract-latest",
+        kind="tesseract",
+        plugin_id="study_companion",
+        run_id="run-study-tesseract-latest",
+        status="completed",
+        phase="completed",
+        message="Study Tesseract installation completed",
+        progress=1.0,
+    )
+
+    galgame_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tesseract/install/latest"
+    )
+    study_response = await plugin_ui_async_client.get(
+        "/plugin/study_companion/ui-api/tesseract/install/latest"
+    )
+
+    assert galgame_response.status_code == 200
+    assert study_response.status_code == 200
+    assert galgame_response.json()["task_id"] == "run-galgame-tesseract-latest"
+    assert galgame_response.json()["plugin_id"] == "galgame_plugin"
+    assert study_response.json()["task_id"] == "run-study-tesseract-latest"
+    assert study_response.json()["plugin_id"] == "study_companion"
 
 
 @pytest.mark.asyncio
