@@ -167,12 +167,22 @@ def _find_keyword_match(text: str, keyword: str) -> re.Match[str] | None:
 
 def _command_prefix_start(text: str, match_start: int) -> int:
     prefix = text[:match_start]
-    for candidate in sorted(_MODE_SWITCH_PREFIXES, key=len, reverse=True):
-        pattern = rf"{re.escape(candidate)}[\s,，。.!！？?:：;；—~·\-\\]*$"
-        match = re.search(pattern, prefix, flags=re.IGNORECASE)
-        if match:
-            return match.start()
-    return match_start
+    chain_start = match_start
+    search_end = len(prefix)
+    while True:
+        best_match = None
+        for candidate in sorted(_MODE_SWITCH_PREFIXES, key=len, reverse=True):
+            pattern = rf"{re.escape(candidate)}[\s,，。.!！？?:：;；—~·\-\\]*$"
+            match = re.search(pattern, prefix[:search_end], flags=re.IGNORECASE)
+            if match is not None:
+                best_match = match
+                break
+        if best_match is None:
+            return chain_start
+        chain_start = best_match.start()
+        if chain_start == 0:
+            return 0
+        search_end = chain_start
 
 
 def _is_english_language(language: str | None) -> bool:
@@ -194,6 +204,13 @@ def _study_i18n():
 
 def study_i18n_t(language: str | None, key: str, *, default: str = "", **params: object) -> str:
     return _study_i18n().t(key, locale=language, default=default, **params)
+
+
+def _transition_i18n_or_fallback(language: str | None, key: str, fallback: str, **params: object) -> str:
+    localized = study_i18n_t(language, key, default="", **params)
+    if localized:
+        return localized
+    return fallback.format(**params)
 
 
 def normalize_mode(mode: str | None) -> str:
@@ -221,27 +238,37 @@ def build_transition_phrase(
     label = mode_label(mode, language=language)
     is_english = _is_english_language(language)
     is_chinese = _is_chinese_language(language)
+    normalized = normalize_mode(mode)
     if outcome == "same":
-        return f"当前已经是{label}。" if is_chinese else f"You are already in {label}."
+        fallback = "当前已经是{label}。" if is_chinese else "You are already in {label}."
+        return _transition_i18n_or_fallback(language, "status.transition.same", fallback, label=label)
     if outcome == "locked":
         if lock_until:
             remaining = max(1, int(round(lock_until - time.time())))
-            if is_chinese:
-                return f"模式切换已进入温和锁定，还要再等约 {remaining} 秒。"
-            return f"Mode switching is temporarily locked for {remaining} second(s)."
+            fallback = (
+                "模式切换已进入温和锁定，还要再等约 {remaining_seconds} 秒。"
+                if is_chinese
+                else "Mode switching is temporarily locked for {remaining_seconds} second(s)."
+            )
+            return _transition_i18n_or_fallback(
+                language,
+                "status.transition.locked",
+                fallback,
+                label=label,
+                remaining_seconds=remaining,
+            )
         return "模式切换已进入温和锁定。" if is_chinese else "Mode switching is temporarily locked."
     if outcome == "dwell":
-        return (
+        fallback = (
             "当前模式刚切换不久，请先停留 3 分钟再切换。"
             if is_chinese
             else "Please keep the current mode for 3 minutes before switching again."
         )
-    normalized = normalize_mode(mode)
+        return _transition_i18n_or_fallback(language, "status.transition.dwell", fallback, label=label)
     if normalized == MODE_TEACHING and is_chinese:
         return "教学模式已开启。"
-    if is_english or not is_chinese:
-        return f"{mode_label(normalized, language=language).capitalize()} enabled."
-    return f"已切换到{label}。"
+    fallback = "已切换到{label}。" if is_chinese else "{label} enabled."
+    return _transition_i18n_or_fallback(language, "status.transition.changed", fallback, label=label)
 
 
 def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:

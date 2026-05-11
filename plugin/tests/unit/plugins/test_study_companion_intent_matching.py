@@ -22,6 +22,10 @@ def test_handle_user_intent_accepts_explicit_switch_phrases() -> None:
     assert discussion["mode"] == MODE_INTERACTIVE
     assert discussion["remaining_text"] == "mitochondria"
 
+    layered = handle_user_intent("please switch to teaching mode photosynthesis", language="en")
+    assert layered["mode"] == MODE_TEACHING
+    assert layered["remaining_text"] == "photosynthesis"
+
     companion = handle_user_intent("switch to companion", language="en")
     assert companion["mode"] == MODE_COMPANION
     assert companion["pure_switch"] is True
