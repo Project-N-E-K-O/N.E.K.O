@@ -1,6 +1,8 @@
 const PLUGIN_ID = 'study_companion';
 const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 60000;
+const RUN_EXPORT_RETRY_COUNT = 3;
+const RUN_EXPORT_RETRY_DELAY_MS = 400;
 
 const statusLine = document.getElementById('statusLine');
 const replyText = document.getElementById('replyText');
@@ -31,6 +33,10 @@ function setReply(text) {
   replyText.textContent = text || '';
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function createRun(entryId, args = {}) {
   const response = await fetch(RUNS_URL, {
     method: 'POST',
@@ -49,18 +55,28 @@ async function createRun(entryId, args = {}) {
 }
 
 async function exportRunResult(runId) {
-  const response = await fetch(`${RUNS_URL}/${runId}/export`);
-  if (!response.ok) {
-    return {};
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
+    const response = await fetch(`${RUNS_URL}/${runId}/export`);
+    lastStatus = response.status;
+    if (response.ok) {
+      const payload = await response.json();
+      const items = payload.items || [];
+      const item = items.find((candidate) => candidate.type === 'json' && candidate.json) || items[0];
+      const pluginResponse = item ? (item.json || {}) : {};
+      if (pluginResponse.success === false || pluginResponse.error) {
+        throw new Error(pluginResponse.error?.message || pluginResponse.message || t('ui.error.plugin_call_failed', 'Plugin call failed'));
+      }
+      if (!item) {
+        throw new Error(t('ui.error.plugin_call_failed', 'Plugin call failed'));
+      }
+      return pluginResponse.data || {};
+    }
+    if (attempt < RUN_EXPORT_RETRY_COUNT - 1) {
+      await sleep(RUN_EXPORT_RETRY_DELAY_MS * (attempt + 1));
+    }
   }
-  const payload = await response.json();
-  const items = payload.items || [];
-  const item = items.find((candidate) => candidate.type === 'json' && candidate.json) || items[0];
-  const pluginResponse = item ? (item.json || {}) : {};
-  if (pluginResponse.success === false || pluginResponse.error) {
-    throw new Error(pluginResponse.error?.message || pluginResponse.message || t('ui.error.plugin_call_failed', 'Plugin call failed'));
-  }
-  return pluginResponse.data || {};
+  throw new Error(tf('ui.error.run_export_failed', 'Run export failed: HTTP {status}', { status: lastStatus }));
 }
 
 async function callPlugin(entryId, args = {}) {

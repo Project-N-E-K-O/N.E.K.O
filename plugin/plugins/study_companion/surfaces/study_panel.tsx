@@ -10,6 +10,8 @@ type StudyStatus = {
 
 const RUN_POLL_INITIAL_DELAY_MS = 300;
 const RUN_POLL_MAX_DELAY_MS = 2000;
+const RUN_EXPORT_RETRY_COUNT = 3;
+const RUN_EXPORT_RETRY_DELAY_MS = 400;
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
@@ -32,6 +34,30 @@ function delay(ms: number, signal?: AbortSignal) {
 
 function timeoutForEntry(entryId: string) {
   return ENTRY_TIMEOUT_MS[entryId] || 60000;
+}
+
+async function exportRunResult(runId: string, signal?: AbortSignal) {
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
+    const exportResp = await fetch(`/runs/${runId}/export`, { signal });
+    lastStatus = exportResp.status;
+    if (exportResp.ok) {
+      const exported = await exportResp.json();
+      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
+      const pluginResponse = item ? (item.json || {}) : {};
+      if (pluginResponse.success === false || pluginResponse.error) {
+        throw new Error(pluginResponse.error?.message || pluginResponse.message || 'Plugin call failed');
+      }
+      if (!item) {
+        throw new Error('Run export missing JSON result');
+      }
+      return pluginResponse.data || {};
+    }
+    if (attempt < RUN_EXPORT_RETRY_COUNT - 1) {
+      await delay(RUN_EXPORT_RETRY_DELAY_MS * (attempt + 1), signal);
+    }
+  }
+  throw new Error(`Run export failed: HTTP ${lastStatus}`);
 }
 
 async function callPlugin(entryId: string, args: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -68,10 +94,7 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
     failureCount = 0;
     const run = await runResp.json();
     if (run.status === 'succeeded') {
-      const exportResp = await fetch(`/runs/${runId}/export`, { signal });
-      const exported = exportResp.ok ? await exportResp.json() : {};
-      const item = (exported.items || []).find((candidate: any) => candidate.type === 'json' && candidate.json);
-      return item?.json?.data || {};
+      return await exportRunResult(runId, signal);
     }
     if (['failed', 'canceled', 'timeout'].includes(run.status)) {
       throw new Error(run.error?.message || run.message || run.status);
@@ -91,13 +114,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
 
-  async function refresh(signal?: AbortSignal) {
+  async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
+    const updateReply = options.updateReply !== false;
     const data = await callPlugin('study_status', {}, signal) as StudyStatus;
     if (signal?.aborted) {
       return;
     }
     setStatus(data);
-    setReply(data.last_reply || '');
+    if (updateReply) {
+      setReply(data.last_reply || '');
+    }
     if (!text.trim() && data.last_ocr_text) {
       setText(data.last_ocr_text);
     }
@@ -116,8 +142,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      setReply(data.reply || data.summary || '');
-      await refresh(controller.signal);
+      const nextReply = data.reply || data.summary || '';
+      setReply(nextReply);
+      await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (controller.signal.aborted) {
         return;

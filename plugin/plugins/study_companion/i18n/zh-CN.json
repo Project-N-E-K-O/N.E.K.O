@@ -40,6 +40,7 @@
   "ui.label.reply": "回复",
   "ui.placeholder.input": "粘贴概念、题目或 OCR 文本。",
   "ui.error.run_create_failed": "创建任务失败：HTTP {status}",
+  "ui.error.run_export_failed": "导出结果失败：HTTP {status}",
   "ui.error.run_id_missing": "未获取到 run_id",
   "ui.error.plugin_call_failed": "插件调用失败",
   "ui.error.plugin_call_timeout": "插件调用超时"

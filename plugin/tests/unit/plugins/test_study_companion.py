@@ -321,6 +321,23 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study_explain_text: 60000" in source
     assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
+    assert "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})" in source
+    assert "await refresh(controller.signal, { updateReply: false });" in source
+
+
+def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+
+    assert "RUN_EXPORT_RETRY_COUNT = 3" in hosted_source
+    assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" in hosted_source
+    assert "const exported = exportResp.ok ? await exportResp.json() : {};" not in hosted_source
+    assert "return item?.json?.data || {};" not in hosted_source
+
+    assert "RUN_EXPORT_RETRY_COUNT = 3" in static_source
+    assert "throw new Error(tf('ui.error.run_export_failed'" in static_source
+    assert "if (!response.ok) {\n    return {};" not in static_source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
