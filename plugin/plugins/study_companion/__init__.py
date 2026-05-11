@@ -122,7 +122,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         await asyncio.to_thread(self._store.save_config, self._cfg)
         await asyncio.to_thread(self._store.save_state, self._state)
 
-    def _sync_mode_runtime(self) -> None:
+    async def _apply_mode_switch(self, mode: str, reason: str, *, language: str | None = None) -> dict[str, Any]:
         with self._lock:
             self._mode_manager.restore(
                 {
@@ -134,12 +134,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "mode_lock_until": self._state.mode_lock_until,
                 }
             )
-
-    async def _apply_mode_switch(self, mode: str, reason: str, *, language: str | None = None) -> dict[str, Any]:
-        self._sync_mode_runtime()
-        result = self._mode_manager.switch_to(mode, reason, language=language or self._cfg.language)
-        checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
-        with self._lock:
+            result = self._mode_manager.switch_to(mode, reason, language=language or self._cfg.language)
+            checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
             self._state.active_mode = str(result.get("new_mode") or self._state.active_mode)
             self._state.mode_started_at = float(checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0)
             self._state.recent_mode_switches = checkpoint.get("recent_mode_switches") if isinstance(checkpoint.get("recent_mode_switches"), list) else self._state.recent_mode_switches
