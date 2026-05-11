@@ -611,6 +611,84 @@ async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arecheck_invalid_scope_bumps_attempts_and_eventually_skips(tmp_path):
+    """Regression for Codex review on PR #1316 P2: persistently-invalid LLM
+    scope must not block migration of other v1 reflections.
+
+    Seed [bad_then_good (always-invalid LLM), other_good]. After MAX attempts
+    on bad_then_good, candidates filter should exclude it and other_good
+    becomes reachable. We patch MAX_ATTEMPTS=2 to keep the test fast.
+    """
+    import json
+    from memory.event_log import EventLog
+    from memory.facts import FactStore
+    from memory.persona import PersonaManager
+    from memory.reflection import ReflectionEngine
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.facts.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.reflection.get_config_manager", return_value=cm):
+        evl = EventLog(); evl._config_manager = cm
+        fs = FactStore(); fs._config_manager = cm
+        pm = PersonaManager(event_log=evl); pm._config_manager = cm
+        re = ReflectionEngine(fs, pm, event_log=evl); re._config_manager = cm
+
+    # bad_then_good will always get invalid scope; other_good gets valid scope
+    bad = {
+        "id": "r-bad", "text": "总是被误判的 reflection", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "2026-04-01T00:00:00",  # 更老 → FIFO 优先
+        "feedback": None, "reinforcement": 1.0, "disputation": 0.0,
+    }
+    other = {
+        "id": "r-other", "text": "另一条 v1 reflection", "entity": "master",
+        "status": "confirmed", "source_fact_ids": [],
+        "created_at": "2026-05-01T00:00:00",
+        "feedback": None, "reinforcement": 1.0, "disputation": 0.0,
+    }
+    await re.asave_reflections("小天", [bad, other])
+
+    # 控制 LLM 响应：r-bad 永远返回非法 scope 'banana'；r-other 返回 valid 'pattern'
+    call_count = {"n": 0}
+    bad_resp = MagicMock()
+    bad_resp.content = json.dumps({"temporal_scope": "banana", "event_when": None})
+    good_resp = MagicMock()
+    good_resp.content = json.dumps({"temporal_scope": "pattern", "event_when": None})
+
+    async def _ainvoke(prompt, *_a, **_k):
+        call_count["n"] += 1
+        # prompt 中包含 reflection text，借此区分
+        return bad_resp if "总是被误判" in prompt else good_resp
+
+    async def _aclose():
+        return None
+
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = _ainvoke
+    fake_llm.aclose = _aclose
+
+    # MAX=2：bad 经过 2 次 invalid scope 后被排除，第 3 次调用应命中 other
+    with patch("memory.reflection.create_chat_llm", return_value=fake_llm, create=True), \
+         patch("utils.llm_client.create_chat_llm", return_value=fake_llm), \
+         patch("config.MEMORY_RECHECK_MAX_ATTEMPTS", 2):
+        r1 = await re.arecheck_one_legacy_reflection("小天")  # bad: invalid → bump 1, return False
+        r2 = await re.arecheck_one_legacy_reflection("小天")  # bad: invalid → bump 2, return False (now excluded)
+        r3 = await re.arecheck_one_legacy_reflection("小天")  # other: valid → migrate, return True
+
+    assert r1 is False
+    assert r2 is False
+    assert r3 is True
+    reflections = await re.aload_reflections("小天", include_archived=True)
+    bad_after = next(r for r in reflections if r.get('id') == 'r-bad')
+    other_after = next(r for r in reflections if r.get('id') == 'r-other')
+    assert bad_after.get('recheck_attempts') == 2
+    assert (bad_after.get('schema_version') or 1) == 1  # 不洗白
+    assert other_after.get('schema_version') == 2
+    assert other_after.get('temporal_scope') == 'pattern'
+
+
+@pytest.mark.asyncio
 async def test_followup_weighted_enabled_varies_picks(tmp_path):
     """REFLECTION_FOLLOWUP_WEIGHTED=True + 候选 > TOP_K → 多轮采样应出现
     不同组合（不再雷同）。"""

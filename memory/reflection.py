@@ -1989,6 +1989,33 @@ class ReflectionEngine:
 
         return transitions
 
+    async def _abump_reflection_recheck_attempts(
+        self, lanlan_name: str, rid: str, reason: str,
+    ) -> None:
+        """递增指定 reflection 的 ``recheck_attempts`` 计数。
+
+        失败到 ``MEMORY_RECHECK_MAX_ATTEMPTS`` 上限后，candidates filter 会
+        把该 entry 排除，让循环把名额匀给其它 v1 条目。计数持久化到主文件，
+        重启不复位（避免饥饿同一坏 entry 反复消耗 LLM quota）。
+        Best-effort——保存失败不抛，下次仍会尝试。
+        """
+        try:
+            async with self._get_alock(lanlan_name):
+                current = await self._aload_reflections_full(lanlan_name)
+                for r in current:
+                    if r.get('id') == rid:
+                        r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
+                        await self.asave_reflections(lanlan_name, current)
+                        logger.debug(
+                            f"[Recheck-Reflection] {lanlan_name} {rid}: "
+                            f"recheck_attempts → {r['recheck_attempts']} ({reason})"
+                        )
+                        return
+        except Exception as e:
+            logger.debug(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: bump attempts 失败: {e}"
+            )
+
     async def arecheck_one_legacy_reflection(self, lanlan_name: str) -> bool:
         """Schema v1 → v2 慢速重判（每次只处理 1 条）。
 
@@ -2005,7 +2032,10 @@ class ReflectionEngine:
         - status in REFLECTION_TERMINAL_STATUSES（archived/merged 等终态）
         - 已在主 reflections.json 之外（archive 分片不被 load_reflections 拉起）
         """
-        from config import MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V
+        from config import (
+            MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
+            MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,
+        )
         from config.prompts.prompts_memory import (
             MEMORY_RECHECK_REFLECTION_PROMPT,
         )
@@ -2021,6 +2051,9 @@ class ReflectionEngine:
             r for r in reflections
             if (r.get('schema_version') or 1) < _SCHEMA_V
             and r.get('status') not in REFLECTION_TERMINAL_STATUSES
+            # 重试预算：LLM 持续给出无效 temporal_scope 或抛异常的 entry
+            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）
+            and (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
         ]
         if not candidates:
             return False
@@ -2073,6 +2106,9 @@ class ReflectionEngine:
             SOURCE_FACTS=source_facts_text,
         )
 
+        failure_reason: str | None = None
+        new_scope: str | None = None
+        event_when_raw: dict | None = None
         try:
             from utils.llm_client import create_chat_llm
             set_call_type("memory_recheck_reflection")
@@ -2092,17 +2128,23 @@ class ReflectionEngine:
                 raw = raw.replace("```json", "").replace("```", "").strip()
             result = robust_json_loads(raw)
             if not isinstance(result, dict):
-                logger.debug(f"[Recheck-Reflection] {lanlan_name} {rid}: LLM 返回非 dict")
-                return False
-            new_scope = result.get('temporal_scope')
-            if new_scope not in ACTIVE_TEMPORAL_SCOPES:
-                logger.debug(
-                    f"[Recheck-Reflection] {lanlan_name} {rid}: 非法 temporal_scope={new_scope!r}"
-                )
-                return False
-            event_when_raw = _norm_when(result.get('event_when'))
+                failure_reason = "non-dict response"
+            else:
+                new_scope = result.get('temporal_scope')
+                if new_scope not in ACTIVE_TEMPORAL_SCOPES:
+                    failure_reason = f"invalid temporal_scope={new_scope!r}"
+                else:
+                    event_when_raw = _norm_when(result.get('event_when'))
         except Exception as e:
-            logger.debug(f"[Recheck-Reflection] {lanlan_name} {rid}: LLM 调用失败: {e}")
+            failure_reason = f"LLM call failed: {e}"
+
+        # 失败路径统一收口：bump recheck_attempts 计数器，让连续失败的 entry
+        # 在达到 MAX 后被 candidates filter 排除（Codex review on PR #1316 P2）
+        if failure_reason is not None:
+            logger.debug(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: 跳过本轮 ({failure_reason})"
+            )
+            await self._abump_reflection_recheck_attempts(lanlan_name, rid, failure_reason)
             return False
 
         # 用 created_at 当锚点解算 ISO

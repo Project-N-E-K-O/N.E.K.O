@@ -1018,6 +1018,28 @@ class FactStore:
     async def amark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
         await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)
 
+    def _bump_fact_recheck_attempts(self, name: str, fid: str, reason: str) -> None:
+        """递增指定 fact 的 ``recheck_attempts`` 计数。
+
+        失败到 ``MEMORY_RECHECK_MAX_ATTEMPTS`` 上限后，candidates filter 把
+        该 fact 排除，让循环把名额匀给其它 v1 entry。直接 mutate cached list
+        + save_facts（对齐 mark_absorbed 写法，save_facts 自取锁）。
+        Best-effort——保存失败不抛。
+        """
+        try:
+            current = self.load_facts(name)
+            for f in current:
+                if f.get('id') == fid:
+                    f['recheck_attempts'] = (f.get('recheck_attempts') or 0) + 1
+                    self.save_facts(name)
+                    logger.debug(
+                        f"[Recheck-Fact] {name} {fid}: "
+                        f"recheck_attempts → {f['recheck_attempts']} ({reason})"
+                    )
+                    return
+        except Exception as e:
+            logger.debug(f"[Recheck-Fact] {name} {fid}: bump attempts 失败: {e}")
+
     async def arecheck_one_legacy_fact(self, name: str) -> bool:
         """Schema v1 → v2 慢速重判（每次只处理 1 条 fact）。
 
@@ -1028,6 +1050,7 @@ class FactStore:
 
         Returns: True 表示成功处理了一条；False 表示没找到候选或失败。
         """
+        from config import MEMORY_RECHECK_MAX_ATTEMPTS
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,
@@ -1038,6 +1061,9 @@ class FactStore:
         candidates = [
             f for f in facts
             if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
+            # 重试预算：LLM 持续失败的 entry 累计达上限后不再阻塞队列
+            # (Codex review on PR #1316 P2，对齐 reflection 同样写法)
+            and (f.get('recheck_attempts') or 0) < MEMORY_RECHECK_MAX_ATTEMPTS
         ]
         if not candidates:
             return False
@@ -1070,6 +1096,8 @@ class FactStore:
             CREATED_AT=created_at_iso,
         )
 
+        failure_reason: str | None = None
+        event_when_raw: dict | None = None
         try:
             from utils.llm_client import create_chat_llm
             set_call_type("memory_recheck_fact")
@@ -1089,11 +1117,20 @@ class FactStore:
                 raw = raw.replace("```json", "").replace("```", "").strip()
             result = robust_json_loads(raw)
             if not isinstance(result, dict):
-                logger.debug(f"[Recheck-Fact] {name} {fid}: LLM 返回非 dict")
-                return False
-            event_when_raw = _norm_when(result.get('event_when'))
+                failure_reason = "non-dict response"
+            else:
+                event_when_raw = _norm_when(result.get('event_when'))
         except Exception as e:
-            logger.debug(f"[Recheck-Fact] {name} {fid}: LLM 调用失败: {e}")
+            failure_reason = f"LLM call failed: {e}"
+
+        # 失败路径统一收口：bump recheck_attempts，让连续失败的 entry 在达到
+        # MAX 后被 candidates filter 排除（Codex review on PR #1316 P2，对齐
+        # reflection 同样写法）。
+        if failure_reason is not None:
+            logger.debug(
+                f"[Recheck-Fact] {name} {fid}: 跳过本轮 ({failure_reason})"
+            )
+            await asyncio.to_thread(self._bump_fact_recheck_attempts, name, fid, failure_reason)
             return False
 
         event_start_at, event_end_at = _compute_ts(

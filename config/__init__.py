@@ -1002,6 +1002,14 @@ MEMORY_RECHECK_INITIAL_DELAY_SECONDS = 180
 - 用途：和现有 6 个循环错峰，避开启动峰值。
 - 现有 _INITIAL_DELAY_* 在 20s~250s，本值 180s 接近末尾。"""
 
+MEMORY_RECHECK_MAX_ATTEMPTS = 5
+"""单条 v1 entry 重判失败几次后放弃，避免饥饿后续合法 v1 条目。
+- 失败定义：LLM 调用抛异常、返回非 dict、temporal_scope 不在合法集合
+  （reflection 限定 pattern/state/episode）。
+- 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
+- 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
+  排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
 """主动搭话 followup 候选采样是否按 evidence_score 加权随机。
