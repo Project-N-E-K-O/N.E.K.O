@@ -338,14 +338,9 @@ class MijiaPlugin(NekoPluginBase):
                         if device_part in dname or device_part in dalias:
                             room_matched.append(d)
                 else:
-                    self.logger.info(f"房间降级匹配: 无房间数据, 设备名 '{device_part}' 对所有设备匹配")
-                    # 降级：无房间数据，对所有设备按名称匹配
-                    for d in devices:
-                        dname = d.get('name', '').lower()
-                        dalias = d.get('alias', '').lower()
-                        if device_part in dname or device_part in dalias:
-                            room_matched.append(d)
-                break
+                    self.logger.info(f"房间前缀/后缀被解析但无房间数据, 丢掉房间限定, 进入模糊匹配: '{name}'")
+                    # 无房间数据时不能确认设备归属房间，丢掉房间限定走模糊匹配
+                    break
 
         if len(room_matched) == 1:
             device = room_matched[0]
