@@ -5991,25 +5991,11 @@ async def proactive_chat(request: Request):
             _bm25_total, _bm25_terms = 0.0, {}
             _ar_corpus = None
 
-        if _bm25_total >= ANTI_REPEAT_DROP_THRESHOLD:
-            logger.info(
-                "[%s] proactive BM25 drop (score=%.2f threshold=%.2f terms=%s)",
-                lanlan_name, _bm25_total, ANTI_REPEAT_DROP_THRESHOLD,
-                list(_bm25_terms.keys())[:6],
-            )
-            print(
-                f"[{lanlan_name}] 主动搭话 BM25 复读度过高直接 drop "
-                f"(score={_bm25_total:.2f} > {ANTI_REPEAT_DROP_THRESHOLD})"
-            )
-            if not mgr.state.is_proactive_preempted(proactive_sid):
-                await mgr.handle_new_message()
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "BM25 复读度过高，已 drop",
-                "bm25_score": _bm25_total,
-            }))
-        elif _bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+        # ANTI_REPEAT_DROP_THRESHOLD 仅在 regen 之后才生效：初稿超 DROP 也得
+        # 给 LLM 一次纠正机会，跑完再用同阈值二判。之前的版本初稿 ≥ DROP
+        # 直接 drop 把潜在可救的输出短路掉，与设计文档"regen then drop"相违
+        # （codex P2）。代价是一次 ainvoke，比静默 drop 整轮投递有价值。
+        if _bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
             # 记下进入 regen 前的初稿 source_tag，下面在改 tag 后判定是否要撤销
             # 原 music 候选状态（CodeRabbit Major：MUSIC → CHAT regen 后，若不清
             # selected_music_link / music_content，should_try_music_fallback 仍
