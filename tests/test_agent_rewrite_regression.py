@@ -552,6 +552,21 @@ def test_home_yui_guide_does_not_route_to_steam_workshop():
     assert "#${p}-menu-steam-workshop" not in tutorial_source
 
 
+def test_home_tutorial_reset_also_clears_backend_prompt_state():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "/api/tutorial-prompt/reset" in tutorial_source
+
+
+def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "if (endMeta.reason === 'destroy')" in tutorial_source
+    assert "if (endMeta.reason === 'skip')" in tutorial_source
+    assert "neko:tutorial-ended-without-completion" in tutorial_source
+    assert "neko:tutorial-skipped" in tutorial_source
+
+
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
     source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
