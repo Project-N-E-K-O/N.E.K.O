@@ -110,6 +110,28 @@
   }
   #controls label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
   #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
+  #game-audio-controls {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    display: grid; grid-template-columns: auto 128px 34px; gap: 6px 8px; align-items: center;
+  }
+  #game-audio-controls label {
+    display: contents;
+    cursor: default;
+  }
+  #game-audio-controls span {
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.84);
+  }
+  #game-audio-controls input[type="range"] {
+    width: 128px;
+    accent-color: #72d6ff;
+    cursor: pointer;
+  }
+  #game-audio-controls output {
+    font: 11px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.68);
+    text-align: right;
+  }
   #voice-controls {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
     display: none; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
@@ -246,6 +268,18 @@
 <div id="controls">
   <label><input type="checkbox" id="boundary-toggle"> Enable bounds (out-of-bounds rule)</label>
   <label><input type="checkbox" id="voice-output-toggle" checked> Speak LLM lines (project voice)</label>
+  <div id="game-audio-controls" aria-label="Game audio volume">
+    <label>
+      <span>BGM</span>
+      <input id="game-bgm-volume" type="range" min="0" max="100" step="1">
+      <output id="game-bgm-volume-value" for="game-bgm-volume">45%</output>
+    </label>
+    <label>
+      <span>SFX</span>
+      <input id="game-sfx-volume" type="range" min="0" max="100" step="1">
+      <output id="game-sfx-volume-value" for="game-sfx-volume">75%</output>
+    </label>
+  </div>
   <div id="voice-controls" aria-hidden="true">
     <button id="voice-mic-button" type="button">Debug voice</button>
     <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
@@ -425,6 +459,9 @@
 <script src="/static/live2d-model.js"></script>
 <script src="/static/live2d-interaction.js"></script>
 <script src="/static/live2d-init.js"></script>
+<script src="/static/game/games/soccer/how%20lovely%60s%20audio%20system%20temp%20root.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/games/soccer/soccer-audio-config.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
 
 <!-- Three.js via importmap -->
 <script type="importmap">
@@ -875,6 +912,172 @@
   const voiceStatusEl = document.getElementById('voice-status');
   const startButton = document.getElementById('soccer-start-button');
   const exitToStartButton = document.getElementById('exit-to-start-button');
+  const bgmVolumeInput = document.getElementById('game-bgm-volume');
+  const bgmVolumeValue = document.getElementById('game-bgm-volume-value');
+  const sfxVolumeInput = document.getElementById('game-sfx-volume');
+  const sfxVolumeValue = document.getElementById('game-sfx-volume-value');
+  const soccerGameAudio = (() => {
+    const gameSystem = window.NekoGameSystem || {};
+    const audioConfig = gameSystem.soccer?.audioConfig || {};
+    const config = {
+      bgm: {
+        startMenu: [],
+        inGame: [],
+        mood: {},
+      },
+      sfx: {},
+      useMoodBgm: false,
+      ...audioConfig,
+    };
+    const audio = typeof gameSystem.GameAudioSystem === 'function'
+      ? new gameSystem.GameAudioSystem({
+          config: {
+            bgm: config.bgm,
+            sfx: config.sfx,
+          },
+          bgmStorageKey: 'neko.soccerGameAudio.bgmVolume',
+          sfxStorageKey: 'neko.soccerGameAudio.sfxVolume',
+          fadeMs: 900,
+          onBgmError: (event, context) => {
+            console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', context?.track?.src || event);
+          },
+          onSfxError: (event, context) => {
+            console.warn('[SoccerAudio] SFX 播放失败:', context?.track?.src || event);
+          },
+        })
+      : null;
+    let currentKey = '';
+
+    function resolvePlaylist() {
+      if (!_llm.gameStarted) {
+        return { key: 'startMenu', playlist: config.bgm.startMenu };
+      }
+
+      if (config.useMoodBgm) {
+        const moodPlaylist = config.bgm.mood?.[moodKey];
+        if (Array.isArray(moodPlaylist) && moodPlaylist.length) {
+          return { key: `mood:${moodKey}`, playlist: moodPlaylist };
+        }
+      }
+
+      return { key: 'inGame', playlist: config.bgm.inGame };
+    }
+
+    function sync(reason = 'sync') {
+      if (!audio) return;
+      const { key: nextKey, playlist } = resolvePlaylist();
+      if (nextKey === currentKey) return;
+      currentKey = nextKey;
+      console.log(`[SoccerAudio] 切换 BGM 歌单=${nextKey} reason=${reason} tracks=${playlist.length}`);
+      void audio.playBgm(playlist, { id: `soccer:${nextKey}` });
+    }
+
+    function setConfig(nextConfig = {}) {
+      if (nextConfig.bgm && typeof nextConfig.bgm === 'object') {
+        const nextMood = nextConfig.bgm.mood;
+        const currentMood = config.bgm.mood || {};
+        Object.assign(config.bgm, nextConfig.bgm);
+        if (nextMood && typeof nextMood === 'object') {
+          config.bgm.mood = { ...currentMood, ...nextMood };
+        }
+      }
+      if (nextConfig.sfx && typeof nextConfig.sfx === 'object') {
+        Object.assign(config.sfx, nextConfig.sfx);
+      }
+      if (Object.prototype.hasOwnProperty.call(nextConfig, 'useMoodBgm')) {
+        config.useMoodBgm = !!nextConfig.useMoodBgm;
+      }
+      audio?.configure({ bgm: config.bgm, sfx: config.sfx });
+      currentKey = '';
+      sync('set-config');
+    }
+
+    function setUseMoodBgm(enabled) {
+      config.useMoodBgm = !!enabled;
+      currentKey = '';
+      sync('set-use-mood-bgm');
+    }
+
+    function setBgmVolume(value) {
+      return audio ? audio.setBgmVolume(value) : 0;
+    }
+
+    function setSfxVolume(value) {
+      return audio ? audio.setSfxVolume(value) : 0;
+    }
+
+    function getBgmVolume() {
+      return audio ? audio.getBgmVolume() : 0;
+    }
+
+    function getSfxVolume() {
+      return audio ? audio.getSfxVolume() : 0;
+    }
+
+    function unlock() {
+      return audio ? audio.unlock() : Promise.resolve(false);
+    }
+
+    function stop() {
+      currentKey = '';
+      audio?.stopBgm();
+    }
+
+    function destroy() {
+      currentKey = '';
+      audio?.destroy();
+    }
+
+    return {
+      audio,
+      config,
+      sync,
+      setConfig,
+      setUseMoodBgm,
+      setBgmVolume,
+      setSfxVolume,
+      getBgmVolume,
+      getSfxVolume,
+      unlock,
+      stop,
+      destroy,
+    };
+  })();
+  {
+    const gameSystem = window.NekoGameSystem || (window.NekoGameSystem = {});
+    gameSystem.soccer = gameSystem.soccer || {};
+    gameSystem.soccer.audio = soccerGameAudio;
+  }
+
+  function _formatVolumePercent(value) {
+    return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
+  }
+
+  function _syncGameAudioVolumeControls() {
+    const bgm = soccerGameAudio.getBgmVolume();
+    const sfx = soccerGameAudio.getSfxVolume();
+    if (bgmVolumeInput) {
+      bgmVolumeInput.disabled = !soccerGameAudio.audio;
+      bgmVolumeInput.value = String(Math.round(bgm * 100));
+    }
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(bgm);
+    if (sfxVolumeInput) {
+      sfxVolumeInput.disabled = !soccerGameAudio.audio;
+      sfxVolumeInput.value = String(Math.round(sfx * 100));
+    }
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(sfx);
+  }
+
+  bgmVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setBgmVolume(Number(bgmVolumeInput.value) / 100);
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  sfxVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setSfxVolume(Number(sfxVolumeInput.value) / 100);
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  _syncGameAudioVolumeControls();
+
   const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
     window.localStorage?.getItem('soccerDebugStt') === '1';
   if (debugSttVisible && voiceControls) {
@@ -1170,6 +1373,7 @@
       emitEvent(kind, { side: 'ai', lastTouch: lastTouchSide });
       resetPositions(+1);
       state.round++;
+      soccerGameAudio.sync('goal-ai');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
     if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
@@ -1179,6 +1383,7 @@
       emitEvent(kind, { side: 'player', lastTouch: lastTouchSide });
       resetPositions(-1);
       state.round++;
+      soccerGameAudio.sync('goal-player');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
   }
@@ -1844,6 +2049,7 @@
     __setMoodBase(name);
     triggerScene('mood-' + name);
     emitEvent('mood-changed', { mood: name });
+    soccerGameAudio.sync('mood-changed');
   };
 
   const __cycleDiffBase = cycleDifficulty;
@@ -2141,6 +2347,7 @@
       lastFreezeKind: null,
     });
     SoccerDemo.clearBubble();
+    soccerGameAudio.sync('reset-start-screen');
   }
 
   function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
@@ -3617,6 +3824,8 @@
     _llm.gameStarted = true;
     _llm.gameStartedAt = performance.now();
     _llm.gameStartedAtEpochMs = Date.now();
+    void soccerGameAudio.unlock();
+    soccerGameAudio.sync('start-game');
     void _sendGameRouteHeartbeat(true);
     _deliverPendingOpeningLine();
   }
@@ -3647,6 +3856,7 @@
         reason: 'manual_user_exit',
         postgameProactive: false,
       });
+      soccerGameAudio.stop();
     } finally {
       window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
@@ -3804,8 +4014,14 @@
     _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
   }
 
-  window.addEventListener('pagehide', () => _endGameLLMSession(true));
-  window.addEventListener('beforeunload', () => _endGameLLMSession(true));
+  window.addEventListener('pagehide', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
+  window.addEventListener('beforeunload', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
 
   let lastT = performance.now();
   function loop(t) {
