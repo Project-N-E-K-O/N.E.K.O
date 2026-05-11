@@ -6027,6 +6027,19 @@ async def proactive_chat(request: Request):
             avoid_msg = render_regen_avoid_instruction(avoid_terms, proactive_lang)
             regen_messages = list(messages) + [HumanMessage(content=avoid_msg)]
             regen_text = ""
+            # 进入 regen 前再读一次 sticky preempt：与上方流式循环 / Phase1 各
+            # 长 await 入口保持一致——用户在初稿出来到这里之间接管的话，免去
+            # 一次最长 20s 的 ainvoke 白烧 token（CodeRabbit Minor）。
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                logger.info(
+                    "[%s] proactive BM25 regen aborted: user preempted before ainvoke",
+                    lanlan_name,
+                )
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 前用户已接管",
+                }))
             try:
                 async with asyncio.timeout(20.0):
                     async with _make_llm(
@@ -6123,16 +6136,21 @@ async def proactive_chat(request: Request):
             # 但 regen 偏离格式产出纯文本时仍走音乐通道——既不是 user-visible
             # bug，但与 regen 的语义"换话题"相违（CodeRabbit Major）。
             source_tag = regen_source_tag or "CHAT"
-            # regen 把意图从 MUSIC 改成非音乐通道时，撤销原始 music 候选——
-            # 否则下面 ``should_try_music_fallback`` 仍可能把刚避开的复读话题
-            # 对应曲目重新塞回 source_links（CodeRabbit Major）。
-            if _initial_source_tag == "MUSIC" and source_tag != "MUSIC":
+            # regen 后只要最终不是 MUSIC，就清掉本轮 music 候选。
+            # 之前的版本只在 _initial_source_tag == "MUSIC" 时清，但 tagless
+            # 初稿（_initial 为空）+ phase1 只有 music topic 的场景下，
+            # should_try_music_fallback 仍会把原曲目塞回 source_links，等于
+            # 把刚 regen 避开的内容又带回去（CodeRabbit Major）。
+            # 仅当 regen 显式落到 MUSIC 才保留候选（initial 即 MUSIC、regen
+            # 也仍选 MUSIC 的少数情形）。
+            if source_tag != "MUSIC":
+                if selected_music_link is not None or music_content is not None:
+                    logger.info(
+                        "[%s] proactive BM25 regen final tag=%s (initial=%s); cleared music candidate",
+                        lanlan_name, source_tag, _initial_source_tag or "(none)",
+                    )
                 selected_music_link = None
                 music_content = None
-                logger.info(
-                    "[%s] proactive BM25 regen switched MUSIC → %s; cleared music candidate",
-                    lanlan_name, source_tag,
-                )
             # 采用 regen 文本接着走下游 source_tag / TTS 投递
             response_text = _cleaned
             full_text = _cleaned
