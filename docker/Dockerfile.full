@@ -16,15 +16,15 @@
 FROM node:24-slim AS frontend-builder
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    git clone --depth 1 --branch main https://github.com/Project-N-E-K-O/N.E.K.O.git .
+
+# Copy frontend source code from local build context
+COPY frontend/plugin-manager /src/frontend/plugin-manager
+COPY frontend/react-neko-chat /src/frontend/react-neko-chat
+
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
+
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
@@ -170,16 +170,8 @@ RUN mkdir -p /root/.config/uv && \
     echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
-# 6. Clone N.E.K.O. project
-# Note: Proxy parameters are needed during compilation for faster builds unless you're outside China
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    cd / && \
-    git clone https://github.com/Project-N-E-K-O/N.E.K.O.git app && \
-    cd /app && \
-    git checkout main && \
-    unset http_proxy && \
-    unset https_proxy
+# 6. Copy N.E.K.O. project from local build context
+COPY . /app
 
 # 7. Copy frontend build artifacts
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist

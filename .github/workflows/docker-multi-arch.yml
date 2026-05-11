@@ -134,6 +134,7 @@ jobs:
   # ============================================================================
   build-standard:
     needs: calculate-version
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -252,6 +253,7 @@ jobs:
   # ============================================================================
   build-full:
     needs: calculate-version
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -353,7 +355,7 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
-    if: always() && needs.build-full.result == 'success'
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
