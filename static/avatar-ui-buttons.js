@@ -291,8 +291,12 @@ const AvatarButtonMixin = {
             // 清理所有模型类型的侧边面板
             ['live2d', 'vrm', 'mmd'].forEach(p => {
                 document.querySelectorAll(`[data-neko-sidepanel-owner^="${p}-popup-"]`).forEach(panel => {
-                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    if (typeof window.clearAvatarSidePanelHoverState === 'function') {
+                        window.clearAvatarSidePanelHoverState(panel);
+                    } else {
+                        if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                        if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    }
                     panel.remove();
                 });
             });
@@ -1015,8 +1019,12 @@ const AvatarButtonMixin = {
 
             // 移除侧边面板
             document.querySelectorAll(`[data-neko-sidepanel-owner^="${opts.popupPrefix}-popup-"]`).forEach(panel => {
-                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                if (typeof window.clearAvatarSidePanelHoverState === 'function') {
+                    window.clearAvatarSidePanelHoverState(panel);
+                } else {
+                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                }
                 panel.remove();
             });
 
