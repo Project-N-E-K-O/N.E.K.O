@@ -1370,7 +1370,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 logger.error(f"xAI TTS 接收出错: {type(e).__name__}: {e}")
 
         try:
-            ws = await websockets.connect(tts_url, additional_headers=headers)
+            # close_timeout=0.5：上限 close handshake 等待，避免半开连接在 sid 切换
+            # 路径 / interrupt / finally 清理时阻塞主循环数秒，伤后续 TTS 响应。
+            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
             receive_task = asyncio.create_task(receive_messages())
 
             logger.info("xAI Grok TTS 已就绪，发送就绪信号")
@@ -1389,7 +1391,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 if sid == "__interrupt__":
                     if ws:
                         try:
-                            await ws.close()
+                            await asyncio.wait_for(ws.close(), timeout=0.5)
                         except Exception:
                             pass
                         ws = None
@@ -1414,7 +1416,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # 失败就放弃，避免短消息被 transient 网络故障吞掉。
                     if ws is None and pending_text and pending_text_sid is not None:
                         try:
-                            ws = await websockets.connect(tts_url, additional_headers=headers)
+                            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
                             receive_task = asyncio.create_task(receive_messages())
                             current_speech_id = pending_text_sid
                             text_done_sent = False
@@ -1429,7 +1431,29 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 for delta in _grok_chunk_text_delta("".join(pending_text)):
                                     await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
                             except Exception as e:
-                                logger.warning(f"flush pending_text 失败: {e}")
+                                # send 失败可能是 last-chance reconnect 拿到的 ws 半死状态
+                                # （服务端在 utterance 间隙 close）。再做一次 fresh reconnect
+                                # 重试，把 pending 救出去，避免 utterance 截尾静音。
+                                logger.warning(f"flush pending_text 首次失败，尝试重连重试: {e}")
+                                if ws:
+                                    try:
+                                        await asyncio.wait_for(ws.close(), timeout=0.5)
+                                    except Exception:
+                                        pass
+                                if receive_task and not receive_task.done():
+                                    receive_task.cancel()
+                                    try:
+                                        await receive_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                try:
+                                    ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                                    receive_task = asyncio.create_task(receive_messages())
+                                    for delta in _grok_chunk_text_delta("".join(pending_text)):
+                                        await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
+                                    logger.info("flush pending_text 重连重试成功")
+                                except Exception as e2:
+                                    logger.warning(f"flush pending_text 重连重试仍失败，pending 丢失: {e2}")
                         try:
                             await ws.send(json.dumps({"type": "text.done"}))
                             text_done_sent = True
@@ -1447,8 +1471,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # 把 sid 提前推进，后续同 sid 的 chunks 走到 `if not ws: continue`
                     # 被静默丢弃，直到出现新 sid 才重试 —— 当轮 utterance 静音。
                     if ws:
+                        # bound close handshake — 默认 10s 在半开连接下会阻塞主循环、
+                        # 拖延下一条 chunk 响应，明显伤交互延迟。
                         try:
-                            await ws.close()
+                            await asyncio.wait_for(ws.close(), timeout=0.5)
                         except Exception:
                             pass
                         ws = None
@@ -1460,7 +1486,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             pass
                         receive_task = None
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
                         receive_task = asyncio.create_task(receive_messages())
                     except Exception as e:
                         logger.error(f"xAI TTS 重连失败: {e}")
@@ -1547,7 +1573,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     pass
             if ws:
                 try:
-                    await ws.close()
+                    await asyncio.wait_for(ws.close(), timeout=0.5)
                 except Exception:
                     pass
 
