@@ -22,6 +22,11 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    MEMORY_SCHEMA_VERSION_CURRENT,
+)
+from memory.temporal import (
+    compute_event_timestamps,
+    normalize_event_when,
 )
 from config.prompts.prompts_memory import (
     get_fact_extraction_prompt,
@@ -478,6 +483,19 @@ class FactStore:
                 if is_dup:
                     continue
 
+            created_at_iso = datetime.now().isoformat()
+            # Event timing (schema v2): LLM 输出相对时间 (offset+unit)，系统
+            # 按 created_at 当锚点解算成 ISO。fact 没有 temporal_scope，但事件
+            # 起始时间在过时 block 渲染和未来重判时都需要——fallback_start=True
+            # 保证一定有 event_start_at。end_at 是 optional（fact 多数是即时
+            # 观察，无明确 end）。
+            event_when_raw = normalize_event_when(fact.get('event_when'))
+            event_start_at, event_end_at = compute_event_timestamps(
+                event_when_raw,
+                created_at_iso,
+                fallback_start=True,
+                fallback_end=False,
+            )
             fact_entry = {
                 'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
                 'text': text,
@@ -486,7 +504,14 @@ class FactStore:
                 # RFC §2.7: tags 字段保留位但新 fact 默认写空，LLM 不再填
                 'tags': [],
                 'hash': content_hash,
-                'created_at': datetime.now().isoformat(),
+                'created_at': created_at_iso,
+                # Schema v2 (memory/temporal.py)：事件发生时间，LLM 用相对偏移
+                # 输出（offset+unit），系统按 created_at 解算。event_when_raw
+                # 留底供后续重判 / debug 反查。
+                'event_when_raw': event_when_raw,
+                'event_start_at': event_start_at,
+                'event_end_at': event_end_at,
+                'schema_version': MEMORY_SCHEMA_VERSION_CURRENT,
                 'absorbed': False,  # True when consumed by a reflection
                 # Stage-2 signal detection drain marker. False → still in queue
                 # for the next idle-loop tick. amark_signal_processed() flips
@@ -992,3 +1017,104 @@ class FactStore:
 
     async def amark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
         await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)
+
+    async def arecheck_one_legacy_fact(self, name: str) -> bool:
+        """Schema v1 → v2 慢速重判（每次只处理 1 条 fact）。
+
+        找该角色 schema_version < CURRENT 的最老 fact（不含 archive 分片，
+        只看主 facts.json），喂给 LLM 补 event_when，按 created_at 解算
+        event_start_at / event_end_at 写回。fact 没有 temporal_scope，比
+        reflection recheck 更轻量。
+
+        Returns: True 表示成功处理了一条；False 表示没找到候选或失败。
+        """
+        from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
+        from memory.temporal import (
+            normalize_event_when as _norm_when,
+            compute_event_timestamps as _compute_ts,
+        )
+
+        facts = await self.aload_facts(name)
+        candidates = [
+            f for f in facts
+            if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
+        ]
+        if not candidates:
+            return False
+        candidates.sort(key=lambda f: (f.get('created_at', ''), f.get('id', '')))
+        target = candidates[0]
+        fid = target.get('id')
+        created_at_iso = target.get('created_at', '')
+        if not fid or not created_at_iso:
+            return False
+
+        prompt = MEMORY_RECHECK_FACT_PROMPT.format(
+            FACT_TEXT=target.get('text', ''),
+            CREATED_AT=created_at_iso,
+        )
+
+        try:
+            from utils.llm_client import create_chat_llm
+            set_call_type("memory_recheck_fact")
+            api_config = self._config_manager.get_model_api_config('summary')
+            llm = create_chat_llm(
+                api_config['model'],
+                api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
+                extra_body=None,
+            )
+            try:
+                resp = await llm.ainvoke(prompt)
+            finally:
+                await llm.aclose()
+            raw = resp.content.strip()
+            if raw.startswith("```"):
+                raw = raw.replace("```json", "").replace("```", "").strip()
+            result = robust_json_loads(raw)
+            if not isinstance(result, dict):
+                logger.debug(f"[Recheck-Fact] {name} {fid}: LLM 返回非 dict")
+                return False
+            event_when_raw = _norm_when(result.get('event_when'))
+        except Exception as e:
+            logger.debug(f"[Recheck-Fact] {name} {fid}: LLM 调用失败: {e}")
+            return False
+
+        event_start_at, event_end_at = _compute_ts(
+            event_when_raw,
+            created_at_iso,
+            fallback_start=True,
+            fallback_end=False,
+        )
+
+        # 锁内更新：sync 路径包 to_thread。和 _apersist_new_facts 一致，
+        # 不动 _facts 内存视图——它在保存时由 save_facts 自己刷。
+        def _apply_update() -> bool:
+            with self._get_lock(name):
+                current = self.load_facts(name)
+                found = None
+                for f in current:
+                    if f.get('id') == fid:
+                        found = f
+                        break
+                if found is None:
+                    return False
+                if (found.get('schema_version') or 1) >= MEMORY_SCHEMA_VERSION_CURRENT:
+                    return False
+                found['event_when_raw'] = event_when_raw
+                found['event_start_at'] = event_start_at
+                found['event_end_at'] = event_end_at
+                found['schema_version'] = MEMORY_SCHEMA_VERSION_CURRENT
+                self.save_facts(name)
+                return True
+
+        try:
+            ok = await asyncio.to_thread(_apply_update)
+        except Exception as e:
+            logger.warning(f"[Recheck-Fact] {name} {fid}: save 失败: {e}")
+            return False
+        if ok:
+            logger.info(
+                f"[Recheck-Fact] {name} {fid}: v1→v{MEMORY_SCHEMA_VERSION_CURRENT} "
+                f"when={event_when_raw}"
+            )
+        return ok

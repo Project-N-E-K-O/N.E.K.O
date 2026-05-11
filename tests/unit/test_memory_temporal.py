@@ -1,0 +1,431 @@
+# -*- coding: utf-8 -*-
+"""Unit tests for schema v2 temporal helpers + past-derivation render
++ weighted followup sampling.
+
+Covered:
+- ``memory.temporal``: normalize_event_when / compute_event_timestamps /
+  is_past_for_render / time_since_label / weighted_sample_no_replace
+- ``persona._compose_markdown_from_trimmed``: outdated block with
+  六等号 delimiters, time labels, mixed active + past
+- ``reflection._filter_followup_candidates``: weighted sampling by
+  evidence_score
+"""
+from __future__ import annotations
+
+import random
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# ── memory.temporal helpers ─────────────────────────────────────────
+
+
+def test_normalize_event_when_accepts_valid_spec():
+    from memory.temporal import normalize_event_when
+    raw = {'start': {'offset': -3, 'unit': 'day'}, 'end': {'offset': 0, 'unit': 'day'}}
+    out = normalize_event_when(raw)
+    assert out == raw
+
+
+def test_normalize_event_when_rejects_garbage():
+    from memory.temporal import normalize_event_when
+    assert normalize_event_when("nope") is None
+    assert normalize_event_when({'start': 'bad'}) is None
+    # 单边坏掉但另一边 OK 时仍返回（半结构容忍）
+    out = normalize_event_when({
+        'start': {'offset': 'x', 'unit': 'day'},
+        'end': {'offset': 0, 'unit': 'day'},
+    })
+    assert out is not None
+    assert out['start'] is None
+    assert out['end'] == {'offset': 0, 'unit': 'day'}
+
+
+def test_normalize_event_when_rejects_unknown_unit():
+    from memory.temporal import normalize_event_when
+    out = normalize_event_when({'start': {'offset': -1, 'unit': 'banana'}, 'end': None})
+    assert out is None
+
+
+def test_compute_event_timestamps_pattern_no_end():
+    """pattern: fallback_start=True, fallback_end=False → end stays None."""
+    from memory.temporal import compute_event_timestamps
+    anchor = "2026-05-12T00:00:00"
+    s, e = compute_event_timestamps(None, anchor, fallback_start=True, fallback_end=False)
+    assert s == anchor
+    assert e is None
+
+
+def test_compute_event_timestamps_state_falls_back_to_added():
+    """state / episode: both fall back to added_at so TTL anchor exists."""
+    from memory.temporal import compute_event_timestamps
+    anchor = "2026-05-12T00:00:00"
+    s, e = compute_event_timestamps(None, anchor, fallback_start=True, fallback_end=True)
+    assert s == anchor
+    assert e == anchor
+
+
+def test_compute_event_timestamps_applies_offset():
+    from memory.temporal import compute_event_timestamps
+    anchor = "2026-05-12T00:00:00"
+    raw = {'start': {'offset': -3, 'unit': 'day'}, 'end': {'offset': -1, 'unit': 'day'}}
+    s, e = compute_event_timestamps(raw, anchor, fallback_start=True, fallback_end=True)
+    assert s.startswith("2026-05-09")  # -3 day
+    assert e.startswith("2026-05-11")  # -1 day
+
+
+# ── is_past_for_render ─────────────────────────────────────────────
+
+
+def _entry(scope, **overrides):
+    base = {'temporal_scope': scope, 'created_at': '2026-05-01T00:00:00'}
+    base.update(overrides)
+    return base
+
+
+def test_pattern_never_past():
+    from memory.temporal import is_past_for_render
+    now = datetime(2027, 1, 1)  # 一年后
+    assert is_past_for_render(_entry('pattern'), now) is False
+
+
+def test_state_past_after_7_days():
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    fresh = _entry('state', event_end_at='2026-05-17T00:00:00')  # 3 天前
+    old = _entry('state', event_end_at='2026-05-10T00:00:00')    # 10 天前
+    assert is_past_for_render(fresh, now) is False
+    assert is_past_for_render(old, now) is True
+
+
+def test_episode_past_after_3_days():
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    fresh = _entry('episode', event_end_at='2026-05-18T00:00:00')  # 2 天前
+    old = _entry('episode', event_end_at='2026-05-15T00:00:00')    # 5 天前
+    assert is_past_for_render(fresh, now) is False
+    assert is_past_for_render(old, now) is True
+
+
+def test_stored_past_always_past():
+    from memory.temporal import is_past_for_render
+    # 即使 event_end_at 是今天，stored 'past' 也立刻进过时 block
+    e = _entry('past', event_end_at='2026-05-20T00:00:00')
+    assert is_past_for_render(e, datetime(2026, 5, 20)) is True
+
+
+def test_legacy_scopes_never_past():
+    """v1 legacy: current / ongoing / None 不淡出（等慢速重判循环修正）。"""
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    for legacy in ('current', 'ongoing', None):
+        old = _entry(legacy, event_end_at='2026-04-01T00:00:00')
+        assert is_past_for_render(old, now) is False, f"{legacy!r} should not be past"
+
+
+def test_past_anchor_prefers_event_end():
+    """anchor 优先级 end > start > added > created（与 time_since 一致）。"""
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    # episode TTL=3d；end 较远（10d 前）→ past；start/created 都是今天但应被忽略
+    e = {
+        'temporal_scope': 'episode',
+        'event_end_at': '2026-05-10T00:00:00',
+        'event_start_at': '2026-05-20T00:00:00',
+        'created_at': '2026-05-20T00:00:00',
+    }
+    assert is_past_for_render(e, now) is True
+
+
+# ── time_since_label：Q-α 0-6d 天 / 7-29d 周 / 30d+ 月 ────────────────
+
+
+def test_time_since_zero_days():
+    from memory.temporal import time_since_label
+    now = datetime(2026, 5, 20)
+    assert time_since_label('2026-05-20T00:00:00', now=now, lang='zh') == '当下'
+
+
+@pytest.mark.parametrize("days,label", [
+    (1, '1 天前'), (3, '3 天前'), (6, '6 天前'),
+    (7, '1 周前'), (14, '2 周前'), (29, '4 周前'),
+    (30, '1 月前'), (60, '2 月前'), (365, '12 月前'),
+])
+def test_time_since_buckets_zh(days, label):
+    from memory.temporal import time_since_label
+    now = datetime(2026, 5, 20)
+    anchor = (now - timedelta(days=days)).isoformat()
+    assert time_since_label(anchor, now=now, lang='zh') == label
+
+
+def test_time_since_unknown_lang_falls_back_zh():
+    """Unknown lang code shouldn't crash — falls back to zh table."""
+    from memory.temporal import time_since_label
+    now = datetime(2026, 5, 20)
+    anchor = (now - timedelta(days=3)).isoformat()
+    out = time_since_label(anchor, now=now, lang='xx')
+    assert out == '3 天前'
+
+
+# ── weighted sampling ──────────────────────────────────────────────
+
+
+def test_weighted_sample_empty():
+    from memory.temporal import weighted_sample_no_replace
+    assert weighted_sample_no_replace([], [], 3) == []
+
+
+def test_weighted_sample_all_zero_weights():
+    """全 0 权重应返回 [] 而非 ZeroDivision。"""
+    from memory.temporal import weighted_sample_no_replace
+    assert weighted_sample_no_replace([1, 2, 3], [0, 0, 0], 2) == []
+
+
+def test_weighted_sample_k_exceeds_n():
+    from memory.temporal import weighted_sample_no_replace
+    out = weighted_sample_no_replace([1, 2], [1, 1], 5, rng=random.Random(0))
+    assert sorted(out) == [1, 2]
+
+
+def test_weighted_sample_high_weight_dominates():
+    """高权重条目应在多次采样中显著多次被选中。"""
+    from memory.temporal import weighted_sample_no_replace
+    items = list(range(10))
+    # idx 1, 4, 7 权重 5；其余 1
+    weights = [1, 5, 1, 1, 5, 1, 1, 5, 1, 1]
+    counts = {i: 0 for i in items}
+    for seed in range(200):
+        picked = weighted_sample_no_replace(items, weights, 3, rng=random.Random(seed))
+        for p in picked:
+            counts[p] += 1
+    # 高权重三个 (1, 4, 7) 累计计数应 > 普通三个 (2, 3, 5) 累计计数
+    high = counts[1] + counts[4] + counts[7]
+    low = counts[2] + counts[3] + counts[5]
+    assert high > low, f"high={high} not > low={low}"
+
+
+# ── render: outdated block layout ──────────────────────────────────
+
+
+def _mock_cm(tmpdir: str):
+    from unittest.mock import AsyncMock
+    cm = MagicMock()
+    cm.memory_dir = tmpdir
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    return cm
+
+
+def _persona_manager(tmpdir: str):
+    from memory.event_log import EventLog
+    from memory.persona import PersonaManager
+    cm = _mock_cm(tmpdir)
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm):
+        evl = EventLog()
+        evl._config_manager = cm
+        pm = PersonaManager(event_log=evl)
+        pm._config_manager = cm
+    return pm, cm
+
+
+def _refl(text, scope, event_end_at=None, status='confirmed'):
+    return {
+        'id': f'r-{text[:8]}',
+        'text': text,
+        'entity': 'master',
+        'status': status,
+        'temporal_scope': scope,
+        'event_end_at': event_end_at,
+        'created_at': event_end_at or '2026-05-01T00:00:00',
+    }
+
+
+def test_render_outdated_block_uses_six_equals(tmp_path):
+    """过时 block 必须用六个等号包裹 below/above 对偶分隔符。"""
+    pm, _ = _persona_manager(str(tmp_path))
+    old_iso = (datetime.now() - timedelta(days=10)).isoformat()
+    md = pm._compose_markdown_from_trimmed(
+        name='小天',
+        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+        name_mapping={'human': '主人'},
+        protected_entries=[],
+        trimmed_non_protected=[],
+        non_protected_entity_index={},
+        trimmed_pending_reflections=[],
+        trimmed_confirmed_reflections=[
+            _refl('当下持续模式', 'pattern'),
+            _refl('过时状态', 'state', event_end_at=old_iso),
+        ],
+    )
+    # active confirmed section stays
+    assert '当下持续模式' in md
+    assert '比较确定的印象' in md
+    # past block uses six-equals below/above pair
+    assert '======以下为较久前的记忆======' in md
+    assert '======以上为较久前的记忆======' in md
+    # past entry rendered with time label
+    assert '过时状态' in md
+    assert '[1 周前]' in md or '[10 天前]' in md  # 10d falls in 7-29d → "1 周前"
+
+
+def test_render_omits_past_block_when_all_active(tmp_path):
+    """没有任何过时条目时不应出现过时 block 分隔符。"""
+    pm, _ = _persona_manager(str(tmp_path))
+    md = pm._compose_markdown_from_trimmed(
+        name='小天',
+        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+        name_mapping={'human': '主人'},
+        protected_entries=[],
+        trimmed_non_protected=[],
+        non_protected_entity_index={},
+        trimmed_pending_reflections=[],
+        trimmed_confirmed_reflections=[
+            _refl('当下持续模式 A', 'pattern'),
+            _refl('当下持续模式 B', 'pattern'),
+        ],
+    )
+    assert '比较确定的印象' in md
+    assert '以下为较久前的记忆' not in md
+    assert '以上为较久前的记忆' not in md
+
+
+def test_render_legacy_temporal_scope_not_past(tmp_path):
+    """legacy 'current' / 'ongoing' / None 应当 fall back into active section,
+    not the past block (保守不淡出，等慢速重判修正)。"""
+    pm, _ = _persona_manager(str(tmp_path))
+    old_iso = (datetime.now() - timedelta(days=60)).isoformat()  # 60 days old
+    md = pm._compose_markdown_from_trimmed(
+        name='小天',
+        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+        name_mapping={'human': '主人'},
+        protected_entries=[],
+        trimmed_non_protected=[],
+        non_protected_entity_index={},
+        trimmed_pending_reflections=[],
+        trimmed_confirmed_reflections=[
+            _refl('legacy current 条目', 'current', event_end_at=old_iso),
+            _refl('legacy ongoing 条目', 'ongoing', event_end_at=old_iso),
+            _refl('legacy None 条目', None, event_end_at=old_iso),
+        ],
+    )
+    assert '比较确定的印象' in md
+    assert '以下为较久前的记忆' not in md  # legacy 不算 past
+    assert 'legacy current 条目' in md
+    assert 'legacy ongoing 条目' in md
+
+
+def test_render_past_block_no_temporal_scope_label(tmp_path):
+    """过时 block 内不出现 temporal_scope 字面值（用户原话："不需要进任何 block"）。
+
+    用户的要求是 render 时不要把 pattern/state/episode 这种类型标签也塞到
+    每条前缀里（仅时间标签 + 全局过时提醒就够）。我们检查 prefix 形式：
+    bullet 行只有 "- [时间标签] 内容"，不会出现 "- [state] xxx" 之类。
+    """
+    pm, _ = _persona_manager(str(tmp_path))
+    old_iso = (datetime.now() - timedelta(days=10)).isoformat()
+    md = pm._compose_markdown_from_trimmed(
+        name='小天',
+        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+        name_mapping={'human': '主人'},
+        protected_entries=[],
+        trimmed_non_protected=[],
+        non_protected_entity_index={},
+        trimmed_pending_reflections=[],
+        trimmed_confirmed_reflections=[
+            _refl('一条过时印象', 'state', event_end_at=old_iso),
+        ],
+    )
+    start = md.find('======以下为较久前的记忆======')
+    end = md.find('======以上为较久前的记忆======')
+    block = md[start:end]
+    # bullet 前缀只允许 [时间标签]，不允许任何形式的 [pattern/state/episode/...]
+    import re as _re
+    for prefix in _re.findall(r'^- \[([^\]]*)\]', block, _re.MULTILINE):
+        for word in ('state', 'episode', 'pattern', 'past', 'temporal_scope'):
+            assert word not in prefix, (
+                f"unexpected temporal label {word!r} in bullet prefix {prefix!r}"
+            )
+
+
+# ── weighted followup sampling integration ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_followup_weighted_disabled_uses_list_order(tmp_path):
+    """REFLECTION_FOLLOWUP_WEIGHTED=False 时回退旧行为（list 顺序）。"""
+    from memory.event_log import EventLog
+    from memory.facts import FactStore
+    from memory.persona import PersonaManager
+    from memory.reflection import ReflectionEngine
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.facts.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.reflection.get_config_manager", return_value=cm):
+        evl = EventLog(); evl._config_manager = cm
+        fs = FactStore(); fs._config_manager = cm
+        pm = PersonaManager(event_log=evl); pm._config_manager = cm
+        re = ReflectionEngine(fs, pm, event_log=evl); re._config_manager = cm
+
+    from datetime import datetime
+    now_iso = datetime.now().isoformat()
+    candidates = [
+        {'id': f'r{i}', 'status': 'pending',
+         'reinforcement': 0.5, 'disputation': 0.0,
+         'rein_last_signal_at': now_iso, 'disp_last_signal_at': None,
+         'next_eligible_at': now_iso, 'created_at': now_iso}
+        for i in range(5)
+    ]
+    await re.asave_reflections('小天', candidates)
+    with patch('config.REFLECTION_FOLLOWUP_WEIGHTED', False):
+        # 两次调用应该返回完全相同的前 K 条（list 顺序）
+        a = await re.aget_followup_topics('小天')
+        b = await re.aget_followup_topics('小天')
+    assert [r['id'] for r in a] == [r['id'] for r in b]
+    assert len(a) == 3  # REFLECTION_SURFACE_TOP_K default
+
+
+@pytest.mark.asyncio
+async def test_followup_weighted_enabled_varies_picks(tmp_path):
+    """REFLECTION_FOLLOWUP_WEIGHTED=True + 候选 > TOP_K → 多轮采样应出现
+    不同组合（不再雷同）。"""
+    from memory.event_log import EventLog
+    from memory.facts import FactStore
+    from memory.persona import PersonaManager
+    from memory.reflection import ReflectionEngine
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.facts.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm), \
+         patch("memory.reflection.get_config_manager", return_value=cm):
+        evl = EventLog(); evl._config_manager = cm
+        fs = FactStore(); fs._config_manager = cm
+        pm = PersonaManager(event_log=evl); pm._config_manager = cm
+        re = ReflectionEngine(fs, pm, event_log=evl); re._config_manager = cm
+
+    from datetime import datetime
+    now_iso = datetime.now().isoformat()
+    # 8 候选 + TOP_K=3 → 加权采样至少应在 30 次中产生 ≥ 2 种 picks
+    candidates = [
+        {'id': f'r{i}', 'status': 'pending',
+         'reinforcement': 0.5, 'disputation': 0.0,
+         'rein_last_signal_at': now_iso, 'disp_last_signal_at': None,
+         'next_eligible_at': now_iso, 'created_at': now_iso}
+        for i in range(8)
+    ]
+    await re.asave_reflections('小天', candidates)
+    seen = set()
+    for _ in range(30):
+        picks = await re.aget_followup_topics('小天')
+        seen.add(tuple(sorted(r['id'] for r in picks)))
+    assert len(seen) >= 2, f"weighted sampling produced only {len(seen)} unique combos"
