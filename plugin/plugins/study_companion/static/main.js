@@ -201,6 +201,8 @@ async function setMode(mode) {
   }
   setStatus(t('ui.status.mode_switching', 'Switching mode...'));
   const data = await callPlugin('study_set_mode', { mode, reason: 'ui' });
+  currentMode = String(mode || 'companion');
+  setModeButtons(currentMode, false);
   setReply(data.transition_phrase || data.summary || data.message || '');
   await refreshStatus({ updateReply: false });
 }

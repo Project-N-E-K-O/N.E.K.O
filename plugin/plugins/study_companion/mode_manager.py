@@ -55,6 +55,7 @@ _MODE_INTENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "一起想",
             "一起思考",
             "interactive mode",
+            "discussion mode",
             "interactive",
             "discussion",
             "discuss",
@@ -87,6 +88,51 @@ _EXPLAIN_INTENT_RULES: tuple[str, ...] = (
     "please explain",
 )
 
+_MODE_SWITCH_PREFIXES: tuple[str, ...] = (
+    "switch to",
+    "switch into",
+    "change to",
+    "change into",
+    "set mode to",
+    "set to",
+    "turn on",
+    "go to",
+    "enter",
+    "enable",
+    "use",
+    "please",
+    "teach me",
+    "study with me",
+    "切换到",
+    "切到",
+    "切换",
+    "改成",
+    "设为",
+    "设置成",
+    "进入",
+    "开启",
+    "打开",
+    "启用",
+    "使用",
+    "请",
+    "教我",
+)
+
+_MODE_PREFIX_REQUIRED_KEYWORDS = frozenset(
+    {
+        "teach",
+        "interactive",
+        "discussion",
+        "discuss",
+        "companion",
+        "教学",
+        "互动",
+        "讨论",
+        "伴学",
+        "讲解",
+    }
+)
+
 
 def _json_copy(value: Any) -> Any:
     if isinstance(value, dict):
@@ -100,6 +146,33 @@ def _json_copy(value: Any) -> Any:
 
 def _strip_noise(text: str) -> str:
     return re.sub(r"^[\s,，。.!！？?:：;；—~·\-\\]+|[\s,，。.!！？?:：;；—~·\-\\]+$", "", str(text or "").strip())
+
+
+def _keyword_pattern(keyword: str) -> str:
+    candidate = str(keyword or "").strip()
+    if not candidate:
+        return ""
+    if all(ord(char) < 128 for char in candidate):
+        escaped = r"\s+".join(re.escape(part) for part in candidate.split())
+        return rf"(?<![0-9A-Za-z_]){escaped}(?![0-9A-Za-z_])"
+    return re.escape(candidate)
+
+
+def _find_keyword_match(text: str, keyword: str) -> re.Match[str] | None:
+    pattern = _keyword_pattern(keyword)
+    if not pattern:
+        return None
+    return re.search(pattern, text, flags=re.IGNORECASE)
+
+
+def _command_prefix_start(text: str, match_start: int) -> int:
+    prefix = text[:match_start]
+    for candidate in sorted(_MODE_SWITCH_PREFIXES, key=len, reverse=True):
+        pattern = rf"{re.escape(candidate)}[\s,，。.!！？?:：;；—~·\-\\]*$"
+        match = re.search(pattern, prefix, flags=re.IGNORECASE)
+        if match:
+            return match.start()
+    return match_start
 
 
 def _is_english_language(language: str | None) -> bool:
@@ -173,20 +246,22 @@ def build_transition_phrase(
 
 def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
     normalized_text = str(text or "").strip()
-    folded = normalized_text.casefold()
-    best_mode_match: tuple[int, str, str] | None = None
+    best_mode_match: tuple[int, str, str, re.Match[str], int] | None = None
     for mode, keywords in _MODE_INTENT_RULES:
         for keyword in keywords:
-            keyword_folded = keyword.casefold()
-            if keyword_folded not in folded:
+            match = _find_keyword_match(normalized_text, keyword)
+            if match is None:
                 continue
-            score = len(keyword_folded)
+            removal_start = _command_prefix_start(normalized_text, match.start())
+            keyword_folded = keyword.casefold()
+            if keyword_folded in _MODE_PREFIX_REQUIRED_KEYWORDS and removal_start == match.start():
+                continue
+            score = match.end() - removal_start
             if best_mode_match is None or score > best_mode_match[0]:
-                best_mode_match = (score, mode, keyword)
+                best_mode_match = (score, mode, keyword, match, removal_start)
     if best_mode_match is not None:
-        _, mode, keyword = best_mode_match
-        remainder = normalized_text
-        remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
+        _, mode, keyword, match, removal_start = best_mode_match
+        remainder = f"{normalized_text[:removal_start]}{normalized_text[match.end():]}"
         remainder = _strip_noise(remainder)
         return {
             "matched": True,
@@ -199,11 +274,11 @@ def handle_user_intent(text: str, *, language: str = "zh-CN") -> dict[str, Any]:
             "transition_phrase": build_transition_phrase(mode, language=language, outcome="changed"),
         }
     for keyword in sorted(_EXPLAIN_INTENT_RULES, key=len, reverse=True):
-        keyword_folded = keyword.casefold()
-        if keyword_folded not in folded:
+        match = _find_keyword_match(normalized_text, keyword)
+        if match is None:
             continue
-        remainder = normalized_text
-        remainder = re.sub(re.escape(keyword), "", remainder, count=1, flags=re.IGNORECASE)
+        removal_start = _command_prefix_start(normalized_text, match.start())
+        remainder = f"{normalized_text[:removal_start]}{normalized_text[match.end():]}"
         remainder = _strip_noise(remainder)
         return {
             "matched": True,
