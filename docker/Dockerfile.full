@@ -225,7 +225,7 @@ RUN echo "========================================" && \
     echo "UV version: $(uv --version)" && \
     echo "Nginx version: $(nginx -v 2>&1)" && \
     echo "Playwright browsers:" && \
-    ls -la /root/.cache/ms-playwright/ 2>/dev/null || echo "  (not found)" && \
+    ls -la /opt/ms-playwright/ 2>/dev/null || echo "  (not found)" && \
     echo "========================================"
 
 # 15. Set entrypoint
