@@ -776,8 +776,25 @@ async def _handle_agent_event(event: dict):
                     else:
                         source_kind = "system"
                 event_metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+                # origin is a STRUCTURAL fact derived from event_type:
+                #   "task_result"      → real task completion (agent_server._emit_task_result):
+                #                        Computer Use / Browser Use / plugin entry / MCP tool result
+                #   "proactive_message" → plugin push_message stream (proactive_bridge):
+                #                        danmaku / gift / external notification
+                # Plugin authors cannot influence this — it's determined by which
+                # SDK method they call (finish() vs push_message()) and which host
+                # path it flows through. _build_callback_instruction uses this to
+                # pick the right wrapper template (task "汇报" vs event "回应").
+                if event_type == "task_result":
+                    origin = "task_result"
+                else:
+                    # event_type == "proactive_message" (or any future event-stream
+                    # producer that lands on this branch); see the (event_type in
+                    # {"task_result", "proactive_message"}) gate above.
+                    origin = "event"
                 callback = {
                     "event": "agent_task_callback",
+                    "origin": origin,
                     "task_id": event.get("task_id") or "",
                     "channel": _channel,
                     "status": cb_status,
