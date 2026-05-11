@@ -73,7 +73,12 @@ def _content_to_text(content: Any) -> str:
             else:
                 # 未知 part 类型：完整 json dump，不截断（审计需要全文）。
                 # 注意 image_url/input_image 已在上面分支拦截，落不到这里。
-                out.append(json.dumps(part, ensure_ascii=False))
+                # try/except 与 dict 分支对偶——单个 part 序列化失败不应
+                # 让整条 message 的 audit 跟着丢掉（外层 except 会吞整条记录）。
+                try:
+                    out.append(json.dumps(part, ensure_ascii=False))
+                except Exception:
+                    out.append(str(part))
         return "\n".join(out)
     if isinstance(content, dict):
         # 镜像 list 分支的类型分流：上游偶尔直接传单个 part dict（不是
