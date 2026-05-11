@@ -29,7 +29,7 @@ enabled = true
 auto_start = false
 
 [study]
-default_mode = "concept_explain"
+default_mode = "companion"
 language = "zh-CN"
 history_limit = 50
 

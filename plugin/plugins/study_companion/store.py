@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .mode_manager import normalize_mode
 from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, build_config, json_copy
 
 
@@ -138,6 +139,12 @@ class StudyStore:
             return fallback
         merged = fallback.to_dict()
         merged.update(raw)
+        merged["active_mode"] = normalize_mode(merged.get("active_mode") or fallback.active_mode)
+        merged["mode_started_at"] = float(merged.get("mode_started_at") or 0.0)
+        merged["recent_mode_switches"] = merged.get("recent_mode_switches") if isinstance(merged.get("recent_mode_switches"), list) else []
+        merged["suggestion_cooldowns"] = merged.get("suggestion_cooldowns") if isinstance(merged.get("suggestion_cooldowns"), dict) else {}
+        merged["session_suggestions"] = merged.get("session_suggestions") if isinstance(merged.get("session_suggestions"), list) else []
+        merged["mode_lock_until"] = float(merged.get("mode_lock_until") or 0.0)
         return StudyState(**{key: merged[key] for key in fallback.to_dict().keys()})
 
     def save_state(self, state: StudyState) -> None:

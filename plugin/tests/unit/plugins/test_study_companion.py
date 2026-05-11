@@ -16,7 +16,15 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
-from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
+from plugin.plugins.study_companion.mode_manager import (
+    MODE_COMPANION,
+    MODE_INTERACTIVE,
+    MODE_TEACHING,
+    ModeManager,
+    handle_user_intent,
+    normalize_mode,
+)
+from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
@@ -140,14 +148,23 @@ class _FakeStudyOcrPipeline:
 
 class _FakeTutorAgent:
     def __init__(self) -> None:
-        self.inputs: list[tuple[str, dict[str, object]]] = []
+        self.inputs: list[tuple[str, dict[str, object], str]] = []
 
-    async def concept_explain(self, text: str, context: dict[str, object] | None = None) -> TutorReply:
-        self.inputs.append((text, dict(context or {})))
+    def update_config(self, config: StudyConfig) -> None:
+        self._config = config
+
+    async def concept_explain(
+        self,
+        text: str,
+        *,
+        mode: str = MODE_COMPANION,
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.inputs.append((text, dict(context or {}), mode))
         return TutorReply(
             operation="concept_explain",
             input_text=text,
-            reply=f"explained: {text}",
+            reply=f"explained[{mode}]: {text}",
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -176,6 +193,67 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+def test_study_mode_manager_intent_switch_rules() -> None:
+    assert normalize_mode("concept_explain") == MODE_COMPANION
+    pure = handle_user_intent("教我")
+    assert pure["mode"] == MODE_TEACHING
+    assert pure["pure_switch"] is True
+
+    with_text = handle_user_intent("教我光合作用")
+    assert with_text["mode"] == MODE_TEACHING
+    assert with_text["pure_switch"] is False
+    assert with_text["remaining_text"] == "光合作用"
+
+    manager = ModeManager(current_mode=MODE_COMPANION)
+    first = manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)
+    assert first["changed"] is True
+    same = manager.switch_to(MODE_INTERACTIVE, "unit", now=1010.0)
+    assert same["changed"] is False
+    assert same["new_mode"] == MODE_INTERACTIVE
+    dwell = manager.switch_to(MODE_TEACHING, "unit", now=1010.0)
+    assert dwell["changed"] is False
+    assert dwell["lock_reason"] == "minimum_dwell"
+
+    manager = ModeManager(current_mode=MODE_COMPANION)
+    assert manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)["changed"] is True
+    manager.mode_started_at = 0.0
+    assert manager.switch_to(MODE_TEACHING, "unit", now=1010.0)["changed"] is True
+    manager.mode_started_at = 0.0
+    locked = manager.switch_to(MODE_COMPANION, "unit", now=1020.0)
+    assert locked["changed"] is True
+    assert locked["lock_until"] > 1020.0
+    blocked = manager.switch_to(MODE_INTERACTIVE, "unit", now=1030.0)
+    assert blocked["changed"] is False
+    assert blocked["lock_reason"] == "mode_lock"
+
+
+def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
+    legacy = build_config({"study": {"default_mode": "concept_explain"}})
+    assert legacy.mode == MODE_COMPANION
+    assert legacy.default_mode == MODE_COMPANION
+
+    interactive = build_config({"study": {"default_mode": MODE_INTERACTIVE}})
+    assert interactive.mode == MODE_INTERACTIVE
+    assert interactive.default_mode == MODE_INTERACTIVE
+
+    invalid = build_config({"study": {"default_mode": "not_a_mode"}})
+    assert invalid.mode == MODE_COMPANION
+    assert invalid.default_mode == MODE_COMPANION
+
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.set_raw("state", {"status": "ready", "active_mode": "concept_explain", "last_ocr_text": "legacy"})
+        loaded = store.load_state(build_initial_state())
+        assert loaded.active_mode == MODE_COMPANION
+        assert loaded.last_ocr_text == "legacy"
+        assert loaded.recent_mode_switches == []
+        assert loaded.suggestion_cooldowns == {}
+        assert loaded.session_suggestions == []
+    finally:
+        store.close()
+
+
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
@@ -187,6 +265,11 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "ui.title" in bundle
         assert "ui.surface.study_panel" in bundle
         assert "ui.button.explain" in bundle
+        assert "status.mode.companion" in bundle
+        assert "status.mode.interactive" in bundle
+        assert "status.mode.teaching" in bundle
+        assert "ui.status.mode_switching" in bundle
+        assert "ui.error.mode_switch_failed" in bundle
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
@@ -238,6 +321,7 @@ document.write(html);
 document.close();
 
 const runEntries = new Map();
+let activeMode = 'companion';
 window.fetch = async (rawUrl, options = {}) => {
   const url = String(rawUrl);
   if (url === '/plugin/study_companion/ui-api/i18n/en.json') {
@@ -245,11 +329,18 @@ window.fetch = async (rawUrl, options = {}) => {
   }
   if (url === '/runs' && options.method === 'POST') {
     const body = JSON.parse(String(options.body || '{}'));
-    const runId = body.entry_id === 'study_explain_text' ? 'run-explain' : 'run-status';
+    const runId = body.entry_id === 'study_explain_text'
+      ? 'run-explain'
+      : body.entry_id === 'study_set_mode'
+        ? 'run-mode'
+        : 'run-status';
     runEntries.set(runId, body);
     return Response.json({ run_id: runId, status: 'queued' });
   }
   if (url === '/runs/run-status') {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (url === '/runs/run-mode') {
     return Response.json({ status: 'succeeded' });
   }
   if (url === '/runs/run-explain') {
@@ -257,7 +348,26 @@ window.fetch = async (rawUrl, options = {}) => {
   }
   if (url === '/runs/run-status/export') {
     return Response.json({
-      items: [{ type: 'json', json: { success: true, data: { status: 'ready', active_mode: 'concept_explain' } } }],
+      items: [{ type: 'json', json: { success: true, data: { status: 'ready', active_mode: activeMode } } }],
+    });
+  }
+  if (url === '/runs/run-mode/export') {
+    const run = runEntries.get('run-mode') || {};
+    activeMode = run.args.mode || activeMode;
+    return Response.json({
+      items: [{
+        type: 'json',
+        json: {
+          success: true,
+          data: {
+            changed: true,
+            old_mode: 'companion',
+            new_mode: activeMode,
+            transition_phrase: `${activeMode} mode enabled`,
+            reply: `${activeMode} mode enabled`,
+          },
+        },
+      }],
     });
   }
   if (url === '/runs/run-explain/export') {
@@ -282,9 +392,15 @@ async function waitFor(predicate, label) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-await waitFor(() => document.getElementById('statusLine').textContent.includes('ready'), 'ready status');
+  await waitFor(() => document.getElementById('statusLine').textContent.includes('Ready'), 'ready status');
 if (document.title !== 'Study Companion') {
   throw new Error(`unexpected title: ${document.title}`);
+}
+
+document.getElementById('modeInteractiveBtn').click();
+await waitFor(() => document.getElementById('statusLine').textContent.includes('Interactive'), 'interactive mode');
+if (!runEntries.get('run-mode') || runEntries.get('run-mode').args.mode !== 'interactive') {
+  throw new Error(`mode run args mismatch: ${JSON.stringify(runEntries.get('run-mode'))}`);
 }
 
 document.getElementById('studyInput').value = 'Explain derivative';
@@ -318,11 +434,15 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
 
     assert "ENTRY_TIMEOUT_MS" in source
+    assert "study_set_mode: 15000" in source
     assert "study_explain_text: 60000" in source
     assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
     assert "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})" in source
     assert "await refresh(controller.signal, { updateReply: false });" in source
+    assert "study-panel__modes" in source
+    assert "study_set_mode" in source
+    assert "status.mode.companion" in source
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
@@ -334,10 +454,12 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" in hosted_source
     assert "const exported = exportResp.ok ? await exportResp.json() : {};" not in hosted_source
     assert "return item?.json?.data || {};" not in hosted_source
+    assert "study_set_mode" in hosted_source
 
     assert "RUN_EXPORT_RETRY_COUNT = 3" in static_source
     assert "throw new Error(tf('ui.error.run_export_failed'" in static_source
     assert "if (!response.ok) {\n    return {};" not in static_source
+    assert "callPlugin('study_set_mode'" in static_source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
@@ -521,6 +643,7 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
 
     try:
         with plugin._lock:
@@ -550,7 +673,65 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
         explain_result = await plugin.study_explain_text()
         assert isinstance(explain_result, Ok)
         assert explain_result.value["input_text"] == "photosynthesis"
-        assert plugin._agent.inputs == [("photosynthesis", {"source": "ocr_snapshot"})]
+        assert plugin._agent.inputs == [("photosynthesis", {"source": "ocr_snapshot", "mode": MODE_COMPANION, "mode_switch": False}, MODE_COMPANION)]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_detects_mode_intent_and_continues_when_content_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        pure = await plugin.study_explain_text("教我")
+        assert isinstance(pure, Ok)
+        assert pure.value["new_mode"] == MODE_TEACHING
+        assert pure.value["reply"]
+        assert "教学模式" in pure.value["reply"]
+
+        with plugin._lock:
+            plugin._state.active_mode = MODE_COMPANION
+            plugin._state.mode_started_at = 0.0
+            plugin._state.mode_lock_until = 0.0
+            plugin._state.recent_mode_switches = []
+            plugin._cfg.mode = MODE_COMPANION
+            plugin._cfg.default_mode = MODE_COMPANION
+        plugin._mode_manager.restore(
+            {
+                "current_mode": MODE_COMPANION,
+                "mode_started_at": 0.0,
+                "recent_mode_switches": [],
+                "suggestion_cooldowns": {},
+                "session_suggestions": [],
+                "mode_lock_until": 0.0,
+            }
+        )
+
+        explained = await plugin.study_explain_text("教我光合作用")
+        assert isinstance(explained, Ok)
+        assert explained.value["intent"]["mode"] == MODE_TEACHING
+        assert explained.value["mode_switch"]["changed"] is True
+        assert explained.value["reply"].startswith("教学模式已开启。")
+        assert plugin._agent.inputs[-1] == (
+            "光合作用",
+            {"source": "manual", "mode": MODE_TEACHING, "mode_switch": True},
+            MODE_TEACHING,
+        )
     finally:
         await plugin.shutdown()
 
@@ -560,10 +741,12 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
     messages = build_concept_explain_messages(
         text="A derivative measures instantaneous rate of change.",
         language="en",
-        context={"source": "unit-test"},
+        mode=MODE_INTERACTIVE,
+        context={"source": "unit-test", "mode": MODE_INTERACTIVE},
     )
     assert messages[0]["role"] == "system"
     assert "unit-test" in messages[1]["content"]
+    assert "Mode: interactive" in messages[1]["content"]
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
@@ -571,7 +754,7 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
         return "A derivative is the slope at one point."
 
     monkeypatch.setattr(agent, "_call_model", _fake_call_model)
-    reply = await agent.concept_explain("derivative")
+    reply = await agent.concept_explain("derivative", mode=MODE_INTERACTIVE)
 
     assert reply.operation == "concept_explain"
     assert reply.reply == "A derivative is the slope at one point."
@@ -661,9 +844,14 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "study_status" in entries
     assert "study_explain_text" in entries
     assert "study_ocr_snapshot" in entries
+    assert "study_set_mode" in entries
+    assert "study_detect_mode_intent" in entries
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
+    assert status.value["active_mode"] == MODE_COMPANION
+    assert "mode_started_at" in status.value
+    assert "recent_mode_switches" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     assert not (tmp_path / "data" / "study_companion.db").exists()
     await plugin.shutdown()

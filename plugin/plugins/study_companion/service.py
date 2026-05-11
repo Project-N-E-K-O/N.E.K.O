@@ -19,7 +19,14 @@ def build_status_payload(
 ) -> dict[str, Any]:
     return {
         "status": state.status,
+        "mode": config.mode,
+        "default_mode": config.default_mode,
         "active_mode": state.active_mode,
+        "mode_started_at": state.mode_started_at,
+        "recent_mode_switches": json_copy(state.recent_mode_switches),
+        "suggestion_cooldowns": json_copy(state.suggestion_cooldowns),
+        "session_suggestions": json_copy(state.session_suggestions),
+        "mode_lock_until": state.mode_lock_until,
         "last_error": state.last_error,
         "last_started_at": state.last_started_at,
         "last_ocr_text": state.last_ocr_text,

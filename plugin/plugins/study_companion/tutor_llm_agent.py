@@ -8,6 +8,7 @@ from typing import Any
 from plugin.sdk.plugin import SdkError
 
 from .llm_prompts import build_concept_explain_messages
+from .mode_manager import MODE_COMPANION, MODE_TEACHING, build_transition_phrase, normalize_mode
 from .models import MODE_CONCEPT_EXPLAIN, StudyConfig, TutorReply, utc_now_iso
 
 
@@ -80,6 +81,7 @@ class TutorLLMAgent:
         self,
         text: str,
         *,
+        mode: str = MODE_COMPANION,
         context: dict[str, Any] | None = None,
     ) -> TutorReply:
         normalized = str(text or "").strip()
@@ -92,9 +94,11 @@ class TutorLLMAgent:
                 diagnostic="empty_input",
                 created_at=utc_now_iso(),
             )
+        selected_mode = normalize_mode(mode)
         messages = build_concept_explain_messages(
             text=normalized,
             language=self._config.language,
+            mode=selected_mode,
             context=context,
         )
         try:
@@ -105,7 +109,11 @@ class TutorLLMAgent:
             return TutorReply(
                 operation=MODE_CONCEPT_EXPLAIN,
                 input_text=normalized,
-                reply=reply,
+                reply=(
+                    f"{build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed')}\n\n{reply}"
+                    if selected_mode == MODE_TEACHING and not reply.startswith(build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed'))
+                    else reply
+                ),
                 degraded=False,
                 created_at=utc_now_iso(),
             )
@@ -113,7 +121,11 @@ class TutorLLMAgent:
             return TutorReply(
                 operation=MODE_CONCEPT_EXPLAIN,
                 input_text=normalized,
-                reply=self._fallback_explanation(normalized),
+                reply=(
+                    f"{build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed')}\n\n{self._fallback_explanation(normalized)}"
+                    if selected_mode == MODE_TEACHING
+                    else self._fallback_explanation(normalized)
+                ),
                 degraded=True,
                 diagnostic=str(exc),
                 created_at=utc_now_iso(),
