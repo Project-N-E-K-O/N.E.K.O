@@ -853,8 +853,11 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     """
     if not message:
         return False
-    # 只剥 region 后缀（zh-CN/zh_CN/en-US/pt-BR ...），保留契约："未知 → zh"
-    short = (lang or "").split('-', 1)[0].split('_', 1)[0]
+    # 只剥 region 后缀（zh-CN/zh_CN/en-US/pt-BR ...），保留契约："未知 → zh"。
+    # 同时 strip 前后空白 + lower 大小写——上游若传 ``EN-US`` 或 ``" en-US "``，
+    # split 后是 ``EN`` / `` en``，dict key 都是小写无空白会 miss → 错落 zh
+    # 兜底（CodeRabbit Minor）。
+    short = (lang or "").strip().lower().split('-', 1)[0].split('_', 1)[0]
     # `zh` is always non-empty in the dict, so the fallback is guaranteed
     # to yield a frozenset (CodeRabbit PR #929 dead-code cleanup).
     kws = NEGATIVE_KEYWORDS_I18N.get(short, NEGATIVE_KEYWORDS_I18N["zh"])
