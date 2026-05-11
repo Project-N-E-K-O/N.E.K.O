@@ -1488,6 +1488,65 @@ def test_redact_does_not_eat_earlier_turn_when_dispatch_double_records_cancel():
     _task_tracker._records.pop(lanlan, None)
 
 
+def test_user_message_signature_distinguishes_senders():
+    """多用户场景：两个不同 user 发同样的文字，sig 必须不同——否则取消 A
+    的请求会让 redact 误吞 B 的同文本请求。"""
+    from app.agent_server import _user_message_signature
+
+    a_top = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_top = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+    a_meta = {"role": "user", "text": "打开天气", "meta": {"sender_id": "user-A"}}
+    a_ctx = {"role": "user", "text": "打开天气", "_ctx": {"user_id": "user-A"}}
+    no_sender = {"role": "user", "text": "打开天气"}
+
+    sig_a = _user_message_signature(a_top)
+    sig_b = _user_message_signature(b_top)
+    assert sig_a and sig_b and sig_a != sig_b
+    # 三种来源同一 sender_id 都归一到同一签名
+    assert _user_message_signature(a_meta) == sig_a
+    assert _user_message_signature(a_ctx) == sig_a
+    # 无 sender 与有 sender 不同
+    no_sig = _user_message_signature(no_sender)
+    assert no_sig and no_sig not in (sig_a, sig_b)
+
+
+def test_redact_does_not_eat_another_users_same_text_turn():
+    """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
+    redact 应只动 A 的请求，不应误吞 B 的。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-multi-user"
+    _task_tracker._records.pop(lanlan, None)
+
+    a_msg = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_msg = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+
+    _task_tracker.record_completed(
+        lanlan, task_id="t-a-cancel", method="browser_use",
+        desc="打开天气", success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature(a_msg),
+    )
+
+    messages = [
+        a_msg,
+        {"role": "assistant", "text": "正在打开"},
+        b_msg,
+        {"role": "assistant", "text": "好的"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is b_msg                    # B 的请求保留
+    assert out[2] == messages[3]              # B 的 assistant 响应保留
+    assert len(out) == 3                      # 只吞 A 的 user + 它后面的 assistant
+
+    _task_tracker._records.pop(lanlan, None)
+
+
 def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
     """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
     normalization helper（_user_message_payload_text），避免归一化规则漂移。

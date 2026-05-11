@@ -1421,15 +1421,47 @@ def _normalize_lanlan_key(lanlan_name: Optional[str]) -> str:
     return name or "__default__"
 
 
+def _user_message_sender_id(message: Any) -> str:
+    """Return a normalized sender identifier for a user message, or "" if
+    none is present. Mirrors `_resolve_openclaw_sender_id`'s lookup paths
+    (top-level sender_id/user_id, plus meta/metadata/_ctx containers) so
+    multi-user signatures align with how OpenClaw routes per-user state.
+    """
+    if not isinstance(message, dict):
+        return ""
+    candidates: list[Any] = [
+        message.get("sender_id"),
+        message.get("user_id"),
+    ]
+    for container_key in ("meta", "metadata", "_ctx"):
+        container = message.get(container_key)
+        if isinstance(container, dict):
+            candidates.extend([
+                container.get("sender_id"),
+                container.get("user_id"),
+            ])
+    for candidate in candidates:
+        resolved = str(candidate or "").strip()
+        if resolved:
+            return resolved
+    return ""
+
+
 def _user_message_payload_text(message: Any) -> Optional[str]:
     """Return the normalized hash payload for a single user message, or None
     if the message is not a user role / has no text or attachments.
 
+    Includes sender identity (when present) so multi-user scenarios where
+    two different users send the same text produce distinct signatures —
+    otherwise canceling user A's task would let `_redact_cancelled_user_turns`
+    eat user B's later identical request. Single-user messages have empty
+    sender and skip the prefix, preserving the historical hash.
+
     Shared between `_user_message_signature` (single-message hash, used at
     dispatch and redact time) and `_build_user_turn_fingerprint` (cross-turn
     "have we analyzed this user turn yet" dedupe). Centralizing the
-    normalization rules prevents the two from drifting when attachment
-    schemas evolve.
+    normalization rules prevents the two from drifting when attachment or
+    sender-id schemas evolve.
     """
     if not isinstance(message, dict) or message.get("role") != "user":
         return None
@@ -1448,10 +1480,15 @@ def _user_message_payload_text(message: Any) -> Optional[str]:
                 attachment_urls.append(url)
     if not text and not attachment_urls:
         return None
-    part = text
+    parts: list[str] = []
+    sender = _user_message_sender_id(message)
+    if sender:
+        parts.append(f"[sender:{sender}]")
+    if text:
+        parts.append(text)
     if attachment_urls:
-        part = f"{part}\n[attachments]\n" + "\n".join(attachment_urls)
-    return part.strip()
+        parts.append("[attachments]\n" + "\n".join(attachment_urls))
+    return "\n".join(parts).strip()
 
 
 def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
