@@ -876,15 +876,22 @@ setup_dependencies() {
     echo "✅ Dependencies installed successfully"
     
     # 安装 Playwright 浏览器（用于 browser_use 自动化）
-    echo "🎭 Installing Playwright Chromium browser for browser_use..."
+    # 如果浏览器已预装（如 full 镜像），则跳过安装
+    echo "🎭 Checking Playwright Chromium browser..."
     mkdir -p "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}"
     
-    # 尝试安装 Chromium，失败时不中断启动
-    if uv run python -m playwright install chromium --with-deps 2>&1; then
-        echo "✅ Playwright Chromium installed successfully"
+    # 检查是否已有 Chromium 浏览器安装
+    if ls "${PLAYWRIGHT_BROWSERS_PATH:-/root/.cache/ms-playwright}"/chromium-* 1>/dev/null 2>&1; then
+        echo "✅ Playwright Chromium already installed, skipping installation"
     else
-        echo "⚠️ Playwright Chromium installation failed (will retry on next start)"
-        echo "   Browser automation features may not work until Playwright is installed"
+        echo "📦 Playwright Chromium not found, installing..."
+        # 尝试安装 Chromium，失败时不中断启动
+        if uv run python -m playwright install chromium --with-deps 2>&1; then
+            echo "✅ Playwright Chromium installed successfully"
+        else
+            echo "⚠️ Playwright Chromium installation failed (will retry on next start)"
+            echo "   Browser automation features may not work until Playwright is installed"
+        fi
     fi
 }
 

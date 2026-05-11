@@ -183,7 +183,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
 
 # 7. Copy frontend build artifacts
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
-COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
+COPY --from=frontend-builder /src/frontend/react-neko-chat/dist /app/static/react/neko-chat
 
 # 7b. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
 #     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
@@ -198,14 +198,16 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
-# 9. Install Playwright Chromium browser during build (FULL version includes this)
+# 9. Set Playwright environment variable BEFORE installing browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
+# 10. Install Playwright Chromium browser during build (FULL version includes this)
 RUN uv run python -m playwright install chromium --with-deps && \
     chmod -R 755 ${PLAYWRIGHT_BROWSERS_PATH}
 
-# 10. 设置环境变量
+# 11. Set remaining environment variables
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"
-ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 # 11. 复制 entrypoint 脚本
 COPY docker/entrypoint.sh /entrypoint.sh

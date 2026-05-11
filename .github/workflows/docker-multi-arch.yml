@@ -186,11 +186,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-${{ matrix.platform }}
           tags: |
-            # PR builds: pr-{number}-ci-standard AND pr-ci-standard
+            # PR builds: pr-{number}-ci-standard-linux-amd64/arm64 AND pr-ci-standard-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
-            # CI builds: ci-{hash}-standard AND ci-standard
+            # CI builds: ci-{hash}-standard-linux-amd64/arm64 AND ci-standard-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
@@ -204,11 +206,13 @@ jobs:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
+          flavor: |
+            suffix=-${{ matrix.platform }}
           tags: |
-            # PR builds: pr-{number}-ci-standard AND pr-ci-standard
+            # PR builds: pr-{number}-ci-standard-linux-amd64/arm64 AND pr-ci-standard-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
-            # CI builds: ci-{hash}-standard AND ci-standard
+            # CI builds: ci-{hash}-standard-linux-amd64/arm64 AND ci-standard-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-standard,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
@@ -283,11 +287,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-${{ matrix.platform }}
           tags: |
-            # PR builds: pr-{number}-ci-full AND pr-ci-full
+            # PR builds: pr-{number}-ci-full-linux-amd64/arm64 AND pr-ci-full-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
-            # CI builds: ci-{hash}-full AND ci-full
+            # CI builds: ci-{hash}-full-linux-amd64/arm64 AND ci-full-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
@@ -301,11 +307,13 @@ jobs:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
+          flavor: |
+            suffix=-${{ matrix.platform }}
           tags: |
-            # PR builds: pr-{number}-ci-full AND pr-ci-full
+            # PR builds: pr-{number}-ci-full-linux-amd64/arm64 AND pr-ci-full-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
             type=raw,value=pr-ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'pr-') }}
-            # CI builds: ci-{hash}-full AND ci-full
+            # CI builds: ci-{hash}-full-linux-amd64/arm64 AND ci-full-linux-amd64/arm64
             type=raw,value=${{ needs.calculate-version.outputs.image_version }},suffix=-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             type=raw,value=ci-full,enable=${{ startsWith(needs.calculate-version.outputs.image_version, 'ci-') }}
             # Other builds (manual/tag): use version as-is
@@ -404,6 +412,8 @@ jobs:
       - name: Create and push CI short tags (GHCR)
         if: needs.calculate-version.outputs.is_main_commit == 'true'
         run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # GHCR - ci-standard (without hash)
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:ci-standard \
@@ -421,6 +431,8 @@ jobs:
       - name: Create and push CI short tags (DockerHub)
         if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # DockerHub - ci-standard (without hash)
           docker manifest create \
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard \
@@ -438,6 +450,8 @@ jobs:
       - name: Create and push PR short tags (GHCR)
         if: github.event_name == 'pull_request'
         run: |
+          VERSION=${{ needs.calculate-version.outputs.image_version }}
+
           # GHCR - pr-ci-standard (without PR number)
           docker manifest create \
             ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard \

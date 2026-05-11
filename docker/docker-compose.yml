@@ -13,25 +13,25 @@ version: '3.8'
 #   docker-compose up -d
 #
 #   # 使用完整版
-#   NEKO_IMAGE_VERSION=full docker-compose up -d
+#   NEKO_IMAGE_VERSION=latest-full docker-compose up -d
 #
 #   # 本地构建标准版
 #   docker-compose build && docker-compose up -d
 #
 #   # 本地构建完整版
-#   NEKO_IMAGE_VERSION=full docker-compose -f docker-compose.yml build && \
-#   NEKO_IMAGE_VERSION=full docker-compose up -d
+#   NEKO_IMAGE_VERSION=latest-full docker-compose -f docker-compose.yml build && \
+#   NEKO_IMAGE_VERSION=latest-full docker-compose up -d
 # ============================================================================
 
 services:
   neko-main:
     # 容器镜像配置 - 支持通过环境变量切换版本
-    # 标准版：latest / 完整版：full
-    image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
+    # 标准版：latest-standard / 完整版：latest-full
+    image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest-standard}}
 
     # 备用镜像源（取消注释以使用）
-    # image: ${NEKO_IMAGE:-ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
-    # image: ${NEKO_IMAGE:-projectneko/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
+    # image: ${NEKO_IMAGE:-ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest-standard}}
+    # image: ${NEKO_IMAGE:-projectneko/n.e.k.o:${NEKO_IMAGE_VERSION:-latest-standard}}
 
     # 容器配置
     container_name: neko
