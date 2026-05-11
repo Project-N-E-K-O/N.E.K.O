@@ -5966,6 +5966,123 @@ async def proactive_chat(request: Request):
                 "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
             }))
 
+        # ── BM25 防复读硬拦截（regen / drop）─────────────────────────
+        # 上面的 ``_is_similar_to_recent_proactive_chat`` 是字面相似度，只能抓
+        # "几乎一字不差的复读"。BM25 走 ngram + IDF，能命中"换种说法但还在同
+        # topic 上打转"——high-IDF 的 unique topic 词在最近 5 条里反复出现就
+        # 触发。命中 REGEN 阈值给 LLM 一次纠正机会（ainvoke 单 shot，注入
+        # avoidance 指令）；纠正后仍 >= DROP 则放弃本次投递。
+        # corpus 在 ``mgr.finish_proactive_delivery`` 里写入；首次调用 / 新角色
+        # 时 corpus 为空，score_draft 直接返回 0，整段无副作用。
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            from config import (
+                ANTI_REPEAT_DROP_THRESHOLD,
+                ANTI_REPEAT_INJECT_TOP_K,
+                ANTI_REPEAT_REGEN_THRESHOLD,
+                PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+            )
+            from config.prompts.prompts_directives import render_regen_avoid_instruction
+            _ar_corpus = get_anti_repeat_corpus()
+            _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
+        except Exception as _ar_exc:  # pragma: no cover - defensive
+            logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+            _bm25_total, _bm25_terms = 0.0, {}
+
+        if _bm25_total >= ANTI_REPEAT_DROP_THRESHOLD:
+            logger.info(
+                "[%s] proactive BM25 drop (score=%.2f threshold=%.2f terms=%s)",
+                lanlan_name, _bm25_total, ANTI_REPEAT_DROP_THRESHOLD,
+                list(_bm25_terms.keys())[:6],
+            )
+            print(
+                f"[{lanlan_name}] 主动搭话 BM25 复读度过高直接 drop "
+                f"(score={_bm25_total:.2f} > {ANTI_REPEAT_DROP_THRESHOLD})"
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return await _end_proactive(JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "BM25 复读度过高，已 drop",
+                "bm25_score": _bm25_total,
+            }))
+        elif _bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+            avoid_terms = list(_bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+            logger.info(
+                "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
+                lanlan_name, _bm25_total, ANTI_REPEAT_REGEN_THRESHOLD, avoid_terms,
+            )
+            print(
+                f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
+                f"(score={_bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, 避开={avoid_terms})"
+            )
+            avoid_msg = render_regen_avoid_instruction(avoid_terms, proactive_lang)
+            regen_messages = list(messages) + [HumanMessage(content=avoid_msg)]
+            regen_text = ""
+            try:
+                async with asyncio.timeout(20.0):
+                    async with _make_llm(
+                        temperature=1.0,
+                        max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                        use_vision=phase2_use_vision,
+                        disable_thinking=True,
+                    ) as _regen_llm:
+                        _regen_resp = await _regen_llm.ainvoke(regen_messages)
+                        regen_text = (
+                            _regen_resp.content if hasattr(_regen_resp, "content") else ""
+                        ) or ""
+            except Exception as _regen_exc:
+                logger.warning(
+                    "[%s] proactive BM25 regen LLM call failed: %s",
+                    lanlan_name, _regen_exc,
+                )
+                regen_text = ""
+
+            # regen 输出可能仍带 "主动搭话\n[TAG]\n" 前缀；轻量剥一下。失败就
+            # 用原文（mismatch 不至于致命）。
+            _cleaned = (regen_text or "").strip()
+            _m = re.search(r"主动搭话\s*\n", _cleaned)
+            if _m:
+                _cleaned = _cleaned[_m.end():]
+            _tag_m = re.match(
+                r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _cleaned, re.IGNORECASE,
+            )
+            if _tag_m:
+                _cleaned = _cleaned[_tag_m.end():]
+            # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文
+            if not _cleaned.strip() or "[PASS]" in _cleaned.upper():
+                logger.info("[%s] proactive BM25 regen returned empty/PASS, drop", lanlan_name)
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 失败，已 drop",
+                }))
+
+            # 再 score 一次：仍 >= DROP 则真 drop
+            try:
+                _regen_total, _ = _ar_corpus.score_draft(lanlan_name, _cleaned)
+            except Exception:
+                _regen_total = 0.0
+            if _regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
+                logger.info(
+                    "[%s] proactive BM25 regen still over drop (score=%.2f)",
+                    lanlan_name, _regen_total,
+                )
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 后仍超阈值，已 drop",
+                    "bm25_score": _regen_total,
+                }))
+            # 采用 regen 文本接着走下游 source_tag / TTS 投递
+            response_text = _cleaned
+            full_text = _cleaned
+
         has_music_topic = 'music' in active_channels
 
         # 【加固】数据级锁：如果正在播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略

@@ -1219,6 +1219,60 @@ SESSION_TURN_THRESHOLD = 10
 - 计数语义：仅用户输入计数（AI 回复不算），见 core.py:980。
 - 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
 
+USER_DIRECTIVE_TTL_SECONDS = 3 * 86400
+"""用户显式 ban-topic 指令（"别再提 X / stop saying X"）的存活时长。
+- 用途：memory/user_directives.py 的 active 判定 + render_prompt_block
+  注入到下次 session 启动的 system prompt。
+- 设计依据：用户态度的有效期介于"本轮结束"和"永久偏好"之间——3 天足够覆盖
+  连续几天的会话上下文又不至于把一时情绪固化成长期人设。
+- 上游：main_logic/core.py:_build_initial_prompt 注入；
+  memory/user_directives.py:UserDirectivesManager 内部判活 + 清理。"""
+
+USER_DIRECTIVE_MAX_ACTIVE = 20
+"""注入到 system prompt 的活跃 ban-topic 上限。
+- 用途：UserDirectivesManager.get_active 截断到 last_seen 最新的 N 条。
+- 设计依据：超过 20 个不同 ban-topic 同时活跃几乎一定是抽取出错或用户在
+  故意刷指令——截断比把 prompt 塞爆好。"""
+
+# ── 防复读（anti-repeat）BM25 相关 ─────────────────────────────────
+ANTI_REPEAT_BG_WINDOW = 100
+"""anti-repeat corpus 背景窗口长度（最近 N 条 AI 输出）。
+- 用途：memory/anti_repeat.py 的滚动 corpus 保留最近 N 条文本算 DF。
+- 设计依据：100 条 ≈ 用户半天到一天的对话量；窗口太短 IDF 不稳定，太长
+  又会让一周前的偶发话题永远算"高 IDF unique"。"""
+
+ANTI_REPEAT_FG_WINDOW = 5
+"""anti-repeat 前景窗口长度（最近 N 条算"是否重复"）。
+- 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
+- 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
+
+ANTI_REPEAT_INJECT_TOP_K = 6
+"""注入 system prompt 的 "最近高频 topic 词" 数量。
+- 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。
+- 设计依据：6 个词够覆盖"几个话题"，又不至于把 prompt 撑长。"""
+
+ANTI_REPEAT_REGEN_THRESHOLD = 8.0
+"""proactive 出口 BM25 总分超此值则触发 1 次 regen。
+- 用途：system_router proactive 流式完成后评分；超阈值用 avoidance prompt
+  重 sample 一次。
+- 设计依据：经验起点；后续 testbench 调。"""
+
+ANTI_REPEAT_DROP_THRESHOLD = 16.0
+"""proactive regen 后仍超此值则放弃投递（不发）。
+- 用途：避免 LLM 卡死在某个 topic 上连续复读。
+- 设计依据：REGEN 的 2 倍，给 LLM 一次纠正机会。"""
+
+ANTI_REPEAT_BM25_K1 = 1.5
+"""BM25 k1 参数（控制 TF saturation 速度）。Robertson 经典推荐值。"""
+
+ANTI_REPEAT_BM25_B = 0.75
+"""BM25 b 参数（文档长度归一化强度）。Robertson 经典推荐值。"""
+
+ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
+"""draft 短于此长度（tokens 数）就不评分，直接放行。
+- 用途：避免"嗯。"、"好"这种短回复被错杀。
+- 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
+
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
 - 用途：去重已处理的 avatar 交互 ID。
@@ -1658,6 +1712,16 @@ __all__ = [
     'OPENCLAW_MAGIC_INTENT_MAX_TOKENS',
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
     'SESSION_TURN_THRESHOLD',
+    'USER_DIRECTIVE_TTL_SECONDS',
+    'USER_DIRECTIVE_MAX_ACTIVE',
+    'ANTI_REPEAT_BG_WINDOW',
+    'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_INJECT_TOP_K',
+    'ANTI_REPEAT_REGEN_THRESHOLD',
+    'ANTI_REPEAT_DROP_THRESHOLD',
+    'ANTI_REPEAT_BM25_K1',
+    'ANTI_REPEAT_BM25_B',
+    'ANTI_REPEAT_MIN_DRAFT_TOKENS',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',
