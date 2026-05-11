@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 from typing import Any
 
 from plugin.sdk.plugin import SdkError
@@ -17,6 +19,9 @@ class TutorLLMAgent:
         self._lock: asyncio.Lock | None = None
 
     def update_config(self, config: StudyConfig) -> None:
+        llms = list(self._llm_cache.values())
+        for llm in llms:
+            self._close_cached_llm(llm)
         self._config = config
         self._llm_cache.clear()
 
@@ -24,12 +29,52 @@ class TutorLLMAgent:
         llms = list(self._llm_cache.values())
         self._llm_cache.clear()
         for llm in llms:
-            close = getattr(llm, "aclose", None)
-            if callable(close):
-                try:
-                    await close()
-                except Exception:
-                    pass
+            await self._close_cached_llm_async(llm)
+
+    def _close_cached_llm(self, llm: Any) -> None:
+        for method_name in ("shutdown", "aclose"):
+            close = getattr(llm, method_name, None)
+            if not callable(close):
+                continue
+            try:
+                result = close()
+            except Exception:
+                return
+            if inspect.isawaitable(result):
+                self._finalize_async_close(result)
+            return
+
+    async def _close_cached_llm_async(self, llm: Any) -> None:
+        for method_name in ("shutdown", "aclose"):
+            close = getattr(llm, method_name, None)
+            if not callable(close):
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                pass
+            return
+
+    def _finalize_async_close(self, close_result: Any) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(close_result)
+            except Exception:
+                pass
+            return
+        task = loop.create_task(close_result)
+        task.add_done_callback(self._consume_close_exception)
+
+    @staticmethod
+    def _consume_close_exception(task: asyncio.Task[Any]) -> None:
+        try:
+            task.exception()
+        except BaseException:
+            pass
 
     async def concept_explain(
         self,
@@ -85,7 +130,13 @@ class TutorLLMAgent:
         api_key = str(api_config.get("api_key") or "").strip()
         if not base_url or not model:
             raise SdkError("missing configured summary model")
-        key = (base_url, model, bool(api_key), self._config.llm_temperature, self._config.llm_max_tokens)
+        key = (
+            base_url,
+            model,
+            self._api_key_cache_fingerprint(api_key),
+            self._config.llm_temperature,
+            self._config.llm_max_tokens,
+        )
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
@@ -107,6 +158,13 @@ class TutorLLMAgent:
         else:
             response = await asyncio.to_thread(llm.invoke, messages)
         return str(getattr(response, "content", "") or response)
+
+    @staticmethod
+    def _api_key_cache_fingerprint(api_key: str) -> tuple[str, str]:
+        if not api_key:
+            return ("empty", "")
+        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        return ("sha256", digest)
 
     @staticmethod
     def _fallback_explanation(text: str) -> str:

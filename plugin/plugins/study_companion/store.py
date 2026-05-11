@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, json_copy
+from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, build_config, json_copy
 
 
 class StudyStore:
@@ -66,7 +66,11 @@ class StudyStore:
         conn.commit()
 
     def _load_seed_if_empty(self) -> None:
-        if self.get_raw(STORE_CONFIG) is not None or not self.seed_json_path.is_file():
+        if not self.seed_json_path.is_file():
+            return
+        if self.get_raw(STORE_CONFIG) is not None or self.get_raw(STORE_STATE) is not None:
+            return
+        if self.get_raw("interactions") or self._has_interactions():
             return
         try:
             payload = json.loads(self.seed_json_path.read_text(encoding="utf-8"))
@@ -87,6 +91,11 @@ class StudyStore:
                 warning(message, *args)
             except Exception:
                 pass
+
+    def _has_interactions(self) -> bool:
+        with self._lock:
+            row = self._require_conn().execute("SELECT 1 FROM interactions LIMIT 1").fetchone()
+            return row is not None
 
     def get_raw(self, key: str) -> dict[str, Any] | None:
         with self._lock:
@@ -118,7 +127,7 @@ class StudyStore:
             return fallback
         merged = fallback.to_dict()
         merged.update(raw)
-        return StudyConfig(**{key: merged[key] for key in fallback.to_dict().keys()})
+        return build_config(merged)
 
     def save_config(self, config: StudyConfig) -> None:
         self.set_raw(STORE_CONFIG, config.to_dict())

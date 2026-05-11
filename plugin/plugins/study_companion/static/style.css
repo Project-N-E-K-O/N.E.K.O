@@ -123,7 +123,7 @@ pre {
   min-height: 180px;
   margin: 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   border: 1px solid #c8d0dc;
   border-radius: 8px;
   background: #ffffff;

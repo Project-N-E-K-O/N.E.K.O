@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -87,16 +88,57 @@ def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:
         candidates.append(Path(path_hit))
     detected = next((candidate for candidate in candidates if candidate.is_file()), None)
     installed = detected is not None
+    target_dir = config.ocr_install_target_dir
+    required_languages = [item for item in config.ocr_languages.split("+") if item]
+    available_languages = _available_tesseract_languages(detected, _expand_path(target_dir) if target_dir else None)
+    missing_languages = [lang for lang in required_languages if lang not in available_languages]
+    detail = "installed" if installed else "missing"
+    if installed and missing_languages:
+        detail = f"missing languages: {', '.join(missing_languages)}"
     return {
         "install_supported": sys.platform == "win32",
         "installed": installed,
         "can_install": sys.platform == "win32" and not installed,
         "detected_path": str(detected) if detected else "",
-        "target_dir": config.ocr_install_target_dir,
-        "required_languages": [item for item in config.ocr_languages.split("+") if item],
-        "missing_languages": [],
-        "detail": "installed" if installed else "missing",
+        "target_dir": target_dir,
+        "required_languages": required_languages,
+        "missing_languages": missing_languages,
+        "detail": detail,
     }
+
+
+def _available_tesseract_languages(detected: Path | None, target_dir: Path | None) -> set[str]:
+    if detected is not None:
+        try:
+            completed = subprocess.run(
+                [str(detected), "--list-langs"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+            languages = {
+                line.strip()
+                for line in output.splitlines()
+                if line.strip() and not line.lower().startswith("list of available languages")
+            }
+            if languages:
+                return languages
+        except Exception:
+            pass
+    tessdata_dirs = []
+    if target_dir is not None:
+        tessdata_dirs.append(target_dir / "tessdata")
+    if detected is not None:
+        tessdata_dirs.append(detected.parent / "tessdata")
+    for tessdata_dir in tessdata_dirs:
+        if tessdata_dir.is_dir():
+            languages = {path.stem for path in tessdata_dir.glob("*.traineddata")}
+            if languages:
+                return languages
+    return set()
 
 
 def _inspect_dxcam() -> dict[str, Any]:

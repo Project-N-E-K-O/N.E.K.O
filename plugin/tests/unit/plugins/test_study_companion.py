@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 try:
@@ -14,7 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
-from plugin.plugins.study_companion.models import StudyConfig
+from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
@@ -126,6 +127,31 @@ class _FakeCaptureBackend:
     def capture_frame(self, target, profile):
         self.calls.append((target, profile))
         return self.image
+
+
+class _FakeStudyOcrPipeline:
+    def __init__(self, snapshot: OcrSnapshot) -> None:
+        self.snapshot = snapshot
+
+    def capture_snapshot(self) -> OcrSnapshot:
+        return self.snapshot
+
+
+class _FakeTutorAgent:
+    def __init__(self) -> None:
+        self.inputs: list[tuple[str, dict[str, object]]] = []
+
+    async def concept_explain(self, text: str, context: dict[str, object] | None = None) -> TutorReply:
+        self.inputs.append((text, dict(context or {})))
+        return TutorReply(
+            operation="concept_explain",
+            input_text=text,
+            reply=f"explained: {text}",
+            created_at="2026-05-11T00:00:00Z",
+        )
+
+    async def shutdown(self) -> None:
+        return None
 
 
 def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
@@ -364,6 +390,57 @@ def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        with plugin._lock:
+            plugin._state.last_ocr_text = "photosynthesis"
+            plugin._state.last_ocr_at = "2026-05-10T00:00:00Z"
+        plugin._ocr_pipeline = _FakeStudyOcrPipeline(
+            OcrSnapshot(
+                status="capture_failed",
+                captured_at="2026-05-11T00:00:00Z",
+                diagnostic="capture boom",
+            )
+        )
+        plugin._agent = _FakeTutorAgent()
+
+        snapshot_result = await plugin.study_ocr_snapshot()
+        assert isinstance(snapshot_result, Ok)
+        assert snapshot_result.value["status"] == "capture_failed"
+        assert snapshot_result.value["text"] == ""
+
+        with plugin._lock:
+            assert plugin._state.last_ocr_text == "photosynthesis"
+            assert plugin._state.last_ocr_at == "2026-05-10T00:00:00Z"
+
+        stored_state = plugin._store.load_state(build_initial_state())
+        assert stored_state.last_ocr_text == "photosynthesis"
+
+        explain_result = await plugin.study_explain_text()
+        assert isinstance(explain_result, Ok)
+        assert explain_result.value["input_text"] == "photosynthesis"
+        assert plugin._agent.inputs == [("photosynthesis", {"source": "ocr_snapshot"})]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     messages = build_concept_explain_messages(
         text="A derivative measures instantaneous rate of change.",
@@ -403,6 +480,50 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert fallback.degraded is True
     assert "llm unavailable" in fallback.diagnostic
     assert "photosynthesis converts light" in fallback.reply
+
+
+@pytest.mark.asyncio
+async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    from utils import config_manager, llm_client
+
+    class _ConfigManager:
+        def __init__(self) -> None:
+            self.api_key = "old-key"
+
+        def get_model_api_config(self, _group: str):
+            return {
+                "base_url": "https://llm.example.test/v1",
+                "model": "study-model",
+                "api_key": self.api_key,
+            }
+
+    class _FakeLLM:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content=f"reply from {self.api_key}")
+
+    cfg_mgr = _ConfigManager()
+    created_keys: list[str] = []
+
+    def _create_chat_llm(*, api_key: str, **_kwargs):
+        created_keys.append(api_key)
+        return _FakeLLM(api_key)
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
+    monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
+
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    first = await agent._call_model([{"role": "user", "content": "one"}])
+    cfg_mgr.api_key = "new-key"
+    second = await agent._call_model([{"role": "user", "content": "two"}])
+
+    assert first == "reply from old-key"
+    assert second == "reply from new-key"
+    assert created_keys == ["old-key", "new-key"]
+    assert "old-key" not in repr(agent._llm_cache)
+    assert "new-key" not in repr(agent._llm_cache)
 
 
 @pytest.mark.asyncio

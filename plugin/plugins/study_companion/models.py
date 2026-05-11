@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any
 
 
@@ -115,51 +116,73 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
 
-    def _str(section: dict[str, Any], key: str, default: str) -> str:
-        return str(section.get(key, default) or default)
+    def _raw(section: dict[str, Any], key: str, default: Any, flat_key: str | None = None) -> Any:
+        if key in section:
+            return section.get(key, default)
+        if flat_key and flat_key in raw:
+            return raw.get(flat_key, default)
+        return default
 
-    def _bool(section: dict[str, Any], key: str, default: bool) -> bool:
-        value = section.get(key, default)
+    def _str(section: dict[str, Any], key: str, default: str, flat_key: str | None = None) -> str:
+        return str(_raw(section, key, default, flat_key) or default)
+
+    def _bool(section: dict[str, Any], key: str, default: bool, flat_key: str | None = None) -> bool:
+        value = _raw(section, key, default, flat_key)
         return value if isinstance(value, bool) else default
 
-    def _int(section: dict[str, Any], key: str, default: int) -> int:
+    def _int(section: dict[str, Any], key: str, default: int, flat_key: str | None = None) -> int:
         try:
-            return int(section.get(key, default))
+            return int(_raw(section, key, default, flat_key))
         except (TypeError, ValueError):
             return default
 
-    def _float(section: dict[str, Any], key: str, default: float) -> float:
+    def _float(section: dict[str, Any], key: str, default: float, flat_key: str | None = None) -> float:
         try:
-            return float(section.get(key, default))
+            return float(_raw(section, key, default, flat_key))
         except (TypeError, ValueError):
             return default
 
-    mode = _str(study, "default_mode", MODE_CONCEPT_EXPLAIN).strip() or MODE_CONCEPT_EXPLAIN
+    def _clamp(value: float, minimum: float, maximum: float, default: float) -> float:
+        if not math.isfinite(value):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    mode = _str(study, "default_mode", MODE_CONCEPT_EXPLAIN, "mode").strip() or MODE_CONCEPT_EXPLAIN
     if mode not in SUPPORTED_MODES:
         mode = MODE_CONCEPT_EXPLAIN
 
     return StudyConfig(
         mode=mode,
-        language=_str(study, "language", "zh-CN"),
-        history_limit=max(1, _int(study, "history_limit", 50)),
-        ocr_enabled=_bool(ocr, "enabled", True),
-        ocr_backend_selection=_str(ocr, "backend_selection", "rapidocr"),
-        ocr_capture_backend=_str(ocr, "capture_backend", "auto"),
-        ocr_tesseract_path=_str(ocr, "tesseract_path", ""),
-        ocr_install_manifest_url=_str(ocr, "install_manifest_url", ""),
-        ocr_install_target_dir=_str(ocr, "install_target_dir", ""),
-        ocr_install_timeout_seconds=_float(ocr, "install_timeout_seconds", 300.0),
-        ocr_languages=_str(ocr, "languages", "chi_sim+jpn+eng"),
-        ocr_left_inset_ratio=_float(ocr, "left_inset_ratio", 0.03),
-        ocr_right_inset_ratio=_float(ocr, "right_inset_ratio", 0.03),
-        ocr_top_ratio=_float(ocr, "top_ratio", 0.0),
-        ocr_bottom_inset_ratio=_float(ocr, "bottom_inset_ratio", 0.0),
-        rapidocr_install_target_dir=_str(rapidocr, "install_target_dir", ""),
-        rapidocr_engine_type=_str(rapidocr, "engine_type", "onnxruntime"),
-        rapidocr_lang_type=_str(rapidocr, "lang_type", "ch"),
-        rapidocr_model_type=_str(rapidocr, "model_type", "mobile"),
-        rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4"),
-        llm_call_timeout_seconds=_float(llm, "llm_call_timeout_seconds", 30.0),
-        llm_temperature=_float(llm, "temperature", 0.2),
-        llm_max_tokens=max(1, _int(llm, "max_tokens", 900)),
+        language=_str(study, "language", "zh-CN", "language"),
+        history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
+        ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
+        ocr_backend_selection=_str(ocr, "backend_selection", "rapidocr", "ocr_backend_selection"),
+        ocr_capture_backend=_str(ocr, "capture_backend", "auto", "ocr_capture_backend"),
+        ocr_tesseract_path=_str(ocr, "tesseract_path", "", "ocr_tesseract_path"),
+        ocr_install_manifest_url=_str(ocr, "install_manifest_url", "", "ocr_install_manifest_url"),
+        ocr_install_target_dir=_str(ocr, "install_target_dir", "", "ocr_install_target_dir"),
+        ocr_install_timeout_seconds=_clamp(
+            _float(ocr, "install_timeout_seconds", 300.0, "ocr_install_timeout_seconds"),
+            1.0,
+            3600.0,
+            300.0,
+        ),
+        ocr_languages=_str(ocr, "languages", "chi_sim+jpn+eng", "ocr_languages"),
+        ocr_left_inset_ratio=_clamp(_float(ocr, "left_inset_ratio", 0.03, "ocr_left_inset_ratio"), 0.0, 1.0, 0.03),
+        ocr_right_inset_ratio=_clamp(_float(ocr, "right_inset_ratio", 0.03, "ocr_right_inset_ratio"), 0.0, 1.0, 0.03),
+        ocr_top_ratio=_clamp(_float(ocr, "top_ratio", 0.0, "ocr_top_ratio"), 0.0, 1.0, 0.0),
+        ocr_bottom_inset_ratio=_clamp(_float(ocr, "bottom_inset_ratio", 0.0, "ocr_bottom_inset_ratio"), 0.0, 1.0, 0.0),
+        rapidocr_install_target_dir=_str(rapidocr, "install_target_dir", "", "rapidocr_install_target_dir"),
+        rapidocr_engine_type=_str(rapidocr, "engine_type", "onnxruntime", "rapidocr_engine_type"),
+        rapidocr_lang_type=_str(rapidocr, "lang_type", "ch", "rapidocr_lang_type"),
+        rapidocr_model_type=_str(rapidocr, "model_type", "mobile", "rapidocr_model_type"),
+        rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"),
+        llm_call_timeout_seconds=_clamp(
+            _float(llm, "llm_call_timeout_seconds", 30.0, "llm_call_timeout_seconds"),
+            1.0,
+            3600.0,
+            30.0,
+        ),
+        llm_temperature=_clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2),
+        llm_max_tokens=max(1, _int(llm, "max_tokens", 900, "llm_max_tokens")),
     )

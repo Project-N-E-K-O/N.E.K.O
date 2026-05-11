@@ -76,7 +76,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     }
                 ]
             )
-            self._persist_state()
+            await self._persist_state()
             return Ok({"status": STATUS_READY, "result": self._status_payload()})
         except Exception as exc:
             with self._lock:
@@ -100,9 +100,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._state.dependency_status = status
         return status
 
-    def _persist_state(self) -> None:
-        self._store.save_config(self._cfg)
-        self._store.save_state(self._state)
+    async def _persist_state(self) -> None:
+        await asyncio.to_thread(self._store.save_config, self._cfg)
+        await asyncio.to_thread(self._store.save_state, self._state)
 
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
@@ -171,7 +171,7 @@ class StudyCompanionPlugin(NekoPluginBase):
     )
     async def study_dependency_status(self, **_):
         status = await asyncio.to_thread(self._refresh_dependency_status)
-        await asyncio.to_thread(self._persist_state)
+        await self._persist_state()
         return Ok(status)
 
     @plugin_entry(
@@ -187,10 +187,11 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("study OCR pipeline is not initialized"))
         snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
         payload = build_ocr_payload(snapshot)
-        with self._lock:
-            self._state.last_ocr_text = snapshot.text
-            self._state.last_ocr_at = snapshot.captured_at
-        await asyncio.to_thread(self._persist_state)
+        if snapshot.text.strip():
+            with self._lock:
+                self._state.last_ocr_text = snapshot.text
+                self._state.last_ocr_at = snapshot.captured_at
+        await self._persist_state()
         return Ok(payload)
 
     @plugin_entry(
@@ -230,7 +231,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             metadata={"degraded": reply.degraded, "diagnostic": reply.diagnostic},
             history_limit=self._cfg.history_limit,
         )
-        await asyncio.to_thread(self._persist_state)
+        await self._persist_state()
         return Ok(build_explain_payload(reply))
 
     @plugin_entry(
@@ -260,7 +261,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 progress_callback=self._resolve_install_progress_callback(run_id),
             )
             self._refresh_dependency_status()
-            await asyncio.to_thread(self._persist_state)
+            await self._persist_state()
             return Ok({"summary": str(result.get("summary") or "Tesseract is ready"), "install_result": result})
         except Exception as exc:
             return Err(SdkError(f"Tesseract install failed: {exc}"))
@@ -294,7 +295,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 before_completed_callback=lambda: None,
             )
             self._refresh_dependency_status()
-            await asyncio.to_thread(self._persist_state)
+            await self._persist_state()
             downloaded = result.get("downloaded") or []
             return Ok(
                 {
