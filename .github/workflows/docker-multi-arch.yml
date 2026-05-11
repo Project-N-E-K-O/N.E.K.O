@@ -134,7 +134,8 @@ jobs:
   # ============================================================================
   build-standard:
     needs: calculate-version
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -253,7 +254,8 @@ jobs:
   # ============================================================================
   build-full:
     needs: calculate-version
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -355,7 +357,7 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
-    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
