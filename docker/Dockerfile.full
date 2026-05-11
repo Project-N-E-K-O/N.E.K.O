@@ -41,15 +41,15 @@ ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 # 设置工作目录
 WORKDIR /app
 
-# 1. 配置阿里云 apt 镜像源
-RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" > /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
+# 1. 配置阿里云 apt 镜像源（HTTPS）
+RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" > /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
 
 # 2. 更新系统并安装基础依赖
 # 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
@@ -147,22 +147,24 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-#创建nginx用户
+#创建nginx用户和应用用户
 RUN groupadd -r nginx && \
     useradd -r -g nginx nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
-    chown -R nginx:nginx /var/log/nginx /var/cache/nginx
+    chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
+    groupadd -r neko && \
+    useradd -r -g neko -d /app -s /bin/bash neko && \
+    mkdir -p /app/logs /app/N.E.K.O /root/ssl && \
+    chown -R neko:neko /app
 
 # 3. 创建 Python 符号链接
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.11 /usr/bin/python
 
-# 4. 安装 uv
-# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    wget -qO- https://astral.sh/uv/install.sh | sh && \
-    echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc
+# 4. Install uv from official Docker image (pinned version for reproducibility)
+COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
+RUN chmod +x /usr/local/bin/uv && \
+    echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
 # 5. 配置 uv 使用阿里云镜像
 RUN mkdir -p /root/.config/uv && \

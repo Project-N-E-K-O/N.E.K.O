@@ -913,12 +913,12 @@ start_services() {
             continue
         fi
 
-        echo "   Starting $service..."
-        # 启动服务并记录PID
-        python "$service" &
+        echo "   Starting $service as neko user..."
+        # 启动服务并记录PID（以 neko 用户运行）
+        runuser -u neko -- python "$service" &
         local pid=$!
         PIDS+=("$pid")
-        echo "     Started $service with PID: $pid"
+        echo "     Started $service with PID: $pid (running as neko)"
         sleep 5  # 给服务启动留出更多时间
     done
     
