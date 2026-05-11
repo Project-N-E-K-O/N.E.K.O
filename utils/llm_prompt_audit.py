@@ -1,21 +1,17 @@
-"""TEMPORARY: 临时 LLM prompt 审计日志（测完即删）。
+"""LLM prompt 审计日志（debug 工具）。
 
 目的：把每一次发给 LLM 的完整请求体（messages、model、max_completion_tokens 等）
 + 各 message 的 tiktoken token 数写到本地 jsonl，配合人工/脚本分析各 component
 budget 占比是否合理。
 
-启用方式：
-    NEKO_LLM_PROMPT_AUDIT=1 ./run.sh
+启用方式（任一为真即开）：
+    1) 源码里把 config.LLM_PROMPT_AUDIT_ENABLED 改成 True（适合打包时分发给用户调试）
+    2) 设置环境变量 NEKO_LLM_PROMPT_AUDIT=1（适合开发期临时打开）
 
 输出：
-    logs/llm_prompt_audit/YYYY-MM-DD.jsonl  （每行一条 JSON）
+    logs/llm_prompt_audit/YYYY-MM-DD.jsonl  （每行一条 JSON，可能含用户原文摘要）
 
-删除方式：
-    1. 删除本文件
-    2. utils/llm_client.py 里删除 record_llm_request 调用
-    3. 删除 logs/llm_prompt_audit/
-
-不要在生产环境启用。
+不要在生产默认启用——log 含 prompt 文本预览，属于隐私敏感数据。
 """
 from __future__ import annotations
 
@@ -28,7 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_ENABLED = os.environ.get("NEKO_LLM_PROMPT_AUDIT", "").lower() in ("1", "true", "yes")
+from config import LLM_PROMPT_AUDIT_ENABLED
+
+_ENABLED = (
+    LLM_PROMPT_AUDIT_ENABLED
+    or os.environ.get("NEKO_LLM_PROMPT_AUDIT", "").lower() in ("1", "true", "yes")
+)
 _LOG_DIR = Path("logs/llm_prompt_audit")
 _LOCK = threading.Lock()
 
@@ -127,7 +128,8 @@ def _print_banner_once() -> None:
     try:
         print(
             "[LLM_PROMPT_AUDIT] enabled — writing to "
-            f"{_LOG_DIR.resolve()} (NEKO_LLM_PROMPT_AUDIT=1)",
+            f"{_LOG_DIR.resolve()} "
+            "(config.LLM_PROMPT_AUDIT_ENABLED or NEKO_LLM_PROMPT_AUDIT=1)",
             flush=True,
         )
     except Exception:

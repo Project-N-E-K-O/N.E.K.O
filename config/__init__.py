@@ -242,6 +242,15 @@ AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
     extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
 )
 
+# ----------------------------------------------------------------------
+# Debug flags（打包给用户调试时在源码里 flip，重新打包即可生效）
+# ----------------------------------------------------------------------
+# LLM prompt 审计：打开后每次发给 LLM 的请求体（messages、token 数、limit
+# 字段）会写到 logs/llm_prompt_audit/YYYY-MM-DD.jsonl，用于诊断 prompt
+# budget 占比。env var NEKO_LLM_PROMPT_AUDIT=1 同样可启用（任一为真即开）。
+# 生产默认 False。
+LLM_PROMPT_AUDIT_ENABLED = False
+
 # tfLink 文件上传服务配置
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
 # tfLink 允许的主机名白名单（用于 SSRF 防护）
