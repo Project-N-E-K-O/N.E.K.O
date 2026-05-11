@@ -889,6 +889,7 @@ def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     output = _build_callback_instruction(
         [
             {
+                "origin": "task_result",
                 "status": "blocked",
                 "source_kind": "plugin",
                 "source_name": "示例插件",

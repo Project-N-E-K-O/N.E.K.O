@@ -58,8 +58,10 @@ from config.prompts.prompts_sys import (
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
-    SYSTEM_NOTIFICATION_PROACTIVE,
-    SYSTEM_NOTIFICATION_PASSIVE,
+    SYSTEM_NOTIFICATION_TASK_ACTIVE,
+    SYSTEM_NOTIFICATION_TASK_PASSIVE,
+    SYSTEM_NOTIFICATION_EVENT_ACTIVE,
+    SYSTEM_NOTIFICATION_EVENT_PASSIVE,
     SOURCE_DESCRIPTORS,
     TASK_STATUS_PHRASES,
     TASK_ACTION_PHRASES,
@@ -68,7 +70,7 @@ from config.prompts.prompts_sys import (
 )
 
 
-# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_PROACTIVE
+# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
 # 表达，emoji 仅作快速视觉识别用。
 _STATUS_EMOJI = {
     "completed": "✅",
@@ -169,9 +171,36 @@ def _build_callback_instruction(
 ) -> str:
     """Render a list of agent_task_callbacks into the LLM injection string.
 
-    Groups by ``(delivery_mode/passive flag, status, source_kind, source_name)``
-    so each group can pick the right outer template (PROACTIVE vs PASSIVE)
-    and slot in the right status/action phrases.
+    Each callback carries an ``origin`` tag stamped by the host at the
+    EventBus → callback boundary:
+      - ``"task_result"`` — real task completion (agent_server._emit_task_result),
+        e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
+      - ``"event"`` — plugin push_message stream (proactive_bridge),
+        e.g. danmaku / gift / external notification.
+
+    Plugin authors cannot set ``origin``; it is derived structurally from
+    which SDK method they called (``finish()`` vs ``push_message()``) by
+    way of the event_type the upstream producer emitted.
+
+    Two axes (origin × passive) pick one of four outer templates:
+
+    +--------------+----------------------+-----------------------------+
+    | origin       | active (proactive)   | passive                     |
+    +==============+======================+=============================+
+    | task_result  | TASK_ACTIVE          | TASK_PASSIVE                |
+    |              | ("已完成，请汇报")   | ("任务结果")                |
+    +--------------+----------------------+-----------------------------+
+    | event        | EVENT_ACTIVE         | EVENT_PASSIVE               |
+    |              | ("新消息，请回应")   | ("消息")                    |
+    +--------------+----------------------+-----------------------------+
+
+    Unknown origin defaults to ``"event"`` + warning. Rationale: rather
+    have the AI naturally react than fabricate "I completed a task".
+
+    Callbacks are grouped by (passive, origin, status, source) so each
+    group can pick the right outer template and (for task_result+active)
+    slot in the right status/action phrases. Event templates ignore
+    status/action — the concept doesn't apply to passive event streams.
     """
     if not callbacks:
         return ""
@@ -182,8 +211,18 @@ def _build_callback_instruction(
         # passive=True call = drain path; treat all as passive regardless
         # of per-callback delivery_mode.
         cb_passive = passive or (cb.get("delivery_mode") == "passive")
+        origin = cb.get("origin")
+        if origin not in ("task_result", "event"):
+            if origin:
+                logger.warning(
+                    "[callback_instruction] unknown origin=%r, falling back to 'event'; "
+                    "source=%s/%s",
+                    origin, cb.get("source_kind"), cb.get("source_name"),
+                )
+            origin = "event"
         key = (
             cb_passive,
+            origin,
             cb.get("status") or "completed",
             cb.get("source_kind") or "unknown",
             (cb.get("source_name") or ""),
@@ -191,26 +230,36 @@ def _build_callback_instruction(
         grouped.setdefault(key, []).append(cb)
 
     parts: list[str] = []
-    for (cb_passive, status, _src_kind, _src_name), cbs in grouped.items():
+    for (cb_passive, origin, status, _src_kind, _src_name), cbs in grouped.items():
         source_text = _format_callback_source(cbs[0], lang)
-        if cb_passive:
-            header = _loc(SYSTEM_NOTIFICATION_PASSIVE, lang).format(source=source_text)
-        else:
-            status_phrase = _loc(
-                TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
-                lang,
-            )
-            action_phrase = _loc(
-                TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
-                lang,
-            )
-            header = _loc(SYSTEM_NOTIFICATION_PROACTIVE, lang).format(
-                source=source_text,
-                status_phrase=status_phrase,
-                action_phrase=action_phrase,
-                name=lanlan_name,
-                master=master_name,
-            )
+        if origin == "task_result":
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_TASK_PASSIVE, lang).format(source=source_text)
+            else:
+                status_phrase = _loc(
+                    TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+                    lang,
+                )
+                action_phrase = _loc(
+                    TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
+                    lang,
+                )
+                header = _loc(SYSTEM_NOTIFICATION_TASK_ACTIVE, lang).format(
+                    source=source_text,
+                    status_phrase=status_phrase,
+                    action_phrase=action_phrase,
+                    name=lanlan_name,
+                    master=master_name,
+                )
+        else:  # origin == "event"
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_PASSIVE, lang).format(source=source_text)
+            else:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_ACTIVE, lang).format(
+                    source=source_text,
+                    name=lanlan_name,
+                    master=master_name,
+                )
         items = [_render_callback_inner_item(cb, lang) for cb in cbs]
         items = [s for s in items if s]
         if items:
