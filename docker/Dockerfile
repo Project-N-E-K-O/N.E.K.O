@@ -111,8 +111,11 @@ RUN mkdir -p /root/.config/uv && \
 COPY --chown=neko:neko . /app
 
 # 7. Copy frontend build artifacts
+# Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
+# (relative to its package root), so the actual build output lives at
+# /src/static/react/neko-chat — NOT /src/frontend/react-neko-chat/dist.
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
-COPY --from=frontend-builder /src/frontend/react-neko-chat/dist /app/static/react/neko-chat
+COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 7b. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
