@@ -2023,6 +2023,8 @@ def test_yui_wakeup_takeover_lives_in_avatar_performance_adapter_and_keeps_m2_bo
     assert "#yui-guide-overlay" not in adapter_source
     assert "yui-taking-over" not in adapter_source
     assert "yui-guide-ghost-cursor-active" not in adapter_source
+    assert "#storage-location-overlay" not in adapter_source
+    assert "yui-guide-live2d-preparing" not in adapter_source
     assert "buildWakeupSequence(options, resultRef)" in adapter_source
     assert "type: 'poseTimeline'" in adapter_source
     assert "name: 'yuiWakeup'" in adapter_source

@@ -170,6 +170,23 @@
         return 'zh-CN';
     }
 
+    function isGuideElementVisible(element) {
+        if (!element || element.hidden) {
+            return false;
+        }
+        try {
+            const style = window.getComputedStyle(element);
+            if (
+                style.display === 'none'
+                || style.visibility === 'hidden'
+                || Number.parseFloat(style.opacity || '1') <= 0
+            ) {
+                return false;
+            }
+        } catch (_) {}
+        return true;
+    }
+
     const DEFAULT_INTERRUPT_DISTANCE = 32;
     const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8;
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09;
@@ -2266,6 +2283,29 @@
                     spotlight: cursorTargetElement || anchorElement
                 }
             };
+        }
+
+        revealPreparedTutorialLive2D(reason) {
+            try {
+                if (typeof document !== 'undefined' && document.body) {
+                    document.body.classList.remove('yui-guide-live2d-preparing');
+                }
+                if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                    window.dispatchEvent(new CustomEvent('neko:yui-guide:live2d-prepared-revealed', {
+                        detail: {
+                            reason: reason || '',
+                            timestamp: Date.now()
+                        }
+                    }));
+                }
+            } catch (_) {}
+        }
+
+        isStorageLocationOverlayVisible() {
+            if (typeof document === 'undefined' || typeof document.querySelector !== 'function') {
+                return false;
+            }
+            return isGuideElementVisible(document.querySelector('#storage-location-overlay'));
         }
 
         callAvatarTimelineAction(stepId, action, target, meta) {
@@ -7880,10 +7920,23 @@
                 return;
             }
 
+            if (this.isStorageLocationOverlayVisible()) {
+                this.revealPreparedTutorialLive2D('storage_overlay_visible');
+                this.recordExperienceMetric('wakeup_result', {
+                    result: 'skipped',
+                    reason: 'storage_overlay_visible'
+                });
+                return;
+            }
+
             this.applyTutorialFaceForwardLock();
             try {
                 const takeover = await this.callAvatarStage('runWakeup', {
-                    document: document
+                    onInitialPose: (detail) => {
+                        this.revealPreparedTutorialLive2D(
+                            detail && detail.reason ? detail.reason : 'wakeup_initial_pose'
+                        );
+                    }
                 });
                 const result = takeover && takeover.result
                     ? takeover.result

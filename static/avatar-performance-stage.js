@@ -23,6 +23,7 @@
             'resolveAvatar',
             'capture',
             'restore',
+            'commitCurrentFrameAsBaseline',
             'acquireSession',
             'releaseSession',
             'applyFrame',
@@ -82,6 +83,7 @@
             resolveAvatar: function () { return null; },
             capture: function () { return {}; },
             restore: function () { return false; },
+            commitCurrentFrameAsBaseline: function () { return null; },
             acquireSession: function () {},
             releaseSession: function () {},
             applyFrame: function () {},
@@ -303,6 +305,22 @@
             }
             this.activeSession = null;
             return true;
+        }
+
+        commitCurrentFrameAsBaseline(sessionId) {
+            const session = this.activeSession;
+            if (!session || session.id !== sessionId || !this.driver) {
+                return false;
+            }
+            if (typeof this.driver.commitCurrentFrameAsBaseline !== 'function') {
+                return false;
+            }
+            try {
+                return this.driver.commitCurrentFrameAsBaseline(session) !== false;
+            } catch (error) {
+                this.warn('driver commit baseline failed', error);
+                return false;
+            }
         }
 
         getActiveSessionId() {
@@ -1566,6 +1584,21 @@
             this.lookAtSnapshot = null;
             this.lookAtSource = '';
             this.lookAtSessionId = '';
+            return true;
+        }
+
+        commitCurrentFrameAsBaseline(session) {
+            if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
+                return false;
+            }
+            const committedStyle = this.captureContainerStyle(this.getContainer());
+            if (!committedStyle) {
+                return false;
+            }
+            this.styleSnapshot = cloneJsonCompatible(committedStyle);
+            if (session && session.snapshot && typeof session.snapshot === 'object') {
+                session.snapshot.containerStyle = cloneJsonCompatible(committedStyle);
+            }
             return true;
         }
 

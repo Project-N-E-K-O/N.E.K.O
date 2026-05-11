@@ -110,48 +110,6 @@
         }
     }
 
-    function isElementVisible(element) {
-        if (!element || element.hidden) {
-            return false;
-        }
-        try {
-            const style = window.getComputedStyle(element);
-            if (
-                style.display === 'none'
-                || style.visibility === 'hidden'
-                || Number.parseFloat(style.opacity || '1') <= 0
-            ) {
-                return false;
-            }
-        } catch (_) {}
-        return true;
-    }
-
-    function isStorageLocationOverlayVisible(doc) {
-        const ownerDocument = doc || document;
-        if (!ownerDocument || typeof ownerDocument.querySelector !== 'function') {
-            return false;
-        }
-        const root = ownerDocument.querySelector('#storage-location-overlay');
-        return isElementVisible(root);
-    }
-
-    function revealPreparedTutorialLive2D(reason) {
-        try {
-            if (document && document.body) {
-                document.body.classList.remove('yui-guide-live2d-preparing');
-            }
-            if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
-                window.dispatchEvent(new CustomEvent('neko:yui-guide:live2d-prepared-revealed', {
-                    detail: {
-                        reason: reason || '',
-                        timestamp: Date.now()
-                    }
-                }));
-            }
-        } catch (_) {}
-    }
-
     function computeYuiWakeupPose(progress, context) {
         const reducedMotion = !!(context && context.reducedMotion);
         const t = easeInOutCubic(progress);
@@ -625,6 +583,9 @@
             const durationMs = Number.isFinite(Number(normalized.durationMs))
                 ? Math.max(0, Math.round(Number(normalized.durationMs)))
                 : DEFAULT_WAKEUP_DURATION_MS;
+            const onInitialPose = typeof normalized.onInitialPose === 'function'
+                ? normalized.onInitialPose
+                : null;
             return [
                 {
                     type: 'poseTimeline',
@@ -655,18 +616,6 @@
                 return false;
             }
             const normalized = options || {};
-            const doc = normalized.document || document;
-            if (isStorageLocationOverlayVisible(doc)) {
-                revealPreparedTutorialLive2D('storage_overlay_visible');
-                return {
-                    handled: true,
-                    result: {
-                        result: 'skipped',
-                        reason: 'storage_overlay_visible'
-                    }
-                };
-            }
-
             const sessionId = this.ensureSession('wakeup', WAKEUP_CAPABILITIES);
             if (!sessionId || !this.stage) {
                 return false;
