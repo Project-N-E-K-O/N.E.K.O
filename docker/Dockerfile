@@ -21,6 +21,13 @@ WORKDIR /src
 COPY frontend/plugin-manager /src/frontend/plugin-manager
 COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 
+# Shared static assets bundled into plugin-manager at build time.
+# yui-guide-runtime.ts imports tutorial PNGs and shared icons via
+# `../../../static/...`; keep these COPY paths in sync with that file
+# (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+COPY static/assets/tutorial /src/static/assets/tutorial
+COPY static/icons /src/static/icons
+
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
 
