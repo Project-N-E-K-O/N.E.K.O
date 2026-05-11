@@ -406,8 +406,8 @@ from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
-    resolve_native_voice_for_route,
     resolve_native_voice_for_routing,
+    should_block_free_native_voice,
     should_block_free_voice_for_route,
 )
 from utils.api_config_loader import (
@@ -3048,12 +3048,18 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_native_voice_for_route(
-            self.core_api_type,
-            self.voice_id,
-            realtime_config.get('base_url', ''),
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            uses_provider_native_voice = False
+        else:
+            _, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -3097,12 +3103,18 @@ class LLMSessionManager:
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
            lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_native_voice_for_route(
-            self.core_api_type,
-            self.voice_id,
-            realtime_config.get('base_url', ''),
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            voice_name, uses_provider_native_voice = self.voice_id, False
+        else:
+            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():

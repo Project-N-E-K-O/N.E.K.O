@@ -323,20 +323,6 @@ def should_block_free_voice_for_route(
     )
 
 
-def resolve_native_voice_for_route(
-    core_api_type: str | None,
-    voice_id: str | None,
-    realtime_base_url: str | None,
-    voice_id_exists: VoiceIdExists | None = None,
-) -> tuple[str, bool]:
-    """按当前路由解析原生音色；海外免费路由不启用 Step/free 原生音色。"""
-    if should_block_free_native_voice(
-        core_api_type, voice_id, realtime_base_url, voice_id_exists
-    ):
-        return (voice_id or "").strip(), False
-    return resolve_native_voice_for_routing(core_api_type, voice_id, voice_id_exists)
-
-
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
 
