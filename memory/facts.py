@@ -1086,26 +1086,29 @@ class FactStore:
             fallback_end=False,
         )
 
-        # 锁内更新：sync 路径包 to_thread。和 _apersist_new_facts 一致，
-        # 不动 _facts 内存视图——它在保存时由 save_facts 自己刷。
+        # 锁策略：和 mark_absorbed / mark_signal_processed (本文件 line 984
+        # 附近) 一致——直接 mutate `load_facts` 返回的 cached list（CPython
+        # 字段赋值是 atomic），不在外层套 _get_lock。save_facts 内部 (line 163)
+        # 会自取 lock + read-merge-write 兜底并发安全。
+        # 为什么不套外层锁：_get_lock 用 threading.Lock（非 reentrant），先
+        # acquire 再调 save_facts 会自我死锁（Codex review on PR #1316 catch）。
         def _apply_update() -> bool:
-            with self._get_lock(name):
-                current = self.load_facts(name)
-                found = None
-                for f in current:
-                    if f.get('id') == fid:
-                        found = f
-                        break
-                if found is None:
-                    return False
-                if (found.get('schema_version') or 1) >= MEMORY_SCHEMA_VERSION_CURRENT:
-                    return False
-                found['event_when_raw'] = event_when_raw
-                found['event_start_at'] = event_start_at
-                found['event_end_at'] = event_end_at
-                found['schema_version'] = MEMORY_SCHEMA_VERSION_CURRENT
-                self.save_facts(name)
-                return True
+            current = self.load_facts(name)
+            found = None
+            for f in current:
+                if f.get('id') == fid:
+                    found = f
+                    break
+            if found is None:
+                return False
+            if (found.get('schema_version') or 1) >= MEMORY_SCHEMA_VERSION_CURRENT:
+                return False
+            found['event_when_raw'] = event_when_raw
+            found['event_start_at'] = event_start_at
+            found['event_end_at'] = event_end_at
+            found['schema_version'] = MEMORY_SCHEMA_VERSION_CURRENT
+            self.save_facts(name)
+            return True
 
         try:
             ok = await asyncio.to_thread(_apply_update)

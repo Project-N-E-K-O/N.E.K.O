@@ -396,6 +396,70 @@ async def test_followup_weighted_disabled_uses_list_order(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arecheck_one_legacy_fact_no_self_deadlock(tmp_path):
+    """Regression for Codex review on PR #1316 inline P1: `_apply_update`
+    must not hold `_get_lock` while calling `save_facts` (threading.Lock is
+    non-reentrant → would deadlock on same-thread re-acquire).
+
+    We assert the call returns within a short timeout against a mocked LLM
+    response — a deadlock would manifest as the test hanging until pytest
+    kills the loop.
+    """
+    import asyncio as _asyncio
+    import json
+    from memory.facts import FactStore
+    cm = _mock_cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        fs = FactStore()
+        fs._config_manager = cm
+
+    # seed one v1 fact (schema_version missing → defaults to 1)
+    fs._facts.setdefault("小天", []).append({
+        "id": "f-legacy",
+        "text": "用户上周一去爬山了",
+        "importance": 6,
+        "entity": "master",
+        "tags": [],
+        "hash": "h-legacy",
+        "created_at": "2026-05-01T00:00:00",
+        "absorbed": False,
+    })
+    await fs.asave_facts("小天")
+
+    resp = MagicMock()
+    resp.content = json.dumps({
+        "event_when": {"start": {"offset": -1, "unit": "week"}, "end": None},
+    })
+
+    async def _ainvoke(*_a, **_k):
+        return resp
+
+    async def _aclose():
+        return None
+
+    fake_llm = MagicMock()
+    fake_llm.ainvoke = _ainvoke
+    fake_llm.aclose = _aclose
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        # If _apply_update held _get_lock around save_facts, this would
+        # deadlock on the inner self.save_facts(name)'s `with self._get_lock`.
+        result = await _asyncio.wait_for(
+            fs.arecheck_one_legacy_fact("小天"),
+            timeout=5.0,
+        )
+    assert result is True
+    # Verify fields were actually persisted, not just "no deadlock"
+    facts = await fs.aload_facts("小天")
+    assert facts[0]['schema_version'] == 2
+    assert facts[0]['event_when_raw'] == {
+        "start": {"offset": -1, "unit": "week"},
+        "end": None,
+    }
+    assert facts[0]['event_start_at'].startswith("2026-04-24")  # -1 week
+
+
+@pytest.mark.asyncio
 async def test_followup_weighted_enabled_varies_picks(tmp_path):
     """REFLECTION_FOLLOWUP_WEIGHTED=True + 候选 > TOP_K → 多轮采样应出现
     不同组合（不再雷同）。"""
