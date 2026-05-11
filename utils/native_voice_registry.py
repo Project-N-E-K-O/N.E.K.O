@@ -211,6 +211,90 @@ def resolve_native_voice_for_routing(
     return provider.resolve_for_routing(voice_id, voice_id_exists)
 
 
+def is_free_lanlan_app_route(
+    core_api_type: str | None,
+    realtime_base_url: str | None,
+) -> bool:
+    """是否为会被 lanlan.app 边缘强制映射为 Leda 的海外免费路由。
+
+    服务端忽略客户端传的 voice_id，硬覆盖成 Leda；这里集中识别"该路由下
+    voice 字段不应下发 / native catalog 不应暴露"的条件。
+    """
+    raw_url = str(realtime_base_url or "").strip()
+    parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
+    hostname = (parsed.hostname or "").lower()
+    return bool(
+        str(core_api_type or "").lower() == "free"
+        and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
+    )
+
+
+def is_free_preset_voice_id(voice_id: str | None) -> bool:
+    """判断 voice_id 是否属于 api_providers.json 的 free_voices 列表。"""
+    from utils.api_config_loader import get_free_voices  # 延迟导入避免循环
+
+    voice = (voice_id or "").strip()
+    if not voice:
+        return False
+    return voice in set(get_free_voices().values())
+
+
+def should_block_free_preset_voice(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+) -> bool:
+    """lanlan.app/free 下屏蔽 free preset 音色（custom 音色不受影响）。"""
+    return bool(
+        is_free_lanlan_app_route(core_api_type, realtime_base_url)
+        and is_free_preset_voice_id(voice_id)
+    )
+
+
+def should_block_free_native_voice(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+) -> bool:
+    """lanlan.app/free 下屏蔽 Step/free 原生音色（避免被静默覆盖为 Leda）。"""
+    normalized = (voice_id or "").strip()
+    if not (normalized and is_free_lanlan_app_route(core_api_type, realtime_base_url)):
+        return False
+    _, uses_native = resolve_native_voice_for_routing("free", normalized, voice_id_exists)
+    return uses_native
+
+
+def should_block_free_voice_for_route(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+) -> bool:
+    """lanlan.app/free 下不下发 free preset 或 Step/free 原生音色。"""
+    normalized = (voice_id or "").strip()
+    return (
+        should_block_free_preset_voice(core_api_type, normalized, realtime_base_url)
+        or should_block_free_native_voice(
+            core_api_type, normalized, realtime_base_url, voice_id_exists
+        )
+    )
+
+
+def resolve_native_voice_for_route(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+) -> tuple[str, bool]:
+    """按当前路由解析原生音色；海外免费路由不启用 Step/free 原生音色。"""
+    if should_block_free_native_voice(
+        core_api_type, voice_id, realtime_base_url, voice_id_exists
+    ):
+        return (voice_id or "").strip(), False
+    return resolve_native_voice_for_routing(core_api_type, voice_id, voice_id_exists)
+
+
 def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     """Return provider key when the active realtime API ships native voices.
 
@@ -235,13 +319,8 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
         except Exception:
             base_url = ""
 
-    parsed_url = urlparse(base_url if "://" in base_url else f"//{base_url}")
-    hostname = (parsed_url.hostname or "").lower()
     # lanlan.app 的免费路由会把 Step/free voice_id 映射为固定音色，不能展示原生目录。
-    if (
-        str(api_type or '').lower() == 'free'
-        and (hostname == 'lanlan.app' or hostname.endswith('.lanlan.app'))
-    ):
+    if is_free_lanlan_app_route(api_type, base_url):
         return None
     return api_type if api_type in _PROVIDERS else None
 

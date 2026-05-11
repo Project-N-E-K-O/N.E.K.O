@@ -14,7 +14,6 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
-from urllib.parse import urlparse
 
 
 # Sentinel for `send_lanlan_response(request_id=...)` so we can tell apart
@@ -405,9 +404,13 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.native_voice_registry import resolve_native_voice_for_routing
+from utils.native_voice_registry import (
+    is_free_preset_voice_id,
+    resolve_native_voice_for_route,
+    resolve_native_voice_for_routing,
+    should_block_free_voice_for_route,
+)
 from utils.api_config_loader import (
-    get_free_voices,
     get_livestream_config,
     is_livestream_active,
 )
@@ -648,12 +651,17 @@ class LLMSessionManager:
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
         raw_voice_id = self._get_voice_id()
-        if self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', '')):
+        if should_block_free_voice_for_route(
+            self.core_api_type,
+            raw_voice_id,
+            realtime_config.get('base_url', ''),
+            self._config_manager.voice_id_exists_in_any_storage,
+        ):
             self.voice_id = ''
             self._is_free_preset_voice = False
         else:
             self.voice_id = raw_voice_id
-            self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+            self._is_free_preset_voice = is_free_preset_voice_id(self.voice_id)
         if self._is_free_preset_voice and self.core_api_type != 'free':
             self.voice_id = ''
             self._is_free_preset_voice = False
@@ -3023,12 +3031,6 @@ class LLMSessionManager:
             self.is_flushing_hot_swap_cache = False
 
     
-    def _is_preset_voice_id(self, voice_id: str) -> bool:
-        """判断 voice_id 是否属于免费 preset 列表。"""
-        if not voice_id:
-            return False
-        return voice_id in set(get_free_voices().values())
-
     def _resolve_session_use_tts(
         self,
         input_mode: str,
@@ -3046,9 +3048,11 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = self._resolve_native_voice_for_route(
+        _, uses_provider_native_voice = resolve_native_voice_for_route(
+            self.core_api_type,
             self.voice_id,
             realtime_config.get('base_url', ''),
+            self._config_manager.voice_id_exists_in_any_storage,
         )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
@@ -3065,54 +3069,6 @@ class LLMSessionManager:
                 logger.info(f"{log_prefix}🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
             return True
         return False
-
-    def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
-        """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
-        normalized_voice_id = (voice_id or "").strip()
-        return bool(
-            self._is_free_lanlan_app_route(realtime_base_url)
-            and self._is_preset_voice_id(normalized_voice_id)
-        )
-
-    def _is_free_lanlan_app_route(self, realtime_base_url: str) -> bool:
-        """判断当前是否为会强制映射 Leda 的海外免费路由。"""
-        raw_url = str(realtime_base_url or "").strip()
-        parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
-        hostname = (parsed.hostname or "").lower()
-        return bool(
-            self.core_api_type == "free"
-            and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
-        )
-
-    def _should_block_free_native_voice(self, voice_id: str, realtime_base_url: str) -> bool:
-        """lanlan.app/free 下屏蔽 StepFun 原生音色，避免选择被强制映射为 Leda。"""
-        normalized_voice_id = (voice_id or "").strip()
-        if not (normalized_voice_id and self._is_free_lanlan_app_route(realtime_base_url)):
-            return False
-        _, uses_provider_native_voice = resolve_native_voice_for_routing(
-            "free",
-            normalized_voice_id,
-            self._config_manager.voice_id_exists_in_any_storage,
-        )
-        return uses_provider_native_voice
-
-    def _should_block_free_voice_for_route(self, voice_id: str, realtime_base_url: str) -> bool:
-        """lanlan.app/free 下不下发 free preset 或 StepFun 原生音色。"""
-        normalized_voice_id = (voice_id or "").strip()
-        return (
-            self._should_block_free_preset_voice(normalized_voice_id, realtime_base_url)
-            or self._should_block_free_native_voice(normalized_voice_id, realtime_base_url)
-        )
-
-    def _resolve_native_voice_for_route(self, voice_id: str, realtime_base_url: str) -> tuple[str, bool]:
-        """按当前路由解析原生音色；海外免费路由不启用 Step/free 原生音色。"""
-        if self._should_block_free_native_voice(voice_id, realtime_base_url):
-            return (voice_id or "").strip(), False
-        return resolve_native_voice_for_routing(
-            self.core_api_type,
-            voice_id,
-            self._config_manager.voice_id_exists_in_any_storage,
-        )
 
     def _get_voice_id(self) -> str:
         return get_reserved(
@@ -3136,11 +3092,13 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_voice_for_route 兜底）
+           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
         """
-        voice_name, uses_provider_native_voice = self._resolve_native_voice_for_route(
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_route(
+            self.core_api_type,
             self.voice_id,
             realtime_config.get('base_url', ''),
+            self._config_manager.voice_id_exists_in_any_storage,
         )
         if uses_provider_native_voice:
             return voice_name
@@ -3340,17 +3298,22 @@ class LLMSessionManager:
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
-            block_free_voice = self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', ''))
+            block_free_voice = should_block_free_voice_for_route(
+                self.core_api_type,
+                raw_voice_id,
+                realtime_config.get('base_url', ''),
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
             if block_free_voice:
                 self.voice_id = ''
                 self._is_free_preset_voice = False
             else:
                 self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+                self._is_free_preset_voice = is_free_preset_voice_id(self.voice_id)
             if self._is_free_preset_voice and self.core_api_type != 'free':
                 self.voice_id = ''
                 self._is_free_preset_voice = False
-        
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
@@ -3977,17 +3940,22 @@ class LLMSessionManager:
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
-            block_free_voice = self._should_block_free_voice_for_route(raw_voice_id, realtime_config.get('base_url', ''))
+            block_free_voice = should_block_free_voice_for_route(
+                self.core_api_type,
+                raw_voice_id,
+                realtime_config.get('base_url', ''),
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
             if block_free_voice:
                 self.voice_id = ''
                 self._is_free_preset_voice = False
             else:
                 self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+                self._is_free_preset_voice = is_free_preset_voice_id(self.voice_id)
             if self._is_free_preset_voice and self.core_api_type != 'free':
                 self.voice_id = ''
                 self._is_free_preset_voice = False
-            
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）

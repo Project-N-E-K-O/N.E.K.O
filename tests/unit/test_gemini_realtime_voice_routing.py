@@ -9,7 +9,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 import main_routers.characters_router as characters_router
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
-from utils.native_voice_registry import resolve_native_voice_for_routing
+from utils.native_voice_registry import (
+    resolve_native_voice_for_routing,
+    should_block_free_voice_for_route,
+)
 
 
 class _FakeConfigManager:
@@ -213,30 +216,32 @@ async def test_free_voice_catalog_hidden_on_lanlan_app(monkeypatch):
 
 
 def test_free_native_voice_blocked_on_lanlan_app_route():
-    mgr = _make_mgr("qingchunshaonv")
-    mgr.core_api_type = "free"
+    voice_id_exists = _FakeConfigManager().voice_id_exists_in_any_storage
 
     assert (
-        LLMSessionManager._should_block_free_voice_for_route(
-            mgr,
+        should_block_free_voice_for_route(
+            "free",
             "  qingchunshaonv  ",
             "wss://lanlan.app/realtime",
+            voice_id_exists,
         )
         is True
     )
     assert (
-        LLMSessionManager._should_block_free_voice_for_route(
-            mgr,
+        should_block_free_voice_for_route(
+            "free",
             "qingchunshaonv",
             "wss://lanlan.tech/realtime",
+            voice_id_exists,
         )
         is False
     )
     assert (
-        LLMSessionManager._should_block_free_voice_for_route(
-            mgr,
+        should_block_free_voice_for_route(
+            "free",
             "qingchunshaonv",
             "wss://notlanlan.app/realtime",
+            voice_id_exists,
         )
         is False
     )
