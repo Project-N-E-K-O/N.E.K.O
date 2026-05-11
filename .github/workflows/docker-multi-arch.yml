@@ -3,16 +3,16 @@ name: Docker Build
 on:
   push:
     branches:
-      - main # 主分支有新 commit 时触发
+      - main # 主分支有新 commit 时触发（合并 PR 后的 squash commit 在这里验）
     tags:
       - 'v*' # 匹配 v 开头的标签，例如 v1.0.0
     paths-ignore:
       - '**.md'
       - 'docs/**'
       - '.gitignore'
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    branches: [main]
+  # PR 触发刻意不开：单个 PR 的多次 commit 会触发多次 multi-arch build，
+  # 200 PR/月 × N commit 占满 runner 队列；让 squash 进 main 的那次 push 来验证即可。
+  # 单 PR 想手动验，用 workflow_dispatch + ci 模式即可。
   workflow_dispatch:
     inputs:
       build_mode:
@@ -78,15 +78,16 @@ jobs:
       - name: Calculate skip_dockerhub flag
         id: calc_skip
         run: |
-          # For manual dispatch, use the input value; for PR builds and tag push, default to false
+          # 策略：Docker Hub 只发 release（tag push）和手动 dispatch（按 input）。
+          # 主线 commit / PR（如果重新启用）只推 GHCR，避免主线滚动版污染对外 channel。
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "SKIP_DOCKERHUB=${{ github.event.inputs.skip_dockerhub || 'false' }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # PR builds: skip DockerHub only if credentials are missing
-            # If credentials exist, push to both GHCR and DockerHub
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Release tag: 推 Docker Hub 作为对外公开发布 channel
             echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
           else
-            echo "SKIP_DOCKERHUB=false" >> $GITHUB_OUTPUT
+            # 其他（main push / PR 等）: 只推 GHCR
+            echo "SKIP_DOCKERHUB=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Calculate Docker image version
