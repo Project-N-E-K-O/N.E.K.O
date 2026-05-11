@@ -1152,18 +1152,7 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    fn_src = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_user_turn_fingerprint":
-            fn_src = ast.get_source_segment(source, node)
-            break
-    assert fn_src is not None
-
-    ns = {}
-    exec("import hashlib\nfrom typing import Any, Optional\n" + fn_src, ns)
-    fingerprint = ns["_build_user_turn_fingerprint"]
+    from app.agent_server import _build_user_turn_fingerprint as fingerprint
 
     text_only = fingerprint([{"role": "user", "content": "看图"}])
     with_attachment = fingerprint([
@@ -1434,6 +1423,97 @@ def test_trim_protects_live_cancelled_records_against_cap_pressure():
     assert counts.get("protected-sig") == 1, (
         f"cancelled record was evicted by _trim under cap pressure; got {counts}"
     )
+
+
+def test_get_cancelled_user_sig_counts_dedupes_by_task_id():
+    """一次 user cancel 在 tracker 里会产生两条 cancelled record（同步入口
+    一条 + dispatch coroutine 的 CancelledError 路径一条）。quota 必须按
+    task_id 去重，否则一条 cancel 会让 redact 多吞一条同 sig user turn。"""
+    from app.agent_server import AgentTaskTracker
+
+    tracker = AgentTaskTracker()
+    lanlan = "test-lanlan-dedup-quota"
+
+    # 模拟 cancel_task 同步路径 + dispatch coroutine CancelledError 路径
+    # 都为同一个 task_id 写一条 cancelled record。
+    for _ in range(2):
+        tracker.record_completed(
+            lanlan, task_id="t-cancel-once", method="browser_use",
+            desc="打开天气", success=False, cancelled=True,
+            trigger_user_fingerprint="sig-x",
+        )
+
+    counts = tracker.get_cancelled_user_sig_counts(lanlan)
+    assert counts == {"sig-x": 1}, (
+        f"one user cancel should produce quota 1 regardless of duplicate "
+        f"records; got {counts}"
+    )
+
+
+def test_redact_does_not_eat_earlier_turn_when_dispatch_double_records_cancel():
+    """端到端：模拟 cancel_task + dispatch coroutine 各写一条 cancel record，
+    redact 只消费 1 个配额 → 早先的同文本成功段保留。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-double-record"
+    _task_tracker._records.pop(lanlan, None)
+
+    text = "打开天气网站"
+    sig = _user_message_signature({"role": "user", "text": text})
+
+    for _ in range(2):  # 双重 record
+        _task_tracker.record_completed(
+            lanlan, task_id="t-cancel-once", method="browser_use",
+            desc=text, success=False, cancelled=True,
+            trigger_user_fingerprint=sig,
+        )
+
+    messages = [
+        {"role": "user", "text": text},                    # 0: 早先成功的同文本
+        {"role": "assistant", "text": "好的"},              # 1: 早先成功响应
+        {"role": "user", "text": text},                    # 2: 这次被取消
+        {"role": "assistant", "text": "正在打开..."},       # 3
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out[0] is messages[0]
+    assert out[1] is messages[1]
+    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert len(out) == 3  # 早先成功保留，最近取消那段被吞
+
+    _task_tracker._records.pop(lanlan, None)
+
+
+def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
+    """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
+    normalization helper（_user_message_payload_text），避免归一化规则漂移。
+    验证：单条 user 消息的 fingerprint = sha256(payload) = signature。
+    """
+    import hashlib
+    from app.agent_server import (
+        _user_message_payload_text,
+        _user_message_signature,
+        _build_user_turn_fingerprint,
+    )
+
+    msg = {
+        "role": "user",
+        "text": "打开天气",
+        "attachments": [{"url": "https://example.com/x.png"}],
+    }
+    payload = _user_message_payload_text(msg)
+    expected_sig = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+    assert _user_message_signature(msg) == expected_sig
+    # 单条 user 消息时，turn fingerprint 也是同一个 payload 的 sha256
+    assert _build_user_turn_fingerprint([msg]) == expected_sig
+
+    # 非 user 消息：两个函数都不参与
+    assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
+    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
 
 
 def test_redact_multiple_cancelled_records_consume_separate_quotas():

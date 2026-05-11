@@ -253,12 +253,20 @@ class AgentTaskTracker:
     def get_cancelled_user_sig_counts(self, lanlan_name: Optional[str]) -> Dict[str, int]:
         """Return a sig → quota dict for still-live cancelled task records.
 
-        Each cancelled record contributes one redact "quota" for its trigger
+        Each *cancelled task* contributes one redact "quota" for its trigger
         signature. The redact pass consumes quotas occurrence-by-occurrence
         from the tail of `messages`, so when the same text appears multiple
         times in history (e.g. an earlier successful "打开天气" plus a more
         recent cancelled "打开天气"), only the cancelled occurrence is
         removed — earlier same-text turns and their tool responses survive.
+
+        Counts are deduped by task_id because a single cancel emits two
+        cancelled records: `cancel_task` (or `_cancel_openclaw_tasks_for_stop`)
+        writes one synchronously, and the dispatch coroutine's
+        `except asyncio.CancelledError` path writes another when the
+        background task wakes up. Without the dedupe, one user-driven cancel
+        would inflate quota to 2 and let `_redact_cancelled_user_turns` eat
+        an extra unrelated same-sig user turn.
         """
         key = _normalize_lanlan_key(lanlan_name)
         records = self._records.get(key)
@@ -269,12 +277,18 @@ class AgentTaskTracker:
         if not records:
             return {}
         counts: Dict[str, int] = {}
+        seen_task_ids: set[str] = set()
         for r in records:
             if r.get("kind") != "cancelled":
                 continue
             sig = r.get("trigger_user_fingerprint")
             if not sig:
                 continue
+            task_id = r.get("task_id")
+            if task_id:
+                if task_id in seen_task_ids:
+                    continue
+                seen_task_ids.add(task_id)
             counts[sig] = counts.get(sig, 0) + 1
         return counts
 
@@ -1407,60 +1421,17 @@ def _normalize_lanlan_key(lanlan_name: Optional[str]) -> str:
     return name or "__default__"
 
 
-def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
+def _user_message_payload_text(message: Any) -> Optional[str]:
+    """Return the normalized hash payload for a single user message, or None
+    if the message is not a user role / has no text or attachments.
+
+    Shared between `_user_message_signature` (single-message hash, used at
+    dispatch and redact time) and `_build_user_turn_fingerprint` (cross-turn
+    "have we analyzed this user turn yet" dedupe). Centralizing the
+    normalization rules prevents the two from drifting when attachment
+    schemas evolve.
     """
-    Build a stable fingerprint from user-role messages only.
-    Used to ensure analyzer consumes each user turn once.
-
-    Only the message *text* is hashed.  Timestamps and message IDs are
-    intentionally excluded because frontends may update these metadata
-    fields on re-render, which would produce a different fingerprint for
-    the same logical user turn and cause duplicate analysis.
-    """
-    if not isinstance(messages, list):
-        return None
-    user_parts: list[str] = []
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        if m.get("role") != "user":
-            continue
-        text = str(m.get("text") or m.get("content") or "").strip()
-        attachments = m.get("attachments") or []
-        attachment_urls: list[str] = []
-        if isinstance(attachments, list):
-            for item in attachments:
-                if isinstance(item, str):
-                    url = item.strip()
-                elif isinstance(item, dict):
-                    url = str(item.get("url") or item.get("image_url") or "").strip()
-                else:
-                    url = ""
-                if url:
-                    attachment_urls.append(url)
-        if text or attachment_urls:
-            part = text
-            if attachment_urls:
-                part = f"{part}\n[attachments]\n" + "\n".join(attachment_urls)
-            user_parts.append(part.strip())
-    if not user_parts:
-        return None
-    payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _user_message_signature(message: Any) -> Optional[str]:
-    """Stable per-message signature for a single user turn.
-
-    Hashes the same fields _build_user_turn_fingerprint uses (text +
-    attachment URLs), but for one message only. This is what gets attached
-    to spawned tasks via "_trigger_user_fingerprint" so cancel-time redact
-    can locate the exact user turn that triggered the task in later
-    message snapshots.
-    """
-    if not isinstance(message, dict):
-        return None
-    if message.get("role") != "user":
+    if not isinstance(message, dict) or message.get("role") != "user":
         return None
     text = str(message.get("text") or message.get("content") or "").strip()
     attachments = message.get("attachments") or []
@@ -1480,8 +1451,43 @@ def _user_message_signature(message: Any) -> Optional[str]:
     part = text
     if attachment_urls:
         part = f"{part}\n[attachments]\n" + "\n".join(attachment_urls)
-    payload = part.strip().encode("utf-8", errors="ignore")
-    return hashlib.sha256(payload).hexdigest()
+    return part.strip()
+
+
+def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
+    """
+    Build a stable fingerprint from user-role messages only.
+    Used to ensure analyzer consumes each user turn once.
+
+    Only the message *text* is hashed.  Timestamps and message IDs are
+    intentionally excluded because frontends may update these metadata
+    fields on re-render, which would produce a different fingerprint for
+    the same logical user turn and cause duplicate analysis.
+    """
+    if not isinstance(messages, list):
+        return None
+    user_parts: list[str] = []
+    for m in messages:
+        payload = _user_message_payload_text(m)
+        if payload is not None:
+            user_parts.append(payload)
+    if not user_parts:
+        return None
+    payload_bytes = "\n".join(user_parts).encode("utf-8", errors="ignore")
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def _user_message_signature(message: Any) -> Optional[str]:
+    """Stable per-message signature for a single user turn.
+
+    Attached to spawned tasks via "_trigger_user_fingerprint" so cancel-time
+    redact can locate the exact user turn that triggered the task in later
+    message snapshots.
+    """
+    payload = _user_message_payload_text(message)
+    if payload is None:
+        return None
+    return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _last_user_message_signature(messages: Any) -> Optional[str]:
