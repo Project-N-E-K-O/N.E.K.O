@@ -396,43 +396,39 @@ jobs:
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push multi-arch manifest for standard version (DockerHub)
         if: needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
 
       - name: Create and push multi-arch manifest for full version (GHCR)
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
 
       - name: Create and push multi-arch manifest for full version (DockerHub)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
         run: |
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
 
       - name: Create and push CI short tags - standard (GHCR)
         if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.build-standard.outputs.skipped != 'true'
@@ -440,11 +436,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - ci-standard (without hash)
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:ci-standard \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-standard
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:ci-standard \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push CI short tags - full (GHCR)
         if: needs.calculate-version.outputs.is_main_commit == 'true'
@@ -452,11 +447,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - ci-full (without hash)
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:ci-full \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:ci-full
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:ci-full \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
 
       - name: Create and push CI short tags - standard (DockerHub)
         if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -464,11 +458,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - ci-standard (without hash)
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-standard \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
 
       - name: Create and push CI short tags - full (DockerHub)
         if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -476,11 +469,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - ci-full (without hash)
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:ci-full \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
 
       - name: Create and push PR short tags - standard (GHCR)
         if: github.event_name == 'pull_request' && needs.build-standard.outputs.skipped != 'true'
@@ -488,11 +480,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - pr-ci-standard (without PR number)
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push PR short tags - full (GHCR)
         if: github.event_name == 'pull_request'
@@ -500,11 +491,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - pr-ci-full (without PR number)
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
 
       - name: Create and push latest manifests - standard (GHCR)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true'
@@ -512,18 +502,16 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - latest (traditional alias pointing to standard)
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:latest \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:latest \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
 
           # GHCR - latest-standard
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:latest-standard \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-standard
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:latest-standard \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push latest manifests - full (GHCR)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
@@ -531,11 +519,10 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # GHCR - latest-full
-          docker manifest create \
-            ghcr.io/${{ env.IMAGE_NAME }}:latest-full \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            --amend ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
-          docker manifest push ghcr.io/${{ env.IMAGE_NAME }}:latest-full
+          docker buildx imagetools create \
+            -t ghcr.io/${{ env.IMAGE_NAME }}:latest-full \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
 
       - name: Create and push latest manifests - standard (DockerHub)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -543,18 +530,16 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - latest (traditional alias pointing to standard)
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
 
           # DockerHub - latest-standard
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-standard \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-standard-linux-arm64
 
       - name: Create and push latest manifests - full (DockerHub)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -562,8 +547,7 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           # DockerHub - latest-full
-          docker manifest create \
-            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-full \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
-            --amend ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
-          docker manifest push ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-full
+          docker buildx imagetools create \
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:latest-full \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-amd64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o:${VERSION}-full-linux-arm64
