@@ -4202,6 +4202,64 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 // ===== 角色卡详情面板 =====
 
 let _catgirlPanelOpen = false;
+const CATGIRL_PANEL_STEAM_COMPACT_WIDTH = 1280;
+let _catgirlPanelSteamLayoutRaf = null;
+
+function isCatgirlPanelSteamCompactWindow() {
+    const width = window.innerWidth || document.documentElement.clientWidth || 0;
+    return width > 0 && width < CATGIRL_PANEL_STEAM_COMPACT_WIDTH;
+}
+
+function refreshSteamPreviewAfterPanelLayoutChange() {
+    requestAnimationFrame(function () {
+        if (typeof buildPreviewRing === 'function') buildPreviewRing();
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            const l2dContainer = document.getElementById('live2d-preview-content');
+            if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                if (live2dPreviewManager.currentModel) {
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                }
+            }
+        }
+        syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+        syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
+    });
+}
+
+function updateCatgirlPanelSteamCardLayout(wrapper) {
+    const panel = wrapper || document.getElementById('catgirl-panel-wrapper');
+    if (!panel) return;
+
+    const activeTab = panel.querySelector('.panel-tab.active');
+    const shouldHideCardFace = !!(
+        activeTab
+        && activeTab.dataset.tab === 'steam'
+        && isCatgirlPanelSteamCompactWindow()
+    );
+    const wasHidden = panel.classList.contains('steam-compact-card-hidden');
+    panel.classList.toggle('steam-compact-card-hidden', shouldHideCardFace);
+    const indicator = panel.querySelector('.panel-tabs-indicator');
+    if (activeTab && indicator) {
+        indicator.style.left = activeTab.offsetLeft + 'px';
+        indicator.style.width = activeTab.offsetWidth + 'px';
+    }
+    const changed = wasHidden !== shouldHideCardFace;
+    if (changed) {
+        setTimeout(refreshSteamPreviewAfterPanelLayoutChange, 430);
+    }
+}
+
+function scheduleCatgirlPanelSteamCardLayoutUpdate() {
+    if (_catgirlPanelSteamLayoutRaf) cancelAnimationFrame(_catgirlPanelSteamLayoutRaf);
+    _catgirlPanelSteamLayoutRaf = requestAnimationFrame(function () {
+        _catgirlPanelSteamLayoutRaf = null;
+        updateCatgirlPanelSteamCardLayout();
+    });
+}
+
+window.addEventListener('resize', scheduleCatgirlPanelSteamCardLayoutUpdate);
 
 function openCatgirlPanel(card, originEl) {
     if (_catgirlPanelOpen) return;
@@ -4479,9 +4537,11 @@ function openCatgirlPanel(card, originEl) {
             '/static/icons/star.png',
             '/static/icons/paw_ui.png'
         ];
-        const spawnCurtainTransition = function (targetTabName, reverse) {
+        const spawnCurtainTransition = function (targetTabName, reverse, fullPanel) {
             const curtain = document.createElement('div');
-            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
+            curtain.className = 'panel-transition-curtain'
+                + (reverse ? ' curtain-reverse' : '')
+                + (fullPanel ? ' full-panel' : '');
 
             // 幕布色块
             const sweep = document.createElement('div');
@@ -4521,7 +4581,8 @@ function openCatgirlPanel(card, originEl) {
             centerIcon.style.animationDelay = '0.18s';
             curtain.appendChild(centerIcon);
 
-            rightSection.appendChild(curtain);
+            const curtainHost = fullPanel ? wrapper : rightSection;
+            curtainHost.appendChild(curtain);
             setTimeout(function () { curtain.remove(); }, 900);
         };
 
@@ -4545,11 +4606,17 @@ function openCatgirlPanel(card, originEl) {
                 const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
                 const targetIdx = allTabs.indexOf(this);
                 const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+                const needsFullPanelCurtain = wrapper.classList.contains('steam-compact-card-hidden')
+                    || (targetTab === 'steam' && isCatgirlPanelSteamCompactWindow());
 
                 _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
                 updateIndicator();
+
+                // 小窗口 Steam 切换会联动左侧卡面，幕布先覆盖整个面板再更新布局。
+                spawnCurtainTransition(targetTab, reverseDirection, needsFullPanelCurtain);
+                updateCatgirlPanelSteamCardLayout(wrapper);
 
                 // 根据当前激活状态切换设定齿轮图标 on/off
                 if (settingsIcon) {
@@ -4557,9 +4624,6 @@ function openCatgirlPanel(card, originEl) {
                         ? '/static/icons/set_on.png'
                         : '/static/icons/set_off.png';
                 }
-
-                // 播放幕布转场
-                spawnCurtainTransition(targetTab, reverseDirection);
 
                 // 退出当前页 — absolute定位防止撑高容器
                 if (currentActive) {
@@ -4623,6 +4687,7 @@ function openCatgirlPanel(card, originEl) {
 
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
+    updateCatgirlPanelSteamCardLayout(wrapper);
 
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
