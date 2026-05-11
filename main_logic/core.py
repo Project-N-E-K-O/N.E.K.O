@@ -3071,12 +3071,15 @@ class LLMSessionManager:
         return False
 
     def _get_voice_id(self) -> str:
-        return get_reserved(
+        raw = get_reserved(
             self.lanlan_basic_config[self.lanlan_name],
             'voice_id',
             default='',
             legacy_keys=('voice_id',),
         )
+        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
+        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
+        return (raw or '').strip()
 
     def _is_livestream_active(self) -> bool:
         """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""

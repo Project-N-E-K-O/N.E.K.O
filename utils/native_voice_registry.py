@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -149,6 +150,47 @@ def register_tts_worker_resolver(
     the provider key for the dispatcher.
     """
     _TTS_WORKER_RESOLVERS[provider_key] = resolver
+
+
+NativeTTSApiKeySource = Literal['core_api_key', 'tts_default_api_key']
+
+
+def make_native_tts_resolver(
+    worker: Callable[..., Any],
+    api_key_source: NativeTTSApiKeySource,
+    *,
+    worker_kwargs: Mapping[str, Any] | None = None,
+) -> TTSWorkerResolver:
+    """Build a `register_tts_worker_resolver`-compatible resolver from the
+    two axes shared by every native-voice provider so far:
+
+    * `worker` — the TTS worker callable to dispatch to.
+    * `api_key_source` — where to read the api key from on the active
+      `ConfigManager`:
+        - ``'core_api_key'`` for providers whose native voices bill against
+          the same key as the realtime/LLM endpoint (Gemini, Grok).
+        - ``'tts_default_api_key'`` for providers using the TTS slot the
+          user configured separately (StepFun, free-mode lanlan TTS).
+    * `worker_kwargs` (optional) — bound via `partial` for variants that
+      share a worker but flip a mode flag (e.g. `free_mode=True` for the
+      free-tier StepFun route).
+
+    Future providers whose api key sourcing falls outside these two
+    branches can register a hand-written resolver directly via
+    `register_tts_worker_resolver`; adding a third literal here is also
+    fine when the new source generalizes.
+    """
+    def resolver(cm: "ConfigManager") -> "tuple[Callable[..., Any], str]":
+        if api_key_source == 'core_api_key':
+            api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        elif api_key_source == 'tts_default_api_key':
+            api_key = cm.get_model_api_config('tts_default').get('api_key', '')
+        else:
+            raise ValueError(f"unknown api_key_source: {api_key_source!r}")
+        bound = partial(worker, **dict(worker_kwargs)) if worker_kwargs else worker
+        return bound, api_key
+
+    return resolver
 
 
 def get_provider(key: str | None) -> NativeVoiceProvider | None:

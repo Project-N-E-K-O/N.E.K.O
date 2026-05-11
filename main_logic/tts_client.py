@@ -25,6 +25,7 @@ from utils.gemini_tts_voices import (
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     get_native_tts_worker,
+    make_native_tts_resolver,
     register_tts_worker_resolver,
 )
 from utils.stepfun_tts_voices import (
@@ -1265,20 +1266,18 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         response_queue.put(("__ready__", False))
 
 
-def _resolve_step_native_tts_worker(cm):
-    """解析阶跃原生音色使用的 TTS worker 与鉴权。"""
-    cfg = cm.get_model_api_config('tts_default')
-    return step_realtime_tts_worker, cfg.get('api_key', '')
-
-
-def _resolve_free_stepfun_native_tts_worker(cm):
-    """解析国内免费 API 原生音色使用的 TTS worker 与鉴权。"""
-    cfg = cm.get_model_api_config('tts_default')
-    return partial(step_realtime_tts_worker, free_mode=True), cfg.get('api_key', '')
-
-
-register_tts_worker_resolver('step', _resolve_step_native_tts_worker)
-register_tts_worker_resolver('free', _resolve_free_stepfun_native_tts_worker)
+register_tts_worker_resolver(
+    'step',
+    make_native_tts_resolver(step_realtime_tts_worker, 'tts_default_api_key'),
+)
+register_tts_worker_resolver(
+    'free',
+    make_native_tts_resolver(
+        step_realtime_tts_worker,
+        'tts_default_api_key',
+        worker_kwargs={'free_mode': True},
+    ),
+)
 
 
 # xAI 文档：'Individual deltas are capped at 15,000 characters'。
@@ -2619,32 +2618,21 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
 
-def _resolve_gemini_native_tts_worker(cm):
-    """Native voice registry resolver for Gemini's TTS worker.
-
-    Gemini's native voices are billed against CORE_API_KEY (the same key the
-    realtime/LLM endpoint uses), not the optional custom TTS api_key.
-    """
-    return gemini_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+# Gemini 内置音色和 realtime/LLM endpoint 共用 CORE_API_KEY，不走自定义 TTS slot。
+register_tts_worker_resolver(
+    'gemini',
+    make_native_tts_resolver(gemini_tts_worker, 'core_api_key'),
+)
 
 
-register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
-
-
-def _resolve_grok_native_tts_worker(cm):
-    """Native voice registry resolver for xAI Grok streaming TTS worker.
-
-    Grok's built-in voices (eve/ara/leo/rex/sal) bill against CORE_API_KEY,
-    same as the realtime endpoint. Without this registration, a non-empty
-    user-selected voice_id makes core._has_custom_tts() return True and
-    get_tts_worker() routes to cosyvoice_vc_tts_worker before the
-    `core_api_type == 'grok'` default-voice branch — silent synthesis or
-    auth failure. See PR #1306 Codex review.
-    """
-    return grok_streaming_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
-
-
-register_tts_worker_resolver('grok', _resolve_grok_native_tts_worker)
+# xAI Grok 内置音色（eve/ara/leo/rex/sal）同样走 CORE_API_KEY。
+# 没有这个注册时，非空 voice_id 会让 core._has_custom_tts() 返 True，
+# get_tts_worker() 在 `core_api_type == 'grok'` 默认分支前就路由到
+# cosyvoice_vc_tts_worker —— 静默合成或鉴权失败。详见 PR #1306 Codex review。
+register_tts_worker_resolver(
+    'grok',
+    make_native_tts_resolver(grok_streaming_tts_worker, 'core_api_key'),
+)
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
