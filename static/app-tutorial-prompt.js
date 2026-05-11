@@ -871,6 +871,34 @@
         return state.tutorialRunToken;
     }
 
+    async function persistHomeTutorialCompletion(event, flowStep, persistedStep) {
+        const source = event.detail.source || 'manual';
+        const tutorialRunToken = await waitForTutorialRunToken(2000);
+        logFlow(flowStep, {
+            source: source,
+            promptToken: shortPromptToken(state.promptDrivenTutorialToken),
+            tutorialRunToken: shortTutorialRunToken(tutorialRunToken),
+        });
+
+        if (!tutorialRunToken) {
+            logFlow(`${flowStep}-skipped`, {
+                source: source,
+                reason: 'missing_run_token',
+            });
+            state.promptDrivenTutorialToken = null;
+            return;
+        }
+
+        await persistTutorialLifecycle('/api/tutorial-prompt/tutorial-completed', {
+            page: 'home',
+            source: source,
+            tutorial_run_token: tutorialRunToken,
+        }, persistedStep, {
+            clearRunTokenOnSuccess: true,
+        });
+        state.promptDrivenTutorialToken = null;
+    }
+
     function takeHeartbeatSnapshot() {
         const snapshot = {
             foregroundMsDelta: consumeForegroundDelta(),
@@ -1334,31 +1362,11 @@
             endHomeTutorialFeatureSuppression('tutorial-completed');
             emitHomeTutorialLockIfChanged('tutorial-completed');
             void (async function () {
-                const source = event.detail.source || 'manual';
-                const tutorialRunToken = await waitForTutorialRunToken(2000);
-                logFlow('tutorial-completed', {
-                    source: source,
-                    promptToken: shortPromptToken(state.promptDrivenTutorialToken),
-                    tutorialRunToken: shortTutorialRunToken(tutorialRunToken),
-                });
-
-                if (!tutorialRunToken) {
-                    logFlow('tutorial-completed-skipped', {
-                        source: source,
-                        reason: 'missing_run_token',
-                    });
-                    state.promptDrivenTutorialToken = null;
-                    return;
-                }
-
-                await persistTutorialLifecycle('/api/tutorial-prompt/tutorial-completed', {
-                    page: 'home',
-                    source: source,
-                    tutorial_run_token: tutorialRunToken,
-                }, 'tutorial-completed-persisted', {
-                    clearRunTokenOnSuccess: true,
-                });
-                state.promptDrivenTutorialToken = null;
+                await persistHomeTutorialCompletion(
+                    event,
+                    'tutorial-completed',
+                    'tutorial-completed-persisted'
+                );
             })();
             scheduleFastHeartbeat();
         });
@@ -1416,8 +1424,19 @@
             }
             state.tutorialRunning = false;
             state.tutorialStartRequested = false;
+            state.tutorialStarted = true;
+            state.homeTutorialCompleted = true;
+            markHomeTutorialStorageSeen();
             endHomeTutorialFeatureSuppression('tutorial-skipped');
             emitHomeTutorialLockIfChanged('tutorial-skipped');
+            void (async function () {
+                await persistHomeTutorialCompletion(
+                    event,
+                    'tutorial-skipped',
+                    'tutorial-skipped-persisted'
+                );
+            })();
+            scheduleFastHeartbeat();
         });
 
         // Keep this recovery bridge paired with handlePromptAcceptance:

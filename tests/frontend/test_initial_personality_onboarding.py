@@ -246,7 +246,11 @@ def test_wait_for_tutorial_completion_removes_sibling_listener_after_completion(
         () => {
             const originalAdd = window.addEventListener.bind(window);
             const originalRemove = window.removeEventListener.bind(window);
-            const trackedTypes = new Set(['neko:tutorial-completed', 'neko:tutorial-skipped']);
+            const trackedTypes = new Set([
+                'neko:tutorial-completed',
+                'neko:tutorial-skipped',
+                'neko:tutorial-ended-without-completion',
+            ]);
             const tracked = [];
 
             const sameCapture = (left, right) => Boolean(left) === Boolean(right);
@@ -297,6 +301,7 @@ def test_wait_for_tutorial_completion_removes_sibling_listener_after_completion(
             window.__tutorialListenerCounts = () => ({
                 completed: activeCount('neko:tutorial-completed'),
                 skipped: activeCount('neko:tutorial-skipped'),
+                endedWithoutCompletion: activeCount('neko:tutorial-ended-without-completion'),
             });
         }
         """
@@ -322,13 +327,16 @@ def test_wait_for_tutorial_completion_removes_sibling_listener_after_completion(
         () => {
             const counts = window.__tutorialListenerCounts();
             const before = window.__tutorialCountsBeforeWait;
-            return counts.completed === before.completed + 1 && counts.skipped === before.skipped + 1;
+            return counts.completed === before.completed + 1 &&
+                counts.skipped === before.skipped + 1 &&
+                counts.endedWithoutCompletion === before.endedWithoutCompletion + 1;
         }
         """
     )
     counts_during_wait = mock_page.evaluate("() => window.__tutorialListenerCounts()")
     assert counts_during_wait["completed"] == counts_before_wait["completed"] + 1
     assert counts_during_wait["skipped"] == counts_before_wait["skipped"] + 1
+    assert counts_during_wait["endedWithoutCompletion"] == counts_before_wait["endedWithoutCompletion"] + 1
 
     mock_page.evaluate(
         """
@@ -343,6 +351,35 @@ def test_wait_for_tutorial_completion_removes_sibling_listener_after_completion(
 
     counts_after = mock_page.evaluate("() => window.__tutorialListenerCounts()")
     assert counts_after == counts_before_wait
+
+
+@pytest.mark.frontend
+def test_onboarding_wait_for_tutorial_completion_resolves_on_destroy_terminal_event(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__tutorialWaitDone = false;
+            window.CharacterPersonalityOnboarding.waitForTutorialCompletion().then(() => {
+                window.__tutorialWaitDone = true;
+            });
+        }
+        """
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: { page: 'home', reason: 'page-changed' }
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_function("() => window.__tutorialWaitDone === true")
 
 
 @pytest.mark.frontend

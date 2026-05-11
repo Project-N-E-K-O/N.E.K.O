@@ -563,6 +563,7 @@ async def _handle_agent_event(event: dict):
             payload = {
                 "type": "agent_status_update",
                 "snapshot": event.get("snapshot", {}),
+                "lanlan_name": lanlan or "",
             }
             mgr_for_status = _get_session_manager(lanlan)
             if lanlan and mgr_for_status is not None:
