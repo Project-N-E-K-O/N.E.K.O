@@ -324,10 +324,28 @@ if ($useGpu) {
     Write-Host "CUDA probe: $($cudaProbe.Text.Trim())" -ForegroundColor Yellow
 }
 
+function Format-LocalUriHost {
+    param([string]$HostAddress)
+
+    $value = if ($null -eq $HostAddress) { "" } else { "$HostAddress" }
+    $trimmed = $value.Trim()
+    if (-not $trimmed) {
+        return "127.0.0.1"
+    }
+    if ($trimmed.StartsWith("[") -and $trimmed.EndsWith("]")) {
+        return $trimmed
+    }
+    if ($trimmed.Contains(":")) {
+        return "[{0}]" -f $trimmed
+    }
+    return $trimmed
+}
+
 $serverScript = Join-Path $scriptDir "server.py"
 $launcherScript = Join-Path $repoRoot "launcher.py"
-$wsUrl = "ws://{0}:{1}" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
-$healthUrl = "http://{0}:{1}/health" -f $env:LOCAL_TTS_HOST, $env:LOCAL_TTS_PORT
+$uriHost = Format-LocalUriHost $env:LOCAL_TTS_HOST
+$wsUrl = "ws://{0}:{1}" -f $uriHost, $env:LOCAL_TTS_PORT
+$healthUrl = "http://{0}:{1}/health" -f $uriHost, $env:LOCAL_TTS_PORT
 $existingLocalTtsKept = $false
 
 function Normalize-LocalHostAddress {

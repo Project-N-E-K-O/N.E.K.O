@@ -30,8 +30,7 @@ function Test-PathInsideDirectory {
     $parentFull = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
     $parentPrefix = $parentFull + [System.IO.Path]::DirectorySeparatorChar
 
-    return $childFull.Equals($parentFull, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $childFull.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    return $childFull.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 if (-not (Test-Path $outputRoot)) {
@@ -160,35 +159,46 @@ endlocal
 '@
 Set-Content -Path (Join-Path $packageRoot "start_kokoro_local_tts.bat") -Value $rootBat -Encoding ASCII
 
-$readme = @'
-# NEKO Kokoro Local TTS Package
-
-This package contains a standalone Kokoro local TTS server, a bundled Python
-environment, and local model files.
-
-## Start
-
-Double click:
-
-  start_kokoro_local_tts.bat
-
-Or run from PowerShell:
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File local_server\local_tts_server\start_kokoro_server.ps1 -ServerOnly
-
-## NEKO WebSocket URL
-
-Use this in NEKO custom API TTS:
-
-  ws://127.0.0.1:50000
-
-## Notes
-
-- The bundled environment is local to this package.
-- Model files live under local_server\local_tts_server\kokoro_models.
-- Hugging Face auto-download is intentionally disabled.
-- If the bundled environment is removed, the launcher can rebuild it only when uv is installed.
-'@
+$readme = @()
+$readme += '# NEKO Kokoro Local TTS Package'
+$readme += ''
+$readme += 'This package contains a standalone Kokoro local TTS server.'
+if (-not $SkipEnv) {
+    $readme += 'It includes a bundled Python environment for offline start.'
+} else {
+    $readme += 'This build does not include a bundled Python environment.'
+}
+if (-not $SkipModels) {
+    $readme += 'Local model files are included under local_server\local_tts_server\kokoro_models.'
+} else {
+    $readme += 'Local model files are not bundled in this build; place them under local_server\local_tts_server\kokoro_models or point LOCAL_TTS_KOKORO_MODEL_DIR at a local directory.'
+}
+$readme += ''
+$readme += '## Start'
+$readme += ''
+$readme += 'Double click:'
+$readme += ''
+$readme += '  start_kokoro_local_tts.bat'
+$readme += ''
+$readme += 'Or run from PowerShell:'
+$readme += ''
+$readme += '  powershell -NoProfile -ExecutionPolicy Bypass -File local_server\local_tts_server\start_kokoro_server.ps1 -ServerOnly'
+$readme += ''
+$readme += '## NEKO WebSocket URL'
+$readme += ''
+$readme += 'Use this in NEKO custom API TTS:'
+$readme += ''
+$readme += '  ws://127.0.0.1:50000'
+$readme += ''
+$readme += '## Notes'
+$readme += ''
+$readme += '- Hugging Face auto-download is intentionally disabled.'
+if (-not $SkipEnv) {
+    $readme += '- If the bundled environment is removed, the launcher can rebuild it only when uv is installed.'
+} else {
+    $readme += '- This build expects uv to recreate the environment if you choose to rebuild it.'
+}
+$readme = $readme -join "`r`n"
 Set-Content -Path (Join-Path $packageRoot "README.txt") -Value $readme -Encoding ASCII
 
 if (-not $NoZip) {

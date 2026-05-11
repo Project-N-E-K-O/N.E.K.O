@@ -11,7 +11,7 @@ from typing import Callable, Optional
 from config import GSV_VOICE_PREFIX
 
 LOCAL_LIGHTWEIGHT_TTS_PREFIXES = ("kokoro:", "melotts:", "melo:", "chattts:")
-LOCAL_LIGHTWEIGHT_BARE_VOICE_RE = re.compile(r"^(?:zf|zm|zh|af|am|bf|bm)_[A-Za-z0-9_-]+$", re.IGNORECASE)
+LOCAL_LIGHTWEIGHT_BARE_VOICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _is_custom_ws_tts(get_model_api_config: Callable[[str], dict]) -> bool:
