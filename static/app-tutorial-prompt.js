@@ -5,6 +5,9 @@
     const FAST_HEARTBEAT_DELAY_MS = 1200;
     const HOME_TUTORIAL_START_WAIT_TIMEOUT_MS = 15000;
     const HOME_TUTORIAL_STORAGE_KEY_FALLBACK = 'neko_tutorial_home';
+    const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
+    const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
+    const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
     const HEARTBEAT_ENDPOINT = '/api/tutorial-prompt/heartbeat';
     const TUTORIAL_PROMPT_COORDINATION_KEY = 'home-tutorial-prompt';
     const TUTORIAL_PROMPT_PRIORITY = 200;
@@ -633,6 +636,12 @@
         });
     }
 
+    function clearHomeTutorialStorageSeen() {
+        getHomeTutorialStorageKeys().forEach(function (storageKey) {
+            localStorage.removeItem(storageKey);
+        });
+    }
+
     function isHomeTutorialSeen() {
         return getHomeTutorialStorageKeys().some(function (storageKey) {
             return localStorage.getItem(storageKey) === 'true';
@@ -680,6 +689,18 @@
 
     mod.isHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
     mod.isHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
+    mod.shouldSuppressAutomaticHomeTutorialStart = function () {
+        return !!(
+            state.promptDisplayPending
+            || state.promptOpen
+            || state.tutorialStartRequested
+            || state.tutorialRunning
+            || state.lastPromptTokenSeen
+            || state.homeTutorialCompleted
+            || state.neverRemind
+            || state.deferredUntil > Date.now()
+        );
+    };
     window.isNekoHomeTutorialInteractionLocked = computeHomeTutorialInteractionLocked;
     window.isNekoHomeTutorialBlockingGreeting = computeHomeTutorialInteractionLocked;
 
@@ -949,6 +970,36 @@
         return hasReplaySensitiveHeartbeatMetrics(snapshot)
             || snapshot.homeTutorialCompleted
             || snapshot.manualHomeTutorialViewed;
+    }
+
+    function resetHomeTutorialClientState(reason) {
+        const snapshot = state.inFlightHeartbeatSnapshot;
+        if (snapshot) {
+            snapshot.homeTutorialCompleted = false;
+            snapshot.manualHomeTutorialViewed = false;
+        }
+
+        state.homeTutorialCompleted = false;
+        state.manualHomeTutorialViewed = false;
+        state.tutorialStarted = false;
+        state.neverRemind = false;
+        state.deferredUntil = 0;
+        state.promptDrivenTutorialToken = null;
+        state.tutorialRunToken = null;
+        state.pendingTutorialStartPayload = null;
+        clearHomeTutorialStorageSeen();
+        logFlow('home-tutorial-reset', {
+            reason: reason || 'unknown',
+        });
+    }
+
+    function handleHomeTutorialResetDetail(detail) {
+        const payload = detail && typeof detail === 'object' ? detail : {};
+        const page = String(payload.page || '').trim();
+        if (page && page !== 'home' && page !== 'all') {
+            return;
+        }
+        resetHomeTutorialClientState(String(payload.source || payload.reason || '').trim());
     }
 
     function buildHeartbeatPayload(snapshot) {
@@ -1453,6 +1504,36 @@
                 endHomeTutorialFeatureSuppression(detail.reason || 'lock-released');
             }
         });
+
+        window.addEventListener(HOME_TUTORIAL_RESET_EVENT, function (event) {
+            handleHomeTutorialResetDetail(event && event.detail ? event.detail : {});
+        });
+
+        window.addEventListener('storage', function (event) {
+            if (!event || event.key !== HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY || !event.newValue) {
+                return;
+            }
+            try {
+                handleHomeTutorialResetDetail(JSON.parse(event.newValue));
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to parse home tutorial reset storage event:', error);
+            }
+        });
+
+        if (typeof BroadcastChannel === 'function') {
+            try {
+                const resetChannel = new BroadcastChannel(HOME_TUTORIAL_RESET_CHANNEL);
+                resetChannel.addEventListener('message', function (event) {
+                    const message = event && event.data ? event.data : {};
+                    if (!message || message.type !== HOME_TUTORIAL_RESET_EVENT) {
+                        return;
+                    }
+                    handleHomeTutorialResetDetail(message.detail || {});
+                });
+            } catch (error) {
+                console.warn('[TutorialPrompt] failed to listen for home tutorial reset broadcasts:', error);
+            }
+        }
 
         window.addEventListener('beforeunload', flushHeartbeatOnUnload);
     }
