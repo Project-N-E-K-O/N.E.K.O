@@ -2176,39 +2176,44 @@ class ConfigManager:
 
         返回的每个 voice_data 都保证包含 ``provider`` 字段
         （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
+
+        免费版下跳过主分区加载：阿里 CosyVoice 克隆音色需要付费 API Key 鉴权，
+        在 IS_FREE_VERSION 下选中也无法实际使用（运行时走 step_realtime_tts_worker
+        free_mode），列出来只会让 UI 误导用户。MiniMax 与 GSV 走独立配置/路由，
+        免费版仍可用，所以保留下方 MiniMax 合并 + 不影响 /custom_tts_voices 的 GSV。
         """
         voice_storage = self.load_voice_storage()
+        storage_key = ''
+        result: dict = {}
 
-        tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        if not self.is_free_version():
+            tts_config = self.get_model_api_config('tts_custom')
+            base_url = tts_config.get('base_url', '')
+            is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
 
-        if is_local_tts:
-            storage_key = '__LOCAL_TTS__'
-            all_voices = voice_storage.get(storage_key, {})
-            result = dict(all_voices)
-        else:
-            tts_api_key = tts_config.get('api_key', '')
-            if tts_api_key:
-                storage_key = tts_api_key
+            if is_local_tts:
+                storage_key = '__LOCAL_TTS__'
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                core_config = self.get_core_config()
-                audio_api_key = core_config.get('AUDIO_API_KEY', '')
-                if not audio_api_key:
-                    storage_key = ''
-                    result = {}
-                else:
-                    storage_key = audio_api_key
+                tts_api_key = tts_config.get('api_key', '')
+                if tts_api_key:
+                    storage_key = tts_api_key
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
+                else:
+                    core_config = self.get_core_config()
+                    audio_api_key = core_config.get('AUDIO_API_KEY', '')
+                    if audio_api_key:
+                        storage_key = audio_api_key
+                        all_voices = voice_storage.get(storage_key, {})
+                        result = dict(all_voices)
 
-        # 确保主分区音色有 provider 字段
-        default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
-        for vdata in result.values():
-            if isinstance(vdata, dict) and 'provider' not in vdata:
-                vdata['provider'] = default_provider
+            # 确保主分区音色有 provider 字段
+            default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+            for vdata in result.values():
+                if isinstance(vdata, dict) and 'provider' not in vdata:
+                    vdata['provider'] = default_provider
 
         # 合并 MiniMax 音色，并确保 provider 字段
         for mk in self._get_minimax_storage_keys():
@@ -2967,7 +2972,20 @@ class ConfigManager:
                 # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 那是另一个层面的问题，下个 PR 跟进。
                 is_follow = provider in ('follow_core', 'follow_assist')
-                skip_url_for_follow = is_follow and prefix in ('omni', 'tts')
+                # GSV 启用时 ttsModelUrl 是 api_key_settings.js (save_button_down 那段)
+                # 强制覆盖进去的 GPT-SoVITS server URL，不是 follow_* 联动出来的 readonly
+                # 提示值。如果还按 skip_url_for_follow 跳过，TTS_MODEL_URL 永远是空，
+                # tts_custom 走 fallthrough → is_custom=False → 整条 GSV 链路全断
+                # （/custom_tts_voices 报 CUSTOM_API_NOT_ENABLED，TTS dispatcher 落到
+                # cosyvoice_vc_tts_worker 撞 dashscope 鉴权）。默认 ttsModelProvider 是
+                # 'follow_assist'，用户开 GSV 但不会专门去把 provider 改成 'custom'，
+                # 这条豁免必须在后端兜住。
+                gsv_enabled_for_url = bool(core_cfg.get('gptsovitsEnabled', False))
+                skip_url_for_follow = (
+                    is_follow
+                    and prefix in ('omni', 'tts')
+                    and not (prefix == 'tts' and gsv_enabled_for_url)
+                )
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
                 if not skip_url_for_follow:
@@ -3030,7 +3048,19 @@ class ConfigManager:
         """
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
-        
+
+        # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
+        # 就是 "启用一个自定义 TTS"，但前端 (api_key_settings.js) 并不会顺手把
+        # ENABLE_CUSTOM_API 也勾上。后端这里自愈，避免 "勾了 GSV 但没勾 ENABLE_CUSTOM_API"
+        # 这条用户极易踩中的路径让 is_custom=False、整条 GSV 链路（dispatcher /
+        # check_custom_tts_voice_allowed / /custom_tts_voices）全部失效。
+        # 仅扩到 tts_custom，不影响其他 slot 的开关行为。
+        gsv_enabled_for_tts = (
+            model_type == 'tts_custom'
+            and core_config.get('GPTSOVITS_ENABLED', False)
+        )
+        treat_as_custom = enable_custom_api or gsv_enabled_for_tts
+
         # 模型类型到配置字段的映射
         # fallback_type: 'assist' = 辅助API, 'core' = 核心API
         model_type_mapping = {
@@ -3106,18 +3136,25 @@ class ConfigManager:
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
-        if enable_custom_api or model_type == 'agent':
+        if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
 
+            # GSV 模式下 voice_id 即定位（无 model 概念），URL 即可视为已配置；
+            # 不放宽到全部 tts_custom 场景，避免改变 cosyvoice 用户原有的 fallthrough 行为。
+            is_gsv_url = (
+                gsv_enabled_for_tts
+                and custom_url.startswith(('http://', 'https://'))
+            )
+
             # 自定义配置完整时使用自定义配置
-            if custom_model and custom_url:
+            if (custom_model and custom_url) or is_gsv_url:
                 return {
                     'model': custom_model,
                     'api_key': custom_key,
                     'base_url': custom_url,
-                    'is_custom': enable_custom_api,
+                    'is_custom': treat_as_custom,
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
