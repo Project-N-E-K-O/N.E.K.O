@@ -250,24 +250,33 @@ class AgentTaskTracker:
         })
         self._trim(records)
 
-    def get_cancelled_user_sigs(self, lanlan_name: Optional[str]) -> set[str]:
-        """Return the set of trigger_user_fingerprint values from still-live
-        cancelled task records. Used by the redact pass to remove the
-        corresponding user turns from messages before analyzer sees them.
+    def get_cancelled_user_sig_counts(self, lanlan_name: Optional[str]) -> Dict[str, int]:
+        """Return a sig → quota dict for still-live cancelled task records.
+
+        Each cancelled record contributes one redact "quota" for its trigger
+        signature. The redact pass consumes quotas occurrence-by-occurrence
+        from the tail of `messages`, so when the same text appears multiple
+        times in history (e.g. an earlier successful "打开天气" plus a more
+        recent cancelled "打开天气"), only the cancelled occurrence is
+        removed — earlier same-text turns and their tool responses survive.
         """
         key = _normalize_lanlan_key(lanlan_name)
         records = self._records.get(key)
         if not records:
-            return set()
+            return {}
         now = time.time()
         records[:] = [r for r in records if now - float(r.get("ts") or 0.0) < TASK_TRACKER_TTL]
         if not records:
-            return set()
-        return {
-            r.get("trigger_user_fingerprint")
-            for r in records
-            if r.get("kind") == "cancelled" and r.get("trigger_user_fingerprint")
-        }
+            return {}
+        counts: Dict[str, int] = {}
+        for r in records:
+            if r.get("kind") != "cancelled":
+                continue
+            sig = r.get("trigger_user_fingerprint")
+            if not sig:
+                continue
+            counts[sig] = counts.get(sig, 0) + 1
+        return counts
 
     def inject(self, messages: list, lanlan_name: Optional[str]) -> list:
         """返回一份新的 messages 列表，其中按时序插入了任务跟踪记录。
@@ -1472,23 +1481,45 @@ REDACTED_USER_TURN_MARKER = (
 def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> list:
     """Return a messages copy with cancelled user turns removed.
 
-    For each user message whose signature matches a still-live cancelled
-    task's trigger_user_fingerprint, replace it (and the following
-    assistant/tool messages up to the next user message) with a single
-    system marker. The original list is not mutated.
+    Each still-live cancelled task contributes one redact quota for its
+    trigger signature. We scan `messages` from the tail forward and
+    consume one quota per matching user message — so if the same text
+    appears multiple times in history, only the most recent occurrences
+    (matching the cancelled task count) are redacted. Earlier same-text
+    successful turns and their tool responses are preserved.
+
+    Each redacted user message and the following assistant/tool segment
+    (up to the next user message) are replaced with a single system
+    marker. The original list is not mutated.
     """
     if not isinstance(messages, list) or not messages:
         return messages
-    cancelled_sigs = _task_tracker.get_cancelled_user_sigs(lanlan_name)
-    if not cancelled_sigs:
+    sig_quota = _task_tracker.get_cancelled_user_sig_counts(lanlan_name)
+    if not sig_quota:
+        return messages
+
+    remaining = dict(sig_quota)
+    redact_indices: set[int] = set()
+    for idx in range(len(messages) - 1, -1, -1):
+        m = messages[idx]
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        sig = _user_message_signature(m)
+        if not sig or remaining.get(sig, 0) <= 0:
+            continue
+        redact_indices.add(idx)
+        remaining[sig] -= 1
+        if not any(v > 0 for v in remaining.values()):
+            break
+
+    if not redact_indices:
         return messages
 
     redacted: list = []
     drop_until_next_user = False
-    for m in messages:
+    for idx, m in enumerate(messages):
         if isinstance(m, dict) and m.get("role") == "user":
-            sig = _user_message_signature(m)
-            if sig and sig in cancelled_sigs:
+            if idx in redact_indices:
                 redacted.append({"role": "system", "content": REDACTED_USER_TURN_MARKER})
                 drop_until_next_user = True
                 continue

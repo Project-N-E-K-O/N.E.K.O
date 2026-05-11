@@ -1291,9 +1291,10 @@ def test_redact_passthrough_when_no_cancelled_records():
     assert _redact_cancelled_user_turns(messages, lanlan) is messages
 
 
-def test_redact_persists_when_user_resends_exact_same_text():
-    """显式重新下达 = 用户给出新内容；逐字复述同一条触发文本仍被 redact，
-    用户必须重新组织语言（或附加新上下文）才能让 analyzer 重新看到请求。
+def test_redact_consumes_one_quota_per_cancelled_record_from_tail():
+    """同文本 user 消息在历史里出现多次时，每条 cancelled record 只消费
+    一次 redact 配额，且按从尾部向前消费——避免把更早的同文本（如已成功）
+    user turn 一起误伤。
     """
     from app.agent_server import (
         _user_message_signature,
@@ -1302,24 +1303,101 @@ def test_redact_persists_when_user_resends_exact_same_text():
         REDACTED_USER_TURN_MARKER,
     )
 
-    lanlan = "test-lanlan-resend"
+    lanlan = "test-lanlan-quota"
     _task_tracker._records.pop(lanlan, None)
 
-    cancelled_msg = {"role": "user", "text": "打开天气网站并截图"}
+    text = "打开天气网站并截图"
+    sig = _user_message_signature({"role": "user", "text": text})
     _task_tracker.record_completed(
-        lanlan,
-        task_id="t1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint=_user_message_signature(cancelled_msg),
+        lanlan, task_id="t1", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
     )
 
-    repeated = {"role": "user", "text": "打开天气网站并截图", "timestamp": 999}
-    out = _redact_cancelled_user_turns([cancelled_msg, repeated], lanlan)
-    # 两条都被 redact 成 marker（同一签名）
+    earlier = {"role": "user", "text": text, "timestamp": 100}
+    latest = {"role": "user", "text": text, "timestamp": 200}
+    out = _redact_cancelled_user_turns([earlier, latest], lanlan)
+    # 仅 1 个 cancel record → 1 个配额 → 倒序消费 → 最新那条被 redact，
+    # 早一条保留。
+    assert out == [earlier, {"role": "system", "content": REDACTED_USER_TURN_MARKER}]
+
+    _task_tracker._records.pop(lanlan, None)
+
+
+def test_redact_preserves_earlier_same_signature_successful_turn():
+    """Codex P1 场景：早先一次"打开天气"已成功有完整 assistant 响应；
+    最近一次"打开天气"被用户取消。redact 不能把早先成功那段一并删掉。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-earlier-same-sig"
+    _task_tracker._records.pop(lanlan, None)
+
+    text = "打开天气网站并截图"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                       # 0: 早先成功的同文本请求
+        {"role": "assistant", "text": "好的，截图已发"},        # 1: 早先成功响应
+        {"role": "tool", "content": "screenshot.png"},        # 2
+        {"role": "user", "text": "再聊别的"},                  # 3
+        {"role": "assistant", "text": "嗯"},                   # 4
+        {"role": "user", "text": text},                       # 5: 最近被取消的那条
+        {"role": "assistant", "text": "正在打开..."},          # 6: 被取消任务的进行中痕迹
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 早先成功段 + 中间无关消息原样保留
+    assert out[0] is messages[0]
+    assert out[1] is messages[1]
+    assert out[2] is messages[2]
+    assert out[3] is messages[3]
+    assert out[4] is messages[4]
+    # 最近取消那条 → marker，紧随其后的"正在打开..." 被吞
+    assert out[5] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert len(out) == 6
+
+    _task_tracker._records.pop(lanlan, None)
+
+
+def test_redact_multiple_cancelled_records_consume_separate_quotas():
+    """两次取消同文本任务 → 配额 = 2 → 倒序消费 → 最近两条同文本 user 都
+    被 redact；再早一条仍保留。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-quota-2"
+    _task_tracker._records.pop(lanlan, None)
+
+    text = "打开天气网站并截图"
+    sig = _user_message_signature({"role": "user", "text": text})
+    for tid in ("t1", "t2"):
+        _task_tracker.record_completed(
+            lanlan, task_id=tid, method="browser_use",
+            desc=text, success=False, cancelled=True,
+            trigger_user_fingerprint=sig,
+        )
+
+    msgs = [
+        {"role": "user", "text": text, "timestamp": 100},
+        {"role": "user", "text": text, "timestamp": 200},
+        {"role": "user", "text": text, "timestamp": 300},
+    ]
+    out = _redact_cancelled_user_turns(msgs, lanlan)
     assert out == [
+        msgs[0],
         {"role": "system", "content": REDACTED_USER_TURN_MARKER},
         {"role": "system", "content": REDACTED_USER_TURN_MARKER},
     ]
