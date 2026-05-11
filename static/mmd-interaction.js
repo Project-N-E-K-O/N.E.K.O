@@ -42,6 +42,7 @@ class MMDInteraction {
         };
         this._snapAnimationFrameId = null;
         this._isSnappingModel = false;
+        this._snapResolve = null;
 
         // 防抖保存
         this._savePositionDebounceTimer = null;
@@ -194,6 +195,10 @@ class MMDInteraction {
             if (this._snapAnimationFrameId) {
                 cancelAnimationFrame(this._snapAnimationFrameId);
                 this._snapAnimationFrameId = null;
+                if (this._snapResolve) {
+                    this._snapResolve(false);
+                    this._snapResolve = null;
+                }
                 this._isSnappingModel = false;
             }
 
@@ -579,6 +584,214 @@ class MMDInteraction {
         }
     }
 
+    /**
+     * 基于可见像素限制 MMD 模型位置。
+     * 只有模型在某个方向上几乎不可见时才拉回，避免用户主动把大模型贴边时被过度纠正。
+     */
+    clampModelPosition(position, { minVisiblePixels = 200 } = {}) {
+        const mesh = this.manager.currentModel?.mesh;
+        const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        if (!mesh || !camera || !renderer || !THREE) {
+            return position;
+        }
+
+        const originalPosition = mesh.position.clone();
+        let shouldRestorePosition = false;
+
+        try {
+            mesh.position.copy(position);
+            shouldRestorePosition = true;
+            mesh.updateMatrixWorld(true);
+
+            const box = new THREE.Box3().setFromObject(mesh);
+
+            if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+                return position;
+            }
+
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
+            const screenHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
+            if (!(screenWidth > 0) || !(screenHeight > 0)) {
+                return position;
+            }
+
+            const effectiveMinX = Math.min(minVisiblePixels, screenWidth);
+            const effectiveMinY = Math.min(minVisiblePixels, screenHeight);
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
+
+            let modelMinX = Infinity, modelMaxX = -Infinity;
+            let modelMinY = Infinity, modelMaxY = -Infinity;
+            for (const corner of corners) {
+                const projected = corner.clone().project(camera);
+                const screenX = (projected.x * 0.5 + 0.5) * screenWidth;
+                const screenY = (-projected.y * 0.5 + 0.5) * screenHeight;
+                modelMinX = Math.min(modelMinX, screenX);
+                modelMaxX = Math.max(modelMaxX, screenX);
+                modelMinY = Math.min(modelMinY, screenY);
+                modelMaxY = Math.max(modelMaxY, screenY);
+            }
+
+            const visibleWidth = Math.max(0, Math.min(screenWidth, modelMaxX) - Math.max(0, modelMinX));
+            const visibleHeight = Math.max(0, Math.min(screenHeight, modelMaxY) - Math.max(0, modelMinY));
+            const needsClampH = (modelMinX < 0 || modelMaxX > screenWidth) && visibleWidth < effectiveMinX;
+            const needsClampV = (modelMinY < 0 || modelMaxY > screenHeight) && visibleHeight < effectiveMinY;
+            if (!needsClampH && !needsClampV) {
+                return position;
+            }
+
+            let moveX = 0;
+            let moveY = 0;
+            if (needsClampH) {
+                if (modelMaxX < effectiveMinX) {
+                    moveX = effectiveMinX - modelMaxX;
+                } else if (modelMinX > screenWidth - effectiveMinX) {
+                    moveX = (screenWidth - effectiveMinX) - modelMinX;
+                }
+            }
+            if (needsClampV) {
+                if (modelMaxY < effectiveMinY) {
+                    moveY = effectiveMinY - modelMaxY;
+                } else if (modelMinY > screenHeight - effectiveMinY) {
+                    moveY = (screenHeight - effectiveMinY) - modelMinY;
+                }
+            }
+
+            const cameraDistance = camera.position.distanceTo(position);
+            if (cameraDistance < 0.001) {
+                return position;
+            }
+            const fov = camera.fov * (Math.PI / 180);
+            const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+            const worldWidth = worldHeight * (screenWidth / screenHeight);
+            const pixelToWorldX = worldWidth / screenWidth;
+            const pixelToWorldY = worldHeight / screenHeight;
+
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+            const correctedPosition = position.clone();
+            correctedPosition.add(right.multiplyScalar(moveX * pixelToWorldX));
+            correctedPosition.add(up.multiplyScalar(-moveY * pixelToWorldY));
+
+            return correctedPosition;
+        } catch (error) {
+            console.warn('[MMD] 边界检测失败，跳过限制:', error);
+            return position;
+        } finally {
+            if (shouldRestorePosition) {
+                mesh.position.copy(originalPosition);
+                mesh.updateMatrixWorld(true);
+            }
+        }
+    }
+
+    _getSnapEasingFunction() {
+        const easingType = this._snapConfig?.easingType || 'easeOutBack';
+        const easingMap = {
+            easeOutBack: (t) => {
+                const c1 = 1.70158;
+                const c3 = c1 + 1;
+                return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+            },
+            easeOutCubic: (t) => (--t) * t * t + 1
+        };
+        return easingMap[easingType] || easingMap.easeOutCubic;
+    }
+
+    _animateModelToPosition(startPosition, targetPosition) {
+        const mesh = this.manager.currentModel?.mesh;
+        if (!mesh) return Promise.resolve(false);
+        if (!Number.isFinite(targetPosition?.x) || !Number.isFinite(targetPosition?.y) || !Number.isFinite(targetPosition?.z)) {
+            return Promise.resolve(false);
+        }
+
+        if (this._snapAnimationFrameId) {
+            cancelAnimationFrame(this._snapAnimationFrameId);
+            this._snapAnimationFrameId = null;
+            if (this._snapResolve) {
+                this._snapResolve(false);
+                this._snapResolve = null;
+            }
+            this._isSnappingModel = false;
+        }
+
+        const duration = this._snapConfig?.duration || 260;
+        const easingFn = this._getSnapEasingFunction();
+        const startTime = performance.now();
+        this._isSnappingModel = true;
+
+        return new Promise((resolve) => {
+            this._snapResolve = resolve;
+            const animate = (currentTime) => {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const eased = easingFn(progress);
+
+                mesh.position.set(
+                    startPosition.x + (targetPosition.x - startPosition.x) * eased,
+                    startPosition.y + (targetPosition.y - startPosition.y) * eased,
+                    startPosition.z + (targetPosition.z - startPosition.z) * eased
+                );
+
+                if (progress < 1) {
+                    this._snapAnimationFrameId = requestAnimationFrame(animate);
+                } else {
+                    mesh.position.copy(targetPosition);
+                    this._isSnappingModel = false;
+                    this._snapAnimationFrameId = null;
+                    this._snapResolve = null;
+                    resolve(true);
+                }
+            };
+
+            this._snapAnimationFrameId = requestAnimationFrame(animate);
+        });
+    }
+
+    /**
+     * 将 MMD 模型回弹到当前可见区域内。
+     * 返回 true 表示位置被修正；修正完成后会保存最终位置。
+     */
+    async _snapModelIntoScreen({ animate = true } = {}) {
+        if (this._isSnappingModel) return false;
+        const mesh = this.manager.currentModel?.mesh;
+        if (!mesh || !this.manager.camera || !this.manager.renderer || !THREE) return false;
+
+        const startPosition = mesh.position.clone();
+        const targetPosition = this.clampModelPosition(startPosition.clone());
+        if (!targetPosition || !targetPosition.isVector3) {
+            return false;
+        }
+
+        const distance = startPosition.distanceTo(targetPosition);
+        if (!Number.isFinite(distance) || distance < 0.0001) {
+            return false;
+        }
+
+        let changed = false;
+        if (animate) {
+            changed = await this._animateModelToPosition(startPosition, targetPosition);
+        } else {
+            mesh.position.copy(targetPosition);
+            changed = true;
+        }
+
+        if (changed) {
+            await this._savePositionAfterInteraction();
+        }
+        return changed;
+    }
+
     // ═══════════════════ 偏好保存 ═══════════════════
 
     async _savePositionAfterInteraction() {
@@ -660,6 +873,11 @@ class MMDInteraction {
             cancelAnimationFrame(this._snapAnimationFrameId);
             this._snapAnimationFrameId = null;
         }
+        if (this._snapResolve) {
+            this._snapResolve(false);
+            this._snapResolve = null;
+        }
+        this._isSnappingModel = false;
 
         if (this._savePositionDebounceTimer) {
             clearTimeout(this._savePositionDebounceTimer);

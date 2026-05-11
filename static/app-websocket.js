@@ -1763,6 +1763,11 @@
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};
+                    var snapshotMeta = { sourceCharacter: response.lanlan_name || '' };
+                    if (typeof window.isAgentStatusSnapshotCurrent === 'function'
+                        && !window.isAgentStatusSnapshotCurrent(snapshotMeta)) {
+                        return;
+                    }
                     window._agentStatusSnapshot = snapshot;
                     var serverOnline = snapshot.server_online !== false;
                     var flags = snapshot.flags || {};
@@ -1773,7 +1778,7 @@
                         window.agentStateMachine.updateCache(serverOnline, flags);
                     }
                     if (typeof window.applyAgentStatusSnapshotToUI === 'function') {
-                        window.applyAgentStatusSnapshotToUI(snapshot);
+                        window.applyAgentStatusSnapshotToUI(snapshot, snapshotMeta);
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;

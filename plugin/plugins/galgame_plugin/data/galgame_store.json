@@ -4,7 +4,12 @@
   "dedupe_window": [],
   "events_byte_offset": 0,
   "events_file_size": 0,
-  "last_error": {},
+  "last_error": {
+    "kind": "warning",
+    "message": "memory_reader TextractorCLI.exe is invalid or missing",
+    "source": "bridge_reader",
+    "ts": ""
+  },
   "last_seq": 0,
   "llm_vision_enabled": false,
   "llm_vision_max_image_px": 768,

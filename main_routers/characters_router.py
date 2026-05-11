@@ -53,6 +53,7 @@ from .shared_state import (
 )
 from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+from .agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
     delete_character_memory_storage,
     list_character_memory_paths,
@@ -2436,6 +2437,11 @@ async def set_current_catgirl(request: Request):
     # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
+
+    # 角色卡切换会复用同一个前端猫爪面板和工具服务全局状态。
+    # 这里先把旧状态归零，避免新角色刷新后继承上一张卡的开关状态。
+    if old_catgirl != catgirl_name:
+        await force_disable_agent_for_character_switch(catgirl_name, old_catgirl)
 
     # B8: if the previous character had an active game route, finalize it
     # immediately. Otherwise the heartbeat-based timeout (10-60s) would

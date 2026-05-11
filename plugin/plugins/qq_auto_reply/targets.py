@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from typing import Optional
+
+
+class QQAutoReplyTargetsMixin:
+    @staticmethod
+    def _normalize_target_id(target_id: str) -> str:
+        return str(target_id or "").strip()
+
+    @classmethod
+    def _validate_target_id(cls, target_id: str, *, field_name: str) -> str:
+        normalized = cls._normalize_target_id(target_id)
+        if not normalized:
+            raise ValueError(f"{field_name} 不能为空")
+        if not normalized.isdigit():
+            raise ValueError(f"{field_name} 必须是纯数字")
+        return normalized
+
+    @staticmethod
+    def _validate_outbound_message(message: str) -> str:
+        normalized = str(message or "").strip()
+        if not normalized:
+            raise ValueError("message 不能为空")
+        return normalized
+
+    def _ensure_qq_client_connected(self):
+        if not self.qq_client:
+            raise RuntimeError("QQ 客户端未初始化")
+        if not self.qq_client.ws:
+            raise RuntimeError("OneBot 未连接，请先启动自动回复")
+
+    def _resolve_private_message_target(self, target: str) -> tuple[str, Optional[str]]:
+        normalized = self._normalize_target_id(target)
+        if not normalized:
+            raise ValueError("target 不能为空")
+        if normalized.isdigit():
+            return normalized, None
+        if not self.permission_mgr:
+            raise RuntimeError("权限管理器未初始化")
+
+        matches = self.permission_mgr.find_users_by_nickname(normalized)
+        if not matches:
+            raise ValueError(f"NICKNAME_NOT_FOUND: 昵称 {normalized} 不在信任用户列表中")
+        if len(matches) > 1:
+            qq_list = ", ".join(user["qq"] for user in matches)
+            raise ValueError(f"NICKNAME_AMBIGUOUS: 昵称 {normalized} 匹配到多个用户: {qq_list}")
+        return matches[0]["qq"], normalized
