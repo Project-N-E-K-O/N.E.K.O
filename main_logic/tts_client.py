@@ -3144,7 +3144,17 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
             # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
-            # 也可能是远端 clone 成功但本地保存失败。fallthrough 让后续分支处理。
+            # 也可能是远端 clone 成功但本地保存失败，
+            # 或 core_api_type=='grok' 时 xAI 的自定义 voice（8-char lowercase
+            # alphanumeric，POST /v1/custom-voices 返回的 id，本地不存）。
+            # 只有 grok 路径要 short-circuit 到 grok_streaming_tts_worker 并显式
+            # 传 CORE_API_KEY；其他场景 fallthrough 让后续分支处理 cosyvoice/
+            # gptsovits/free preset。把 grok short-circuit 放在 voice_meta is None
+            # 分支里很关键：voice_meta 非 None 时说明是本地已保存的 clone（cosyvoice
+            # / minimax / ...），grok session 下也应保留原 clone 路径，不能劫持。
+            if core_api_type == 'grok':
+                grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+                return grok_streaming_tts_worker, grok_api_key, 'grok'
             logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
         elif voice_meta.get('provider', '').startswith('minimax'):
             provider = voice_meta['provider']
@@ -3191,16 +3201,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
     # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
-        # xAI 自定义 voice（8-char lowercase alphanumeric，POST /v1/custom-voices
-        # 返回的 id）由 xAI 的 streaming TTS 端点合成，不能走 CosyVoice。当
-        # core_api_type=='grok' 且 voice_id 不在 native catalog 时，必然是 xAI
-        # 自定义 voice — 直接路由到 grok worker，避免误入 cosyvoice 鉴权失败。
-        # api_key_override 必须显式给 CORE_API_KEY：has_custom=True 时调用方默认
-        # 从 get_model_api_config('tts_custom') 取凭证，对 xAI 是错凭证；与
-        # _resolve_grok_native_tts_worker 同源。
-        if core_api_type == 'grok':
-            grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
-            return grok_streaming_tts_worker, grok_api_key, 'grok'
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
