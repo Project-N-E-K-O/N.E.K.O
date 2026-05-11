@@ -5112,12 +5112,12 @@ margin-top: 10px;
     position: relative;
 }
 
-/* voice_id 的 field-row 特殊处理 - 缩短宽度 */
+/* voice_id 的 field-row 特殊处理 - 允许音色下拉占用更多横向空间 */
 .catgirl-panel-right .field-row:has(select[name="voice_id"]) {
-    flex: 0 0 auto;
+    flex: 1 1 360px;
     width: auto;
-    min-width: 200px;
-    max-width: 300px;
+    min-width: 240px;
+    max-width: 560px;
 }
 
 /* select 下拉框需要可见 */
@@ -5299,6 +5299,36 @@ margin-top: 10px;
     font-weight: 700;
     cursor: default;
     opacity: 0.85;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    white-space: nowrap;
+    position: relative;
+}
+
+.catgirl-panel-right .voice-select-group-label::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    top: 50%;
+    height: 2px;
+    border-radius: 999px;
+    background: rgba(64, 197, 241, 0.55);
+    transform: translateY(-50%);
+}
+
+.catgirl-panel-right .voice-select-group-text {
+    min-width: 0;
+    max-width: calc(100% - 32px);
+    padding: 0 12px;
+    background: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative;
+    z-index: 1;
 }
 
 .catgirl-panel-right .field-row:has(.voice-custom-select.active) {

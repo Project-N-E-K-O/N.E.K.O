@@ -10,6 +10,31 @@ from starlette.requests import Request
 from utils.config_manager import ConfigManager, get_config_manager
 
 
+@pytest.fixture
+def reset_tracker_records():
+    """Hand out a `register(lanlan)` callable; wipe registered lanlan keys
+    from the module-level `_task_tracker._records` both before yield and
+    in the finalizer.
+
+    Module-level `_task_tracker` is shared across tests; without explicit
+    isolation a failing assertion would leak cancelled records into the
+    next test and produce spurious flakes. Putting cleanup in the fixture
+    finalizer keeps it on the `finally` path so it runs even if the test
+    body raises.
+    """
+    from app.agent_server import _task_tracker
+
+    registered: set[str] = set()
+
+    def register(lanlan: str) -> None:
+        _task_tracker._records.pop(lanlan, None)
+        registered.add(lanlan)
+
+    yield register
+    for lanlan in registered:
+        _task_tracker._records.pop(lanlan, None)
+
+
 def _expected_plugin_dashboard_location(v: str = "") -> str:
     from config import USER_PLUGIN_BASE
 
@@ -1153,18 +1178,7 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    fn_src = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_user_turn_fingerprint":
-            fn_src = ast.get_source_segment(source, node)
-            break
-    assert fn_src is not None
-
-    ns = {}
-    exec("import hashlib\nfrom typing import Any, Optional\n" + fn_src, ns)
-    fingerprint = ns["_build_user_turn_fingerprint"]
+    from app.agent_server import _build_user_turn_fingerprint as fingerprint
 
     text_only = fingerprint([{"role": "user", "content": "看图"}])
     with_attachment = fingerprint([
@@ -1186,282 +1200,420 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
     assert image_only is not None
 
 
-def test_agent_task_tracker_blocks_cancelled_task_until_later_user_turn():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
+def test_user_message_signature_ignores_metadata_and_role():
+    from app.agent_server import _user_message_signature, _last_user_message_signature
+
+    # 非 user 消息 / 无 text → None
+    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
+    assert _user_message_signature({"role": "user"}) is None
+    assert _user_message_signature("not a dict") is None
+
+    a = {"role": "user", "text": "打开天气网站并截图", "timestamp": 100}
+    b = {"role": "user", "text": "打开天气网站并截图", "timestamp": 999, "id": "msg-99"}
+    c = {"role": "user", "text": "打开天气网站", "timestamp": 100}
+    assert _user_message_signature(a) == _user_message_signature(b)
+    assert _user_message_signature(a) != _user_message_signature(c)
+
+    # attachments 进入 signature
+    d = {
+        "role": "user",
+        "text": "看下这个",
+        "attachments": [{"url": "https://example.com/x.png"}],
     }
-    segments = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted:
-            segments.append(ast.get_source_segment(source, node))
-    assert len(segments) == len(wanted)
-
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
-
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
+    e = {
+        "role": "user",
+        "text": "看下这个",
+        "attachments": [{"url": "https://example.com/y.png"}],
     }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
+    assert _user_message_signature(d) != _user_message_signature(e)
 
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-        trigger_user_ts=100.0,
-    )
-    cancelled_at = tracker._records["lanlan"][0]["ts"]
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=cancelled_at - 1,
-    )["task_id"] == "cancelled-1"
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=cancelled_at + 1,
-    ) is None
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=None,
-    ) is None
-
-
-def test_agent_task_tracker_keeps_same_turn_blocked_with_ahead_client_clock():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    # _last_user_message_signature 取最后一条 user
+    messages = [
+        {"role": "user", "text": "你好"},
+        {"role": "assistant", "text": "嗨"},
+        {"role": "user", "text": "打开天气网站并截图"},
+        {"role": "assistant", "text": "ok"},
     ]
-    assert len(segments) == len(wanted)
-
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
-
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-        trigger_user_ts=100.0,
-    )
-    cancelled_at = tracker._records["lanlan"][0]["ts"]
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=cancelled_at + 3600,
-    )["task_id"] == "cancelled-1"
+    assert _last_user_message_signature(messages) == _user_message_signature(messages[2])
 
 
-def test_agent_task_tracker_ignores_metadata_less_cancel_in_fingerprint_fallback():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
+    from app.agent_server import _redact_cancelled_user_turns
+
+    lanlan = "test-lanlan-redact-passthrough"
+    reset_tracker_records(lanlan)
+
+    messages = [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "hello"},
     ]
-    assert len(segments) == len(wanted)
+    assert _redact_cancelled_user_turns(messages, lanlan) is messages
 
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
 
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-with-fp",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-    )
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-without-fp",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Task cancelled by user",
-        success=False,
-        cancelled=True,
+def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(reset_tracker_records):
+    """核心 bypass 规则：user msg 后面有且仅有 1 条 role='assistant' 的消息时，
+    它是"首次被 analyze"——即使 sig 命中 cancelled_sigs 也 bypass。这一次
+    bypass 后下次 analyze 时它的 trailing-assistant 计数会涨过 1，自动失去
+    豁免。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
     )
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=None,
-    )["task_id"] == "cancelled-with-fp"
+    lanlan = "test-lanlan-bypass-firsttime"
+    reset_tracker_records(lanlan)
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=None,
-    ) is None
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
 
-
-def test_openclaw_stop_records_cancel_trigger_metadata():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    segment = None
-    for node in tree.body:
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cancel_openclaw_tasks_for_stop":
-            segment = ast.get_source_segment(source, node)
-            break
-
-    assert segment is not None
-    assert "_task_tracker.record_completed" in segment
-    assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment
-    assert 'trigger_user_ts=info.get("_trigger_user_ts")' in segment
-
-
-def test_agent_task_tracker_matches_cancelled_user_plugin_suffix():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    # 用户 cancel 之后又发了同文本，messages 末尾就是这条新 user + 它的 reply
+    messages = [
+        {"role": "user", "text": text},                  # 0: 旧的被取消那条，后面 2 条 assistant
+        {"role": "assistant", "text": "正在打开"},        # 1
+        {"role": "user", "text": text},                  # 2: 新发的复述，后面 1 条 assistant
+        {"role": "assistant", "text": "再次打开中"},      # 3
     ]
-    assert len(segments) == len(wanted)
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 旧 user (trailing=2) 被 redact，新 user (trailing=1) bypass 保留
+    from app.agent_server import REDACTED_USER_TURN_MARKER
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]
+    assert out[2] is messages[3]
+    assert len(out) == 3
 
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
 
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-plugin",
-        method="user_plugin",
-        desc="notes.run: 整理今天的会议纪要",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
+def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_records):
+    """t/t+1/t+2 连发同文本，单次 cancel → 用户继续聊别的（新 user+assistant）
+    → 三条同文本全部 redact（trailing assistant 都 >1），新 user msg
+    bypass。这是用户拍板的核心诉求："cancel 抵消之前所有相关请求"。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
     )
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="user_plugin",
-        desc="整理今天的会议纪要",
-        latest_user_fingerprint="fp-before",
-    )["task_id"] == "cancelled-plugin"
+    lanlan = "test-lanlan-three-repeats"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                  # 0: trailing assistants = 2
+        {"role": "user", "text": text},                  # 1: trailing assistants = 2
+        {"role": "user", "text": text},                  # 2: trailing assistants = 2
+        {"role": "assistant", "text": "尝试打开"},        # 3: 第 1 条 assistant
+        {"role": "user", "text": "再聊别的"},             # 4: trailing assistants = 1 → bypass
+        {"role": "assistant", "text": "嗯"},              # 5: 第 2 条 assistant
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 三条 X 都被 redact，"再聊别的" 保留
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    # "尝试打开" 紧跟最后一条 X 被吞
+    assert out[3] is messages[4]                          # "再聊别的"
+    assert out[4] is messages[5]                          # "嗯"
+    assert len(out) == 5
+
+
+def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_tracker_records):
+    """by-design 副作用：用户先后用同文本各发一次请求，第一次成功完成、
+    第二次被取消。redact 不区分历史里同 sig 的成功段和取消段——所有
+    trailing-assistant > 1 的同 sig user msg 都被屏蔽。早先成功段的
+    assistant 响应文本因此丢失，但 inject() 仍输出 [COMPLETED] 行让
+    analyzer 知道"那个任务做过且成功"，所以语义层面不算严重损失。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-earlier-success"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                  # 0: 早先成功的同文本
+        {"role": "assistant", "text": "好的，截图已发"},   # 1: 早先成功响应
+        {"role": "user", "text": "再聊别的"},             # 2
+        {"role": "assistant", "text": "嗯"},              # 3
+        {"role": "user", "text": text},                  # 4: 最近被取消那次
+        {"role": "assistant", "text": "正在打开"},        # 5: 取消任务的进行中痕迹
+        {"role": "user", "text": "继续"},                 # 6: 用户继续聊
+        {"role": "assistant", "text": "嗯"},              # 7
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 两条同 sig user msg 都 redact，各自之后的 assistant 段也吞掉
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]                          # "再聊别的" 保留
+    assert out[2] is messages[3]                          # 它的 assistant
+    assert out[3] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[4] is messages[6]                          # "继续"
+    assert out[5] is messages[7]
+    assert len(out) == 6
+
+
+def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_records):
+    """drop_until_next_user 期间只吞 assistant/tool；夹在中间的 system
+    消息（session callback / context 注入）跟被取消请求无关，必须保留。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-system-preserve"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
+    )
+
+    # cancelled user msg 后面有 2 条 assistant，所以 trailing=2 → redact
+    messages = [
+        {"role": "user", "text": text},
+        {"role": "assistant", "text": "正在打开..."},
+        {"role": "system", "content": "[session callback] something unrelated"},
+        {"role": "tool", "content": "browser_screenshot.png"},
+        {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out == [
+        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
+        # 中间无关的 system 消息保留
+        {"role": "system", "content": "[session callback] something unrelated"},
+        # assistant + tool 被吞
+        {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
+    ]
+
+
+def test_trim_protects_live_cancelled_records_against_cap_pressure():
+    """繁忙 session 在 TTL 内积累大量 assigned/completed 时，still-live
+    cancelled record 不能被 tail-window 裁剪挤掉——否则它代表的 redact 信号
+    会丢失，被取消的 user turn 重新暴露给 analyzer。"""
+    from app.agent_server import AgentTaskTracker
+    from config import AGENT_TASK_TRACKER_MAX_RECORDS as CAP
+
+    tracker = AgentTaskTracker()
+    lanlan = "test-lanlan-trim-protect"
+
+    # 先记一条 cancel，它必须被保住。
+    tracker.record_completed(
+        lanlan, task_id="cancel-me", method="browser_use",
+        desc="x", success=False, cancelled=True,
+        trigger_user_fingerprint="protected-sig",
+    )
+
+    # 然后填满超过 cap 数量的 assigned/completed 噪声。
+    for i in range(CAP * 3):
+        tracker.record_assigned(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}")
+        tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
+
+    assert len(tracker._records[lanlan]) <= CAP
+    sigs = tracker.get_cancelled_user_sigs(lanlan)
+    assert "protected-sig" in sigs, (
+        f"cancelled record was evicted by _trim under cap pressure; got {sigs}"
+    )
+
+
+def test_user_message_signature_distinguishes_senders():
+    """多用户场景：两个不同 user 发同样的文字，sig 必须不同——否则取消 A
+    的请求会让 redact 误吞 B 的同文本请求。"""
+    from app.agent_server import _user_message_signature
+
+    a_top = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_top = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+    a_meta = {"role": "user", "text": "打开天气", "meta": {"sender_id": "user-A"}}
+    a_ctx = {"role": "user", "text": "打开天气", "_ctx": {"user_id": "user-A"}}
+    no_sender = {"role": "user", "text": "打开天气"}
+
+    sig_a = _user_message_signature(a_top)
+    sig_b = _user_message_signature(b_top)
+    assert sig_a and sig_b and sig_a != sig_b
+    # 三种来源同一 sender_id 都归一到同一签名
+    assert _user_message_signature(a_meta) == sig_a
+    assert _user_message_signature(a_ctx) == sig_a
+    # 无 sender 与有 sender 不同
+    no_sig = _user_message_signature(no_sender)
+    assert no_sig and no_sig not in (sig_a, sig_b)
+
+
+def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records):
+    """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
+    redact 应只动 A 的请求（sig 不同），不应误吞 B 的。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-multi-user"
+    reset_tracker_records(lanlan)
+
+    a_msg = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_msg = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+
+    _task_tracker.record_completed(
+        lanlan, task_id="t-a-cancel", method="browser_use",
+        desc="打开天气", success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature(a_msg),
+    )
+
+    # A 的 user msg trailing=2（被 redact），B 的 trailing=1（首次 bypass）
+    messages = [
+        a_msg,
+        {"role": "assistant", "text": "正在打开"},
+        b_msg,
+        {"role": "assistant", "text": "好的"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is b_msg                    # B 的请求保留
+    assert out[2] == messages[3]              # B 的 assistant 响应保留
+    assert len(out) == 3                      # 只吞 A 的 user + 它后面的 assistant
+
+
+def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
+    """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
+    normalization helper（_user_message_payload_text），避免归一化规则漂移。
+    验证：单条 user 消息的 fingerprint = sha256(payload) = signature。
+    """
+    import hashlib
+    from app.agent_server import (
+        _user_message_payload_text,
+        _user_message_signature,
+        _build_user_turn_fingerprint,
+    )
+
+    msg = {
+        "role": "user",
+        "text": "打开天气",
+        "attachments": [{"url": "https://example.com/x.png"}],
+    }
+    payload = _user_message_payload_text(msg)
+    expected_sig = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+    assert _user_message_signature(msg) == expected_sig
+    # 单条 user 消息时，turn fingerprint 也是同一个 payload 的 sha256
+    assert _build_user_turn_fingerprint([msg]) == expected_sig
+
+    # 非 user 消息：两个函数都不参与
+    assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
+    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
+
+
+def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records):
+    """被取消任务对应的 [ASSIGNED] 与 [CANCELLED] 记录都不应再注入到 analyzer
+    视野——其触发的 user turn 已被 redact，重新注入只会把它拉回视野。"""
+    from app.agent_server import _task_tracker
+
+    lanlan = "test-lanlan-inject"
+    reset_tracker_records(lanlan)
+
+    _task_tracker.record_assigned(
+        lanlan, task_id="t1", method="browser_use", desc="打开天气并截图",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc="打开天气并截图", success=False, cancelled=True,
+        trigger_user_fingerprint="sig-1",
+    )
+    _task_tracker.record_assigned(
+        lanlan, task_id="t2", method="user_plugin", desc="另一个任务",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t2", method="user_plugin",
+        desc="另一个任务", success=True,
+    )
+
+    messages = [{"role": "user", "text": "..."}]
+    out = _task_tracker.inject(messages, lanlan)
+    summary = next((m for m in out if isinstance(m, dict) and m.get("role") == "system"), None)
+    assert summary is not None
+    content = summary["content"]
+    # 取消任务的 desc 完全不出现
+    assert "打开天气并截图" not in content
+    assert "[CANCELLED]" not in content
+    # 没被取消的任务正常出现
+    assert "另一个任务" in content
+
+
+def test_inject_returns_messages_unchanged_when_all_tasks_cancelled(reset_tracker_records):
+    """全部 records 都属于已取消任务 → inject 不应再插入空 summary 消息。"""
+    from app.agent_server import _task_tracker
+
+    lanlan = "test-lanlan-inject-empty"
+    reset_tracker_records(lanlan)
+
+    _task_tracker.record_assigned(
+        lanlan, task_id="t1", method="browser_use", desc="x",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc="x", success=False, cancelled=True,
+        trigger_user_fingerprint="sig-1",
+    )
+
+    messages = [{"role": "user", "text": "..."}]
+    out = _task_tracker.inject(messages, lanlan)
+    assert out is messages
+
+
+def test_cancel_task_records_trigger_signature_for_redact():
+    """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
+    _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
+    触发的 user turn。"""
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    targets = {
+        "cancel_task": ast.AsyncFunctionDef,
+        "_cancel_openclaw_tasks_for_stop": ast.AsyncFunctionDef,
+    }
+    for name, kind in targets.items():
+        node = next(
+            (n for n in tree.body if isinstance(n, kind) and n.name == name),
+            None,
+        )
+        assert node is not None, f"{name} not found"
+        segment = ast.get_source_segment(source, node)
+        assert "_task_tracker.record_completed" in segment, (
+            f"{name} should call record_completed on cancel"
+        )
+        assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment, (
+            f"{name} should forward _trigger_user_fingerprint to record_completed"
+        )
+        # 旧的 trigger_user_ts 字段已彻底拆除
+        assert "trigger_user_ts" not in segment, (
+            f"{name} still references the removed trigger_user_ts field"
+        )
 
 
 @pytest.mark.asyncio

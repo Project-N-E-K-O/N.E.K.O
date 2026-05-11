@@ -1,25 +1,23 @@
-"""Provider-agnostic registry for core API native voice catalogs.
+"""跨 Provider 的原生音色注册表。
 
-Each `core_api_type` that ships built-in TTS voices (e.g. Gemini's Puck/Leda,
-future OpenAI/Qwen native voices) registers a `NativeVoiceProvider` here.
-Cross-cutting code (config validation, character UI, TTS worker dispatch,
-realtime voice routing) consults the registry instead of hard-coding
-`if core_api_type == 'gemini'` branches, so adding a second provider is one
-adapter file plus one worker registration — not edits in five places.
+带内置 TTS 音色的 core_api_type（例如 Gemini、StepFun，以及后续可能接入的
+OpenAI/Qwen 原生音色）会在这里注册 NativeVoiceProvider。
+配置校验、角色 UI、TTS worker 分发和实时语音路由都通过这个注册表查询，
+避免到处硬编码 core_api_type 判断。
 
-Two-phase registration avoids circular imports:
-  1. The provider metadata module (e.g. `utils/gemini_tts_voices.py`) creates
-     and registers a `NativeVoiceProvider` at import time — pure data.
-  2. The TTS worker module (`main_logic/tts_client.py`) registers the worker
-     callable + api-key resolver after defining the worker, since the worker
-     pulls in heavy deps (httpx, soxr, etc.) the metadata module must not.
+注册分两层，避免循环导入：
+  1. Provider 元数据模块只在 import 时创建并注册 NativeVoiceProvider。
+  2. TTS worker 模块等 worker 定义完之后再注册 worker 与鉴权解析函数，
+     避免元数据模块提前加载 httpx、soxr 等重依赖。
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from utils.config_manager import ConfigManager
@@ -31,13 +29,11 @@ TTSWorkerResolver = Callable[["ConfigManager"], "tuple[Callable[..., Any], str]"
 
 @dataclass(frozen=True)
 class NativeVoiceProvider:
-    """Metadata for one core API's built-in TTS voice catalog.
+    """单个 core API 内置 TTS 音色目录的元数据。
 
-    `key` matches the `core_api_type` / realtime `api_type` string used
-    elsewhere in the codebase (e.g. "gemini"). `catalog` maps canonical voice
-    names (case-sensitive as the upstream API expects) to a gender label;
-    `aliases` maps casefolded user-friendly inputs (e.g. "中文男", "female")
-    to canonical voice names so users can type either form.
+    key 对应代码里的 core_api_type / realtime api_type。catalog 的 key 是上游
+    API 接收的规范音色名，value 默认作为补充标签；aliases 用于把用户友好的
+    输入映射回规范音色名。
     """
 
     key: str
@@ -46,6 +42,7 @@ class NativeVoiceProvider:
     default_voice: str
     default_male_voice: str
     catalog_prefix: str
+    catalog_value_is_display_name: bool = False
     _voice_lookup: dict[str, str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -56,11 +53,10 @@ class NativeVoiceProvider:
         )
 
     def normalize(self, voice_id: str | None) -> tuple[str, bool]:
-        """Return (canonical_voice_name, recognized).
+        """返回 (规范音色名, 是否识别)。
 
-        Empty / whitespace input is treated as unrecognized so callers can
-        tell "user explicitly chose a native voice" apart from "we picked the
-        default."
+        空值按未识别处理，方便调用方区分“用户明确选择了原生音色”和
+        “系统使用默认值”。
         """
         normalized = (voice_id or "").strip()
         if not normalized:
@@ -80,37 +76,42 @@ class NativeVoiceProvider:
         return self.normalize(voice_id)[1]
 
     def voice_catalog_for_ui(self) -> dict[str, dict[str, str | bool]]:
-        """Return the voice list in the shape the character UI expects."""
-        return {
-            voice_name: {
-                "prefix": f"{self.catalog_prefix} {voice_name} ({gender})",
+        """返回角色 UI 需要的音色列表结构。"""
+        def format_prefix(voice_name: str, group: str, display_name: str) -> str:
+            if self.catalog_value_is_display_name:
+                return display_name
+            return f"{self.catalog_prefix} {display_name} ({group})"
+
+        def split_catalog_value(voice_name: str, value: str) -> tuple[str, str]:
+            if self.catalog_value_is_display_name:
+                return "", value or voice_name
+            return value, voice_name
+
+        catalog_for_ui: dict[str, dict[str, str | bool]] = {}
+        for voice_name, catalog_value in self.catalog.items():
+            gender, display_name = split_catalog_value(voice_name, catalog_value)
+            catalog_for_ui[voice_name] = {
+                "prefix": format_prefix(voice_name, gender, display_name),
                 "provider": self.key,
+                "provider_label": self.catalog_prefix,
                 "gender": gender,
+                "display_name": display_name,
                 "builtin": True,
             }
-            for voice_name, gender in self.catalog.items()
-        }
+        return catalog_for_ui
 
     def resolve_for_routing(
         self,
         voice_id: str | None,
         voice_id_exists: VoiceIdExists | None = None,
     ) -> tuple[str, bool]:
-        """Return (voice, use_native).
+        """返回 (音色, 是否使用原生音色)。
 
-        When the input is not in this provider's catalog, the returned
-        `voice` is the caller's stripped input verbatim — symmetric with
-        the module-level `resolve_native_voice_for_routing` helper (which
-        returns the input as-is when no native provider matches the
-        `core_api_type`). That keeps the "use_native=False" contract
-        consistent: callers that inspect `voice` in the False branch see
-        the original id, not a fallback default they never asked for.
+        输入未命中当前 Provider 目录时，返回 strip 后的原始输入，避免把用户自定义
+        音色悄悄替换成默认原生音色。
 
-        Collision branch behaves differently on purpose: when the input
-        canonicalizes to a voice the user has cloned, we return the
-        canonical name with use_native=False, so callers can route to that
-        clone by canonical id (e.g. user typed alias "中文男", clone is
-        stored as "Puck" — caller wants "Puck", not "中文男").
+        如果规范音色名和用户克隆音色冲突，则返回规范音色名但禁用原生路由，
+        让调用方按自定义音色处理。
         """
         normalized_voice, recognized = self.normalize(voice_id)
         if not recognized:
@@ -149,6 +150,47 @@ def register_tts_worker_resolver(
     the provider key for the dispatcher.
     """
     _TTS_WORKER_RESOLVERS[provider_key] = resolver
+
+
+NativeTTSApiKeySource = Literal['core_api_key', 'tts_default_api_key']
+
+
+def make_native_tts_resolver(
+    worker: Callable[..., Any],
+    api_key_source: NativeTTSApiKeySource,
+    *,
+    worker_kwargs: Mapping[str, Any] | None = None,
+) -> TTSWorkerResolver:
+    """Build a `register_tts_worker_resolver`-compatible resolver from the
+    two axes shared by every native-voice provider so far:
+
+    * `worker` — the TTS worker callable to dispatch to.
+    * `api_key_source` — where to read the api key from on the active
+      `ConfigManager`:
+        - ``'core_api_key'`` for providers whose native voices bill against
+          the same key as the realtime/LLM endpoint (Gemini, Grok).
+        - ``'tts_default_api_key'`` for providers using the TTS slot the
+          user configured separately (StepFun, free-mode lanlan TTS).
+    * `worker_kwargs` (optional) — bound via `partial` for variants that
+      share a worker but flip a mode flag (e.g. `free_mode=True` for the
+      free-tier StepFun route).
+
+    Future providers whose api key sourcing falls outside these two
+    branches can register a hand-written resolver directly via
+    `register_tts_worker_resolver`; adding a third literal here is also
+    fine when the new source generalizes.
+    """
+    def resolver(cm: "ConfigManager") -> "tuple[Callable[..., Any], str]":
+        if api_key_source == 'core_api_key':
+            api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        elif api_key_source == 'tts_default_api_key':
+            api_key = cm.get_model_api_config('tts_default').get('api_key', '')
+        else:
+            raise ValueError(f"unknown api_key_source: {api_key_source!r}")
+        bound = partial(worker, **dict(worker_kwargs)) if worker_kwargs else worker
+        return bound, api_key
+
+    return resolver
 
 
 def get_provider(key: str | None) -> NativeVoiceProvider | None:
@@ -211,13 +253,87 @@ def resolve_native_voice_for_routing(
     return provider.resolve_for_routing(voice_id, voice_id_exists)
 
 
-def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
-    """Return provider key when the active realtime API ships native voices.
+def is_free_lanlan_app_route(
+    core_api_type: str | None,
+    realtime_base_url: str | None,
+) -> bool:
+    """是否为会被 lanlan.app 边缘强制映射为 Leda 的海外免费路由。
 
-    Falls back to core_api_type when realtime config is unavailable, matching
-    the behavior of the previous `is_gemini_realtime_api_active` helper.
-    Returns None when neither realtime nor core api type is a registered
-    native-voice provider.
+    服务端忽略客户端传的 voice_id，硬覆盖成 Leda；这里集中识别"该路由下
+    voice 字段不应下发 / native catalog 不应暴露"的条件。
+    """
+    raw_url = str(realtime_base_url or "").strip()
+    parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
+    hostname = (parsed.hostname or "").lower()
+    return bool(
+        str(core_api_type or "").lower() == "free"
+        and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
+    )
+
+
+def is_free_preset_voice_id(voice_id: str | None) -> bool:
+    """判断 voice_id 是否属于 api_providers.json 的 free_voices 列表。"""
+    from utils.api_config_loader import get_free_voices  # 延迟导入避免循环
+
+    voice = (voice_id or "").strip()
+    if not voice:
+        return False
+    return voice in set(get_free_voices().values())
+
+
+def should_block_free_preset_voice(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+) -> bool:
+    """lanlan.app/free 下屏蔽 free preset 音色（custom 音色不受影响）。"""
+    return bool(
+        is_free_lanlan_app_route(core_api_type, realtime_base_url)
+        and is_free_preset_voice_id(voice_id)
+    )
+
+
+def should_block_free_native_voice(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+) -> bool:
+    """lanlan.app/free 下屏蔽 Step/free 原生音色（避免被静默覆盖为 Leda）。"""
+    normalized = (voice_id or "").strip()
+    if not (normalized and is_free_lanlan_app_route(core_api_type, realtime_base_url)):
+        return False
+    _, uses_native = resolve_native_voice_for_routing("free", normalized, voice_id_exists)
+    return uses_native
+
+
+def should_block_free_voice_for_route(
+    core_api_type: str | None,
+    voice_id: str | None,
+    realtime_base_url: str | None,
+    voice_id_exists: VoiceIdExists | None = None,
+) -> bool:
+    """lanlan.app/free 下不下发 free preset 或 Step/free 原生音色。"""
+    normalized = (voice_id or "").strip()
+    return (
+        should_block_free_preset_voice(core_api_type, normalized, realtime_base_url)
+        or should_block_free_native_voice(
+            core_api_type, normalized, realtime_base_url, voice_id_exists
+        )
+    )
+
+
+def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
+    """返回当前 realtime API 注册的 native voice provider key（route-agnostic）。
+
+    没有路由屏蔽 —— 仅看 api_type 是否对应已注册 provider。validate_voice_id
+    / cleanup_invalid_voice_ids 等校验链路用这一版：哪怕当前在 lanlan.app
+    海外免费路由（runtime 会被服务端覆盖成 Leda），也认 Step/free 原生音色
+    为合法保存值，避免用户切线路时 characters.json 里保存的 voice_id 被
+    silently 清空。
+
+    UI / preview 路径要"该路由下不展示不可用音色"语义的，用
+    `get_active_realtime_native_provider_for_ui`。
     """
     try:
         realtime_config = cm.get_model_api_config('realtime')
@@ -227,8 +343,37 @@ def get_active_realtime_native_provider(cm: "ConfigManager") -> str | None:
     return api_type if api_type in _PROVIDERS else None
 
 
+def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | None:
+    """同 get_active_realtime_native_provider，但屏蔽 lanlan.app 海外免费路由。
+
+    /voices 端点和原生音色 preview 路径用这一版：lanlan.app 边缘会把
+    Step/free voice_id 映射为固定 Leda，UI 不应让用户选这些音色，preview
+    也不该走原生合成。
+    """
+    provider = get_active_realtime_native_provider(cm)
+    if provider is None:
+        return None
+
+    base_url = ""
+    try:
+        realtime_config = cm.get_model_api_config('realtime')
+        base_url = str(realtime_config.get('base_url') or '')
+    except Exception:
+        base_url = ""
+    if not base_url:
+        try:
+            base_url = str((cm.get_core_config() or {}).get('CORE_URL') or '')
+        except Exception:
+            base_url = ""
+
+    if is_free_lanlan_app_route(provider, base_url):
+        return None
+    return provider
+
+
 _BUILTIN_PROVIDER_MODULES: tuple[str, ...] = (
     "utils.gemini_tts_voices",
+    "utils.stepfun_tts_voices",
     "utils.grok_tts_voices",
 )
 

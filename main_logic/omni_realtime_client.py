@@ -32,6 +32,7 @@ from utils.frontend_utils import calculate_text_similarity
 from utils.gemini_tts_voices import normalize_gemini_tts_voice
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
+from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
 
 # Gemini Live API SDK (startup-time import)
 try:
@@ -47,6 +48,7 @@ except Exception as e:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
 _PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"
@@ -782,10 +784,11 @@ class OmniRealtimeClient:
                 gpt_session["tool_choice"] = "auto"
             await self.update_session(gpt_session)
         elif "step" in self._model_lower:
+            default_voice = get_stepfun_tts_default_voice('step')
             step_session = {
                 "instructions": instructions,
                 "modalities": ['text', 'audio'], # Step API只支持这一个模式
-                "voice": self.voice if self.voice else "qingchunshaonv",
+                "voice": self.voice if self.voice else default_voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
@@ -826,10 +829,11 @@ class OmniRealtimeClient:
             # client events to Vertex Live (see _has_server_vad gate
             # at __init__ — lanlan.app+free is already treated as
             # client-side VAD only).
+            default_voice = get_stepfun_tts_default_voice('free')
             free_session = {
                 "instructions": instructions,
                 "modalities": ['text', 'audio'],
-                "voice": self.voice if self.voice else "qingchunshaonv",
+                "voice": self.voice if self.voice else default_voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
