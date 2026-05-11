@@ -1368,6 +1368,74 @@ def test_redact_preserves_earlier_same_signature_successful_turn():
     _task_tracker._records.pop(lanlan, None)
 
 
+def test_redact_preserves_system_messages_inside_dropped_span():
+    """drop_until_next_user 期间只吞 assistant/tool；夹在中间的 system
+    消息（session callback / context 注入）跟被取消请求无关，必须保留。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-system-preserve"
+    _task_tracker._records.pop(lanlan, None)
+
+    text = "打开天气"
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
+    )
+
+    messages = [
+        {"role": "user", "text": text},
+        {"role": "assistant", "text": "正在打开..."},
+        {"role": "system", "content": "[session callback] something unrelated"},
+        {"role": "tool", "content": "browser_screenshot.png"},
+        {"role": "user", "text": "再聊别的"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out == [
+        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
+        # 中间无关的 system 消息保留
+        {"role": "system", "content": "[session callback] something unrelated"},
+        # assistant + tool 被吞
+        {"role": "user", "text": "再聊别的"},
+    ]
+
+    _task_tracker._records.pop(lanlan, None)
+
+
+def test_trim_protects_live_cancelled_records_against_cap_pressure():
+    """繁忙 session 在 TTL 内积累大量 assigned/completed 时，still-live
+    cancelled record 不能被 tail-window 裁剪挤掉——否则它代表的 redact 信号
+    会丢失，被取消的 user turn 重新暴露给 analyzer。"""
+    from app.agent_server import AgentTaskTracker
+    from config import AGENT_TASK_TRACKER_MAX_RECORDS as CAP
+
+    tracker = AgentTaskTracker()
+    lanlan = "test-lanlan-trim-protect"
+
+    # 先记一条 cancel，它必须被保住。
+    tracker.record_completed(
+        lanlan, task_id="cancel-me", method="browser_use",
+        desc="x", success=False, cancelled=True,
+        trigger_user_fingerprint="protected-sig",
+    )
+
+    # 然后填满超过 cap 数量的 assigned/completed 噪声。
+    for i in range(CAP * 3):
+        tracker.record_assigned(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}")
+        tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
+
+    assert len(tracker._records[lanlan]) <= CAP
+    counts = tracker.get_cancelled_user_sig_counts(lanlan)
+    assert counts.get("protected-sig") == 1, (
+        f"cancelled record was evicted by _trim under cap pressure; got {counts}"
+    )
+
+
 def test_redact_multiple_cancelled_records_consume_separate_quotas():
     """两次取消同文本任务 → 配额 = 2 → 倒序消费 → 最近两条同文本 user 都
     被 redact；再早一条仍保留。"""

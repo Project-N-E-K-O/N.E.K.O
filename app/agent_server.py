@@ -366,8 +366,31 @@ class AgentTaskTracker:
         return [m for _, m in merged]
 
     def _trim(self, records: list) -> None:
-        if len(records) > TASK_TRACKER_MAX_RECORDS:
-            records[:] = records[-TASK_TRACKER_MAX_RECORDS:]
+        if len(records) <= TASK_TRACKER_MAX_RECORDS:
+            return
+        # cancelled record 还在 TTL 内 = redact 信号源；纯 tail-window 裁剪
+        # 会在繁忙 session（短时间内大量 assigned/completed）把它们挤掉，
+        # 让 analyzer 重新看到本该被 redact 的 user turn。优先保护未过期
+        # 的 cancelled record。剩余配额留给最新的非 cancel record。
+        now = time.time()
+
+        def _is_live_cancel(r: dict) -> bool:
+            return (
+                r.get("kind") == "cancelled"
+                and now - float(r.get("ts") or 0.0) < TASK_TRACKER_TTL
+            )
+
+        live_cancelled = [r for r in records if _is_live_cancel(r)]
+        if len(live_cancelled) >= TASK_TRACKER_MAX_RECORDS:
+            # 极端情况：cancel 自己就超过 cap，按最新优先丢更早的 cancel。
+            keep_ids = {id(r) for r in live_cancelled[-TASK_TRACKER_MAX_RECORDS:]}
+        else:
+            slots_left = TASK_TRACKER_MAX_RECORDS - len(live_cancelled)
+            others = [r for r in records if not _is_live_cancel(r)]
+            keep_ids = {id(r) for r in live_cancelled}
+            keep_ids.update(id(r) for r in others[-slots_left:])
+        # 保持原插入序（records 是 append-only，所以原序即时间序）。
+        records[:] = [r for r in records if id(r) in keep_ids]
 
 
 # 全局任务跟踪器实例
@@ -1527,7 +1550,10 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
             redacted.append(m)
             continue
         if drop_until_next_user:
-            continue
+            # 只吞掉被取消任务产出的 assistant/tool 段；夹在中间的 system
+            # 消息（session callback、context 注入等）跟取消请求无关，保留。
+            if isinstance(m, dict) and m.get("role") in {"assistant", "tool"}:
+                continue
         redacted.append(m)
     return redacted
 
