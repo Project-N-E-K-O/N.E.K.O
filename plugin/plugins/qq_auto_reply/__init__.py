@@ -550,7 +550,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self._stop_auto_reply_runtime(stop_napcat=False)
         return Ok({"status": "stopped"})
 
-    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="主动发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="让 AI 生成一条私聊消息并主动发送给指定 QQ 用户。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}}, "required": ["target", "message"], "additionalProperties": False})
+    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="主动发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="让 AI 生成一条私聊消息并主动发送给指定 QQ 用户。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}}, "required": ["target", "message"], "additionalProperties": False}, metadata={"timeout": 90})
     async def send_private_proactive_message(self, target: str, message: str, **_):
         try:
             self._ensure_qq_client_connected()
@@ -596,11 +596,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.logger.exception("Failed to send proactive private QQ message")
             return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
 
-    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="主动发送群聊消息"), description=tr("entries.send_group_proactive_message.description", default="让 AI 生成一条群聊消息并主动发送给指定 QQ 群。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["group_id", "message"], "additionalProperties": False})
+    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="主动发送群聊消息"), description=tr("entries.send_group_proactive_message.description", default="让 AI 生成一条群聊消息并主动发送给指定 QQ 群。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["group_id", "message"], "additionalProperties": False}, metadata={"timeout": 90})
     async def send_group_proactive_message(self, group_id: str, message: str, **_):
         try:
             self._ensure_qq_client_connected()
-            normalized_group_id = self._validate_target_id(group_id, field_name="group_id")
+            normalized_group_id = self._validate_group_id(group_id)
             prompt_message = self._validate_outbound_message(message)
             reply_text = await self._generate_reply(
                 prompt_message,

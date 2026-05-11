@@ -15,12 +15,12 @@ class QQAutoReplyTargetsMixin:
         return str(target_id or "").strip()
 
     @classmethod
-    def _validate_target_id(cls, target_id: str, *, field_name: str) -> str:
-        normalized = cls._normalize_target_id(target_id)
+    def _validate_group_id(cls, group_id: str) -> str:
+        normalized = cls._normalize_target_id(group_id)
         if not normalized:
-            raise QQAutoReplyValidationError("INVALID_GROUP_ID", f"{field_name} 不能为空")
+            raise QQAutoReplyValidationError("INVALID_GROUP_ID", "group_id 不能为空")
         if not normalized.isdigit():
-            raise QQAutoReplyValidationError("INVALID_GROUP_ID", f"{field_name} 必须是纯数字")
+            raise QQAutoReplyValidationError("INVALID_GROUP_ID", "group_id 必须是纯数字")
         return normalized
 
     @staticmethod
