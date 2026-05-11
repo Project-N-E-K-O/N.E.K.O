@@ -3943,7 +3943,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
-        if elevenlabs_enabled:
+        if elevenlabs_enabled and not has_custom_voice:
             elevenlabs_options = _get_elevenlabs_options()
             return (
                 partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
