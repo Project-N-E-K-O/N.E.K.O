@@ -5145,7 +5145,6 @@ class LLMSessionManager:
         hot-swap fire at different lifecycle points).
         """
         try:
-            self.pending_agent_callbacks.append(callback)
             summary = str(callback.get("summary") or "").strip()
             detail = str(callback.get("detail") or "").strip()
             error_message = str(callback.get("error_message") or "").strip()
@@ -5157,13 +5156,20 @@ class LLMSessionManager:
                 # hot-swap renderer does not fabricate "我完成了任务" for what
                 # may actually be an external event push.
                 origin = "event"
-            # Skip enqueue only when there is *truly* nothing to convey:
-            # no body text, no error context, no identifiable source, and a
-            # benign completed status. Anything else (failed/cancelled/blocked,
-            # an error message, or a named source) carries meaning even with
-            # empty summary/detail and must survive into the hot-swap output.
+            # Skip enqueue (BOTH queues) only when there is *truly* nothing
+            # to convey: no body text, no error context, no identifiable
+            # source, and a benign completed status. Anything else
+            # (failed/cancelled/blocked, an error message, or a named source)
+            # carries meaning even with empty summary/detail and must survive
+            # into the hot-swap output.
+            #
+            # The two queues must filter consistently — otherwise text mode
+            # (which drains pending_agent_callbacks) would inject a garbage
+            # header-only block for callbacks the voice mode already
+            # discarded.
             if not summary and not detail and not error_message and not source_name and status == "completed":
                 return
+            self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
                 "origin": origin,
                 "summary": summary,
