@@ -3833,6 +3833,44 @@ class LLMSessionManager:
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
+        # 记录 / 查询 key：lanlan_name 为空时落到 "default" 与 sink 端对齐
+        # （sink 在 lanlan 字段空 / "default" 时把 directive 写到 "default"
+        # bucket；这里读取也得用同一 key，否则用户的 ban-topic 永远进不来
+        # system prompt，codex P2）。
+        _directives_key = self.lanlan_name or "default"
+
+        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
+        # 用户在过去 3 天里说过的 "别再提 X / stop saying X" 类指令，本轮 LLM
+        # 在 context 里已经看过；下一次 session 重启时原话已被 compress_history
+        # 抹掉，需要把活跃 term 拼成 system prompt 一段重新提醒模型避开。
+        # 抽取与落盘走 ``memory.user_directives`` 的 user_utterance sink；
+        # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            prompt += get_user_directives_manager().render_prompt_block(
+                _directives_key, _lang,
+            )
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[UserDirectives] prompt injection skipped: %s", _exc,
+            )
+
+        # ── 防复读 soft hint 注入 ──────────────────────────────────
+        # 把最近高 BM25 rank 的 topic 词列出来，提示模型"已经聊过这些"。这是
+        # 对**所有路径**生效的软约束（与 user ban list 不同：那个是用户明确
+        # 说过别提，必须强约束）。proactive 还会在 system_router Phase 2 出口
+        # 被 BM25 总分阈值二次拦截（regen / drop），常规 reply 只靠这段 prompt
+        # 软约束。空 corpus / 新角色第一轮 → render 返回 ""，无副作用。
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            from config.prompts.prompts_directives import render_recent_topics_block
+            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            prompt += render_recent_topics_block(topics, _lang)
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[AntiRepeat] soft hint injection skipped: %s", _exc,
+            )
+
         return prompt
 
     def _is_agent_enabled(self):
@@ -4495,6 +4533,15 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
+                # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
+                # LLM 给自己的元数据备忘，不算复读对象。
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    get_anti_repeat_corpus().record_output(
+                        self.lanlan_name, full_text, is_proactive=True,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:

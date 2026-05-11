@@ -74,6 +74,9 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     PROACTIVE_CHAT_HISTORY_MAX,
+    ANTI_REPEAT_DROP_THRESHOLD,
+    ANTI_REPEAT_INJECT_TOP_K,
+    ANTI_REPEAT_REGEN_THRESHOLD,
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
@@ -103,6 +106,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_label_aliases_flat,
 )
 from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
+from config.prompts.prompts_directives import render_regen_avoid_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -5976,6 +5980,177 @@ async def proactive_chat(request: Request):
                 "similarity": similarity_score,
                 "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
             }))
+
+        # ── BM25 防复读硬拦截（regen / drop）─────────────────────────
+        # 上面的 ``_is_similar_to_recent_proactive_chat`` 是字面相似度，只能抓
+        # "几乎一字不差的复读"。BM25 走 ngram + IDF，能命中"换种说法但还在同
+        # topic 上打转"——high-IDF 的 unique topic 词在最近 5 条里反复出现就
+        # 触发。命中 REGEN 阈值给 LLM 一次纠正机会（ainvoke 单 shot，注入
+        # avoidance 指令）；纠正后仍 >= DROP 则放弃本次投递。
+        # corpus 在 ``mgr.finish_proactive_delivery`` 里写入；首次调用 / 新角色
+        # 时 corpus 为空，score_draft 直接返回 0，整段无副作用。
+        # 常量 + render helper 走模块顶部 import（``ANTI_REPEAT_*`` /
+        # ``PROACTIVE_PHASE2_GENERATE_MAX_TOKENS`` / ``render_regen_avoid_instruction``）；
+        # 这里 try 仅包 corpus 单例与评分本身——若把常量 import 也塞进 try，
+        # except 后下面的 ``>= ANTI_REPEAT_DROP_THRESHOLD`` 会 NameError（codex P1）。
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            _ar_corpus = get_anti_repeat_corpus()
+            _bm25_total, _bm25_terms = _ar_corpus.score_draft(lanlan_name, response_text)
+        except Exception as _ar_exc:  # pragma: no cover - defensive
+            logger.debug("[AntiRepeat] BM25 score skipped: %s", _ar_exc)
+            _bm25_total, _bm25_terms = 0.0, {}
+            _ar_corpus = None
+
+        # ANTI_REPEAT_DROP_THRESHOLD 仅在 regen 之后才生效：初稿超 DROP 也得
+        # 给 LLM 一次纠正机会，跑完再用同阈值二判。之前的版本初稿 ≥ DROP
+        # 直接 drop 把潜在可救的输出短路掉，与设计文档"regen then drop"相违
+        # （codex P2）。代价是一次 ainvoke，比静默 drop 整轮投递有价值。
+        if _bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+            # 记下进入 regen 前的初稿 source_tag，下面在改 tag 后判定是否要撤销
+            # 原 music 候选状态（CodeRabbit Major：MUSIC → CHAT regen 后，若不清
+            # selected_music_link / music_content，should_try_music_fallback 仍
+            # 会把刚避开的复读话题对应曲目塞回 source_links）。
+            _initial_source_tag = source_tag
+            avoid_terms = list(_bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+            logger.info(
+                "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
+                lanlan_name, _bm25_total, ANTI_REPEAT_REGEN_THRESHOLD, avoid_terms,
+            )
+            print(
+                f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
+                f"(score={_bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, 避开={avoid_terms})"
+            )
+            avoid_msg = render_regen_avoid_instruction(avoid_terms, proactive_lang)
+            regen_messages = list(messages) + [HumanMessage(content=avoid_msg)]
+            regen_text = ""
+            # 进入 regen 前再读一次 sticky preempt：与上方流式循环 / Phase1 各
+            # 长 await 入口保持一致——用户在初稿出来到这里之间接管的话，免去
+            # 一次最长 20s 的 ainvoke 白烧 token（CodeRabbit Minor）。
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                logger.info(
+                    "[%s] proactive BM25 regen aborted: user preempted before ainvoke",
+                    lanlan_name,
+                )
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 前用户已接管",
+                }))
+            try:
+                async with asyncio.timeout(20.0):
+                    async with _make_llm(
+                        temperature=1.0,
+                        max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                        use_vision=phase2_use_vision,
+                        disable_thinking=True,
+                    ) as _regen_llm:
+                        _regen_resp = await _regen_llm.ainvoke(regen_messages)
+                        regen_text = (
+                            _regen_resp.content if hasattr(_regen_resp, "content") else ""
+                        ) or ""
+            except Exception as _regen_exc:
+                logger.warning(
+                    "[%s] proactive BM25 regen LLM call failed: %s",
+                    lanlan_name, _regen_exc,
+                )
+                regen_text = ""
+
+            # regen 输出可能仍带 "主动搭话\n[TAG]\n" 前缀；轻量剥一下。失败就
+            # 用原文（mismatch 不至于致命）。
+            # ⚠️ regen 用**独立**的 ``regen_source_tag`` 解析，避免沿用初稿的
+            # ``source_tag``：若初稿是 [MUSIC]、regen 返回纯文本，沿用 MUSIC 会
+            # 让下面的 "MUSIC→非MUSIC clear" 不触发、music 候选继续注入 → 复读
+            # 又出去（CodeRabbit Major）。规则：
+            #   regen 解析出 tag → 用该 tag
+            #   regen 非空但没 tag → 当成 CHAT（model 偏离格式但产出有效正文）
+            #   regen 空 / [PASS] → 上面 drop 分支拦掉
+            _cleaned = (regen_text or "").strip()
+            regen_source_tag = ""
+            _m = re.search(r"主动搭话\s*\n", _cleaned)
+            if _m:
+                _cleaned = _cleaned[_m.end():]
+            _tag_m = re.match(
+                r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _cleaned, re.IGNORECASE,
+            )
+            if _tag_m:
+                regen_source_tag = _tag_m.group(1).upper()
+                _cleaned = _cleaned[_tag_m.end():]
+            # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
+            # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop——前面剥过 [TAG]
+            # 前缀，剩下的 _cleaned 已经不含 "[PASS]" 字面量，但 regen_source_tag
+            # 已经记下这是 PASS，与"内嵌 [PASS]"等价拦掉（CodeRabbit Minor）。
+            if regen_source_tag == "PASS" or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
+                logger.info("[%s] proactive BM25 regen returned empty/PASS, drop", lanlan_name)
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 失败，已 drop",
+                }))
+
+            # 再 score 一次：仍 >= DROP 则真 drop
+            try:
+                _regen_total, _ = _ar_corpus.score_draft(lanlan_name, _cleaned)
+            except Exception:
+                _regen_total = 0.0
+            if _regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
+                logger.info(
+                    "[%s] proactive BM25 regen still over drop (score=%.2f)",
+                    lanlan_name, _regen_total,
+                )
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 后仍超阈值，已 drop",
+                    "bm25_score": _regen_total,
+                }))
+            # regen 文本也跑一次字面相似度检查——BM25 抓"换种说法但同 topic"，
+            # 字面相似度抓"几乎一字不差"，两条独立信号；regen 在 BM25 上过关
+            # 不代表没撞上最近原话（model 偶尔会沿用语序）。CodeRabbit Major
+            # 指出。
+            _regen_dup, _regen_sim = _is_similar_to_recent_proactive_chat(
+                lanlan_name, _cleaned,
+            )
+            if _regen_dup:
+                logger.info(
+                    "[%s] proactive BM25 regen still literal-dup (similarity=%.3f)",
+                    lanlan_name, _regen_sim,
+                )
+                if not mgr.state.is_proactive_preempted(proactive_sid):
+                    await mgr.handle_new_message()
+                return await _end_proactive(JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "BM25 regen 后字面相似度仍超阈值，已 drop",
+                    "similarity": _regen_sim,
+                    "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
+                }))
+            # regen 非空 + 没 tag → 视为 CHAT。沿用初稿 tag 会让初稿 [MUSIC]
+            # 但 regen 偏离格式产出纯文本时仍走音乐通道——既不是 user-visible
+            # bug，但与 regen 的语义"换话题"相违（CodeRabbit Major）。
+            source_tag = regen_source_tag or "CHAT"
+            # regen 后只要最终不是 MUSIC，就清掉本轮 music 候选。
+            # 之前的版本只在 _initial_source_tag == "MUSIC" 时清，但 tagless
+            # 初稿（_initial 为空）+ phase1 只有 music topic 的场景下，
+            # should_try_music_fallback 仍会把原曲目塞回 source_links，等于
+            # 把刚 regen 避开的内容又带回去（CodeRabbit Major）。
+            # 仅当 regen 显式落到 MUSIC 才保留候选（initial 即 MUSIC、regen
+            # 也仍选 MUSIC 的少数情形）。
+            if source_tag != "MUSIC":
+                if selected_music_link is not None or music_content is not None:
+                    logger.info(
+                        "[%s] proactive BM25 regen final tag=%s (initial=%s); cleared music candidate",
+                        lanlan_name, source_tag, _initial_source_tag or "(none)",
+                    )
+                selected_music_link = None
+                music_content = None
+            # 采用 regen 文本接着走下游 source_tag / TTS 投递
+            response_text = _cleaned
+            full_text = _cleaned
 
         has_music_topic = 'music' in active_channels
 
