@@ -322,6 +322,9 @@ def test_render_legacy_temporal_scope_not_past(tmp_path):
     assert '以下为较久前的记忆' not in md  # legacy 不算 past
     assert 'legacy current 条目' in md
     assert 'legacy ongoing 条目' in md
+    # None 分支必须显式 assert——否则误把 None 当 past 时此用例仍会通过
+    # (CodeRabbit review on PR #1316 catch)
+    assert 'legacy None 条目' in md
 
 
 def test_render_past_block_no_temporal_scope_label(tmp_path):
