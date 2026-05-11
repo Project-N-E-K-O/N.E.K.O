@@ -41,6 +41,25 @@
         return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix);
     }
 
+    function clearSidePanelTimers(panel) {
+        if (!panel) return;
+        if (typeof window.clearAvatarSidePanelHoverState === 'function') {
+            window.clearAvatarSidePanelHoverState(panel);
+            return;
+        }
+        if (panel._collapseTimeout) {
+            clearTimeout(panel._collapseTimeout);
+            panel._collapseTimeout = null;
+        }
+        if (panel._hoverCollapseTimer) {
+            clearTimeout(panel._hoverCollapseTimer);
+            panel._hoverCollapseTimer = null;
+        }
+        if (typeof panel._stopHoverPointerTracking === 'function') {
+            panel._stopHoverPointerTracking();
+        }
+    }
+
     /**
      * 立即隐藏除 current 以外的所有侧面板（跳过动画）。
      * 必须在计算新面板位置之前调用，确保旧面板不影响空间判断。
@@ -59,14 +78,7 @@
 
         for (const panel of toHide) {
             // 清除所有定时器
-            if (panel._collapseTimeout) {
-                clearTimeout(panel._collapseTimeout);
-                panel._collapseTimeout = null;
-            }
-            if (panel._hoverCollapseTimer) {
-                clearTimeout(panel._hoverCollapseTimer);
-                panel._hoverCollapseTimer = null;
-            }
+            clearSidePanelTimers(panel);
             // 立即隐藏 + 彻底清除位置状态，不留任何残影
             if (panel._expandFrameId) {
                 cancelAnimationFrame(panel._expandFrameId);

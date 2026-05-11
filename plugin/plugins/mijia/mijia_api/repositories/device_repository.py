@@ -86,7 +86,7 @@ class DeviceRepositoryImpl(IDeviceRepository):
                 name=device_data.get("name", ""),
                 model=device_data.get("model", ""),
                 home_id=home_id,
-                room_id=device_data.get("room_id"),
+                room_id=device_data.get("room_id") or device_data.get("roomid"),
                 status=self._parse_device_status(device_data.get("isOnline")),
                 parent_id=device_data.get("parent_id"),
                 parent_model=device_data.get("parent_model"),

@@ -24,6 +24,7 @@ from utils.tutorial_prompt_state import (
     record_tutorial_prompt_decision,
     record_tutorial_started,
     record_tutorial_completed,
+    reset_tutorial_prompt_state,
     save_tutorial_prompt_state,
 )
 
@@ -74,6 +75,39 @@ def test_prompt_triggers_immediately_on_first_open(tmp_path):
     assert state["active_prompt_token"] == response["prompt_token"]
     assert state["last_shown_at"] == 0
     assert state["recent_heartbeat_tokens"] == []
+
+
+@pytest.mark.unit
+def test_reset_tutorial_prompt_state_clears_completed_home_prompt_state(tmp_path):
+    config = DummyConfig(tmp_path)
+    started = record_tutorial_started(
+        {"page": "home", "source": "manual"},
+        config_manager=config,
+        now_ms=1_000,
+    )
+    record_tutorial_completed(
+        {
+            "page": "home",
+            "source": "manual",
+            "tutorial_run_token": started["tutorial_run_token"],
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    reset = reset_tutorial_prompt_state(config_manager=config)
+
+    assert reset["ok"] is True
+    assert reset["state"]["status"] == "observing"
+    assert reset["state"]["home_tutorial_completed"] is False
+    assert reset["state"]["manual_home_tutorial_viewed"] is False
+
+    state = load_tutorial_prompt_state(config)
+    assert state["completed_at"] == 0
+    assert state["started_at"] == 0
+    assert state["home_tutorial_completed"] is False
+    assert state["manual_home_tutorial_viewed"] is False
+    assert state["active_tutorial_run_token"] == ""
 
 
 @pytest.mark.unit

@@ -158,6 +158,7 @@ from utils.tutorial_prompt_state import (
     record_tutorial_prompt_decision,
     record_tutorial_started,
     record_tutorial_completed,
+    reset_tutorial_prompt_state,
 )
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
 from utils.config_manager import get_config_manager as get_runtime_config_manager
@@ -1097,6 +1098,16 @@ async def post_tutorial_prompt_decision(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
 
 
+@router.post("/tutorial-prompt/reset")
+async def post_tutorial_prompt_reset(request: Request):
+    """重置主页新手引导状态，供记忆浏览的手动重置入口调用。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    return reset_tutorial_prompt_state(config_manager=get_config_manager())
+
+
 @router.get("/autostart-prompt/state")
 async def get_autostart_prompt_state():
     """返回开机自启动提示状态快照。"""
@@ -1726,8 +1737,8 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     if not recent:
         return ""
 
-    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['zh'])
-    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['zh'])
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['en'])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['en'])
 
     def _rel(ts):
         """
@@ -2117,7 +2128,7 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
         normalized = normalize_language_code(session_lang, format='short')
         if normalized:
             return normalized
-    return get_global_language() or 'zh'
+    return get_global_language() or 'en'
 
 
 async def _maybe_deliver_mini_game_invite(
@@ -2920,7 +2931,7 @@ def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
     if not music_content.get('success'):
         return ""
     
-    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['zh'])
+    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['en'])
     
     output_lines = [t['title']]
     tracks = music_content.get('data', [])
@@ -5110,7 +5121,7 @@ async def proactive_chat(request: Request):
                 if remaining_total <= 0:
                     break
                 src = sources[m]
-                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
+                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['en'])
                 label = label_map.get(m, m)
                 links = src.get('links', []) or []
 
@@ -5243,7 +5254,7 @@ async def proactive_chat(request: Request):
                         src = sources.get(m)
                         if not src:
                             continue
-                        label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
+                        label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['en'])
                         label = label_map.get(m, m)
                         links = src.get('links', []) or []
                         selected_links_2: list[dict] = []

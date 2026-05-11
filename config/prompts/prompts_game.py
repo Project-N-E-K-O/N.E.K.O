@@ -7,6 +7,12 @@ from config.prompts.prompts_sys import _loc
 def _normalize_prompt_lang(lang: str | None) -> str:
     value = str(lang or "").strip().lower().replace("_", "-")
     if not value:
+        # Stays "zh" intentionally: the soccer/game module hardcodes
+        # Chinese-flavored helpers (e.g. fullwidth "；" in
+        # ``_apply_soccer_anger_pressure_cap``) and helpers such as
+        # ``_apply_soccer_anger_pressure_cap`` don't accept a language
+        # parameter at all. Module-internal default is Chinese; cross-module
+        # fallback (resolve_global_language) is English.
         return "zh"
     if value.startswith("zh") or value in {"schinese", "tchinese"}:
         return "zh"
@@ -905,7 +911,7 @@ def get_soccer_pregame_context_prompt(lang: str | None = None) -> str:
 
 def get_soccer_pregame_context_formatter_labels(lang: str | None = None) -> dict[str, str]:
     prompt_lang = _normalize_prompt_lang(lang)
-    return SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS["zh"]
+    return SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS["en"]
 
 
 def get_soccer_anger_pressure_cap_message(lang: str | None = None) -> str:

@@ -41,6 +41,7 @@ from utils.prompt_state_core import (
     mark_prompt_decision_token as _mark_prompt_decision_token,
     normalize_prompt_flow_state,
     now_ms as _now_ms,
+    reset_successful_prompt_flow_state as _reset_successful_prompt_flow_state,
 )
 
 TUTORIAL_PROMPT_CONFIG_FILENAME = "tutorial_prompt_config.json"
@@ -973,6 +974,40 @@ def record_tutorial_completed(
     return {
         "ok": True,
         "ignored": False,
+        "state": build_public_tutorial_prompt_snapshot(state),
+    }
+
+
+def reset_tutorial_prompt_state(
+    *,
+    config_manager=None,
+) -> dict[str, Any]:
+    with _STATE_LOCK:
+        state = load_tutorial_prompt_state(config_manager)
+        changed = _reset_successful_prompt_flow_state(state, reset_prompt_history=True)
+
+        for field, empty_value in (
+            ("home_tutorial_completed", False),
+            ("manual_home_tutorial_viewed", False),
+            ("manual_home_tutorial_viewed_at", 0),
+            ("active_tutorial_run_token", ""),
+            ("active_tutorial_run_source", ""),
+            ("active_tutorial_run_started_at", 0),
+            ("never_remind", False),
+        ):
+            if state.get(field) != empty_value:
+                state[field] = empty_value
+                changed = True
+
+        if state.get("status") != "observing":
+            state["status"] = "observing"
+            changed = True
+
+        if changed:
+            state = save_tutorial_prompt_state(state, config_manager)
+
+    return {
+        "ok": True,
         "state": build_public_tutorial_prompt_snapshot(state),
     }
 

@@ -4529,6 +4529,38 @@ margin-top: 10px;
     }
 }
 
+/* 窄窗口切到 Steam 时收起左侧卡面，把宽度留给上传配置与模型预览 */
+.catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .catgirl-panel-left {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+    transform: scaleX(0);
+    transform-origin: left center;
+    border-color: transparent;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .catgirl-panel-card-image,
+.catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .card-meta-block,
+.catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .card-panel-actions {
+    opacity: 0;
+    transform: translateX(-12px);
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .panel-header-bar {
+    border-radius: 12px 12px 0 0;
+}
+
+@media (max-width: 768px) {
+    .catgirl-panel-wrapper.card-only.phase-expand.steam-compact-card-hidden .catgirl-panel-left {
+        transform-origin: left top;
+    }
+}
+
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-right {
     flex: 1 1 auto;
     min-width: 0;
@@ -4709,6 +4741,10 @@ margin-top: 10px;
     z-index: 30;
     pointer-events: none;
     overflow: hidden;
+}
+
+.panel-transition-curtain.full-panel {
+    border-radius: inherit;
 }
 
 /* 主幕布色块 - 默认从左到右扫过（点击右侧 tab） */
@@ -4894,6 +4930,9 @@ margin-top: 10px;
     gap: 12px;
     border-right: 1px solid #f0f0f0;
     background: #fafcff;
+    transform: scaleX(1);
+    transform-origin: left center;
+    transition: transform 0.28s ease, opacity 0.24s ease, border-color 0.28s ease;
 }
 
 
@@ -4909,7 +4948,7 @@ margin-top: 10px;
     overflow: hidden;
     cursor: pointer;
     position: relative;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.24s ease;
 }
 
 .catgirl-panel-card-image:hover {
@@ -5917,6 +5956,7 @@ margin-top: 10px;
     overscroll-behavior: contain;
     scrollbar-width: thin;
     scrollbar-color: rgba(64, 197, 241, 0.55) rgba(179, 229, 252, 0.3);
+    transition: opacity 0.24s ease, transform 0.24s ease;
 }
 
 .card-meta-block::-webkit-scrollbar {
@@ -6033,6 +6073,7 @@ margin-top: 10px;
     gap: 6px;
     box-sizing: border-box;
     flex-shrink: 0;
+    transition: opacity 0.24s ease, transform 0.24s ease;
 }
 
 /* 新建猫娘面板（card-only 无 phase-expand）时，左侧只有卡面，不占位 */

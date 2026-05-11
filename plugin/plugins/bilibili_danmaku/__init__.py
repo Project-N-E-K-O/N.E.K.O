@@ -577,7 +577,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if self._target_lanlan:
             her_name = self._target_lanlan
         user_language = get_global_language()
-        init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT.get('zh', '你是{name}。'))
+        init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT.get('en', 'You are {name}.'))
         character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
         current_character = catgirl_data.get(her_name, {})
         character_card_fields = {}

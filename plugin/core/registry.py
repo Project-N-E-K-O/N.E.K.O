@@ -716,6 +716,44 @@ def _build_plugin_meta(
     return meta
 
 
+def _router_entry_preview(
+    pid: str,
+    eid: str,
+    event_meta: Any,
+    _to_dict: Callable[[Any], Dict[str, Any]],
+    _to_string_list: Callable[[Any], List[str]],
+) -> Dict[str, Any]:
+    """Build the static preview dict for one router-declared entry.
+
+    与 1) 分支保持一致：从 `event_meta` 读 return_message，避免 router 预览丢字段喵。
+    """
+    name_obj = getattr(event_meta, "name", None) or ""
+    description_obj = getattr(event_meta, "description", None) or ""
+    return_message_obj = getattr(event_meta, "return_message", None)
+    if return_message_obj is None:
+        return_message_obj = ""
+    preview: Dict[str, Any] = {
+        "id": eid,
+        "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
+        "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
+        "event_key": f"{pid}.{eid}",
+        "input_schema": _to_dict(getattr(event_meta, "input_schema", {}) or {}),
+        "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
+        "event_type": "plugin_entry",
+        "kind": str(getattr(event_meta, "kind", "action") or "action"),
+        "auto_start": bool(getattr(event_meta, "auto_start", False)),
+        "timeout": getattr(event_meta, "timeout", None),
+        "model_validate": bool(getattr(event_meta, "model_validate", True)),
+        "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+        "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+        "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+    }
+    meta_dict = getattr(event_meta, "metadata", None)
+    if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+        preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+    return preview
+
+
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
     """Extract entry metadata for UI visibility without registering event handlers.
 
@@ -801,6 +839,62 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             results.append(entry_preview)
     except Exception:
         # Best-effort: preview must never break plugin listing.
+        pass
+
+    # 1b) Router-decorated entries declared via `__routers__`.
+    #     这些 entry 是通过 @plugin_entry 装饰在 PluginRouter 子类方法上的，
+    #     静态 preview 之前只看 plugin class 本身的成员，所以 router 入口对
+    #     UI/agent 列表完全不可见喵。这里额外扫描 `__routers__` 里声明的
+    #     router 类（或已实例化的 router），和 1) 一样只抽元数据，不触发运行时。
+    #
+    #     如果声明的是已实例化的 router，优先用实例 `collect_entries()` 拿
+    #     prefix 解析后的入口，避免 preview 的 id 与运行时不一致而被 seen 误去重喵。
+    try:
+        declared_routers = getattr(cls, "__routers__", None) or []
+        for router_item in declared_routers:
+            router_obj = router_item if not isinstance(router_item, type) else None
+            router_cls = router_item if isinstance(router_item, type) else type(router_item)
+
+            # 优先使用实例的已解析入口
+            instance_handled = False
+            if router_obj is not None and hasattr(router_obj, "collect_entries"):
+                try:
+                    collected = router_obj.collect_entries() or {}
+                except Exception:
+                    collected = {}
+                if collected:
+                    instance_handled = True
+                    for resolved_id, handler in collected.items():
+                        event_meta = getattr(handler, "meta", None)
+                        if event_meta is None:
+                            continue
+                        etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                        if etype != "plugin_entry":
+                            continue
+                        eid = str(resolved_id or getattr(event_meta, "id", "") or "")
+                        if not eid or eid in seen:
+                            continue
+                        seen.add(eid)
+                        results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+
+            if instance_handled:
+                continue
+
+            for name, member in inspect.getmembers(router_cls):
+                event_meta = getattr(member, EVENT_META_ATTR, None)
+                if event_meta is None and hasattr(member, "__wrapped__"):
+                    event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+                if not event_meta:
+                    continue
+                etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+                if etype != "plugin_entry":
+                    continue
+                eid = str(getattr(event_meta, "id", None) or name)
+                if not eid or eid in seen:
+                    continue
+                seen.add(eid)
+                results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+    except Exception:
         pass
 
     # 2) Config-specified entries (conf/pdata)

@@ -32,7 +32,7 @@ class _FakeCharactersRouterConfigManager:
         self._base_url = base_url
         self._stored_voice_ids = set(stored_voice_ids)
 
-    def get_voices_for_current_api(self):
+    def get_voices_for_current_api(self, for_listing: bool = False):
         return {}
 
     async def aget_core_config(self):
@@ -65,7 +65,7 @@ def _make_mgr(voice_id, stored_voice_ids=()):
 
 def _make_config_manager_with_realtime_api_type(realtime_api_type):
     mgr = object.__new__(ConfigManager)
-    mgr.get_voices_for_current_api = lambda: {}
+    mgr.get_voices_for_current_api = lambda for_listing=False: {}
     mgr.get_model_api_config = lambda model_type: {"api_type": realtime_api_type}
     mgr.get_core_config = lambda: {"CORE_API_TYPE": "gemini"}
     return mgr
