@@ -307,7 +307,10 @@ function setupResizableChatContainer() {
         e.preventDefault();
     };
     // 绑定调整大小启动事件（仅 handle 上绑定 mousedown/touchstart）
-    resizeHandle.addEventListener('mousedown', startResize);
+    resizeHandle.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        startResize(e);
+    });
     resizeHandle.addEventListener('touchstart', startResize, { passive: false });
 
     window.addEventListener('resize', () => {
@@ -622,6 +625,10 @@ if (toggleBtn) {
     let pendingDragClientX = 0; // 待处理的鼠标位置
     let pendingDragClientY = 0;
 
+    function isPrimaryMouseDrag(e) {
+        return !e || e.type.includes('touch') || e.button === 0;
+    }
+
     // 拖动回弹配置（多屏幕切换时使用）
     const CHAT_SNAP_CONFIG = {
         margin: 6,
@@ -784,6 +791,8 @@ if (toggleBtn) {
 
     // 开始拖动的函数
     function startDrag(e, skipPreventDefault = false) {
+        if (!isPrimaryMouseDrag(e)) return false;
+
         isDragging = true;
         hasMoved = false;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
@@ -830,6 +839,8 @@ if (toggleBtn) {
         if (!skipPreventDefault) {
             e.preventDefault();
         }
+
+        return true;
     }
 
     // 计算边界限制后的位移量
@@ -947,6 +958,7 @@ if (toggleBtn) {
     if (chatHeader) {
         // 鼠标事件
         chatHeader.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             if (!isCollapsed()) {
                 startDrag(e);
             }
@@ -964,6 +976,7 @@ if (toggleBtn) {
     if (toggleBtn) {
         // 鼠标事件
         toggleBtn.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             // 使用 skipPreventDefault=true 来保留 click 事件
             startDrag(e, true);
             e.stopPropagation(); // 阻止事件冒泡到 chatContainer
@@ -982,6 +995,7 @@ if (toggleBtn) {
             !!el.closest('textarea, input, button, select, a, [contenteditable]');
 
         textInputArea.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
             if (!isCollapsed() && !isInteractiveTarget(e.target)) {
                 startDrag(e);
             }
@@ -996,6 +1010,7 @@ if (toggleBtn) {
 
     // 折叠状态：点击容器（除了按钮）可以拖动或展开
     chatContainer.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
         if (isCollapsed()) {
             // 如果点击的是切换按钮，不启动拖动
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {

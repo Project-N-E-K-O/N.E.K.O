@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from plugin.sdk.plugin import (
     NekoPluginBase, lifecycle, neko_plugin, plugin_entry,
-    Ok, Err, SdkError,
+    Ok, Err, SdkError, tr,
 )
 
 from .bili_client import BiliDMClient
@@ -186,8 +186,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="start_listening",
-        name="开始监听",
-        description="开始监听 B站私信并自动回复。",
+        name=tr("entries.start_listening.name", default="开始监听"),
+        description=tr("entries.start_listening.description", default="启动 B站私信监听并自动回复"),
         input_schema={"type": "object", "properties": {}},
     )
     async def start_listening(self, **_):
@@ -215,8 +215,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="stop_listening",
-        name="停止监听",
-        description="停止监听 B站私信。",
+        name=tr("entries.stop_listening.name", default="停止监听"),
+        description=tr("entries.stop_listening.description", default="停止监听 B站私信"),
         input_schema={"type": "object", "properties": {}},
     )
     async def stop_listening(self, **_):
@@ -270,8 +270,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="send_message",
-        name="发送私信",
-        description="向指定 B站用户发送一条私信。",
+        name=tr("entries.send_message.name", default="发送私信"),
+        description=tr("entries.send_message.description", default="向指定 B站用户发送一条私信"),
         input_schema={
             "type": "object",
             "properties": {
@@ -318,8 +318,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="add_trusted_user",
-        name="添加信任用户",
-        description="添加一个信任的 B站用户到白名单。",
+        name=tr("entries.add_trusted_user.name", default="添加信任用户"),
+        description=tr("entries.add_trusted_user.description", default="添加信任用户到白名单"),
         input_schema={
             "type": "object",
             "properties": {
@@ -379,8 +379,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="remove_trusted_user",
-        name="移除信任用户",
-        description="从白名单中移除一个 B站用户。",
+        name=tr("entries.remove_trusted_user.name", default="移除信任用户"),
+        description=tr("entries.remove_trusted_user.description", default="从白名单中移除用户"),
         input_schema={
             "type": "object",
             "properties": {
@@ -424,8 +424,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_user_nickname",
-        name="设置用户昵称",
-        description="为信任用户设置专属称呼。",
+        name=tr("entries.set_user_nickname.name", default="设置用户昵称"),
+        description=tr("entries.set_user_nickname.description", default="为信任用户设置专属称呼"),
         input_schema={
             "type": "object",
             "properties": {
@@ -467,8 +467,8 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="list_trusted_users",
-        name="列出信任用户",
-        description="列出所有信任的 B站用户。",
+        name=tr("entries.list_trusted_users.name", default="列出信任用户"),
+        description=tr("entries.list_trusted_users.description", default="列出所有信任的 B站用户"),
         input_schema={"type": "object", "properties": {}},
     )
     async def list_trusted_users(self, **_):

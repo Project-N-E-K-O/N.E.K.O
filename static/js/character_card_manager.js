@@ -4285,10 +4285,15 @@ function openCatgirlPanel(card, originEl) {
         openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
 
-    // 点击卡面主体或右侧按钮打开角色卡制作页面
-    cardImage.addEventListener('click', (event) => {
+    const openCardModelManager = async () => {
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        await openModelManagerForCharacterForm(form, name);
+    };
+
+    // 点击卡面主体打开模型管理；编辑卡面按钮仍进入角色卡制作页面。
+    cardImage.addEventListener('click', async (event) => {
         if (event.target.closest('.catgirl-panel-card-action')) return;
-        openCardMaker();
+        await openCardModelManager();
     });
     editCardFaceAction.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -4296,8 +4301,7 @@ function openCatgirlPanel(card, originEl) {
     });
     modelSettingsAction.addEventListener('click', async (event) => {
         event.stopPropagation();
-        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        await openModelManagerForCharacterForm(form, name);
+        await openCardModelManager();
     });
 
     // 监听角色卡制作页面的保存消息

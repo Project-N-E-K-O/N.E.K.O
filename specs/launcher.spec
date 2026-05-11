@@ -125,6 +125,15 @@ for json_file in config_json_files:
     # 使用绝对路径，目标路径为 'config'
     datas.append((json_file, 'config'))
 
+# 本地化角色种子模板（config/characters/<lang>.json）— 首次创建 characters.json 时
+# 由 ConfigManager._get_localized_characters_source 按语言挑选拷贝；不进 config/*.json
+# 顶层 glob，所以单独打包到 config/characters/ 子目录。
+config_characters_files = glob.glob(os.path.join(PROJECT_ROOT, 'config/characters/*.json'))
+print(f"[Build] Packing {len(config_characters_files)} localized character templates:")
+for json_file in config_characters_files:
+    print(f"  - {json_file}")
+    datas.append((json_file, 'config/characters'))
+
 # 添加项目目录和文件（使用绝对路径）
 # 受版权保护的 live2d 模型打包到 _internal（用户不可见）
 def add_data(src, dest):
