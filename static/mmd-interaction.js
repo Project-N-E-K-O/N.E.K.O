@@ -195,6 +195,10 @@ class MMDInteraction {
             if (this._snapAnimationFrameId) {
                 cancelAnimationFrame(this._snapAnimationFrameId);
                 this._snapAnimationFrameId = null;
+                if (this._snapResolve) {
+                    this._snapResolve(false);
+                    this._snapResolve = null;
+                }
                 this._isSnappingModel = false;
             }
 
@@ -592,15 +596,15 @@ class MMDInteraction {
             return position;
         }
 
+        const originalPosition = mesh.position.clone();
+        let shouldRestorePosition = false;
+
         try {
-            const originalPosition = mesh.position.clone();
             mesh.position.copy(position);
+            shouldRestorePosition = true;
             mesh.updateMatrixWorld(true);
 
             const box = new THREE.Box3().setFromObject(mesh);
-
-            mesh.position.copy(originalPosition);
-            mesh.updateMatrixWorld(true);
 
             if (!box || !Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
                 return position;
@@ -683,6 +687,11 @@ class MMDInteraction {
         } catch (error) {
             console.warn('[MMD] 边界检测失败，跳过限制:', error);
             return position;
+        } finally {
+            if (shouldRestorePosition) {
+                mesh.position.copy(originalPosition);
+                mesh.updateMatrixWorld(true);
+            }
         }
     }
 
