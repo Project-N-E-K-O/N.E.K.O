@@ -3191,6 +3191,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
     # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
+        # xAI 自定义 voice（8-char lowercase alphanumeric，POST /v1/custom-voices
+        # 返回的 id）由 xAI 的 streaming TTS 端点合成，不能走 CosyVoice。当
+        # core_api_type=='grok' 且 voice_id 不在 native catalog 时，必然是 xAI
+        # 自定义 voice — 直接路由到 grok worker，避免误入 cosyvoice 鉴权失败。
+        if core_api_type == 'grok':
+            return grok_streaming_tts_worker, None, 'grok'
         from utils.api_config_loader import get_free_voices
         if voice_id not in set(get_free_voices().values()):
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
