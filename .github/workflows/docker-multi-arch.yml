@@ -64,10 +64,12 @@ jobs:
       - name: Calculate is_main_commit flag
         id: calc_is_main
         run: |
-          # True for: main branch push OR manual dispatch in CI mode
+          # True for: main branch push OR manual dispatch from main branch in CI mode
+          # 必须同时锁定 ref==main，否则在 feature branch 上手动 dispatch ci 模式
+          # 会让 ci-standard/ci-full 等共享别名被未合并代码覆盖
           if [[ "$GITHUB_REF" == refs/heads/main ]] && [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             echo "IS_MAIN_COMMIT=true" >> $GITHUB_OUTPUT
-          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] && [[ "${{ github.event.inputs.build_mode }}" == "ci" ]]; then
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] && [[ "${{ github.event.inputs.build_mode }}" == "ci" ]] && [[ "$GITHUB_REF" == refs/heads/main ]]; then
             echo "IS_MAIN_COMMIT=true" >> $GITHUB_OUTPUT
           else
             echo "IS_MAIN_COMMIT=false" >> $GITHUB_OUTPUT
