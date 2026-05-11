@@ -14,6 +14,7 @@ from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, 
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
+from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
@@ -111,7 +112,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return Path(config_path).parent if config_path is not None else Path.cwd()
 
     def data_path(self, *parts: str) -> Path:
-        base = self.config_dir / "data"
+        base = resolve_plugin_data_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
     @property

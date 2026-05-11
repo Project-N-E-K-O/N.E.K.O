@@ -326,6 +326,7 @@ async def _download_file(
     destination: Path,
     timeout_seconds: float,
     task_id: str | None = None,
+    plugin_id: str = "galgame_plugin",
     progress_callback: ProgressCallback | None = None,
     phase: str = "downloading",
     message: str = "",
@@ -380,7 +381,7 @@ async def _download_file(
                 "error": "",
             }
             if task_id:
-                update_install_task_state(task_id, kind="tesseract", **initial_progress)
+                update_install_task_state(task_id, kind="tesseract", plugin_id=plugin_id, **initial_progress)
             await _emit_progress(progress_callback, initial_progress)
             last_progress_emit_at = time.monotonic()
 
@@ -418,7 +419,7 @@ async def _download_file(
                         "error": "",
                     }
                     if task_id:
-                        update_install_task_state(task_id, kind="tesseract", **chunk_progress)
+                        update_install_task_state(task_id, kind="tesseract", plugin_id=plugin_id, **chunk_progress)
                     await _emit_progress(progress_callback, chunk_progress)
 
             result = {
@@ -481,6 +482,7 @@ async def install_tesseract(
     platform_fn: Callable[[], bool] | None = None,
     client_factory: Callable[[], Awaitable[httpx.AsyncClient] | httpx.AsyncClient] | None = None,
     task_id: str | None = None,
+    plugin_id: str = "galgame_plugin",
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     install_status = inspect_tesseract_installation(
@@ -503,6 +505,7 @@ async def install_tesseract(
             update_install_task_state(
                 task_id,
                 kind="tesseract",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message="Tesseract is already installed",
@@ -536,6 +539,7 @@ async def install_tesseract(
         update_install_task_state(
             task_id,
             kind="tesseract",
+            plugin_id=plugin_id,
             status="running",
             phase="metadata",
             message="Fetching Tesseract install metadata",
@@ -605,6 +609,7 @@ async def install_tesseract(
                 destination=installer_path,
                 timeout_seconds=timeout_seconds,
                 task_id=task_id,
+                plugin_id=plugin_id,
                 progress_callback=progress_callback,
                 phase="downloading",
                 message=f"Downloading {installer_name}",
@@ -629,7 +634,7 @@ async def install_tesseract(
                 "error": "",
             }
             if task_id:
-                update_install_task_state(task_id, kind="tesseract", **installing_progress)
+                update_install_task_state(task_id, kind="tesseract", plugin_id=plugin_id, **installing_progress)
             await _emit_progress(progress_callback, installing_progress)
             await asyncio.to_thread(
                 _run_tesseract_installer,
@@ -654,6 +659,7 @@ async def install_tesseract(
                     destination=tessdata_dir / asset_name,
                     timeout_seconds=timeout_seconds,
                     task_id=task_id,
+                    plugin_id=plugin_id,
                     progress_callback=progress_callback,
                     phase="languages",
                     message=f"Downloading {asset_name}",
@@ -678,7 +684,7 @@ async def install_tesseract(
                 "error": "",
             }
             if task_id:
-                update_install_task_state(task_id, kind="tesseract", **verifying_progress)
+                update_install_task_state(task_id, kind="tesseract", plugin_id=plugin_id, **verifying_progress)
             await _emit_progress(progress_callback, verifying_progress)
 
             result_status = inspect_tesseract_installation(
@@ -715,7 +721,7 @@ async def install_tesseract(
                 "error": "",
             }
             if task_id:
-                update_install_task_state(task_id, kind="tesseract", **completed_progress)
+                update_install_task_state(task_id, kind="tesseract", plugin_id=plugin_id, **completed_progress)
             await _emit_progress(progress_callback, completed_progress)
             return result
         finally:
@@ -730,6 +736,7 @@ async def install_tesseract(
             update_install_task_state(
                 task_id,
                 kind="tesseract",
+                plugin_id=plugin_id,
                 status="failed",
                 phase="failed",
                 message=error_message,

@@ -28,7 +28,7 @@ router = APIRouter(tags=["galgame-install"])
 logger = get_logger("galgame.install_routes")
 run_service = RunService()
 
-_INSTALL_PLUGIN_IDS = {"galgame_plugin"}
+_INSTALL_PLUGIN_IDS = {"galgame_plugin", "study_companion"}
 _STALE_INSTALL_STATUS = "failed"
 _STALE_INSTALL_PHASE = "failed"
 _UI_I18N_DIR = Path(__file__).resolve().parent / "i18n" / "ui"
@@ -80,8 +80,20 @@ def _normalize_ui_locale(locale: str) -> str:
     return "zh-CN"
 
 
-def _get_install_kind_spec(kind: str) -> dict[str, Any]:
+def _install_entry_id(plugin_id: str, galgame_entry_id: str) -> str:
+    if plugin_id == "study_companion":
+        mapping = {
+            "galgame_install_tesseract": "study_install_tesseract",
+            "galgame_download_rapidocr_models": "study_download_rapidocr_models",
+        }
+        return mapping.get(galgame_entry_id, galgame_entry_id)
+    return galgame_entry_id
+
+
+def _get_install_kind_spec(kind: str, *, plugin_id: str = "galgame_plugin") -> dict[str, Any]:
     normalized = str(kind or "").strip().lower()
+    if plugin_id == "study_companion" and normalized == "textractor":
+        raise HTTPException(status_code=404, detail="Textractor install is not supported by study_companion")
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
     # galgame). textractor + tesseract still need runtime install. rapidocr_models
@@ -90,21 +102,21 @@ def _get_install_kind_spec(kind: str) -> dict[str, Any]:
     mapping = {
         "textractor": {
             "kind": "textractor",
-            "entry_id": "galgame_install_textractor",
+            "entry_id": _install_entry_id(plugin_id, "galgame_install_textractor"),
             "label": "Textractor",
             "queued_message": "Textractor install queued",
             "entry_timeout": 600.0,
         },
         "tesseract": {
             "kind": "tesseract",
-            "entry_id": "galgame_install_tesseract",
+            "entry_id": _install_entry_id(plugin_id, "galgame_install_tesseract"),
             "label": "Tesseract",
             "queued_message": "Tesseract install queued",
             "entry_timeout": 300.0,
         },
         "rapidocr_models": {
             "kind": "rapidocr_models",
-            "entry_id": "galgame_download_rapidocr_models",
+            "entry_id": _install_entry_id(plugin_id, "galgame_download_rapidocr_models"),
             "label": "RapidOCR Models",
             "queued_message": "RapidOCR model download queued",
             "entry_timeout": 600.0,
@@ -134,7 +146,7 @@ def _run_to_install_status(run_status: str) -> str:
     return mapping.get(run_status, "queued")
 
 
-def _install_state_from_run(run_record, *, kind: str) -> dict[str, object]:
+def _install_state_from_run(run_record, *, plugin_id: str, kind: str) -> dict[str, object]:
     metrics = dict(getattr(run_record, "metrics", {}) or {})
     status = _run_to_install_status(str(getattr(run_record, "status", "") or "queued"))
     phase = str(getattr(run_record, "stage", "") or status)
@@ -147,6 +159,7 @@ def _install_state_from_run(run_record, *, kind: str) -> dict[str, object]:
     payload = build_install_task_state(
         task_id=str(getattr(run_record, "task_id", None) or getattr(run_record, "run_id")),
         run_id=str(getattr(run_record, "run_id")),
+        plugin_id=plugin_id,
         kind=kind,
         status=status,
         phase=phase,
@@ -167,10 +180,17 @@ def _install_state_from_run(run_record, *, kind: str) -> dict[str, object]:
     return payload
 
 
-def _persist_install_payload(task_id: str, *, kind: str, payload: dict[str, object]) -> dict[str, object]:
+def _persist_install_payload(
+    task_id: str,
+    *,
+    plugin_id: str,
+    kind: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
     return update_install_task_state(
         task_id,
         kind=kind,
+        plugin_id=plugin_id,
         run_id=str(payload.get("run_id") or task_id),
         status=str(payload.get("status") or "queued"),
         phase=str(payload.get("phase") or payload.get("status") or "queued"),
@@ -190,6 +210,7 @@ def _persist_install_payload(task_id: str, *, kind: str, payload: dict[str, obje
 def _mark_stale_install_task(
     task_id: str,
     *,
+    plugin_id: str,
     kind: str,
     label: str,
     payload: dict[str, object],
@@ -218,14 +239,20 @@ def _mark_stale_install_task(
             "completed_at": time.time(),
         }
     )
-    return _persist_install_payload(task_id, kind=kind, payload=stale_payload)
+    return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=stale_payload)
 
 
-def _resolve_install_task_payload(task_id: str, *, kind: str, label: str) -> dict[str, object]:
+def _resolve_install_task_payload(
+    task_id: str,
+    *,
+    plugin_id: str,
+    kind: str,
+    label: str,
+) -> dict[str, object]:
     task_id = (task_id or "").strip()
     if not task_id or ".." in task_id or "/" in task_id or "\\" in task_id:
         raise HTTPException(status_code=400, detail=f"Invalid {label} install task_id")
-    state_payload = load_install_task_state(task_id, kind=kind)
+    state_payload = load_install_task_state(task_id, kind=kind, plugin_id=plugin_id)
 
     # Short-circuit: persisted terminal states don't need a live run lookup.
     if state_payload is not None:
@@ -247,19 +274,25 @@ def _resolve_install_task_payload(task_id: str, *, kind: str, label: str) -> dic
         raise HTTPException(status_code=404, detail=f"{label} install task '{task_id}' not found")
 
     if state_payload is None and run_record is not None:
-        run_payload = _install_state_from_run(run_record, kind=kind)
+        run_payload = _install_state_from_run(run_record, plugin_id=plugin_id, kind=kind)
         if str(run_payload.get("status") or "") in INSTALL_TERMINAL_STATUSES:
-            return _persist_install_payload(task_id, kind=kind, payload=run_payload)
+            return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=run_payload)
         return run_payload
 
     payload = dict(state_payload or {})
     if run_record is None:
         state_status = str(payload.get("status") or "")
         if run_missing and state_status not in INSTALL_TERMINAL_STATUSES:
-            return _mark_stale_install_task(task_id, kind=kind, label=label, payload=payload)
+            return _mark_stale_install_task(
+                task_id,
+                plugin_id=plugin_id,
+                kind=kind,
+                label=label,
+                payload=payload,
+            )
         return payload
 
-    run_payload = _install_state_from_run(run_record, kind=kind)
+    run_payload = _install_state_from_run(run_record, plugin_id=plugin_id, kind=kind)
     payload["run_id"] = str(payload.get("run_id") or run_payload.get("run_id") or task_id)
     payload["task_id"] = str(payload.get("task_id") or task_id)
 
@@ -279,7 +312,7 @@ def _resolve_install_task_payload(task_id: str, *, kind: str, label: str) -> dic
         payload["detected_path"] = str(run_payload.get("detected_path") or payload.get("detected_path") or "")
         payload["updated_at"] = run_payload.get("updated_at")
         payload["completed_at"] = run_payload.get("completed_at")
-        return _persist_install_payload(task_id, kind=kind, payload=payload)
+        return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=payload)
 
     payload["status"] = run_status or state_status
     if run_payload.get("phase"):
@@ -307,7 +340,7 @@ async def _start_install_task(
     request: Request,
 ) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     try:
         client_host = request.client.host if request.client is not None else None
         args: dict[str, object] = {"force": bool(payload.force)}
@@ -330,6 +363,7 @@ async def _start_install_task(
         state_payload = update_install_task_state(
             created.run_id,
             kind=spec["kind"],
+            plugin_id=plugin_id,
             run_id=created.run_id,
             status="queued",
             phase="queued",
@@ -357,28 +391,28 @@ async def _start_install_task(
 
 def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
-    payload = load_latest_install_task_state(kind=spec["kind"])
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    payload = load_latest_install_task_state(kind=spec["kind"], plugin_id=plugin_id)
     if payload is None:
         raise HTTPException(status_code=404, detail=f"No {spec['label']} install task found")
     task_id = str(payload.get("task_id") or "").strip()
     return JSONResponse(
-        _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
+        _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
     )
 
 
 def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     return JSONResponse(
-        _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
+        _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
     )
 
 
 def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request: Request) -> StreamingResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind)
-    _resolve_install_task_payload(task_id, kind=spec["kind"], label=spec["label"])
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
 
     async def _event_stream():
         last_payload = ""
@@ -388,6 +422,7 @@ def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request
                 break
             payload = _resolve_install_task_payload(
                 task_id,
+                plugin_id=plugin_id,
                 kind=spec["kind"],
                 label=spec["label"],
             )

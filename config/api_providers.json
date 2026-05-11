@@ -49,6 +49,13 @@
       "description": "有免费额度，支持联网搜索，语音默认含水印滴滴声（可在智谱控制台手动关闭）",
       "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
       "core_model": "glm-realtime-air"
+    },
+    "grok": {
+      "key": "grok",
+      "name": "Grok Voice（xAI）",
+      "description": "xAI 实时语音，国内无法直连，价格较高",
+      "core_url": "wss://api.x.ai/v1/realtime",
+      "core_model": "grok-voice-fast-1.0"
     }
   },
   "assist_api_providers": {
