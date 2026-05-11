@@ -3183,6 +3183,34 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     return None
 
 
+def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
+    """判断 voice_id 是否真的是 xAI 自定义 voice 而非 alias 撞了用户克隆。
+
+    场景：用户把克隆音色命名为 grok 内置 voice 的 canonical id（例如 'leo'），
+    然后在 UI 上选 alias（例如 'male'，会 normalize 到 'leo'）。
+    ``core._has_custom_tts()`` 内部走 ``resolve_native_voice_for_routing`` 并把
+    canonical name 当作 voice_id_exists 探针，命中 collision 后会让
+    has_custom_voice=True 进入这里，但 ``_get_voice_meta(raw_voice_id)`` 仍是
+    None（用户存的是 canonical 'leo'，不是 alias 'male'）。如果直接路由到 grok
+    worker，worker 会把 alias normalize 回内置 'leo'，悄悄绕过用户的克隆。
+
+    这里把 voice_id 归一化后再查 voice_meta：normalize 识别（grok native id 或
+    alias）且 canonical 在 voice_storage 中存在 → 是 alias-collision 场景，
+    不算 xAI custom，返回 False 让调用方路由到 cosyvoice clone 路径；否则
+    （voice_id 不是 grok 词表 / 是词表但 canonical 没被克隆）视为 xAI custom。
+    """
+    if not voice_id:
+        return False
+    try:
+        from utils.grok_tts_voices import normalize_grok_tts_voice
+    except Exception:
+        return True  # 没装 grok adapter，按 xAI custom 保守处理
+    canonical, recognized = normalize_grok_tts_voice(voice_id)
+    if not recognized:
+        return True  # voice_id 不是 grok 词表内容 → 必为 xAI custom 8-char id
+    return _get_voice_meta(canonical) is None
+
+
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     根据 core_api 类型和是否有自定义音色，返回一个 callable。
@@ -3264,14 +3292,19 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         from utils.api_config_loader import get_free_voices
         if voice_id in set(get_free_voices().values()):
             logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
-        elif core_api_type == 'grok' and voice_meta is None:
+        elif core_api_type == 'grok' and voice_meta is None and _grok_voice_id_is_xai_custom(voice_id):
             # grok session + voice 不是已存 clone（voice_meta=None）+ 不是 free preset
-            # → 必然是 xAI 自定义 voice（8-char lowercase alphanumeric，
-            # POST /v1/custom-voices 返回的 id）。走 grok worker 用 xAI 端点合成，
-            # api_key 显式给 CORE_API_KEY（has_custom=True 默认从 tts_custom 槽取凭证，
-            # 对 xAI 是错凭证）。voice_meta 非 None 的 cosyvoice clone 不进这分支，
-            # 即使 core_api='grok' 也保留 cosyvoice 路径。tts_custom (GPT-SoVITS /
-            # local CosyVoice) 已经在前面的 try 块里短路返回，到不了这里。
+            # + 不是 alias 撞用户克隆 → 必然是 xAI 自定义 voice（8-char lowercase
+            # alphanumeric，POST /v1/custom-voices 返回的 id）。走 grok worker
+            # 用 xAI 端点合成，api_key 显式给 CORE_API_KEY（has_custom=True 默认
+            # 从 tts_custom 槽取凭证，对 xAI 是错凭证）。voice_meta 非 None 的
+            # cosyvoice clone 不进这分支，即使 core_api='grok' 也保留 cosyvoice 路径。
+            # tts_custom (GPT-SoVITS / local CosyVoice) 已经在前面的 try 块里短路
+            # 返回，到不了这里。`_grok_voice_id_is_xai_custom` 还会拦下 alias
+            # collision：用户克隆了 canonical voice 'leo' 但输入 alias 'male' 时，
+            # core._has_custom_tts 会因 collision 把 has_custom_voice 置 True，
+            # 这里要识别出来转走 cosyvoice，否则 grok worker 会把 alias normalize
+            # 回内置 voice，悄悄绕过用户的克隆。
             grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
             return grok_streaming_tts_worker, grok_api_key, 'grok'
         else:
