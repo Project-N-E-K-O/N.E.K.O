@@ -422,21 +422,21 @@ class CompressedRecentHistoryManager:
             lines.append(line)
         messages_text = "\n".join(lines)
         lang = get_global_language()
-        # ``{master_name}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
+        # ``{MASTER_NAME}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
         # 占位符（与同 prompt 里既有的 ``%s`` 共存：``%s`` 走 Python 格式化，
-        # ``{master_name}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
+        # ``{MASTER_NAME}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
         # 看到 "%s 和 ai 的对话"+"用户的负面反馈" 时困惑（feedback_no_dehumanizing_terms）。
         master_name = self.name_mapping['human']
         if not detailed:
             prompt = (
                 get_recent_history_manager_prompt(lang)
-                .replace("{master_name}", master_name)
+                .replace("{MASTER_NAME}", master_name)
                 .replace("%s", messages_text)
             )
         else:
             prompt = (
                 get_detailed_recent_history_manager_prompt(lang)
-                .replace("{master_name}", master_name)
+                .replace("{MASTER_NAME}", master_name)
                 % messages_text
             )
 
@@ -547,7 +547,7 @@ class CompressedRecentHistoryManager:
                 try:
                     response_content = (await llm.ainvoke(
                         get_further_summarize_prompt(get_global_language())
-                        .replace("{master_name}", self.name_mapping['human'])
+                        .replace("{MASTER_NAME}", self.name_mapping['human'])
                         % initial_summary,
                         max_completion_tokens=stage2_cap,
                     )).content
@@ -713,7 +713,7 @@ class CompressedRecentHistoryManager:
                 set_call_type("memory_review")
                 prompt = (
                     get_history_review_prompt(get_global_language())
-                    .replace("{master_name}", self.name_mapping['human'])
+                    .replace("{MASTER_NAME}", self.name_mapping['human'])
                     % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 )
                 review_llm = self._get_review_llm()
