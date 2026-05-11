@@ -842,6 +842,24 @@ class OmniRealtimeClient:
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools
             await self.update_session(free_session)
+        elif "grok" in self._model_lower:
+            # xAI Grok Voice：OpenAI Realtime 1.0 风格的扁平 schema。
+            # 内置 voice 见 GET /v1/tts/voices（eve/ara/leo/rex/sal），默认 eve。
+            # tools 走 OpenAI 兼容的 function 协议（response.function_call_arguments.done）。
+            grok_session = {
+                "instructions": instructions,
+                "modalities": self._modalities,
+                "voice": self.voice if self.voice else "eve",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": None if is_manual else {
+                    "type": "server_vad"
+                },
+            }
+            if self.has_tools():
+                grok_session["tools"] = self._tools_for_openai_realtime()
+                grok_session["tool_choice"] = "auto"
+            await self.update_session(grok_session)
         else:
             raise ValueError(f"Invalid model: {self.model}")
         self.instructions = instructions

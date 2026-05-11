@@ -292,6 +292,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="input_text_buffer.append 追加文本，commit 触发合成；server_commit 模式",
     ),
+    "grok": TTSProviderMeta(
+        name="grok",
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.x.ai/v1/tts)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="text.delta 逐片发送；无 session 握手；language=auto；每个 speech_id 重连",
+    ),
     "cosyvoice": TTSProviderMeta(
         name="cosyvoice",
         category="ws_bistream",
@@ -1235,6 +1245,205 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         asyncio.run(async_worker())
     except Exception as e:
         logger.error(f"StepFun实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
+        response_queue.put(("__ready__", False))
+
+
+def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    xAI Grok 流式 TTS worker（wss://api.x.ai/v1/tts）
+
+    协议特点（对比 step）:
+      - 无 session 握手 / 无 tts.create，连上即可推 text.delta
+      - 配置全部走 query params（voice/language/codec/sample_rate）
+      - codec=pcm 时音频是 raw 16-bit little-endian，无 WAV header
+      - language 必传；用 auto 让服务端自动检测，省掉客户端语言检测
+
+    Args:
+        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
+        response_queue: 多进程响应队列，发送音频数据和就绪信号
+        audio_api_key: xAI API key
+        voice_id: 内置音色（eve/ara/leo/rex/sal）或自定义 8 位音色 id，默认 eve
+    """
+    if not voice_id:
+        voice_id = "eve"
+
+    async def async_worker():
+        from urllib.parse import urlencode
+        params = urlencode({
+            "voice": voice_id,
+            "language": "auto",
+            "codec": "pcm",
+            "sample_rate": 24000,
+        })
+        tts_url = f"wss://api.x.ai/v1/tts?{params}"
+        headers = {"Authorization": f"Bearer {audio_api_key}"}
+
+        ws = None
+        current_speech_id = None
+        receive_task = None
+        text_done_sent = False
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+
+        async def receive_messages():
+            # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
+            # 文档未明确给出，两路径都保留。字段名走 'delta'（OpenAI Realtime 标准）
+            # 但保留 'audio' 作为兜底，未来如果 xAI 改名也不会立刻挂。
+            try:
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        try:
+                            audio_array = np.frombuffer(message, dtype=np.int16)
+                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                        except Exception as e:
+                            logger.error(f"xAI TTS 二进制音频解码失败: {e}")
+                        continue
+                    try:
+                        event = json.loads(message)
+                    except Exception as e:
+                        preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                        logger.warning(f"xAI TTS recv (non-JSON): {preview} err={e}")
+                        continue
+                    event_type = event.get("type")
+                    if event_type == "audio.delta":
+                        audio_b64 = event.get("delta") or event.get("audio") or ""
+                        if not audio_b64:
+                            logger.warning(f"xAI TTS audio.delta 无音频字段，event keys={list(event.keys())}")
+                            continue
+                        try:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                        except Exception as e:
+                            logger.error(f"xAI TTS 音频解码失败: {e}")
+                    elif event_type == "audio.done":
+                        pass
+                    elif event_type == "error":
+                        logger.error(f"xAI TTS server error: {event}")
+                        _enqueue_error(response_queue, event)
+                    else:
+                        # 未知 event 留 INFO — 出现新事件类型时能立即看见
+                        preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                        logger.info(f"xAI TTS recv unknown type={event_type!r} raw={preview}")
+            except websockets.exceptions.ConnectionClosed as e:
+                # 仅对异常关闭出 log（1006=abnormal、4xxx=应用层）。正常 1000 静默，
+                # 避免 worker 每次 sid 切换主动 close 时也刷一行。
+                if e.code != 1000:
+                    logger.info(f"xAI TTS WebSocket closed: code={e.code} reason={e.reason!r}")
+            except Exception as e:
+                logger.error(f"xAI TTS 接收出错: {type(e).__name__}: {e}")
+
+        try:
+            ws = await websockets.connect(tts_url, additional_headers=headers)
+            receive_task = asyncio.create_task(receive_messages())
+
+            logger.info("xAI Grok TTS 已就绪，发送就绪信号")
+            response_queue.put(("__ready__", True))
+
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
+                if sid == "__interrupt__":
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    current_speech_id = None
+                    text_done_sent = False
+                    continue
+
+                if sid is None:
+                    # 当前 speech 文本流结束 — 发 text.done 触发服务端 flush 剩余音频
+                    if ws and current_speech_id is not None and not text_done_sent:
+                        try:
+                            await ws.send(json.dumps({"type": "text.done"}))
+                            text_done_sent = True
+                        except Exception as e:
+                            logger.warning(f"发送 text.done 失败: {e}")
+                    continue
+
+                # 新 speech_id — 关旧开新（对偶 step worker 的重连策略）
+                if current_speech_id != sid:
+                    current_speech_id = sid
+                    text_done_sent = False
+                    resampler.clear()
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                    try:
+                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        receive_task = asyncio.create_task(receive_messages())
+                    except Exception as e:
+                        logger.error(f"xAI TTS 重连失败: {e}")
+                        if 'HTTP 503' in str(e):
+                            _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        await asyncio.sleep(1.0)
+                        continue
+
+                if not tts_text or not tts_text.strip():
+                    continue
+                if text_done_sent:
+                    continue
+                if not ws:
+                    continue
+
+                try:
+                    # 字段名用 'delta'（OpenAI Realtime 标准；xAI 文档把消息体叫
+                    # "deltas"——"Individual deltas are capped at 15,000 characters"）。
+                    # 用 'text' 时服务端 silently 当空字符串处理，合成 0 字节后直接 audio.done。
+                    await ws.send(json.dumps({"type": "text.delta", "delta": tts_text}))
+                    _record_tts_telemetry("grok", tts_text)
+                except Exception as e:
+                    logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
+                    ws = None
+                    current_speech_id = None
+
+        except Exception as e:
+            logger.error(f"xAI Grok TTS Worker 错误: {type(e).__name__}: {e!r}", exc_info=True)
+            if 'HTTP 503' in str(e):
+                _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            response_queue.put(("__ready__", False))
+        finally:
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"xAI Grok TTS Worker 启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
 
 
@@ -2962,6 +3171,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         return gemini_tts_worker, None, 'gemini'
     elif core_api_type == 'openai':
         return openai_tts_worker, None, 'openai'
+    elif core_api_type == 'grok':
+        return grok_streaming_tts_worker, None, 'grok'
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker, None, None
