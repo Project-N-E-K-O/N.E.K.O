@@ -2009,13 +2009,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
-        # 单条 user 消息签名：派单时塞到 task info 里。取消后用它从 messages
-        # 里 redact 掉对应 user turn，使 analyzer 看不到那条已被取消的请求。
-        trigger_user_msg_sig = _last_user_message_signature(messages)
-
         # 在 inject 之前先把已被用户 UI 取消的 user turn 整段 redact，让 analyzer
         # 完全看不到那条请求；inject 阶段也会跳过 cancelled 任务的所有 record。
         redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name)
+        # 单条 user 消息签名：派单时塞到 task info 里。取自 redacted_messages
+        # 而非 raw —— analyzer 实际看到的最新 user 才是该任务的真触发者；
+        # 正常场景下 raw-latest 是 first-time bypass、没被 redact，两个签名
+        # 一致，区别仅在 raw-latest 已经被 redact 的边界 case。
+        trigger_user_msg_sig = _last_user_message_signature(redacted_messages)
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行
