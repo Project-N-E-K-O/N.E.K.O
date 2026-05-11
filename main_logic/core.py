@@ -273,6 +273,49 @@ def _build_callback_instruction(
     return "\n\n".join(parts)
 
 
+def _format_voice_swap_item(entry: dict, lang: str) -> str:
+    """Render a single voice-mode pending_extra_replies entry to a bulleted
+    line for the hot-swap injection.
+
+    Priority: ``summary`` → ``detail`` → synthesized "{status_phrase} from
+    {source}[: error_message]" placeholder. The placeholder path matters for
+    failure callbacks whose body is empty — without it, "执行失败 / 来自插件
+    X / Connection refused" header information would be silently dropped
+    (the voice-mode equivalent of the header-only branch in
+    ``_build_callback_instruction``).
+
+    Returns ``""`` when the entry is genuinely empty (no body, no error, and
+    a benign ``completed`` status) — caller filters those out.
+    """
+    summary = (entry.get("summary") or "").strip()
+    detail = (entry.get("detail") or "").strip()
+    text = summary or detail
+    status = entry.get("status") or "completed"
+    emoji = _STATUS_EMOJI.get(status, "•")
+
+    if text:
+        return f"- {emoji} {text}"
+
+    # No body text — synthesize from header info so the failure status
+    # doesn't disappear silently.
+    error_message = (entry.get("error_message") or "").strip()
+    source_name = (entry.get("source_name") or "").strip()
+    if not error_message and not source_name and status == "completed":
+        # Truly nothing to convey; drop. (enqueue_agent_callback already
+        # filters these out, but be defensive against legacy entries.)
+        return ""
+
+    source_text = _format_callback_source(entry, lang)
+    status_phrase = _loc(
+        TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+        lang,
+    )
+    line = f"- {emoji} {source_text} {status_phrase}"
+    if error_message:
+        line += f"：{error_message}"
+    return line
+
+
 def _render_pending_extra_replies_by_origin(
     entries,
     *,
@@ -283,11 +326,13 @@ def _render_pending_extra_replies_by_origin(
     """Render voice-mode ``pending_extra_replies`` into the hot-swap injection
     string, grouped by ``origin``.
 
-    Each entry should be ``{"origin": "task_result"|"event", "text": str}``.
-    Legacy plain-string elements (from pre-migration code paths) are tolerated
-    and treated as ``origin="event"`` — the safer default since "汇报先前执行
-    的任务的结果" framing on what may actually be an event push is the bug
-    this refactor fixes.
+    Each entry should be a structured dict with at least ``origin``;
+    ``summary``/``detail``/``status``/``source_kind``/``source_name``/
+    ``error_message`` are consumed by :func:`_format_voice_swap_item`. Legacy
+    plain-string entries (pre-migration code paths) are tolerated and
+    treated as ``origin="event"`` event-stream content — the safer default,
+    since "汇报先前执行的任务的结果" framing on what may actually be a push
+    event is the bug this refactor fixes.
 
     Returns a single string suitable for appending to ``final_prime_text``.
     Order: task block first (if any), then event block — matches the original
@@ -296,39 +341,51 @@ def _render_pending_extra_replies_by_origin(
     if not entries:
         return ""
 
-    task_items: list[str] = []
-    event_items: list[str] = []
+    task_entries: list[dict] = []
+    event_entries: list[dict] = []
     for entry in entries:
         if isinstance(entry, dict):
-            txt = (entry.get("text") or "").strip()
-            if not txt:
-                continue
-            origin = entry.get("origin")
+            normalized = dict(entry)
+            origin = normalized.get("origin")
+            if origin not in ("task_result", "event"):
+                normalized["origin"] = "event"  # fail-safe
+                origin = "event"
             if origin == "task_result":
-                task_items.append(txt)
+                task_entries.append(normalized)
             else:
-                # event, missing, or unknown — group as event (fail-safe).
-                event_items.append(txt)
+                event_entries.append(normalized)
         elif isinstance(entry, str):
             stripped = entry.strip()
             if stripped:
-                event_items.append(stripped)
+                event_entries.append({
+                    "origin": "event",
+                    "summary": stripped,
+                    "detail": "",
+                    "status": "completed",
+                    "source_kind": "unknown",
+                    "source_name": "",
+                    "error_message": "",
+                })
 
     blocks: list[str] = []
-    if task_items:
-        items_text = "\n".join(f"- {t}" for t in task_items)
-        blocks.append(
-            _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
-            + items_text
-            + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
-        )
-    if event_items:
-        items_text = "\n".join(f"- {t}" for t in event_items)
-        blocks.append(
-            _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
-            + items_text
-            + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
-        )
+    if task_entries:
+        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
+            )
+    if event_entries:
+        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
+            )
     return "".join(blocks)
 
 
@@ -5071,27 +5128,51 @@ class LLMSessionManager:
         Voice mode: also appended to pending_extra_replies for hot-swap
         injection via prime_context().
 
-        Each pending_extra_replies element carries ``origin`` so the hot-swap
-        renderer can pick TASK vs EVENT wrapper at drain time — without this
-        the voice-mode path would wrap event-stream pushes (push_message) in
-        the "请汇报先前执行的任务的结果" template that only applies to real
-        task completions. The two queues stay independent (text-mode drain
-        and voice-mode hot-swap fire at different lifecycle points).
+        Voice queue element shape is structured (not flat text) so the
+        hot-swap renderer can:
+          1. Pick TASK vs EVENT wrapper from ``origin``.
+          2. Recover status / source phrasing when both ``summary`` and
+             ``detail`` are empty — typical for failure callbacks where
+             the meaning lives in the header (e.g. ``status="failed"`` +
+             ``error_message="Connection refused"``).
+
+        ``summary`` and ``detail`` are normalized **independently** (strip
+        each, then prefer summary → detail), so a blank-whitespace
+        ``summary`` doesn't shadow a real ``detail`` via the legacy
+        ``summary or detail`` chain.
+
+        The two queues stay independent (text-mode drain and voice-mode
+        hot-swap fire at different lifecycle points).
         """
         try:
             self.pending_agent_callbacks.append(callback)
-            text = (callback.get("summary") or callback.get("detail") or "").strip()
-            if text:
-                origin = callback.get("origin")
-                if origin not in ("task_result", "event"):
-                    # Fail-safe: missing/unknown origin defaults to event so
-                    # the hot-swap renderer does not fabricate "我完成了任务"
-                    # for what may actually be an external event push.
-                    origin = "event"
-                self.pending_extra_replies.append({
-                    "origin": origin,
-                    "text": text,
-                })
+            summary = str(callback.get("summary") or "").strip()
+            detail = str(callback.get("detail") or "").strip()
+            error_message = str(callback.get("error_message") or "").strip()
+            source_name = str(callback.get("source_name") or "").strip()
+            status = callback.get("status") or "completed"
+            origin = callback.get("origin")
+            if origin not in ("task_result", "event"):
+                # Fail-safe: missing/unknown origin defaults to event so the
+                # hot-swap renderer does not fabricate "我完成了任务" for what
+                # may actually be an external event push.
+                origin = "event"
+            # Skip enqueue only when there is *truly* nothing to convey:
+            # no body text, no error context, no identifiable source, and a
+            # benign completed status. Anything else (failed/cancelled/blocked,
+            # an error message, or a named source) carries meaning even with
+            # empty summary/detail and must survive into the hot-swap output.
+            if not summary and not detail and not error_message and not source_name and status == "completed":
+                return
+            self.pending_extra_replies.append({
+                "origin": origin,
+                "summary": summary,
+                "detail": detail,
+                "status": status,
+                "source_kind": callback.get("source_kind") or "unknown",
+                "source_name": source_name,
+                "error_message": error_message,
+            })
         except Exception:
             pass
 

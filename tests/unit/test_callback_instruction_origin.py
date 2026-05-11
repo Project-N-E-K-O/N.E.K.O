@@ -151,27 +151,52 @@ def test_missing_origin_falls_back_to_event_silently():
     one. Rationale: we'd rather have the AI react naturally than fabricate
     "我做完了一个任务" for an event that wasn't actually a task.
 
-    Missing-key path stays silent (no warning) because it's the legitimate
-    pre-migration fallback. An explicit but unknown value, by contrast,
-    does warn (see test_unknown_origin_value_warns_and_falls_back).
+    Missing-key path stays **silent** (no warning) because it's the
+    legitimate pre-migration fallback. An explicit but unknown value, by
+    contrast, does warn (see test_unknown_origin_value_warns_and_falls_back).
+
+    Pins both halves of that contract: the fallback behavior AND the
+    no-warning invariant. Without the second assertion a future drift that
+    started warning on missing-key (turning every legacy callsite noisy)
+    would silently slip in.
     """
-    out = _build(
-        [
-            {
-                # no origin key
-                "status": "completed",
-                "source_kind": "plugin",
-                "source_name": "unknown_emitter",
-                "summary": "事件 A",
-                "detail": "事件 A",
-                "delivery_mode": "proactive",
-            }
-        ],
-    )
+    from main_logic.core import _build_callback_instruction  # noqa: F401
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.setLevel(logging.WARNING)
+    handler.emit = lambda r: records.append(r)
+    target_logger = logging.getLogger("N.E.K.O.Main.main_logic.core")
+    prior_level = target_logger.level
+    target_logger.addHandler(handler)
+    if prior_level > logging.WARNING or prior_level == logging.NOTSET:
+        target_logger.setLevel(logging.WARNING)
+    try:
+        out = _build(
+            [
+                {
+                    # no origin key
+                    "status": "completed",
+                    "source_kind": "plugin",
+                    "source_name": "unknown_emitter",
+                    "summary": "事件 A",
+                    "detail": "事件 A",
+                    "delivery_mode": "proactive",
+                }
+            ],
+        )
+    finally:
+        target_logger.removeHandler(handler)
+        target_logger.setLevel(prior_level)
+
     assert "事件 A" in out
     # Should render the EVENT wrapper, not TASK.
     assert "新消息" in out
     assert "任务" not in out
+    # Critically: NO "unknown origin" warning (pin the silent contract).
+    assert not any("unknown origin" in r.getMessage() for r in records), [
+        r.getMessage() for r in records
+    ]
 
 
 def test_unknown_origin_value_warns_and_falls_back():
@@ -321,6 +346,21 @@ def _render_swap(entries):
     )
 
 
+def _voice_entry(origin, *, summary="", detail="", status="completed",
+                 source_kind="plugin", source_name="", error_message=""):
+    """Helper: build a voice swap entry matching the shape enqueue_agent_callback
+    produces. Lets each test focus on the dimensions it cares about."""
+    return {
+        "origin": origin,
+        "summary": summary,
+        "detail": detail,
+        "status": status,
+        "source_kind": source_kind,
+        "source_name": source_name,
+        "error_message": error_message,
+    }
+
+
 def test_voice_swap_event_entries_use_event_wrapper():
     """The bilidanmu voice-mode fix anchor. push_message events queued via
     ``enqueue_agent_callback`` end up in ``pending_extra_replies`` with
@@ -329,8 +369,8 @@ def test_voice_swap_event_entries_use_event_wrapper():
     """
     out = _render_swap(
         [
-            {"origin": "event", "text": "💬 [大佬]观众A: 好可爱"},
-            {"origin": "event", "text": "🎁 观众B 送了 1个 小心心"},
+            _voice_entry("event", summary="💬 [大佬]观众A: 好可爱", source_name="bilibili_danmaku"),
+            _voice_entry("event", summary="🎁 观众B 送了 1个 小心心", source_name="bilibili_danmaku"),
         ]
     )
     # Event wrapper: "请...根据下方新消息回应..."
@@ -350,7 +390,7 @@ def test_voice_swap_task_entries_use_task_wrapper():
     behavior the refactor must preserve."""
     out = _render_swap(
         [
-            {"origin": "task_result", "text": "番茄钟到点了"},
+            _voice_entry("task_result", summary="番茄钟到点了", source_name="pomodoro"),
         ]
     )
     assert "汇报" in out
@@ -365,9 +405,9 @@ def test_voice_swap_mixed_origins_render_separate_blocks():
     """
     out = _render_swap(
         [
-            {"origin": "task_result", "text": "搜索完成"},
-            {"origin": "event", "text": "弹幕来了"},
-            {"origin": "task_result", "text": "音乐播放完毕"},
+            _voice_entry("task_result", summary="搜索完成", source_name="search"),
+            _voice_entry("event", summary="弹幕来了", source_name="bilibili_danmaku"),
+            _voice_entry("task_result", summary="音乐播放完毕", source_name="music"),
         ]
     )
     # Both wrappers present.
@@ -379,6 +419,54 @@ def test_voice_swap_mixed_origins_render_separate_blocks():
     assert "音乐播放完毕" in out
     # Task block precedes event block (matches helper docstring).
     assert out.index("搜索完成") < out.index("弹幕来了")
+
+
+def test_voice_swap_failure_callback_without_body_still_surfaces():
+    """Header-only failure callback: summary/detail empty but status="failed"
+    and error_message carries the diagnostic. The v1 voice fix flattened
+    these to "" and dropped them entirely; v2 must synthesize a status+source
+    placeholder so the failure doesn't disappear silently before the next
+    hot-swap injects context into the new session.
+    """
+    out = _render_swap(
+        [
+            {
+                "origin": "task_result",
+                "summary": "",
+                "detail": "",
+                "status": "failed",
+                "source_kind": "plugin",
+                "source_name": "pomodoro",
+                "error_message": "Connection refused",
+            }
+        ]
+    )
+    # Wrapper: TASK (this is a real task failure).
+    assert "汇报" in out
+    # Status emoji + source phrase + error message all in the placeholder line.
+    assert "❌" in out
+    assert "pomodoro" in out
+    assert "执行失败" in out
+    assert "Connection refused" in out
+
+
+def test_voice_swap_whitespace_summary_does_not_shadow_detail():
+    """``summary = "   "`` must NOT block the renderer from picking up
+    ``detail``. The legacy ``summary or detail`` chain treated whitespace
+    summary as truthy and dropped detail — fixed in this refactor by
+    stripping each independently before falling through.
+    """
+    out = _render_swap(
+        [
+            _voice_entry(
+                "event",
+                summary="   ",
+                detail="真正的内容在 detail 里",
+                source_name="ambient",
+            ),
+        ]
+    )
+    assert "真正的内容在 detail 里" in out
 
 
 def test_voice_swap_legacy_string_entries_treated_as_event():
@@ -396,13 +484,15 @@ def test_voice_swap_legacy_string_entries_treated_as_event():
 def test_voice_swap_missing_origin_falls_back_to_event():
     """Dict entries without ``origin`` key — same fail-safe as
     ``_build_callback_instruction``: render as event."""
-    out = _render_swap([{"text": "无 origin 条目"}])
+    out = _render_swap([{"summary": "无 origin 条目", "source_kind": "plugin", "source_name": "x"}])
     assert "新消息" in out
     assert "汇报" not in out
     assert "无 origin 条目" in out
 
 
 def test_voice_swap_empty_input_returns_empty_string():
+    """Both genuinely empty input and entries that filter to nothing
+    (completed status with no body, no error, no source) collapse to ""."""
     assert _render_swap([]) == ""
-    assert _render_swap([{"origin": "event", "text": ""}]) == ""  # all blank
-    assert _render_swap([{"origin": "event", "text": "   "}]) == ""
+    assert _render_swap([_voice_entry("event")]) == ""  # all blank
+    assert _render_swap([_voice_entry("event", summary="   ", detail="   ")]) == ""
