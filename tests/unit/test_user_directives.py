@@ -221,10 +221,9 @@ def test_purge_expired_drops_entries(tmp_path):
     name = "Neko"
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=0.0)
     mgr.record(name, locale="zh", kind="ban_topic", term="股票", now=1000.0)
-    # 加班 已过期, 股票 仍有效
-    purge_at = 1000.0 + USER_DIRECTIVE_TTL_SECONDS + 1
-    # 推进时间到 加班 过期且 股票 还活的瞬间
-    purge_at = USER_DIRECTIVE_TTL_SECONDS + 500.0  # > 加班.expire, < 股票.expire
+    # 推进时间到 加班 过期、股票 还活的瞬间
+    # （加班.expire = USER_DIRECTIVE_TTL_SECONDS；股票.expire = 1000 + USER_DIRECTIVE_TTL_SECONDS）
+    purge_at = USER_DIRECTIVE_TTL_SECONDS + 500.0
     removed = mgr.purge_expired(name, now=purge_at)
     assert removed == 1
     data = _read_file(tmp_path, name)

@@ -75,12 +75,17 @@ def _now() -> float:
 
 def _ngrams(text: str) -> List[str]:
     """对 ``text`` 抽 ngram。复用 ``memory.persona._extract_keywords`` 作为唯一
-    事实源。失败回退到极简 ASCII whitespace split（不阻断主流程）。"""
+    事实源。失败回退到极简 ASCII whitespace split（不阻断主流程）。
+
+    ``stop_names`` 用 ``collect_stop_names(config_manager)``——必填，零参数调用
+    会 TypeError 让外层 except 静默吞掉、stop names 永远空，master/lanlan 名字
+    渗透进 ngram 集合污染 BM25（每轮对话都出现的实体名会被算成高 DF 后压下
+    IDF，间接保护了一部分，但仍把无关的 nickname 2/3-gram 灌进 corpus）。"""
     try:
         from memory.persona import _extract_keywords
         from memory.stop_names import collect_stop_names
         try:
-            stop_names = collect_stop_names()
+            stop_names = collect_stop_names(get_config_manager())
         except Exception:
             stop_names = []
         return list(_extract_keywords(text or "", stop_names=stop_names))

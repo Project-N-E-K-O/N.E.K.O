@@ -145,4 +145,7 @@ def install_runtime_bindings() -> None:
                         exc_info=True,
                     )
                 except Exception:
+                    # Logger 本身不可用（极早期 import / 配置坏）；同
+                    # config_runtime block 的策略——咽掉避免 startup 二次崩，
+                    # caller (app/__init__) 已经印过 stderr 面包屑。
                     pass

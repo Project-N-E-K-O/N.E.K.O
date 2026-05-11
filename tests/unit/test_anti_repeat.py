@@ -21,10 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config import (
-    ANTI_REPEAT_BG_WINDOW,
-    ANTI_REPEAT_MIN_DRAFT_TOKENS,
-)
+from config import ANTI_REPEAT_BG_WINDOW
 from config.prompts.prompts_directives import (
     RECENT_TOPIC_HINT_PROMPT_BLOCK,
     PROACTIVE_REGEN_AVOID_INSTRUCTION,
