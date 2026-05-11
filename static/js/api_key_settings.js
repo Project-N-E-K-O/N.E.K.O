@@ -1692,11 +1692,9 @@ async function fetchElevenlabsVoices(silent = false) {
 
 function getElevenlabsConfigForSave() {
     const apiKeyInput = document.getElementById('elevenlabsApiKey');
-    const keyBookInput = document.getElementById('keyBookInput_elevenlabs');
-    const cachedApiKey = (_elevenlabsApiKeyDraft || '').trim();
     const liveApiKey = getElevenlabsInputKey(apiKeyInput);
-    const bookApiKey = getElevenlabsInputKey(keyBookInput);
-    const editedApiKey = liveApiKey.edited ? liveApiKey.value : (bookApiKey.edited ? bookApiKey.value : '');
+    const rawLiveValue = (apiKeyInput?.value || '').trim();
+    const editedApiKey = rawLiveValue ? liveApiKey.value : '';
     return {
         enabled: !!document.getElementById('elevenlabsEnabled')?.checked,
         baseUrl: document.getElementById('elevenlabsBaseUrl')?.value.trim() || 'https://api.elevenlabs.io',
@@ -1708,7 +1706,7 @@ function getElevenlabsConfigForSave() {
         style: _getSliderValue('elevenlabsStyle', 0),
         useSpeakerBoost: document.getElementById('elevenlabsUseSpeakerBoost')?.checked !== false,
         voiceId: document.getElementById('elevenlabsVoiceId')?.value || '',
-        apiKey: editedApiKey || liveApiKey.value || bookApiKey.value || cachedApiKey,
+        apiKey: editedApiKey,
     };
 }
 

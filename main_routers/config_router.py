@@ -710,7 +710,7 @@ async def update_core_config(request: Request):
             if not isinstance(value, str):
                 return False
             stripped = value.strip()
-            return not stripped or '***' in stripped or set(stripped) == {'*'}
+            return bool(stripped) and ('***' in stripped or set(stripped) == {'*'})
 
         # 只有在启用自定义API时，才允许不设置coreApiKey
         if enable_custom_api:

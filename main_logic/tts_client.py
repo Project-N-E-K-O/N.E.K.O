@@ -3328,6 +3328,20 @@ def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
     return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
 
 
+def _config_value_is_enabled(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
 def _get_elevenlabs_options(base_url=None):
     cm = get_config_manager()
     core_cfg = cm.get_core_config()
@@ -3810,7 +3824,6 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                     continue
 
                 if tts_text and tts_text.strip():
-                    await _ensure_session(sid)
                     payload_text = tts_text
                     if pending_text and pending_text_sid == current_speech_id:
                         payload_text = "".join(pending_text) + tts_text
@@ -3825,6 +3838,15 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         )
                         pending_text.clear()
                         pending_text_sid = None
+                    try:
+                        await _ensure_session(sid)
+                    except Exception as exc:
+                        logger.warning("ElevenLabs WS ensure session failed: %s", exc)
+                        pending_text.append(payload_text)
+                        pending_text_sid = sid
+                        await _close_ws(send_final_empty=False, wait_for_final=False)
+                        current_speech_id = None
+                        continue
                     try:
                         await _send_text(payload_text, current_speech_id)
                     except Exception as exc:
@@ -3975,7 +3997,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
         logger.info("Detected ElevenLabs voice_id, using ElevenLabs TTS Worker")
-        return elevenlabs_tts_worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
+        elevenlabs_options = _get_elevenlabs_options()
+        return (
+            partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
+            _resolve_elevenlabs_api_key(cm),
+            'elevenlabs',
+        )
 
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
@@ -4019,10 +4046,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             or core_cfg.get('ttsProvider')
             or ''
         )
-        elevenlabs_enabled = bool(
-            core_cfg.get('ELEVENLABS_ENABLED')
-            or core_cfg.get('elevenlabsEnabled')
-            or tts_provider == 'elevenlabs'
+        elevenlabs_enabled = (
+            _config_value_is_enabled(core_cfg.get('ELEVENLABS_ENABLED'))
+            or _config_value_is_enabled(core_cfg.get('elevenlabsEnabled'))
+            or str(tts_provider).strip().lower() == 'elevenlabs'
         )
         if elevenlabs_enabled:
             elevenlabs_base_url = (
