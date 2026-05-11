@@ -44,6 +44,8 @@
   "status.mode.interactive": "Interactivo",
   "status.mode.teaching": "Enseñanza",
   "status.mode.concept_explain": "Compañero",
+  "reply.empty_input": "Proporciona texto o captura una pantalla legible primero.",
+  "reply.fallback_explanation": "Texto clave: {first_line}\n\nExplicación: no pude acceder al modelo configurado, así que esta es una respuesta local de respaldo. Lee el enunciado una vez para identificar definiciones, luego encuentra la causa, el resultado y cualquier fórmula o término que cambie la conclusión.\n\nPregunta de comprobación: ¿cuál es el término o relación principal que necesitas recordar de este texto?",
   "ui.label.mode": "Modo",
   "ui.label.text": "Texto",
   "ui.label.reply": "Respuesta",

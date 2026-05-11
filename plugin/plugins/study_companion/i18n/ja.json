@@ -30,6 +30,8 @@
   "status.mode.interactive": "対話",
   "status.mode.teaching": "指導",
   "status.mode.concept_explain": "学習サポート",
+  "reply.empty_input": "先にテキストを入力するか、読める画面をキャプチャしてください。",
+  "reply.fallback_explanation": "重要なテキスト：{first_line}\n\n説明：設定済みのモデルに接続できなかったため、これはローカルのフォールバック結果です。まず文を読み、定義を確認してから、原因、結果、結論を変える公式や用語を見つけてください。\n\n確認質問：この文章で覚えるべき中心的な用語や関係は何ですか？",
   "ui.label.mode": "モード",
   "ui.label.text": "テキスト",
   "ui.label.reply": "返信",

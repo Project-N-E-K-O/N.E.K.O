@@ -44,6 +44,8 @@
   "status.mode.interactive": "Interactive",
   "status.mode.teaching": "Teaching",
   "status.mode.concept_explain": "Companion",
+  "reply.empty_input": "Please provide text or capture a readable screen first.",
+  "reply.fallback_explanation": "Key text: {first_line}\n\nExplanation: I could not reach the configured model, so this is a local fallback. Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\nCheck question: What is the main term or relationship you need to remember from this text?",
   "ui.label.mode": "Mode",
   "ui.label.text": "Text",
   "ui.label.reply": "Reply",

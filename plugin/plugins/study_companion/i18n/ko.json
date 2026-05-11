@@ -44,6 +44,8 @@
   "status.mode.interactive": "대화",
   "status.mode.teaching": "지도",
   "status.mode.concept_explain": "학습 지원",
+  "reply.empty_input": "먼저 텍스트를 입력하거나 읽을 수 있는 화면을 캡처해 주세요.",
+  "reply.fallback_explanation": "핵심 텍스트: {first_line}\n\n설명: 설정된 모델에 연결할 수 없어 로컬 대체 답변을 제공합니다. 먼저 문장을 읽고 정의를 확인한 뒤, 원인, 결과, 결론을 바꾸는 공식이나 용어를 찾아보세요.\n\n확인 질문: 이 글에서 기억해야 할 핵심 용어나 관계는 무엇인가요?",
   "ui.label.mode": "모드",
   "ui.label.text": "텍스트",
   "ui.label.reply": "응답",

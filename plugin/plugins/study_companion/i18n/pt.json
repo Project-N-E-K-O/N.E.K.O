@@ -44,6 +44,8 @@
   "status.mode.interactive": "Interativo",
   "status.mode.teaching": "Ensino",
   "status.mode.concept_explain": "Companheiro",
+  "reply.empty_input": "Forneça um texto ou capture uma tela legível primeiro.",
+  "reply.fallback_explanation": "Texto-chave: {first_line}\n\nExplicação: não consegui acessar o modelo configurado, então esta é uma resposta local de fallback. Leia a afirmação uma vez para identificar definições, depois encontre a causa, o resultado e qualquer fórmula ou termo que altere a conclusão.\n\nPergunta de verificação: qual é o principal termo ou relação que você precisa lembrar deste texto?",
   "ui.label.mode": "Modo",
   "ui.label.text": "Texto",
   "ui.label.reply": "Resposta",

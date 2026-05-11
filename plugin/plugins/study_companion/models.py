@@ -148,6 +148,20 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         except (TypeError, ValueError):
             return default
 
+    def _float_alias(section: dict[str, Any], keys: tuple[str, ...], default: float, flat_key: str | None = None) -> float:
+        for key in keys:
+            if key in section:
+                try:
+                    return float(section.get(key, default))
+                except (TypeError, ValueError):
+                    return default
+        if flat_key and flat_key in raw:
+            try:
+                return float(raw.get(flat_key, default))
+            except (TypeError, ValueError):
+                return default
+        return default
+
     def _clamp(value: float, minimum: float, maximum: float, default: float) -> float:
         if not math.isfinite(value):
             value = default
@@ -185,7 +199,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         rapidocr_model_type=_str(rapidocr, "model_type", "mobile", "rapidocr_model_type"),
         rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"),
         llm_call_timeout_seconds=_clamp(
-            _float(llm, "call_timeout_seconds", 30.0, "llm_call_timeout_seconds"),
+            _float_alias(llm, ("call_timeout_seconds", "llm_call_timeout_seconds"), 30.0, "llm_call_timeout_seconds"),
             1.0,
             3600.0,
             30.0,
