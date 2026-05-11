@@ -390,10 +390,16 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
         )
     start = md.find('======以下为较久前的记忆======')
     end = md.find('======以上为较久前的记忆======')
+    # 显式断言分隔符存在——否则 find 返回 -1 → block 为空字符串 →
+    # 正则循环零次执行 → 测试"空块假通过" (CodeRabbit nit on PR #1316)
+    assert start >= 0, "past block opening delimiter missing"
+    assert end > start, "past block closing delimiter missing or out of order"
     block = md[start:end]
     # bullet 前缀只允许 [时间标签]，不允许任何形式的 [pattern/state/episode/...]
     import re as _re
-    for prefix in _re.findall(r'^- \[([^\]]*)\]', block, _re.MULTILINE):
+    prefixes = _re.findall(r'^- \[([^\]]*)\]', block, _re.MULTILINE)
+    assert prefixes, "past block has no bulleted entries to validate"
+    for prefix in prefixes:
         for word in ('state', 'episode', 'pattern', 'past', 'temporal_scope'):
             assert word not in prefix, (
                 f"unexpected temporal label {word!r} in bullet prefix {prefix!r}"
@@ -596,6 +602,12 @@ async def test_arecheck_one_legacy_reflection_skips_malformed_head(tmp_path):
     g = next(r for r in reflections if r.get('id') == 'r-good')
     assert g.get('schema_version') == 2
     assert g.get('temporal_scope') == 'pattern'
+    # 同时断言 malformed 条目保持原状（schema_version 未升 v2、未被改写
+    # temporal_scope）—— 防止未来回归把"洗白未验证条目"的反模式引回来
+    # (CodeRabbit nit on PR #1316)
+    b = next(r for r in reflections if r.get('text') == '破损 reflection')
+    assert (b.get('schema_version') or 1) == 1
+    assert b.get('event_when_raw') is None
 
 
 @pytest.mark.asyncio
@@ -627,8 +639,12 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
         for i in range(8)
     ]
     await re.asave_reflections('小天', candidates)
-    seen = set()
-    for _ in range(30):
-        picks = await re.aget_followup_topics('小天')
-        seen.add(tuple(sorted(r['id'] for r in picks)))
+    # 显式 patch REFLECTION_FOLLOWUP_WEIGHTED=True，不依赖全局默认——如果
+    # 未来 config 默认值翻成 False，这个用例就会"沉默通过"成 list-order
+    # 行为而不报错 (CodeRabbit nit on PR #1316)。
+    with patch('config.REFLECTION_FOLLOWUP_WEIGHTED', True):
+        seen = set()
+        for _ in range(30):
+            picks = await re.aget_followup_topics('小天')
+            seen.add(tuple(sorted(r['id'] for r in picks)))
     assert len(seen) >= 2, f"weighted sampling produced only {len(seen)} unique combos"
