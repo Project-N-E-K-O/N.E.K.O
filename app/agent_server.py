@@ -250,47 +250,28 @@ class AgentTaskTracker:
         })
         self._trim(records)
 
-    def get_cancelled_user_sig_counts(self, lanlan_name: Optional[str]) -> Dict[str, int]:
-        """Return a sig → quota dict for still-live cancelled task records.
-
-        Each *cancelled task* contributes one redact "quota" for its trigger
-        signature. The redact pass consumes quotas occurrence-by-occurrence
-        from the tail of `messages`, so when the same text appears multiple
-        times in history (e.g. an earlier successful "打开天气" plus a more
-        recent cancelled "打开天气"), only the cancelled occurrence is
-        removed — earlier same-text turns and their tool responses survive.
-
-        Counts are deduped by task_id because a single cancel emits two
-        cancelled records: `cancel_task` (or `_cancel_openclaw_tasks_for_stop`)
-        writes one synchronously, and the dispatch coroutine's
-        `except asyncio.CancelledError` path writes another when the
-        background task wakes up. Without the dedupe, one user-driven cancel
-        would inflate quota to 2 and let `_redact_cancelled_user_turns` eat
-        an extra unrelated same-sig user turn.
+    def get_cancelled_user_sigs(self, lanlan_name: Optional[str]) -> set[str]:
+        """Return the set of trigger signatures from still-live cancelled
+        task records. The redact pass uses set-membership to decide whether
+        a user message should be silenced; "first-time analyze" bypass is
+        determined by `_redact_cancelled_user_turns` from messages shape,
+        not from per-record counts. As such this doesn't try to dedupe
+        duplicate cancel records (cancel_task + dispatch coroutine's
+        CancelledError path both write one) — set-membership is idempotent.
         """
         key = _normalize_lanlan_key(lanlan_name)
         records = self._records.get(key)
         if not records:
-            return {}
+            return set()
         now = time.time()
         records[:] = [r for r in records if now - float(r.get("ts") or 0.0) < TASK_TRACKER_TTL]
         if not records:
-            return {}
-        counts: Dict[str, int] = {}
-        seen_task_ids: set[str] = set()
-        for r in records:
-            if r.get("kind") != "cancelled":
-                continue
-            sig = r.get("trigger_user_fingerprint")
-            if not sig:
-                continue
-            task_id = r.get("task_id")
-            if task_id:
-                if task_id in seen_task_ids:
-                    continue
-                seen_task_ids.add(task_id)
-            counts[sig] = counts.get(sig, 0) + 1
-        return counts
+            return set()
+        return {
+            r.get("trigger_user_fingerprint")
+            for r in records
+            if r.get("kind") == "cancelled" and r.get("trigger_user_fingerprint")
+        }
 
     def inject(self, messages: list, lanlan_name: Optional[str]) -> list:
         """返回一份新的 messages 列表，其中按时序插入了任务跟踪记录。
@@ -1547,36 +1528,62 @@ REDACTED_USER_TURN_MARKER = (
 def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> list:
     """Return a messages copy with cancelled user turns removed.
 
-    Each still-live cancelled task contributes one redact quota for its
-    trigger signature. We scan `messages` from the tail forward and
-    consume one quota per matching user message — so if the same text
-    appears multiple times in history, only the most recent occurrences
-    (matching the cancelled task count) are redacted. Earlier same-text
-    successful turns and their tool responses are preserved.
+    Rule: a user message matches the cancel set (its sig is in
+    `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
+    turn. A user message is first-time if it has **exactly one**
+    role=='assistant' message after it in `messages` — that one assistant
+    is the猫娘 reply whose turn-end triggered the current analyze call,
+    so this is its first analyze pass and it must bypass the cancel set
+    (the user has explicitly re-issued / added new input after the
+    previous cancel).
 
-    Each redacted user message and the following assistant/tool segment
+    Why this works statelessly:
+    - messages is append-only conversation history. The single trailing
+      assistant message that fires analyze is the only one after a
+      "first-time" user turn; once the next user turn arrives and gets
+      its own assistant reply, the older user msg's trailing-assistant
+      count grows past 1 and it is no longer "first-time".
+    - bypass is one-shot: the user msg gets exactly one analyze pass
+      where it can escape the cancel set, after which it falls back to
+      normal cancel-set membership.
+    - No persistent state needed → robust against frontend message
+      revisions (re-renders, edits) that would invalidate any cached
+      "previously analyzed" list.
+
+    Each redacted user message and its following assistant/tool segment
     (up to the next user message) are replaced with a single system
-    marker. The original list is not mutated.
+    marker. system messages dropped inside that segment are preserved
+    (they are session callbacks / context, not part of the cancelled
+    task's tool output). The original list is not mutated.
     """
     if not isinstance(messages, list) or not messages:
         return messages
-    sig_quota = _task_tracker.get_cancelled_user_sig_counts(lanlan_name)
-    if not sig_quota:
+    cancelled_sigs = _task_tracker.get_cancelled_user_sigs(lanlan_name)
+    if not cancelled_sigs:
         return messages
 
-    remaining = dict(sig_quota)
-    redact_indices: set[int] = set()
+    # Precompute trailing assistant counts so we can resolve "first-time"
+    # in one O(n) sweep instead of nested scans.
+    trailing_assistant_count = [0] * len(messages)
+    running = 0
     for idx in range(len(messages) - 1, -1, -1):
         m = messages[idx]
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            running += 1
+        trailing_assistant_count[idx] = running
+
+    redact_indices: set[int] = set()
+    for idx, m in enumerate(messages):
         if not isinstance(m, dict) or m.get("role") != "user":
             continue
         sig = _user_message_signature(m)
-        if not sig or remaining.get(sig, 0) <= 0:
+        if not sig or sig not in cancelled_sigs:
+            continue
+        # Exactly one trailing assistant → first-time analyze pass for this
+        # user msg → bypass cancel.
+        if trailing_assistant_count[idx] == 1:
             continue
         redact_indices.add(idx)
-        remaining[sig] -= 1
-        if not any(v > 0 for v in remaining.values()):
-            break
 
     if not redact_indices:
         return messages

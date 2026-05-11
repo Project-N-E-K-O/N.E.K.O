@@ -1236,62 +1236,8 @@ def test_user_message_signature_ignores_metadata_and_role():
     assert _last_user_message_signature(messages) == _user_message_signature(messages[2])
 
 
-def test_redact_cancelled_user_turns_drops_user_msg_and_following_tool_segment(reset_tracker_records):
-    """取消后，下一次 analyze 进入时，对应 user 消息及其之后到下一条 user
-    之间的所有 assistant/tool 消息会被整段替换为 REDACTED marker；不相关
-    user turn 不动。"""
-    from app.agent_server import (
-        AgentTaskTracker,
-        REDACTED_USER_TURN_MARKER,
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-    )
-
-    # Use a unique lanlan_name to avoid leaking state between tests in the
-    # shared module-level _task_tracker singleton.
-    lanlan = "test-lanlan-redact-1"
-    reset_tracker_records(lanlan)
-
-    cancelled_msg = {"role": "user", "text": "打开天气网站并截图"}
-    sig = _user_message_signature(cancelled_msg)
-
-    _task_tracker.record_completed(
-        lanlan,
-        task_id="t1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint=sig,
-    )
-
-    messages = [
-        {"role": "user", "text": "你好"},
-        {"role": "assistant", "text": "你好呀"},
-        cancelled_msg,
-        {"role": "assistant", "text": "好的，正在打开"},
-        {"role": "tool", "content": "browser opened"},
-        {"role": "user", "text": "另说一件事"},
-        {"role": "assistant", "text": "嗯嗯"},
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-
-    # 原列表不被改
-    assert messages[2] is cancelled_msg
-    # 输出里 cancelled 那条 user + 其后 assistant/tool 段被整段替换为单条 system marker
-    assert out[0] == messages[0]
-    assert out[1] == messages[1]
-    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    # cancelled 段后续的 assistant / tool 消失了
-    assert out[3] == messages[5]
-    assert out[4] == messages[6]
-    assert len(out) == 5
-
-
 def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
-    from app.agent_server import _redact_cancelled_user_turns, _task_tracker
+    from app.agent_server import _redact_cancelled_user_turns
 
     lanlan = "test-lanlan-redact-passthrough"
     reset_tracker_records(lanlan)
@@ -1303,40 +1249,48 @@ def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
     assert _redact_cancelled_user_turns(messages, lanlan) is messages
 
 
-def test_redact_consumes_one_quota_per_cancelled_record_from_tail(reset_tracker_records):
-    """同文本 user 消息在历史里出现多次时，每条 cancelled record 只消费
-    一次 redact 配额，且按从尾部向前消费——避免把更早的同文本（如已成功）
-    user turn 一起误伤。
-    """
+def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(reset_tracker_records):
+    """核心 bypass 规则：user msg 后面有且仅有 1 条 role='assistant' 的消息时，
+    它是"首次被 analyze"——即使 sig 命中 cancelled_sigs 也 bypass。这一次
+    bypass 后下次 analyze 时它的 trailing-assistant 计数会涨过 1，自动失去
+    豁免。"""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
         _task_tracker,
-        REDACTED_USER_TURN_MARKER,
     )
 
-    lanlan = "test-lanlan-quota"
+    lanlan = "test-lanlan-bypass-firsttime"
     reset_tracker_records(lanlan)
 
-    text = "打开天气网站并截图"
+    text = "打开天气"
     sig = _user_message_signature({"role": "user", "text": text})
     _task_tracker.record_completed(
-        lanlan, task_id="t1", method="browser_use",
+        lanlan, task_id="t-cancel", method="browser_use",
         desc=text, success=False, cancelled=True,
         trigger_user_fingerprint=sig,
     )
 
-    earlier = {"role": "user", "text": text, "timestamp": 100}
-    latest = {"role": "user", "text": text, "timestamp": 200}
-    out = _redact_cancelled_user_turns([earlier, latest], lanlan)
-    # 仅 1 个 cancel record → 1 个配额 → 倒序消费 → 最新那条被 redact，
-    # 早一条保留。
-    assert out == [earlier, {"role": "system", "content": REDACTED_USER_TURN_MARKER}]
+    # 用户 cancel 之后又发了同文本，messages 末尾就是这条新 user + 它的 reply
+    messages = [
+        {"role": "user", "text": text},                  # 0: 旧的被取消那条，后面 2 条 assistant
+        {"role": "assistant", "text": "正在打开"},        # 1
+        {"role": "user", "text": text},                  # 2: 新发的复述，后面 1 条 assistant
+        {"role": "assistant", "text": "再次打开中"},      # 3
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 旧 user (trailing=2) 被 redact，新 user (trailing=1) bypass 保留
+    from app.agent_server import REDACTED_USER_TURN_MARKER
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]
+    assert out[2] is messages[3]
+    assert len(out) == 3
 
 
-def test_redact_preserves_earlier_same_signature_successful_turn(reset_tracker_records):
-    """Codex P1 场景：早先一次"打开天气"已成功有完整 assistant 响应；
-    最近一次"打开天气"被用户取消。redact 不能把早先成功那段一并删掉。"""
+def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_records):
+    """t/t+1/t+2 连发同文本，单次 cancel → 用户继续聊别的（新 user+assistant）
+    → 三条同文本全部 redact（trailing assistant 都 >1），新 user msg
+    bypass。这是用户拍板的核心诉求："cancel 抵消之前所有相关请求"。"""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -1344,10 +1298,10 @@ def test_redact_preserves_earlier_same_signature_successful_turn(reset_tracker_r
         REDACTED_USER_TURN_MARKER,
     )
 
-    lanlan = "test-lanlan-earlier-same-sig"
+    lanlan = "test-lanlan-three-repeats"
     reset_tracker_records(lanlan)
 
-    text = "打开天气网站并截图"
+    text = "打开天气"
     sig = _user_message_signature({"role": "user", "text": text})
     _task_tracker.record_completed(
         lanlan, task_id="t-cancel", method="browser_use",
@@ -1356,23 +1310,66 @@ def test_redact_preserves_earlier_same_signature_successful_turn(reset_tracker_r
     )
 
     messages = [
-        {"role": "user", "text": text},                       # 0: 早先成功的同文本请求
-        {"role": "assistant", "text": "好的，截图已发"},        # 1: 早先成功响应
-        {"role": "tool", "content": "screenshot.png"},        # 2
-        {"role": "user", "text": "再聊别的"},                  # 3
-        {"role": "assistant", "text": "嗯"},                   # 4
-        {"role": "user", "text": text},                       # 5: 最近被取消的那条
-        {"role": "assistant", "text": "正在打开..."},          # 6: 被取消任务的进行中痕迹
+        {"role": "user", "text": text},                  # 0: trailing assistants = 2
+        {"role": "user", "text": text},                  # 1: trailing assistants = 2
+        {"role": "user", "text": text},                  # 2: trailing assistants = 2
+        {"role": "assistant", "text": "尝试打开"},        # 3: 第 1 条 assistant
+        {"role": "user", "text": "再聊别的"},             # 4: trailing assistants = 1 → bypass
+        {"role": "assistant", "text": "嗯"},              # 5: 第 2 条 assistant
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
-    # 早先成功段 + 中间无关消息原样保留
-    assert out[0] is messages[0]
-    assert out[1] is messages[1]
-    assert out[2] is messages[2]
-    assert out[3] is messages[3]
-    assert out[4] is messages[4]
-    # 最近取消那条 → marker，紧随其后的"正在打开..." 被吞
-    assert out[5] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    # 三条 X 都被 redact，"再聊别的" 保留
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    # "尝试打开" 紧跟最后一条 X 被吞
+    assert out[3] is messages[4]                          # "再聊别的"
+    assert out[4] is messages[5]                          # "嗯"
+    assert len(out) == 5
+
+
+def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_tracker_records):
+    """by-design 副作用：用户先后用同文本各发一次请求，第一次成功完成、
+    第二次被取消。redact 不区分历史里同 sig 的成功段和取消段——所有
+    trailing-assistant > 1 的同 sig user msg 都被屏蔽。早先成功段的
+    assistant 响应文本因此丢失，但 inject() 仍输出 [COMPLETED] 行让
+    analyzer 知道"那个任务做过且成功"，所以语义层面不算严重损失。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-earlier-success"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                  # 0: 早先成功的同文本
+        {"role": "assistant", "text": "好的，截图已发"},   # 1: 早先成功响应
+        {"role": "user", "text": "再聊别的"},             # 2
+        {"role": "assistant", "text": "嗯"},              # 3
+        {"role": "user", "text": text},                  # 4: 最近被取消那次
+        {"role": "assistant", "text": "正在打开"},        # 5: 取消任务的进行中痕迹
+        {"role": "user", "text": "继续"},                 # 6: 用户继续聊
+        {"role": "assistant", "text": "嗯"},              # 7
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 两条同 sig user msg 都 redact，各自之后的 assistant 段也吞掉
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]                          # "再聊别的" 保留
+    assert out[2] is messages[3]                          # 它的 assistant
+    assert out[3] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[4] is messages[6]                          # "继续"
+    assert out[5] is messages[7]
     assert len(out) == 6
 
 
@@ -1396,12 +1393,14 @@ def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_reco
         trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
     )
 
+    # cancelled user msg 后面有 2 条 assistant，所以 trailing=2 → redact
     messages = [
         {"role": "user", "text": text},
         {"role": "assistant", "text": "正在打开..."},
         {"role": "system", "content": "[session callback] something unrelated"},
         {"role": "tool", "content": "browser_screenshot.png"},
         {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
     ]
     out = _redact_cancelled_user_turns(messages, lanlan)
     assert out == [
@@ -1410,6 +1409,7 @@ def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_reco
         {"role": "system", "content": "[session callback] something unrelated"},
         # assistant + tool 被吞
         {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
     ]
 
 
@@ -1436,71 +1436,10 @@ def test_trim_protects_live_cancelled_records_against_cap_pressure():
         tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
 
     assert len(tracker._records[lanlan]) <= CAP
-    counts = tracker.get_cancelled_user_sig_counts(lanlan)
-    assert counts.get("protected-sig") == 1, (
-        f"cancelled record was evicted by _trim under cap pressure; got {counts}"
+    sigs = tracker.get_cancelled_user_sigs(lanlan)
+    assert "protected-sig" in sigs, (
+        f"cancelled record was evicted by _trim under cap pressure; got {sigs}"
     )
-
-
-def test_get_cancelled_user_sig_counts_dedupes_by_task_id():
-    """一次 user cancel 在 tracker 里会产生两条 cancelled record（同步入口
-    一条 + dispatch coroutine 的 CancelledError 路径一条）。quota 必须按
-    task_id 去重，否则一条 cancel 会让 redact 多吞一条同 sig user turn。"""
-    from app.agent_server import AgentTaskTracker
-
-    tracker = AgentTaskTracker()
-    lanlan = "test-lanlan-dedup-quota"
-
-    # 模拟 cancel_task 同步路径 + dispatch coroutine CancelledError 路径
-    # 都为同一个 task_id 写一条 cancelled record。
-    for _ in range(2):
-        tracker.record_completed(
-            lanlan, task_id="t-cancel-once", method="browser_use",
-            desc="打开天气", success=False, cancelled=True,
-            trigger_user_fingerprint="sig-x",
-        )
-
-    counts = tracker.get_cancelled_user_sig_counts(lanlan)
-    assert counts == {"sig-x": 1}, (
-        f"one user cancel should produce quota 1 regardless of duplicate "
-        f"records; got {counts}"
-    )
-
-
-def test_redact_does_not_eat_earlier_turn_when_dispatch_double_records_cancel(reset_tracker_records):
-    """端到端：模拟 cancel_task + dispatch coroutine 各写一条 cancel record，
-    redact 只消费 1 个配额 → 早先的同文本成功段保留。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-double-record"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气网站"
-    sig = _user_message_signature({"role": "user", "text": text})
-
-    for _ in range(2):  # 双重 record
-        _task_tracker.record_completed(
-            lanlan, task_id="t-cancel-once", method="browser_use",
-            desc=text, success=False, cancelled=True,
-            trigger_user_fingerprint=sig,
-        )
-
-    messages = [
-        {"role": "user", "text": text},                    # 0: 早先成功的同文本
-        {"role": "assistant", "text": "好的"},              # 1: 早先成功响应
-        {"role": "user", "text": text},                    # 2: 这次被取消
-        {"role": "assistant", "text": "正在打开..."},       # 3
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    assert out[0] is messages[0]
-    assert out[1] is messages[1]
-    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert len(out) == 3  # 早先成功保留，最近取消那段被吞
 
 
 def test_user_message_signature_distinguishes_senders():
@@ -1527,7 +1466,7 @@ def test_user_message_signature_distinguishes_senders():
 
 def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records):
     """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
-    redact 应只动 A 的请求，不应误吞 B 的。"""
+    redact 应只动 A 的请求（sig 不同），不应误吞 B 的。"""
     from app.agent_server import (
         _user_message_signature,
         _redact_cancelled_user_turns,
@@ -1547,6 +1486,7 @@ def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records)
         trigger_user_fingerprint=_user_message_signature(a_msg),
     )
 
+    # A 的 user msg trailing=2（被 redact），B 的 trailing=1（首次 bypass）
     messages = [
         a_msg,
         {"role": "assistant", "text": "正在打开"},
@@ -1586,41 +1526,6 @@ def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerpr
     # 非 user 消息：两个函数都不参与
     assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
     assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
-
-
-def test_redact_multiple_cancelled_records_consume_separate_quotas(reset_tracker_records):
-    """两次取消同文本任务 → 配额 = 2 → 倒序消费 → 最近两条同文本 user 都
-    被 redact；再早一条仍保留。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-quota-2"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气网站并截图"
-    sig = _user_message_signature({"role": "user", "text": text})
-    for tid in ("t1", "t2"):
-        _task_tracker.record_completed(
-            lanlan, task_id=tid, method="browser_use",
-            desc=text, success=False, cancelled=True,
-            trigger_user_fingerprint=sig,
-        )
-
-    msgs = [
-        {"role": "user", "text": text, "timestamp": 100},
-        {"role": "user", "text": text, "timestamp": 200},
-        {"role": "user", "text": text, "timestamp": 300},
-    ]
-    out = _redact_cancelled_user_turns(msgs, lanlan)
-    assert out == [
-        msgs[0],
-        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
-        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
-    ]
 
 
 def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records):
