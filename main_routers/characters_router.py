@@ -679,8 +679,8 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
     return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
-def _get_elevenlabs_base_url(config_manager) -> str:
-    core_config = config_manager.get_core_config()
+async def _get_elevenlabs_base_url(config_manager) -> str:
+    core_config = await config_manager.aget_core_config()
     return (
         core_config.get('ELEVENLABS_BASE_URL')
         or core_config.get('elevenlabsBaseUrl')
@@ -742,8 +742,8 @@ async def _elevenlabs_synthesize_preview(config_manager, voice_id: str, text: st
     if not raw_voice_id:
         return b'', 'TTS_VOICE_ID_MISSING'
 
-    core_config = config_manager.get_core_config()
-    base_url = _get_elevenlabs_base_url(config_manager)
+    core_config = await config_manager.aget_core_config()
+    base_url = await _get_elevenlabs_base_url(config_manager)
     model_id = (
         core_config.get('ELEVENLABS_MODEL')
         or core_config.get('elevenlabsModel')
@@ -3928,7 +3928,7 @@ async def voice_clone(
                 'code': 'ELEVENLABS_API_KEY_MISSING',
                 'message': '未配置 ElevenLabs API Key，请先在设置中填写'
             }, status_code=400)
-        base_url = _get_elevenlabs_base_url(_config_manager)
+        base_url = await _get_elevenlabs_base_url(_config_manager)
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
 
@@ -4196,7 +4196,7 @@ async def voice_clone_direct(request: Request):
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
     elif provider == 'elevenlabs':
-        base_url = _get_elevenlabs_base_url(_config_manager)
+        base_url = await _get_elevenlabs_base_url(_config_manager)
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
     else:  # cosyvoice
