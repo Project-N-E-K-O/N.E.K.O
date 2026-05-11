@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass, field
 import math
 from typing import Any
 
-from .mode_manager import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES, normalize_mode
+from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
+from .mode_manager import normalize_mode
 
 
 PLUGIN_ID = "study_companion"

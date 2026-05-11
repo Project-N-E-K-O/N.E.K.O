@@ -29,10 +29,6 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
 
-function normalizeMode(mode?: string): StudyMode {
-  return mode === 'interactive' || mode === 'teaching' ? mode : 'companion';
-}
-
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
@@ -88,7 +84,6 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
   const created = await createResp.json();
   const runId = created.run_id || created.id;
   if (!runId) {
-    console.error('study_companion run create response missing run id', created);
     throw new Error('run_id_missing');
   }
   let failureCount = 0;
@@ -100,7 +95,6 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}, s
     const runResp = await fetch(`/runs/${runId}`, { signal });
     if (!runResp.ok) {
       failureCount += 1;
-      console.warn('study_companion run polling failed', { runId, status: runResp.status });
       if (failureCount >= 3) {
         throw new Error(`Run poll failed: HTTP ${runResp.status}`);
       }
@@ -128,16 +122,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
-  const currentMode = normalizeMode(status.active_mode || status.mode || 'companion');
+  const currentMode = String(status.active_mode || status.mode || 'companion');
 
-  function modeLabel(mode: StudyMode) {
-    const entry = MODE_ORDER.find((candidate) => candidate.id === mode) || MODE_ORDER[0];
-    return t(entry.labelKey, entry.fallback);
+  function modeLabel(mode: string) {
+    const entry = MODE_ORDER.find((candidate) => candidate.id === mode);
+    return entry ? t(entry.labelKey, entry.fallback) : String(mode || MODE_ORDER[0].id);
   }
 
   function setStatusLine(data: StudyStatus) {
-    const modeValue = normalizeMode(data.active_mode || data.mode || 'companion');
-    setStatus({ ...data, active_mode: modeValue });
+    setStatus({ ...data, active_mode: String(data.active_mode || data.mode || 'companion') });
   }
 
   async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {

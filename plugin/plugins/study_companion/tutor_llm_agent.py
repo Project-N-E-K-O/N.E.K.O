@@ -8,7 +8,8 @@ from typing import Any
 from plugin.sdk.plugin import SdkError
 
 from .llm_prompts import build_concept_explain_messages
-from .mode_manager import MODE_COMPANION, MODE_TEACHING, build_transition_phrase, normalize_mode
+from .constants import MODE_COMPANION, MODE_TEACHING
+from .mode_manager import build_transition_phrase, normalize_mode
 from .models import MODE_CONCEPT_EXPLAIN, StudyConfig, TutorReply, utc_now_iso
 
 
@@ -95,6 +96,11 @@ class TutorLLMAgent:
                 created_at=utc_now_iso(),
             )
         selected_mode = normalize_mode(mode)
+        teaching_prefix = (
+            build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome="changed")
+            if selected_mode == MODE_TEACHING
+            else ""
+        )
         messages = build_concept_explain_messages(
             text=normalized,
             language=self._config.language,
@@ -106,26 +112,23 @@ class TutorLLMAgent:
             reply = content.strip()
             if not reply:
                 raise SdkError("empty model response")
+            if teaching_prefix and not reply.startswith(teaching_prefix):
+                reply = f"{teaching_prefix}\n\n{reply}"
             return TutorReply(
                 operation=MODE_CONCEPT_EXPLAIN,
                 input_text=normalized,
-                reply=(
-                    f"{build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed')}\n\n{reply}"
-                    if selected_mode == MODE_TEACHING and not reply.startswith(build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed'))
-                    else reply
-                ),
+                reply=reply,
                 degraded=False,
                 created_at=utc_now_iso(),
             )
         except Exception as exc:
+            fallback_reply = self._fallback_explanation(normalized)
+            if teaching_prefix and not fallback_reply.startswith(teaching_prefix):
+                fallback_reply = f"{teaching_prefix}\n\n{fallback_reply}"
             return TutorReply(
                 operation=MODE_CONCEPT_EXPLAIN,
                 input_text=normalized,
-                reply=(
-                    f"{build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome='changed')}\n\n{self._fallback_explanation(normalized)}"
-                    if selected_mode == MODE_TEACHING
-                    else self._fallback_explanation(normalized)
-                ),
+                reply=fallback_reply,
                 degraded=True,
                 diagnostic=str(exc),
                 created_at=utc_now_iso(),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .mode_manager import MODE_COMPANION, normalize_mode
+from .constants import MODE_COMPANION
+from .mode_manager import normalize_mode
 from .models import STATUS_STOPPED, StudyState
 
 

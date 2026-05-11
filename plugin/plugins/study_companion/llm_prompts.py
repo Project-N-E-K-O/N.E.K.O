@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .mode_manager import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING, normalize_mode
+from .constants import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING
+from .mode_manager import normalize_mode
 
 CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
     "You are a concise study tutor. Explain the concept clearly, "

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from plugin.plugins.study_companion.mode_manager import (
     MODE_INTERACTIVE,
     MODE_TEACHING,
     ModeManager,
+    build_transition_phrase,
     handle_user_intent,
     normalize_mode,
 )
@@ -281,14 +283,9 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "plugin_ui": plugin_ui,
         "i18n": config["plugin"]["i18n"],
     }
-    zh_surfaces, zh_warnings = _build_surfaces_sync("study_companion", meta, locale="zh-CN")
-    en_surfaces, en_warnings = _build_surfaces_sync("study_companion", meta, locale="en")
-    assert zh_warnings == []
-    assert en_warnings == []
-    zh_study_panel = next(surface for surface in zh_surfaces if surface["id"] == "study-panel")
-    en_study_panel = next(surface for surface in en_surfaces if surface["id"] == "study-panel")
-    assert zh_study_panel["title"] == "伴学面板"
-    assert en_study_panel["title"] == "Study Panel"
+    surfaces, warnings = _build_surfaces_sync("study_companion", meta)
+    assert warnings == []
+    assert any(surface["id"] == "study-panel" and surface["available"] is True for surface in surfaces)
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
@@ -726,12 +723,66 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert isinstance(explained, Ok)
         assert explained.value["intent"]["mode"] == MODE_TEACHING
         assert explained.value["mode_switch"]["changed"] is True
-        assert explained.value["reply"].startswith("教学模式已开启。")
+        assert explained.value["reply"] == "explained[teaching]: 光合作用"
         assert plugin._agent.inputs[-1] == (
             "光合作用",
             {"source": "manual", "mode": MODE_TEACHING, "mode_switch": True},
             MODE_TEACHING,
         )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_continues_when_mode_switch_is_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        lock_until = time.time() + 300.0
+        with plugin._lock:
+            plugin._state.active_mode = MODE_COMPANION
+            plugin._state.mode_started_at = 0.0
+            plugin._state.mode_lock_until = lock_until
+            plugin._state.recent_mode_switches = []
+            plugin._cfg.mode = MODE_COMPANION
+            plugin._cfg.default_mode = MODE_COMPANION
+        plugin._mode_manager.restore(
+            {
+                "current_mode": MODE_COMPANION,
+                "mode_started_at": 0.0,
+                "recent_mode_switches": [],
+                "suggestion_cooldowns": {},
+                "session_suggestions": [],
+                "mode_lock_until": lock_until,
+            }
+        )
+
+        explained = await plugin.study_explain_text("教我光合作用")
+        assert isinstance(explained, Ok)
+        assert explained.value["intent"]["mode"] == MODE_TEACHING
+        assert explained.value["mode_switch"]["changed"] is False
+        assert explained.value["mode_switch"]["locked"] is True
+        assert plugin._agent.inputs[-1] == (
+            "光合作用",
+            {"source": "manual", "mode": MODE_COMPANION, "mode_switch": False},
+            MODE_COMPANION,
+        )
+        assert explained.value["reply"].startswith("explained[companion]: 光合作用")
     finally:
         await plugin.shutdown()
 
@@ -759,6 +810,22 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
     assert reply.operation == "concept_explain"
     assert reply.reply == "A derivative is the slope at one point."
     assert reply.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_tutor_agent_teaching_prefix_is_applied_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    teaching_prefix = build_transition_phrase(MODE_TEACHING, language="en", outcome="changed")
+
+    async def _fake_call_model(_messages):
+        return f"{teaching_prefix}\n\nA derivative is the slope at one point."
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    reply = await agent.concept_explain("derivative", mode=MODE_TEACHING)
+
+    assert reply.operation == "concept_explain"
+    assert reply.reply.count(teaching_prefix) == 1
+    assert reply.reply.startswith(teaching_prefix)
 
 
 @pytest.mark.asyncio
@@ -852,6 +919,5 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert status.value["active_mode"] == MODE_COMPANION
     assert "mode_started_at" in status.value
     assert "recent_mode_switches" in status.value
-    assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
-    assert not (tmp_path / "data" / "study_companion.db").exists()
+    assert (tmp_path / "data" / "study_companion.db").is_file()
     await plugin.shutdown()

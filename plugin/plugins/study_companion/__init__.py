@@ -6,11 +6,9 @@ from typing import Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
+from .constants import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING
 from .models import (
     MODE_CONCEPT_EXPLAIN,
-    MODE_COMPANION,
-    MODE_INTERACTIVE,
-    MODE_TEACHING,
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
@@ -304,6 +302,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         raw_text = str(text or "").strip()
+        # Phase 1: detect an explicit mode intent and switch first when present.
         intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
         active_mode = self._state.active_mode
         mode_switch: dict[str, Any] = {}
@@ -325,19 +324,17 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "degraded": False,
                     }
                 )
+        # Phase 2: resolve the text to explain.
         source_text = str(intent.get("remaining_text") or raw_text).strip()
         if not source_text:
             with self._lock:
                 source_text = self._state.last_ocr_text
+        # Phase 3: explain with the active mode selected above.
         reply = await self._agent.concept_explain(
             source_text,
             mode=active_mode,
             context={"source": "manual" if raw_text else "ocr_snapshot", "mode": active_mode, "mode_switch": bool(mode_switch.get("changed"))},
         )
-        if active_mode == MODE_TEACHING:
-            teaching_prefix = build_transition_phrase(MODE_TEACHING, language=self._cfg.language, outcome="changed")
-            if not reply.reply.startswith(teaching_prefix):
-                reply.reply = f"{teaching_prefix}\n\n{reply.reply}"
         with self._lock:
             self._state.last_reply = reply.reply
             self._state.last_reply_at = reply.created_at
