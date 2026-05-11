@@ -18,7 +18,7 @@ class TutorLLMAgent:
         self._logger = logger
         self._config = config
         self._llm_cache: dict[tuple[Any, ...], Any] = {}
-        self._lock: asyncio.Lock | None = None
+        self._llm_locks: dict[tuple[Any, ...], asyncio.Lock] = {}
 
     def update_config(self, config: StudyConfig) -> None:
         llms = list(self._llm_cache.values())
@@ -26,10 +26,12 @@ class TutorLLMAgent:
             self._close_cached_llm(llm)
         self._config = config
         self._llm_cache.clear()
+        self._llm_locks.clear()
 
     async def shutdown(self) -> None:
         llms = list(self._llm_cache.values())
         self._llm_cache.clear()
+        self._llm_locks.clear()
         for llm in llms:
             await self._close_cached_llm_async(llm)
 
@@ -152,20 +154,24 @@ class TutorLLMAgent:
             self._config.llm_temperature,
             self._config.llm_max_tokens,
         )
-        if self._lock is None:
-            self._lock = asyncio.Lock()
-        async with self._lock:
+        llm = self._llm_cache.get(key)
+        if llm is None:
+            lock = self._llm_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                llm = self._llm_cache.get(key)
+                if llm is None:
+                    llm = create_chat_llm(
+                        model=model,
+                        base_url=base_url,
+                        api_key=api_key,
+                        temperature=float(self._config.llm_temperature),
+                        max_completion_tokens=int(self._config.llm_max_tokens),
+                        timeout=float(self._config.llm_call_timeout_seconds) + 0.5,
+                    )
+                    self._llm_cache[key] = llm
             llm = self._llm_cache.get(key)
-            if llm is None:
-                llm = create_chat_llm(
-                    model=model,
-                    base_url=base_url,
-                    api_key=api_key,
-                    temperature=float(self._config.llm_temperature),
-                    max_completion_tokens=int(self._config.llm_max_tokens),
-                    timeout=float(self._config.llm_call_timeout_seconds) + 0.5,
-                )
-                self._llm_cache[key] = llm
+        if llm is None:
+            raise SdkError("failed to initialize summary model")
         set_call_type("summary")
         ainvoke = getattr(llm, "ainvoke", None)
         if callable(ainvoke):

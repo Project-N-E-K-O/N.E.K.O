@@ -306,7 +306,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
         active_mode = self._state.active_mode
         mode_switch: dict[str, Any] = {}
-        if intent.get("matched"):
+        if intent.get("matched") and intent.get("kind") == "mode_switch":
             try:
                 mode_switch = await self._apply_mode_switch(str(intent.get("mode") or MODE_COMPANION), f"intent:{intent.get('keyword') or 'text'}", language=self._cfg.language)
                 active_mode = str(mode_switch.get("new_mode") or active_mode)
