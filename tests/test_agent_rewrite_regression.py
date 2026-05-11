@@ -1538,7 +1538,6 @@ def test_cancel_task_records_trigger_signature_for_redact():
     """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
     _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
     触发的 user turn。"""
-    import ast
     source = Path("app/agent_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
