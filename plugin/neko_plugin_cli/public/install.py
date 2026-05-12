@@ -1,13 +1,10 @@
-"""Stable public archive helper exports."""
+"""Stable public package extraction exports."""
 
 from __future__ import annotations
 
 from ..core.archive_utils import (
     collect_plugin_folders,
-    collect_profile_names,
     compute_archive_payload_hash,
-    load_toml_from_bytes,
-    read_archive_toml,
     read_manifest,
     read_metadata,
     safe_archive_path,
@@ -15,16 +12,19 @@ from ..core.archive_utils import (
     validate_plugin_layout,
     verify_payload_hash,
 )
+from ..core.models import InstalledPlugin, InstallResult
+from ..core.install import PackageInstaller, install_package
 
 __all__ = [
+    "PackageInstaller",
+    "InstallResult",
+    "InstalledPlugin",
     "collect_plugin_folders",
-    "collect_profile_names",
     "compute_archive_payload_hash",
-    "load_toml_from_bytes",
-    "read_archive_toml",
     "read_manifest",
     "read_metadata",
     "safe_archive_path",
+    "install_package",
     "validate_package_type",
     "validate_plugin_layout",
     "verify_payload_hash",

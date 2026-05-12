@@ -1,7 +1,7 @@
 [plugin]
 id = "plugin_with_rules"
 name = "Plugin With Rules"
-description = "Fixture plugin with realistic pack rules and runtime config."
+description = "Fixture plugin with realistic build rules and runtime config."
 version = "1.4.2"
 type = "plugin"
 entry = "main:Plugin"
