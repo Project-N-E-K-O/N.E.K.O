@@ -426,18 +426,21 @@ class CompressedRecentHistoryManager:
         # 占位符（与同 prompt 里既有的 ``%s`` 共存：``%s`` 走 Python 格式化，
         # ``{MASTER_NAME}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
         # 看到 "%s 和 ai 的对话"+"用户的负面反馈" 时困惑（feedback_no_dehumanizing_terms）。
+        # ⚠️ master_name 替换**最后**做：它是 user-controlled，含 ``%`` 会让先前
+        # 的 ``%`` formatting 把它当格式符崩溃；含 ``%s`` 会被先前的
+        # ``.replace("%s", ...)`` 二次替换。先做模板自身的 ``%s`` 替换 / ``%``
+        # formatting，再注入实名（codex P2）。
         master_name = self.name_mapping['human']
         if not detailed:
             prompt = (
                 get_recent_history_manager_prompt(lang)
-                .replace("{MASTER_NAME}", master_name)
                 .replace("%s", messages_text)
+                .replace("{MASTER_NAME}", master_name)
             )
         else:
             prompt = (
-                get_detailed_recent_history_manager_prompt(lang)
+                (get_detailed_recent_history_manager_prompt(lang) % messages_text)
                 .replace("{MASTER_NAME}", master_name)
-                % messages_text
             )
 
         # Past block 时间衰减：距上次"实际更新 past block"超过
@@ -546,9 +549,9 @@ class CompressedRecentHistoryManager:
                 llm = self._get_llm()
                 try:
                     response_content = (await llm.ainvoke(
-                        get_further_summarize_prompt(get_global_language())
-                        .replace("{MASTER_NAME}", self.name_mapping['human'])
-                        % initial_summary,
+                        # codex P2：先 % 再 .replace，否则 master_name 含 % 会崩
+                        (get_further_summarize_prompt(get_global_language()) % initial_summary)
+                        .replace("{MASTER_NAME}", self.name_mapping['human']),
                         max_completion_tokens=stage2_cap,
                     )).content
                 finally:
@@ -712,9 +715,13 @@ class CompressedRecentHistoryManager:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
                 prompt = (
-                    get_history_review_prompt(get_global_language())
+                    # codex P2：先 % formatting 再 .replace，否则 master_name 含 %
+                    # 会让 5-arg `% (...)` 把它当格式符崩溃
+                    (
+                        get_history_review_prompt(get_global_language())
+                        % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                    )
                     .replace("{MASTER_NAME}", self.name_mapping['human'])
-                    % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 )
                 review_llm = self._get_review_llm()
                 try:
