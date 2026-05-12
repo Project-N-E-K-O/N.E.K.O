@@ -433,13 +433,19 @@ def derive_tone(
 
 # ── Default skip_probability for gaming subtypes ───────────────────
 #
-# Source: design doc + user direction (concise: competitive, immersive
-# horror are the only two non-zero defaults; casual/immersive_rpg/varied
-# all stay at 0). User can shift via ``skip_probability_overrides``
-# in preferences. Keys are gaming-only; non-gaming states always have
-# default 0 (skip is not a propensity-strength choice for non-game).
+# Source: design doc + user direction. Only immersive_horror keeps a
+# non-zero default — atmospheric tension genuinely breaks on
+# interruption, so a probabilistic full-skip is worth it. Competitive
+# games used to have 0.3 here too but produced negative feedback (the
+# AI vanishing during the user's longest gaming sessions defeats the
+# companion product thesis); the quietness for restricted_screen_only
+# gaming now comes from the frontend-scheduler / backend-jitter path
+# instead (see proactive_chat in main_routers/system_router.py).
+# Casual / immersive_rpg / varied / competitive all stay at 0. User
+# can shift via ``skip_probability_overrides`` in preferences. Keys
+# are gaming-only; non-gaming states always have default 0 (skip is
+# not a propensity-strength choice for non-game).
 _DEFAULT_GAMING_SKIP_PROB: dict[tuple[GameIntensity, str | None], float] = {
-    ('competitive', None):     0.3,   # Any competitive game (genre doesn't refine further)
     ('immersive',   'horror'): 0.3,   # Atmospheric tension — interruption breaks immersion
     ('immersive',   None):     0.0,   # RPG / story — propensity already restricts to screen
     ('casual',      None):     0.0,   # Pause-anytime

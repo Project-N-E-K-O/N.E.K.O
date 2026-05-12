@@ -450,8 +450,10 @@ def test_skip_probability_defaults():
     assert derive_skip_probability('chatting') == 0.0
     assert derive_skip_probability('idle') == 0.0
 
-    # Gaming defaults
-    assert derive_skip_probability('gaming', game_intensity='competitive') == pytest.approx(0.3)
+    # Gaming defaults — competitive intentionally dropped to 0 (was 0.3).
+    # 屏幕专注态的安静感现在由 /proactive_chat 的 base-interval×1.25 + 后端
+    # 抖动机制承担，skip_probability 只留 immersive_horror 这一例外。
+    assert derive_skip_probability('gaming', game_intensity='competitive') == 0.0
     assert derive_skip_probability(
         'gaming', game_intensity='immersive', game_genre='horror',
     ) == pytest.approx(0.3)

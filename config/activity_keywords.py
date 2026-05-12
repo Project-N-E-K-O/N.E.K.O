@@ -298,10 +298,13 @@ OWN_APP_PROCESS_NAMES: list[str] = [
 #
 # Tagged games drive propensity / skip_probability / tone derivation:
 #
-#   competitive            → propensity=restricted_screen_only, skip 0.3,
+#   competitive            → propensity=restricted_screen_only, skip 0.0,
 #                            tone=terse  (LoL team fight, CS round, etc.)
+#                            screen-only 的安静感由 /proactive_chat 的
+#                            base×1.25 + 后端抖动机制承担，skip 不再叠加。
 #   immersive horror       → propensity=restricted_screen_only, skip 0.3,
-#                            tone=hushed (silent hill, RE2, etc.)
+#                            tone=hushed (silent hill, RE2, etc.) —
+#                            氛围比信息密度更怕打扰，保留整轮 skip
 #   immersive (other)      → propensity=restricted_screen_only, skip 0.0,
 #                            tone=mellow (RPG, story-driven)
 #   casual                 → propensity=open, skip 0.0, tone=playful

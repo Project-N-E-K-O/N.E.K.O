@@ -481,6 +481,14 @@
         //
         // 单调性: 固定 M1 使 delay(T) ≈ base + T×(M1-1)，
         //         ∂delay/∂base = 1 > 0，base 越高期望 delay 越高。
+        //
+        // ── 固定间隔分支 (proactiveFixedScheduleMode) ──
+        // 当后端 propensity=restricted_screen_only（屏幕专注态：gaming /
+        // focused_work）时，常规退避会让搭话间隔指数级增长，跟陪伴产品
+        // 命题冲突。前端跳过 tier backoff，按 baseInterval 等间隔触发，
+        // 后端在 /proactive_chat 入口注入 [0, 0.5×base] sleep 把实际间隔
+        // 抹成 [base, 1.5×base] 均匀分布。详见 main_routers/system_router.py
+        // 的 restricted_screen_only 处理段。
 
         var baseInterval = S.proactiveChatInterval;
         var BACKOFF_TARGET = 120;
@@ -500,10 +508,18 @@
         var cap1 = caps.cap1;
         var cap2 = caps.cap2;
 
+        var fixedMode = !!S.proactiveFixedScheduleMode;
         var level = S.proactiveChatBackoffLevel;
         var delay;
 
-        if (level < cap1) {
+        if (fixedMode) {
+            // 屏幕专注态：跳过 tier backoff，重置 level，按 baseInterval 等间隔
+            // 触发。抖动完全交给后端（[0, 0.5×base] sleep），前端不做乘性抖动，
+            // 否则两层叠加会让方差大于设计目标。
+            S.proactiveChatBackoffLevel = 0;
+            level = 0;
+            delay = baseInterval * 1000;
+        } else if (level < cap1) {
             // Tier 1: base × M1^level，确定性爬升
             delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level);
         } else {
@@ -514,7 +530,10 @@
         }
 
         // 对 delay 做 ±12% 乘性随机抖动，避免节奏过于机械
-        delay *= 1 + (Math.random() - 0.5) * 0.24;
+        // 固定模式下抖动由后端注入，前端不再叠加
+        if (!fixedMode) {
+            delay *= 1 + (Math.random() - 0.5) * 0.24;
+        }
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -527,7 +546,11 @@
         }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        if (fixedMode) {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（屏幕专注态固定间隔，base=' + baseInterval + 's，level 已重置，后端注入抖动，启动延迟：' + (startupDelay / 1000) + '秒）');
+        } else {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        }
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -561,7 +584,10 @@
             //   tier 1 (level < cap1): 每次必升 — 确定性爬升阶段
             //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
             //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
-            if (triggered) {
+            // 屏幕专注态固定模式下不动 level（由 next_schedule_fixed_mode
+            // 反向通知后续 reset），让用户离开屏幕态回到常规态时 backoff
+            // 不会带着旧值。
+            if (triggered && !S.proactiveFixedScheduleMode) {
                 var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
                 var currentCap1 = currentCaps.cap1;
                 var currentCap2 = currentCaps.cap2;
@@ -756,7 +782,11 @@
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage
+                i18n_language: i18nLanguage,
+                // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
+                // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
+                // 时忽略此字段。
+                base_interval_seconds: S.proactiveChatInterval
             };
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
@@ -916,6 +946,16 @@
             requestSent = true;
 
             var result = await response.json();
+
+            // 同步下一轮调度模式：后端在 propensity=restricted_screen_only
+            // 时会把这个字段置 true，前端 scheduleProactiveChat 据此跳过
+            // tier backoff、按 baseInterval 等间隔触发。字段缺席时保守
+            // 走常规退避（与 200 之前的旧行为一致）。
+            if (typeof result.next_schedule_fixed_mode === 'boolean') {
+                S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
+            } else {
+                S.proactiveFixedScheduleMode = false;
+            }
 
             if (result.success) {
                 if (result.action === 'chat') {
