@@ -4202,6 +4202,64 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 // ===== 角色卡详情面板 =====
 
 let _catgirlPanelOpen = false;
+const CATGIRL_PANEL_STEAM_COMPACT_WIDTH = 1280;
+let _catgirlPanelSteamLayoutRaf = null;
+
+function isCatgirlPanelSteamCompactWindow() {
+    const width = window.innerWidth || document.documentElement.clientWidth || 0;
+    return width > 0 && width < CATGIRL_PANEL_STEAM_COMPACT_WIDTH;
+}
+
+function refreshSteamPreviewAfterPanelLayoutChange() {
+    requestAnimationFrame(function () {
+        if (typeof buildPreviewRing === 'function') buildPreviewRing();
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            const l2dContainer = document.getElementById('live2d-preview-content');
+            if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                if (live2dPreviewManager.currentModel) {
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                }
+            }
+        }
+        syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+        syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
+    });
+}
+
+function updateCatgirlPanelSteamCardLayout(wrapper) {
+    const panel = wrapper || document.getElementById('catgirl-panel-wrapper');
+    if (!panel) return;
+
+    const activeTab = panel.querySelector('.panel-tab.active');
+    const shouldHideCardFace = !!(
+        activeTab
+        && activeTab.dataset.tab === 'steam'
+        && isCatgirlPanelSteamCompactWindow()
+    );
+    const wasHidden = panel.classList.contains('steam-compact-card-hidden');
+    panel.classList.toggle('steam-compact-card-hidden', shouldHideCardFace);
+    const indicator = panel.querySelector('.panel-tabs-indicator');
+    if (activeTab && indicator) {
+        indicator.style.left = activeTab.offsetLeft + 'px';
+        indicator.style.width = activeTab.offsetWidth + 'px';
+    }
+    const changed = wasHidden !== shouldHideCardFace;
+    if (changed) {
+        setTimeout(refreshSteamPreviewAfterPanelLayoutChange, 430);
+    }
+}
+
+function scheduleCatgirlPanelSteamCardLayoutUpdate() {
+    if (_catgirlPanelSteamLayoutRaf) cancelAnimationFrame(_catgirlPanelSteamLayoutRaf);
+    _catgirlPanelSteamLayoutRaf = requestAnimationFrame(function () {
+        _catgirlPanelSteamLayoutRaf = null;
+        updateCatgirlPanelSteamCardLayout();
+    });
+}
+
+window.addEventListener('resize', scheduleCatgirlPanelSteamCardLayoutUpdate);
 
 function openCatgirlPanel(card, originEl) {
     if (_catgirlPanelOpen) return;
@@ -4285,10 +4343,15 @@ function openCatgirlPanel(card, originEl) {
         openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
 
-    // 点击卡面主体或右侧按钮打开角色卡制作页面
-    cardImage.addEventListener('click', (event) => {
+    const openCardModelManager = async () => {
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        await openModelManagerForCharacterForm(form, name);
+    };
+
+    // 点击卡面主体打开模型管理；编辑卡面按钮仍进入角色卡制作页面。
+    cardImage.addEventListener('click', async (event) => {
         if (event.target.closest('.catgirl-panel-card-action')) return;
-        openCardMaker();
+        await openCardModelManager();
     });
     editCardFaceAction.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -4296,8 +4359,7 @@ function openCatgirlPanel(card, originEl) {
     });
     modelSettingsAction.addEventListener('click', async (event) => {
         event.stopPropagation();
-        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        await openModelManagerForCharacterForm(form, name);
+        await openCardModelManager();
     });
 
     // 监听角色卡制作页面的保存消息
@@ -4475,9 +4537,11 @@ function openCatgirlPanel(card, originEl) {
             '/static/icons/star.png',
             '/static/icons/paw_ui.png'
         ];
-        const spawnCurtainTransition = function (targetTabName, reverse) {
+        const spawnCurtainTransition = function (targetTabName, reverse, fullPanel) {
             const curtain = document.createElement('div');
-            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
+            curtain.className = 'panel-transition-curtain'
+                + (reverse ? ' curtain-reverse' : '')
+                + (fullPanel ? ' full-panel' : '');
 
             // 幕布色块
             const sweep = document.createElement('div');
@@ -4517,7 +4581,8 @@ function openCatgirlPanel(card, originEl) {
             centerIcon.style.animationDelay = '0.18s';
             curtain.appendChild(centerIcon);
 
-            rightSection.appendChild(curtain);
+            const curtainHost = fullPanel ? wrapper : rightSection;
+            curtainHost.appendChild(curtain);
             setTimeout(function () { curtain.remove(); }, 900);
         };
 
@@ -4541,11 +4606,17 @@ function openCatgirlPanel(card, originEl) {
                 const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
                 const targetIdx = allTabs.indexOf(this);
                 const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+                const needsFullPanelCurtain = wrapper.classList.contains('steam-compact-card-hidden')
+                    || (targetTab === 'steam' && isCatgirlPanelSteamCompactWindow());
 
                 _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
                 updateIndicator();
+
+                // 小窗口 Steam 切换会联动左侧卡面，幕布先覆盖整个面板再更新布局。
+                spawnCurtainTransition(targetTab, reverseDirection, needsFullPanelCurtain);
+                updateCatgirlPanelSteamCardLayout(wrapper);
 
                 // 根据当前激活状态切换设定齿轮图标 on/off
                 if (settingsIcon) {
@@ -4553,9 +4624,6 @@ function openCatgirlPanel(card, originEl) {
                         ? '/static/icons/set_on.png'
                         : '/static/icons/set_off.png';
                 }
-
-                // 播放幕布转场
-                spawnCurtainTransition(targetTab, reverseDirection);
 
                 // 退出当前页 — absolute定位防止撑高容器
                 if (currentActive) {
@@ -4619,6 +4687,7 @@ function openCatgirlPanel(card, originEl) {
 
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
+    updateCatgirlPanelSteamCardLayout(wrapper);
 
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
@@ -5268,10 +5337,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.overflow = 'visible';
     voiceRow.style.position = 'relative';
     voiceRow.style.alignItems = 'center';
-    voiceRow.style.flex = '0 0 auto';
+    voiceRow.style.flex = '1 1 360px';
     voiceRow.style.width = 'auto';
-    voiceRow.style.minWidth = '200px';
-    voiceRow.style.maxWidth = '300px';
+    voiceRow.style.minWidth = '240px';
+    voiceRow.style.maxWidth = '560px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
     voiceSelect.className = 'form-control voice-native-select';
@@ -5558,6 +5627,29 @@ function _panelAttachTextareaAutoResize(textarea) {
     resize();
 }
 
+function _panelGetNativeVoiceProviderLabel(nativeEntries) {
+    if (!Array.isArray(nativeEntries)) return '';
+    for (const [, voiceData] of nativeEntries) {
+        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        if (label) return String(label);
+    }
+    return '';
+}
+
+function _panelFormatNativeVoiceGroupLabel(nativeEntries) {
+    const providerLabel = _panelGetNativeVoiceProviderLabel(nativeEntries);
+    if (providerLabel) {
+        return window.t
+            ? window.t('character.nativePresetVoices', { provider: providerLabel })
+            : providerLabel + ' 原生音色';
+    }
+    return window.t ? window.t('character.nativePresetVoicesGeneric') : '原生预设音色';
+}
+
+function _panelNormalizeVoiceGroupLabel(label) {
+    return String(label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
+}
+
 // 创建音色自定义单选下拉，原生 select 只负责表单值。
 function _panelCreateVoiceSelectUi(selectEl) {
     const container = document.createElement('div');
@@ -5743,7 +5835,10 @@ function _panelCreateVoiceSelectUi(selectEl) {
                 if (groupOptions.length > 0) {
                     const groupLabel = document.createElement('div');
                     groupLabel.className = 'voice-select-group-label';
-                    groupLabel.textContent = child.label || '';
+                    const groupLabelText = document.createElement('span');
+                    groupLabelText.className = 'voice-select-group-text';
+                    groupLabelText.textContent = _panelNormalizeVoiceGroupLabel(child.label);
+                    groupLabel.appendChild(groupLabelText);
                     options.appendChild(groupLabel);
                     groupOptions.forEach(appendOptionItem);
                 }
@@ -5838,7 +5933,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
                 const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = '── ' + freeLabel + ' ──';
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(freeLabel);
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -5849,7 +5944,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 selectEl.appendChild(freeGroup);
             }
 
-            // Gemini 原生音色（仅在 CORE_API_TYPE=gemini 时由后端注入）
+            // 当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
             // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
             // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
             // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
@@ -5867,8 +5962,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
                 if (nativeEntries.length > 0) {
                     const nativeGroup = document.createElement('optgroup');
-                    const nativeLabel = window.t ? window.t('character.geminiNativeVoices') : 'Gemini 原生音色';
-                    nativeGroup.label = '── ' + nativeLabel + ' ──';
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(_panelFormatNativeVoiceGroupLabel(nativeEntries));
                     nativeEntries.forEach(function ([voiceId, voiceData]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
@@ -5879,30 +5973,34 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     });
                     selectEl.appendChild(nativeGroup);
                 }
-
-                // 保底：currentVoiceId 是 Gemini 别名（"中文男"、"male" 等）或本轮 catalog 没暴露
-                // 该 ID 时，下拉里没有匹配项 select 会回到首项；下次保存表单会被误判为
-                // "已清空"走 unregister_voice 分支，把用户保存的音色丢掉。这里仿 GSV 兜底，
-                // 给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
-                if (currentVoiceId
-                    && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
-                    const fallbackGroup = document.createElement('optgroup');
-                    const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
-                    fallbackGroup.label = '── ' + fallbackLabel + ' ──';
-                    fallbackGroup.dataset.geminiFallbackGroup = 'true';
-                    const fallbackOption = document.createElement('option');
-                    fallbackOption.value = currentVoiceId;
-                    fallbackOption.textContent = currentVoiceId + ' (?)';
-                    fallbackOption.title = currentVoiceId;
-                    fallbackOption.selected = true;
-                    fallbackGroup.appendChild(fallbackOption);
-                    selectEl.appendChild(fallbackGroup);
-                }
             }
         }
 
         // 加载 GPT-SoVITS 声音列表
         await _loadPanelGsvVoices(selectEl, currentVoiceId);
+
+        // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
+        // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
+        // 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
+        // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+        // 必须放在所有 loader（含 _loadPanelGsvVoices）之后才能正确判断是否已渲染；
+        // gsv: 前缀 ID 由 _loadPanelGsvVoices.ensureGsvFallback 自行兜底，跳过避免双插。
+        if (currentVoiceId
+            && !currentVoiceId.startsWith(GSV_PREFIX)
+            && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            const fallbackGroup = document.createElement('optgroup');
+            const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+            fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
+            fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = currentVoiceId;
+            fallbackOption.textContent = currentVoiceId + ' (?)';
+            fallbackOption.title = currentVoiceId;
+            fallbackOption.selected = true;
+            fallbackGroup.appendChild(fallbackOption);
+            selectEl.appendChild(fallbackGroup);
+            selectEl.value = currentVoiceId;
+        }
     } catch (e) {
         console.warn('加载音色列表失败:', e);
     }
@@ -5922,7 +6020,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             selectEl.appendChild(gsvGroup);
         }
@@ -5933,17 +6031,56 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         selectEl.value = currentVoiceId;
     }
 
+    // GSV 不可用时把后端给的 code 翻成一行人话塞到下拉里——以前是静默丢，
+    // 用户连"为啥没出现"都看不到，只能猜是 server 没起还是开关没勾。
+    const _gsvT = (key, fallback) => (window.t && typeof window.t === 'function' && window.t(key)) || fallback;
+
+    function _appendGsvDiagnosticOption(message) {
+        const diagGroup = document.createElement('optgroup');
+        diagGroup.label = '── GPT-SoVITS ──';
+        diagGroup.dataset.gsvDiagGroup = 'true';
+        const diagOpt = document.createElement('option');
+        diagOpt.value = '';
+        diagOpt.disabled = true;
+        diagOpt.textContent = message;
+        diagGroup.appendChild(diagOpt);
+        selectEl.appendChild(diagGroup);
+    }
+
+    function _diagnoseFailure(result, status) {
+        const code = result && result.code;
+        if (code === 'GPTSOVITS_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagNotEnabled', 'GPT-SoVITS 未启用 (请在 API 设置勾选)');
+        }
+        if (code === 'CUSTOM_API_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagUrlMissing', 'GPT-SoVITS URL 未配置 (请在 API 设置填写)');
+        }
+        if (code === 'TTS_CUSTOM_URL_NOT_CONFIGURED') {
+            return _gsvT('character.gsvDiagUrlInvalid', 'GPT-SoVITS URL 未配置或不是 http(s)');
+        }
+        if (code === 'TTS_CUSTOM_URL_LOCALHOST_ONLY') {
+            return _gsvT('character.gsvDiagUrlLocalhostOnly', 'GPT-SoVITS URL 必须是 localhost');
+        }
+        if (status === 502 || (result && /连接 GPT-SoVITS API 失败/.test(result.error || ''))) {
+            return _gsvT('character.gsvDiagUnreachable', 'GPT-SoVITS server 未运行或不可达');
+        }
+        const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+        return base + (result && result.error ? ': ' + result.error : '');
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
         const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
         clearTimeout(timeoutId);
-        const result = await resp.json();
+        // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
+        // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。
+        const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
@@ -5963,11 +6100,21 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
             if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
                 selectEl.value = currentVoiceId;
             }
+        } else if (result && result.success && Array.isArray(result.voices) && result.voices.length === 0) {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagEmpty', 'GPT-SoVITS server 没有任何声音 (空列表)'));
+        } else {
+            _appendGsvDiagnosticOption(_diagnoseFailure(result, resp.status));
         }
         ensureGsvFallback();
     } catch (e) {
         clearTimeout(timeoutId);
         console.debug('GPT-SoVITS voices not available:', e.message);
+        if (e.name === 'AbortError') {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagTimeout', 'GPT-SoVITS server 响应超时 (>3s)'));
+        } else {
+            const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+            _appendGsvDiagnosticOption(base + (e && e.message ? ': ' + e.message : ''));
+        }
         ensureGsvFallback();
     }
 }
@@ -6086,8 +6233,22 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         body: JSON.stringify({ voice_id: selectedVoiceId })
                     });
                     const voiceResult = await voiceResp.json().catch(() => ({}));
+                    // 留 console 痕迹：toast 一闪而过看不清，这里把 PUT 的完整 status/payload
+                    // 持久打到 console，遇到 "保存后再打开 voice 又没了" 这类问题能直接定位
+                    // 是 PUT 被拒、还是后续 cleanup_invalid_voice_ids 把它清掉了。
+                    console.log(
+                        '[character voice PUT]',
+                        'name=', data['档案名'],
+                        'voice_id=', selectedVoiceId,
+                        'status=', voiceResp.status,
+                        'response=', voiceResult,
+                    );
                     if (!voiceResp.ok || voiceResult.success === false) {
                         const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
+                        // available_voices 直接打出来，方便看到 backend 当前认到的合法音色
+                        if (voiceResult && Array.isArray(voiceResult.available_voices)) {
+                            console.warn('[character voice PUT] backend 当前合法音色:', voiceResult.available_voices);
+                        }
                         showMessage(
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'

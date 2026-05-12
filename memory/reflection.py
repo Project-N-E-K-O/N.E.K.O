@@ -142,7 +142,20 @@ def _allowed_relation_types(entity: str) -> frozenset[str]:
     return KIND_RELATION_MAP.get(_entity_kind(entity), frozenset())
 
 
-TEMPORAL_SCOPES = frozenset({'current', 'past', 'ongoing'})
+# Schema v2 active temporal_scope（LLM 可输出的三档）+ 'past' 派生归档态 +
+# legacy v1 值（'current' / 'ongoing'）。validate 时全部当合法值放过，render
+# 侧 memory.temporal.is_past_for_render 把 legacy 当 pattern 兜底（保守不淡
+# 出，等慢速重判循环升 schema_version 修正）。
+# 参见 docs/design/memory-enhancements.md 和 memory/temporal.py。
+TEMPORAL_SCOPES = frozenset({
+    # v2 新增（LLM 写入只用这三档）
+    'pattern',  # 持续模式 / 性格特质，永不过时
+    'state',    # 当前持续情境，超 MEMORY_STATE_PAST_DAYS 后过时
+    'episode',  # 一次具体事件，超 MEMORY_EPISODE_PAST_DAYS 后过时
+    # 派生 + legacy 兼容
+    'past',     # 已派生 / legacy 旧数据，直接进过时 block
+    'current', 'ongoing',  # v1 legacy，render 按 pattern 兜底
+})
 
 # Soft cap on reflection text length. Beyond this, the ontology fields
 # are stripped because the text is likely a compound/multi-fact statement.
@@ -337,6 +350,15 @@ class ReflectionEngine:
             'relation_type': None,
             'subject': None,
             'temporal_scope': None,
+            # Schema v2 (memory/temporal.py)：事件发生时间锚点，LLM 用相对
+            # 偏移输出（offset+unit），系统按 created_at 解算成 ISO 留底。
+            # 老条目缺失这些键时通过 setdefault 兜底成 None / 1，由
+            # is_past_for_render 按 pattern 处理（保守不淡出）；慢速重判
+            # 循环升 schema_version 后才会真正应用 state/episode TTL。
+            'event_when_raw': None,
+            'event_start_at': None,
+            'event_end_at': None,
+            'schema_version': 1,
             # Vector-embedding cache (memory-enhancements P2 — see
             # memory/embeddings.py). Reflection text is immutable in the
             # current pipeline (synthesis writes once, callers don't
@@ -726,6 +748,11 @@ class ReflectionEngine:
             subject = result.get('subject')
             if subject is not None and not isinstance(subject, str):
                 subject = None
+            # Schema v2: event_when_raw 由 LLM 输出（相对时间，offset+unit），
+            # 系统按 created_at 解算。LLM 可能省略整段或单边 (start/end)，
+            # normalize_event_when 把破损值兜底成 None。
+            from memory.temporal import normalize_event_when as _norm_when
+            event_when_raw = _norm_when(result.get('event_when'))
 
             ok, reason = _validate_reflection_ontology(
                 reflection_entity, rel_type, temporal, reflection_text,
@@ -764,6 +791,23 @@ class ReflectionEngine:
         )
         initial_rein = initial_reinforcement_from_importance(max_importance)
 
+        # Schema v2：event_start/end 是 fact 和 reflection 共用的 ISO 锚点。
+        # fallback 策略按 temporal_scope 分流：
+        #   - state / episode 需要 end（TTL 判定锚点），end 缺失时和 start 同值
+        #   - pattern 允许 end=None（持续模式没有"何时结束"）
+        #   - 兜底（temporal=None/legacy）按 pattern 处理（保守不淡出）
+        from memory.temporal import (
+            compute_event_timestamps as _compute_ts,
+        )
+        from config import MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V
+        _needs_end = temporal in ('state', 'episode')
+        event_start_at, event_end_at = _compute_ts(
+            event_when_raw,
+            now_iso,
+            fallback_start=True,
+            fallback_end=_needs_end,
+        )
+
         reflection = self._normalize_reflection({
             'id': rid,
             'text': reflection_text,
@@ -781,6 +825,11 @@ class ReflectionEngine:
             'relation_type': rel_type,
             'temporal_scope': temporal,
             'subject': subject,
+            # Schema v2 event timing (memory/temporal.py)
+            'event_when_raw': event_when_raw,
+            'event_start_at': event_start_at,
+            'event_end_at': event_end_at,
+            'schema_version': _SCHEMA_V,
         })
 
         # ── LOCK 仅护住 re-load + dedup append + save ──
@@ -1334,6 +1383,13 @@ class ReflectionEngine:
         derived-confirmed range is still a valid followup candidate. AI
         picking it up gives user a natural chance to re-affirm (or push
         back) before the periodic loop finally flips the stored status.
+
+        Sampling: 当候选池 > TOP_K 时按 `evidence_score + WEIGHT_BASE` 无放
+        回加权随机抽样（Efraimidis-Spirakis），避免每次都取同一批前 K 条
+        造成主动搭话内容雷同。WEIGHT_BASE 给 score=0 的"新鲜未受信号"条目
+        留出最低权重，否则全 0 score 时会退化成空集。可由
+        `REFLECTION_FOLLOWUP_WEIGHTED=False` 回退到旧的"按 list 顺序取前
+        K"行为（测试 / 调试用）。
         """
         if not pending:
             return []
@@ -1350,8 +1406,24 @@ class ReflectionEngine:
             if evidence_score(r, now) < 0:
                 continue
             eligible.append(r)
-        from config import REFLECTION_SURFACE_TOP_K
-        return eligible[:REFLECTION_SURFACE_TOP_K]
+        from config import (
+            REFLECTION_SURFACE_TOP_K,
+            REFLECTION_FOLLOWUP_WEIGHTED,
+            REFLECTION_FOLLOWUP_WEIGHT_BASE,
+        )
+        if (
+            not REFLECTION_FOLLOWUP_WEIGHTED
+            or len(eligible) <= REFLECTION_SURFACE_TOP_K
+        ):
+            return eligible[:REFLECTION_SURFACE_TOP_K]
+        from memory.temporal import weighted_sample_no_replace
+        weights = [
+            max(evidence_score(r, now), 0.0) + REFLECTION_FOLLOWUP_WEIGHT_BASE
+            for r in eligible
+        ]
+        return weighted_sample_no_replace(
+            eligible, weights, REFLECTION_SURFACE_TOP_K,
+        )
 
     def get_followup_topics(self, lanlan_name: str) -> list[dict]:
         """Get pending reflections suitable for natural mention in proactive chat.
@@ -1916,6 +1988,200 @@ class ReflectionEngine:
                     )
 
         return transitions
+
+    async def _abump_reflection_recheck_attempts(
+        self, lanlan_name: str, rid: str, reason: str,
+    ) -> None:
+        """递增指定 reflection 的 ``recheck_attempts`` 计数。
+
+        失败到 ``MEMORY_RECHECK_MAX_ATTEMPTS`` 上限后，candidates filter 会
+        把该 entry 排除，让循环把名额匀给其它 v1 条目。计数持久化到主文件，
+        重启不复位（避免饥饿同一坏 entry 反复消耗 LLM quota）。
+        Best-effort——保存失败不抛，下次仍会尝试。
+        """
+        try:
+            async with self._get_alock(lanlan_name):
+                current = await self._aload_reflections_full(lanlan_name)
+                for r in current:
+                    if r.get('id') == rid:
+                        r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
+                        await self.asave_reflections(lanlan_name, current)
+                        logger.debug(
+                            f"[Recheck-Reflection] {lanlan_name} {rid}: "
+                            f"recheck_attempts → {r['recheck_attempts']} ({reason})"
+                        )
+                        return
+        except Exception as e:
+            logger.debug(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: bump attempts 失败: {e}"
+            )
+
+    async def arecheck_one_legacy_reflection(self, lanlan_name: str) -> bool:
+        """Schema v1 → v2 慢速重判（每次只处理 1 条）。
+
+        找到该角色 schema_version < CURRENT 且非 archived 的最老 reflection，
+        喂给 LLM 重新标 temporal_scope (pattern/state/episode) + event_when
+        (相对偏移)，系统按 reflection.created_at 解算成 ISO 写回。
+
+        Returns: True 表示成功处理了一条；False 表示没找到候选或处理失败。
+        Caller (memory_server._periodic_slow_memory_recheck_loop) 拿 True 时
+        无需 sleep 即可继续下一条（实际仍然每 30s 一条以控速）。
+
+        Skip 条件：
+        - schema_version >= CURRENT（已升版）
+        - status in REFLECTION_TERMINAL_STATUSES（archived/merged 等终态）
+        - 已在主 reflections.json 之外（archive 分片不被 load_reflections 拉起）
+        """
+        from config import (
+            MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
+            MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,
+        )
+        from config.prompts.prompts_memory import (
+            MEMORY_RECHECK_REFLECTION_PROMPT,
+        )
+        from memory.temporal import (
+            normalize_event_when as _norm_when,
+            compute_event_timestamps as _compute_ts,
+            ACTIVE_TEMPORAL_SCOPES,
+        )
+
+        # ── 锁外：选候选 + LLM 调用 ─────────────────────────────────
+        reflections = await self.aload_reflections(lanlan_name)
+        candidates = [
+            r for r in reflections
+            if (r.get('schema_version') or 1) < _SCHEMA_V
+            and r.get('status') not in REFLECTION_TERMINAL_STATUSES
+            # 重试预算：LLM 持续给出无效 temporal_scope 或抛异常的 entry
+            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）
+            and (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+        ]
+        if not candidates:
+            return False
+        # 最老优先（FIFO 迁移），id 兜底排序保稳定
+        candidates.sort(key=lambda r: (r.get('created_at', ''), r.get('id', '')))
+        # Skip malformed candidates (missing id / created_at) instead of
+        # aborting the whole call — otherwise a single bad legacy entry at
+        # head of FIFO order would starve every later v1 reflection forever
+        # (Codex review on PR #1316 P2 catch).
+        target: dict | None = None
+        rid = ''
+        created_at_iso = ''
+        for c in candidates:
+            cid = c.get('id')
+            cts = c.get('created_at', '')
+            if not cid or not cts:
+                logger.debug(
+                    f"[Recheck-Reflection] {lanlan_name}: skip malformed legacy "
+                    f"reflection (id={cid!r} created_at={cts!r})"
+                )
+                continue
+            target = c
+            rid = cid
+            created_at_iso = cts
+            break
+        if target is None:
+            return False
+
+        # 拉 source facts 上下文（最多 5 条文本，太多 prompt 太长）
+        source_fact_ids = target.get('source_fact_ids') or []
+        source_facts_text = ""
+        if source_fact_ids:
+            try:
+                all_facts = await self._fact_store.aload_facts(lanlan_name)
+                fact_by_id = {f.get('id'): f for f in all_facts}
+                lines = []
+                for fid in source_fact_ids[:5]:
+                    f = fact_by_id.get(fid)
+                    if f and f.get('text'):
+                        lines.append(f"- {f['text']}")
+                source_facts_text = "\n".join(lines) if lines else "（无）"
+            except Exception:
+                source_facts_text = "（无）"
+        else:
+            source_facts_text = "（无）"
+
+        prompt = MEMORY_RECHECK_REFLECTION_PROMPT.format(
+            REFLECTION_TEXT=target.get('text', ''),
+            CREATED_AT=created_at_iso,
+            SOURCE_FACTS=source_facts_text,
+        )
+
+        failure_reason: str | None = None
+        new_scope: str | None = None
+        event_when_raw: dict | None = None
+        try:
+            from utils.llm_client import create_chat_llm
+            set_call_type("memory_recheck_reflection")
+            api_config = self._config_manager.get_model_api_config('summary')
+            llm = create_chat_llm(
+                api_config['model'],
+                api_config['base_url'], api_config['api_key'],
+                timeout=60, max_retries=0,
+                extra_body=None,
+            )
+            try:
+                resp = await llm.ainvoke(prompt)
+            finally:
+                await llm.aclose()
+            raw = resp.content.strip()
+            if raw.startswith("```"):
+                raw = raw.replace("```json", "").replace("```", "").strip()
+            result = robust_json_loads(raw)
+            if not isinstance(result, dict):
+                failure_reason = "non-dict response"
+            else:
+                new_scope = result.get('temporal_scope')
+                if new_scope not in ACTIVE_TEMPORAL_SCOPES:
+                    failure_reason = f"invalid temporal_scope={new_scope!r}"
+                else:
+                    event_when_raw = _norm_when(result.get('event_when'))
+        except Exception as e:
+            failure_reason = f"LLM call failed: {e}"
+
+        # 失败路径统一收口：bump recheck_attempts 计数器，让连续失败的 entry
+        # 在达到 MAX 后被 candidates filter 排除（Codex review on PR #1316 P2）
+        if failure_reason is not None:
+            logger.debug(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: 跳过本轮 ({failure_reason})"
+            )
+            await self._abump_reflection_recheck_attempts(lanlan_name, rid, failure_reason)
+            return False
+
+        # 用 created_at 当锚点解算 ISO
+        _needs_end = new_scope in ('state', 'episode')
+        event_start_at, event_end_at = _compute_ts(
+            event_when_raw,
+            created_at_iso,
+            fallback_start=True,
+            fallback_end=_needs_end,
+        )
+
+        # ── 锁内：reload + 找同 id + 更新字段 + save ──────────────
+        async with self._get_alock(lanlan_name):
+            current = await self._aload_reflections_full(lanlan_name)
+            found = None
+            for r in current:
+                if r.get('id') == rid:
+                    found = r
+                    break
+            if found is None:
+                logger.debug(f"[Recheck-Reflection] {lanlan_name} {rid}: 锁内已不存在")
+                return False
+            # 再次检查 schema_version（防并发重复处理）
+            if (found.get('schema_version') or 1) >= _SCHEMA_V:
+                return False
+            found['temporal_scope'] = new_scope
+            found['event_when_raw'] = event_when_raw
+            found['event_start_at'] = event_start_at
+            found['event_end_at'] = event_end_at
+            found['schema_version'] = _SCHEMA_V
+            await self.asave_reflections(lanlan_name, current)
+
+        logger.info(
+            f"[Recheck-Reflection] {lanlan_name} {rid}: v1→v{_SCHEMA_V} "
+            f"scope={new_scope} when={event_when_raw}"
+        )
+        return True
 
     async def areset_confirmed_at_to_now(self, lanlan_name: str) -> int:
         """开→关 migration：把所有 confirmed reflection 的 confirmed_at 重置

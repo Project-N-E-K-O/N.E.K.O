@@ -5,7 +5,10 @@ import importlib
 import re
 import shutil
 import time as time_module
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path

@@ -104,7 +104,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 def _normalize_lang(lang: str) -> str:
     """归一化语言代码到支持的 key（zh/zh-TW/en/ja/ko/ru）"""
     if not lang:
-        return 'zh'
+        return 'en'
     lang_lower = lang.lower()
     if lang_lower.startswith('zh'):
         if 'tw' in lang_lower or 'hant' in lang_lower or 'hk' in lang_lower:
@@ -128,7 +128,7 @@ def _normalize_lang(lang: str) -> str:
 def _build_lanlan_prompt(lang: str) -> str:
     """根据语言代码构建完整提示词"""
     lang_key = _normalize_lang(lang)
-    parts = _L10N.get(lang_key, _L10N['zh'])
+    parts = _L10N.get(lang_key, _L10N['en'])
     result = _LANLAN_PROMPT_TEMPLATE
     for key, value in parts.items():
         result = result.replace('{_' + key + '}', value)
@@ -249,7 +249,7 @@ def get_lanlan_prompt(lang: str | None = None) -> str:
     if lang is None:
         # config._runtime resolves to utils.language_utils.get_global_language_full
         # at runtime (registered in app/runtime_bindings.py); falls back to
-        # "zh-CN" if unbound (cold-import / unit tests).
+        # "en" if unbound (cold-import / unit tests).
         from config._runtime import resolve_global_language
         lang = resolve_global_language()
     return _build_lanlan_prompt(lang)

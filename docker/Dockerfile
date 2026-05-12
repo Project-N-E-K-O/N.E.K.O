@@ -1,16 +1,36 @@
+# ============================================================================
+# N.E.K.O. Dockerfile - Standard Version (lightweight, downloads Chromium at runtime)
+# ============================================================================
+# This Dockerfile builds the "standard" version of N.E.K.O (~1.5GB).
+# Chromium browser is downloaded on first container start.
+#
+# Build: docker build -f docker/Dockerfile -t neko:latest .
+# Run:   docker run -d --name neko -p 48911:80 -p 48912:443 neko:latest
+#
+# Usage with docker-compose:
+#   docker-compose up -d  (uses latest tag by default)
+# ============================================================================
+
 # --- Stage 1: Build frontend projects ---
 FROM node:24-slim AS frontend-builder
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    git clone --depth 1 --branch main https://github.com/Project-N-E-K-O/N.E.K.O.git .
+
+# Copy frontend source code from local build context
+COPY frontend/plugin-manager /src/frontend/plugin-manager
+COPY frontend/react-neko-chat /src/frontend/react-neko-chat
+
+# Shared static assets bundled into plugin-manager at build time.
+# yui-guide-runtime.ts imports tutorial PNGs and shared icons via
+# `../../../static/...`; keep these COPY paths in sync with that file
+# (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+COPY static/assets/tutorial /src/static/assets/tutorial
+COPY static/icons /src/static/icons
+
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
+
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
@@ -19,31 +39,29 @@ FROM debian:bookworm
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
-# 设置环境变量
+# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
-# 设置工作目录
+# Set working directory
 WORKDIR /app
 
-# 1. 配置阿里云 apt 镜像源
-RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" > /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
-    echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
+# 1. Configure Aliyun apt mirror sources (HTTPS)
+RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" > /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm-updates main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list && \
+    echo "deb-src https://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
 
-# 2. 更新系统并安装基础依赖
-# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
+# 2. Update system and install base dependencies
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-    git \
     wget \
     curl \
     python3.11 \
@@ -64,61 +82,81 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     unset http_proxy && \
     unset https_proxy
 
-#创建nginx用户
+# Create nginx user and neko application user, plus Playwright cache directory
 RUN groupadd -r nginx && \
     useradd -r -g nginx nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
-    chown -R nginx:nginx /var/log/nginx /var/cache/nginx
+    chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
+    groupadd -r neko && \
+    useradd -r -g neko -d /app -s /bin/bash neko && \
+    mkdir -p /app/logs /app/N.E.K.O /root/ssl /opt/ms-playwright && \
+    chown -R neko:neko /app /opt/ms-playwright
 
-# 3. 创建 Python 符号链接
+# 3. Create Python symlinks
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.11 /usr/bin/python
 
-# 4. 安装 uv
-# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    wget -qO- https://astral.sh/uv/install.sh | sh && \
-    echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc && \
-    unset http_proxy && \
-    unset https_proxy
+# 4. Install uv from official Docker image (pinned version for reproducibility)
+COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
+RUN chmod +x /usr/local/bin/uv && \
+    echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
-# 5. 配置 uv 使用阿里云镜像
+# 5. Configure uv to use Aliyun mirror
 RUN mkdir -p /root/.config/uv && \
     echo '[[index]]' > /root/.config/uv/uv.toml && \
     echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
-# 6. 克隆 N.E.K.O. 项目
-# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    cd / && \
-    git clone https://github.com/Project-N-E-K-O/N.E.K.O.git app && \
-    cd /app && \
-    git checkout main && \
-    unset http_proxy && \
-    unset https_proxy
+# 6. Copy N.E.K.O. project from local build context (with correct ownership)
+COPY --chown=neko:neko . /app
 
-# 7. 复制前端构建产物
+# 7. Copy frontend build artifacts
+# Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
+# (relative to its package root), so the actual build output lives at
+# /src/static/react/neko-chat — NOT /src/frontend/react-neko-chat/dist.
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
-# 7b. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
-#     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
+# 7b. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
     test -f static/yui-origin/yui-origin.moc3
 
-# 8. 设置环境变量
-ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
+# 8. Install Python dependencies using uv
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    uv sync --frozen && \
+    unset http_proxy && \
+    unset https_proxy
+
+# 8b. Fix ownership after root operations (uv sync creates files as root)
+RUN chown -R neko:neko /app
+
+# 9. Set Playwright environment variable
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# 10. Set remaining environment variables
+ENV PATH="/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# 9. 复制 entrypoint 脚本
-COPY entrypoint.sh /entrypoint.sh
+# 11. Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 10. 创建数据持久化目录
+# 12. Create data persistence directory
 VOLUME ["/data"]
 
-# 11. 设置入口点
+# 13. Expose ports
+EXPOSE 80 443
+
+# 14. Show build information
+RUN echo "========================================" && \
+    echo "  N.E.K.O. Standard Image Build Complete" && \
+    echo "========================================" && \
+    echo "Python version: $(python --version)" && \
+    echo "UV version: $(uv --version)" && \
+    echo "Nginx version: $(nginx -v 2>&1)" && \
+    echo "========================================"
+
+# 15. Set entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

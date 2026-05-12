@@ -5,6 +5,9 @@
     const TUTORIAL_PROMPT_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
+    const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
+    const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
+    const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 
     function interpolateTemplate(template, options) {
         return String(template || '').replace(/{{\s*(\w+)\s*}}/g, (_, name) => {
@@ -113,6 +116,8 @@
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.lastTutorialPromptState = null;
+            this.homeTutorialCompletedInSession = false;
+            this.resetBroadcastChannel = null;
             // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
             // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
             this._tutorialFlowAborted = false;
@@ -157,8 +162,13 @@
                     }),
                 ]);
                 if (!tutorialSettled) {
-                    this._tutorialFlowAborted = true;
-                    console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
+                    if (this.isHomeTutorialInteractionLocked()) {
+                        console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out while home tutorial is locked, keep waiting');
+                        await this.waitForTutorialFlowToSettle();
+                    } else {
+                        this._tutorialFlowAborted = true;
+                        console.warn('[CharacterPersonalityOnboarding] tutorial flow settle timed out, fallthrough');
+                    }
                 }
                 if (await this.openIfManualReselectPending()) {
                     return;
@@ -258,6 +268,43 @@
             });
         }
 
+        isHomeTutorialInteractionLocked() {
+            if (!this.shouldRespectHomeTutorialGate()) {
+                return false;
+            }
+
+            const manager = window.universalTutorialManager || null;
+            if (window.isInTutorial === true
+                || (manager && manager.currentPage === 'home' && manager.isTutorialRunning)) {
+                return true;
+            }
+
+            const lockReaders = [
+                window.isNekoHomeTutorialInteractionLocked,
+                window.isNekoHomeTutorialBlockingGreeting,
+                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialInteractionLocked,
+                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialBlockingGreeting,
+            ];
+            return lockReaders.some((reader) => {
+                if (typeof reader !== 'function') {
+                    return false;
+                }
+                try {
+                    return reader() === true;
+                } catch (_) {
+                    return false;
+                }
+            });
+        }
+
+        async waitForHomeTutorialInteractionUnlock() {
+            while (this.isHomeTutorialInteractionLocked()) {
+                await new Promise((resolve) => {
+                    window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                });
+            }
+        }
+
         async fetchTutorialPromptState() {
             try {
                 const payload = await requestJson('/api/tutorial-prompt/state', {
@@ -284,11 +331,69 @@
             return String(state.user_cohort || '').trim().toLowerCase();
         }
 
+        hasHomeTutorialCompletionMarker() {
+            if (this.homeTutorialCompletedInSession) {
+                return true;
+            }
+
+            const manager = window.universalTutorialManager || null;
+            if (manager && typeof manager.hasSeenTutorial === 'function') {
+                try {
+                    if (manager.hasSeenTutorial('home')) {
+                        return true;
+                    }
+                } catch (_) {}
+            }
+
+            try {
+                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
+                    || localStorage.getItem('neko_tutorial_home') === 'true';
+            } catch (_) {
+                return false;
+            }
+        }
+
+        shouldWaitForHomeTutorialCompletion(state) {
+            if (!this.shouldRespectHomeTutorialGate() || this.hasHomeTutorialCompletionMarker()) {
+                return false;
+            }
+            if (!state || typeof state !== 'object') {
+                return false;
+            }
+
+            if (state.home_tutorial_completed === true || state.manual_home_tutorial_viewed === true) {
+                return false;
+            }
+
+            const userCohort = this.normalizeTutorialPromptUserCohort(state);
+            if (userCohort === 'new') {
+                return true;
+            }
+            if (userCohort !== 'existing') {
+                return false;
+            }
+
+            const chatTurns = Number(state.chat_turns || 0);
+            const voiceSessions = Number(state.voice_sessions || 0);
+            const shownCount = Number(state.shown_count || 0);
+            return (!Number.isFinite(chatTurns) || chatTurns <= 0)
+                && (!Number.isFinite(voiceSessions) || voiceSessions <= 0)
+                && (!Number.isFinite(shownCount) || shownCount <= 0);
+        }
+
         isTutorialPromptSettled(state) {
             if (!state || typeof state !== 'object') {
                 return false;
             }
             const status = this.normalizeTutorialPromptStatus(state);
+            if (this.shouldWaitForHomeTutorialCompletion(state) && (
+                status === 'completed'
+                || status === 'error'
+                || status === 'observing'
+                || status === 'prompted'
+            )) {
+                return false;
+            }
             if (status === 'completed' || status === 'deferred' || status === 'never' || status === 'error') {
                 return true;
             }
@@ -314,6 +419,10 @@
             while (true) {
                 if (this._tutorialFlowAborted) {
                     return;
+                }
+                if (this.isHomeTutorialInteractionLocked()) {
+                    await this.waitForHomeTutorialInteractionUnlock();
+                    continue;
                 }
                 if (window.universalTutorialManager && window.universalTutorialManager.isTutorialRunning) {
                     await this.waitForTutorialCompletion();
@@ -455,6 +564,22 @@
         }
 
         bindTutorialLifecycleEvents() {
+            const resetHomeTutorialCompleted = (event) => {
+                const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+                const page = String(detail.page || '').trim();
+                if (page && page !== 'home' && page !== 'all') {
+                    return;
+                }
+                this.homeTutorialCompletedInSession = false;
+            };
+
+            const markHomeTutorialCompleted = (event) => {
+                if (!event || !event.detail || event.detail.page !== 'home') {
+                    return;
+                }
+                this.homeTutorialCompletedInSession = true;
+            };
+
             const queueResume = (event) => {
                 if (!event || !event.detail || event.detail.page !== 'home') {
                     return;
@@ -500,9 +625,49 @@
                 void this.openIfPending();
             };
 
+            const resetHomeTutorialCompletedFromStorage = (event) => {
+                if (!event || event.key !== HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY || !event.newValue) {
+                    return;
+                }
+                try {
+                    resetHomeTutorialCompleted({ detail: JSON.parse(event.newValue) });
+                } catch (error) {
+                    console.warn('[CharacterPersonalityOnboarding] failed to parse home tutorial reset storage event:', error);
+                }
+            };
+
+            window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
+            window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
             window.addEventListener('neko:tutorial-started', queueResume);
+            window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
+            window.addEventListener('neko:tutorial-skipped', markHomeTutorialCompleted);
             window.addEventListener('neko:tutorial-completed', resumeIfNeeded);
             window.addEventListener('neko:tutorial-skipped', resumeIfNeeded);
+
+            if (typeof BroadcastChannel === 'function') {
+                try {
+                    this.resetBroadcastChannel = new BroadcastChannel(HOME_TUTORIAL_RESET_CHANNEL);
+                    this.resetBroadcastChannel.addEventListener('message', (event) => {
+                        const message = event && event.data ? event.data : {};
+                        if (!message || message.type !== HOME_TUTORIAL_RESET_EVENT) {
+                            return;
+                        }
+                        resetHomeTutorialCompleted({ detail: message.detail || {} });
+                    });
+                } catch (error) {
+                    console.warn('[CharacterPersonalityOnboarding] failed to listen for home tutorial reset broadcasts:', error);
+                }
+            }
+
+            window.addEventListener('beforeunload', () => {
+                if (!this.resetBroadcastChannel) {
+                    return;
+                }
+                try {
+                    this.resetBroadcastChannel.close();
+                } catch (_) {}
+                this.resetBroadcastChannel = null;
+            });
         }
 
         getEyebrowText() {

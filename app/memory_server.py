@@ -43,6 +43,9 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
+    MEMORY_RECHECK_ENABLED,
+    MEMORY_RECHECK_INITIAL_DELAY_SECONDS,
+    MEMORY_RECHECK_INTERVAL_SECONDS,
     MEMORY_SERVER_PORT,
     USER_CONFIRM_DELTA,
     USER_FACT_NEGATE_DELTA,
@@ -57,6 +60,11 @@ from config.prompts.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+)
+# Negative-intent prompts/scanner 已迁到 ``prompts_directives``（与 ban-topic
+# regex 同源——同是"用户负面 / 回避指令"的语义层）。``prompts_memory`` 保留
+# fact/persona/reflection/summary 等纯 memory-业务 prompt。
+from config.prompts.prompts_directives import (
     get_negative_target_check_prompt,
     scan_negative_keywords,
 )
@@ -1392,6 +1400,86 @@ async def _aone_shot_archive_migration_if_needed(lanlan_name: str) -> None:
 # ── memory-evidence-rfc §3.5: periodic archive sweep ────────────────
 
 
+# Round-robin 起点游标：每轮 +1。避免每次都从 catgirl_names[0] 开始扫描
+# + 命中即 break 造成首角色独占（CodeRabbit review on PR #1316 catch）。
+# 模块级状态可接受：循环单实例、单事件循环、无并发。
+_RECHECK_RR_CURSOR: int = 0
+
+
+async def _periodic_slow_memory_recheck_loop():
+    """Schema v1 → v2 慢速记忆重判循环。
+
+    每 MEMORY_RECHECK_INTERVAL_SECONDS 秒重判 1 条 reflection / fact。优
+    先级：所有角色的 v1 reflection 先跑完，再跑 fact。每轮只处理 1 条，
+    控速避免 LLM 抢占工作模型 quota（参考 archive_sweep 的 background-tier
+    设计）。
+
+    多角色公平性：用 `_RECHECK_RR_CURSOR` 做 round-robin 起点轮转——每轮
+    从 cursor 开始扫描，命中即 break + 推进 cursor。catgirl A 有 100 条
+    v1 数据、catgirl B 只有 1 条时，B 仍能在 N 轮内拿到调度名额，不被
+    A 长尾独占。
+
+    LLM 输出：
+    - reflection: temporal_scope (pattern/state/episode) + event_when (相对偏移)
+    - fact:       event_when 单字段
+    系统按 created_at 当锚点解算 event_start_at / event_end_at 写回。
+
+    Skip 条件（在 store 层做）：
+    - schema_version >= CURRENT
+    - reflection status in REFLECTION_TERMINAL_STATUSES（archived 等）
+    - 已 archive 的 reflection / fact 在 shard 文件里，主路径不加载，
+      自然不会被选中
+
+    首轮启动延迟 MEMORY_RECHECK_INITIAL_DELAY_SECONDS 秒（与其他后台循环
+    错峰）。`MEMORY_RECHECK_ENABLED=False` 时整个循环不启动。
+    """
+    global _RECHECK_RR_CURSOR
+    if not MEMORY_RECHECK_ENABLED:
+        logger.info("[MemoryRecheck] 重判循环未启用 (MEMORY_RECHECK_ENABLED=False)")
+        return
+    await asyncio.sleep(MEMORY_RECHECK_INITIAL_DELAY_SECONDS)
+    logger.info("[MemoryRecheck] 慢速 schema v1→v2 重判循环启动")
+    while True:
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[MemoryRecheck] 加载角色列表失败: {e}")
+            await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
+            continue
+
+        # Round-robin: 每轮起点比上轮 +1，保证 N 角色在 N 轮内都被尝试到
+        n = len(catgirl_names)
+        if n == 0:
+            await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
+            continue
+        start = _RECHECK_RR_CURSOR % n
+        ordered = catgirl_names[start:] + catgirl_names[:start]
+        _RECHECK_RR_CURSOR = (start + 1) % n
+
+        # 阶段 1：reflection 优先（数据少、影响 prompt 直接、价值高）
+        # 阶段 2：所有 reflection 跑完后才轮到 fact（数据多、影响间接）
+        # 每次外循环只动 1 条，避免单角色 reflection 长时间独占
+        did_one = False
+        for name in ordered:
+            try:
+                if await reflection_engine.arecheck_one_legacy_reflection(name):
+                    did_one = True
+                    break
+            except Exception as e:
+                logger.debug(f"[MemoryRecheck] {name} reflection recheck 异常: {e}")
+        if not did_one:
+            for name in ordered:
+                try:
+                    if await fact_store.arecheck_one_legacy_fact(name):
+                        did_one = True
+                        break
+                except Exception as e:
+                    logger.debug(f"[MemoryRecheck] {name} fact recheck 异常: {e}")
+
+        await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
+
+
 async def _periodic_archive_sweep_loop():
     """Periodically scan all non-protected reflection / persona entries
     and (a) bump `sub_zero_days` for those with `evidence_score < 0`
@@ -2026,6 +2114,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
                 _spawn_background_task(_periodic_signal_extraction_loop())
             _spawn_background_task(_periodic_archive_sweep_loop())
             _spawn_background_task(_periodic_new_dialog_qps_log_loop())
+            if MEMORY_RECHECK_ENABLED:
+                _spawn_background_task(_periodic_slow_memory_recheck_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.

@@ -21,7 +21,7 @@ GAME_CONTEXT_SIGNAL_GROUP_KEYS = (
 
 def _labels(templates: dict[str, dict[str, str]], lang: str | None) -> dict[str, str]:
     prompt_lang = _normalize_prompt_lang(lang)
-    return templates.get(prompt_lang) or templates["zh"]
+    return templates.get(prompt_lang) or templates["en"]
 
 
 _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH = """\

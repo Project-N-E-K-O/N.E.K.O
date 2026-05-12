@@ -1,0 +1,157 @@
+:root {
+  color-scheme: light;
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  background: #f6f7f9;
+  color: #1d2430;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #f6f7f9;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.study-shell {
+  width: min(980px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0;
+}
+
+.study-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid #d8dde6;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: 16px;
+  line-height: 1.3;
+  margin-bottom: 10px;
+}
+
+#statusLine {
+  margin-top: 6px;
+  color: #5a6472;
+  font-size: 14px;
+}
+
+.toolbar-actions,
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+button {
+  min-height: 36px;
+  border: 1px solid #aeb8c7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2430;
+  padding: 0 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #6f7d91;
+  background: #f8fafc;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+button.loading {
+  cursor: wait;
+}
+
+.study-workspace,
+.reply-panel {
+  margin-top: 18px;
+}
+
+.input-label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border: 1px solid #c8d0dc;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1d2430;
+  padding: 12px;
+  line-height: 1.5;
+}
+
+.action-row {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.reply-panel {
+  border-top: 1px solid #d8dde6;
+  padding-top: 18px;
+}
+
+pre {
+  min-height: 180px;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  border: 1px solid #c8d0dc;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .study-shell {
+    width: min(100vw - 20px, 980px);
+    padding: 14px 0;
+  }
+
+  .study-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbar-actions {
+    justify-content: stretch;
+  }
+
+  .toolbar-actions button,
+  .action-row button {
+    flex: 1;
+  }
+}

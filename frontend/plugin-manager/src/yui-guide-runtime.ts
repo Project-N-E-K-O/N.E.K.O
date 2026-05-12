@@ -69,12 +69,12 @@ const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
   interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
   interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-  interrupt_angry_exit: '人类~~~~！你真的.mp3',
+  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
 } as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
