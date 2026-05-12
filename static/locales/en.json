@@ -2432,6 +2432,8 @@
         "sourceLabel": "Guide Source",
         "contentLanguageNotice": "The guide body switches with the selected language.",
         "languageLabel": "Language",
+        "tocTitle": "Contents",
+        "tocEmpty": "No headings yet",
         "guideUnavailable": "Guide content is empty."
     },
     "subtitle": {

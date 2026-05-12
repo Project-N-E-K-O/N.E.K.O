@@ -14,7 +14,7 @@ from utils.native_voice_registry import (
     register_provider,
 )
 
-FALLBACK_STEPFUN_TTS_DEFAULT_VOICE = "qingchunshaonv"
+FALLBACK_STEPFUN_TTS_DEFAULT_VOICE = "linjiameimei"
 FALLBACK_STEPFUN_TTS_DEFAULT_MALE_VOICE = "cixingnansheng"
 
 

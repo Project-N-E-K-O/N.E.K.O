@@ -6,6 +6,7 @@ from typing import Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
+from .constants import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING
 from .models import (
     MODE_CONCEPT_EXPLAIN,
     STATUS_ERROR,
@@ -22,6 +23,7 @@ from .service import (
     build_ocr_payload,
     build_status_payload,
 )
+from .mode_manager import ModeManager, build_transition_phrase, handle_user_intent, normalize_mode
 from .state import build_initial_state
 from .store import StudyStore
 from .study_ocr_pipeline import StudyOcrPipeline
@@ -39,7 +41,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._install_lock = threading.Lock()
         self._rapidocr_models_lock = threading.Lock()
         self._cfg = StudyConfig()
-        self._state = build_initial_state(mode=MODE_CONCEPT_EXPLAIN)
+        self._state = build_initial_state(mode=MODE_COMPANION)
         self._store = StudyStore(
             self.data_path("study_companion.db"),
             self.config_dir / "data" / "study_seed.json",
@@ -47,6 +49,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         )
         self._ocr_pipeline: StudyOcrPipeline | None = None
         self._agent: TutorLLMAgent | None = None
+        self._mode_manager = ModeManager()
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -59,12 +62,26 @@ class StudyCompanionPlugin(NekoPluginBase):
             with self._lock:
                 self._state = restored
                 self._state.status = STATUS_READY
-                self._state.active_mode = self._cfg.mode
+                self._state.active_mode = normalize_mode(self._state.active_mode or self._cfg.mode)
+                self._state.mode_started_at = float(self._state.mode_started_at or 0.0)
+                self._state.mode_lock_until = float(self._state.mode_lock_until or 0.0)
+                self._cfg.mode = self._state.active_mode
+                self._cfg.default_mode = self._state.active_mode
                 self._state.last_started_at = utc_now_iso()
                 self._state.last_error = ""
+                self._mode_manager.restore(
+                    {
+                        "current_mode": self._state.active_mode,
+                        "mode_started_at": self._state.mode_started_at,
+                        "recent_mode_switches": self._state.recent_mode_switches,
+                        "suggestion_cooldowns": self._state.suggestion_cooldowns,
+                        "session_suggestions": self._state.session_suggestions,
+                        "mode_lock_until": self._state.mode_lock_until,
+                    }
+            )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
-            self._refresh_dependency_status()
+            await asyncio.to_thread(self._refresh_dependency_status)
             self.register_static_ui("static")
             self.set_list_actions(
                 [
@@ -77,7 +94,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                 ]
             )
             await self._persist_state()
-            return Ok({"status": STATUS_READY, "result": self._status_payload()})
+            status_payload = await asyncio.to_thread(self._status_payload)
+            return Ok({"status": STATUS_READY, "result": status_payload})
         except Exception as exc:
             with self._lock:
                 self._state.status = STATUS_ERROR
@@ -103,6 +121,45 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def _persist_state(self) -> None:
         await asyncio.to_thread(self._store.save_config, self._cfg)
         await asyncio.to_thread(self._store.save_state, self._state)
+
+    async def _apply_mode_switch(self, mode: str, reason: str, *, language: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._mode_manager.restore(
+                {
+                    "current_mode": self._state.active_mode,
+                    "mode_started_at": self._state.mode_started_at,
+                    "recent_mode_switches": self._state.recent_mode_switches,
+                    "suggestion_cooldowns": self._state.suggestion_cooldowns,
+                    "session_suggestions": self._state.session_suggestions,
+                    "mode_lock_until": self._state.mode_lock_until,
+                }
+            )
+            result = self._mode_manager.switch_to(mode, reason, language=language or self._cfg.language)
+            checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
+            self._state.active_mode = str(result.get("new_mode") or self._state.active_mode)
+            self._state.mode_started_at = float(checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0)
+            self._state.recent_mode_switches = checkpoint.get("recent_mode_switches") if isinstance(checkpoint.get("recent_mode_switches"), list) else self._state.recent_mode_switches
+            self._state.suggestion_cooldowns = checkpoint.get("suggestion_cooldowns") if isinstance(checkpoint.get("suggestion_cooldowns"), dict) else self._state.suggestion_cooldowns
+            self._state.session_suggestions = checkpoint.get("session_suggestions") if isinstance(checkpoint.get("session_suggestions"), list) else self._state.session_suggestions
+            self._state.mode_lock_until = float(checkpoint.get("mode_lock_until") or self._state.mode_lock_until or 0.0)
+            self._state.checkpoint = {
+                **checkpoint,
+                "changed": bool(result.get("changed")),
+                "old_mode": result.get("old_mode"),
+                "new_mode": result.get("new_mode"),
+                "reason": result.get("reason"),
+                "transition_phrase": result.get("transition_phrase"),
+                "locked": bool(result.get("locked")),
+                "lock_reason": result.get("lock_reason"),
+                "lock_until": float(result.get("lock_until") or 0.0),
+            }
+            if result.get("changed"):
+                self._cfg.mode = self._state.active_mode
+                self._cfg.default_mode = self._state.active_mode
+        if result.get("changed") and self._agent is not None:
+            self._agent.update_config(self._cfg)
+        await self._persist_state()
+        return result
 
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
@@ -147,7 +204,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         name=tr("entries.open_ui.name", default="Open Study Companion UI"),
         description=tr("entries.open_ui.description", default="Return the static UI path for study_companion."),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["message"],
+        llm_result_fields=["available", "path", "message_key"],
     )
     async def study_open_ui(self, **_):
         return Ok(build_open_ui_payload(plugin_id=self.plugin_id, available=self.get_static_ui_config() is not None))
@@ -160,7 +217,39 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["status", "active_mode"],
     )
     async def study_status(self, **_):
-        return Ok(self._status_payload())
+        payload = await asyncio.to_thread(self._status_payload)
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_detect_mode_intent",
+        name=tr("entries.detect_mode_intent.name", default="Detect Study Mode Intent"),
+        description=tr("entries.detect_mode_intent.description", default="Detect whether a text snippet contains a study mode switch intent."),
+        input_schema={"type": "object", "properties": {"text": {"type": "string", "default": ""}}},
+        llm_result_fields=["mode", "pure_switch", "transition_phrase"],
+    )
+    async def study_detect_mode_intent(self, text: str = "", **_):
+        return Ok(handle_user_intent(text, language=self._cfg.language))
+
+    @plugin_entry(
+        id="study_set_mode",
+        name=tr("entries.set_mode.name", default="Set Study Mode"),
+        description=tr("entries.set_mode.description", default="Switch the study companion between companion, interactive, and teaching modes."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": [MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING]},
+                "reason": {"type": "string", "default": "ui"},
+            },
+            "required": ["mode"],
+        },
+        llm_result_fields=["changed", "new_mode", "transition_phrase"],
+    )
+    async def study_set_mode(self, mode: str, reason: str = "ui", **_):
+        try:
+            result = await self._apply_mode_switch(mode, reason, language=self._cfg.language)
+        except ValueError as exc:
+            return Err(SdkError(str(exc)))
+        return Ok(result)
 
     @plugin_entry(
         id="study_dependency_status",
@@ -210,13 +299,48 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_explain_text(self, text: str = "", **_):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
-        source_text = str(text or "").strip()
+        raw_text = str(text or "").strip()
+        # Phase 1: detect an explicit mode intent and switch first when present.
+        intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
+        active_mode = self._state.active_mode
+        mode_switch: dict[str, Any] = {}
+        if intent.get("matched") and intent.get("kind") == "mode_switch":
+            try:
+                mode_switch = await self._apply_mode_switch(str(intent.get("mode") or MODE_COMPANION), f"intent:{intent.get('keyword') or 'text'}", language=self._cfg.language)
+                active_mode = str(mode_switch.get("new_mode") or active_mode)
+            except ValueError as exc:
+                return Err(SdkError(str(exc)))
+            if intent.get("pure_switch"):
+                transition_phrase = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
+                return Ok(
+                    {
+                        **mode_switch,
+                        "reply": transition_phrase,
+                        "summary": transition_phrase,
+                        "operation": MODE_CONCEPT_EXPLAIN,
+                        "input_text": raw_text,
+                        "degraded": False,
+                    }
+                )
+        # Phase 2: resolve the text to explain.
+        intent_kind = str(intent.get("kind") or "")
+        source_text = str(intent.get("remaining_text") or "").strip()
+        if not source_text and intent_kind != "concept_explain":
+            source_text = raw_text
+        used_ocr_fallback = False
         if not source_text:
             with self._lock:
                 source_text = self._state.last_ocr_text
+            used_ocr_fallback = bool(source_text.strip())
+        # Phase 3: explain with the active mode selected above.
         reply = await self._agent.concept_explain(
             source_text,
-            context={"source": "manual" if text else "ocr_snapshot"},
+            mode=active_mode,
+            context={
+                "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
+                "mode": active_mode,
+                "mode_switch": bool(mode_switch.get("changed")),
+            },
         )
         with self._lock:
             self._state.last_reply = reply.reply
@@ -228,11 +352,24 @@ class StudyCompanionPlugin(NekoPluginBase):
             kind=MODE_CONCEPT_EXPLAIN,
             input_text=reply.input_text,
             output_text=reply.reply,
-            metadata={"degraded": reply.degraded, "diagnostic": reply.diagnostic},
+            metadata={
+                "degraded": reply.degraded,
+                "diagnostic": reply.diagnostic,
+                "mode": active_mode,
+                "mode_switch": mode_switch,
+                "intent": intent,
+            },
             history_limit=self._cfg.history_limit,
         )
         await self._persist_state()
-        return Ok(build_explain_payload(reply))
+        payload = build_explain_payload(reply)
+        if mode_switch:
+            payload["mode_switch"] = mode_switch
+        if intent.get("matched"):
+            payload["intent"] = intent
+            if intent.get("pure_switch"):
+                payload["transition_phrase"] = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
+        return Ok(payload)
 
     @plugin_entry(
         id="study_install_tesseract",

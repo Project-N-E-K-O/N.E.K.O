@@ -4,11 +4,11 @@ from dataclasses import asdict, dataclass, field
 import math
 from typing import Any
 
+from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
+from .mode_manager import normalize_mode
+
 
 PLUGIN_ID = "study_companion"
-
-MODE_CONCEPT_EXPLAIN = "concept_explain"
-SUPPORTED_MODES = frozenset({MODE_CONCEPT_EXPLAIN})
 
 STATUS_READY = "ready"
 STATUS_STOPPED = "stopped"
@@ -36,7 +36,8 @@ def json_copy(value: Any) -> Any:
 
 @dataclass(slots=True)
 class StudyConfig:
-    mode: str = MODE_CONCEPT_EXPLAIN
+    mode: str = MODE_COMPANION
+    default_mode: str = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
     ocr_enabled: bool = True
@@ -67,7 +68,12 @@ class StudyConfig:
 @dataclass(slots=True)
 class StudyState:
     status: str = STATUS_STOPPED
-    active_mode: str = MODE_CONCEPT_EXPLAIN
+    active_mode: str = MODE_COMPANION
+    mode_started_at: float = 0.0
+    recent_mode_switches: list[dict[str, Any]] = field(default_factory=list)
+    suggestion_cooldowns: dict[str, float] = field(default_factory=dict)
+    session_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    mode_lock_until: float = 0.0
     last_error: str = ""
     last_started_at: str = ""
     last_ocr_text: str = ""
@@ -142,17 +148,32 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         except (TypeError, ValueError):
             return default
 
+    def _float_alias(section: dict[str, Any], keys: tuple[str, ...], default: float, flat_key: str | None = None) -> float:
+        for key in keys:
+            if key in section:
+                try:
+                    return float(section.get(key, default))
+                except (TypeError, ValueError):
+                    return default
+        if flat_key and flat_key in raw:
+            try:
+                return float(raw.get(flat_key, default))
+            except (TypeError, ValueError):
+                return default
+        return default
+
     def _clamp(value: float, minimum: float, maximum: float, default: float) -> float:
         if not math.isfinite(value):
             value = default
         return max(minimum, min(maximum, value))
 
-    mode = _str(study, "default_mode", MODE_CONCEPT_EXPLAIN, "mode").strip() or MODE_CONCEPT_EXPLAIN
-    if mode not in SUPPORTED_MODES:
-        mode = MODE_CONCEPT_EXPLAIN
+    default_mode = _str(study, "default_mode", _str(study, "mode", MODE_COMPANION, "mode"), "default_mode").strip() or MODE_COMPANION
+    default_mode = normalize_mode(default_mode)
+    mode = normalize_mode(_str(study, "mode", default_mode, "mode"))
 
     return StudyConfig(
         mode=mode,
+        default_mode=default_mode,
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
@@ -178,7 +199,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         rapidocr_model_type=_str(rapidocr, "model_type", "mobile", "rapidocr_model_type"),
         rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"),
         llm_call_timeout_seconds=_clamp(
-            _float(llm, "llm_call_timeout_seconds", 30.0, "llm_call_timeout_seconds"),
+            _float_alias(llm, ("call_timeout_seconds", "llm_call_timeout_seconds"), 30.0, "llm_call_timeout_seconds"),
             1.0,
             3600.0,
             30.0,

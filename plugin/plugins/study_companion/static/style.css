@@ -35,6 +35,13 @@ textarea {
   border-bottom: 1px solid #d8dde6;
 }
 
+.mode-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
 h1,
 h2,
 p {
@@ -78,6 +85,17 @@ button {
 button:hover {
   border-color: #6f7d91;
   background: #f8fafc;
+}
+
+button.is-active {
+  background: #2e5bff;
+  border-color: #2e5bff;
+  color: #ffffff;
+}
+
+button.is-active:hover {
+  background: #2348cc;
+  border-color: #2348cc;
 }
 
 button:disabled {
@@ -153,5 +171,10 @@ pre {
   .toolbar-actions button,
   .action-row button {
     flex: 1;
+  }
+
+  .mode-strip button {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }

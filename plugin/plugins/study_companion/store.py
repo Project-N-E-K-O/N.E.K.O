@@ -7,7 +7,54 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .mode_manager import normalize_mode
 from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, build_config, json_copy
+
+_DROP = object()
+_STATE_ITEM_FLOAT_KEYS = {"at", "created_at", "updated_at", "expires_at", "lock_until"}
+
+
+def safe_float(value: Any, default: Any = 0.0) -> Any:
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _sanitize_suggestion_cooldowns(value: Any) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, float] = {}
+    for key, raw in value.items():
+        coerced = safe_float(raw, _DROP)
+        if coerced is not _DROP:
+            cleaned[str(key)] = coerced
+    return cleaned
+
+
+def _sanitize_state_item_list(value: Any, *, required_float_key: str | None = None) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for item in json_copy(value):
+        if not isinstance(item, dict):
+            continue
+        sanitized = dict(item)
+        if required_float_key is not None:
+            coerced = safe_float(sanitized.get(required_float_key), _DROP)
+            if coerced is _DROP:
+                continue
+            sanitized[required_float_key] = coerced
+        valid = True
+        for key in _STATE_ITEM_FLOAT_KEYS.intersection(sanitized.keys()):
+            coerced = safe_float(sanitized.get(key), _DROP)
+            if coerced is _DROP:
+                valid = False
+                break
+            sanitized[key] = coerced
+        if valid:
+            cleaned.append(sanitized)
+    return cleaned
 
 
 class StudyStore:
@@ -138,6 +185,15 @@ class StudyStore:
             return fallback
         merged = fallback.to_dict()
         merged.update(raw)
+        merged["active_mode"] = normalize_mode(merged.get("active_mode") or fallback.active_mode)
+        merged["mode_started_at"] = safe_float(merged.get("mode_started_at"), 0.0)
+        merged["recent_mode_switches"] = _sanitize_state_item_list(
+            merged.get("recent_mode_switches"),
+            required_float_key="at",
+        )
+        merged["suggestion_cooldowns"] = _sanitize_suggestion_cooldowns(merged.get("suggestion_cooldowns"))
+        merged["session_suggestions"] = _sanitize_state_item_list(merged.get("session_suggestions"))
+        merged["mode_lock_until"] = safe_float(merged.get("mode_lock_until"), 0.0)
         return StudyState(**{key: merged[key] for key in fallback.to_dict().keys()})
 
     def save_state(self, state: StudyState) -> None:

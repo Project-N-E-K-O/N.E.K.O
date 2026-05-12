@@ -2432,6 +2432,8 @@
         "sourceLabel": "ガイドソース",
         "contentLanguageNotice": "言語切り替えはページ操作文言と本文の両方に反映されます。",
         "languageLabel": "言語",
+        "tocTitle": "目次",
+        "tocEmpty": "目次はまだありません",
         "guideUnavailable": "ガイド内容が空です。"
     },
     "subtitle": {

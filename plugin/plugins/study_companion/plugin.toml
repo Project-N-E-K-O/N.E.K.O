@@ -29,7 +29,7 @@ enabled = true
 auto_start = false
 
 [study]
-default_mode = "concept_explain"
+default_mode = "companion"
 language = "zh-CN"
 history_limit = 50
 
@@ -65,7 +65,7 @@ enabled = true
 
 [[plugin.ui.guide]]
 id = "study-panel"
-title = { "$i18n" = "ui.surface.study_panel", default = "Study Panel" }
+title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
 permissions = ["state:read"]
 
