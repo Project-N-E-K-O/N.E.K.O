@@ -3546,7 +3546,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         async def _ensure_session(speech_id: str) -> None:
             nonlocal current_speech_id, pending_text_sid
             if current_speech_id != speech_id or ws is None:
-                await _close_ws(send_final_empty=False, wait_for_final=False)
+                wait_for_previous_final = (
+                    ws is not None
+                    and text_done_sent
+                    and not response_finished.is_set()
+                )
+                await _close_ws(send_final_empty=False, wait_for_final=wait_for_previous_final)
                 if pending_text and pending_text_sid not in (None, speech_id):
                     logger.debug(
                         "ElevenLabs WS dropping stale pending text: pending_sid=%s current_sid=%s len=%d",
