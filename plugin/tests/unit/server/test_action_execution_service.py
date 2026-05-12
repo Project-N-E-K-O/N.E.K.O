@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from plugin.server.application.actions.execution_service import ActionExecutionService
-from plugin.server.domain.action_models import ActionDescriptor, ActionExecuteResponse
+from plugin.server.domain.action_models import ActionDescriptor
 from plugin.server.domain.errors import ServerDomainError
 
 

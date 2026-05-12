@@ -154,12 +154,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """Return image attachments forwarded from the user's chat message."""
         try:
             result = self.ctx.get_attachments()
-            if result is not None:
-                return list(result) if isinstance(result, list) else []
+            if isinstance(result, list):
+                self._last_attachments = list(result)
+                return self._last_attachments
         except Exception:
-            pass
-        raw = getattr(self, "_last_attachments", None)
-        return list(raw) if isinstance(raw, list) else []
+            pass  # ctx may not support get_attachments; fall back to cache
+        return list(self._last_attachments)
 
     def get_user_language(self) -> str:
         try:
@@ -167,7 +167,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             if callable(getter):
                 return str(getter() or "")
         except Exception:
-            pass
+            pass  # ctx may not implement get_user_language; return empty
         return ""
 
     def set_user_language(self, lang: str) -> None:
@@ -176,7 +176,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             if callable(setter):
                 setter(lang)
         except Exception:
-            pass
+            pass  # best-effort; language state is non-critical
 
     async def fetch_user_language(self, *, timeout: float = 5.0) -> str:
         try:

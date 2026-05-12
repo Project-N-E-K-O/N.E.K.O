@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import threading
 import json
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch

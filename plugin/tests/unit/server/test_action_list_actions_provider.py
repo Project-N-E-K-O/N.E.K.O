@@ -1,7 +1,6 @@
 """Unit tests for plugin.server.application.actions.list_actions_provider."""
 from __future__ import annotations
 
-import threading
 from typing import Any
 from unittest.mock import patch
 

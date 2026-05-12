@@ -6,7 +6,6 @@ through FastAPI, including error mapping and serialization.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -16,7 +15,7 @@ from plugin.server.domain.action_models import ActionDescriptor, ActionExecuteRe
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import verify_admin_code
 from plugin.server.infrastructure.exceptions import register_exception_handlers
-from plugin.server.routes.actions import router
+import plugin.server.routes.actions as _actions_route_module
 
 
 # ── Fakes ────────────────────────────────────────────────────────────
@@ -106,17 +105,15 @@ def actions_test_app() -> FastAPI:
     app = FastAPI(title="actions-test")
     register_exception_handlers(app)
     app.dependency_overrides[verify_admin_code] = lambda: "test"
-    app.include_router(router)
+    app.include_router(_actions_route_module.router)
     return app
 
 
 @pytest.fixture
 async def client(actions_test_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
-    import plugin.server.routes.actions as route_module
-
-    monkeypatch.setattr(route_module, "aggregation_service", _FakeAggregationService())
-    monkeypatch.setattr(route_module, "execution_service", _FakeExecutionService())
-    monkeypatch.setattr(route_module, "preferences_service", _FakePreferencesService())
+    monkeypatch.setattr(_actions_route_module, "aggregation_service", _FakeAggregationService())
+    monkeypatch.setattr(_actions_route_module, "execution_service", _FakeExecutionService())
+    monkeypatch.setattr(_actions_route_module, "preferences_service", _FakePreferencesService())
 
     transport = ASGITransport(app=actions_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as c:
