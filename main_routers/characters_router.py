@@ -4499,7 +4499,8 @@ async def voice_clone_direct(request: Request):
                     'provider': provider
                 })
 
-            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+            normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
                 io.BytesIO(audio_bytes),
                 filename,
             )

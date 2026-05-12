@@ -1199,7 +1199,7 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            loadElevenlabsConfig(data);
+            syncElevenlabsKeyBook(data);
 
             // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
             loadGptSovitsConfig(
@@ -1502,215 +1502,14 @@ function toggleGptSovitsConfig() {
     if (configFields) {
         configFields.style.display = enabled ? 'block' : 'none';
     }
-    if (enabled) {
-        const elevenlabsEnabled = document.getElementById('elevenlabsEnabled');
-        if (elevenlabsEnabled && elevenlabsEnabled.checked) {
-            elevenlabsEnabled.checked = false;
-            toggleElevenlabsConfig();
-        }
-    }
 }
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
-// ==================== ElevenLabs 配置相关函数 ====================
-
-function _setSliderValue(id, value, fallback) {
-    const input = document.getElementById(id);
-    const label = document.getElementById(id + 'Value');
-    const numericValue = Number.isFinite(Number(value)) ? Number(value) : fallback;
-    const clamped = Math.max(0, Math.min(1, numericValue));
-    if (input) input.value = String(clamped);
-    if (label) label.textContent = clamped.toFixed(2);
+// ==================== ElevenLabs Key Book 同步 ====================
+function syncElevenlabsKeyBook(data) {
+    syncKeyToBook('elevenlabs', data.assistApiKeyElevenlabs || '');
 }
-
-function _getSliderValue(id, fallback) {
-    const value = Number(document.getElementById(id)?.value);
-    if (!Number.isFinite(value)) return fallback;
-    return Math.max(0, Math.min(1, value));
-}
-
-function loadElevenlabsConfig(data) {
-    const enabled = !!data.elevenlabsEnabled || data.ttsProvider === 'elevenlabs';
-    const enabledCheckbox = document.getElementById('elevenlabsEnabled');
-    if (enabledCheckbox) enabledCheckbox.checked = enabled;
-
-    const apiKeyInput = document.getElementById('elevenlabsApiKey');
-    if (apiKeyInput) {
-        const savedKey = data.assistApiKeyElevenlabs || '';
-        setMaskedInput(apiKeyInput, savedKey);
-        attachMaskBehavior(apiKeyInput);
-        _elevenlabsApiKeyDraft = savedKey;
-        syncKeyToBook('elevenlabs', savedKey);
-        bindElevenlabsApiKeySync(apiKeyInput);
-    }
-
-    setInputValue('elevenlabsBaseUrl', data.elevenlabsBaseUrl || 'https://api.elevenlabs.io');
-    setInputValue('elevenlabsModel', data.elevenlabsModel || 'eleven_flash_v2_5');
-    const elevenlabsOutputFormat = typeof data.elevenlabsOutputFormat === 'string' && /^pcm_\d+$/.test(data.elevenlabsOutputFormat.trim())
-        ? data.elevenlabsOutputFormat.trim()
-        : 'pcm_24000';
-    setInputValue('elevenlabsOutputFormat', elevenlabsOutputFormat);
-    setInputValue('elevenlabsOptimizeStreamingLatency', data.elevenlabsOptimizeStreamingLatency ?? 0);
-    _setSliderValue('elevenlabsStability', data.elevenlabsStability, 0.5);
-    _setSliderValue('elevenlabsSimilarityBoost', data.elevenlabsSimilarityBoost, 0.75);
-    _setSliderValue('elevenlabsStyle', data.elevenlabsStyle, 0);
-
-    const speakerBoost = document.getElementById('elevenlabsUseSpeakerBoost');
-    if (speakerBoost) {
-        speakerBoost.checked = data.elevenlabsUseSpeakerBoost !== false;
-    }
-
-    const hiddenInput = document.getElementById('elevenlabsVoiceId');
-    if (hiddenInput) {
-        hiddenInput.value = (data.ttsVoiceId && data.ttsVoiceId.startsWith('eleven:')) ? data.ttsVoiceId : '';
-    }
-
-    toggleElevenlabsConfig();
-    if (enabled) {
-        fetchElevenlabsVoices(true);
-    }
-}
-
-function toggleElevenlabsConfig() {
-    const enabled = document.getElementById('elevenlabsEnabled')?.checked;
-    const configFields = document.getElementById('elevenlabs-config-fields');
-    if (configFields) {
-        configFields.style.display = enabled ? 'block' : 'none';
-    }
-    if (enabled) {
-        const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
-        if (gptsovitsEnabled && gptsovitsEnabled.checked) {
-            gptsovitsEnabled.checked = false;
-            toggleGptSovitsConfig();
-        }
-    }
-}
-
-function selectElevenlabsVoice(voiceId) {
-    const hiddenInput = document.getElementById('elevenlabsVoiceId');
-    if (hiddenInput) hiddenInput.value = voiceId;
-
-    const grid = document.getElementById('elevenlabs-voices-grid');
-    if (!grid) return;
-    grid.querySelectorAll('.gsv-voice-card').forEach(card => {
-        const isSelected = card.dataset.voiceId === voiceId;
-        card.classList.toggle('selected', isSelected);
-        card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
-        card.tabIndex = isSelected ? 0 : -1;
-    });
-}
-
-async function fetchElevenlabsVoices(silent = false) {
-    const grid = document.getElementById('elevenlabs-voices-grid');
-    const hiddenInput = document.getElementById('elevenlabsVoiceId');
-    if (!grid) return;
-
-    const currentValue = hiddenInput ? hiddenInput.value : '';
-    grid.innerHTML = '<div class="gsv-voices-loading">' + _escHtml(window.t ? window.t('api.loadingConfig') : '正在加载...') + '</div>';
-
-    try {
-        const resp = await fetch('/api/characters/custom_tts_voices?provider=elevenlabs');
-        const result = await resp.json();
-        if (result.success && Array.isArray(result.voices)) {
-            grid.innerHTML = '';
-            if (result.voices.length === 0) {
-                grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(window.t ? window.t('api.elevenlabsNoVoices') : '-- 无可用 ElevenLabs 声音 --') + '</div>';
-            } else {
-                let hasSelectedCard = false;
-                result.voices.forEach(v => {
-                    const card = document.createElement('div');
-                    card.className = 'gsv-voice-card';
-                    card.dataset.voiceId = v.voice_id;
-                    const isSelected = v.voice_id === currentValue;
-                    if (isSelected) {
-                        card.classList.add('selected');
-                        hasSelectedCard = true;
-                    }
-                    card.setAttribute('role', 'radio');
-                    card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
-                    card.tabIndex = isSelected ? 0 : -1;
-
-                    let html = '';
-                    html += '<div class="gsv-card-name">' + _escHtml(v.name || v.raw_id || v.voice_id) + '</div>';
-                    if (v.raw_id) {
-                        html += '<div class="gsv-card-id">' + _escHtml(v.raw_id) + '</div>';
-                    }
-                    html += '<div class="gsv-card-version">ElevenLabs</div>';
-                    if (v.description) {
-                        html += '<div class="gsv-card-desc" title="' + _escAttr(v.description) + '">' + _escHtml(v.description) + '</div>';
-                    }
-                    card.innerHTML = html;
-                    card.addEventListener('click', () => selectElevenlabsVoice(v.voice_id));
-                    card.addEventListener('keydown', (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            selectElevenlabsVoice(v.voice_id);
-                            return;
-                        }
-
-                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-                            event.preventDefault();
-                            const cards = Array.from(grid.querySelectorAll('.gsv-voice-card'));
-                            const currentIndex = cards.indexOf(card);
-                            if (currentIndex === -1 || cards.length === 0) return;
-
-                            const step = (event.key === 'ArrowRight' || event.key === 'ArrowDown') ? 1 : -1;
-                            const nextIndex = (currentIndex + step + cards.length) % cards.length;
-                            const nextCard = cards[nextIndex];
-                            if (nextCard) {
-                                selectElevenlabsVoice(nextCard.dataset.voiceId || '');
-                                nextCard.focus();
-                            }
-                        }
-                    });
-                    grid.appendChild(card);
-                });
-
-                if (!hasSelectedCard) {
-                    const firstCard = grid.querySelector('.gsv-voice-card');
-                    if (firstCard) firstCard.tabIndex = 0;
-                }
-            }
-            if (!silent) {
-                showStatus(window.t ? window.t('api.elevenlabsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个 ElevenLabs 声音`, 'success');
-            }
-        } else {
-            const _errMsg = (result.code && window.t) ? window.t('errors.' + result.code, result.details || {}) : result.error;
-            grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(_errMsg || (window.t ? window.t('api.elevenlabsVoicesLoadFailed') : '获取 ElevenLabs 声音列表失败')) + '</div>';
-            if (!silent) {
-                showStatus(_errMsg || (window.t ? window.t('api.elevenlabsVoicesLoadFailed') : '获取 ElevenLabs 声音列表失败'), 'error');
-            }
-        }
-    } catch (e) {
-        grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(window.t ? window.t('api.elevenlabsVoicesLoadFailed') : '获取 ElevenLabs 声音列表失败') + '</div>';
-        if (!silent) {
-            showStatus(window.t ? window.t('api.elevenlabsVoicesLoadFailed') : '获取 ElevenLabs 声音列表失败: ' + e.message, 'error');
-        }
-    }
-}
-
-function getElevenlabsConfigForSave() {
-    const apiKeyInput = document.getElementById('elevenlabsApiKey');
-    const liveApiKey = getElevenlabsInputKey(apiKeyInput);
-    const rawLiveValue = (apiKeyInput?.value || '').trim();
-    const editedApiKey = rawLiveValue ? liveApiKey.value : '';
-    return {
-        enabled: !!document.getElementById('elevenlabsEnabled')?.checked,
-        baseUrl: document.getElementById('elevenlabsBaseUrl')?.value.trim() || 'https://api.elevenlabs.io',
-        model: document.getElementById('elevenlabsModel')?.value.trim() || 'eleven_flash_v2_5',
-        outputFormat: document.getElementById('elevenlabsOutputFormat')?.value || 'pcm_24000',
-        optimizeStreamingLatency: Number(document.getElementById('elevenlabsOptimizeStreamingLatency')?.value || 0),
-        stability: _getSliderValue('elevenlabsStability', 0.5),
-        similarityBoost: _getSliderValue('elevenlabsSimilarityBoost', 0.75),
-        style: _getSliderValue('elevenlabsStyle', 0),
-        useSpeakerBoost: document.getElementById('elevenlabsUseSpeakerBoost')?.checked !== false,
-        voiceId: document.getElementById('elevenlabsVoiceId')?.value || '',
-        apiKey: editedApiKey,
-    };
-}
-
-// ==================== 结束 ElevenLabs 配置相关函数 ====================
 
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
@@ -1851,32 +1650,6 @@ function confirmClearCustomApi() {
     _loadedGptSovitsState = 'none';
     _ttsConfigDirty = true;
 
-    const elevenlabsEnabled = document.getElementById('elevenlabsEnabled');
-    if (elevenlabsEnabled && elevenlabsEnabled.checked) {
-        elevenlabsEnabled.checked = false;
-        toggleElevenlabsConfig();
-    }
-    ['elevenlabsApiKey', 'elevenlabsVoiceId'].forEach(id => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.value = '';
-        if (el.dataset) {
-            delete el.dataset.realKey;
-            delete el.dataset.masked;
-        }
-    });
-    _elevenlabsApiKeyDraft = '';
-    setInputValue('elevenlabsBaseUrl', 'https://api.elevenlabs.io');
-    setInputValue('elevenlabsModel', 'eleven_flash_v2_5');
-    setInputValue('elevenlabsOutputFormat', 'pcm_24000');
-    setInputValue('elevenlabsOptimizeStreamingLatency', 0);
-    _setSliderValue('elevenlabsStability', 0.5, 0.5);
-    _setSliderValue('elevenlabsSimilarityBoost', 0.75, 0.75);
-    _setSliderValue('elevenlabsStyle', 0, 0);
-    const elevenlabsUseSpeakerBoost = document.getElementById('elevenlabsUseSpeakerBoost');
-    if (elevenlabsUseSpeakerBoost) elevenlabsUseSpeakerBoost.checked = true;
-
-    // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi && enableCustomApi.checked) {
         enableCustomApi.checked = false;
@@ -1897,11 +1670,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
-    }
-
-    const elevenlabsApiKeyInput = document.getElementById('elevenlabsApiKey');
-    if (elevenlabsApiKeyInput) {
-        bindElevenlabsApiKeySync(elevenlabsApiKeyInput);
     }
 
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
@@ -1927,12 +1695,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    ['elevenlabsStability', 'elevenlabsSimilarityBoost', 'elevenlabsStyle'].forEach(id => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', () => _setSliderValue(id, el.value, Number(el.defaultValue) || 0));
-        _setSliderValue(id, el.value, Number(el.defaultValue) || 0);
-    });
+    
 });
 
 
@@ -1990,25 +1753,6 @@ async function save_button_down(e) {
             allBookKeys[pk] = val; // include '' so backend can clear
         }
     });
-    const elevenlabsConfigForSave = getElevenlabsConfigForSave();
-    const elevenlabsKeyInput = document.getElementById('elevenlabsApiKey');
-    let elevenlabsKeyToSave = '';
-    if (elevenlabsKeyInput) {
-        elevenlabsKeyToSave = elevenlabsConfigForSave.apiKey || '';
-        allBookKeys.elevenlabs = elevenlabsKeyToSave;
-        syncKeyToBook('elevenlabs', elevenlabsKeyToSave);
-    }
-
-    // 用输入框中的值覆盖管理簿中对应服务商的Key（不直接修改管理簿DOM，
-    // 避免二次确认取消时管理簿已被污染）
-    if (coreApi && coreApi !== 'free' && apiKey) {
-        allBookKeys[coreApi] = apiKey;
-    }
-    if (assistApi && assistApi !== 'free' && assistKeyVal) {
-        allBookKeys[assistApi] = assistKeyVal;
-    }
-
-    // 获取用户自定义API配置
     const getVal = (id) => {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
@@ -2055,12 +1799,6 @@ async function save_button_down(e) {
     const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
 
-    const elevenlabsEnabled = elevenlabsConfigForSave.enabled;
-    if (elevenlabsEnabled && !/^https?:\/\//.test(elevenlabsConfigForSave.baseUrl)) {
-        showStatus(window.t ? window.t('api.elevenlabsApiUrlRequired') : '请填写正确的 ElevenLabs http/https API URL', 'error');
-        return;
-    }
-
     // 启用 GPT-SoVITS 时校验 URL 协议
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         const url = gptsovitsConfigForSave.url || '';
@@ -2070,10 +1808,7 @@ async function save_button_down(e) {
         }
     }
 
-    if (elevenlabsEnabled) {
-        ttsModelUrl = elevenlabsConfigForSave.baseUrl;
-        ttsVoiceId = elevenlabsConfigForSave.voiceId || (ttsVoiceId.startsWith('eleven:') ? ttsVoiceId : '');
-    } else if (gptsovitsEnabled && gptsovitsConfigForSave) {
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
         ttsModelUrl = gptsovitsConfigForSave.url;
         ttsVoiceId = gptsovitsConfigForSave.voiceId;
     } else if (!gptsovitsEnabled && _loadedGptSovitsState !== 'none' && !_ttsConfigDirty) {
@@ -2124,17 +1859,7 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
-        elevenlabsEnabled,
-        elevenlabsBaseUrl: elevenlabsConfigForSave.baseUrl,
-        elevenlabsModel: elevenlabsConfigForSave.model,
-        elevenlabsOutputFormat: elevenlabsConfigForSave.outputFormat,
-        elevenlabsOptimizeStreamingLatency: elevenlabsConfigForSave.optimizeStreamingLatency,
-        elevenlabsStability: elevenlabsConfigForSave.stability,
-        elevenlabsSimilarityBoost: elevenlabsConfigForSave.similarityBoost,
-        elevenlabsStyle: elevenlabsConfigForSave.style,
-        elevenlabsUseSpeakerBoost: elevenlabsConfigForSave.useSpeakerBoost,
-        assistApiKeyElevenlabs: elevenlabsKeyToSave,
-        ttsProvider: elevenlabsEnabled ? 'elevenlabs' : (gptsovitsEnabled ? 'gptsovits' : ''),
+        ttsProvider: gptsovitsEnabled ? 'gptsovits' : undefined,
         ...modelProviders
     };
 

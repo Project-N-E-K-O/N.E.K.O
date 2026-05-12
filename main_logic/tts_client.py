@@ -3693,7 +3693,15 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             continue
                         pending_text.clear()
                         pending_text_sid = None
-                    await _close_ws(send_final_empty=True, wait_for_final=True)
+                    # 只发 final empty，让 receive_task 在后台继续把剩余音频抽完；
+                    # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
+                    # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
+                    if ws is not None and not text_done_sent:
+                        try:
+                            await ws.send(json.dumps({"text": ""}))
+                            text_done_sent = True
+                        except Exception as exc:
+                            logger.debug("ElevenLabs WS final empty send failed: %s", exc)
                     current_speech_id = None
                     pending_text.clear()
                     pending_text_sid = None
