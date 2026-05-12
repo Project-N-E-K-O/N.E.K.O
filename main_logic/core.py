@@ -404,9 +404,13 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.native_voice_registry import resolve_native_voice_for_routing
+from utils.native_voice_registry import (
+    is_free_preset_voice_id,
+    resolve_native_voice_for_routing,
+    should_block_free_native_voice,
+    should_block_free_voice_for_route,
+)
 from utils.api_config_loader import (
-    get_free_voices,
     get_livestream_config,
     is_livestream_active,
 )
@@ -646,16 +650,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        raw_voice_id = self._get_voice_id()
-        if self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', '')):
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-        else:
-            self.voice_id = raw_voice_id
-            self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-        if self._is_free_preset_voice and self.core_api_type != 'free':
-            self.voice_id = ''
-            self._is_free_preset_voice = False
+        self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -3022,12 +3017,6 @@ class LLMSessionManager:
             self.is_flushing_hot_swap_cache = False
 
     
-    def _is_preset_voice_id(self, voice_id: str) -> bool:
-        """判断 voice_id 是否属于免费 preset 列表。"""
-        if not voice_id:
-            return False
-        return voice_id in set(get_free_voices().values())
-
     def _resolve_session_use_tts(
         self,
         input_mode: str,
@@ -3045,11 +3034,18 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
-            self.voice_id,
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            uses_provider_native_voice = False
+        else:
+            _, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -3066,21 +3062,41 @@ class LLMSessionManager:
             return True
         return False
 
-    def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
-        """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
-        return bool(
-            self.core_api_type == "free"
-            and "lanlan.app" in (realtime_base_url or "")
-            and self._is_preset_voice_id(voice_id)
-        )
-
     def _get_voice_id(self) -> str:
-        return get_reserved(
+        raw = get_reserved(
             self.lanlan_basic_config[self.lanlan_name],
             'voice_id',
             default='',
             legacy_keys=('voice_id',),
         )
+        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
+        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
+        return (raw or '').strip()
+
+    def _apply_voice_id_for_route(self, realtime_base_url: str) -> None:
+        """按当前 route 把角色卡里的 voice_id 解析进 self.voice_id /
+        self._is_free_preset_voice。
+
+        __init__ / start_session / _background_prepare_pending_session 三处
+        共用：读取 _get_voice_id() → 海外 free 路由屏蔽 → 校正 free preset
+        与 core_api_type 的匹配关系。集中在这里避免规则漂移。
+        """
+        raw_voice_id = self._get_voice_id()
+        if should_block_free_voice_for_route(
+            self.core_api_type,
+            raw_voice_id,
+            realtime_base_url,
+            self._config_manager.voice_id_exists_in_any_storage,
+        ):
+            self.voice_id = ''
+            self._is_free_preset_voice = False
+            return
+        self.voice_id = raw_voice_id
+        self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
+        # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
+        if self._is_free_preset_voice and self.core_api_type != 'free':
+            self.voice_id = ''
+            self._is_free_preset_voice = False
 
     def _is_livestream_active(self) -> bool:
         """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""
@@ -3096,13 +3112,20 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
+           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
-            self.voice_id,
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            voice_name, uses_provider_native_voice = self.voice_id, False
+        else:
+            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
@@ -3300,18 +3323,8 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            else:
-                self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-            if self._is_free_preset_voice and self.core_api_type != 'free':
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-        
+            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
@@ -3820,6 +3833,44 @@ class LLMSessionManager:
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
+        # 记录 / 查询 key：lanlan_name 为空时落到 "default" 与 sink 端对齐
+        # （sink 在 lanlan 字段空 / "default" 时把 directive 写到 "default"
+        # bucket；这里读取也得用同一 key，否则用户的 ban-topic 永远进不来
+        # system prompt，codex P2）。
+        _directives_key = self.lanlan_name or "default"
+
+        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
+        # 用户在过去 3 天里说过的 "别再提 X / stop saying X" 类指令，本轮 LLM
+        # 在 context 里已经看过；下一次 session 重启时原话已被 compress_history
+        # 抹掉，需要把活跃 term 拼成 system prompt 一段重新提醒模型避开。
+        # 抽取与落盘走 ``memory.user_directives`` 的 user_utterance sink；
+        # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            prompt += get_user_directives_manager().render_prompt_block(
+                _directives_key, _lang,
+            )
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[UserDirectives] prompt injection skipped: %s", _exc,
+            )
+
+        # ── 防复读 soft hint 注入 ──────────────────────────────────
+        # 把最近高 BM25 rank 的 topic 词列出来，提示模型"已经聊过这些"。这是
+        # 对**所有路径**生效的软约束（与 user ban list 不同：那个是用户明确
+        # 说过别提，必须强约束）。proactive 还会在 system_router Phase 2 出口
+        # 被 BM25 总分阈值二次拦截（regen / drop），常规 reply 只靠这段 prompt
+        # 软约束。空 corpus / 新角色第一轮 → render 返回 ""，无副作用。
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            from config.prompts.prompts_directives import render_recent_topics_block
+            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            prompt += render_recent_topics_block(topics, _lang)
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[AntiRepeat] soft hint injection skipped: %s", _exc,
+            )
+
         return prompt
 
     def _is_agent_enabled(self):
@@ -3937,18 +3988,8 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            else:
-                self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-            if self._is_free_preset_voice and self.core_api_type != 'free':
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            
+            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）
@@ -4492,6 +4533,15 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
+                # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
+                # LLM 给自己的元数据备忘，不算复读对象。
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    get_anti_repeat_corpus().record_output(
+                        self.lanlan_name, full_text, is_proactive=True,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:

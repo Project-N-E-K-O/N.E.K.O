@@ -491,10 +491,21 @@ async def _preview_recent_compress(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
+    # 与生产 ``memory.recent.compress_history`` 保持一致：先把 ``{MASTER_NAME}``
+    # 字面占位符（"保留负面反馈"clause 用的）替成 master 实名，再做 ``%s`` 替换。
+    master_name = name_mapping.get('human', '')
+    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
     if detailed:
-        prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+        prompt = (
+            (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
     else:
-        prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+        prompt = (
+            get_recent_history_manager_prompt(lang)
+            .replace("%s", messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
 
     llm = _llm_for_memory(session, temperature=0.3)
     warnings: list[str] = []
@@ -1624,10 +1635,21 @@ async def _build_recent_compress_wire(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
+    # 同 _run_memory_compress 的 master_name 替换路径，preview 也得复刻避免
+    # 原始 ``{MASTER_NAME}`` 字面流到调试输出。
+    master_name = name_mapping.get('human', '')
+    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
     if detailed:
-        prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+        prompt = (
+            (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
     else:
-        prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+        prompt = (
+            get_recent_history_manager_prompt(lang)
+            .replace("%s", messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
 
     return MemoryPromptPreview(
         op=OP_RECENT_COMPRESS,

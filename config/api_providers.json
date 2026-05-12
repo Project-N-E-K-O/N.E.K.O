@@ -368,5 +368,65 @@
     "frailMaiden": "voice-tone-PGLmzXEX44",
     "childishMaiden": "voice-tone-PGLnVNQn7A",
     "yui_cn": "voice-tone-QqMv39SYSW"
+  },
+  "_comment_native_tts_voice_providers": "Shape: {providerKey: {catalog_prefix, default_voice, default_male_voice, catalog_value_is_display_name, voices, aliases, inherits}}. voices maps upstream voice_id to display label. Keep this list to voices available on realtime/free TTS paths; some HTTP-only or permission-gated official voices are intentionally omitted.",
+  "native_tts_voice_providers": {
+    "step": {
+      "catalog_prefix": "StepFun",
+      "default_voice": "qingchunshaonv",
+      "default_male_voice": "cixingnansheng",
+      "catalog_value_is_display_name": true,
+      "voices": {
+        "elegantgentle-female": "气质温婉",
+        "livelybreezy-female": "活力轻快",
+        "wenrounansheng": "温柔男声",
+        "wenrougongzi": "温柔公子",
+        "yuanqinansheng": "元气男声",
+        "jingdiannvsheng": "经典女声",
+        "wenroushunv": "温柔熟女",
+        "tianmeinvsheng": "甜美女声",
+        "qingchunshaonv": "清纯少女",
+        "cixingnansheng": "磁性男声",
+        "yuanqishaonv": "元气少女",
+        "linjiajiejie": "邻家姐姐",
+        "zhengpaiqingnian": "正派青年",
+        "qingniandaxuesheng": "青年大学生",
+        "boyinnansheng": "播音男声",
+        "ruyananshi": "儒雅男士",
+        "shenchennanyin": "深沉男音",
+        "qinqienvsheng": "亲切女声",
+        "wenrounvsheng": "温柔女声",
+        "jilingshaonv": "机灵少女",
+        "ruanmengnvsheng": "软萌女声",
+        "youyanvsheng": "优雅女声",
+        "lengyanyujie": "冷艳御姐",
+        "shuangkuaijiejie": "爽快姐姐",
+        "wenjingxuejie": "文静学姐",
+        "linjiameimei": "邻家妹妹",
+        "zhixingjiejie": "知性姐姐",
+        "shuangkuainansheng": "爽快男声",
+        "ganliannvsheng": "干练女声",
+        "qinhenvsheng": "亲和女声",
+        "huolinvsheng": "活力女声"
+      },
+      "aliases": {
+        "default": "qingchunshaonv",
+        "默认": "qingchunshaonv",
+        "female": "qingchunshaonv",
+        "woman": "qingchunshaonv",
+        "女": "qingchunshaonv",
+        "女声": "qingchunshaonv",
+        "中文女": "qingchunshaonv",
+        "male": "cixingnansheng",
+        "man": "cixingnansheng",
+        "男": "cixingnansheng",
+        "男声": "cixingnansheng",
+        "中文男": "cixingnansheng"
+      }
+    },
+    "free": {
+      "inherits": "step",
+      "catalog_prefix": "免费 API"
+    }
   }
 }

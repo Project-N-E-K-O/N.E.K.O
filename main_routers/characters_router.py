@@ -67,8 +67,10 @@ from utils.config_manager import (
     strip_generated_persona_selection_prompt,
 )
 from utils.native_voice_registry import (
-    get_active_realtime_native_provider,
+    get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
+    normalize_native_voice,
+    resolve_native_voice_for_routing,
 )
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -121,6 +123,7 @@ logger = get_module_logger(__name__, "Main")
 
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
+DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
 
 
 def _voice_session_starting_response():
@@ -145,6 +148,18 @@ def _is_current_catgirl_voice_session_starting(name: str, characters, session_ma
         getattr(mgr, "is_starting", False)
         and not getattr(mgr, "is_active", False)
         and (getattr(mgr, "starting_input_mode", None) or getattr(mgr, "input_mode", "")) == "audio"
+    )
+
+
+def _get_new_catgirl_default_voice_id() -> str:
+    """获取新建角色的默认音色，兼容旧版/自定义 free_voices 缺失的配置。"""
+    from utils.api_config_loader import get_free_voices
+
+    free_voices = get_free_voices() or {}
+    return (
+        free_voices.get('cuteGirl')
+        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
+        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
     )
 
 
@@ -266,6 +281,24 @@ def _is_free_preset_voice_id(voice_id: object) -> bool:
     return normalized in free_voice_ids
 
 
+def _get_active_native_preview_provider(config_manager, voice_id: object) -> str | None:
+    """判断 voice_id 是否应走当前实时 Provider 的原生预览路径。"""
+    normalized = str(voice_id or "").strip()
+    if not normalized:
+        return None
+    active_provider = get_active_realtime_native_provider_for_ui(config_manager)
+    if not active_provider:
+        return None
+    _, uses_provider_native_voice = resolve_native_voice_for_routing(
+        active_provider,
+        normalized,
+        config_manager.voice_id_exists_in_any_storage,
+    )
+    if uses_provider_native_voice:
+        return active_provider
+    return None
+
+
 def _read_wav_payload(audio_bytes: bytes) -> tuple[bytes, int, int, int]:
     """读取上游返回的 WAV，返回 PCM 与声道、采样宽度、采样率。"""
     with io.BytesIO(audio_bytes) as wav_io:
@@ -290,15 +323,27 @@ def _build_wav_payload(pcm_chunks: list[bytes], channels: int, sample_width: int
     return out.getvalue()
 
 
-async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
-    """使用 free TTS WebSocket 为免费预设音色生成试听 WAV。"""
+async def _synthesize_step_voice_preview(
+    voice_id: str,
+    preview_line: str,
+    preview_language: str,
+    audio_api_key: str = "",
+    *,
+    free_mode: bool = False,
+) -> bytes:
+    """使用 StepFun/free TTS WebSocket 生成试听 WAV。"""
     import websockets
 
-    from main_logic.tts_client import _adjust_free_tts_url
+    from main_logic.tts_client import _adjust_free_tts_url, _build_step_tts_create_data
 
-    tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
+    tts_url = (
+        _adjust_free_tts_url("wss://www.lanlan.tech/tts")
+        if free_mode
+        else "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
+    )
     headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
     lang_hint = "ja" if preview_language == "ja" else None
+    is_lanlan_app = "lanlan.app" in tts_url
     session_id = ""
     pcm_chunks: list[bytes] = []
     wav_meta: tuple[int, int, int] | None = None
@@ -318,16 +363,9 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
                     raise RuntimeError(str(event.get("data") or event))
 
             if not session_id:
-                raise RuntimeError("free TTS connection did not return session_id")
+                raise RuntimeError("TTS 连接未返回 session_id")
 
-            create_data = {
-                "session_id": session_id,
-                "voice_id": voice_id,
-                "response_format": "wav",
-                "sample_rate": 24000,
-            }
-            if lang_hint == "ja":
-                create_data["voice_label"] = {"language": "日语"}
+            create_data = _build_step_tts_create_data(session_id, voice_id, lang_hint, is_lanlan_app)
 
             await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
             await ws.send(json.dumps({
@@ -357,10 +395,60 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
                     break
 
     if not pcm_chunks or wav_meta is None:
-        raise RuntimeError("free TTS did not return audio")
+        raise RuntimeError("TTS 未返回音频")
 
     channels, sample_width, sample_rate = wav_meta
     return _build_wav_payload(pcm_chunks, channels, sample_width, sample_rate)
+
+
+async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
+    """使用 free TTS WebSocket 为免费预设音色生成试听 WAV。"""
+    return await _synthesize_step_voice_preview(
+        voice_id=voice_id,
+        preview_line=preview_line,
+        preview_language=preview_language,
+        audio_api_key=audio_api_key,
+        free_mode=True,
+    )
+
+
+async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
+    """使用 Gemini 原生 TTS 生成试听 WAV。"""
+    from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
+
+    normalized_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
+    if not recognized:
+        raise ValueError(f"不支持的 Gemini 原生音色: {voice_id}")
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": f"Say the text with a proper tone, don't omit or add any words:\n\"{preview_line}\""}]}],
+        "generationConfig": {
+            "response_modalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": normalized_voice_id}
+                }
+            },
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(14, connect=10)) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    candidates = data.get("candidates", [])
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if parts:
+            audio_b64 = parts[0].get("inlineData", {}).get("data")
+            if audio_b64:
+                return _build_wav_payload([base64.b64decode(audio_b64)], 1, 2, 24000)
+    raise RuntimeError("Gemini TTS 未返回音频")
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -2641,9 +2729,8 @@ async def add_catgirl(request: Request):
 
     characters['猫娘'][key] = catgirl_data
     # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
-    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时退回 PR 前 yui-origin 历史值。
-    from utils.api_config_loader import get_free_voices
-    default_free_voice_id = (get_free_voices() or {}).get('cuteGirl') or 'voice-tone-PGLiyZt65w'
+    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+    default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
@@ -3084,7 +3171,7 @@ async def get_voices():
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
     
     core_config = await _config_manager.aget_core_config()
-    active_native_provider = get_active_realtime_native_provider(_config_manager)
+    active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
     if active_native_provider:
         result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
 
@@ -3145,6 +3232,68 @@ async def get_voice_preview(
         
         preview_language = _get_voice_preview_language(request, language, i18n_language)
         text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+        native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
+
+        if native_preview_provider:
+            native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
+            try:
+                if native_preview_provider in ('step', 'free'):
+                    # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
+                    # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
+                    # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
+                    # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
+                    try:
+                        native_tts_config = _config_manager.get_model_api_config('tts_default')
+                        native_audio_api_key = native_tts_config.get('api_key', '') or ''
+                    except Exception:
+                        native_audio_api_key = ''
+                    if native_preview_provider == 'step' and not native_audio_api_key:
+                        return JSONResponse({
+                            'success': False,
+                            'error': 'TTS_AUDIO_API_KEY_MISSING',
+                            'code': 'TTS_AUDIO_API_KEY_MISSING'
+                        }, status_code=400)
+                    audio_data = await _synthesize_step_voice_preview(
+                        voice_id=native_voice_id,
+                        preview_line=text,
+                        preview_language=preview_language,
+                        audio_api_key=native_audio_api_key,
+                        free_mode=(native_preview_provider == 'free'),
+                    )
+                elif native_preview_provider == 'gemini':
+                    core_config = await _config_manager.aget_core_config()
+                    native_audio_api_key = (core_config or {}).get('CORE_API_KEY', '')
+                    if not native_audio_api_key:
+                        return JSONResponse({
+                            'success': False,
+                            'error': 'TTS_AUDIO_API_KEY_MISSING',
+                            'code': 'TTS_AUDIO_API_KEY_MISSING'
+                        }, status_code=400)
+                    audio_data = await _synthesize_gemini_native_voice_preview(
+                        voice_id=native_voice_id,
+                        preview_line=text,
+                        audio_api_key=native_audio_api_key,
+                    )
+                else:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'当前原生音色暂不支持预览: {native_preview_provider}'
+                    }, status_code=400)
+
+                logger.info(f"原生音色 {native_voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/wav'
+                }
+            except Exception as e:
+                logger.error(f"原生音色 {native_voice_id} 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'原生音色预览生成失败: {str(e)}'
+                }, status_code=500)
+
         if is_free_preset_voice:
             try:
                 audio_data = await _synthesize_free_voice_preview(

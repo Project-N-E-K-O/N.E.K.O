@@ -969,6 +969,74 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
+# ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
+# Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
+# 衰减。state 与 episode 各有 TTL，超期自动进过时 block。pattern 永不过时。
+# `past` 是历史兼容值（旧数据可能存了），render 时直接进过时 block。
+MEMORY_STATE_PAST_DAYS = 7
+"""state 类 reflection 距 event 多少天后被视为已过时。
+- 用途：memory.temporal.is_past_for_render；render 时把此条移入过时 block。
+- 上游：reflection synth LLM 标注 temporal_scope='state' 的条目。"""
+
+MEMORY_EPISODE_PAST_DAYS = 3
+"""episode 类 reflection 距 event 多少天后被视为已过时。
+- 用途：同上，但 episode 是一次性事件，衰减更快。
+- 上游：reflection synth LLM 标注 temporal_scope='episode' 的条目。"""
+
+MEMORY_SCHEMA_VERSION_CURRENT = 2
+"""fact / reflection 当前 schema 版本号。
+- v1（缺失或显式 1）：旧 ontology（current/ongoing/None temporal_scope，无
+  event_when）。
+- v2：新 ontology（pattern/state/episode）+ event_start_at / event_end_at。
+- 用途：背景循环找 schema_version < CURRENT 的条目慢慢重判升版本。"""
+
+# ---- Memory: slow recheck loop (memory/temporal.py + memory_server.py) ─
+MEMORY_RECHECK_ENABLED = True
+"""慢速记忆重判循环总开关。
+- 用途：app/memory_server.py _periodic_slow_memory_recheck_loop 启动门控。
+- 关闭时老数据不会被升版本（render 兜底走 pattern 不淡出）。"""
+
+MEMORY_RECHECK_INTERVAL_SECONDS = 30
+"""慢速重判循环单条间隔。
+- 用途：每 N 秒重判 1 条 reflection / fact。
+- 上游：背景循环 sleep；设计参考 §3.5 archive_sweep（更慢、低 IO）。"""
+
+MEMORY_RECHECK_INITIAL_DELAY_SECONDS = 180
+"""慢速重判循环启动延迟（错峰）。
+- 用途：和现有 6 个循环错峰，避开启动峰值。
+- 现有 _INITIAL_DELAY_* 在 20s~250s，本值 180s 接近末尾。"""
+
+MEMORY_RECHECK_MAX_ATTEMPTS = 5
+"""单条 v1 entry 重判失败几次后放弃，避免饥饿后续合法 v1 条目。
+- 失败定义：LLM 调用抛异常、返回非 dict、temporal_scope 不在合法集合
+  （reflection 限定 pattern/state/episode）。
+- 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
+- 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
+  排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
+# ---- Memory: followup picker (memory/reflection.py) ─
+REFLECTION_FOLLOWUP_WEIGHTED = True
+"""主动搭话 followup 候选采样是否按 evidence_score 加权随机。
+- 用途：_filter_followup_candidates；False 时回退到旧行为（按落盘顺序取
+  top-K）。
+- 设计依据：候选池大时纯落盘顺序总取同一批，造成主动搭话内容雷同。"""
+
+REFLECTION_FOLLOWUP_WEIGHT_BASE = 0.5
+"""加权采样的最低权重（score=0 时也有此权重，避免全 0 score 时退化）。"""
+
+# ---- Memory: summary stale prompt (memory/recent.py) ─
+RECENT_SUMMARY_STALE_HOURS = 1
+"""距上次"LLM 实际更新 past block 的时刻"超过此小时数，下一次 compress
+时在 prompt 头部附加"时间已过 X"提示，让 LLM 主动把过时片段挪进 summary
+内部的过时 block。
+- 锚点：不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
+  stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时刷一次
+  past block"的稳定节奏。改记"上次 hint 真正注入的时刻"，即 LLM 实际
+  被要求更新 past block 的那一刻。
+- 上游：recent_meta.json 里的 last_past_block_update_at 字段。
+- 注意：summary 的过时 block 只在当前 session 临时降级，不持久化到
+  reflection / persona。"""
+
 # ---- Memory: persona ----
 PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 """promote-merge 时同 entity persona+reflection 池总 token 上限。
@@ -1231,6 +1299,60 @@ SESSION_TURN_THRESHOLD = 10
   SESSION_ARCHIVE_TRIGGER_TOKENS 是 OR 关系，任一满足即触发）。
 - 计数语义：仅用户输入计数（AI 回复不算），见 core.py:980。
 - 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
+
+USER_DIRECTIVE_TTL_SECONDS = 3 * 86400
+"""用户显式 ban-topic 指令（"别再提 X / stop saying X"）的存活时长。
+- 用途：memory/user_directives.py 的 active 判定 + render_prompt_block
+  注入到下次 session 启动的 system prompt。
+- 设计依据：用户态度的有效期介于"本轮结束"和"永久偏好"之间——3 天足够覆盖
+  连续几天的会话上下文又不至于把一时情绪固化成长期人设。
+- 上游：main_logic/core.py:_build_initial_prompt 注入；
+  memory/user_directives.py:UserDirectivesManager 内部判活 + 清理。"""
+
+USER_DIRECTIVE_MAX_ACTIVE = 20
+"""注入到 system prompt 的活跃 ban-topic 上限。
+- 用途：UserDirectivesManager.get_active 截断到 last_seen 最新的 N 条。
+- 设计依据：超过 20 个不同 ban-topic 同时活跃几乎一定是抽取出错或用户在
+  故意刷指令——截断比把 prompt 塞爆好。"""
+
+# ── 防复读（anti-repeat）BM25 相关 ─────────────────────────────────
+ANTI_REPEAT_BG_WINDOW = 100
+"""anti-repeat corpus 背景窗口长度（最近 N 条 AI 输出）。
+- 用途：memory/anti_repeat.py 的滚动 corpus 保留最近 N 条文本算 DF。
+- 设计依据：100 条 ≈ 用户半天到一天的对话量；窗口太短 IDF 不稳定，太长
+  又会让一周前的偶发话题永远算"高 IDF unique"。"""
+
+ANTI_REPEAT_FG_WINDOW = 5
+"""anti-repeat 前景窗口长度（最近 N 条算"是否重复"）。
+- 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
+- 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
+
+ANTI_REPEAT_INJECT_TOP_K = 6
+"""注入 system prompt 的 "最近高频 topic 词" 数量。
+- 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。
+- 设计依据：6 个词够覆盖"几个话题"，又不至于把 prompt 撑长。"""
+
+ANTI_REPEAT_REGEN_THRESHOLD = 8.0
+"""proactive 出口 BM25 总分超此值则触发 1 次 regen。
+- 用途：system_router proactive 流式完成后评分；超阈值用 avoidance prompt
+  重 sample 一次。
+- 设计依据：经验起点；后续 testbench 调。"""
+
+ANTI_REPEAT_DROP_THRESHOLD = 16.0
+"""proactive regen 后仍超此值则放弃投递（不发）。
+- 用途：避免 LLM 卡死在某个 topic 上连续复读。
+- 设计依据：REGEN 的 2 倍，给 LLM 一次纠正机会。"""
+
+ANTI_REPEAT_BM25_K1 = 1.5
+"""BM25 k1 参数（控制 TF saturation 速度）。Robertson 经典推荐值。"""
+
+ANTI_REPEAT_BM25_B = 0.75
+"""BM25 b 参数（文档长度归一化强度）。Robertson 经典推荐值。"""
+
+ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
+"""draft 短于此长度（tokens 数）就不评分，直接放行。
+- 用途：避免"嗯。"、"好"这种短回复被错杀。
+- 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
 
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。
@@ -1671,6 +1793,16 @@ __all__ = [
     'OPENCLAW_MAGIC_INTENT_MAX_TOKENS',
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
     'SESSION_TURN_THRESHOLD',
+    'USER_DIRECTIVE_TTL_SECONDS',
+    'USER_DIRECTIVE_MAX_ACTIVE',
+    'ANTI_REPEAT_BG_WINDOW',
+    'ANTI_REPEAT_FG_WINDOW',
+    'ANTI_REPEAT_INJECT_TOP_K',
+    'ANTI_REPEAT_REGEN_THRESHOLD',
+    'ANTI_REPEAT_DROP_THRESHOLD',
+    'ANTI_REPEAT_BM25_K1',
+    'ANTI_REPEAT_BM25_B',
+    'ANTI_REPEAT_MIN_DRAFT_TOKENS',
     'AVATAR_INTERACTION_DEDUPE_MAX_ITEMS',
     'AVATAR_INTERACTION_DEDUPE_WINDOW_MS',
     'AVATAR_INTERACTION_CONTEXT_MAX_TOKENS',

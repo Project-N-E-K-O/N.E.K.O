@@ -313,10 +313,98 @@ def get_free_voices() -> Dict[str, str]:
     获取免费预设音色列表（从 api_providers.json 中读取 free_voices 字段）
     
     Returns:
-        Dict[str, str]: {显示名: voice_id} 的映射字典
+        Dict[str, str]: {voiceKey: voice_id} 的映射字典，voiceKey 由前端本地化
     """
     config = get_config()
     return config.get('free_voices', {})
+
+
+def _normalize_str_dict(raw: Any) -> Dict[str, str]:
+    """把配置中的 dict 规范化为 str -> str，过滤空 key。"""
+    if not isinstance(raw, dict):
+        return {}
+    result: Dict[str, str] = {}
+    for key, value in raw.items():
+        normalized_key = str(key or '').strip()
+        if normalized_key:
+            result[normalized_key] = str(value or '').strip()
+    return result
+
+
+def _resolve_native_tts_voice_provider_config(
+    provider_key: str,
+    raw_configs: Dict[str, Any],
+    resolving: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """解析原生 TTS 音色 Provider 配置，支持 inherits 复用目录。"""
+    key = str(provider_key or '').strip()
+    if not key:
+        return {}
+    raw = raw_configs.get(key)
+    if not isinstance(raw, dict):
+        return {}
+
+    resolving = set(resolving or set())
+    if key in resolving:
+        logger.warning(f"原生 TTS 音色配置存在循环继承，已跳过: {key}")
+        return {}
+    resolving.add(key)
+
+    inherited: Dict[str, Any] = {}
+    inherit_key = str(raw.get('inherits') or '').strip()
+    if inherit_key:
+        inherited = _resolve_native_tts_voice_provider_config(
+            inherit_key,
+            raw_configs,
+            resolving,
+        )
+
+    merged = deepcopy(inherited)
+    for field, value in raw.items():
+        if field == 'inherits':
+            continue
+        merged[field] = deepcopy(value)
+    return merged
+
+
+def get_native_tts_voice_provider_config(provider_key: str) -> Dict[str, Any]:
+    """获取单个原生 TTS 音色 Provider 配置。"""
+    raw_configs = get_config().get('native_tts_voice_providers', {})
+    if not isinstance(raw_configs, dict):
+        return {}
+    resolved = _resolve_native_tts_voice_provider_config(provider_key, raw_configs)
+    if not resolved:
+        return {}
+
+    voices = _normalize_str_dict(resolved.get('voices'))
+    aliases = _normalize_str_dict(resolved.get('aliases'))
+    default_voice = str(resolved.get('default_voice') or '').strip()
+    default_male_voice = str(resolved.get('default_male_voice') or '').strip()
+    if not default_voice and voices:
+        default_voice = next(iter(voices))
+    if not default_male_voice:
+        default_male_voice = default_voice
+
+    return {
+        'key': str(provider_key or '').strip(),
+        'catalog_prefix': str(resolved.get('catalog_prefix') or provider_key or '').strip(),
+        'default_voice': default_voice,
+        'default_male_voice': default_male_voice,
+        'catalog_value_is_display_name': bool(resolved.get('catalog_value_is_display_name', False)),
+        'voices': voices,
+        'aliases': aliases,
+    }
+
+
+def get_native_tts_voice_provider_configs() -> Dict[str, Dict[str, Any]]:
+    """获取所有原生 TTS 音色 Provider 配置。"""
+    raw_configs = get_config().get('native_tts_voice_providers', {})
+    if not isinstance(raw_configs, dict):
+        return {}
+    return {
+        str(provider_key): get_native_tts_voice_provider_config(str(provider_key))
+        for provider_key in raw_configs
+    }
 
 
 _COSYVOICE_CLONE_MODEL_DEFAULT = "cosyvoice-v3.5-plus"
@@ -407,6 +495,8 @@ __all__ = [
     'reload_config',
     'get_config',
     'get_free_voices',
+    'get_native_tts_voice_provider_config',
+    'get_native_tts_voice_provider_configs',
     'get_cosyvoice_clone_model',
     'cosyvoice_model_supports_language_hints',
     'get_livestream_config',

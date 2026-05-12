@@ -25,7 +25,13 @@ from utils.gemini_tts_voices import (
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     get_native_tts_worker,
+    make_native_tts_resolver,
     register_tts_worker_resolver,
+)
+from utils.stepfun_tts_voices import (
+    STEPFUN_TTS_DEFAULT_VOICE,
+    get_stepfun_tts_default_voice,
+    normalize_stepfun_tts_voice,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -374,6 +380,36 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         notes="连接本地 CosyVoice 服务",
     ),
 }
+
+
+# GSV worker 的"句标点"白名单。判据：
+# - 含字母 / 数字（Unicode 字母含 CJK / 假名 / 韩文 / 希腊 / 西里尔 /
+#   阿拉伯 letter）→ 真内容，放行
+# - 无字母数字但全是白名单标点（不限个数）→ LLM 真实标点 chunk（`，` `。`
+#   `？` 等，可能也含罕见的 `。。。` `？！`），放行让 server TextBuffer 切句
+# - 无字母数字且含任何非白名单符号 → kaomoji（`=。=` `(╯°□°）╯` `^_^`），丢
+#
+# 标点集刻意覆盖多语言（CJK / ASCII / Arabic / Spanish），但**不放** `(` `)`
+# `[` `]` `{` `}` `「」` `《》` `"` `'` `~` `^` `*` `_` `-` 等 kaomoji 高发字符。
+_GSV_ALLOWED_PUNCT = frozenset('。！？；：，、…—．.!?;:,¿¡،؟؛')
+
+
+def _gsv_should_drop_chunk(text: str) -> bool:
+    """True = chunk 是 kaomoji / 怪符号堆，丢；False = 放行。
+
+    扫完所有字符再判：任何 alnum 都让 chunk 立刻放行（含 letter 的 kaomoji
+    如 `T_T` / `\\(^o^)/` 走这条路过——server clean 完还有字母，不会触发
+    empty error）；无 alnum 时只看有没有非白名单符号。
+    """
+    has_unsanctioned = False
+    for c in text:
+        if c.isspace():
+            continue
+        if c.isalnum():
+            return False
+        if c not in _GSV_ALLOWED_PUNCT:
+            has_unsanctioned = True
+    return has_unsanctioned
 
 
 # ─── 非流式输入 TTS 公共基础设施 ───────────────────────────────────────────
@@ -799,11 +835,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
-        voice_id: 音色ID，默认使用"qingchunshaonv"
+        voice_id: 音色ID，默认读取 api_providers.json 的 StepFun 配置
     """
     # free + livestream 子模式：voice_id 优先取 api_providers.json 的
     # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
     # 多进程 worker 这里独立 import，与主进程对偶。
+    native_provider_key = 'free' if free_mode else 'step'
+    default_voice_id = get_stepfun_tts_default_voice(native_provider_key)
+
     if free_mode:
         try:
             from utils.api_config_loader import is_livestream_active, get_livestream_config
@@ -816,14 +855,23 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 直播音色已生效却实际还在用 caller 传入或默认 preset
                     logger.warning(
                         "livestream_config.enabled=true 但 voice_id 为空，"
-                        f"继续使用 caller 传入或默认音色: {voice_id or 'qingchunshaonv'}"
+                        f"继续使用 caller 传入或默认音色: {voice_id or default_voice_id}"
                     )
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
 
-    # 使用默认音色 "qingchunshaonv"
+    voice_id = (voice_id or '').strip()
+
+    # 使用配置中的默认 StepFun 音色
     if not voice_id:
-        voice_id = "qingchunshaonv"
+        voice_id = default_voice_id or STEPFUN_TTS_DEFAULT_VOICE
+    else:
+        normalized_voice_id, voice_recognized = normalize_stepfun_tts_voice(
+            voice_id,
+            native_provider_key,
+        )
+        if voice_recognized:
+            voice_id = normalized_voice_id
     
     async def async_worker():
         """异步TTS worker主循环"""
@@ -1246,6 +1294,20 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     except Exception as e:
         logger.error(f"StepFun实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
+
+
+register_tts_worker_resolver(
+    'step',
+    make_native_tts_resolver(step_realtime_tts_worker, 'tts_default_api_key'),
+)
+register_tts_worker_resolver(
+    'free',
+    make_native_tts_resolver(
+        step_realtime_tts_worker,
+        'tts_default_api_key',
+        worker_kwargs={'free_mode': True},
+    ),
+)
 
 
 # xAI 文档：'Individual deltas are capped at 15,000 characters'。
@@ -2586,32 +2648,21 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
 
-def _resolve_gemini_native_tts_worker(cm):
-    """Native voice registry resolver for Gemini's TTS worker.
-
-    Gemini's native voices are billed against CORE_API_KEY (the same key the
-    realtime/LLM endpoint uses), not the optional custom TTS api_key.
-    """
-    return gemini_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+# Gemini 内置音色和 realtime/LLM endpoint 共用 CORE_API_KEY，不走自定义 TTS slot。
+register_tts_worker_resolver(
+    'gemini',
+    make_native_tts_resolver(gemini_tts_worker, 'core_api_key'),
+)
 
 
-register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
-
-
-def _resolve_grok_native_tts_worker(cm):
-    """Native voice registry resolver for xAI Grok streaming TTS worker.
-
-    Grok's built-in voices (eve/ara/leo/rex/sal) bill against CORE_API_KEY,
-    same as the realtime endpoint. Without this registration, a non-empty
-    user-selected voice_id makes core._has_custom_tts() return True and
-    get_tts_worker() routes to cosyvoice_vc_tts_worker before the
-    `core_api_type == 'grok'` default-voice branch — silent synthesis or
-    auth failure. See PR #1306 Codex review.
-    """
-    return grok_streaming_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
-
-
-register_tts_worker_resolver('grok', _resolve_grok_native_tts_worker)
+# xAI Grok 内置音色（eve/ara/leo/rex/sal）同样走 CORE_API_KEY。
+# 没有这个注册时，非空 voice_id 会让 core._has_custom_tts() 返 True，
+# get_tts_worker() 在 `core_api_type == 'grok'` 默认分支前就路由到
+# cosyvoice_vc_tts_worker —— 静默合成或鉴权失败。详见 PR #1306 Codex review。
+register_tts_worker_resolver(
+    'grok',
+    make_native_tts_resolver(grok_streaming_tts_worker, 'core_api_key'),
+)
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -2902,7 +2953,10 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if not tts_text or not tts_text.strip():
                     continue
 
-                if not re.sub(r'\W+', '', tts_text.strip()):
+                # kaomoji / 颜文字兜底：见 _GSV_ALLOWED_PUNCT 注释。
+                # `=。=` `(╯°□°）╯` `^_^` 这类丢；单标点 `，` `。` `？` 放过让
+                # server TextBuffer 触发切句。
+                if _gsv_should_drop_chunk(tts_text):
                     continue
 
                 # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理

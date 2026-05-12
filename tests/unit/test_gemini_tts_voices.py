@@ -101,6 +101,7 @@ def test_gemini_voice_catalog_for_ui_shape():
         assert meta["provider"] == "gemini"
         assert meta["builtin"] is True
         assert meta["gender"] == GEMINI_TTS_VOICE_GENDERS[voice_name]
+        assert meta["display_name"] == voice_name
         assert voice_name in meta["prefix"]
         assert meta["gender"] in meta["prefix"]
 
