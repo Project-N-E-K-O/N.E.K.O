@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from plugin.plugins.study_companion.fsrs_bridge import (
+    StudyFsrsRating,
+    create_card,
+    get_due_reviews,
+    rate_answer,
+    retrievability,
+)
+
+
+def test_study_fsrs_rating_updates_stability_difficulty_and_due() -> None:
+    now = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    card = create_card("quadratic_vertex_form", now)
+
+    again, again_schedule = rate_answer(card, StudyFsrsRating.Again, now)
+    hard, _ = rate_answer(card, StudyFsrsRating.Hard, now)
+    good, _ = rate_answer(card, StudyFsrsRating.Good, now)
+    easy, _ = rate_answer(card, StudyFsrsRating.Easy, now)
+
+    assert again.stability < card.stability
+    assert again.difficulty > card.difficulty
+    assert again_schedule["rating"] == 1
+    assert hard.stability > again.stability
+    assert good.stability > hard.stability
+    assert easy.stability > good.stability
+    assert easy.difficulty < good.difficulty < hard.difficulty
+    assert again.due < hard.due < good.due < easy.due
+
+
+def test_study_fsrs_retrievability_and_due_sorting() -> None:
+    now = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    fresh = create_card("fresh", now)
+    fresh = fresh.__class__.from_dict({**fresh.to_dict(), "due": (now + timedelta(days=2)).isoformat()})
+    old = create_card("old", now - timedelta(days=20))
+    old = old.__class__.from_dict({**old.to_dict(), "stability": 2.0, "due": (now - timedelta(days=1)).isoformat()})
+    weak = create_card("weak", now - timedelta(days=8))
+    weak = weak.__class__.from_dict({**weak.to_dict(), "stability": 3.0, "due": (now + timedelta(days=2)).isoformat()})
+
+    assert retrievability(fresh, now) == 1.0
+    assert retrievability(old, now) < retrievability(weak, now)
+
+    due = get_due_reviews([fresh, old, weak], now, retention_target=0.90)
+
+    assert [item["topic_id"] for item in due] == ["old", "weak"]
+    assert due[0]["priority"] > due[1]["priority"]

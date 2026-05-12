@@ -71,6 +71,14 @@ lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv4"
 
+[fsrs]
+retention_target = 0.90
+auto_optimize_interval_days = 30
+
+[knowledge_contribution]
+opt_in = false
+min_sample_count = 3
+
 [plugin.ui]
 enabled = true
 

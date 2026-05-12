@@ -20,7 +20,9 @@ def build_status_payload(
     config: StudyConfig,
     state: StudyState,
     history: list[dict[str, Any]] | None = None,
+    knowledge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    knowledge_payload = json_copy(knowledge or {})
     return {
         "status": state.status,
         "mode": config.mode,
@@ -49,6 +51,12 @@ def build_status_payload(
         "last_reply_at": state.last_reply_at,
         "checkpoint": json_copy(state.checkpoint),
         "dependencies": json_copy(state.dependency_status),
+        "knowledge_summary": knowledge_payload.get("knowledge_summary") or {},
+        "knowledge_quality_summary": knowledge_payload.get("knowledge_quality_summary") or {},
+        "anonymous_knowledge_stats_summary": knowledge_payload.get("anonymous_knowledge_stats_summary") or {},
+        "review_queue": knowledge_payload.get("review_queue") or [],
+        "weak_topics": knowledge_payload.get("weak_topics") or [],
+        "mastery_overview": knowledge_payload.get("mastery_overview") or [],
         "config": config.to_dict(),
         "history": list(history or []),
     }

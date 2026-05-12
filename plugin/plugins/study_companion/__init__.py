@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import threading
 import time
 from typing import Any
@@ -37,6 +38,8 @@ from .service import (
     build_tutor_payload,
 )
 from .mode_manager import ModeManager, build_transition_phrase, handle_user_intent, normalize_mode
+from .knowledge_contribution import PublicGraphContributionBuilder
+from .knowledge_tracker import KnowledgeTracker
 from .state import build_initial_state
 from .store import StudyStore
 from .study_ocr_pipeline import StudyOcrPipeline
@@ -60,10 +63,16 @@ class StudyCompanionPlugin(NekoPluginBase):
             self.data_path("study_companion.db"),
             self.config_dir / "data" / "study_seed.json",
             self.logger,
+            Path(__file__).resolve().parent / "static" / "knowledge_graph_seed.json",
         )
         self._ocr_pipeline: StudyOcrPipeline | None = None
         self._agent: TutorLLMAgent | None = None
         self._mode_manager = ModeManager()
+        self._knowledge_tracker = KnowledgeTracker(
+            self._store,
+            retention_target=self._cfg.fsrs_retention_target,
+            logger=self.logger,
+        )
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -72,6 +81,11 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
+            self._knowledge_tracker = KnowledgeTracker(
+                self._store,
+                retention_target=self._cfg.fsrs_retention_target,
+                logger=self.logger,
+            )
             restored = await asyncio.to_thread(self._store.load_state, build_initial_state(mode=self._cfg.mode))
             with self._lock:
                 self._state = restored
@@ -201,7 +215,15 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
-        return build_status_payload(config=self._cfg, state=self._state, history=history)
+        knowledge = {
+            "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
+            "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(limit=8),
+            "anonymous_knowledge_stats_summary": self._store.anonymous_knowledge_stats_summary(),
+            "review_queue": self._knowledge_tracker.get_review_queue(limit=8),
+            "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
+            "mastery_overview": self._store.list_mastery_overview(limit=8),
+        }
+        return build_status_payload(config=self._cfg, state=self._state, history=history, knowledge=knowledge)
 
     def _state_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -299,6 +321,15 @@ class StudyCompanionPlugin(NekoPluginBase):
             "last_ocr_at": snapshot.get("last_ocr_at") or "",
             "history": history,
         }
+        if operation == LLM_OPERATION_QUESTION_GENERATE:
+            hint = ""
+            if extra:
+                hint = str(extra.get("topic_hint") or extra.get("topic") or "").strip()
+            context["knowledge_question_params"] = self._knowledge_tracker.get_next_question_params(hint)
+        elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
+            context["knowledge_session_summary"] = self._knowledge_tracker.get_session_summary()
+        else:
+            context["knowledge_summary"] = self._knowledge_tracker.get_status_summary(limit=5)
         if extra:
             context.update(extra)
         return context
@@ -404,6 +435,51 @@ class StudyCompanionPlugin(NekoPluginBase):
                 created_at=utc_now_iso(),
             )
         self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
+        if operation == LLM_OPERATION_ANSWER_EVALUATE:
+            await self._record_answer_knowledge(reply, track_reply, extra_context=extra_context)
+
+    async def _record_answer_knowledge(
+        self,
+        eval_reply: TutorReply,
+        track_reply: TutorReply,
+        *,
+        extra_context: dict[str, Any] | None = None,
+    ) -> None:
+        context = dict(extra_context or {})
+        track_payload = dict(track_reply.payload or {})
+        eval_payload = dict(eval_reply.payload or {})
+        current_question = dict(context.get("current_question") or {})
+        question_text = str(context.get("question") or current_question.get("question") or "").strip()
+        question_payload = {
+            **current_question,
+            "question": question_text,
+            "answer": str(context.get("expected_answer") or current_question.get("answer") or ""),
+        }
+        topic = str(
+            question_payload.get("topic")
+            or track_payload.get("topic")
+            or eval_payload.get("topic")
+            or self._guess_track_topic(track_reply)
+        ).strip()
+        if topic:
+            question_payload.setdefault("topic", topic)
+        eval_result = {
+            **eval_payload,
+            "topic": topic,
+            "track": track_payload,
+        }
+        try:
+            await asyncio.to_thread(
+                self._knowledge_tracker.on_answer,
+                topic_id=topic,
+                question=question_payload,
+                user_answer=str(context.get("answer") or eval_reply.input_text or ""),
+                eval_result=eval_result,
+                mode=str(context.get("mode") or self._state.active_mode),
+                session_id="default",
+            )
+        except Exception as exc:
+            self.logger.warning("study knowledge tracker persistence failed: {}", exc)
 
     @staticmethod
     def _guess_track_topic(reply: TutorReply) -> str:
@@ -469,6 +545,41 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_status(self, **_):
         payload = await asyncio.to_thread(self._status_payload)
         return Ok(payload)
+
+    @plugin_entry(
+        id="study_knowledge_quality_status",
+        name=tr("entries.knowledge_quality_status.name", default="Study Knowledge Quality Status"),
+        description=tr("entries.knowledge_quality_status.description", default="Return candidate knowledge quality counts and recent evidence."),
+        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}},
+        llm_result_fields=["total", "by_status", "recent_evidence"],
+    )
+    async def study_knowledge_quality_status(self, limit: int = 20, **_):
+        payload = await asyncio.to_thread(self._knowledge_tracker.quality.status_summary, limit=max(1, int(limit or 20)))
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_anonymous_knowledge_preview",
+        name=tr("entries.anonymous_knowledge_preview.name", default="Study Anonymous Knowledge Preview"),
+        description=tr("entries.anonymous_knowledge_preview.description", default="Build and return a local anonymized knowledge contribution preview. Phase 4 does not upload it."),
+        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 100}}},
+        llm_result_fields=["summary", "stats", "opt_in"],
+    )
+    async def study_anonymous_knowledge_preview(self, limit: int = 100, **_):
+        builder = PublicGraphContributionBuilder(self._store, self._cfg)
+        payload = await asyncio.to_thread(builder.preview, limit=max(1, int(limit or 100)))
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_clear_knowledge_contribution_queue",
+        name=tr("entries.clear_knowledge_contribution_queue.name", default="Clear Study Knowledge Contribution Queue"),
+        description=tr("entries.clear_knowledge_contribution_queue.description", default="Clear the local anonymous knowledge contribution queue."),
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["cleared_count"],
+    )
+    async def study_clear_knowledge_contribution_queue(self, **_):
+        builder = PublicGraphContributionBuilder(self._store, self._cfg)
+        cleared = await asyncio.to_thread(builder.clear_queue)
+        return Ok({"cleared_count": cleared})
 
     @plugin_entry(
         id="study_detect_mode_intent",

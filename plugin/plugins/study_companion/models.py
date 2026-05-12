@@ -127,6 +127,10 @@ class StudyConfig:
     llm_max_tokens_knowledge_track: int = 480
     llm_temperature_summarize_session: float = 0.18
     llm_max_tokens_summarize_session: int = 1200
+    fsrs_retention_target: float = 0.90
+    fsrs_auto_optimize_interval_days: int = 30
+    knowledge_contribution_opt_in: bool = False
+    knowledge_contribution_min_sample_count: int = 3
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -151,6 +155,13 @@ class StudyConfig:
         self.llm_max_tokens_knowledge_track = max(1, self._coerce_int(self.llm_max_tokens_knowledge_track, 480))
         self.llm_temperature_summarize_session = self._clamp_float(self.llm_temperature_summarize_session, 0.0, 2.0, 0.18)
         self.llm_max_tokens_summarize_session = max(1, self._coerce_int(self.llm_max_tokens_summarize_session, 1200))
+        self.fsrs_retention_target = self._clamp_float(self.fsrs_retention_target, 0.1, 0.99, 0.90)
+        self.fsrs_auto_optimize_interval_days = max(1, self._coerce_int(self.fsrs_auto_optimize_interval_days, 30))
+        self.knowledge_contribution_opt_in = bool(self.knowledge_contribution_opt_in)
+        self.knowledge_contribution_min_sample_count = max(
+            1,
+            self._coerce_int(self.knowledge_contribution_min_sample_count, 3),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -254,6 +265,8 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
+    fsrs = raw.get("fsrs") if isinstance(raw.get("fsrs"), dict) else {}
+    contribution = raw.get("knowledge_contribution") if isinstance(raw.get("knowledge_contribution"), dict) else {}
 
     def _raw(section: dict[str, Any], key: str, default: Any, flat_key: str | None = None) -> Any:
         if key in section:
@@ -390,5 +403,25 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         llm_max_tokens_summarize_session=max(
             1,
             _int(llm, "max_tokens_summarize_session", generic_llm_max_tokens, "llm_max_tokens_summarize_session"),
+        ),
+        fsrs_retention_target=_clamp(_float(fsrs, "retention_target", 0.90, "fsrs_retention_target"), 0.1, 0.99, 0.90),
+        fsrs_auto_optimize_interval_days=max(
+            1,
+            _int(fsrs, "auto_optimize_interval_days", 30, "fsrs_auto_optimize_interval_days"),
+        ),
+        knowledge_contribution_opt_in=_bool(
+            contribution,
+            "opt_in",
+            False,
+            "knowledge_contribution_opt_in",
+        ),
+        knowledge_contribution_min_sample_count=max(
+            1,
+            _int(
+                contribution,
+                "min_sample_count",
+                3,
+                "knowledge_contribution_min_sample_count",
+            ),
         ),
     )

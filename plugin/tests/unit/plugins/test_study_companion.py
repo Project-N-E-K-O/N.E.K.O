@@ -319,6 +319,9 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
+    fsrs_config = build_config({"fsrs": {"retention_target": 0.88, "auto_optimize_interval_days": 14}})
+    assert fsrs_config.fsrs_retention_target == 0.88
+    assert fsrs_config.fsrs_auto_optimize_interval_days == 14
     llm_section_legacy_timeout = build_config({"llm": {"llm_call_timeout_seconds": 84}})
     assert llm_section_legacy_timeout.llm_call_timeout_seconds == 84
 
@@ -1250,6 +1253,98 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
 
 
 @pytest.mark.asyncio
+async def test_study_evaluate_answer_persists_knowledge_tracking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TrackingTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="符号方向反了",
+                payload={
+                    "verdict": "wrong",
+                    "score": 20,
+                    "error_type": "sign_reversal",
+                    "feedback": "符号方向反了",
+                    "next_action": "复习顶点式中的 h",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="二次函数顶点式",
+                payload={
+                    "topic": "quadratic_vertex_form",
+                    "mastery_delta": -0.1,
+                    "confidence": 0.7,
+                    "weak_points": ["sign_reversal"],
+                    "next_steps": ["复习顶点式"],
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _TrackingTutorAgent()
+
+    try:
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "二次函数 y=a(x-h)^2+k 的顶点是什么？",
+                "answer": "(h,k)",
+                "topic": "quadratic_vertex_form",
+                "difficulty": 3,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(answer="(-h,k)")
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["verdict"] == "wrong"
+
+        mastery = plugin._store.get_latest_mastery("quadratic_vertex_form")
+        assert mastery is not None
+        assert mastery["level"] in {"薄弱", "进行中", "未接触"}
+        assert plugin._store.get_fsrs_card("quadratic_vertex_form") is not None
+        assert plugin._store.list_wrong_questions(topic_id="quadratic_vertex_form")
+
+        status = await plugin.study_status()
+        assert isinstance(status, Ok)
+        assert status.value["knowledge_summary"]["tracked_topic_count"] >= 1
+        assert status.value["weak_topics"]
+        assert status.value["mastery_overview"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     messages = build_concept_explain_messages(
         text="A derivative measures instantaneous rate of change.",
@@ -1542,6 +1637,10 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert status.value["active_mode"] == MODE_COMPANION
     assert "mode_started_at" in status.value
     assert "recent_mode_switches" in status.value
+    assert status.value["knowledge_summary"]["topic_count"] >= 120
+    assert "review_queue" in status.value
+    assert "weak_topics" in status.value
+    assert "mastery_overview" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
 
