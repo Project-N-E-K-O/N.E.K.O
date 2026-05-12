@@ -3300,34 +3300,6 @@ def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
     return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
 
 
-def _config_value_is_enabled(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
-
-
-def _is_elevenlabs_enabled(core_cfg: dict | None) -> bool:
-    core_cfg = core_cfg or {}
-    tts_provider = (
-        core_cfg.get('TTS_PROVIDER')
-        or core_cfg.get('ttsProvider')
-        or ''
-    )
-    return (
-        _config_value_is_enabled(core_cfg.get('ELEVENLABS_ENABLED'))
-        or _config_value_is_enabled(core_cfg.get('elevenlabsEnabled'))
-        or str(tts_provider).strip().lower() == 'elevenlabs'
-    )
-
-
 def _is_elevenlabs_voice_id(voice_id: str | None) -> bool:
     return str(voice_id or '').strip().startswith(ELEVENLABS_VOICE_PREFIX)
 
@@ -3882,13 +3854,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         core_cfg = cm.get_core_config() or {}
     except Exception:
         core_cfg = {}
-    elevenlabs_enabled = _is_elevenlabs_enabled(core_cfg)
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
     # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
     voice_meta = None
 
-    if _is_elevenlabs_voice_id(voice_id) and elevenlabs_enabled:
+    if _is_elevenlabs_voice_id(voice_id):
+        logger.info("Detected ElevenLabs voice_id, using ElevenLabs TTS Worker")
         elevenlabs_options = _get_elevenlabs_options()
         return (
             partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
@@ -3932,13 +3904,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
-        if elevenlabs_enabled and not has_custom_voice and _is_elevenlabs_voice_id(voice_id):
-            elevenlabs_options = _get_elevenlabs_options()
-            return (
-                partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
-                _resolve_elevenlabs_api_key(cm),
-                'elevenlabs',
-            )
         if tts_config.get('is_custom'):
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。

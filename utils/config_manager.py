@@ -2409,15 +2409,7 @@ class ConfigManager:
             return True
 
         if voice_id.startswith('eleven:'):
-            core_config = self.get_core_config()
-            elevenlabs_enabled = (
-                _as_bool(core_config.get('ELEVENLABS_ENABLED'))
-                or _as_bool(core_config.get('elevenlabsEnabled'))
-                or core_config.get('TTS_PROVIDER') == 'elevenlabs'
-                or core_config.get('ttsProvider') == 'elevenlabs'
-            )
-            if elevenlabs_enabled:
-                return True
+            return True
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -2446,15 +2438,7 @@ class ConfigManager:
             return True
 
         if voice_id.startswith('eleven:'):
-            core_config = self.get_core_config()
-            elevenlabs_enabled = (
-                _as_bool(core_config.get('ELEVENLABS_ENABLED'))
-                or _as_bool(core_config.get('elevenlabsEnabled'))
-                or core_config.get('TTS_PROVIDER') == 'elevenlabs'
-                or core_config.get('ttsProvider') == 'elevenlabs'
-            )
-            if elevenlabs_enabled:
-                return True
+            return True
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
