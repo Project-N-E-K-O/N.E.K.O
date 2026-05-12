@@ -10,6 +10,7 @@ from plugin.plugins.galgame_plugin.context_metrics import (
     ContextMetricsCollector,
 )
 from plugin.plugins.galgame_plugin.llm_backend import GalgameLLMBackend
+from plugin.plugins.galgame_plugin import llm_gateway as llm_gateway_module
 from plugin.plugins.galgame_plugin.llm_gateway import LLMGateway
 
 
@@ -131,6 +132,41 @@ def test_llm_gateway_metric_recording_preserves_zero_metadata_values() -> None:
     assert record.compacted_chars == 0
 
 
+def test_llm_gateway_metric_recording_does_not_render_context_with_complete_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(context_metrics_enabled=True),
+        backend=_Backend(),
+    )
+
+    def fail_json_dumps(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("context should not be rendered when metadata is complete")
+
+    monkeypatch.setattr(llm_gateway_module.json, "dumps", fail_json_dumps)
+
+    gateway._record_context_metric(
+        operation="agent_reply",
+        context={"large": ["x"] * 100},
+        prompt_metadata={
+            "raw_tokens": 100,
+            "compacted_tokens": 40,
+            "raw_chars": 200,
+            "compacted_chars": 80,
+            "compression_level": 2,
+        },
+        cache_hit=True,
+        total_time_ms=1.0,
+    )
+
+    assert gateway.context_metrics is not None
+    record = gateway.context_metrics.records()[0]
+    assert record.raw_tokens == 100
+    assert record.raw_chars == 200
+
+
 @pytest.mark.asyncio
 async def test_llm_gateway_does_not_create_metrics_collector_when_disabled() -> None:
     gateway = LLMGateway(None, None, _config(), backend=_Backend())
@@ -165,6 +201,40 @@ async def test_llm_gateway_records_metrics_for_call_and_cache_hit() -> None:
     assert records[0].raw_tokens == 100
     assert records[0].compacted_tokens == 40
     assert records[1].cache_hit is True
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_records_cache_hit_metrics_outside_lock() -> None:
+    class _LockAssertingGateway(LLMGateway):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.metric_lock_states: list[bool] = []
+
+        def _record_context_metric(self, **kwargs: Any) -> None:
+            self.metric_lock_states.append(bool(self._lock and self._lock.locked()))
+            super()._record_context_metric(**kwargs)
+
+    gateway = _LockAssertingGateway(
+        None,
+        None,
+        _config(
+            context_metrics_enabled=True,
+            llm_request_cache_ttl_seconds=60.0,
+            llm_scene_summary_cache_ttl_seconds=60.0,
+        ),
+        backend=_Backend(),
+    )
+
+    context = {"scene_id": "scene-a", "recent_lines": []}
+    await gateway.summarize_scene(context)
+    await gateway.summarize_scene(context)
+
+    assert gateway.metric_lock_states == [False, False]
+    assert gateway.context_metrics is not None
+    assert [record.cache_hit for record in gateway.context_metrics.records()] == [
+        False,
+        True,
+    ]
 
 
 @pytest.mark.asyncio

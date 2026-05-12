@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from plugin.sdk.shared.models import Err
 
 from .context_metrics import ContextMetric, ContextMetricsCollector
-from .context_tokens import estimate_context_tokens
+from .context_tokens import count_tokens_heuristic
 from .llm_backend import GalgameLLMBackend
 from .models import json_copy
 from .service import (
@@ -214,46 +214,53 @@ class LLMGateway:
         now = time.monotonic()
         start_time = now
         wait_task: asyncio.Task[dict[str, Any]] | None = None
+        cached_payload: dict[str, Any] | None = None
+        cached_prompt_metadata: dict[str, Any] | None = None
 
         async with self._lock:
             cached = self._cache.get(fingerprint)
             if cached is not None and cached[0] > now:
                 self._cache.move_to_end(fingerprint)
-                self._record_context_metric(
-                    operation=operation,
-                    context=context,
-                    prompt_metadata=cached[2],
-                    cache_hit=True,
-                    total_time_ms=(time.monotonic() - start_time) * 1000.0,
-                )
-                return _json_payload_copy(cached[1])
-            if cached is not None:
+                cached_payload = cached[1]
+                cached_prompt_metadata = cached[2]
+            elif cached is not None:
                 self._cache.pop(fingerprint, None)
 
-            backoff = self._active_provider_backoff_locked(provider_key, now=now)
-            if backoff is not None:
-                _category, diagnostic = backoff
-                return degraded(diagnostic)
+            if cached_payload is None:
+                backoff = self._active_provider_backoff_locked(provider_key, now=now)
+                if backoff is not None:
+                    _category, diagnostic = backoff
+                    return degraded(diagnostic)
 
-            in_flight = self._inflight.get(fingerprint)
-            if in_flight is not None:
-                wait_task = in_flight
-            else:
-                if self._active_calls >= int(self._config.llm_max_in_flight):
-                    return degraded("busy: throttled by llm_max_in_flight")
+                in_flight = self._inflight.get(fingerprint)
+                if in_flight is not None:
+                    wait_task = in_flight
+                else:
+                    if self._active_calls >= int(self._config.llm_max_in_flight):
+                        return degraded("busy: throttled by llm_max_in_flight")
 
-                self._active_calls += 1
-                wait_task = asyncio.create_task(
-                    self._perform_call(
-                        fingerprint=fingerprint,
-                        provider_key=provider_key,
-                        operation=operation,
-                        context=context,
-                        validate=validate,
-                        degraded=degraded,
+                    self._active_calls += 1
+                    wait_task = asyncio.create_task(
+                        self._perform_call(
+                            fingerprint=fingerprint,
+                            provider_key=provider_key,
+                            operation=operation,
+                            context=context,
+                            validate=validate,
+                            degraded=degraded,
+                        )
                     )
-                )
-                self._inflight[fingerprint] = wait_task
+                    self._inflight[fingerprint] = wait_task
+
+        if cached_payload is not None:
+            self._record_context_metric(
+                operation=operation,
+                context=context,
+                prompt_metadata=cached_prompt_metadata or {},
+                cache_hit=True,
+                total_time_ms=(time.monotonic() - start_time) * 1000.0,
+            )
+            return _json_payload_copy(cached_payload)
 
         try:
             return _json_payload_copy(await wait_task)
@@ -354,15 +361,18 @@ class LLMGateway:
     def _metadata_int(
         metadata: dict[str, Any],
         key: str,
-        fallback: int,
+        fallback: int | Callable[[], int],
     ) -> int:
+        def fallback_value() -> int:
+            return fallback() if callable(fallback) else fallback
+
         value = metadata.get(key)
         if value is None:
-            return fallback
+            return fallback_value()
         try:
             return int(value)
         except (TypeError, ValueError):
-            return fallback
+            return fallback_value()
 
     def _record_context_metric(
         self,
@@ -376,13 +386,25 @@ class LLMGateway:
         collector = self._metrics_collector()
         if collector is None:
             return
-        raw_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+
+        raw_text: str | None = None
+
+        def rendered_context() -> str:
+            nonlocal raw_text
+            if raw_text is None:
+                raw_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+            return raw_text
+
         raw_tokens = self._metadata_int(
             prompt_metadata,
             "raw_tokens",
-            estimate_context_tokens(context),
+            lambda: count_tokens_heuristic(rendered_context()),
         )
-        raw_chars = self._metadata_int(prompt_metadata, "raw_chars", len(raw_text))
+        raw_chars = self._metadata_int(
+            prompt_metadata,
+            "raw_chars",
+            lambda: len(rendered_context()),
+        )
         compacted_tokens = self._metadata_int(
             prompt_metadata,
             "compacted_tokens",
