@@ -56,6 +56,10 @@ _DEFAULT_WEIGHTS = {
     KnowledgeEvidenceType.DUPLICATE_DETECTED.value: -0.45,
     KnowledgeEvidenceType.REVIEW_RETAINED.value: 0.75,
 }
+DEFAULT_EVIDENCE_RECOMPUTE_LIMIT = 5000
+# Trusted candidates tolerate duplicate noise, but explicit rejection,
+# conflicts, or this many total negative events deprecates them.
+DEFAULT_TRUSTED_NEGATIVE_THRESHOLD = 3
 
 
 def _normalized_key(value: object) -> str:
@@ -75,8 +79,21 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
 
 
 class KnowledgeQualityStore:
-    def __init__(self, store: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        evidence_recompute_limit: int = DEFAULT_EVIDENCE_RECOMPUTE_LIMIT,
+        trusted_negative_threshold: int = DEFAULT_TRUSTED_NEGATIVE_THRESHOLD,
+    ) -> None:
+        """Create a quality store.
+
+        evidence_recompute_limit bounds score recomputation reads. trusted_negative_threshold controls
+        how many negative evidence events can force a TRUSTED candidate to DEPRECATED.
+        """
         self._store = store
+        self._evidence_recompute_limit = max(1, int(evidence_recompute_limit or DEFAULT_EVIDENCE_RECOMPUTE_LIMIT))
+        self._trusted_negative_threshold = max(1, int(trusted_negative_threshold or DEFAULT_TRUSTED_NEGATIVE_THRESHOLD))
 
     def upsert_candidate(
         self,
@@ -131,7 +148,7 @@ class KnowledgeQualityStore:
         item = self._store.get_candidate_item(item_id)
         if not item:
             raise KeyError(f"knowledge candidate not found: {item_id}")
-        evidence = self._store.list_knowledge_evidence(item_id, limit=5000)
+        evidence = self._store.list_knowledge_evidence(item_id, limit=self._evidence_recompute_limit)
         score_parts = self._score_parts(item, evidence)
         status = self._next_status(item, score_parts)
         self._store.update_candidate_score_status(
@@ -320,6 +337,7 @@ class KnowledgeQualityStore:
             "positive_count": positive_count,
             "negative_count": negative_count,
             "conflict_count": conflict_count,
+            "user_rejected_count": rejected_count,
         }
 
     @staticmethod
@@ -334,15 +352,17 @@ class KnowledgeQualityStore:
                 return 0.15
         return 0.0
 
-    @staticmethod
-    def _next_status(item: dict[str, Any], score_parts: dict[str, Any]) -> str:
+    def _next_status(self, item: dict[str, Any], score_parts: dict[str, Any]) -> str:
         current = str(item.get("status") or KnowledgeCandidateStatus.CANDIDATE.value)
         score = float(score_parts.get("score") or 0.0)
         evidence_count = int(score_parts.get("evidence_count") or 0)
         positive_count = int(score_parts.get("positive_count") or 0)
         negative_count = int(score_parts.get("negative_count") or 0)
         conflict_count = int(score_parts.get("conflict_count") or 0)
+        user_rejected_count = int(score_parts.get("user_rejected_count") or 0)
         if current == KnowledgeCandidateStatus.TRUSTED.value:
+            if user_rejected_count > 0 or negative_count >= self._trusted_negative_threshold:
+                return KnowledgeCandidateStatus.DEPRECATED.value
             return current
         if score <= -0.20 or negative_count >= 2 or conflict_count >= 2:
             return KnowledgeCandidateStatus.DEPRECATED.value

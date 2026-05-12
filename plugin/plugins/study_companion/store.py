@@ -22,6 +22,13 @@ def safe_float(value: Any, default: Any = 0.0) -> Any:
         return default
 
 
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _sanitize_suggestion_cooldowns(value: Any) -> dict[str, float]:
     if not isinstance(value, dict):
         return {}
@@ -341,8 +348,8 @@ class StudyStore:
             "name": str(row["name"]),
             "subject": str(row["subject"]),
             "chapter": str(row["chapter"] or ""),
-            "depth": int(row["depth"] or 1),
-            "difficulty": float(row["difficulty"] or 0.5),
+            "depth": safe_int(row["depth"] or 1, 1),
+            "difficulty": safe_float(row["difficulty"] or 0.5, 0.5),
             "prerequisites": StudyStore._json_loads(row["prerequisites"], []),
             "related": StudyStore._json_loads(row["related"], []),
             "typical_misconceptions": StudyStore._json_loads(row["typical_misconceptions"], []),
@@ -427,8 +434,8 @@ class StudyStore:
                         "name": name,
                         "subject": str(item.get("subject") or payload.get("subject") or "math"),
                         "chapter": str(item.get("chapter") or ""),
-                        "depth": int(item.get("depth") or 1),
-                        "difficulty": float(item.get("difficulty") or 0.5),
+                        "depth": safe_int(item.get("depth") or 1, 1),
+                        "difficulty": safe_float(item.get("difficulty") or 0.5, 0.5),
                         "prerequisites": item.get("prerequisites") if isinstance(item.get("prerequisites"), list) else [],
                         "related": item.get("related") if isinstance(item.get("related"), list) else [],
                         "typical_misconceptions": item.get("typical_misconceptions") if isinstance(item.get("typical_misconceptions"), list) else [],
@@ -600,8 +607,8 @@ class StudyStore:
                     name,
                     str(topic.get("subject") or "math"),
                     str(topic.get("chapter") or ""),
-                    int(topic.get("depth") or 1),
-                    float(topic.get("difficulty") or 0.5),
+                    safe_int(topic.get("depth") or 1, 1),
+                    safe_float(topic.get("difficulty") or 0.5, 0.5),
                     self._json_dumps(topic.get("prerequisites") if isinstance(topic.get("prerequisites"), list) else []),
                     self._json_dumps(topic.get("related") if isinstance(topic.get("related"), list) else []),
                     self._json_dumps(

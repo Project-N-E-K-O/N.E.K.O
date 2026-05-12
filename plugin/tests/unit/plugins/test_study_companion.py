@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 import subprocess
@@ -30,6 +31,12 @@ from plugin.plugins.study_companion.mode_manager import (
     handle_user_intent,
     mode_label,
     normalize_mode,
+)
+from plugin.plugins.study_companion.knowledge_quality import (
+    KnowledgeCandidateStatus,
+    KnowledgeCandidateType,
+    KnowledgeEvidenceType,
+    KnowledgeQualityStore,
 )
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
@@ -352,6 +359,43 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         assert loaded.recent_mode_switches == []
         assert loaded.suggestion_cooldowns == {}
         assert loaded.session_suggestions == []
+    finally:
+        store.close()
+
+
+def test_trusted_knowledge_candidate_is_deprecated_after_conflict(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    quality = KnowledgeQualityStore(store, trusted_negative_threshold=1)
+
+    try:
+        payload = {
+            "subject": "math",
+            "topic_id": "linear_equation",
+            "name": "linear equation",
+        }
+        candidate = store.upsert_candidate_item(
+            item_type=KnowledgeCandidateType.TOPIC.value,
+            payload=payload,
+            source="unit-test",
+            dedupe_key="math:linear equation",
+            status=KnowledgeCandidateStatus.TRUSTED.value,
+        )
+
+        assert candidate["status"] == KnowledgeCandidateStatus.TRUSTED.value
+        assert quality.prompt_evidence_summary(topic_id="linear_equation")
+
+        quality.add_evidence(
+            candidate["id"],
+            KnowledgeEvidenceType.CONFLICT_DETECTED.value,
+            -1.0,
+            {"source": "unit-test"},
+        )
+
+        updated = store.get_candidate_item(candidate["id"])
+        assert updated is not None
+        assert updated["status"] == KnowledgeCandidateStatus.DEPRECATED.value
+        assert quality.prompt_evidence_summary(topic_id="linear_equation") == []
     finally:
         store.close()
 
@@ -1279,6 +1323,48 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
         assert plugin._agent.inputs[-1][1]["mode_switch"] is False
         assert "screen_classification" in plugin._agent.inputs[-1][1]
         assert explained.value["reply"].startswith("explained[companion]: 光合作用")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_learning_context_builds_question_params_off_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _ThreadCheckingTracker:
+        def __init__(self, event_loop_thread_id: int) -> None:
+            self.event_loop_thread_id = event_loop_thread_id
+            self.calls: list[tuple[str, bool]] = []
+
+        def get_next_question_params(self, topic_id: str = "") -> dict[str, object]:
+            self.calls.append((topic_id, threading.get_ident() != self.event_loop_thread_id))
+            return {"target_topic_id": topic_id, "threaded": self.calls[-1][1]}
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    tracker = _ThreadCheckingTracker(threading.get_ident())
+    plugin._knowledge_tracker = tracker  # type: ignore[assignment]
+
+    try:
+        context = await plugin._build_learning_context(
+            "question_generate",
+            input_text="二次函数",
+            extra={"topic_hint": "quadratic_vertex_form"},
+        )
+
+        assert context["knowledge_question_params"]["target_topic_id"] == "quadratic_vertex_form"
+        assert tracker.calls == [("quadratic_vertex_form", True)]
     finally:
         await plugin.shutdown()
 

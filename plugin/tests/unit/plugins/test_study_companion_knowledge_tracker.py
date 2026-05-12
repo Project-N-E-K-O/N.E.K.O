@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -118,5 +119,47 @@ def test_knowledge_seed_loads_idempotently(tmp_path: Path) -> None:
         loaded_again = store.load_knowledge_seed()
         assert loaded_again == first_count
         assert store.count_topics() == first_count
+    finally:
+        store.close()
+
+
+def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(tmp_path: Path) -> None:
+    knowledge_seed = tmp_path / "bad_knowledge_seed.json"
+    knowledge_seed.write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "topics": [
+                    {
+                        "id": "bad_numeric_topic",
+                        "name": "Bad Numeric Topic",
+                        "depth": "not-an-int",
+                        "difficulty": "not-a-float",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger(), knowledge_seed)
+    store.open()
+    try:
+        topic = store.get_topic("bad_numeric_topic")
+        assert topic is not None
+        assert topic["depth"] == 1
+        assert topic["difficulty"] == 0.5
+
+        store.upsert_topic(
+            {
+                "id": "bad_runtime_topic",
+                "name": "Bad Runtime Topic",
+                "depth": "still-not-an-int",
+                "difficulty": "still-not-a-float",
+            }
+        )
+        runtime_topic = store.get_topic("bad_runtime_topic")
+        assert runtime_topic is not None
+        assert runtime_topic["depth"] == 1
+        assert runtime_topic["difficulty"] == 0.5
     finally:
         store.close()

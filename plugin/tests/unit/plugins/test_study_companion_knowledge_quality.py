@@ -149,6 +149,56 @@ def test_evidence_recomputes_score_and_lifecycle_thresholds(tmp_path: Path) -> N
         store.close()
 
 
+def test_trusted_candidate_can_deprecate_on_strong_negative_evidence(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store, trusted_negative_threshold=2)
+
+        item = quality.upsert_candidate(
+            KnowledgeCandidateType.QUESTION_TYPE.value,
+            {"topic_id": "quadratic_vertex_form", "question_type_key": "trusted_negative"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {"source": "llm"},
+        )
+        quality.add_evidence(item["id"], KnowledgeEvidenceType.ANSWER_IMPROVED.value, 3.0, {"source": "eval"})
+        quality.add_evidence(item["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 3.0, {"source": "user"})
+        for _ in range(4):
+            quality.add_evidence(item["id"], KnowledgeEvidenceType.USED_IN_PROMPT.value, 0.35, {"source": "prompt"})
+        trusted = quality.promote_or_deprecate(item["id"])
+        assert trusted["status"] == KnowledgeCandidateStatus.TRUSTED.value
+
+        quality.add_evidence(item["id"], KnowledgeEvidenceType.CONFLICT_DETECTED.value, -1.0, {"source": "review"})
+        still_trusted = store.get_candidate_item(item["id"])
+        assert still_trusted is not None
+        assert still_trusted["status"] == KnowledgeCandidateStatus.TRUSTED.value
+
+        quality.add_evidence(item["id"], KnowledgeEvidenceType.CONFLICT_DETECTED.value, -1.0, {"source": "review"})
+        deprecated = store.get_candidate_item(item["id"])
+        assert deprecated is not None
+        assert deprecated["status"] == KnowledgeCandidateStatus.DEPRECATED.value
+
+        rejected = quality.upsert_candidate(
+            KnowledgeCandidateType.MISCONCEPTION.value,
+            {"topic_id": "quadratic_vertex_form", "misconception_key": "trusted_rejected"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {"source": "llm"},
+        )
+        quality.add_evidence(rejected["id"], KnowledgeEvidenceType.ANSWER_IMPROVED.value, 3.0, {"source": "eval"})
+        quality.add_evidence(rejected["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 3.0, {"source": "user"})
+        for _ in range(4):
+            quality.add_evidence(rejected["id"], KnowledgeEvidenceType.USED_IN_PROMPT.value, 0.35, {"source": "prompt"})
+        assert quality.promote_or_deprecate(rejected["id"])["status"] == KnowledgeCandidateStatus.TRUSTED.value
+
+        quality.add_evidence(rejected["id"], KnowledgeEvidenceType.USER_REJECTED.value, -1.0, {"source": "user"})
+        deprecated_rejected = store.get_candidate_item(rejected["id"])
+        assert deprecated_rejected is not None
+        assert deprecated_rejected["status"] == KnowledgeCandidateStatus.DEPRECATED.value
+    finally:
+        store.close()
+
+
 def test_negative_evidence_deprecates_candidate(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

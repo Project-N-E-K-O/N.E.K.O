@@ -325,11 +325,19 @@ class StudyCompanionPlugin(NekoPluginBase):
             hint = ""
             if extra:
                 hint = str(extra.get("topic_hint") or extra.get("topic") or "").strip()
-            context["knowledge_question_params"] = self._knowledge_tracker.get_next_question_params(hint)
+            context["knowledge_question_params"] = await asyncio.to_thread(
+                self._knowledge_tracker.get_next_question_params,
+                hint,
+            )
         elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-            context["knowledge_session_summary"] = self._knowledge_tracker.get_session_summary()
+            context["knowledge_session_summary"] = await asyncio.to_thread(
+                self._knowledge_tracker.get_session_summary
+            )
         else:
-            context["knowledge_summary"] = self._knowledge_tracker.get_status_summary(limit=5)
+            context["knowledge_summary"] = await asyncio.to_thread(
+                self._knowledge_tracker.get_status_summary,
+                limit=5,
+            )
         if extra:
             context.update(extra)
         return context
