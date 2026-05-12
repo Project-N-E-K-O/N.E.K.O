@@ -1319,13 +1319,23 @@ class StudyStore:
                 SELECT *
                 FROM wrong_questions
                 WHERE topic_id = ? AND status IN ('active', 'retrying')
-                ORDER BY created_at DESC
+                ORDER BY
+                    CASE WHEN status = 'retrying' THEN 0 ELSE 1 END,
+                    last_retry_at DESC,
+                    created_at DESC,
+                    id DESC
                 LIMIT 5
                 """,
                 (str(topic_id or ""),),
             ).fetchall()
+            matched_generic_correct = False
+            current_error_type = str(error_type or "none").strip()
             for row in rows:
-                if str(error_type or "none") not in {"", "none", str(row["error_type"] or "")}:
+                if current_error_type in {"", "none"}:
+                    if matched_generic_correct:
+                        continue
+                    matched_generic_correct = True
+                elif current_error_type != str(row["error_type"] or ""):
                     continue
                 consecutive = int(row["consecutive_correct"] or 0) + 1
                 max_difficulty = max(int(row["max_correct_difficulty"] or 0), int(difficulty or 0))

@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker, MasteryTracker
+from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker, MasteryTracker, _difficulty_to_float
 from plugin.plugins.study_companion.store import StudyStore
 
 
@@ -49,6 +49,14 @@ def test_mastery_tracker_levels_confidence_and_false_mastery() -> None:
     assert first.confidence < repeated.confidence
     assert repeated.mastery > first.mastery
     assert "false_mastery" in shaky.flags
+
+
+def test_difficulty_integer_levels_are_scaled_from_one_to_five() -> None:
+    assert _difficulty_to_float(1) == 0.2
+    assert _difficulty_to_float("1") == 0.2
+    assert _difficulty_to_float(3) == 0.6
+    assert _difficulty_to_float(5) == 1.0
+    assert _difficulty_to_float(0.5) == 0.5
 
 
 def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp_path: Path) -> None:
@@ -107,6 +115,84 @@ def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: 
         resolved = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",))
         assert resolved and resolved[0]["id"] == wrong_id
         assert resolved[0]["consecutive_correct"] >= 3
+    finally:
+        store.close()
+
+
+def test_easy_integer_difficulty_does_not_resolve_wrong_question_as_hard_evidence(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        wrong_id = tracker.on_answer(
+            topic_id="linear_function_kb",
+            question={"question": "k 表示什么？", "answer": "斜率", "difficulty": 3},
+            user_answer="截距",
+            eval_result={"verdict": "wrong", "score": 10, "error_type": "misunderstanding"},
+            mode="interactive",
+        )["wrong_question_id"]
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "UPDATE wrong_questions SET last_error_at = datetime('now', '-2 days') WHERE id = ?",
+                (wrong_id,),
+            )
+
+        for _ in range(3):
+            tracker.on_answer(
+                topic_id="linear_function_kb",
+                question={"question": "k 是什么？", "answer": "斜率", "difficulty": 1},
+                user_answer="斜率",
+                eval_result={"verdict": "correct", "score": 90, "error_type": "none"},
+                mode="interactive",
+            )
+
+        active = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("retrying",))
+        assert active and active[0]["id"] == wrong_id
+        assert active[0]["max_correct_difficulty"] == 1
+        assert store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",)) == []
+    finally:
+        store.close()
+
+
+def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        first_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "k 表示什么？", "difficulty": 3},
+            user_answer="截距",
+            expected_answer="斜率",
+            error_type="misunderstanding",
+            verdict="wrong",
+        )
+        second_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "b 表示什么？", "difficulty": 3},
+            user_answer="斜率",
+            expected_answer="截距",
+            error_type="symbol_confusion",
+            verdict="wrong",
+        )
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "UPDATE wrong_questions SET last_error_at = datetime('now', '-2 days') WHERE id IN (?, ?)",
+                (first_id, second_id),
+            )
+
+        for _ in range(3):
+            store.record_wrong_question_correct(
+                topic_id="linear_function_kb",
+                error_type="none",
+                difficulty=3,
+            )
+
+        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying", "resolved"))
+        by_id = {row["id"]: row for row in rows}
+        resolved = [row for row in rows if row["status"] == "resolved"]
+        untouched = [row for row in rows if row["consecutive_correct"] == 0]
+
+        assert len(resolved) == 1
+        assert len(untouched) == 1
+        assert {first_id, second_id} == set(by_id)
     finally:
         store.close()
 

@@ -43,7 +43,10 @@ def _difficulty_to_float(value: object, default: float = 0.5) -> float:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    if number > 1.0:
+    text = str(value).strip()
+    is_integer_level = isinstance(value, int) and not isinstance(value, bool)
+    is_string_integer_level = bool(re.fullmatch(r"[1-5]", text))
+    if number > 1.0 or is_integer_level or is_string_integer_level:
         number = number / 5.0
     return _clamp(number, 0.1, 1.0)
 
