@@ -160,6 +160,7 @@ class _FakeStudyOcrPipeline:
 class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
+        self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -176,6 +177,30 @@ class _FakeTutorAgent:
             operation="concept_explain",
             input_text=text,
             reply=f"explained[{mode}]: {text}",
+            created_at="2026-05-11T00:00:00Z",
+        )
+
+    async def answer_evaluate(
+        self,
+        *,
+        question: str = "",
+        answer: str = "",
+        expected_answer: str = "",
+        mode: str = MODE_COMPANION,
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+        return TutorReply(
+            operation="answer_evaluate",
+            input_text=answer,
+            reply="evaluated",
+            payload={
+                "verdict": "partial",
+                "score": 50,
+                "error_type": "unknown",
+                "feedback": "evaluated",
+                "next_action": "review",
+            },
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -1180,6 +1205,46 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
         assert plugin._agent.inputs[-1][1]["mode_switch"] is False
         assert "screen_classification" in plugin._agent.inputs[-1][1]
         assert explained.value["reply"].startswith("explained[companion]: 光合作用")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_custom_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What process converts light to chemical energy?",
+                "answer": "Photosynthesis",
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What organelle stores genetic material?",
+            answer="The nucleus.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert fake_agent.evaluations[-1][0] == "What organelle stores genetic material?"
+        assert fake_agent.evaluations[-1][2] == ""
+        assert fake_agent.evaluations[-1][3]["expected_answer"] == ""
     finally:
         await plugin.shutdown()
 

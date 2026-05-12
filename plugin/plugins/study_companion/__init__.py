@@ -694,8 +694,14 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             current_question = dict(self._state.current_question)
             active_mode = self._state.active_mode
-        resolved_question = str(question or current_question.get("question") or "").strip()
-        resolved_expected = str(expected_answer or current_question.get("answer") or "").strip()
+        supplied_question = str(question or "").strip()
+        supplied_expected = str(expected_answer or "").strip()
+        state_question = str(current_question.get("question") or "").strip()
+        state_expected = str(current_question.get("answer") or "").strip()
+        resolved_question = supplied_question or state_question
+        resolved_expected = supplied_expected
+        if not resolved_expected and (not supplied_question or supplied_question == state_question):
+            resolved_expected = state_expected
         answer_text = str(answer or "").strip()
         tutor_context = self._build_learning_context(
             LLM_OPERATION_ANSWER_EVALUATE,
