@@ -10,6 +10,7 @@ from typing import Any
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_dir
 
 from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
+from .json_utils import json_copy
 
 MODE_MIN_DWELL_SECONDS = 180.0
 MODE_SWITCH_WINDOW_SECONDS = 180.0
@@ -134,16 +135,6 @@ _MODE_PREFIX_REQUIRED_KEYWORDS = frozenset(
 )
 
 
-def _json_copy(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _json_copy(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_copy(item) for item in value]
-    if isinstance(value, tuple):
-        return [_json_copy(item) for item in value]
-    return value
-
-
 def _strip_noise(text: str) -> str:
     return re.sub(r"^[\s,，。.!！？?:：;；—~·\-\\]+|[\s,，。.!！？?:：;；—~·\-\\]+$", "", str(text or "").strip())
 
@@ -208,7 +199,7 @@ def study_i18n_t(language: str | None, key: str, *, default: str = "", **params:
 
 def _transition_i18n_or_fallback(language: str | None, key: str, fallback: str, **params: object) -> str:
     localized = study_i18n_t(language, key, default="", **params)
-    if localized:
+    if localized and localized != key:
         return localized
     return fallback.format(**params)
 
@@ -349,9 +340,9 @@ class ModeManager:
         return {
             "current_mode": normalize_mode(self.current_mode),
             "mode_started_at": float(self.mode_started_at or 0.0),
-            "recent_mode_switches": _json_copy(self.recent_mode_switches),
+            "recent_mode_switches": json_copy(self.recent_mode_switches),
             "suggestion_cooldowns": {str(key): float(value) for key, value in self.suggestion_cooldowns.items()},
-            "session_suggestions": _json_copy(self.session_suggestions),
+            "session_suggestions": json_copy(self.session_suggestions),
             "mode_lock_until": float(self.mode_lock_until or 0.0),
         }
 
@@ -362,7 +353,7 @@ class ModeManager:
         self.mode_lock_until = _coerce_timestamp(payload.get("mode_lock_until"), self.mode_lock_until)
         self.recent_mode_switches = [
             item
-            for item in (_json_copy(payload.get("recent_mode_switches")) if isinstance(payload.get("recent_mode_switches"), list) else [])
+            for item in (json_copy(payload.get("recent_mode_switches")) if isinstance(payload.get("recent_mode_switches"), list) else [])
             if isinstance(item, dict)
         ]
         self.suggestion_cooldowns = {}
@@ -371,7 +362,7 @@ class ModeManager:
             for key, value in raw_cooldowns.items():
                 self.suggestion_cooldowns[str(key)] = _coerce_timestamp(value, 0.0)
         raw_session = payload.get("session_suggestions")
-        self.session_suggestions = [item for item in (_json_copy(raw_session) if isinstance(raw_session, list) else []) if isinstance(item, dict)]
+        self.session_suggestions = [item for item in (json_copy(raw_session) if isinstance(raw_session, list) else []) if isinstance(item, dict)]
 
     def _prune_recent_mode_switches(self, now_ts: float) -> None:
         self.recent_mode_switches = [

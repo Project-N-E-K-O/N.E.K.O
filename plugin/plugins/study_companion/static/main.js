@@ -3,6 +3,15 @@ const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
+const ENTRY_TIMEOUT_MS = {
+  study_status: 15000,
+  study_ocr_snapshot: 60000,
+  study_set_mode: 15000,
+  study_explain_text: 60000,
+  study_generate_question: 75000,
+  study_evaluate_answer: 75000,
+  study_summarize_session: 90000,
+};
 let currentMode = 'companion';
 
 const statusLine = document.getElementById('statusLine');
@@ -10,7 +19,15 @@ const replyText = document.getElementById('replyText');
 const studyInput = document.getElementById('studyInput');
 const refreshBtn = document.getElementById('refreshBtn');
 const ocrBtn = document.getElementById('ocrBtn');
+const generateQuestionBtn = document.getElementById('generateQuestionBtn');
 const explainBtn = document.getElementById('explainBtn');
+const evaluateAnswerBtn = document.getElementById('evaluateAnswerBtn');
+const summarizeBtn = document.getElementById('summarizeBtn');
+const answerInput = document.getElementById('answerInput');
+const questionText = document.getElementById('questionText');
+const screenType = document.getElementById('screenType');
+const questionStatus = document.getElementById('questionStatus');
+const evaluationStatus = document.getElementById('evaluationStatus');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 
 function t(key, fallback) {
@@ -40,6 +57,33 @@ function modeLabel(mode) {
   return known ? t(`status.mode.${mode}`, mode) : mode;
 }
 
+function screenLabel(type) {
+  const normalized = String(type || 'idle');
+  const known = ['idle', 'reading', 'question', 'answering', 'review', 'notes', 'summary'].includes(normalized);
+  return known ? t(`ui.status.screen.${normalized}`, normalized) : normalized;
+}
+
+function formatPluginError(error) {
+  if (error instanceof Error && error.message === 'plugin_call_timeout') {
+    return t('ui.error.plugin_call_timeout', 'Plugin call timed out');
+  }
+  if (error instanceof Error && error.message === 'run_id_missing') {
+    return t('ui.error.run_id_missing', 'Run id missing');
+  }
+  if (error instanceof Error && error.message === 'plugin_call_failed') {
+    return t('ui.error.plugin_call_failed', 'Plugin call failed');
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function compactText(value, fallback = '-') {
+  const text = String(value || '').trim();
+  if (!text) {
+    return fallback;
+  }
+  return text.length > 72 ? `${text.slice(0, 72)}...` : text;
+}
+
 function setModeButtons(mode, disabled = false) {
   currentMode = String(mode || 'companion');
   modeButtons.forEach((button) => {
@@ -50,12 +94,37 @@ function setModeButtons(mode, disabled = false) {
   });
 }
 
+function setStudyState(data = {}) {
+  const classification = data.screen_classification || {};
+  const screenValue = classification.screen_type || data.screen_type || 'idle';
+  if (screenType) {
+    screenType.textContent = screenLabel(screenValue);
+    if (classification.reason) {
+      screenType.title = classification.reason;
+    }
+  }
+  const currentQuestion = data.current_question || {};
+  if (questionStatus) {
+    questionStatus.textContent = compactText(currentQuestion.question);
+  }
+  if (questionText) {
+    questionText.textContent = currentQuestion.question || '';
+  }
+  const evaluation = data.last_answer_evaluation || {};
+  if (evaluationStatus) {
+    const verdict = evaluation.verdict ? String(evaluation.verdict) : '';
+    const score = Number.isFinite(Number(evaluation.score)) ? ` / ${evaluation.score}` : '';
+    evaluationStatus.textContent = verdict ? `${verdict}${score}` : '-';
+  }
+}
+
 function setStatusLine(data) {
   const statusValue = data.status || 'unknown';
   const modeValue = String(data.active_mode || data.mode || 'companion');
   const statusLabel = t(`status.state.${statusValue}`, statusValue);
   setStatus(`${statusLabel} / ${modeLabel(modeValue)}`);
   setModeButtons(modeValue, false);
+  setStudyState(data);
 }
 
 function sleep(ms) {
@@ -64,6 +133,10 @@ function sleep(ms) {
 
 function timeLeft(deadline) {
   return Math.max(0, deadline - Date.now());
+}
+
+function timeoutForEntry(entryId) {
+  return ENTRY_TIMEOUT_MS[entryId] || RUN_TIMEOUT_MS;
 }
 
 function isAbortError(error) {
@@ -135,7 +208,7 @@ async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS) {
 }
 
 async function callPlugin(entryId, args = {}) {
-  const deadline = Date.now() + RUN_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutForEntry(entryId);
   const runId = await createRun(entryId, args, deadline);
   let delay = 250;
   while (Date.now() < deadline) {
@@ -195,6 +268,62 @@ async function explainText() {
   await refreshStatus({ updateReply: false });
 }
 
+async function generateQuestion() {
+  const text = studyInput.value.trim();
+  setStatus(t('ui.status.generating_question', 'Generating question...'));
+  const data = await callPlugin('study_generate_question', { text });
+  setStatus(data.degraded
+    ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
+    : t('ui.status.reply_ready', 'Reply ready'));
+  if (data.question) {
+    if (questionText) {
+      questionText.textContent = data.question;
+    }
+    if (questionStatus) {
+      questionStatus.textContent = data.question.length > 72 ? `${data.question.slice(0, 72)}...` : data.question;
+    }
+  }
+  if (data.answer && answerInput && !answerInput.value.trim()) {
+    answerInput.value = data.answer;
+  }
+  setReply(data.hint || data.question || data.summary || data.reply || '');
+  await refreshStatus({ updateReply: false });
+}
+
+async function evaluateAnswer() {
+  const answer = answerInput ? answerInput.value.trim() : '';
+  if (!answer) {
+    throw new Error(t('ui.error.missing_answer', 'Please enter an answer first.'));
+  }
+  const question = questionText && questionText.textContent.trim()
+    ? questionText.textContent.trim()
+    : (studyInput.value.trim() || '');
+  setStatus(t('ui.status.evaluating_answer', 'Evaluating answer...'));
+  const data = await callPlugin('study_evaluate_answer', {
+    answer,
+    question,
+  });
+  setStatus(data.degraded
+    ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
+    : t('ui.status.reply_ready', 'Reply ready'));
+  if (evaluationStatus) {
+    evaluationStatus.textContent = data.verdict ? `${data.verdict}${Number.isFinite(Number(data.score)) ? ` / ${data.score}` : ''}` : '-';
+  }
+  const replyLines = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
+  setReply(replyLines.join('\n\n') || data.summary || '');
+  await refreshStatus({ updateReply: false });
+}
+
+async function summarizeSession() {
+  setStatus(t('ui.status.summarizing_session', 'Summarizing session...'));
+  const data = await callPlugin('study_summarize_session', {});
+  setStatus(data.degraded
+    ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
+    : t('ui.status.reply_ready', 'Reply ready'));
+  setReply(data.markdown || data.summary || data.reply || '');
+  await refreshStatus({ updateReply: false });
+}
+
 async function setMode(mode) {
   if (mode === currentMode) {
     return;
@@ -211,13 +340,16 @@ async function setMode(mode) {
 }
 
 function bindButton(button, handler) {
+  if (!button) {
+    return;
+  }
   button.addEventListener('click', async () => {
     button.disabled = true;
     try {
       await handler();
     } catch (error) {
       setStatus(t('ui.status.error', 'Error'));
-      setReply(error instanceof Error ? error.message : String(error));
+      setReply(formatPluginError(error));
     } finally {
       button.disabled = false;
     }
@@ -232,7 +364,10 @@ async function bootstrap() {
   }
   bindButton(refreshBtn, refreshStatus);
   bindButton(ocrBtn, runOcr);
+  bindButton(generateQuestionBtn, generateQuestion);
   bindButton(explainBtn, explainText);
+  bindButton(evaluateAnswerBtn, evaluateAnswer);
+  bindButton(summarizeBtn, summarizeSession);
   modeButtons.forEach((button) => {
     button.addEventListener('click', async () => {
       if (button.disabled) {
@@ -245,7 +380,7 @@ async function bootstrap() {
         await setMode(button.getAttribute('data-mode') || 'companion');
       } catch (error) {
         setStatus(t('ui.status.error', 'Error'));
-        setReply(error instanceof Error ? error.message : String(error));
+        setReply(formatPluginError(error));
       } finally {
         setModeButtons(currentMode, false);
       }
@@ -256,5 +391,5 @@ async function bootstrap() {
 
 bootstrap().catch((error) => {
   setStatus(t('ui.status.not_ready', 'Not ready'));
-  setReply(error instanceof Error ? error.message : String(error));
+  setReply(formatPluginError(error));
 });

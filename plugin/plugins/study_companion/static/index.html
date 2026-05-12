@@ -25,11 +25,38 @@
         <button id="modeTeachingBtn" type="button" data-mode="teaching" data-i18n="status.mode.teaching">Teaching</button>
       </section>
 
+      <section class="study-meta" aria-label="Study state">
+        <div class="meta-item">
+          <span data-i18n="ui.label.screen">Screen</span>
+          <strong id="screenType">-</strong>
+        </div>
+        <div class="meta-item">
+          <span data-i18n="ui.label.question">Question</span>
+          <strong id="questionStatus">-</strong>
+        </div>
+        <div class="meta-item">
+          <span data-i18n="ui.label.answer">Answer</span>
+          <strong id="evaluationStatus">-</strong>
+        </div>
+      </section>
+
       <section class="study-workspace">
         <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
         <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
         <div class="action-row">
+          <button id="generateQuestionBtn" type="button" data-i18n="ui.button.generate_question">Generate Question</button>
           <button id="explainBtn" type="button" data-i18n="ui.button.explain">Explain</button>
+        </div>
+      </section>
+
+      <section class="question-panel" aria-live="polite">
+        <h2 data-i18n="ui.label.question">Question</h2>
+        <pre id="questionText"></pre>
+        <label class="input-label" for="answerInput" data-i18n="ui.label.answer">Answer</label>
+        <textarea id="answerInput" spellcheck="true"></textarea>
+        <div class="action-row">
+          <button id="evaluateAnswerBtn" type="button" data-i18n="ui.button.evaluate_answer">Evaluate Answer</button>
+          <button id="summarizeBtn" type="button" data-i18n="ui.button.summarize_session">Summarize Session</button>
         </div>
       </section>
 

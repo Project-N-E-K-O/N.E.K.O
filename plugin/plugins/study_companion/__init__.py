@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
 
-from .constants import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING
+from .constants import (
+    LLM_OPERATION_ANSWER_EVALUATE,
+    LLM_OPERATION_CONCEPT_EXPLAIN,
+    LLM_OPERATION_KNOWLEDGE_TRACK,
+    LLM_OPERATION_QUESTION_GENERATE,
+    LLM_OPERATION_SUMMARIZE_SESSION,
+    MODE_COMPANION,
+    MODE_INTERACTIVE,
+    MODE_TEACHING,
+)
+from .screen_classifier import classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
     STATUS_ERROR,
@@ -14,6 +25,7 @@ from .models import (
     STATUS_STOPPED,
     StudyConfig,
     StudyState,
+    TutorReply,
     build_config,
     utc_now_iso,
 )
@@ -22,12 +34,14 @@ from .service import (
     build_explain_payload,
     build_ocr_payload,
     build_status_payload,
+    build_tutor_payload,
 )
 from .mode_manager import ModeManager, build_transition_phrase, handle_user_intent, normalize_mode
 from .state import build_initial_state
 from .store import StudyStore
 from .study_ocr_pipeline import StudyOcrPipeline
 from .tutor_llm_agent import TutorLLMAgent
+from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 
 
@@ -66,7 +80,6 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._state.mode_started_at = float(self._state.mode_started_at or 0.0)
                 self._state.mode_lock_until = float(self._state.mode_lock_until or 0.0)
                 self._cfg.mode = self._state.active_mode
-                self._cfg.default_mode = self._state.active_mode
                 self._state.last_started_at = utc_now_iso()
                 self._state.last_error = ""
                 self._mode_manager.restore(
@@ -96,11 +109,37 @@ class StudyCompanionPlugin(NekoPluginBase):
             await self._persist_state()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            self.logger.warning("study plugin startup failed: {}", exc)
+            await self._cleanup_after_failed_startup()
             with self._lock:
                 self._state.status = STATUS_ERROR
-                self._state.last_error = str(exc)
-            return Err(SdkError(f"failed to start study_companion: {exc}"))
+                self._state.last_error = "startup_failed"
+            return Err(SdkError("failed to start study_companion"))
+
+    async def _cleanup_after_failed_startup(self) -> None:
+        agent = self._agent
+        self._agent = None
+        self._ocr_pipeline = None
+        try:
+            self.clear_list_actions()
+        except Exception as exc:
+            self.logger.warning("study startup cleanup clear actions failed: {}", exc)
+        try:
+            self._static_ui_config = None
+        except Exception as exc:
+            self.logger.warning("study startup cleanup static UI failed: {}", exc)
+        if agent is not None:
+            try:
+                await agent.shutdown()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup agent shutdown failed: {}", exc)
+        try:
+            await asyncio.to_thread(self._store.close)
+        except Exception as exc:
+            self.logger.warning("study startup cleanup store close failed: {}", exc)
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
@@ -155,7 +194,6 @@ class StudyCompanionPlugin(NekoPluginBase):
             }
             if result.get("changed"):
                 self._cfg.mode = self._state.active_mode
-                self._cfg.default_mode = self._state.active_mode
         if result.get("changed") and self._agent is not None:
             self._agent.update_config(self._cfg)
         await self._persist_state()
@@ -164,6 +202,218 @@ class StudyCompanionPlugin(NekoPluginBase):
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
         return build_status_payload(config=self._cfg, state=self._state, history=history)
+
+    def _state_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._state.to_dict()
+
+    def _merge_session_summary_seed(
+        self,
+        operation: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        seed: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        current = dict(seed or {})
+        payload = dict(payload or {})
+        current["event_count"] = int(current.get("event_count") or 0) + 1
+        current["last_operation"] = operation
+        current["last_updated_at"] = utc_now_iso()
+        screen_type = str(payload.get("screen_type") or current.get("last_screen_type") or "").strip()
+        if screen_type:
+            current["last_screen_type"] = screen_type
+        if operation == LLM_OPERATION_QUESTION_GENERATE:
+            current["question_count"] = int(current.get("question_count") or 0) + 1
+        elif operation == LLM_OPERATION_ANSWER_EVALUATE:
+            current["answer_count"] = int(current.get("answer_count") or 0) + 1
+            verdict = str(payload.get("verdict") or "").strip()
+            if verdict:
+                verdict_counts = dict(current.get("verdict_counts") or {})
+                verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
+                current["verdict_counts"] = verdict_counts
+            weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
+            if weak_points:
+                current["weak_points"] = weak_points[:6]
+        elif operation == LLM_OPERATION_CONCEPT_EXPLAIN:
+            current["explain_count"] = int(current.get("explain_count") or 0) + 1
+        elif operation == LLM_OPERATION_KNOWLEDGE_TRACK:
+            current["track_count"] = int(current.get("track_count") or 0) + 1
+        elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
+            current["summary_count"] = int(current.get("summary_count") or 0) + 1
+        topic = str(payload.get("topic") or "").strip()
+        if topic:
+            current["last_topic"] = topic
+        weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
+        if weak_points:
+            current["weak_points"] = weak_points[:6]
+        return current
+
+    def _screen_classification_context(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state.last_screen_classification)
+
+    def _update_screen_classification(self, text: str, *, window_title: str = "", update_empty: bool = True) -> dict[str, Any]:
+        normalized = str(text or "").strip()
+        if not normalized and not update_empty:
+            with self._lock:
+                return dict(self._state.last_screen_classification)
+        with self._lock:
+            recent = list(self._state.recent_screen_classifications)
+        classification = classify_screen_from_ocr(normalized, window_title=window_title, recent_classifications=recent)
+        payload = classification.to_payload()
+        with self._lock:
+            if normalized or update_empty:
+                self._state.last_screen_classification = payload
+                recent_classifications = list(self._state.recent_screen_classifications)
+                recent_classifications.append(payload)
+                self._state.recent_screen_classifications = recent_classifications[-8:]
+                self._state.session_summary_seed = self._merge_session_summary_seed(
+                    "screen_classification",
+                    payload=payload,
+                    seed=self._state.session_summary_seed,
+                )
+        return payload
+
+    async def _build_learning_context(
+        self,
+        operation: str,
+        *,
+        input_text: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self._state_snapshot()
+        history_limit = max(5, min(12, int(self._cfg.history_limit or 10)))
+        history = await asyncio.to_thread(self._store.list_interactions, history_limit)
+        context = {
+            "operation": operation,
+            "input_text": input_text,
+            "language": self._cfg.language,
+            "mode": snapshot.get("active_mode") or self._cfg.mode,
+            "screen_classification": snapshot.get("last_screen_classification") or {},
+            "recent_screen_classifications": snapshot.get("recent_screen_classifications") or [],
+            "current_question": snapshot.get("current_question") or {},
+            "last_answer_evaluation": snapshot.get("last_answer_evaluation") or {},
+            "session_summary_seed": snapshot.get("session_summary_seed") or {},
+            "recent_learning_events": (snapshot.get("recent_learning_events") or [])[-8:],
+            "last_ocr_text": snapshot.get("last_ocr_text") or "",
+            "last_ocr_at": snapshot.get("last_ocr_at") or "",
+            "history": history,
+        }
+        if extra:
+            context.update(extra)
+        return context
+
+    def _record_tutor_result(self, operation: str, reply: TutorReply, *, extra: dict[str, Any] | None = None) -> None:
+        payload = dict(reply.payload or {})
+        summary = str(reply.reply or "").strip()
+        event = {
+            "operation": operation,
+            "kind": operation,
+            "input_text": reply.input_text,
+            "summary": summary,
+            "degraded": bool(reply.degraded),
+            "diagnostic": reply.diagnostic,
+            "at": time.time(),
+            "created_at": reply.created_at or utc_now_iso(),
+            "screen_type": str(payload.get("screen_type") or (extra or {}).get("screen_type") or self._screen_classification_context().get("screen_type") or ""),
+        }
+        with self._lock:
+            seed = self._merge_session_summary_seed(operation, payload=payload, seed=self._state.session_summary_seed)
+            self._state.session_summary_seed = seed
+            self._state.recent_learning_events = (self._state.recent_learning_events + [event])[-16:]
+            if operation != LLM_OPERATION_KNOWLEDGE_TRACK:
+                self._state.last_reply = summary
+                self._state.last_reply_at = reply.created_at or utc_now_iso()
+                if operation == LLM_OPERATION_QUESTION_GENERATE:
+                    if str(payload.get("question") or "").strip():
+                        self._state.current_question = dict(payload)
+                        self._state.last_question_at = reply.created_at or utc_now_iso()
+                elif operation == LLM_OPERATION_ANSWER_EVALUATE:
+                    self._state.last_answer_evaluation = dict(payload)
+                    self._state.last_answer_evaluated_at = reply.created_at or utc_now_iso()
+                elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
+                    self._state.last_session_summary = str(payload.get("summary") or "").strip()
+                    self._state.last_session_summary_at = reply.created_at or utc_now_iso()
+
+    async def _finalize_tutor_call(
+        self,
+        operation: str,
+        reply: TutorReply,
+        *,
+        history_kind: str,
+        metadata: dict[str, Any],
+        extra_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._record_tutor_result(operation, reply)
+        diagnostic = str(reply.diagnostic or "")
+        if diagnostic and reply.degraded:
+            with self._lock:
+                self._state.last_error = diagnostic
+        await asyncio.to_thread(
+            self._store.append_interaction,
+            kind=history_kind,
+            input_text=reply.input_text,
+            output_text=reply.reply,
+            metadata=metadata,
+            history_limit=self._cfg.history_limit,
+        )
+        if operation != LLM_OPERATION_SUMMARIZE_SESSION:
+            await self._track_learning(operation, reply, extra_context=extra_context)
+        await self._persist_state()
+        return build_tutor_payload(reply)
+
+    async def _track_learning(
+        self,
+        operation: str,
+        reply: TutorReply,
+        *,
+        extra_context: dict[str, Any] | None = None,
+    ) -> None:
+        if self._agent is None or not hasattr(self._agent, "knowledge_track"):
+            return
+        try:
+            track_context = await self._build_learning_context(
+                LLM_OPERATION_KNOWLEDGE_TRACK,
+                input_text=reply.input_text,
+                extra={
+                    "operation": operation,
+                    "result": reply.payload or {"reply": reply.reply},
+                    "reply": reply.reply,
+                    "degraded": reply.degraded,
+                    "diagnostic": reply.diagnostic,
+                    **(extra_context or {}),
+                },
+            )
+            track_reply = await self._agent.knowledge_track(mode=self._state.active_mode, context=track_context)
+        except Exception as exc:
+            self.logger.warning("study knowledge track failed: {}", exc)
+            track_reply = TutorReply(
+                operation=LLM_OPERATION_KNOWLEDGE_TRACK,
+                input_text=reply.input_text,
+                reply="knowledge track updated",
+                payload={
+                    "topic": self._guess_track_topic(reply),
+                    "mastery_delta": 0.0,
+                    "confidence": 0.35,
+                    "weak_points": [],
+                    "next_steps": [],
+                    "screen_type": self._screen_classification_context().get("screen_type") or "",
+                },
+                degraded=True,
+                diagnostic=diagnostic_code_for_exception(exc),
+                created_at=utc_now_iso(),
+            )
+        self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
+
+    @staticmethod
+    def _guess_track_topic(reply: TutorReply) -> str:
+        payload = dict(reply.payload or {})
+        topic = str(payload.get("topic") or "").strip()
+        if topic:
+            return topic
+        text = str(reply.input_text or "").strip()
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        return first_line[:48] or "general"
 
     def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:
         current = str(getattr(self.ctx, "run_id", "") or "").strip()
@@ -214,7 +464,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         name=tr("entries.status.name", default="Study Companion Status"),
         description=tr("entries.status.description", default="Return runtime status, dependencies, and recent study interactions."),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["status", "active_mode"],
+        llm_result_fields=["status", "active_mode", "screen_classification", "current_question", "last_answer_evaluation"],
     )
     async def study_status(self, **_):
         payload = await asyncio.to_thread(self._status_payload)
@@ -280,6 +530,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             with self._lock:
                 self._state.last_ocr_text = snapshot.text
                 self._state.last_ocr_at = snapshot.captured_at
+            payload["screen_classification"] = self._update_screen_classification(snapshot.text, update_empty=False)
+        elif snapshot.status == "empty":
+            payload["screen_classification"] = self._update_screen_classification("", update_empty=True)
         await self._persist_state()
         return Ok(payload)
 
@@ -302,7 +555,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         raw_text = str(text or "").strip()
         # Phase 1: detect an explicit mode intent and switch first when present.
         intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
-        active_mode = self._state.active_mode
+        with self._lock:
+            active_mode = self._state.active_mode
         mode_switch: dict[str, Any] = {}
         if intent.get("matched") and intent.get("kind") == "mode_switch":
             try:
@@ -333,42 +587,198 @@ class StudyCompanionPlugin(NekoPluginBase):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         # Phase 3: explain with the active mode selected above.
-        reply = await self._agent.concept_explain(
-            source_text,
-            mode=active_mode,
-            context={
+        tutor_context = await self._build_learning_context(
+            LLM_OPERATION_CONCEPT_EXPLAIN,
+            input_text=source_text,
+            extra={
                 "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
                 "mode": active_mode,
                 "mode_switch": bool(mode_switch.get("changed")),
+                "source_text": source_text,
             },
         )
-        with self._lock:
-            self._state.last_reply = reply.reply
-            self._state.last_reply_at = reply.created_at
-            if reply.diagnostic and reply.degraded:
-                self._state.last_error = reply.diagnostic
-        await asyncio.to_thread(
-            self._store.append_interaction,
-            kind=MODE_CONCEPT_EXPLAIN,
-            input_text=reply.input_text,
-            output_text=reply.reply,
+        reply = await self._agent.concept_explain(
+            source_text,
+            mode=active_mode,
+            context=tutor_context,
+        )
+        payload = await self._finalize_tutor_call(
+            LLM_OPERATION_CONCEPT_EXPLAIN,
+            reply,
+            history_kind=MODE_CONCEPT_EXPLAIN,
             metadata={
                 "degraded": reply.degraded,
                 "diagnostic": reply.diagnostic,
                 "mode": active_mode,
                 "mode_switch": mode_switch,
                 "intent": intent,
+                "screen_classification": tutor_context.get("screen_classification") or {},
             },
-            history_limit=self._cfg.history_limit,
+            extra_context=tutor_context,
         )
-        await self._persist_state()
-        payload = build_explain_payload(reply)
         if mode_switch:
             payload["mode_switch"] = mode_switch
         if intent.get("matched"):
             payload["intent"] = intent
             if intent.get("pure_switch"):
                 payload["transition_phrase"] = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_generate_question",
+        name=tr("entries.generate_question.name", default="Generate Study Question"),
+        description=tr("entries.generate_question.description", default="Generate one study question from supplied text or the latest OCR text."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "default": ""},
+                "topic": {"type": "string", "default": ""},
+            },
+        },
+        timeout=60.0,
+        llm_result_fields=["summary", "question", "answer", "hint", "difficulty", "topic"],
+    )
+    async def study_generate_question(self, text: str = "", topic: str = "", **_):
+        if self._agent is None:
+            return Err(SdkError("study tutor agent is not initialized"))
+        source_text = str(text or "").strip()
+        used_ocr_fallback = False
+        if not source_text:
+            with self._lock:
+                source_text = self._state.last_ocr_text
+            used_ocr_fallback = bool(source_text.strip())
+        with self._lock:
+            active_mode = self._state.active_mode
+        tutor_context = await self._build_learning_context(
+            LLM_OPERATION_QUESTION_GENERATE,
+            input_text=source_text,
+            extra={
+                "source": "ocr_snapshot" if used_ocr_fallback or not text else "manual",
+                "source_text": source_text,
+                "topic_hint": str(topic or "").strip(),
+                "mode": active_mode,
+            },
+        )
+        reply = await self._agent.question_generate(source_text, mode=active_mode, context=tutor_context)
+        payload = await self._finalize_tutor_call(
+            LLM_OPERATION_QUESTION_GENERATE,
+            reply,
+            history_kind=LLM_OPERATION_QUESTION_GENERATE,
+            metadata={
+                "degraded": reply.degraded,
+                "diagnostic": reply.diagnostic,
+                "payload": reply.payload,
+                "screen_classification": tutor_context.get("screen_classification") or {},
+            },
+            extra_context=tutor_context,
+        )
+        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_evaluate_answer",
+        name=tr("entries.evaluate_answer.name", default="Evaluate Study Answer"),
+        description=tr("entries.evaluate_answer.description", default="Evaluate an answer against the current generated question or a supplied question."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string", "default": ""},
+                "question": {"type": "string", "default": ""},
+                "expected_answer": {"type": "string", "default": ""},
+            },
+        },
+        timeout=60.0,
+        llm_result_fields=["summary", "verdict", "score", "error_type", "feedback", "next_action"],
+    )
+    async def study_evaluate_answer(self, answer: str = "", question: str = "", expected_answer: str = "", **_):
+        if self._agent is None:
+            return Err(SdkError("study tutor agent is not initialized"))
+        with self._lock:
+            current_question = dict(self._state.current_question)
+            active_mode = self._state.active_mode
+        supplied_question = str(question or "").strip()
+        supplied_expected = str(expected_answer or "").strip()
+        state_question = str(current_question.get("question") or "").strip()
+        state_expected = str(current_question.get("answer") or "").strip()
+        resolved_question = supplied_question or state_question
+        if not resolved_question:
+            return Err(SdkError("study tutor requires a question to evaluate against"))
+        resolved_expected = supplied_expected
+        if not resolved_expected and (not supplied_question or supplied_question == state_question):
+            resolved_expected = state_expected
+        answer_text = str(answer or "").strip()
+        tutor_context = await self._build_learning_context(
+            LLM_OPERATION_ANSWER_EVALUATE,
+            input_text=answer_text,
+            extra={
+                "question": resolved_question,
+                "expected_answer": resolved_expected,
+                "answer": answer_text,
+                "current_question": current_question,
+                "mode": active_mode,
+            },
+        )
+        reply = await self._agent.answer_evaluate(
+            question=resolved_question,
+            answer=answer_text,
+            expected_answer=resolved_expected,
+            mode=active_mode,
+            context=tutor_context,
+        )
+        payload = await self._finalize_tutor_call(
+            LLM_OPERATION_ANSWER_EVALUATE,
+            reply,
+            history_kind=LLM_OPERATION_ANSWER_EVALUATE,
+            metadata={
+                "question": resolved_question,
+                "expected_answer": resolved_expected,
+                "degraded": reply.degraded,
+                "diagnostic": reply.diagnostic,
+                "payload": reply.payload,
+                "screen_classification": tutor_context.get("screen_classification") or {},
+            },
+            extra_context=tutor_context,
+        )
+        payload["question"] = resolved_question
+        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
+        return Ok(payload)
+
+    @plugin_entry(
+        id="study_summarize_session",
+        name=tr("entries.summarize_session.name", default="Summarize Study Session"),
+        description=tr("entries.summarize_session.description", default="Summarize recent study interactions into compact study notes."),
+        input_schema={"type": "object", "properties": {"focus": {"type": "string", "default": ""}}},
+        timeout=75.0,
+        llm_result_fields=["summary", "markdown", "highlights", "weak_points", "next_actions"],
+    )
+    async def study_summarize_session(self, focus: str = "", **_):
+        if self._agent is None:
+            return Err(SdkError("study tutor agent is not initialized"))
+        with self._lock:
+            active_mode = self._state.active_mode
+        history = await asyncio.to_thread(self._store.list_interactions, max(5, min(30, self._cfg.history_limit)))
+        tutor_context = await self._build_learning_context(
+            LLM_OPERATION_SUMMARIZE_SESSION,
+            input_text="session",
+            extra={
+                "focus": str(focus or "").strip(),
+                "history": history,
+                "mode": active_mode,
+            },
+        )
+        reply = await self._agent.summarize_session(history, mode=active_mode, context=tutor_context)
+        payload = await self._finalize_tutor_call(
+            LLM_OPERATION_SUMMARIZE_SESSION,
+            reply,
+            history_kind=LLM_OPERATION_SUMMARIZE_SESSION,
+            metadata={
+                "degraded": reply.degraded,
+                "diagnostic": reply.diagnostic,
+                "payload": reply.payload,
+                "screen_classification": tutor_context.get("screen_classification") or {},
+            },
+        )
+        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
         return Ok(payload)
 
     @plugin_entry(

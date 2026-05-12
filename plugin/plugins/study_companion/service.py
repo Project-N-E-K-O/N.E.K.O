@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import importlib.util
 import os
 import shutil
@@ -9,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from .models import OcrSnapshot, StudyConfig, StudyState, TutorReply, json_copy
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def build_status_payload(
@@ -31,6 +35,16 @@ def build_status_payload(
         "last_started_at": state.last_started_at,
         "last_ocr_text": state.last_ocr_text,
         "last_ocr_at": state.last_ocr_at,
+        "screen_classification": json_copy(state.last_screen_classification),
+        "recent_screen_classifications": json_copy(state.recent_screen_classifications),
+        "current_question": json_copy(state.current_question),
+        "last_answer_evaluation": json_copy(state.last_answer_evaluation),
+        "session_summary_seed": json_copy(state.session_summary_seed),
+        "recent_learning_events": json_copy(state.recent_learning_events),
+        "last_question_at": state.last_question_at,
+        "last_answer_evaluated_at": state.last_answer_evaluated_at,
+        "last_session_summary": state.last_session_summary,
+        "last_session_summary_at": state.last_session_summary_at,
         "last_reply": state.last_reply,
         "last_reply_at": state.last_reply_at,
         "checkpoint": json_copy(state.checkpoint),
@@ -115,6 +129,7 @@ def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:
 
 
 def _available_tesseract_languages(detected: Path | None, target_dir: Path | None) -> set[str]:
+    tessdata_dirs = []
     if detected is not None:
         try:
             completed = subprocess.run(
@@ -131,11 +146,17 @@ def _available_tesseract_languages(detected: Path | None, target_dir: Path | Non
                 for line in output.splitlines()
                 if line.strip() and not line.lower().startswith("list of available languages")
             }
+            if completed.returncode != 0:
+                _LOGGER.warning(
+                    "tesseract --list-langs exited with code %s, falling back to filesystem scan",
+                    completed.returncode,
+                )
             if languages:
                 return languages
-        except Exception:
-            pass
-    tessdata_dirs = []
+        except subprocess.TimeoutExpired as exc:
+            _LOGGER.warning("tesseract --list-langs timed out, falling back to filesystem scan: %s", exc)
+        except OSError as exc:
+            _LOGGER.warning("tesseract --list-langs failed, falling back to filesystem scan: %s", exc)
     if target_dir is not None:
         tessdata_dirs.append(target_dir / "tessdata")
     if detected is not None:
@@ -165,10 +186,17 @@ def _inspect_dxcam() -> dict[str, Any]:
     }
 
 
-def build_explain_payload(reply: TutorReply) -> dict[str, Any]:
+def build_tutor_payload(reply: TutorReply) -> dict[str, Any]:
     payload = reply.to_dict()
-    payload["summary"] = reply.reply
+    if reply.payload:
+        payload.update(json_copy(reply.payload))
+    if not payload.get("summary"):
+        payload["summary"] = reply.reply
     return payload
+
+
+def build_explain_payload(reply: TutorReply) -> dict[str, Any]:
+    return build_tutor_payload(reply)
 
 
 def build_ocr_payload(snapshot: OcrSnapshot) -> dict[str, Any]:

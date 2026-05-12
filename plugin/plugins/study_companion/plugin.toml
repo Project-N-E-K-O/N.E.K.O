@@ -1,8 +1,8 @@
 [plugin]
 id = "study_companion"
 name = "Study Companion"
-description = "A minimal study companion that can OCR a study screen and explain concepts through the configured LLM."
-short_description = "OCR and concept explanation companion for study sessions."
+description = "An adaptive study companion that can classify the screen, generate questions, evaluate answers, explain concepts, and summarize sessions."
+short_description = "OCR, tutoring, and session summaries for study sessions."
 keywords = ["study", "ocr", "tutor", "concept", "learning"]
 version = "0.1.0"
 type = "plugin"
@@ -35,8 +35,19 @@ history_limit = 50
 
 [llm]
 llm_call_timeout_seconds = 30
+# Generic fallback used only when an operation-specific limit is omitted.
 temperature = 0.2
 max_tokens = 900
+temperature_concept_explain = 0.2
+max_tokens_concept_explain = 900
+temperature_question_generate = 0.35
+max_tokens_question_generate = 720
+temperature_answer_evaluate = 0.12
+max_tokens_answer_evaluate = 720
+temperature_knowledge_track = 0.08
+max_tokens_knowledge_track = 480
+temperature_summarize_session = 0.18
+max_tokens_summarize_session = 1200
 
 [ocr_reader]
 enabled = true

@@ -2,13 +2,82 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import math
-from typing import Any
+from typing import Any, Literal, TypedDict
 
-from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
+from .constants import (
+    LLM_OPERATION_ANSWER_EVALUATE,
+    LLM_OPERATION_CONCEPT_EXPLAIN,
+    LLM_OPERATION_KNOWLEDGE_TRACK,
+    LLM_OPERATION_QUESTION_GENERATE,
+    LLM_OPERATION_SUMMARIZE_SESSION,
+    MODE_COMPANION,
+    MODE_CONCEPT_EXPLAIN,
+    MODE_INTERACTIVE,
+    MODE_TEACHING,
+    SUPPORTED_LLM_OPERATIONS,
+    SUPPORTED_MODES,
+)
+from .json_utils import json_copy
 from .mode_manager import normalize_mode
 
 
 PLUGIN_ID = "study_companion"
+StudyMode = Literal["companion", "interactive", "teaching"]
+
+
+class ModeIntentPayload(TypedDict, total=False):
+    matched: bool
+    pure_switch: bool
+    kind: str
+    mode: StudyMode
+    remaining_text: str
+    keyword: str
+    transition_phrase: str
+
+
+class ModeSwitchPayload(TypedDict, total=False):
+    changed: bool
+    old_mode: StudyMode
+    new_mode: StudyMode
+    reason: str
+    transition_phrase: str
+    locked: bool
+    lock_reason: str
+    lock_until: float
+    checkpoint: dict[str, Any]
+
+
+class StudyStatusPayload(TypedDict, total=False):
+    status: str
+    active_mode: StudyMode
+    mode: StudyMode
+    current_question: dict[str, Any]
+    last_answer_evaluation: dict[str, Any]
+    screen_classification: dict[str, Any]
+    last_reply: str
+    last_error: str
+    history: list[dict[str, Any]]
+
+
+class TutorReplyPayload(TypedDict, total=False):
+    question: str
+    answer: str
+    hint: str
+    difficulty: int
+    topic: str
+    verdict: str
+    score: int
+    error_type: str
+    feedback: str
+    next_action: str
+    mastery_delta: float
+    confidence: float
+    weak_points: list[str]
+    next_steps: list[str]
+    summary: str
+    highlights: list[str]
+    next_actions: list[str]
+    markdown: str
 
 STATUS_READY = "ready"
 STATUS_STOPPED = "stopped"
@@ -22,22 +91,10 @@ def utc_now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def json_copy(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): json_copy(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [json_copy(item) for item in value]
-    if isinstance(value, tuple):
-        return [json_copy(item) for item in value]
-    return value
-
-
 @dataclass(slots=True)
 class StudyConfig:
-    mode: str = MODE_COMPANION
-    default_mode: str = MODE_COMPANION
+    mode: StudyMode = MODE_COMPANION
+    default_mode: StudyMode = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
     ocr_enabled: bool = True
@@ -60,9 +117,74 @@ class StudyConfig:
     llm_call_timeout_seconds: float = 30.0
     llm_temperature: float = 0.2
     llm_max_tokens: int = 900
+    llm_temperature_concept_explain: float = 0.2
+    llm_max_tokens_concept_explain: int = 900
+    llm_temperature_question_generate: float = 0.35
+    llm_max_tokens_question_generate: int = 720
+    llm_temperature_answer_evaluate: float = 0.12
+    llm_max_tokens_answer_evaluate: int = 720
+    llm_temperature_knowledge_track: float = 0.08
+    llm_max_tokens_knowledge_track: int = 480
+    llm_temperature_summarize_session: float = 0.18
+    llm_max_tokens_summarize_session: int = 1200
+
+    def __post_init__(self) -> None:
+        self.mode = normalize_mode(self.mode)
+        self.default_mode = normalize_mode(self.default_mode or self.mode)
+        self.language = str(self.language or "zh-CN").strip() or "zh-CN"
+        self.history_limit = max(1, self._coerce_int(self.history_limit, 50))
+        self.ocr_install_timeout_seconds = self._clamp_float(self.ocr_install_timeout_seconds, 1.0, 3600.0, 300.0)
+        self.ocr_left_inset_ratio = self._clamp_float(self.ocr_left_inset_ratio, 0.0, 1.0, 0.03)
+        self.ocr_right_inset_ratio = self._clamp_float(self.ocr_right_inset_ratio, 0.0, 1.0, 0.03)
+        self.ocr_top_ratio = self._clamp_float(self.ocr_top_ratio, 0.0, 1.0, 0.0)
+        self.ocr_bottom_inset_ratio = self._clamp_float(self.ocr_bottom_inset_ratio, 0.0, 1.0, 0.0)
+        self.llm_call_timeout_seconds = self._clamp_float(self.llm_call_timeout_seconds, 1.0, 3600.0, 30.0)
+        self.llm_temperature = self._clamp_float(self.llm_temperature, 0.0, 2.0, 0.2)
+        self.llm_max_tokens = max(1, self._coerce_int(self.llm_max_tokens, 900))
+        self.llm_temperature_concept_explain = self._clamp_float(self.llm_temperature_concept_explain, 0.0, 2.0, 0.2)
+        self.llm_max_tokens_concept_explain = max(1, self._coerce_int(self.llm_max_tokens_concept_explain, 900))
+        self.llm_temperature_question_generate = self._clamp_float(self.llm_temperature_question_generate, 0.0, 2.0, 0.35)
+        self.llm_max_tokens_question_generate = max(1, self._coerce_int(self.llm_max_tokens_question_generate, 720))
+        self.llm_temperature_answer_evaluate = self._clamp_float(self.llm_temperature_answer_evaluate, 0.0, 2.0, 0.12)
+        self.llm_max_tokens_answer_evaluate = max(1, self._coerce_int(self.llm_max_tokens_answer_evaluate, 720))
+        self.llm_temperature_knowledge_track = self._clamp_float(self.llm_temperature_knowledge_track, 0.0, 2.0, 0.08)
+        self.llm_max_tokens_knowledge_track = max(1, self._coerce_int(self.llm_max_tokens_knowledge_track, 480))
+        self.llm_temperature_summarize_session = self._clamp_float(self.llm_temperature_summarize_session, 0.0, 2.0, 0.18)
+        self.llm_max_tokens_summarize_session = max(1, self._coerce_int(self.llm_max_tokens_summarize_session, 1200))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @staticmethod
+    def _coerce_int(value: object, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    @staticmethod
+    def _clamp_float(value: object, minimum: float, maximum: float, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            number = default
+        if not math.isfinite(number):
+            number = default
+        return max(minimum, min(maximum, number))
+
+    def llm_limits_for_operation(self, operation: str) -> tuple[float, int]:
+        normalized = operation if operation in SUPPORTED_LLM_OPERATIONS else LLM_OPERATION_CONCEPT_EXPLAIN
+        if normalized == LLM_OPERATION_QUESTION_GENERATE:
+            return self.llm_temperature_question_generate, self.llm_max_tokens_question_generate
+        if normalized == LLM_OPERATION_ANSWER_EVALUATE:
+            return self.llm_temperature_answer_evaluate, self.llm_max_tokens_answer_evaluate
+        if normalized == LLM_OPERATION_KNOWLEDGE_TRACK:
+            return self.llm_temperature_knowledge_track, self.llm_max_tokens_knowledge_track
+        if normalized == LLM_OPERATION_SUMMARIZE_SESSION:
+            return self.llm_temperature_summarize_session, self.llm_max_tokens_summarize_session
+        if normalized == LLM_OPERATION_CONCEPT_EXPLAIN:
+            return self.llm_temperature_concept_explain, self.llm_max_tokens_concept_explain
+        return self.llm_temperature, self.llm_max_tokens
 
 
 @dataclass(slots=True)
@@ -78,6 +200,16 @@ class StudyState:
     last_started_at: str = ""
     last_ocr_text: str = ""
     last_ocr_at: str = ""
+    last_screen_classification: dict[str, Any] = field(default_factory=dict)
+    recent_screen_classifications: list[dict[str, Any]] = field(default_factory=list)
+    current_question: dict[str, Any] = field(default_factory=dict)
+    last_answer_evaluation: dict[str, Any] = field(default_factory=dict)
+    session_summary_seed: dict[str, Any] = field(default_factory=dict)
+    recent_learning_events: list[dict[str, Any]] = field(default_factory=list)
+    last_question_at: str = ""
+    last_answer_evaluated_at: str = ""
+    last_session_summary: str = ""
+    last_session_summary_at: str = ""
     last_reply: str = ""
     last_reply_at: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
@@ -105,6 +237,7 @@ class TutorReply:
     operation: str
     input_text: str
     reply: str
+    payload: dict[str, Any] = field(default_factory=dict)
     degraded: bool = False
     diagnostic: str = ""
     created_at: str = ""
@@ -170,6 +303,8 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     default_mode = _str(study, "default_mode", _str(study, "mode", MODE_COMPANION, "mode"), "default_mode").strip() or MODE_COMPANION
     default_mode = normalize_mode(default_mode)
     mode = normalize_mode(_str(study, "mode", default_mode, "mode"))
+    generic_llm_temperature = _clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2)
+    generic_llm_max_tokens = max(1, _int(llm, "max_tokens", 900, "llm_max_tokens"))
 
     return StudyConfig(
         mode=mode,
@@ -204,6 +339,56 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             3600.0,
             30.0,
         ),
-        llm_temperature=_clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2),
-        llm_max_tokens=max(1, _int(llm, "max_tokens", 900, "llm_max_tokens")),
+        llm_temperature=generic_llm_temperature,
+        llm_max_tokens=generic_llm_max_tokens,
+        llm_temperature_concept_explain=_clamp(
+            _float_alias(llm, ("temperature_concept_explain", "llm_temperature_concept_explain"), generic_llm_temperature, "llm_temperature_concept_explain"),
+            0.0,
+            2.0,
+            generic_llm_temperature,
+        ),
+        llm_max_tokens_concept_explain=max(
+            1,
+            _int(llm, "max_tokens_concept_explain", generic_llm_max_tokens, "llm_max_tokens_concept_explain"),
+        ),
+        llm_temperature_question_generate=_clamp(
+            _float_alias(llm, ("temperature_question_generate", "llm_temperature_question_generate"), generic_llm_temperature, "llm_temperature_question_generate"),
+            0.0,
+            2.0,
+            generic_llm_temperature,
+        ),
+        llm_max_tokens_question_generate=max(
+            1,
+            _int(llm, "max_tokens_question_generate", generic_llm_max_tokens, "llm_max_tokens_question_generate"),
+        ),
+        llm_temperature_answer_evaluate=_clamp(
+            _float_alias(llm, ("temperature_answer_evaluate", "llm_temperature_answer_evaluate"), generic_llm_temperature, "llm_temperature_answer_evaluate"),
+            0.0,
+            2.0,
+            generic_llm_temperature,
+        ),
+        llm_max_tokens_answer_evaluate=max(
+            1,
+            _int(llm, "max_tokens_answer_evaluate", generic_llm_max_tokens, "llm_max_tokens_answer_evaluate"),
+        ),
+        llm_temperature_knowledge_track=_clamp(
+            _float_alias(llm, ("temperature_knowledge_track", "llm_temperature_knowledge_track"), generic_llm_temperature, "llm_temperature_knowledge_track"),
+            0.0,
+            2.0,
+            generic_llm_temperature,
+        ),
+        llm_max_tokens_knowledge_track=max(
+            1,
+            _int(llm, "max_tokens_knowledge_track", generic_llm_max_tokens, "llm_max_tokens_knowledge_track"),
+        ),
+        llm_temperature_summarize_session=_clamp(
+            _float_alias(llm, ("temperature_summarize_session", "llm_temperature_summarize_session"), generic_llm_temperature, "llm_temperature_summarize_session"),
+            0.0,
+            2.0,
+            generic_llm_temperature,
+        ),
+        llm_max_tokens_summarize_session=max(
+            1,
+            _int(llm, "max_tokens_summarize_session", generic_llm_max_tokens, "llm_max_tokens_summarize_session"),
+        ),
     )

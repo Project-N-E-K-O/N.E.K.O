@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
-from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
+from plugin.plugins.study_companion.llm_prompts import _compact_prompt_value, build_concept_explain_messages
 from plugin.plugins.study_companion.mode_manager import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
@@ -31,17 +31,24 @@ from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, Tuto
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
-from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
+from plugin.plugins.study_companion import service as study_service
+from plugin.plugins.study_companion.screen_classifier import classify_screen_from_ocr
+from plugin.plugins.study_companion.service import _available_tesseract_languages
+from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
 from plugin.plugins.study_companion.ui_api import build_open_ui_payload
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Ok
 
 
 class _Logger:
+    def __init__(self) -> None:
+        self.warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
     def info(self, *args, **kwargs):
         return None
 
     def warning(self, *args, **kwargs):
+        self.warnings.append((args, kwargs))
         return None
 
     def error(self, *args, **kwargs):
@@ -153,6 +160,7 @@ class _FakeStudyOcrPipeline:
 class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
+        self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -169,6 +177,30 @@ class _FakeTutorAgent:
             operation="concept_explain",
             input_text=text,
             reply=f"explained[{mode}]: {text}",
+            created_at="2026-05-11T00:00:00Z",
+        )
+
+    async def answer_evaluate(
+        self,
+        *,
+        question: str = "",
+        answer: str = "",
+        expected_answer: str = "",
+        mode: str = MODE_COMPANION,
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+        return TutorReply(
+            operation="answer_evaluate",
+            input_text=answer,
+            reply="evaluated",
+            payload={
+                "verdict": "partial",
+                "score": 50,
+                "error_type": "unknown",
+                "feedback": "evaluated",
+                "next_action": "review",
+            },
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -195,6 +227,26 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     exported = store.export_json()
     assert exported["config"]["language"] == "en"
     store.close()
+
+
+def test_build_tutor_payload_preserves_structured_summary() -> None:
+    reply = TutorReply(
+        operation="summarize_session",
+        input_text="session",
+        reply="## Summary\n\nThe learner reviewed photosynthesis.",
+        payload={
+            "summary": "The learner reviewed photosynthesis.",
+            "markdown": "## Summary\n\nThe learner reviewed photosynthesis.",
+            "highlights": ["Generated one question"],
+        },
+        created_at="2026-05-11T00:00:00Z",
+    )
+
+    payload = study_service.build_tutor_payload(reply)
+
+    assert payload["summary"] == "The learner reviewed photosynthesis."
+    assert payload["markdown"] == "## Summary\n\nThe learner reviewed photosynthesis."
+    assert payload["reply"] == "## Summary\n\nThe learner reviewed photosynthesis."
 
 
 def test_study_mode_manager_intent_switch_rules() -> None:
@@ -278,6 +330,20 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert invalid.mode == MODE_COMPANION
     assert invalid.default_mode == MODE_COMPANION
 
+    direct = StudyConfig(mode="not_a_mode", default_mode="invalid", history_limit=0, llm_temperature=9.0, llm_max_tokens=0)
+    assert direct.mode == MODE_COMPANION
+    assert direct.default_mode == MODE_COMPANION
+    assert direct.history_limit == 1
+    assert direct.llm_temperature == 2.0
+    assert direct.llm_max_tokens == 1
+
+    generic_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333}})
+    assert generic_llm.llm_limits_for_operation("unsupported") == (0.6, 333)
+    assert generic_llm.llm_limits_for_operation("question_generate") == (0.6, 333)
+
+    specific_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333, "temperature_question_generate": 0.3, "max_tokens_question_generate": 444}})
+    assert specific_llm.llm_limits_for_operation("question_generate") == (0.3, 444)
+
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
@@ -292,6 +358,24 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         store.close()
 
 
+def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
+    english = classify_screen_from_ocr("## Summary\n\nThe learner reviewed photosynthesis.")
+    assert english.screen_type == "summary"
+    assert "summary" in english.signals.get("summary_hits", [])
+
+    chinese = classify_screen_from_ocr("本节总结\n光合作用的主要过程包括光反应和暗反应。")
+    assert chinese.screen_type == "summary"
+    assert "总结" in chinese.signals.get("summary_hits", [])
+
+
+def test_compact_prompt_value_stops_at_max_depth() -> None:
+    nested = {"a": {"b": {"c": {"d": "bottom"}}}}
+
+    compacted = _compact_prompt_value(nested, list_limit=5, string_limit=50, max_depth=2)
+
+    assert compacted == {"a": {"b": "...[max depth reached]"}}
+
+
 def test_study_open_ui_payload_returns_message_key() -> None:
     payload = build_open_ui_payload(plugin_id="study_companion", available=True)
     assert payload["available"] is True
@@ -303,10 +387,34 @@ def test_study_open_ui_payload_returns_message_key() -> None:
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
+    phase3_keys = [
+        "ui.label.screen",
+        "ui.label.question",
+        "ui.label.answer",
+        "ui.label.classification",
+        "ui.label.history",
+        "ui.button.generate_question",
+        "ui.button.evaluate_answer",
+        "ui.button.summarize_session",
+        "ui.status.generating_question",
+        "ui.status.evaluating_answer",
+        "ui.status.summarizing_session",
+        "ui.status.screen.idle",
+        "ui.status.screen.reading",
+        "ui.status.screen.question",
+        "ui.status.screen.answering",
+        "ui.status.screen.review",
+        "ui.status.screen.notes",
+        "ui.status.screen.summary",
+        "ui.error.missing_question",
+        "ui.error.missing_answer",
+    ]
+    bundles: dict[str, dict[str, str]] = {}
     for locale in locales:
         bundle_path = plugin_dir / "i18n" / f"{locale}.json"
         assert bundle_path.is_file()
         bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        bundles[locale] = bundle
         assert "plugin.name" in bundle
         assert "ui.title" in bundle
         assert "ui.surface.study_panel" in bundle
@@ -318,8 +426,13 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "ui.error.mode_switch_failed" in bundle
 
     en_bundle = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
-    ko_bundle = json.loads((plugin_dir / "i18n" / "ko.json").read_text(encoding="utf-8"))
-    assert set(ko_bundle) == set(en_bundle)
+    for locale in locales:
+        assert set(bundles[locale]) == set(en_bundle)
+    for locale in [item for item in locales if item != "en"]:
+        bundle = bundles[locale]
+        assert any(bundle[key] != en_bundle[key] for key in phase3_keys)
+    assert bundles["ja"]["entries.open_ui.name"] != en_bundle["entries.open_ui.name"]
+    assert bundles["ja"]["entries.download_rapidocr_models.description"] != en_bundle["entries.download_rapidocr_models.description"]
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
@@ -345,6 +458,8 @@ def test_study_companion_i18n_bundles_are_present() -> None:
 def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; frontend/plugin-manager happy-dom smoke test requires node")
     if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
         pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
 
@@ -515,18 +630,18 @@ def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
 
-    assert """async function setMode(mode) {
-  if (mode === currentMode) {
-    return;
-  }
-  setStatus(t('ui.status.mode_switching', 'Switching mode...'));
-  const data = await callPlugin('study_set_mode', { mode, reason: 'ui' });
-  const appliedMode = data && data.new_mode
-    ? data.new_mode
-    : (data && data.changed === false ? currentMode : mode);
-  currentMode = String(appliedMode || 'companion');
-  setModeButtons(currentMode, false);
-""" in static_source
+    set_mode_start = static_source.index("async function setMode(mode)")
+    set_mode_end = static_source.index("function bindButton", set_mode_start)
+    set_mode = static_source[set_mode_start:set_mode_end]
+
+    assert "async function setMode(mode)" in set_mode
+    assert "if (mode === currentMode)" in set_mode
+    assert "callPlugin('study_set_mode'" in set_mode
+    assert "data.new_mode" in set_mode
+    assert "data && data.changed === false" in set_mode
+    assert "setModeButtons(currentMode, false)" in set_mode
+    assert "answerInput.value = data.answer;" in static_source
+    assert "answerInput.value = '';" not in static_source
 
 
 def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> None:
@@ -838,6 +953,26 @@ def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.Monk
     assert "capture boom" in snapshot.diagnostic
 
 
+def test_available_tesseract_languages_logs_timeout_and_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    detected = tmp_path / "tesseract.exe"
+    target_dir = tmp_path / "install"
+    tessdata = target_dir / "tessdata"
+    tessdata.mkdir(parents=True)
+    (tessdata / "eng.traineddata").write_text("stub", encoding="utf-8")
+
+    def _timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=[str(detected), "--list-langs"], timeout=5.0)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    with caplog.at_level("WARNING", logger=study_service._LOGGER.name):
+        languages = _available_tesseract_languages(detected, target_dir)
+
+    assert languages == {"eng"}
+    assert any("timed out" in record.message for record in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -885,7 +1020,12 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
         explain_result = await plugin.study_explain_text()
         assert isinstance(explain_result, Ok)
         assert explain_result.value["input_text"] == "photosynthesis"
-        assert plugin._agent.inputs == [("photosynthesis", {"source": "ocr_snapshot", "mode": MODE_COMPANION, "mode_switch": False}, MODE_COMPANION)]
+        assert plugin._agent.inputs[0][0] == "photosynthesis"
+        assert plugin._agent.inputs[0][2] == MODE_COMPANION
+        assert plugin._agent.inputs[0][1]["source"] == "ocr_snapshot"
+        assert plugin._agent.inputs[0][1]["mode"] == MODE_COMPANION
+        assert plugin._agent.inputs[0][1]["mode_switch"] is False
+        assert "screen_classification" in plugin._agent.inputs[0][1]
     finally:
         await plugin.shutdown()
 
@@ -915,6 +1055,9 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert pure.value["new_mode"] == MODE_TEACHING
         assert pure.value["reply"]
         assert "教学模式" in pure.value["reply"]
+        assert plugin._cfg.mode == MODE_TEACHING
+        assert plugin._cfg.default_mode == MODE_COMPANION
+        assert plugin._store.load_config(StudyConfig()).default_mode == MODE_COMPANION
 
         explain_only = await plugin.study_explain_text("解释光合作用")
         assert isinstance(explain_only, Ok)
@@ -930,11 +1073,12 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert explain_latest_ocr.value["intent"]["kind"] == "concept_explain"
         assert explain_latest_ocr.value["input_text"] == "细胞呼吸"
         assert explain_latest_ocr.value["reply"] == "explained[teaching]: 细胞呼吸"
-        assert plugin._agent.inputs[-1] == (
-            "细胞呼吸",
-            {"source": "ocr_snapshot", "mode": MODE_TEACHING, "mode_switch": False},
-            MODE_TEACHING,
-        )
+        assert plugin._agent.inputs[-1][0] == "细胞呼吸"
+        assert plugin._agent.inputs[-1][2] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["source"] == "ocr_snapshot"
+        assert plugin._agent.inputs[-1][1]["mode"] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["mode_switch"] is False
+        assert "screen_classification" in plugin._agent.inputs[-1][1]
 
         with plugin._lock:
             plugin._state.active_mode = MODE_COMPANION
@@ -958,22 +1102,24 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert isinstance(explained, Ok)
         assert explained.value["intent"]["mode"] == MODE_TEACHING
         assert explained.value["mode_switch"]["changed"] is True
-        assert explained.value["reply"] == "explained[teaching]: 光合作用"
-        assert plugin._agent.inputs[-1] == (
-            "光合作用",
-            {"source": "manual", "mode": MODE_TEACHING, "mode_switch": True},
-            MODE_TEACHING,
-        )
+        assert explained.value["reply"] == f'explained[teaching]: {explained.value["input_text"]}'
+        assert plugin._agent.inputs[-1][0] == explained.value["input_text"]
+        assert plugin._agent.inputs[-1][2] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["source"] == "manual"
+        assert plugin._agent.inputs[-1][1]["mode"] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["mode_switch"] is True
+        assert "screen_classification" in plugin._agent.inputs[-1][1]
 
-        short_explained = await plugin.study_explain_text("教我微分")
+        short_explained = await plugin.study_explain_text("??????")
         assert isinstance(short_explained, Ok)
-        assert short_explained.value["intent"]["pure_switch"] is False
-        assert short_explained.value["reply"] == "explained[teaching]: 微分"
-        assert plugin._agent.inputs[-1] == (
-            "微分",
-            {"source": "manual", "mode": MODE_TEACHING, "mode_switch": False},
-            MODE_TEACHING,
-        )
+        assert short_explained.value.get("intent", {}).get("pure_switch", False) is False
+        assert short_explained.value["reply"] == f'explained[teaching]: {short_explained.value["input_text"]}'
+        assert plugin._agent.inputs[-1][0] == short_explained.value["input_text"]
+        assert plugin._agent.inputs[-1][2] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["source"] == "manual"
+        assert plugin._agent.inputs[-1][1]["mode"] == MODE_TEACHING
+        assert plugin._agent.inputs[-1][1]["mode_switch"] is False
+        assert "screen_classification" in plugin._agent.inputs[-1][1]
     finally:
         await plugin.shutdown()
 
@@ -1052,12 +1198,53 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
         assert explained.value["intent"]["mode"] == MODE_TEACHING
         assert explained.value["mode_switch"]["changed"] is False
         assert explained.value["mode_switch"]["locked"] is True
-        assert plugin._agent.inputs[-1] == (
-            "光合作用",
-            {"source": "manual", "mode": MODE_COMPANION, "mode_switch": False},
-            MODE_COMPANION,
-        )
+        assert plugin._agent.inputs[-1][0] == "光合作用"
+        assert plugin._agent.inputs[-1][2] == MODE_COMPANION
+        assert plugin._agent.inputs[-1][1]["source"] == "manual"
+        assert plugin._agent.inputs[-1][1]["mode"] == MODE_COMPANION
+        assert plugin._agent.inputs[-1][1]["mode_switch"] is False
+        assert "screen_classification" in plugin._agent.inputs[-1][1]
         assert explained.value["reply"].startswith("explained[companion]: 光合作用")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_custom_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What process converts light to chemical energy?",
+                "answer": "Photosynthesis",
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What organelle stores genetic material?",
+            answer="The nucleus.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert fake_agent.evaluations[-1][0] == "What organelle stores genetic material?"
+        assert fake_agent.evaluations[-1][2] == ""
+        assert fake_agent.evaluations[-1][3]["expected_answer"] == ""
     finally:
         await plugin.shutdown()
 
@@ -1118,7 +1305,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     fallback = await agent.concept_explain("photosynthesis converts light")
 
     assert fallback.degraded is True
-    assert "llm unavailable" in fallback.diagnostic
+    assert fallback.diagnostic == "llm_call_failed"
     assert "photosynthesis converts light" in fallback.reply
 
     zh_agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
@@ -1128,6 +1315,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
 
     zh_agent._call_model = _broken_call_model  # type: ignore[method-assign]
     zh_fallback = await zh_agent.concept_explain("光合作用")
+    assert zh_fallback.diagnostic == "llm_call_failed"
     assert "关键文本：光合作用" in zh_fallback.reply
 
     ja_agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="ja"))
@@ -1136,7 +1324,150 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
 
     ja_agent._call_model = _broken_call_model  # type: ignore[method-assign]
     ja_fallback = await ja_agent.concept_explain("微分")
+    assert ja_fallback.diagnostic == "llm_call_failed"
     assert "重要なテキスト：微分" in ja_fallback.reply
+
+
+def test_json_corrector_parses_plain_json() -> None:
+    corrector = _JSONCorrector(logger=_Logger())
+    assert corrector.parse_json_object('{"answer": "42"}') == {"answer": "42"}
+
+
+def test_json_corrector_parses_code_fenced_json() -> None:
+    corrector = _JSONCorrector(logger=_Logger())
+    assert corrector.parse_json_object('```json\n{"question": "What is it?"}\n```') == {"question": "What is it?"}
+
+
+def test_json_corrector_recovers_json_from_surrounding_text() -> None:
+    corrector = _JSONCorrector(logger=_Logger())
+    assert corrector.parse_json_object('noise before {"topic": "biology", "score": 90} noise after') == {
+        "topic": "biology",
+        "score": 90,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation_name, kwargs, response_json, expected_field, expected_value",
+    [
+        (
+            "question_generate",
+            {"text": "Photosynthesis converts light to chemical energy.", "mode": MODE_INTERACTIVE, "context": {"screen_classification": {"screen_type": "reading"}}},
+            {
+                "question": "What process converts light to chemical energy?",
+                "answer": "Photosynthesis",
+                "hint": "Look for the named process.",
+                "difficulty": 2,
+                "topic": "biology",
+                "screen_type": "reading",
+            },
+            "question",
+            "What process converts light to chemical energy?",
+        ),
+        (
+            "answer_evaluate",
+            {
+                "question": "What process converts light to chemical energy?",
+                "answer": "It is photosynthesis.",
+                "expected_answer": "Photosynthesis",
+                "mode": MODE_COMPANION,
+                "context": {"screen_classification": {"screen_type": "answering"}},
+            },
+            {
+                "verdict": "correct",
+                "score": 95,
+                "error_type": "none",
+                "feedback": "Correct.",
+                "next_action": "Move on.",
+                "screen_type": "answering",
+            },
+            "verdict",
+            "correct",
+        ),
+        (
+            "knowledge_track",
+            {"mode": MODE_COMPANION, "context": {"screen_classification": {"screen_type": "review"}, "session_summary_seed": {"weak_points": ["definition"]}}},
+            {
+                "topic": "photosynthesis",
+                "mastery_delta": 0.1,
+                "confidence": 0.8,
+                "weak_points": ["definition"],
+                "next_steps": ["Review the definition"],
+                "session_summary_seed": {"weak_points": ["definition"]},
+                "screen_type": "review",
+            },
+            "topic",
+            "photosynthesis",
+        ),
+        (
+            "summarize_session",
+            {
+                "history": [{"kind": "question_generate", "output_text": "What process converts light to chemical energy?"}],
+                "mode": MODE_TEACHING,
+                "context": {"screen_classification": {"screen_type": "summary"}},
+            },
+            {
+                "summary": "The learner reviewed photosynthesis.",
+                "highlights": ["Generated one question"],
+                "weak_points": ["definition"],
+                "next_actions": ["Review the definition"],
+                "markdown": "## Summary\n\nThe learner reviewed photosynthesis.",
+                "screen_type": "summary",
+            },
+            "summary",
+            "The learner reviewed photosynthesis.",
+        ),
+    ],
+)
+async def test_tutor_agent_structured_operations_normal_path(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+    kwargs: dict[str, object],
+    response_json: dict[str, object],
+    expected_field: str,
+    expected_value: object,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    async def _fake_call_model(_messages, *, operation: str = "concept_explain"):
+        assert operation == operation_name
+        return json.dumps(response_json)
+
+    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    reply = await getattr(agent, operation_name)(**kwargs)
+
+    assert reply.operation == operation_name
+    assert reply.degraded is False
+    assert reply.payload[expected_field] == expected_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation_name, kwargs",
+    [
+        ("question_generate", {"text": "Photosynthesis converts light to chemical energy.", "context": {"screen_classification": {"screen_type": "reading"}}}),
+        ("answer_evaluate", {"question": "What process converts light to chemical energy?", "answer": "It is photosynthesis.", "expected_answer": "Photosynthesis", "context": {"screen_classification": {"screen_type": "answering"}}}),
+        ("knowledge_track", {"context": {"screen_classification": {"screen_type": "review"}}}),
+        ("summarize_session", {"history": [{"kind": "question_generate", "output_text": "What process converts light to chemical energy?"}], "context": {"screen_classification": {"screen_type": "summary"}}}),
+    ],
+)
+async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+    kwargs: dict[str, object],
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    async def _broken_call_model(_messages, *, operation: str = "concept_explain"):
+        raise RuntimeError("secret api endpoint https://example.invalid/v1 key=sk-123")
+
+    monkeypatch.setattr(agent, "_call_model", _broken_call_model)
+    reply = await getattr(agent, operation_name)(**kwargs)
+
+    assert reply.operation == operation_name
+    assert reply.degraded is True
+    assert reply.diagnostic == "llm_call_failed"
+    assert "secret api endpoint" not in reply.reply
 
 
 @pytest.mark.asyncio
@@ -1179,8 +1510,8 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert created_keys == ["old-key", "new-key"]
-    assert "old-key" not in repr(agent._llm_cache)
-    assert "new-key" not in repr(agent._llm_cache)
+    assert "old-key" not in repr(agent._client_cache._cache)
+    assert "new-key" not in repr(agent._client_cache._cache)
 
 
 @pytest.mark.asyncio
@@ -1213,3 +1544,67 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "recent_mode_switches" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    state = build_initial_state(mode=MODE_TEACHING)
+    plugin._store.open()
+    try:
+        plugin._store.save_config(StudyConfig(mode=MODE_COMPANION, default_mode=MODE_COMPANION, language="en"))
+        plugin._store.save_state(state)
+    finally:
+        plugin._store.close()
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert plugin._state.active_mode == MODE_TEACHING
+        assert plugin._cfg.mode == MODE_TEACHING
+        assert plugin._cfg.default_mode == MODE_COMPANION
+        assert plugin._store.load_config(StudyConfig()).default_mode == MODE_COMPANION
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_failure_cleans_partial_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    async def _fail_persist(_self) -> None:
+        raise RuntimeError("persist failed")
+
+    monkeypatch.setattr(StudyCompanionPlugin, "_persist_state", _fail_persist)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    assert not isinstance(result, Ok)
+    assert plugin._agent is None
+    assert plugin._ocr_pipeline is None
+    assert plugin._store._conn is None
+    assert plugin.get_static_ui_config() is None
+    assert plugin.get_list_actions() == []

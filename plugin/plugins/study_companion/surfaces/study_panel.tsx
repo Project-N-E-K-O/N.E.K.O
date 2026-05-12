@@ -8,6 +8,25 @@ type StudyStatus = {
   last_reply?: string;
   last_ocr_text?: string;
   last_error?: string;
+  screen_classification?: {
+    screen_type?: string;
+    confidence?: number;
+    reason?: string;
+  };
+  current_question?: {
+    question?: string;
+    answer?: string;
+    hint?: string;
+    topic?: string;
+    difficulty?: number;
+  };
+  last_answer_evaluation?: {
+    verdict?: string;
+    score?: number;
+    feedback?: string;
+    next_action?: string;
+  };
+  last_session_summary?: string;
 };
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
@@ -21,6 +40,9 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 60000,
+  study_generate_question: 75000,
+  study_evaluate_answer: 75000,
+  study_summarize_session: 90000,
 };
 
 const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> = [
@@ -119,6 +141,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   };
   const [status, setStatus] = useState<StudyStatus>({});
   const [text, setText] = useState('');
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
@@ -142,13 +166,82 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     return entry ? t(entry.labelKey, entry.fallback) : String(mode || MODE_ORDER[0].id);
   }
 
+  function screenLabel(type: string) {
+    const normalized = String(type || 'idle');
+    return t(`ui.status.screen.${normalized}`, normalized);
+  }
+
+  function normalizeStudyStatus(value: unknown): StudyStatus {
+    if (!value || typeof value !== 'object') {
+      return {};
+    }
+    const data = value as Record<string, unknown>;
+    const screen = data.screen_classification && typeof data.screen_classification === 'object'
+      ? data.screen_classification as Record<string, unknown>
+      : undefined;
+    const question = data.current_question && typeof data.current_question === 'object'
+      ? data.current_question as Record<string, unknown>
+      : undefined;
+    const evaluation = data.last_answer_evaluation && typeof data.last_answer_evaluation === 'object'
+      ? data.last_answer_evaluation as Record<string, unknown>
+      : undefined;
+    return {
+      status: typeof data.status === 'string' ? data.status : undefined,
+      active_mode: typeof data.active_mode === 'string' ? data.active_mode : undefined,
+      mode: typeof data.mode === 'string' ? data.mode : undefined,
+      last_reply: typeof data.last_reply === 'string' ? data.last_reply : undefined,
+      last_ocr_text: typeof data.last_ocr_text === 'string' ? data.last_ocr_text : undefined,
+      last_error: typeof data.last_error === 'string' ? data.last_error : undefined,
+      screen_classification: screen ? {
+        screen_type: typeof screen.screen_type === 'string' ? screen.screen_type : undefined,
+        confidence: typeof screen.confidence === 'number' ? screen.confidence : undefined,
+        reason: typeof screen.reason === 'string' ? screen.reason : undefined,
+      } : undefined,
+      current_question: question ? {
+        question: typeof question.question === 'string' ? question.question : undefined,
+        answer: typeof question.answer === 'string' ? question.answer : undefined,
+        hint: typeof question.hint === 'string' ? question.hint : undefined,
+        topic: typeof question.topic === 'string' ? question.topic : undefined,
+        difficulty: typeof question.difficulty === 'number' ? question.difficulty : undefined,
+      } : undefined,
+      last_answer_evaluation: evaluation ? {
+        verdict: typeof evaluation.verdict === 'string' ? evaluation.verdict : undefined,
+        score: typeof evaluation.score === 'number' ? evaluation.score : undefined,
+        feedback: typeof evaluation.feedback === 'string' ? evaluation.feedback : undefined,
+        next_action: typeof evaluation.next_action === 'string' ? evaluation.next_action : undefined,
+      } : undefined,
+      last_session_summary: typeof data.last_session_summary === 'string' ? data.last_session_summary : undefined,
+    };
+  }
+
+  function formatPluginError(error: unknown) {
+    return error instanceof Error && error.message === 'plugin_call_timeout'
+      ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
+      : error instanceof Error && error.message === 'run_id_missing'
+        ? t('ui.error.run_id_missing', 'Run id missing')
+        : error instanceof Error && error.message === 'plugin_call_failed'
+          ? t('ui.error.plugin_call_failed', 'Plugin call failed')
+          : error instanceof Error
+            ? error.message
+            : String(error);
+  }
+
+  function compactText(value: string | undefined) {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) {
+      return '-';
+    }
+    return trimmed.length > 72 ? `${trimmed.slice(0, 72)}...` : trimmed;
+  }
+
   function setStatusLine(data: StudyStatus) {
     setStatus({ ...data, active_mode: String(data.active_mode || data.mode || 'companion') });
+    setQuestion(data.current_question?.question || '');
   }
 
   async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
     const updateReply = options.updateReply !== false;
-    const data = await callPlugin('study_status', {}, signal) as StudyStatus;
+    const data = normalizeStudyStatus(await callPlugin('study_status', {}, signal));
     if (signal?.aborted) {
       return;
     }
@@ -193,14 +286,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      const message = error instanceof Error && error.message === 'plugin_call_timeout'
-        ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
-        : error instanceof Error && error.message === 'run_id_missing'
-          ? t('ui.error.run_id_missing', 'Run id missing')
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      setReply(message);
+      setReply(formatPluginError(error));
     } finally {
       if (!controller.signal.aborted) {
         setBusy(false);
@@ -231,14 +317,102 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      const message = error instanceof Error && error.message === 'plugin_call_timeout'
-        ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
-        : error instanceof Error && error.message === 'run_id_missing'
-          ? t('ui.error.run_id_missing', 'Run id missing')
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      setReply(message);
+      setReply(formatPluginError(error));
+    } finally {
+      if (!controller.signal.aborted) {
+        setBusy(false);
+      }
+      endStudyRequest(controller);
+    }
+  }
+
+  async function generateQuestion() {
+    if (busy) {
+      return;
+    }
+    const controller = beginStudyRequest();
+    setBusy(true);
+    try {
+      const data = await callPlugin('study_generate_question', { text }, controller.signal) as {
+        question?: string;
+        hint?: string;
+        summary?: string;
+        reply?: string;
+      };
+      if (controller.signal.aborted) {
+        return;
+      }
+      setQuestion(data.question || '');
+      setReply(data.hint || data.question || data.summary || data.reply || '');
+      await refresh(controller.signal, { updateReply: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setReply(formatPluginError(error));
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setBusy(false);
+      }
+      endStudyRequest(controller);
+    }
+  }
+
+  async function evaluateAnswer() {
+    if (busy) {
+      return;
+    }
+    if (!answer.trim()) {
+      setReply(t('ui.error.missing_answer', 'Please enter an answer first.'));
+      return;
+    }
+    const controller = beginStudyRequest();
+    setBusy(true);
+    try {
+      const data = await callPlugin('study_evaluate_answer', { answer, question }, controller.signal) as {
+        feedback?: string;
+        next_action?: string;
+        summary?: string;
+        reply?: string;
+      };
+      if (controller.signal.aborted) {
+        return;
+      }
+      const replyParts = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
+      setReply(replyParts.join('\n\n') || data.summary || '');
+      await refresh(controller.signal, { updateReply: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setReply(formatPluginError(error));
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setBusy(false);
+      }
+      endStudyRequest(controller);
+    }
+  }
+
+  async function summarizeSession() {
+    if (busy) {
+      return;
+    }
+    const controller = beginStudyRequest();
+    setBusy(true);
+    try {
+      const data = await callPlugin('study_summarize_session', {}, controller.signal) as {
+        markdown?: string;
+        summary?: string;
+        reply?: string;
+      };
+      if (controller.signal.aborted) {
+        return;
+      }
+      setReply(data.markdown || data.summary || data.reply || '');
+      await refresh(controller.signal, { updateReply: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setReply(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       if (!controller.signal.aborted) {
         setBusy(false);
@@ -253,12 +427,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      const message = error instanceof Error && error.message === 'plugin_call_timeout'
-        ? t('ui.error.plugin_call_timeout', 'Plugin call timed out')
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      setReply(message);
+      setReply(formatPluginError(error));
     });
     return () => {
       controller.abort();
@@ -270,6 +439,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const stateValue = status.status || 'unknown';
   const stateLabel = t(`status.state.${stateValue}`, stateValue);
   const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
+  const screenType = status.screen_classification?.screen_type || 'idle';
+  const evaluation = status.last_answer_evaluation;
 
   return (
     <div className="study-panel">
@@ -296,12 +467,35 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           })}
         </div>
       </header>
+      <section className="study-panel__state">
+        <div>
+          <span>{t('ui.label.screen', 'Screen')}</span>
+          <strong>{screenLabel(screenType)}</strong>
+        </div>
+        <div>
+          <span>{t('ui.label.question', 'Question')}</span>
+          <strong>{compactText(question || status.current_question?.question)}</strong>
+        </div>
+        <div>
+          <span>{t('ui.label.answer', 'Answer')}</span>
+          <strong>{evaluation?.verdict ? `${evaluation.verdict}${evaluation.score !== undefined ? ` / ${evaluation.score}` : ''}` : '-'}</strong>
+        </div>
+      </section>
       <textarea
         aria-label={t('ui.label.text', 'Text')}
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
         onChange={(event) => setText(event.target.value)}
       />
+      <div className="study-panel__actions">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={busy ? undefined : generateQuestion}
+        >
+          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.generate_question', 'Generate Question')}
+        </button>
+      </div>
       <button
         type="button"
         className={busy ? 'loading' : ''}
@@ -312,6 +506,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       >
         {explainLabel}
       </button>
+      <div className="study-panel__reply-label">{t('ui.label.question', 'Question')}</div>
+      <pre>{question}</pre>
+      <textarea
+        aria-label={t('ui.label.answer', 'Answer')}
+        value={answer}
+        onChange={(event) => setAnswer(event.target.value)}
+      />
+      <div className="study-panel__actions">
+        <button type="button" disabled={busy} onClick={busy ? undefined : evaluateAnswer}>
+          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.evaluate_answer', 'Evaluate Answer')}
+        </button>
+        <button type="button" disabled={busy} onClick={busy ? undefined : summarizeSession}>
+          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
+        </button>
+      </div>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
       <pre>{reply}</pre>
     </div>
