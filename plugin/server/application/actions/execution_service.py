@@ -70,16 +70,21 @@ def _plugin_id_from_action_id(action_id: str) -> str | None:
 
     Mirrors the structural dispatch in :class:`ActionExecutionService.execute`
     so a plugin literally named ``system`` doesn't get its settings / list
-    actions misclassified as lifecycle calls. The rule:
+    actions misclassified as lifecycle calls. The rule (precedence matters):
 
-    * ``system:{plugin_id}:{lifecycle | entry...}`` → ``parts[1]``, only when
-      ``parts[2]`` is a known lifecycle keyword.
-    * Otherwise → ``parts[0]`` (covers ``{pid}:settings:{field}``,
-      ``{pid}:{list_action}``, and the plugin-"system" cases).
+    1. ``{plugin_id}:settings:{field}`` → ``parts[0]``. Checked first so a
+       field name that happens to collide with a lifecycle keyword (e.g.
+       ``system:settings:start``) still resolves to plugin ``parts[0]``.
+    2. ``system:{plugin_id}:{lifecycle | entry...}`` → ``parts[1]``, only
+       when ``parts[2]`` is a known lifecycle keyword.
+    3. Otherwise → ``parts[0]`` (covers list actions, including plugin
+       "system" cases like ``system:foo``).
     """
     parts = action_id.split(":")
     if not parts:
         return None
+    if len(parts) >= 3 and parts[1] == "settings":
+        return parts[0]
     if (
         action_id.startswith("system:")
         and len(parts) >= 3

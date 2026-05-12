@@ -385,6 +385,13 @@ class TestPluginIdFromActionId:
         assert _plugin_id_from_action_id("system:settings:enabled") == "system"
         assert _plugin_id_from_action_id("system:foo") == "system"
 
+    def test_settings_precedence_beats_lifecycle_keyword(self) -> None:
+        """Field name colliding with a lifecycle keyword (e.g. ``start``)
+        must not flip the resolver to the lifecycle shortcut — settings
+        precedence wins."""
+        assert _plugin_id_from_action_id("system:settings:start") == "system"
+        assert _plugin_id_from_action_id("system:settings:stop") == "system"
+
     def test_normal_plugin_settings_uses_parts_0(self) -> None:
         assert _plugin_id_from_action_id("demo:settings:enabled") == "demo"
         assert _plugin_id_from_action_id("demo:greet") == "demo"
@@ -415,7 +422,13 @@ class TestSystemPluginIdNamespace:
     ) -> None:
         """``system:settings:enabled`` for plugin_id=="system" must reach the
         settings handler — not get misclassified as a lifecycle 'settings'
-        action (which would fail ACTION_NOT_FOUND)."""
+        action (which would fail ACTION_NOT_FOUND).
+
+        Also locks the ``_find_action`` re-fetch path: a previously-buggy
+        ``_find_action`` mapped this action_id to plugin "settings", so the
+        aggregation filter would miss the descriptor and
+        ``resp.action`` would come back ``None``.
+        """
         captured: dict[str, Any] = {}
 
         async def fake_hot_update(plugin_id: str, updates: dict, mode: str) -> dict:
@@ -439,11 +452,26 @@ class TestSystemPluginIdNamespace:
             lambda pid, **kw: _FakeSettings,
         )
 
-        svc = _build_service()
+        descriptor = ActionDescriptor(
+            action_id="system:settings:enabled",
+            type="instant",
+            label="Enabled",
+            category="System",
+            plugin_id="system",
+            control="toggle",
+            current_value=True,
+        )
+        aggregation = _FakeAggregationService(actions=[descriptor])
+        svc = _build_service(aggregation=aggregation)
         resp = await svc.execute("system:settings:enabled", value=True)
         assert resp.success is True
         assert captured["plugin_id"] == "system"
         assert captured["updates"] == {"settings": {"enabled": True}}
+        # The whole point of fixing _find_action's namespace handling: the
+        # refreshed descriptor must come back so the palette can update its
+        # inline widget without a full re-fetch.
+        assert resp.action is not None
+        assert resp.action.action_id == "system:settings:enabled"
 
     async def test_lifecycle_keyword_collision_with_system_plugin_field(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -474,8 +502,20 @@ class TestSystemPluginIdNamespace:
             lambda pid, **kw: _FakeSettings,
         )
 
-        svc = _build_service()
+        descriptor = ActionDescriptor(
+            action_id="system:settings:start",
+            type="instant",
+            label="Start",
+            category="System",
+            plugin_id="system",
+            control="toggle",
+            current_value=True,
+        )
+        aggregation = _FakeAggregationService(actions=[descriptor])
+        svc = _build_service(aggregation=aggregation)
         resp = await svc.execute("system:settings:start", value=True)
         assert resp.success is True
         assert captured["plugin_id"] == "system"
         assert captured["updates"] == {"settings": {"start": True}}
+        assert resp.action is not None
+        assert resp.action.action_id == "system:settings:start"
