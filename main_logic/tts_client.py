@@ -3594,7 +3594,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             if ws is None or current_speech_id != target_sid:
                                 await _ensure_session(target_sid)
                             if ws is not None and current_speech_id == target_sid:
-                                await _send_text("".join(pending_text), current_speech_id)
+                                sent_text = "".join(pending_text)
+                                await _send_text(sent_text, current_speech_id)
+                                _record_tts_telemetry(options['model'], sent_text)
                         except Exception as exc:
                             logger.warning("ElevenLabs WS flush pending text failed: %s", exc)
                             _enqueue_error(response_queue, {
@@ -3648,6 +3650,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         continue
                     try:
                         await _send_text(payload_text, current_speech_id)
+                        _record_tts_telemetry(options['model'], payload_text)
                     except Exception as exc:
                         logger.warning("ElevenLabs WS send text failed: %s", exc)
                         pending_text.append(payload_text)
