@@ -142,6 +142,12 @@ class DirectLinkSecurityError(Exception):
         self.code = code
 
 
+class ElevenLabsUpstreamError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _validate_direct_link_target(target_url: str) -> None:
     parsed_url = urlparse(target_url)
     if parsed_url.scheme not in ("http", "https"):
@@ -197,12 +203,13 @@ async def _request_direct_link_follow_redirects(
     direct_link: str,
     *,
     stream: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response:
     current_url = direct_link
     for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
         _validate_direct_link_target(current_url)
         response = await client.send(
-            client.build_request(method, current_url),
+            client.build_request(method, current_url, headers=headers),
             follow_redirects=False,
             stream=stream,
         )
@@ -931,6 +938,15 @@ def _raw_elevenlabs_voice_id(voice_id: str) -> str:
     return raw
 
 
+def _raise_for_elevenlabs_response(resp: httpx.Response, action: str) -> None:
+    if resp.status_code < 400:
+        return
+    message = f"ElevenLabs {action} API error ({resp.status_code}): {resp.text[:300]}"
+    if resp.status_code >= 500:
+        raise ElevenLabsUpstreamError(resp.status_code, message)
+    raise ValueError(message)
+
+
 async def _elevenlabs_clone_voice(
     *,
     api_key: str,
@@ -951,15 +967,14 @@ async def _elevenlabs_clone_voice(
     files = [("files", (filename or "voice.wav", audio_buffer, "application/octet-stream"))]
     async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
         resp = await client.post(url, headers=headers, data=data, files=files)
-    if resp.status_code >= 400:
-        raise ValueError(f"ElevenLabs API error ({resp.status_code}): {resp.text[:300]}")
+    _raise_for_elevenlabs_response(resp, "voice clone")
     try:
         payload = resp.json()
     except Exception as exc:
-        raise ValueError("ElevenLabs returned invalid JSON while adding voice") from exc
+        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while adding voice") from exc
     raw_voice_id = payload.get("voice_id") or payload.get("voiceId") or ""
     if not raw_voice_id:
-        raise ValueError("ElevenLabs did not return voice_id")
+        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
     return _prefixed_elevenlabs_voice_id(raw_voice_id)
 
 
@@ -1017,8 +1032,7 @@ async def _elevenlabs_synthesize_preview(
     params = {"output_format": "mp3_44100_128"}
     async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
         resp = await client.post(url, headers=headers, params=params, json=payload)
-    if resp.status_code >= 400:
-        raise ValueError(f"ElevenLabs preview API error ({resp.status_code}): {resp.text[:300]}")
+    _raise_for_elevenlabs_response(resp, "preview")
     return resp.content, ''
 
 
@@ -3569,6 +3583,13 @@ async def get_voice_preview(
                     'audio': audio_base64,
                     'mime_type': 'audio/mpeg'
                 }
+            except ElevenLabsUpstreamError as e:
+                logger.error(f"ElevenLabs 预览上游服务错误 ({e.status_code}): {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs 上游服务错误: {str(e)}',
+                    'code': 'ELEVENLABS_UPSTREAM_ERROR'
+                }, status_code=502)
             except ValueError as e:
                 # 新增专门的客户端错误 4xx 捕获分支
                 logger.error(f"ElevenLabs 预览请求失败 (4xx): {e}")
@@ -4309,6 +4330,13 @@ async def voice_clone(
 
         logger.info(f"{provider_label} 音色注册成功，voice_id: {voice_id}")
 
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs 音色注册上游服务错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+            'provider': provider,
+        }, status_code=502)
     except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
         logger.error(f"{provider_label} 音色注册失败: {e}")
         error_detail = str(e)
@@ -4456,7 +4484,13 @@ async def voice_clone_direct(request: Request):
                 if head_resp.status_code >= 400:
                     # HEAD失败，尝试GET
                     logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
-                    get_resp = await _request_direct_link_follow_redirects(client, "GET", direct_link, stream=True)
+                    get_resp = await _request_direct_link_follow_redirects(
+                        client,
+                        "GET",
+                        direct_link,
+                        stream=True,
+                        headers={"Range": "bytes=0-0"},
+                    )
                     try:
                         if get_resp.status_code >= 400:
                             return JSONResponse({
@@ -4663,6 +4697,13 @@ async def voice_clone_direct(request: Request):
             'code': e.code,
             'provider': provider,
         }, status_code=400)
+    except ElevenLabsUpstreamError as e:
+        logger.error(f"ElevenLabs 直链音色注册上游服务错误 ({e.status_code}): {e}")
+        return JSONResponse({
+            'error': f'ElevenLabs上游服务错误: {str(e)}',
+            'code': 'ELEVENLABS_UPSTREAM_ERROR',
+            'provider': provider,
+        }, status_code=502)
     except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
         logger.error(f"{provider_label} 直链音色注册失败: {e}")
         error_detail = str(e)

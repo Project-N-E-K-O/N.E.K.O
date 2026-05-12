@@ -586,6 +586,7 @@ function renderKeyBook(registry, providers) {
 
         container.appendChild(row);
     });
+    bindElevenlabsPanelApiKeySync();
 }
 
 /**
@@ -639,6 +640,10 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
         }
         _elevenlabsApiKeyDraft = (keyValue || '').trim();
     }
+}
+
+function bindElevenlabsPanelApiKeySync() {
+    bindElevenlabsApiKeySync(document.getElementById('elevenlabsApiKey'));
 }
 
 function bindElevenlabsApiKeySync(input) {
@@ -1671,6 +1676,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
+    bindElevenlabsPanelApiKeySync();
 
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
@@ -1848,6 +1854,7 @@ async function save_button_down(e) {
             modelProviders[`${mt}ModelProvider`] = sel.value;
         }
     });
+    const selectedTtsProvider = (modelProviders.ttsModelProvider || '').trim();
 
     // Build payload — map book keys to config field names via registry.
     // Only include providers present in allBookKeys (skips restricted/hidden ones).
@@ -1875,7 +1882,11 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
+    } else if (selectedTtsProvider === 'elevenlabs') {
+        payload.ttsProvider = 'elevenlabs';
     } else if (_loadedGptSovitsState !== 'none') {
+        payload.ttsProvider = '';
+    } else if (selectedTtsProvider) {
         payload.ttsProvider = '';
     }
 
