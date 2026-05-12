@@ -97,6 +97,58 @@ def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
     return "token", max(1, budget)
 
 
+def _fallback_context_from_excerpt(raw: str, excerpt: str) -> dict[str, Any]:
+    return {
+        "_prompt_truncated": True,
+        "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
+    }
+
+
+def _token_budgeted_fallback_context(raw: str, budget: int) -> dict[str, Any]:
+    """Build a hard fallback whose full rendered JSON fits the token budget.
+
+    The old token-mode fallback used ``budget * 4`` as a one-shot char
+    estimate. That under-counted CJK-heavy excerpts because the wrapper JSON
+    itself was never re-measured. Measure the complete fallback object instead
+    and shrink the excerpt until the final rendered JSON is within budget. If
+    the configured budget is too small to fit even the marker JSON, preserve the
+    explicit truncation payload rather than returning an ambiguous empty object.
+    """
+    initial_limit = min(len(raw), max(0, budget * 4 - 200))
+    candidate = _fallback_context_from_excerpt(raw, raw[:initial_limit])
+    if estimate_context_tokens(candidate) <= budget:
+        return candidate
+
+    best_excerpt: str | None = None
+    low = 0
+    high = initial_limit
+    while low <= high:
+        mid = (low + high) // 2
+        excerpt = raw[:mid]
+        candidate = _fallback_context_from_excerpt(raw, excerpt)
+        if estimate_context_tokens(candidate) <= budget:
+            best_excerpt = excerpt
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    if best_excerpt is None:
+        # Extremely small budgets cannot fit even the marker JSON. Preserve the
+        # public contract that fallback payloads are explicit about truncation.
+        return _fallback_context_from_excerpt(raw, "")
+
+    # The omitted-char suffix changes as the excerpt length changes. Binary
+    # search should already be within budget, but keep a defensive trim loop so
+    # future suffix changes cannot leak past the token cap.
+    best = _fallback_context_from_excerpt(raw, best_excerpt)
+    while estimate_context_tokens(best) > budget:
+        if not best_excerpt:
+            break
+        best_excerpt = best_excerpt[:-1]
+        best = _fallback_context_from_excerpt(raw, best_excerpt)
+    return best
+
+
 def _context_json_result_for_prompt(
     context: dict[str, Any],
     config: PromptBudgetConfig | None = None,
@@ -147,16 +199,12 @@ def _context_json_result_for_prompt(
                     "compression_level": compression_level,
                 },
             )
-    excerpt_limit = (
-        max(0, _PROMPT_CONTEXT_MAX_CHARS - 200)
-        if mode == "char"
-        else max(0, budget * 4 - 200)
-    )
-    excerpt = raw[:excerpt_limit]
-    fallback = {
-        "_prompt_truncated": True,
-        "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
-    }
+    if mode == "token":
+        fallback = _token_budgeted_fallback_context(raw, budget)
+    else:
+        excerpt_limit = max(0, _PROMPT_CONTEXT_MAX_CHARS - 200)
+        excerpt = raw[:excerpt_limit]
+        fallback = _fallback_context_from_excerpt(raw, excerpt)
     rendered = _json_dump(fallback)
     return PromptContextResult(
         text=rendered,

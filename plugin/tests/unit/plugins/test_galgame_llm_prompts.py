@@ -77,6 +77,22 @@ def test_token_mode_hard_fallback_reports_level_four() -> None:
     assert json.loads(_rendered_context(result))["_prompt_truncated"] is True
 
 
+def test_token_mode_hard_fallback_trims_excerpt_to_token_budget() -> None:
+    context = {"items": [{"text": "日" * 5000, "extra": list(range(100))} for _ in range(50)]}
+
+    result = build_prompt_messages_with_metadata(
+        "agent_reply",
+        context,
+        _cfg(context_counting_mode="token", context_max_tokens=300),
+    )
+    rendered_context = json.loads(_rendered_context(result))
+
+    assert result.metadata["compression_level"] == 4
+    assert result.metadata["compacted_tokens"] <= result.metadata["budget"]
+    assert rendered_context["_prompt_truncated"] is True
+    assert "context_excerpt" in rendered_context
+
+
 def test_build_prompt_messages_public_contract_returns_message_list() -> None:
     messages = build_prompt_messages("agent_reply", {"prompt": "status"})
 

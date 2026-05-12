@@ -181,20 +181,65 @@ def test_build_config_reads_context_optimization_fields() -> None:
     assert invalid.context_counting_mode == "char"
 
 
-def test_context_builder_forwards_context_builders_without_behavior_change() -> None:
+def test_context_builder_forwards_context_builders_without_behavior_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     local_state = _local_state()
+    merge_from_scene_ids = ["ocr:game:scene-0000"]
+    summarize_result = {"sentinel": "summarize"}
+    explain_result = {"sentinel": "explain"}
+    suggest_result = {"sentinel": "suggest"}
+    calls: dict[str, object] = {}
 
-    assert galgame_context_builder.build_summarize_context(
+    def fake_build_summarize_context(
+        received_local_state: dict[str, object],
+        *,
+        scene_id: str,
+        merge_from_scene_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        calls["summarize"] = (received_local_state, scene_id, merge_from_scene_ids)
+        return summarize_result
+
+    def fake_build_explain_context(
+        received_local_state: dict[str, object],
+        *,
+        line_id: str,
+    ) -> dict[str, str]:
+        calls["explain"] = (received_local_state, line_id)
+        return explain_result
+
+    def fake_build_suggest_context(received_local_state: dict[str, object]) -> dict[str, str]:
+        calls["suggest"] = (received_local_state,)
+        return suggest_result
+
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_summarize_context",
+        fake_build_summarize_context,
+    )
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_explain_context",
+        fake_build_explain_context,
+    )
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_suggest_context",
+        fake_build_suggest_context,
+    )
+
+    assert build_summarize_context(
         local_state,
         scene_id="ocr:game:scene-0001",
-    ) == build_summarize_context(local_state, scene_id="ocr:game:scene-0001")
-    assert galgame_context_builder.build_explain_context(
-        local_state,
-        line_id="ocr:line-stable",
-    ) == build_explain_context(local_state, line_id="ocr:line-stable")
-    assert galgame_context_builder.build_suggest_context(local_state) == build_suggest_context(
-        local_state
-    )
+        merge_from_scene_ids=merge_from_scene_ids,
+    ) is summarize_result
+    assert build_explain_context(local_state, line_id="ocr:line-stable") is explain_result
+    assert build_suggest_context(local_state) is suggest_result
+    assert calls == {
+        "summarize": (local_state, "ocr:game:scene-0001", merge_from_scene_ids),
+        "explain": (local_state, "ocr:line-stable"),
+        "suggest": (local_state,),
+    }
 
 
 def _candidate(
