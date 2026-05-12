@@ -1,6 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-User-directive 抽取的 i18n 正则模板 + 下一轮会话注入用的 system prompt 片段。
+用户**负面意图 / 回避指令** prompt + 模板集中地。包括两类相关但用途不同
+的工具：
+
+(1) **Ban-topic 抽取（带 term）**：``DIRECTIVE_PATTERNS`` 7 locale 正则模板 +
+    ``extract_directives()``。匹配祈使句结构"动词 + 对象"，capture group 直接
+    拿到话题。命中后由 ``memory.user_directives`` 持久化 3 天（TTL 见
+    ``USER_DIRECTIVE_TTL_SECONDS``），下次 ``_build_initial_prompt`` 启动时把
+    活跃 term 注入 system prompt 让模型避开。
+
+(2) **Negative-intent 关键词扫描（boolean）**：``NEGATIVE_KEYWORDS_I18N`` +
+    ``scan_negative_keywords()``。frozenset 子串扫描，命中即"用户希望结束当前
+    话题"（含 *显式回避* 与 *嫌烦* 两族）。下游由 evidence 系统
+    （``app/memory_server._amaybe_trigger_negative_keyword_hook``）异步派一次
+    LLM target check（``NEGATIVE_TARGET_CHECK_PROMPT``）决定打哪条 fact 的
+    disputation signal。
 
 设计动机
 --------
@@ -23,11 +37,20 @@ prompt 末尾。
   本身在 context 已经被 LLM 看到，又不适合持久化，**不**抽取
 - 错杀代价 = 用户下次再说一遍；模型代价 = system prompt 多一行；
   漏抽代价 = 用户被再次冒犯。所以倾向于宽松。
+
+ban-topic regex vs. negative-keyword scan 的差异
+------------------------------------------------
+- regex 能直接 capture term（祈使句结构清晰），用于 user_directives 的写盘
+- substring scan 只判定"有没有负面意图"，捕不到 term；用于 evidence 的
+  fast pre-filter（命中后 LLM 复核 target），还能涵盖"嫌烦型"（"烦死"、
+  "annoying"——这些无 term，不归 directive，但仍是 negative signal）
 """
 from __future__ import annotations
 
 import re
 from typing import List, Tuple
+
+from config.prompts.prompts_sys import _loc
 
 
 # 抓到 term 后剥两端的字符：标点 + 各语言语气助词 / 修饰小尾巴。
@@ -59,16 +82,32 @@ _TRIM_TRAIL_TOKENS = (
 def _norm_lang(lang: str) -> str:
     """归一化 lang code（``zh-CN`` → ``zh``、``pt-BR`` → ``pt`` 等）。
 
-    本模块的 3 个 render 函数都靠 dict 精确 key 取模板；如果上游把
+    本模块的 render 函数都靠 dict 精确 key 取模板；如果上游把
     ``user_language`` 直接传过来（带 region 后缀），会全部走英文兜底——这是
     用户可见的回归。在边界归一化一次，比要求所有调用方都先 normalize 更稳。
+
+    策略：优先走 ``config._runtime.normalize_language_code``（app 启动注册了
+    ``utils.language_utils.normalize_language_code``，能识别 Steam literal
+    如 ``schinese`` → ``zh``，未知语言归 ``en``——render 函数用英文兜底）；
+    resolver 未绑定时退化为本地 split 兜底。
+
+    ⚠️ 该 helper 服务于 i18n **template rendering** 路径（未知 → en）。如果
+    需要"未知 → 中文"的兜底（比如 ``scan_negative_keywords`` 的契约），不要
+    复用此 helper，自己写本地 strip——见该函数实现。
     """
+    if not lang:
+        return 'en'
     try:
         from config._runtime import normalize_language_code as _nlc
-        out = _nlc(lang, format='short')
-        return out or 'en'
+        out = _nlc(lang, format='short') or lang
     except Exception:
-        return lang or 'en'
+        out = lang
+    # Defensive split: resolver 未绑定（partial entrypoint / 测试直跑）时
+    # ``_nlc`` 会**原样**返回输入；这里手动剥 region 后缀，保 zh-CN → zh
+    # 这种基础归一化在测试环境也能工作。已是短码则 split 是 no-op。
+    if '-' in out or '_' in out:
+        out = out.split('-', 1)[0].split('_', 1)[0]
+    return out or 'en'
 
 
 def _trim_term(term: str) -> str:
@@ -476,3 +515,354 @@ def render_regen_avoid_instruction(terms: List[str], lang: str) -> str:
     # 用各 locale 的"、/、/ , / etc" 列表分隔符
     sep = "、" if short in ("zh", "ja") else ", "
     return template.format(terms=sep.join(terms))
+
+
+# =====================================================================
+# ======= Negative-keyword target check (RFC §3.4.5 Layer 2) ==========
+# =====================================================================
+# 职责：用户说"别提了 / 换个话题"这类话命中本地关键词后，派一次小 LLM 调
+# 用决定"用户到底是在说哪条？还是只是泛化情绪？"。水印："======以上为".
+#
+# 历史位置：从 ``prompts_memory.py`` 迁过来——negative-intent prompt + 关键词
+# 与本模块的 ban-topic regex/抽取 是同一类输入（"用户的负面 / 回避指令"），
+# 集中在一处便于以后维护词表 / prompt 一致性。
+# evidence 系统的接入点保持原样（``app/memory_server._amaybe_trigger_negative_keyword_hook``）。
+
+NEGATIVE_TARGET_CHECK_PROMPT = {
+    "zh": """你是一个用户回避意图判定专家。
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+用户消息里，"别提了 / 不想聊 / 换个话题 / 别再说"这类表达到底指上述哪一条？可能多条、也可能一条都没有（用户只是泛化情绪）。
+
+只能从"观察列表"里选 target_id，不要凭空生成。
+target_type 必须是字符串 "reflection" 或 "persona" 之一。
+
+返回合法 JSON（如果用户只是泛化情绪，无明确 target，返回 {"targets": []}）：
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "简短理由"}]}""",
+    "en": """You are a user pushback target analyst.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+In the user's messages, when they say things like "don't mention / change the topic / stop talking about", which observation(s) above are they referring to? Could be several, or none at all (just a vague mood).
+
+target_id MUST come from "observations" above — do not invent IDs.
+target_type MUST be the literal string "reflection" or "persona".
+
+Return valid JSON. If the user is just venting without a specific target, return an object with an empty `targets` array: {"targets": []}. Otherwise:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "short rationale"}]}""",
+    "ja": """あなたはユーザーの拒否反応が何を指しているかを判定する専門家です。
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+ユーザーが「その話はいい／話題を変えて／やめて」などと言ったのは、上の観察のうちどれを指していますか？複数の場合もあれば、一つも該当しない場合もあります（単なるムード）。
+
+target_id は必ず上の "観察" から選ぶこと。
+target_type は文字列 "reflection" または "persona" のいずれかでなければならない。
+
+有効な JSON で返す。該当なしの場合は targets を空配列に: {"targets": []}。
+それ以外:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "短い理由"}]}""",
+    "ko": """당신은 사용자의 거부 표현이 무엇을 가리키는지 판정하는 전문가입니다.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+사용자가 "그 얘기는 그만 / 다른 이야기하자" 같은 표현을 쓸 때, 위 관찰 중 어떤 것을 가리킵니까? 여러 개일 수도, 전혀 없을 수도 있습니다.
+
+target_id는 반드시 위 "관찰"에서 가져오세요.
+target_type은 문자열 "reflection" 또는 "persona" 중 하나여야 합니다.
+
+유효한 JSON으로 반환하세요. 해당 없음이면 targets를 빈 배열로: {"targets": []}.
+그 외:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "짧은 이유"}]}""",
+    "ru": """Вы эксперт по определению цели пользовательского отказа от темы.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+Когда пользователь говорит "хватит об этом / сменим тему / не надо об этом", к каким из перечисленных наблюдений это относится? Может быть несколько или ни одного (просто эмоция).
+
+target_id ДОЛЖЕН быть из "наблюдений" выше.
+target_type ДОЛЖЕН быть строкой "reflection" или "persona".
+
+Верните валидный JSON. Если конкретной цели нет — объект с пустым массивом `targets`: {"targets": []}. В противном случае:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "короткое обоснование"}]}""",
+    "es": """Eres especialista en determinar el objetivo de una reacción de rechazo del usuario.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+Cuando el usuario dice cosas como "no lo menciones / cambia de tema / deja de hablar de eso", ¿a cuál(es) de las observaciones de arriba se refiere? Puede ser varias o ninguna (solo un estado de ánimo general).
+
+target_id DEBE venir de la "lista de observaciones" de arriba; no inventes IDs.
+target_type DEBE ser literalmente "reflection" o "persona".
+
+Devuelve JSON válido. Si no hay objetivo específico, devuelve {"targets": []}. Si lo hay:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "razón breve"}]}""",
+    "pt": """Você é especialista em determinar o alvo de uma reação de recusa do usuário.
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+Quando o usuário diz coisas como "não mencione / muda de assunto / pare de falar disso", a qual(is) observação(ões) acima ele se refere? Pode ser várias ou nenhuma (apenas um humor geral).
+
+target_id DEVE vir da "lista de observações" acima; não invente IDs.
+target_type DEVE ser literalmente "reflection" ou "persona".
+
+Retorne JSON válido. Se não houver alvo específico, retorne {"targets": []}. Caso contrário:
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "motivo breve"}]}""",
+}
+
+
+def get_negative_target_check_prompt(lang: str = "zh") -> str:
+    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, lang)
+
+
+# =====================================================================
+# ======= Negative-keyword scanning (RFC §3.4.5 Layer 1) ==============
+# =====================================================================
+# 本地确定性 frozenset 扫描；命中后异步派发 Layer 2 LLM 判定。
+# 目标语义：用户希望 AI 闭嘴 / 回避特定话题（包含"嫌烦"族，因为这类词用在
+# 话题语境时基本都意味着"想结束这个话题"）。**不收纯情绪词**（焦虑/崩溃/
+# 难受/失望/痛苦…）——它们经常单独出现而无回避意图，会触发无用 LLM 调用。
+# 单字也避免（"烦"会被"麻烦你"/"麻烦了"误命中），双字以上更稳。
+NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
+    "zh": frozenset(
+        [
+            # 显式回避型
+            "别说了",
+            "别再说",
+            "不要再说",
+            "不要说",
+            "别提了",
+            "别提",
+            "别再提",
+            "不要再提",
+            "不想提",
+            "不想再提",
+            "不想说",
+            "不想说了",
+            "不想再说",
+            "别讲",
+            "别再讲",
+            "不要讲",
+            "不要再讲",
+            "别聊",
+            "别聊这个",
+            "不要聊",
+            "不想聊",
+            "换个话题",
+            "换话题",
+            "聊点别的",
+            "说点别的",
+            "这个不用说了",
+            "闭嘴",
+            "别问了",
+            "不要问了",
+            # 嫌烦型（暗含"想结束此话题"）
+            "烦死",
+            "烦人",
+            "好烦",
+            "真烦",
+            "烦透",
+            "心烦",
+            "讨厌",
+            "真讨厌",
+            "受不了",
+            "无语",
+            "真无语",
+        ]
+    ),
+    "en": frozenset(
+        [
+            # Explicit avoidance
+            "stop talking about",
+            "don't mention",
+            "do not mention",
+            "change the topic",
+            "change the subject",
+            "let's not discuss",
+            "let's not talk about",
+            "drop the subject",
+            "drop it",
+            "not this again",
+            "shut up",
+            "let it go",
+            "move on",
+            "enough of this",
+            # Annoyance (implies "end this topic")
+            # `hate` must stay multi-word — bare "hate" is a substring of common
+            # words like "whatever" and would fire false positives every turn.
+            "i hate",
+            "hate this",
+            "hate that",
+            "hate it",
+            "hate when",
+            "annoying",
+            "annoyed",
+            "frustrating",
+            "frustrated",
+            "sick of",
+        ]
+    ),
+    "ja": frozenset(
+        [
+            # 明示的な回避
+            "その話は",
+            "その話はもう",
+            "その話やめ",
+            "やめて",
+            "話題を変えて",
+            "別の話",
+            "他の話",
+            "言わないで",
+            "黙って",
+            # うんざり系（話題を終わらせたい含意）
+            "もう嫌",
+            "イライラ",
+            "うざい",
+            "しつこい",
+        ]
+    ),
+    "ko": frozenset(
+        [
+            # 명시적 회피
+            "그만하자",
+            "그 얘기는 그만",
+            "다른 이야기",
+            "다른 얘기",
+            "다른 얘기 하자",
+            "말하지 마",
+            "닥쳐",
+            # 짜증 계열 (화제 종료 함의)
+            "짜증",
+            "싫어",
+            "지긋지긋",
+        ]
+    ),
+    "ru": frozenset(
+        [
+            # Явное избегание
+            "хватит об этом",
+            "сменим тему",
+            "не говори об этом",
+            "другая тема",
+            "не надо об этом",
+            "замолчи",
+            "отстань",
+            "хватит",
+            # Раздражение (подразумевает «закроем тему»)
+            "раздражает",
+            "надоело",
+            "достало",
+        ]
+    ),
+    "es": frozenset(
+        [
+            "no hables",
+            "no quiero hablar",
+            "no quiero hablar de eso",
+            "cambia de tema",
+            "hablemos de otra cosa",
+            "déjalo",
+            "basta",
+            "no lo menciones",
+            "no sigas",
+        ]
+    ),
+    "pt": frozenset(
+        [
+            "não fale",
+            "não quero falar",
+            "não quero falar disso",
+            "mude de assunto",
+            "vamos falar de outra coisa",
+            "deixa pra lá",
+            "chega",
+            "não mencione isso",
+            "não continue",
+        ]
+    ),
+}
+
+
+def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
+    """Fast path: case-insensitive substring scan against NEGATIVE_KEYWORDS_I18N.
+
+    Returns True if the message contains any negation keyword for the given
+    language; if lang is unknown, falls back to zh.
+
+    ⚠️ 不走 ``_norm_lang``——那个 helper 服务于 i18n template rendering，未知
+    语言归 ``en``（英文是 lingua franca，模板渲染默认英文合理）。本函数的契约
+    是"语言识别不出就当中文用户"（codex P2 / scan-only policy），与 render
+    路径策略不同。所以这里只做最小归一化：strip region 后缀（``en-US`` →
+    ``en`` / ``zh-CN`` → ``zh``），未识别的短码留给 ``.get(..., zh)`` 兜底。
+    """
+    if not message:
+        return False
+    # 只剥 region 后缀（zh-CN/zh_CN/en-US/pt-BR ...），保留契约："未知 → zh"。
+    # 同时 strip 前后空白 + lower 大小写——上游若传 ``EN-US`` 或 ``" en-US "``，
+    # split 后是 ``EN`` / `` en``，dict key 都是小写无空白会 miss → 错落 zh
+    # 兜底（CodeRabbit Minor）。
+    short = (lang or "").strip().lower().split('-', 1)[0].split('_', 1)[0]
+    # `zh` is always non-empty in the dict, so the fallback is guaranteed
+    # to yield a frozenset (CodeRabbit PR #929 dead-code cleanup).
+    kws = NEGATIVE_KEYWORDS_I18N.get(short, NEGATIVE_KEYWORDS_I18N["zh"])
+    lower = message.lower()
+    for kw in kws:
+        if kw.lower() in lower:
+            return True
+    return False

@@ -980,6 +980,74 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
+# ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
+# Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
+# 衰减。state 与 episode 各有 TTL，超期自动进过时 block。pattern 永不过时。
+# `past` 是历史兼容值（旧数据可能存了），render 时直接进过时 block。
+MEMORY_STATE_PAST_DAYS = 7
+"""state 类 reflection 距 event 多少天后被视为已过时。
+- 用途：memory.temporal.is_past_for_render；render 时把此条移入过时 block。
+- 上游：reflection synth LLM 标注 temporal_scope='state' 的条目。"""
+
+MEMORY_EPISODE_PAST_DAYS = 3
+"""episode 类 reflection 距 event 多少天后被视为已过时。
+- 用途：同上，但 episode 是一次性事件，衰减更快。
+- 上游：reflection synth LLM 标注 temporal_scope='episode' 的条目。"""
+
+MEMORY_SCHEMA_VERSION_CURRENT = 2
+"""fact / reflection 当前 schema 版本号。
+- v1（缺失或显式 1）：旧 ontology（current/ongoing/None temporal_scope，无
+  event_when）。
+- v2：新 ontology（pattern/state/episode）+ event_start_at / event_end_at。
+- 用途：背景循环找 schema_version < CURRENT 的条目慢慢重判升版本。"""
+
+# ---- Memory: slow recheck loop (memory/temporal.py + memory_server.py) ─
+MEMORY_RECHECK_ENABLED = True
+"""慢速记忆重判循环总开关。
+- 用途：app/memory_server.py _periodic_slow_memory_recheck_loop 启动门控。
+- 关闭时老数据不会被升版本（render 兜底走 pattern 不淡出）。"""
+
+MEMORY_RECHECK_INTERVAL_SECONDS = 30
+"""慢速重判循环单条间隔。
+- 用途：每 N 秒重判 1 条 reflection / fact。
+- 上游：背景循环 sleep；设计参考 §3.5 archive_sweep（更慢、低 IO）。"""
+
+MEMORY_RECHECK_INITIAL_DELAY_SECONDS = 180
+"""慢速重判循环启动延迟（错峰）。
+- 用途：和现有 6 个循环错峰，避开启动峰值。
+- 现有 _INITIAL_DELAY_* 在 20s~250s，本值 180s 接近末尾。"""
+
+MEMORY_RECHECK_MAX_ATTEMPTS = 5
+"""单条 v1 entry 重判失败几次后放弃，避免饥饿后续合法 v1 条目。
+- 失败定义：LLM 调用抛异常、返回非 dict、temporal_scope 不在合法集合
+  （reflection 限定 pattern/state/episode）。
+- 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
+- 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
+  排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
+# ---- Memory: followup picker (memory/reflection.py) ─
+REFLECTION_FOLLOWUP_WEIGHTED = True
+"""主动搭话 followup 候选采样是否按 evidence_score 加权随机。
+- 用途：_filter_followup_candidates；False 时回退到旧行为（按落盘顺序取
+  top-K）。
+- 设计依据：候选池大时纯落盘顺序总取同一批，造成主动搭话内容雷同。"""
+
+REFLECTION_FOLLOWUP_WEIGHT_BASE = 0.5
+"""加权采样的最低权重（score=0 时也有此权重，避免全 0 score 时退化）。"""
+
+# ---- Memory: summary stale prompt (memory/recent.py) ─
+RECENT_SUMMARY_STALE_HOURS = 1
+"""距上次"LLM 实际更新 past block 的时刻"超过此小时数，下一次 compress
+时在 prompt 头部附加"时间已过 X"提示，让 LLM 主动把过时片段挪进 summary
+内部的过时 block。
+- 锚点：不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
+  stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时刷一次
+  past block"的稳定节奏。改记"上次 hint 真正注入的时刻"，即 LLM 实际
+  被要求更新 past block 的那一刻。
+- 上游：recent_meta.json 里的 last_past_block_update_at 字段。
+- 注意：summary 的过时 block 只在当前 session 临时降级，不持久化到
+  reflection / persona。"""
+
 # ---- Memory: persona ----
 PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 """promote-merge 时同 entity persona+reflection 池总 token 上限。
