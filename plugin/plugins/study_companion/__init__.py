@@ -325,8 +325,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._state.last_reply = summary
                 self._state.last_reply_at = reply.created_at or utc_now_iso()
                 if operation == LLM_OPERATION_QUESTION_GENERATE:
-                    self._state.current_question = dict(payload)
-                    self._state.last_question_at = reply.created_at or utc_now_iso()
+                    if str(payload.get("question") or "").strip():
+                        self._state.current_question = dict(payload)
+                        self._state.last_question_at = reply.created_at or utc_now_iso()
                 elif operation == LLM_OPERATION_ANSWER_EVALUATE:
                     self._state.last_answer_evaluation = dict(payload)
                     self._state.last_answer_evaluated_at = reply.created_at or utc_now_iso()
