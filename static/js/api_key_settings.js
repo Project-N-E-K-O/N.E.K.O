@@ -1871,9 +1871,13 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
-        ttsProvider: gptsovitsEnabled ? 'gptsovits' : undefined,
         ...modelProviders
     };
+    if (gptsovitsEnabled) {
+        payload.ttsProvider = 'gptsovits';
+    } else if (_loadedGptSovitsState !== 'none') {
+        payload.ttsProvider = '';
+    }
 
     const disableTtsEl = document.getElementById('disableTts');
     if (disableTtsEl) {

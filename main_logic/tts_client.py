@@ -3328,6 +3328,10 @@ def _is_elevenlabs_enabled(core_cfg: dict | None) -> bool:
     )
 
 
+def _is_elevenlabs_voice_id(voice_id: str | None) -> bool:
+    return str(voice_id or '').strip().startswith(ELEVENLABS_VOICE_PREFIX)
+
+
 def _get_elevenlabs_options(base_url=None):
     cm = get_config_manager()
     core_cfg = cm.get_core_config()
@@ -3884,7 +3888,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
     voice_meta = None
 
-    if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
+    if _is_elevenlabs_voice_id(voice_id) and elevenlabs_enabled:
         elevenlabs_options = _get_elevenlabs_options()
         return (
             partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
@@ -3928,7 +3932,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     try:
         tts_config = cm.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url') or ''
-        if elevenlabs_enabled and not has_custom_voice:
+        if elevenlabs_enabled and not has_custom_voice and _is_elevenlabs_voice_id(voice_id):
             elevenlabs_options = _get_elevenlabs_options()
             return (
                 partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),

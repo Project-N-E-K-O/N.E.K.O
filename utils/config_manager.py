@@ -47,6 +47,22 @@ from utils.steam_state import get_steamworks
 logger = get_module_logger(__name__)
 
 
+def _as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ('true', '1', 'yes', 'on'):
+            return True
+        if lowered in ('false', '0', 'no', 'off', ''):
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
     """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
 
@@ -2394,9 +2410,9 @@ class ConfigManager:
 
         if voice_id.startswith('eleven:'):
             core_config = self.get_core_config()
-            elevenlabs_enabled = bool(
-                core_config.get('ELEVENLABS_ENABLED')
-                or core_config.get('elevenlabsEnabled')
+            elevenlabs_enabled = (
+                _as_bool(core_config.get('ELEVENLABS_ENABLED'))
+                or _as_bool(core_config.get('elevenlabsEnabled'))
                 or core_config.get('TTS_PROVIDER') == 'elevenlabs'
                 or core_config.get('ttsProvider') == 'elevenlabs'
             )
@@ -2431,9 +2447,9 @@ class ConfigManager:
 
         if voice_id.startswith('eleven:'):
             core_config = self.get_core_config()
-            elevenlabs_enabled = bool(
-                core_config.get('ELEVENLABS_ENABLED')
-                or core_config.get('elevenlabsEnabled')
+            elevenlabs_enabled = (
+                _as_bool(core_config.get('ELEVENLABS_ENABLED'))
+                or _as_bool(core_config.get('elevenlabsEnabled'))
                 or core_config.get('TTS_PROVIDER') == 'elevenlabs'
                 or core_config.get('ttsProvider') == 'elevenlabs'
             )
@@ -2989,21 +3005,6 @@ class ConfigManager:
 
         # GPT-SoVITS 配置映射
         config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
-
-        def _as_bool(value, default=False):
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, (int, float)):
-                return bool(value)
-            if isinstance(value, str):
-                lowered = value.strip().lower()
-                if lowered in ('true', '1', 'yes', 'on'):
-                    return True
-                if lowered in ('false', '0', 'no', 'off', ''):
-                    return False
-            if value is None:
-                return default
-            return bool(value)
 
         config['ELEVENLABS_ENABLED'] = _as_bool(core_cfg.get('elevenlabsEnabled', False), False)
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')

@@ -195,11 +195,17 @@ async def _request_direct_link_follow_redirects(
     client: httpx.AsyncClient,
     method: str,
     direct_link: str,
+    *,
+    stream: bool = False,
 ) -> httpx.Response:
     current_url = direct_link
     for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
         _validate_direct_link_target(current_url)
-        response = await client.request(method, current_url, follow_redirects=False)
+        response = await client.send(
+            client.build_request(method, current_url),
+            follow_redirects=False,
+            stream=stream,
+        )
         if response.status_code in _DIRECT_LINK_REDIRECT_STATUSES:
             current_url = _redirect_target_from_response(response)
             await response.aclose()
@@ -3308,15 +3314,16 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
     try:
         _config_manager = get_config_manager()
         core_config = await _config_manager.aget_core_config()
-        tts_config = await _config_manager.aget_tts_config()
+        tts_config = _config_manager.get_model_api_config('tts_custom')
 
         base_url = (
-            tts_config.get('url')
+            tts_config.get('base_url')
+            or tts_config.get('url')
             or core_config.get('ttsModelUrl')
             or core_config.get('TTS_MODEL_URL')
             or ''
         )
-        if tts_config.get('is_enabled') is False or core_config.get('gptsovitsEnabled') is False:
+        if tts_config.get('is_enabled') is False or core_config.get('GPTSOVITS_ENABLED') is False:
             return JSONResponse({
                 'success': False,
                 'error': 'GPTSOVITS_NOT_ENABLED',
@@ -4449,7 +4456,7 @@ async def voice_clone_direct(request: Request):
                 if head_resp.status_code >= 400:
                     # HEAD失败，尝试GET
                     logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
-                    get_resp = await _request_direct_link_follow_redirects(client, "GET", direct_link)
+                    get_resp = await _request_direct_link_follow_redirects(client, "GET", direct_link, stream=True)
                     try:
                         if get_resp.status_code >= 400:
                             return JSONResponse({
@@ -4506,7 +4513,8 @@ async def voice_clone_direct(request: Request):
             # 2. 音频归一化处理（与文件上传路径保持一致）
             from utils.audio import normalize_voice_clone_api_audio
             original_buffer = io.BytesIO(audio_bytes)
-            normalized_buffer, normalized_filename, _ = normalize_voice_clone_api_audio(
+            normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
                 original_buffer, filename
             )
 
