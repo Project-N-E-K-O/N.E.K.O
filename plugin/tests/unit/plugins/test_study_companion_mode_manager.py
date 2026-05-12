@@ -73,3 +73,23 @@ def test_mode_intent_still_accepts_explicit_switch_phrases() -> None:
     cross_mode = mode_manager.handle_user_intent("教我互动模式 光合作用", language="zh-CN")
     assert cross_mode["mode"] == mode_manager.MODE_INTERACTIVE
     assert cross_mode["keyword"] == "互动模式"
+
+
+def test_failed_rapid_mode_switch_attempts_count_toward_lock() -> None:
+    mode_manager = _load_mode_manager()
+    manager = mode_manager.ModeManager(current_mode=mode_manager.MODE_COMPANION, mode_started_at=1000.0)
+
+    first = manager.switch_to(mode_manager.MODE_TEACHING, "unit", now=1005.0)
+    second = manager.switch_to(mode_manager.MODE_TEACHING, "unit", now=1010.0)
+    third = manager.switch_to(mode_manager.MODE_TEACHING, "unit", now=1015.0)
+
+    assert first["changed"] is False
+    assert first["lock_reason"] == "minimum_dwell"
+    assert len(first["checkpoint"]["recent_mode_switches"]) == 1
+    assert second["changed"] is False
+    assert second["lock_reason"] == "minimum_dwell"
+    assert len(second["checkpoint"]["recent_mode_switches"]) == 2
+    assert third["changed"] is False
+    assert third["lock_reason"] == "mode_lock"
+    assert third["lock_until"] > 1015.0
+    assert manager.mode_lock_until == third["lock_until"]

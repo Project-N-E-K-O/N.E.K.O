@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
-from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
+from plugin.plugins.study_companion.llm_prompts import _compact_prompt_value, build_concept_explain_messages
 from plugin.plugins.study_companion.mode_manager import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
@@ -32,6 +32,7 @@ from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
 from plugin.plugins.study_companion import service as study_service
+from plugin.plugins.study_companion.screen_classifier import classify_screen_from_ocr
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
 from plugin.plugins.study_companion.ui_api import build_open_ui_payload
@@ -311,6 +312,13 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert direct.llm_temperature == 2.0
     assert direct.llm_max_tokens == 1
 
+    generic_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333}})
+    assert generic_llm.llm_limits_for_operation("unsupported") == (0.6, 333)
+    assert generic_llm.llm_limits_for_operation("question_generate") == (0.6, 333)
+
+    specific_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333, "temperature_question_generate": 0.3, "max_tokens_question_generate": 444}})
+    assert specific_llm.llm_limits_for_operation("question_generate") == (0.3, 444)
+
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
@@ -323,6 +331,24 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         assert loaded.session_suggestions == []
     finally:
         store.close()
+
+
+def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
+    english = classify_screen_from_ocr("## Summary\n\nThe learner reviewed photosynthesis.")
+    assert english.screen_type == "summary"
+    assert "summary" in english.signals.get("summary_hits", [])
+
+    chinese = classify_screen_from_ocr("本节总结\n光合作用的主要过程包括光反应和暗反应。")
+    assert chinese.screen_type == "summary"
+    assert "总结" in chinese.signals.get("summary_hits", [])
+
+
+def test_compact_prompt_value_stops_at_max_depth() -> None:
+    nested = {"a": {"b": {"c": {"d": "bottom"}}}}
+
+    compacted = _compact_prompt_value(nested, list_limit=5, string_limit=50, max_depth=2)
+
+    assert compacted == {"a": {"b": "...[max depth reached]"}}
 
 
 def test_study_open_ui_payload_returns_message_key() -> None:
@@ -407,6 +433,8 @@ def test_study_companion_i18n_bundles_are_present() -> None:
 def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; frontend/plugin-manager happy-dom smoke test requires node")
     if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
         pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
 
@@ -577,18 +605,18 @@ def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
 
-    assert """async function setMode(mode) {
-  if (mode === currentMode) {
-    return;
-  }
-  setStatus(t('ui.status.mode_switching', 'Switching mode...'));
-  const data = await callPlugin('study_set_mode', { mode, reason: 'ui' });
-  const appliedMode = data && data.new_mode
-    ? data.new_mode
-    : (data && data.changed === false ? currentMode : mode);
-  currentMode = String(appliedMode || 'companion');
-  setModeButtons(currentMode, false);
-""" in static_source
+    set_mode_start = static_source.index("async function setMode(mode)")
+    set_mode_end = static_source.index("function bindButton", set_mode_start)
+    set_mode = static_source[set_mode_start:set_mode_end]
+
+    assert "async function setMode(mode)" in set_mode
+    assert "if (mode === currentMode)" in set_mode
+    assert "callPlugin('study_set_mode'" in set_mode
+    assert "data.new_mode" in set_mode
+    assert "data && data.changed === false" in set_mode
+    assert "setModeButtons(currentMode, false)" in set_mode
+    assert "answerInput.value = data.answer;" in static_source
+    assert "answerInput.value = '';" not in static_source
 
 
 def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> None:
@@ -1002,6 +1030,9 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert pure.value["new_mode"] == MODE_TEACHING
         assert pure.value["reply"]
         assert "教学模式" in pure.value["reply"]
+        assert plugin._cfg.mode == MODE_TEACHING
+        assert plugin._cfg.default_mode == MODE_COMPANION
+        assert plugin._store.load_config(StudyConfig()).default_mode == MODE_COMPANION
 
         explain_only = await plugin.study_explain_text("解释光合作用")
         assert isinstance(explain_only, Ok)
@@ -1448,3 +1479,67 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "recent_mode_switches" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    state = build_initial_state(mode=MODE_TEACHING)
+    plugin._store.open()
+    try:
+        plugin._store.save_config(StudyConfig(mode=MODE_COMPANION, default_mode=MODE_COMPANION, language="en"))
+        plugin._store.save_state(state)
+    finally:
+        plugin._store.close()
+
+    result = await plugin.startup()
+
+    try:
+        assert isinstance(result, Ok)
+        assert plugin._state.active_mode == MODE_TEACHING
+        assert plugin._cfg.mode == MODE_TEACHING
+        assert plugin._cfg.default_mode == MODE_COMPANION
+        assert plugin._store.load_config(StudyConfig()).default_mode == MODE_COMPANION
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_startup_failure_cleans_partial_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    async def _fail_persist(_self) -> None:
+        raise RuntimeError("persist failed")
+
+    monkeypatch.setattr(StudyCompanionPlugin, "_persist_state", _fail_persist)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    assert not isinstance(result, Ok)
+    assert plugin._agent is None
+    assert plugin._ocr_pipeline is None
+    assert plugin._store._conn is None
+    assert plugin.get_static_ui_config() is None
+    assert plugin.get_list_actions() == []

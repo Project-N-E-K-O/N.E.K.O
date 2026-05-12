@@ -65,17 +65,24 @@ _REVIEW_KEYWORDS = (
     "note",
     "review note",
     "复习",
-    "总结",
     "回顾",
     "错题",
     "反思",
+)
+_SUMMARY_KEYWORDS = (
+    "summary",
+    "summarize",
+    "recap",
+    "session summary",
+    "总结",
+    "小结",
+    "归纳",
 )
 _NOTES_KEYWORDS = (
     "note",
     "notes",
     "memo",
     "outline",
-    "summary",
     "笔记",
     "大纲",
     "整理",
@@ -263,6 +270,7 @@ def classify_screen_from_ocr(
     question_score, question_hits = _score_category(lines, title, _QUESTION_KEYWORDS, extra=0.2 if "?" in text or "？" in text else 0.0)
     answer_score, answer_hits = _score_category(lines, title, _ANSWER_KEYWORDS, extra=0.1)
     review_score, review_hits = _score_category(lines, title, _REVIEW_KEYWORDS, extra=0.15)
+    summary_score, summary_hits = _score_category(lines, title, _SUMMARY_KEYWORDS, extra=0.35)
     notes_score, notes_hits = _score_category(lines, title, _NOTES_KEYWORDS, extra=0.1)
     reading_score, reading_hits = _score_category(lines, title, _READING_KEYWORDS, extra=0.05 + min(1.0, len(text) / 180.0))
 
@@ -272,7 +280,9 @@ def classify_screen_from_ocr(
     if any(token in title_lower for token in ("answer", "review", "score", "答案", "解析", "错题")):
         answer_score += 0.6
         review_score += 0.4
-    if any(token in title_lower for token in ("note", "memo", "summary", "笔记", "总结")):
+    if any(token in title_lower for token in ("summary", "summarize", "recap", "总结", "小结")):
+        summary_score += 0.7
+    if any(token in title_lower for token in ("note", "memo", "笔记")):
         notes_score += 0.6
     if any(token in title_lower for token in ("lesson", "chapter", "reading", "article", "lecture", "概念", "定义")):
         reading_score += 0.4
@@ -281,6 +291,7 @@ def classify_screen_from_ocr(
         "question": question_score,
         "answering": answer_score,
         "review": review_score,
+        "summary": summary_score,
         "notes": notes_score,
         "reading": reading_score,
     }
@@ -300,6 +311,8 @@ def classify_screen_from_ocr(
         confidence = min(0.98, confidence + 0.1)
     if screen_type == "review" and review_hits:
         confidence = min(0.98, confidence + 0.08)
+    if screen_type == "summary" and summary_hits:
+        confidence = min(0.98, confidence + 0.1)
     if screen_type == "notes" and notes_hits:
         confidence = min(0.98, confidence + 0.08)
     if screen_type == "reading" and reading_hits:
@@ -311,6 +324,7 @@ def classify_screen_from_ocr(
         "question": question_hits,
         "answering": answer_hits,
         "review": review_hits,
+        "summary": summary_hits,
         "notes": notes_hits,
         "reading": reading_hits,
     }
@@ -323,6 +337,7 @@ def classify_screen_from_ocr(
                 f"question:{','.join(question_hits[:3])}" if question_hits else "",
                 f"answer:{','.join(answer_hits[:3])}" if answer_hits else "",
                 f"review:{','.join(review_hits[:3])}" if review_hits else "",
+                f"summary:{','.join(summary_hits[:3])}" if summary_hits else "",
                 f"notes:{','.join(notes_hits[:3])}" if notes_hits else "",
                 f"reading:{','.join(reading_hits[:3])}" if reading_hits else "",
             )
@@ -334,11 +349,13 @@ def classify_screen_from_ocr(
             "question_score": question_score,
             "answer_score": answer_score,
             "review_score": review_score,
+            "summary_score": summary_score,
             "notes_score": notes_score,
             "reading_score": reading_score,
             "question_hits": question_hits,
             "answer_hits": answer_hits,
             "review_hits": review_hits,
+            "summary_hits": summary_hits,
             "notes_hits": notes_hits,
             "reading_hits": reading_hits,
         },

@@ -35,6 +35,7 @@ history_limit = 50
 
 [llm]
 llm_call_timeout_seconds = 30
+# Generic fallback used only when an operation-specific limit is omitted.
 temperature = 0.2
 max_tokens = 900
 temperature_concept_explain = 0.2

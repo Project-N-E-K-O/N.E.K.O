@@ -4,6 +4,7 @@ from __future__ import annotations
 MODE_COMPANION = "companion"
 MODE_INTERACTIVE = "interactive"
 MODE_TEACHING = "teaching"
+# Legacy operation alias, not a study mode. Keep it separate from SUPPORTED_MODES.
 MODE_CONCEPT_EXPLAIN = "concept_explain"
 
 LLM_OPERATION_CONCEPT_EXPLAIN = MODE_CONCEPT_EXPLAIN

@@ -80,7 +80,6 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._state.mode_started_at = float(self._state.mode_started_at or 0.0)
                 self._state.mode_lock_until = float(self._state.mode_lock_until or 0.0)
                 self._cfg.mode = self._state.active_mode
-                self._cfg.default_mode = self._state.active_mode
                 self._state.last_started_at = utc_now_iso()
                 self._state.last_error = ""
                 self._mode_manager.restore(
@@ -114,10 +113,33 @@ class StudyCompanionPlugin(NekoPluginBase):
             raise
         except Exception as exc:
             self.logger.warning("study plugin startup failed: {}", exc)
+            await self._cleanup_after_failed_startup()
             with self._lock:
                 self._state.status = STATUS_ERROR
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
+
+    async def _cleanup_after_failed_startup(self) -> None:
+        agent = self._agent
+        self._agent = None
+        self._ocr_pipeline = None
+        try:
+            self.clear_list_actions()
+        except Exception as exc:
+            self.logger.warning("study startup cleanup clear actions failed: {}", exc)
+        try:
+            self._static_ui_config = None
+        except Exception as exc:
+            self.logger.warning("study startup cleanup static UI failed: {}", exc)
+        if agent is not None:
+            try:
+                await agent.shutdown()
+            except Exception as exc:
+                self.logger.warning("study startup cleanup agent shutdown failed: {}", exc)
+        try:
+            await asyncio.to_thread(self._store.close)
+        except Exception as exc:
+            self.logger.warning("study startup cleanup store close failed: {}", exc)
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
@@ -172,7 +194,6 @@ class StudyCompanionPlugin(NekoPluginBase):
             }
             if result.get("changed"):
                 self._cfg.mode = self._state.active_mode
-                self._cfg.default_mode = self._state.active_mode
         if result.get("changed") and self._agent is not None:
             self._agent.update_config(self._cfg)
         await self._persist_state()

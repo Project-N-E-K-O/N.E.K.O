@@ -284,7 +284,7 @@ async function generateQuestion() {
     }
   }
   if (data.answer && answerInput && !answerInput.value.trim()) {
-    answerInput.value = '';
+    answerInput.value = data.answer;
   }
   setReply(data.hint || data.question || data.summary || data.reply || '');
   await refreshStatus({ updateReply: false });

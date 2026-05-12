@@ -47,7 +47,10 @@ def _compact_prompt_value(
     list_limit: int,
     string_limit: int,
     dict_key_limit: int = 0,
+    max_depth: int = 10,
 ) -> Any:
+    if max_depth <= 0:
+        return "...[max depth reached]"
     if isinstance(value, str):
         if len(value) <= string_limit:
             return value
@@ -61,6 +64,7 @@ def _compact_prompt_value(
                 list_limit=list_limit,
                 string_limit=string_limit,
                 dict_key_limit=dict_key_limit,
+                max_depth=max_depth - 1,
             )
             for item in items
         ]
@@ -75,6 +79,7 @@ def _compact_prompt_value(
                     list_limit=list_limit,
                     string_limit=string_limit,
                     dict_key_limit=dict_key_limit,
+                    max_depth=max_depth - 1,
                 )
                 for key, item in items
             }
@@ -86,6 +91,7 @@ def _compact_prompt_value(
                 list_limit=list_limit,
                 string_limit=string_limit,
                 dict_key_limit=dict_key_limit,
+                max_depth=max_depth - 1,
             )
             for key, item in items
         }

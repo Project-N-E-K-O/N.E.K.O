@@ -303,6 +303,8 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     default_mode = _str(study, "default_mode", _str(study, "mode", MODE_COMPANION, "mode"), "default_mode").strip() or MODE_COMPANION
     default_mode = normalize_mode(default_mode)
     mode = normalize_mode(_str(study, "mode", default_mode, "mode"))
+    generic_llm_temperature = _clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2)
+    generic_llm_max_tokens = max(1, _int(llm, "max_tokens", 900, "llm_max_tokens"))
 
     return StudyConfig(
         mode=mode,
@@ -337,56 +339,56 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             3600.0,
             30.0,
         ),
-        llm_temperature=_clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2),
-        llm_max_tokens=max(1, _int(llm, "max_tokens", 900, "llm_max_tokens")),
+        llm_temperature=generic_llm_temperature,
+        llm_max_tokens=generic_llm_max_tokens,
         llm_temperature_concept_explain=_clamp(
-            _float_alias(llm, ("temperature_concept_explain", "llm_temperature_concept_explain"), 0.2, "llm_temperature_concept_explain"),
+            _float_alias(llm, ("temperature_concept_explain", "llm_temperature_concept_explain"), generic_llm_temperature, "llm_temperature_concept_explain"),
             0.0,
             2.0,
-            0.2,
+            generic_llm_temperature,
         ),
         llm_max_tokens_concept_explain=max(
             1,
-            _int(llm, "max_tokens_concept_explain", 900, "llm_max_tokens_concept_explain"),
+            _int(llm, "max_tokens_concept_explain", generic_llm_max_tokens, "llm_max_tokens_concept_explain"),
         ),
         llm_temperature_question_generate=_clamp(
-            _float_alias(llm, ("temperature_question_generate", "llm_temperature_question_generate"), 0.35, "llm_temperature_question_generate"),
+            _float_alias(llm, ("temperature_question_generate", "llm_temperature_question_generate"), generic_llm_temperature, "llm_temperature_question_generate"),
             0.0,
             2.0,
-            0.35,
+            generic_llm_temperature,
         ),
         llm_max_tokens_question_generate=max(
             1,
-            _int(llm, "max_tokens_question_generate", 720, "llm_max_tokens_question_generate"),
+            _int(llm, "max_tokens_question_generate", generic_llm_max_tokens, "llm_max_tokens_question_generate"),
         ),
         llm_temperature_answer_evaluate=_clamp(
-            _float_alias(llm, ("temperature_answer_evaluate", "llm_temperature_answer_evaluate"), 0.12, "llm_temperature_answer_evaluate"),
+            _float_alias(llm, ("temperature_answer_evaluate", "llm_temperature_answer_evaluate"), generic_llm_temperature, "llm_temperature_answer_evaluate"),
             0.0,
             2.0,
-            0.12,
+            generic_llm_temperature,
         ),
         llm_max_tokens_answer_evaluate=max(
             1,
-            _int(llm, "max_tokens_answer_evaluate", 720, "llm_max_tokens_answer_evaluate"),
+            _int(llm, "max_tokens_answer_evaluate", generic_llm_max_tokens, "llm_max_tokens_answer_evaluate"),
         ),
         llm_temperature_knowledge_track=_clamp(
-            _float_alias(llm, ("temperature_knowledge_track", "llm_temperature_knowledge_track"), 0.08, "llm_temperature_knowledge_track"),
+            _float_alias(llm, ("temperature_knowledge_track", "llm_temperature_knowledge_track"), generic_llm_temperature, "llm_temperature_knowledge_track"),
             0.0,
             2.0,
-            0.08,
+            generic_llm_temperature,
         ),
         llm_max_tokens_knowledge_track=max(
             1,
-            _int(llm, "max_tokens_knowledge_track", 480, "llm_max_tokens_knowledge_track"),
+            _int(llm, "max_tokens_knowledge_track", generic_llm_max_tokens, "llm_max_tokens_knowledge_track"),
         ),
         llm_temperature_summarize_session=_clamp(
-            _float_alias(llm, ("temperature_summarize_session", "llm_temperature_summarize_session"), 0.18, "llm_temperature_summarize_session"),
+            _float_alias(llm, ("temperature_summarize_session", "llm_temperature_summarize_session"), generic_llm_temperature, "llm_temperature_summarize_session"),
             0.0,
             2.0,
-            0.18,
+            generic_llm_temperature,
         ),
         llm_max_tokens_summarize_session=max(
             1,
-            _int(llm, "max_tokens_summarize_session", 1200, "llm_max_tokens_summarize_session"),
+            _int(llm, "max_tokens_summarize_session", generic_llm_max_tokens, "llm_max_tokens_summarize_session"),
         ),
     )
