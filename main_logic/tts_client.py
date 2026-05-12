@@ -3794,6 +3794,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     except Exception:
         core_cfg = {}
 
+    if core_cfg.get('DISABLE_TTS', False):
+        logger.info("TTS disabled; using dummy TTS worker")
+        return dummy_tts_worker, None, None
+
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
     # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
     voice_meta = None
