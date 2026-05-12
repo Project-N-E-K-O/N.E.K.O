@@ -57,7 +57,6 @@ from main_logic.tts_client import (
     CustomTTSVoiceFetchError,
 )
 from utils.elevenlabs_tts_voices import (
-    ELEVENLABS_TTS_DEFAULT_BASE_URL,
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_VOICE_PREFIX,
 )
@@ -913,7 +912,7 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:
-    return ELEVENLABS_TTS_DEFAULT_BASE_URL.strip().rstrip('/')
+    return "https://api.elevenlabs.io"
 
 
 def _config_value_is_enabled(value) -> bool:

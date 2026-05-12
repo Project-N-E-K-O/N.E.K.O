@@ -19,7 +19,6 @@ from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.elevenlabs_tts_voices import (
-    ELEVENLABS_TTS_DEFAULT_BASE_URL,
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
     ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
@@ -3307,9 +3306,9 @@ def _is_elevenlabs_voice_id(voice_id: str | None) -> bool:
 def _get_elevenlabs_options(base_url=None):
     raw_base_url = (
         base_url
-        or ELEVENLABS_TTS_DEFAULT_BASE_URL
+        or "https://api.elevenlabs.io"
     )
-    base_url = (raw_base_url or ELEVENLABS_TTS_DEFAULT_BASE_URL).strip().rstrip('/')
+    base_url = (raw_base_url or "https://api.elevenlabs.io").strip().rstrip('/')
 
     return {
         'base_url': base_url,
@@ -3338,7 +3337,7 @@ def _elevenlabs_ws_chunk_schedule(optimize_streaming_latency: int) -> list[int]:
 
 
 def _elevenlabs_ws_base_url(base_url: str | None) -> str:
-    raw = (base_url or ELEVENLABS_TTS_DEFAULT_BASE_URL).strip().rstrip("/")
+    raw = (base_url or "https://api.elevenlabs.io").strip().rstrip("/")
     if raw.startswith("https://"):
         return "wss://" + raw[len("https://"):]
     if raw.startswith("http://"):
