@@ -366,6 +366,11 @@
             height: 0;
         }
 
+        .guide-content:focus-visible {
+            outline: 2px solid var(--guide-accent);
+            outline-offset: -4px;
+        }
+
         .guide-content-scrollbar {
             position: absolute;
             top: 18px;
@@ -615,7 +620,7 @@
             </div>
 
             <div class="guide-content-wrap">
-                <article id="guideContent" class="guide-content" aria-live="polite"></article>
+                <article id="guideContent" class="guide-content" aria-live="polite" tabindex="0"></article>
                 <div id="guideContentScrollbar" class="guide-content-scrollbar" aria-hidden="true">
                     <div id="guideContentScrollbarThumb" class="guide-content-scrollbar-thumb"></div>
                 </div>

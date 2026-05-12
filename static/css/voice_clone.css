@@ -983,8 +983,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
         padding: 14px 18px;
     }
 
-    [data-theme="dark"].neko-window-maximized .voice-list-section,
-    [data-theme="dark"] .neko-window-maximized .voice-list-section {
+    [data-theme="dark"].neko-window-maximized .voice-list-section {
         border-left-color: rgba(255, 255, 255, 0.16);
     }
 }
