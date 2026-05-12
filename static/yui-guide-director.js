@@ -7697,8 +7697,23 @@
                 textKey: INTRO_GREETING_REPLY_TEXT_KEY,
                 voiceKey: 'intro_greeting_reply'
             });
-            await this.speakGuideLine(greetingReplyText, {
-                voiceKey: 'intro_greeting_reply'
+            await Promise.all([
+                this.speakGuideLine(greetingReplyText, {
+                    voiceKey: 'intro_greeting_reply'
+                }),
+                this.runIntroGreetingHugPerformance().catch(() => {})
+            ]);
+        }
+
+        async runIntroGreetingHugPerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playIntroGreetingHug !== 'function') {
+                return null;
+            }
+            return api.playIntroGreetingHug({
+                approachMs: 1500,
+                settleMs: 1250,
+                isCancelled: () => this.isStopping()
             });
         }
 

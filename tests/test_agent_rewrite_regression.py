@@ -461,6 +461,7 @@ def test_home_template_loads_yui_wakeup_before_director():
         for name in (
             "yui-guide-overlay.js",
             "yui-guide-page-handoff.js",
+            "yui-guide-avatar-stage.js",
             "yui-guide-wakeup.js",
             "yui-guide-director.js",
             "universal-tutorial-manager.js",
@@ -469,8 +470,42 @@ def test_home_template_loads_yui_wakeup_before_director():
     assert positions == sorted(positions)
 
 
-def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
+def test_yui_avatar_stage_exposes_extracted_wakeup_action():
+    source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DWakeupSession" in source
+    assert "createWakeupSession" in source
+    assert "computeWakeupPose" in source
+    assert "YUI_WAKEUP_PARAMS" in source
+    assert "class Live2DIntroGreetingHugSession" in source
+    assert "playIntroGreetingHug" in source
+    assert "computeIntroGreetingHugPose" in source
+    assert "YUI_INTRO_GREETING_HUG_PARAMS" in source
+    assert "Param77" in source
+    assert "Param91" in source
+    assert "Param93" in source
+    assert "Param96" in source
+    assert "frameScale" in source
+    assert "frameY" in source
+    assert "INTRO_GREETING_HUG_CLOSE_SCALE = 1.38" in source
+    assert "INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.52" in source
+    assert "INTRO_GREETING_HUG_MIN_SHIFT_PX = 320" in source
+    assert "INTRO_GREETING_HUG_MAX_SHIFT_PX = 760" in source
+    assert "resolveIntroGreetingHugFrameShift" in source
+    assert "initialModelFrame" in source
+    assert "restoreModelFrame" in source
+    assert "preserveFrameStyle" not in source
+    assert "onInitialPose" in source
+    assert "wakeup_initial_pose" not in source
+    assert "shouldReduceMotion" not in source
+    assert "isStorageLocationOverlayVisible" not in source
+    assert "removeBlockingGuideOverlay" not in source
+    assert "revealPreparedTutorialLive2D" not in source
+
+
+def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
@@ -481,21 +516,47 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
         if isinstance(item, dict)
     }
 
-    assert "class Live2DWakeupSession" in source
-    assert "DEFAULT_DURATION_MS = 4000" in source
-    assert "LIVE2D_HANDOFF_MS = 620" in source
-    assert "LIVE2D_HANDOFF_MS" in source
-    assert "_suspendEyeBlinkOverride" in source
-    assert "removeBlockingGuideOverlay" in source
-    assert "#yui-guide-overlay" in source
-    assert "yui-taking-over" in source
-    assert "setTemporaryPoseOverride" in source
-    assert "applyTemporaryPose" in source
-    assert "restoreCapturedParams()" in source
-    assert "this.clearTemporaryPoseOverride();" in source
-    assert "this.clearMotionHold();" in source
-    assert "this.restoreCapturedParams();" in source
-    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in source
+    assert "class Live2DWakeupSession" not in source
+    assert "computeWakeupPose" not in source
+    assert "setTemporaryPoseOverride" not in source
+    assert "applyTemporaryPose" not in source
+    assert "restoreCapturedParams()" not in source
+    assert "createWakeupSession(context" in source
+    assert "api && typeof api.shouldReduceMotion" not in source
+    assert "api && typeof api.isStorageLocationOverlayVisible" not in source
+    assert "api && typeof api.removeBlockingGuideOverlay" not in source
+    assert "api && typeof api.revealPreparedTutorialLive2D" not in source
+    assert "matchMedia" in source
+    assert "storage-location-overlay" in source
+    assert "yui-guide-live2d-preparing" in source
+    assert "wakeup_initial_pose" in source
+    assert "onInitialPose: () =>" in source
+    assert "waitForLive2DContext(waitBudget)" in source
+    assert "revealPreparedTutorialLive2D(live2dResult.reason || live2dResult.result)" in source
+    assert "removeBlockingGuideOverlay(this.document)" in source
+    assert "shouldReduceMotion()" in source
+    assert "live2d_session_unavailable" in source
+    assert "avatar_stage_unavailable" in source
+    assert "Live2D 苏醒动作失败" in source
+
+    assert "class Live2DWakeupSession" in avatar_source
+    assert "DEFAULT_DURATION_MS = 4000" in avatar_source
+    assert "LIVE2D_HANDOFF_MS = 620" in avatar_source
+    assert "_suspendEyeBlinkOverride" in avatar_source
+    assert "removeBlockingGuideOverlay" not in avatar_source
+    assert "#yui-guide-overlay" not in avatar_source
+    assert "yui-taking-over" not in avatar_source
+    assert "setTemporaryPoseOverride" in avatar_source
+    assert "applyTemporaryPose" in avatar_source
+    assert "restoreCapturedParams()" in avatar_source
+    assert "preserveFinalPose" in avatar_source
+    assert "YUI_WAKEUP_POSE_BLEND_FACTORS" in avatar_source
+    assert "YUI_INTRO_GREETING_HUG_POSE_BLEND_FACTORS" in avatar_source
+    assert "this.clearTemporaryPoseOverride();" in avatar_source
+    assert "this.restoreCapturedParams();" in avatar_source
+    assert "suspendTemporaryMotions" not in avatar_source
+    assert "resumeTemporaryMotions" not in avatar_source
+    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in avatar_source
     assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
     assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
     for param_id in (
@@ -510,7 +571,7 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
         "ParamBodyAngleY",
         "ParamBodyAngleZ",
     ):
-        assert param_id in source
+        assert param_id in avatar_source
 
     yui_file_refs = yui_model.get("FileReferences", {})
     assert yui_file_refs.get("Moc") == "yui-origin.moc3"
@@ -518,14 +579,30 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
     for param_id in ("Param75", "Param90", "Param92", "Param95"):
         assert param_id in yui_param_ids
 
-    assert "coreModel.update =" not in source
-    assert "motionManager.update =" not in source
-    assert "model.focus(" not in source
-    assert "document.createElement" not in source
-    assert "appendChild" not in source
+    assert "coreModel.update =" not in avatar_source
+    assert "motionManager.update =" not in avatar_source
+    assert "model.focus(" not in avatar_source
+    assert "document.createElement" not in avatar_source
+    assert "appendChild" not in avatar_source
     assert "yui-guide-wakeup-stage" not in style_source
     assert "yui-guide-wakeup-backdrop" not in style_source
     assert "yui-guide-wakeup-particle" not in style_source
+
+
+def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "runIntroGreetingHugPerformance" in director_source
+    assert "playIntroGreetingHug" in director_source
+    assert "releaseIntroGreetingHugPerformance" not in director_source
+    assert "releaseIntroGreetingHug" not in director_source
+    assert "holdAfterSettle" not in director_source
+    assert "Promise.all([" in director_source
+    assert "this.speakGuideLine(greetingReplyText" in director_source
+    assert "Param77" not in director_source
+    assert "Param91" not in director_source
+    assert "Param93" not in director_source
+    assert "Param96" not in director_source
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
