@@ -2409,7 +2409,7 @@ class ConfigManager:
             return True
 
         if voice_id.startswith('eleven:'):
-            return True
+            return len(voice_id) > len('eleven:')
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -2438,7 +2438,7 @@ class ConfigManager:
             return True
 
         if voice_id.startswith('eleven:'):
-            return True
+            return len(voice_id) > len('eleven:')
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
