@@ -507,6 +507,24 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     assert "callPlugin('study_set_mode'" in static_source
 
 
+def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+
+    assert """async function setMode(mode) {
+  if (mode === currentMode) {
+    return;
+  }
+  setStatus(t('ui.status.mode_switching', 'Switching mode...'));
+  const data = await callPlugin('study_set_mode', { mode, reason: 'ui' });
+  const appliedMode = data && data.new_mode
+    ? data.new_mode
+    : (data && data.changed === false ? currentMode : mode);
+  currentMode = String(appliedMode || 'companion');
+  setModeButtons(currentMode, false);
+""" in static_source
+
+
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is not installed")
