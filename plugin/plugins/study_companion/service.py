@@ -190,7 +190,8 @@ def build_tutor_payload(reply: TutorReply) -> dict[str, Any]:
     payload = reply.to_dict()
     if reply.payload:
         payload.update(json_copy(reply.payload))
-    payload["summary"] = reply.reply
+    if not payload.get("summary"):
+        payload["summary"] = reply.reply
     return payload
 
 

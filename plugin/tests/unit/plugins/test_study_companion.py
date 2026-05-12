@@ -203,6 +203,26 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+def test_build_tutor_payload_preserves_structured_summary() -> None:
+    reply = TutorReply(
+        operation="summarize_session",
+        input_text="session",
+        reply="## Summary\n\nThe learner reviewed photosynthesis.",
+        payload={
+            "summary": "The learner reviewed photosynthesis.",
+            "markdown": "## Summary\n\nThe learner reviewed photosynthesis.",
+            "highlights": ["Generated one question"],
+        },
+        created_at="2026-05-11T00:00:00Z",
+    )
+
+    payload = study_service.build_tutor_payload(reply)
+
+    assert payload["summary"] == "The learner reviewed photosynthesis."
+    assert payload["markdown"] == "## Summary\n\nThe learner reviewed photosynthesis."
+    assert payload["reply"] == "## Summary\n\nThe learner reviewed photosynthesis."
+
+
 def test_study_mode_manager_intent_switch_rules() -> None:
     assert normalize_mode("concept_explain") == MODE_COMPANION
     assert "already in" in build_transition_phrase(MODE_COMPANION, language="en-GB", outcome="same")
