@@ -32,6 +32,16 @@ logger = get_logger("server.application.actions.execution")
 # Shared helper
 # ======================================================================
 
+# Known lifecycle keywords that authorize the ``system:`` prefix to mean
+# "system-handler lifecycle action" rather than "plugin literally named
+# system". Module-level so dispatch (``ActionExecutionService.execute``) and
+# action_id → plugin_id reverse lookup (``_plugin_id_from_action_id``,
+# ``_find_action``) stay in sync.
+_SYSTEM_LIFECYCLE_KEYS: frozenset[str] = frozenset({
+    "start", "stop", "reload", "toggle", "profile", "entry",
+})
+
+
 def _is_plugin_running(plugin_id: str) -> bool:
     from plugin.core.state import state
 
@@ -45,17 +55,7 @@ async def _find_action(
 ) -> ActionDescriptor | None:
     """Re-fetch the updated ActionDescriptor for *action_id*."""
     try:
-        # Determine plugin_id from action_id for efficient filtering
-        plugin_id: str | None = None
-        if action_id.startswith("system:"):
-            parts = action_id.split(":")
-            if len(parts) >= 2:
-                plugin_id = parts[1]
-        else:
-            parts = action_id.split(":")
-            if parts:
-                plugin_id = parts[0]
-
+        plugin_id = _plugin_id_from_action_id(action_id)
         all_actions = await aggregation.aggregate_actions(plugin_id=plugin_id)
         for action in all_actions:
             if action.action_id == action_id:
@@ -63,6 +63,30 @@ async def _find_action(
     except Exception as exc:
         logger.warning("Failed to re-fetch action {}: {}", action_id, str(exc))
     return None
+
+
+def _plugin_id_from_action_id(action_id: str) -> str | None:
+    """Map an action_id to its owning plugin_id.
+
+    Mirrors the structural dispatch in :class:`ActionExecutionService.execute`
+    so a plugin literally named ``system`` doesn't get its settings / list
+    actions misclassified as lifecycle calls. The rule:
+
+    * ``system:{plugin_id}:{lifecycle | entry...}`` → ``parts[1]``, only when
+      ``parts[2]`` is a known lifecycle keyword.
+    * Otherwise → ``parts[0]`` (covers ``{pid}:settings:{field}``,
+      ``{pid}:{list_action}``, and the plugin-"system" cases).
+    """
+    parts = action_id.split(":")
+    if not parts:
+        return None
+    if (
+        action_id.startswith("system:")
+        and len(parts) >= 3
+        and parts[2] in _SYSTEM_LIFECYCLE_KEYS
+    ):
+        return parts[1]
+    return parts[0]
 
 
 # ======================================================================
@@ -421,13 +445,10 @@ class ActionExecutionService:
         self._system_handler = _SystemActionHandler(self._lifecycle)
         self._list_action_handler = _ListActionHandler()
 
-    # Known lifecycle keywords that authorize the ``system:`` prefix to
-    # mean "system-handler lifecycle action" rather than "plugin literally
-    # named system". Kept in sync with ``_SystemActionHandler._DISPATCH``
-    # plus the special ``entry`` form.
-    _SYSTEM_LIFECYCLE_KEYS = frozenset({
-        "start", "stop", "reload", "toggle", "profile", "entry",
-    })
+    # Mirror the module-level constant so existing callers / tests that
+    # reach for ``ActionExecutionService._SYSTEM_LIFECYCLE_KEYS`` keep
+    # working. The authoritative source is the module-level one above.
+    _SYSTEM_LIFECYCLE_KEYS = _SYSTEM_LIFECYCLE_KEYS
 
     async def execute(
         self,
@@ -455,7 +476,7 @@ class ActionExecutionService:
         if (
             action_id.startswith("system:")
             and len(parts) >= 3
-            and parts[2] in self._SYSTEM_LIFECYCLE_KEYS
+            and parts[2] in _SYSTEM_LIFECYCLE_KEYS
         ):
             return await self._system_handler.execute(action_id, value)
 

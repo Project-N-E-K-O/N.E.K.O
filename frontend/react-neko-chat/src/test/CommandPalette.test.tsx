@@ -346,6 +346,43 @@ describe('Slider control', () => {
   });
 });
 
+describe('Parameter form submit', () => {
+  it('omits untouched optional fields so the server default applies', async () => {
+    const { onExecute } = renderPalette([buttonWithParams]);
+    const search = screen.getByPlaceholderText('搜索操作...');
+
+    // Open the parameter form for the button-with-params item.
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(screen.getByText('Name')).toBeInTheDocument();
+
+    // Submit without filling anything. Previously this would coerce blank
+    // string into `{name: ""}`, actively overriding the plugin/server
+    // default; the fix should send an empty payload instead.
+    fireEvent.click(screen.getByText('确认'));
+
+    await waitFor(() => {
+      expect(onExecute).toHaveBeenCalledWith('system:demo:entry:with_params', {});
+    });
+  });
+
+  it('emits filled fields verbatim', async () => {
+    const { onExecute } = renderPalette([buttonWithParams]);
+    const search = screen.getByPlaceholderText('搜索操作...');
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    fireEvent.keyDown(search, { key: 'Enter' });
+
+    const nameInput = screen.getByPlaceholderText('name');
+    fireEvent.change(nameInput, { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('确认'));
+
+    await waitFor(() => {
+      expect(onExecute).toHaveBeenCalledWith('system:demo:entry:with_params', { name: 'hello' });
+    });
+  });
+});
+
 describe('Grouped view keyboard activation', () => {
   it('activates the highlighted row via Enter even when rendered grouped', async () => {
     // Use only the chat_inject item so Enter activation calls onInjectText

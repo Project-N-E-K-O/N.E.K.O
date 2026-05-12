@@ -276,8 +276,15 @@ function ParamForm({ item, onExec, onCancel }: {
     for (const key of propKeys) {
       const prop = properties[key];
       const raw = values[key] ?? '';
+      // Untouched / cleared inputs are emitted as "absent" so the
+      // server/plugin can apply its own default for optional parameters.
+      // The previous `Number(raw) || 0` / `false` / `""` coercion silently
+      // overrode those defaults with concrete zero/false/empty values.
+      if (raw === '') continue;
       if (prop?.type === 'number' || prop?.type === 'integer') {
-        args[key] = Number(raw) || 0;
+        const n = Number(raw);
+        if (Number.isNaN(n)) continue;
+        args[key] = n;
       } else if (prop?.type === 'boolean') {
         args[key] = raw === 'true' || raw === '1';
       } else {

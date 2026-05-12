@@ -6,7 +6,10 @@ from typing import Any
 
 import pytest
 
-from plugin.server.application.actions.execution_service import ActionExecutionService
+from plugin.server.application.actions.execution_service import (
+    ActionExecutionService,
+    _plugin_id_from_action_id,
+)
 from plugin.server.domain.action_models import ActionDescriptor
 from plugin.server.domain.errors import ServerDomainError
 
@@ -357,6 +360,34 @@ class TestDispatchRouting:
         with pytest.raises(ServerDomainError) as exc_info:
             await svc.execute("system:demo:profile", value="  ")
         assert exc_info.value.code == "INVALID_ARGUMENT"
+
+
+# ── _plugin_id_from_action_id reverse lookup ────────────────────────
+
+@pytest.mark.plugin_unit
+class TestPluginIdFromActionId:
+    """The reverse lookup must mirror ``ActionExecutionService.execute`` so
+    that ``_find_action`` after a settings/list-action execute hits the
+    right plugin slice. The previous implementation read ``parts[1]`` for
+    every ``system:`` prefix, which routed plugin "system" settings to a
+    nonexistent plugin "settings"."""
+
+    def test_lifecycle_uses_parts_1(self) -> None:
+        assert _plugin_id_from_action_id("system:demo:start") == "demo"
+        assert _plugin_id_from_action_id("system:demo:stop") == "demo"
+        assert _plugin_id_from_action_id("system:demo:entry:do_thing") == "demo"
+        assert _plugin_id_from_action_id("system:demo:profile") == "demo"
+
+    def test_system_plugin_settings_uses_parts_0(self) -> None:
+        """For plugin literally named "system", ``parts[0]`` is the plugin
+        id; only authorize the lifecycle shortcut when ``parts[2]`` is a
+        known lifecycle keyword."""
+        assert _plugin_id_from_action_id("system:settings:enabled") == "system"
+        assert _plugin_id_from_action_id("system:foo") == "system"
+
+    def test_normal_plugin_settings_uses_parts_0(self) -> None:
+        assert _plugin_id_from_action_id("demo:settings:enabled") == "demo"
+        assert _plugin_id_from_action_id("demo:greet") == "demo"
 
 
 # ── Plugin literally named "system" — namespace collision regression ─
