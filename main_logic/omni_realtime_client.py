@@ -795,17 +795,7 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
-            # Always keep the built-in web_search; append custom tools
-            # (StepFun supports both type:"web_search" and type:"function"
-            # in the same array — see official docs).
-            step_tools: List[Dict[str, Any]] = [
-                {
-                    "type": "web_search",
-                    "function": {
-                        "description": "这个web_search用来搜索互联网的信息"
-                    }
-                }
-            ]
+            step_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 step_tools.extend(self._tools_for_step())
             step_session["tools"] = step_tools
