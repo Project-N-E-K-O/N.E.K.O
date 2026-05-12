@@ -18,6 +18,14 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.elevenlabs_tts_voices import (
+    ELEVENLABS_DEFAULT_BASE_URL,
+    ELEVENLABS_DEFAULT_MODEL,
+    ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
+    ELEVENLABS_DEFAULT_OUTPUT_FORMAT,
+    ELEVENLABS_VOICE_PREFIX,
+    normalize_elevenlabs_voice_id,
+)
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
     normalize_gemini_tts_voice,
@@ -35,12 +43,6 @@ from utils.stepfun_tts_voices import (
 )
 
 logger = get_module_logger(__name__, "Main")
-
-ELEVENLABS_VOICE_PREFIX = "eleven:"
-ELEVENLABS_DEFAULT_BASE_URL = "https://api.elevenlabs.io"
-ELEVENLABS_DEFAULT_MODEL = "eleven_flash_v2_5"
-ELEVENLABS_DEFAULT_OUTPUT_FORMAT = "pcm_24000"
-ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY = 0
 
 # 关闭哨兵：core.py 通过 request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
 # 通知 worker 退出主循环。不能复用 (None, None)，因为它已被用作"本轮 utterance
@@ -87,8 +89,6 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
     Returns:
         list[dict]: normalized voices with fields: voice_id/raw_id/name/description/version
     """
-    if provider == 'elevenlabs':
-        return await _get_elevenlabs_voices(base_url)
     if provider != 'gptsovits':
         raise CustomTTSVoiceFetchError(f"Unsupported custom TTS provider: {provider}")
 
@@ -133,77 +133,6 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
 
 def _resolve_elevenlabs_api_key(cm) -> str:
     return (cm.get_tts_api_key('elevenlabs') or '').strip()
-
-
-async def _get_elevenlabs_voices(base_url: str):
-    """Fetch and normalize ElevenLabs voices for NEKO voice selectors."""
-    cm = get_config_manager()
-    api_key = _resolve_elevenlabs_api_key(cm)
-    if not api_key:
-        raise CustomTTSVoiceFetchError("ElevenLabs API key is not configured")
-
-    base_url = (base_url or ELEVENLABS_DEFAULT_BASE_URL).strip().rstrip("/")
-    timeout = aiohttp.ClientTimeout(total=10)
-    headers = {"xi-api-key": api_key}
-    try:
-        session_kwargs = aiohttp_session_kwargs_for_url(base_url)
-        voice_pages = []
-        next_page_token = None
-        async with aiohttp.ClientSession(timeout=timeout, **session_kwargs) as session:
-            for _ in range(10):
-                params = {"page_size": 100}
-                if next_page_token:
-                    params["next_page_token"] = next_page_token
-                async with session.get(f"{base_url}/v2/voices", headers=headers, params=params) as resp:
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        raise CustomTTSVoiceFetchError(f"HTTP {resp.status}: {text[:200]}")
-                    voices_data = await resp.json()
-                if isinstance(voices_data, dict):
-                    page_voices = voices_data.get('voices')
-                    if isinstance(page_voices, list):
-                        voice_pages.extend(page_voices)
-                    next_page_token = voices_data.get('next_page_token') or voices_data.get('nextPageToken')
-                    if not voices_data.get('has_more') or not next_page_token:
-                        break
-                else:
-                    break
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
-        raise CustomTTSVoiceFetchError(str(e)) from e
-
-    raw_voices = voice_pages
-    if not isinstance(raw_voices, list):
-        logger.warning("ElevenLabs /v2/voices returned non-list voices payload: %s",
-                       type(raw_voices).__name__)
-        return []
-
-    voices = []
-    for idx, voice in enumerate(raw_voices):
-        if not isinstance(voice, dict):
-            logger.warning("ElevenLabs voice item %d is not an object: %s",
-                           idx, type(voice).__name__)
-            continue
-        raw_id = voice.get('voice_id') or voice.get('voiceId') or ''
-        if not raw_id:
-            continue
-        labels = voice.get('labels') if isinstance(voice.get('labels'), dict) else {}
-        description_parts = []
-        category = voice.get('category')
-        if category:
-            description_parts.append(str(category))
-        if labels:
-            label_text = ", ".join(f"{k}: {v}" for k, v in labels.items() if v)
-            if label_text:
-                description_parts.append(label_text)
-        voices.append({
-            'voice_id': f"{ELEVENLABS_VOICE_PREFIX}{raw_id}",
-            'raw_id': raw_id,
-            'name': voice.get('name') or raw_id,
-            'description': " | ".join(description_parts),
-            'version': 'elevenlabs',
-        })
-
-    return voices
 
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
@@ -3354,10 +3283,7 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
 
 def _normalize_elevenlabs_voice_id(voice_id: str | None) -> str:
-    raw = (voice_id or "").strip()
-    if raw.startswith(ELEVENLABS_VOICE_PREFIX):
-        raw = raw[len(ELEVENLABS_VOICE_PREFIX):].strip()
-    return raw
+    return normalize_elevenlabs_voice_id(voice_id)
 
 
 def _parse_elevenlabs_pcm_sample_rate(output_format: str | None) -> int:
@@ -3951,15 +3877,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     voice_meta = None
 
     if voice_id and voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
-        if not elevenlabs_enabled:
-            logger.info("ElevenLabs voice_id detected but provider is disabled; skipping ElevenLabs TTS Worker")
-        else:
-            elevenlabs_options = _get_elevenlabs_options()
-            return (
-                partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
-                _resolve_elevenlabs_api_key(cm),
-                'elevenlabs',
-            )
+        elevenlabs_options = _get_elevenlabs_options()
+        return (
+            partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
+            _resolve_elevenlabs_api_key(cm),
+            'elevenlabs',
+        )
 
     # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
     if has_custom_voice and voice_id:

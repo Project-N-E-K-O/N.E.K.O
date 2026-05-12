@@ -53,11 +53,13 @@ from .shared_state import (
 )
 from .workshop_router import _ugc_sync_lock
 from main_logic.tts_client import (
+    get_custom_tts_voices,
+    CustomTTSVoiceFetchError,
+)
+from utils.elevenlabs_tts_voices import (
     ELEVENLABS_DEFAULT_BASE_URL,
     ELEVENLABS_DEFAULT_MODEL,
     ELEVENLABS_VOICE_PREFIX,
-    get_custom_tts_voices,
-    CustomTTSVoiceFetchError,
 )
 from .agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
@@ -3176,73 +3178,32 @@ async def clear_voice_ids():
 
 @router.get('/custom_tts_voices')
 async def list_custom_tts_voices_for_characters(provider: str = ''):
-    """获取自定义 TTS 可用声音列表（用于角色管理页面的音色选择）。
-
-    当前由适配层处理 GPT-SoVITS / ElevenLabs provider 的路径映射与 voice_id 前缀规则。
-
-    与 ``check_custom_tts_voice_allowed`` 判定对称：要求 GPTSOVITS 开关开启 +
-    ENABLE_CUSTOM_API 启用 + http(s) 协议。否则即便能 fetch 到 GSV /api/v3/voices
-    并填入下拉，``validate_voice_id`` 也会在保存阶段拒绝 ``gsv:`` 前缀，导致
-    "列表能选但保存失败" 的不对称体验。
-    """
-    resolved_provider = (provider or '').strip().lower()
+    """Return custom GPT-SoVITS voices for the character UI."""
     try:
         _config_manager = get_config_manager()
-
         core_config = await _config_manager.aget_core_config()
-        requested_provider = (provider or '').strip().lower()
-        # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
-        tts_config = _config_manager.get_model_api_config('tts_custom')
-        core_provider = (
-            core_config.get('TTS_PROVIDER')
-            or core_config.get('ttsProvider')
-            or ''
-        ).strip().lower()
-        base_url = (tts_config.get('base_url') or '').rstrip('/')
-        elevenlabs_enabled = (
-            _config_value_is_enabled(core_config.get('ELEVENLABS_ENABLED'))
-            or _config_value_is_enabled(core_config.get('elevenlabsEnabled'))
-        )
-        resolved_provider = requested_provider or core_provider
-        if not resolved_provider:
-            if elevenlabs_enabled or 'elevenlabs.io' in base_url:
-                resolved_provider = 'elevenlabs'
-            else:
-                resolved_provider = 'gptsovits'
+        tts_config = await _config_manager.aget_tts_config()
 
-        if resolved_provider == 'elevenlabs':
-            allow_tts_base_url_fallback = (
-                (not requested_provider and (core_provider == 'elevenlabs' or elevenlabs_enabled))
-                or 'elevenlabs.io' in base_url
-            )
-            elevenlabs_base_url = (
-                core_config.get('ELEVENLABS_BASE_URL')
-                or core_config.get('elevenlabsBaseUrl')
-                or (base_url if allow_tts_base_url_fallback else '')
-                or ELEVENLABS_DEFAULT_BASE_URL
-            ).rstrip('/')
-            voices = await get_custom_tts_voices(elevenlabs_base_url, provider='elevenlabs')
+        base_url = (
+            tts_config.get('url')
+            or core_config.get('ttsModelUrl')
+            or core_config.get('TTS_MODEL_URL')
+            or ''
+        )
+        if tts_config.get('is_enabled') is False or core_config.get('gptsovitsEnabled') is False:
             return JSONResponse({
-                'success': True,
-                'provider': 'elevenlabs',
-                'voices': voices,
-                'api_url': elevenlabs_base_url
-            })
-        if resolved_provider == 'gptsovits':
-            if not core_config.get('GPTSOVITS_ENABLED', False):
-                return JSONResponse({
-                    'success': False,
-                    'error': 'GPTSOVITS_NOT_ENABLED',
-                    'code': 'GPTSOVITS_NOT_ENABLED',
-                    'voices': []
-                }, status_code=400)
-            if not tts_config.get('is_custom'):
-                return JSONResponse({
-                    'success': False,
-                    'error': 'CUSTOM_API_NOT_ENABLED',
-                    'code': 'CUSTOM_API_NOT_ENABLED',
-                    'voices': []
-                }, status_code=400)
+                'success': False,
+                'error': 'GPTSOVITS_NOT_ENABLED',
+                'code': 'GPTSOVITS_NOT_ENABLED',
+                'voices': []
+            }, status_code=400)
+        if not tts_config.get('is_custom'):
+            return JSONResponse({
+                'success': False,
+                'error': 'CUSTOM_API_NOT_ENABLED',
+                'code': 'CUSTOM_API_NOT_ENABLED',
+                'voices': []
+            }, status_code=400)
         if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
             return JSONResponse({
                 'success': False,
@@ -3250,8 +3211,7 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
                 'code': 'TTS_CUSTOM_URL_NOT_CONFIGURED',
                 'voices': []
             }, status_code=400)
-        
-        # SSRF 防护：GPT-SoVITS 仅限 localhost
+
         from urllib.parse import urlparse
         import ipaddress
         parsed = urlparse(base_url)
@@ -3262,10 +3222,8 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
         except ValueError:
             if host not in ('localhost',):
                 return JSONResponse({'success': False, 'error': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'code': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'voices': []}, status_code=400)
-        
-        # 通过适配层获取并标准化自定义 TTS voices
+
         voices = await get_custom_tts_voices(base_url, provider='gptsovits')
-        
         return JSONResponse({
             'success': True,
             'provider': 'gptsovits',
@@ -3273,27 +3231,18 @@ async def list_custom_tts_voices_for_characters(provider: str = ''):
             'api_url': base_url
         })
     except (CustomTTSVoiceFetchError, ValueError) as e:
-        provider_label = 'ElevenLabs' if resolved_provider == 'elevenlabs' else 'GPT-SoVITS'
         error_text = str(e)
-        status_code = 400 if provider_label == 'ElevenLabs' and 'api key' in error_text.lower() else 502
-        error_code = 'ELEVENLABS_API_KEY_MISSING' if status_code == 400 else None
-        payload = {
-            'success': False,
-            'error': f'连接 {provider_label} API 失败: {error_text}',
-            'voices': []
-        }
-        if error_code:
-            payload['code'] = error_code
-        return JSONResponse(payload, status_code=status_code)
-    except Exception as e:
-        provider_label = 'ElevenLabs' if resolved_provider == 'elevenlabs' else 'GPT-SoVITS'
         return JSONResponse({
             'success': False,
-            'error': f'获取 {provider_label} 声音列表失败: {str(e)}',
+            'error': f'连接 GPT-SoVITS API 失败: {error_text}',
+            'voices': []
+        }, status_code=502)
+    except Exception as e:
+        return JSONResponse({
+            'success': False,
+            'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
             'voices': []
         }, status_code=500)
-
-
 @router.post('/set_microphone')
 async def set_microphone(request: Request):
     try:
