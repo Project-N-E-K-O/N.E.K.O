@@ -1,5 +1,9 @@
 @import url('base.css');
 
+:root {
+    --scrollbar-width: 8px;
+}
+
 html,
 body {
     height: 100%;
@@ -1046,7 +1050,8 @@ html.neko-window-maximized .chat-item + .chat-item {
 
 html.neko-window-maximized .chat-item + .chat-item::before {
     left: 0;
-    right: 12px;
+    /* 最大化时为聊天记录滚动条预留额外间距。 */
+    right: calc(var(--scrollbar-width, 8px) + 4px);
     height: 2px;
     background: linear-gradient(90deg, rgba(64, 197, 241, 0.1), rgba(64, 197, 241, 0.46), rgba(64, 197, 241, 0.1));
     box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -1264,7 +1269,7 @@ html.neko-window-maximized .chat-item + .chat-item:hover::before {
 
 /* 滚动条样式 */
 #memory-chat-edit::-webkit-scrollbar {
-    width: 8px;
+    width: var(--scrollbar-width, 8px);
 }
 
 #memory-chat-edit::-webkit-scrollbar-track {

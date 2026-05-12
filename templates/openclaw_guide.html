@@ -24,6 +24,8 @@
             --guide-shadow: 0 24px 60px rgba(31, 77, 122, 0.16);
             --guide-toolbar-btn: rgba(255, 255, 255, 0.74);
             --guide-toolbar-btn-hover: rgba(255, 255, 255, 0.96);
+            --guide-content-scrollbar-thumb: rgba(11, 132, 216, 0.48);
+            --guide-content-scrollbar-thumb-hover: rgba(11, 132, 216, 0.68);
         }
 
         html[data-theme="dark"] {
@@ -41,6 +43,8 @@
             --guide-shadow: 0 28px 70px rgba(0, 0, 0, 0.42);
             --guide-toolbar-btn: rgba(18, 29, 44, 0.92);
             --guide-toolbar-btn-hover: rgba(33, 48, 69, 0.98);
+            --guide-content-scrollbar-thumb: rgba(121, 203, 255, 0.42);
+            --guide-content-scrollbar-thumb-hover: rgba(121, 203, 255, 0.62);
         }
 
         * {
@@ -49,6 +53,7 @@
 
         html, body {
             margin: 0;
+            height: 100%;
             min-height: 100%;
             font-family: "SF Pro Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
             background: var(--guide-bg);
@@ -56,11 +61,14 @@
         }
 
         body {
+            height: 100vh;
             min-height: 100vh;
             padding: 24px;
+            overflow: hidden;
         }
 
         .guide-shell {
+            height: calc(100vh - 48px);
             min-height: calc(100vh - 48px);
             display: grid;
             grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
@@ -80,6 +88,8 @@
             display: flex;
             flex-direction: column;
             gap: 18px;
+            min-height: 0;
+            overflow: hidden;
         }
 
         .sidebar-badge {
@@ -108,8 +118,101 @@
             color: rgba(255, 255, 255, 0.86);
         }
 
+        .guide-toc {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .guide-toc-title {
+            font-size: 12px;
+            font-weight: 760;
+            letter-spacing: 0.08em;
+            color: rgba(255, 255, 255, 0.68);
+        }
+
+        .guide-toc-list {
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 4px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.44) transparent;
+        }
+
+        .guide-toc-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .guide-toc-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.36);
+            border-radius: 999px;
+        }
+
+        .guide-toc-empty {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.6;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .guide-toc-link {
+            width: 100%;
+            min-height: 34px;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            background: transparent;
+            color: rgba(255, 255, 255, 0.78);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            text-align: left;
+            font: inherit;
+            font-size: 13px;
+            line-height: 1.35;
+            cursor: pointer;
+            transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+        }
+
+        .guide-toc-link:hover,
+        .guide-toc-link.is-active {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.22);
+            color: #fff;
+        }
+
+        .guide-toc-link:hover {
+            transform: translateX(2px);
+        }
+
+        .guide-toc-link.is-active {
+            box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.78);
+        }
+
+        .guide-toc-link--h2 {
+            padding-left: 18px;
+        }
+
+        .guide-toc-link--h3 {
+            padding-left: 28px;
+            font-size: 12.5px;
+        }
+
+        .guide-toc-text {
+            min-width: 0;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+
         .guide-main {
             min-width: 0;
+            min-height: 0;
             display: flex;
             flex-direction: column;
             padding: 24px;
@@ -236,19 +339,68 @@
         }
 
         .guide-content-wrap {
+            position: relative;
             min-height: 0;
             flex: 1;
-            overflow: auto;
-            padding-right: 4px;
+            overflow: hidden;
         }
 
         .guide-content {
+            height: 100%;
+            min-height: 0;
+            overflow: auto;
             background: var(--guide-card);
             border: 1px solid var(--guide-card-border);
             border-radius: 24px;
             padding: 28px;
             line-height: 1.82;
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+            scroll-behavior: smooth;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+
+        .guide-content::-webkit-scrollbar {
+            display: none;
+            width: 0;
+            height: 0;
+        }
+
+        .guide-content-scrollbar {
+            position: absolute;
+            top: 18px;
+            right: 0;
+            bottom: 18px;
+            width: 10px;
+            border-radius: 999px;
+            background: transparent;
+            z-index: 3;
+        }
+
+        .guide-content-scrollbar.is-hidden {
+            display: none;
+        }
+
+        .guide-content-scrollbar-thumb {
+            position: absolute;
+            top: 0;
+            right: 1px;
+            width: 4px;
+            min-height: 40px;
+            border-radius: 999px;
+            background: var(--guide-content-scrollbar-thumb);
+            transition: background 0.18s ease, width 0.18s ease;
+            cursor: grab;
+        }
+
+        .guide-content-scrollbar:hover .guide-content-scrollbar-thumb,
+        .guide-content-scrollbar-thumb.is-dragging {
+            width: 5px;
+            background: var(--guide-content-scrollbar-thumb-hover);
+        }
+
+        .guide-content-scrollbar-thumb.is-dragging {
+            cursor: grabbing;
         }
 
         .guide-content > :first-child {
@@ -268,6 +420,7 @@
             margin: 1.6em 0 0.72em;
             line-height: 1.28;
             color: var(--guide-text);
+            scroll-margin-top: 18px;
         }
 
         .guide-content h1 {
@@ -369,16 +522,29 @@
 
         @media (max-width: 980px) {
             body {
+                height: 100vh;
                 padding: 12px;
             }
 
             .guide-shell {
+                height: calc(100vh - 24px);
                 min-height: calc(100vh - 24px);
                 grid-template-columns: 1fr;
+                grid-template-rows: auto minmax(0, 1fr);
             }
 
             .guide-sidebar {
                 gap: 14px;
+                padding: 20px;
+                max-height: 40vh;
+            }
+
+            .guide-toc {
+                padding-top: 12px;
+            }
+
+            .guide-toc-list {
+                max-height: 22vh;
             }
 
             .guide-main {
@@ -408,6 +574,12 @@
                 <span>Guide</span>
             </div>
             <h1 class="sidebar-title" data-guide-text="title">OpenClaw 接入教程</h1>
+            <nav id="guideTocNav" class="guide-toc" aria-labelledby="guideTocTitle">
+                <div id="guideTocTitle" class="guide-toc-title" data-guide-text="tocTitle">目录</div>
+                <div id="guideToc" class="guide-toc-list">
+                    <p class="guide-toc-empty">加载中...</p>
+                </div>
+            </nav>
         </aside>
 
         <main class="guide-main">
@@ -444,6 +616,9 @@
 
             <div class="guide-content-wrap">
                 <article id="guideContent" class="guide-content" aria-live="polite"></article>
+                <div id="guideContentScrollbar" class="guide-content-scrollbar" aria-hidden="true">
+                    <div id="guideContentScrollbarThumb" class="guide-content-scrollbar-thumb"></div>
+                </div>
             </div>
         </main>
     </div>
@@ -463,9 +638,20 @@
             const themeToggleIcon = document.getElementById('themeToggleIcon');
             const closeGuideBtn = document.getElementById('closeGuideBtn');
             const guideContent = document.getElementById('guideContent');
+            const guideContentWrap = guideContent;
+            const guideContentScrollbar = document.getElementById('guideContentScrollbar');
+            const guideContentScrollbarThumb = document.getElementById('guideContentScrollbarThumb');
+            const guideToc = document.getElementById('guideToc');
+            const guideTocNav = document.getElementById('guideTocNav');
+            let guideTocItems = [];
+            let guideTocScrollFrame = 0;
+            let guideScrollbarFrame = 0;
+            let guideScrollbarDrag = null;
+            let activeTocId = '';
 
             const GUIDE_TEXT = {
                 title: 'openclawGuide.pageTitle',
+                tocTitle: 'openclawGuide.tocTitle',
             };
 
             const GUIDE_ROUTE_BASE = '/api/agent/openclaw/guide';
@@ -654,6 +840,212 @@
                 return html.join('\n');
             }
 
+            function getGuideTocEmptyHtml() {
+                return '<p class="guide-toc-empty">' + escapeHtml(translate('openclawGuide.tocEmpty', '暂无目录')) + '</p>';
+            }
+
+            function setActiveTocItem(id) {
+                if (!id || activeTocId === id) return;
+                activeTocId = id;
+                let activeButton = null;
+                guideTocItems.forEach((item) => {
+                    const isActive = item.id === id;
+                    item.button.classList.toggle('is-active', isActive);
+                    if (isActive) {
+                        item.button.setAttribute('aria-current', 'true');
+                        activeButton = item.button;
+                    } else {
+                        item.button.removeAttribute('aria-current');
+                    }
+                });
+
+                if (activeButton) {
+                    activeButton.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                }
+            }
+
+            function updateActiveGuideToc() {
+                if (!guideContentWrap || !guideTocItems.length) return;
+                const wrapRect = guideContentWrap.getBoundingClientRect();
+                const threshold = 72;
+                let current = guideTocItems[0];
+
+                guideTocItems.forEach((item) => {
+                    const distance = item.heading.getBoundingClientRect().top - wrapRect.top;
+                    if (distance <= threshold) {
+                        current = item;
+                    }
+                });
+
+                const nearBottom = guideContentWrap.scrollTop + guideContentWrap.clientHeight >= guideContentWrap.scrollHeight - 24;
+                if (nearBottom) {
+                    current = guideTocItems[guideTocItems.length - 1];
+                }
+                setActiveTocItem(current.id);
+            }
+
+            function queueGuideTocUpdate() {
+                if (guideTocScrollFrame) return;
+                guideTocScrollFrame = window.requestAnimationFrame(() => {
+                    guideTocScrollFrame = 0;
+                    updateActiveGuideToc();
+                });
+            }
+
+            function updateGuideContentScrollbar() {
+                if (!guideContentWrap || !guideContentScrollbar || !guideContentScrollbarThumb) return;
+                const maxScroll = guideContentWrap.scrollHeight - guideContentWrap.clientHeight;
+                if (maxScroll <= 1) {
+                    guideContentScrollbar.classList.add('is-hidden');
+                    return;
+                }
+
+                guideContentScrollbar.classList.remove('is-hidden');
+                const trackHeight = guideContentScrollbar.clientHeight;
+                const thumbHeight = Math.max(40, Math.round(trackHeight * guideContentWrap.clientHeight / guideContentWrap.scrollHeight));
+                const maxThumbTop = Math.max(1, trackHeight - thumbHeight);
+                const thumbTop = Math.round((guideContentWrap.scrollTop / maxScroll) * maxThumbTop);
+                guideContentScrollbarThumb.style.height = thumbHeight + 'px';
+                guideContentScrollbarThumb.style.transform = 'translateY(' + thumbTop + 'px)';
+            }
+
+            function queueGuideScrollbarUpdate() {
+                if (guideScrollbarFrame) return;
+                guideScrollbarFrame = window.requestAnimationFrame(() => {
+                    guideScrollbarFrame = 0;
+                    updateGuideContentScrollbar();
+                });
+            }
+
+            function handleGuideContentScroll() {
+                queueGuideTocUpdate();
+                queueGuideScrollbarUpdate();
+            }
+
+            function scrollGuideContentByPointer(clientY) {
+                if (!guideContentWrap || !guideContentScrollbar || !guideContentScrollbarThumb) return;
+                const trackRect = guideContentScrollbar.getBoundingClientRect();
+                const thumbHeight = guideContentScrollbarThumb.offsetHeight || 40;
+                const maxThumbTop = Math.max(1, trackRect.height - thumbHeight);
+                const maxScroll = Math.max(1, guideContentWrap.scrollHeight - guideContentWrap.clientHeight);
+                const nextThumbTop = Math.min(Math.max(clientY - trackRect.top - thumbHeight / 2, 0), maxThumbTop);
+                guideContentWrap.scrollTop = (nextThumbTop / maxThumbTop) * maxScroll;
+            }
+
+            function initializeGuideContentScrollbar() {
+                if (!guideContentWrap || !guideContentScrollbar || !guideContentScrollbarThumb) return;
+
+                guideContentScrollbar.addEventListener('pointerdown', (event) => {
+                    if (event.target === guideContentScrollbarThumb) return;
+                    event.preventDefault();
+                    scrollGuideContentByPointer(event.clientY);
+                });
+
+                guideContentScrollbarThumb.addEventListener('pointerdown', (event) => {
+                    event.preventDefault();
+                    const trackHeight = guideContentScrollbar.clientHeight;
+                    const thumbHeight = guideContentScrollbarThumb.offsetHeight || 40;
+                    guideScrollbarDrag = {
+                        startY: event.clientY,
+                        startScrollTop: guideContentWrap.scrollTop,
+                        maxScroll: Math.max(1, guideContentWrap.scrollHeight - guideContentWrap.clientHeight),
+                        maxThumbTop: Math.max(1, trackHeight - thumbHeight),
+                    };
+                    guideContentScrollbarThumb.classList.add('is-dragging');
+                    guideContentScrollbarThumb.setPointerCapture?.(event.pointerId);
+                });
+
+                guideContentScrollbarThumb.addEventListener('pointermove', (event) => {
+                    if (!guideScrollbarDrag) return;
+                    event.preventDefault();
+                    const delta = event.clientY - guideScrollbarDrag.startY;
+                    guideContentWrap.scrollTop = guideScrollbarDrag.startScrollTop + (delta / guideScrollbarDrag.maxThumbTop) * guideScrollbarDrag.maxScroll;
+                });
+
+                guideContentScrollbarThumb.addEventListener('pointerup', (event) => {
+                    guideScrollbarDrag = null;
+                    guideContentScrollbarThumb.classList.remove('is-dragging');
+                    guideContentScrollbarThumb.releasePointerCapture?.(event.pointerId);
+                });
+
+                guideContentScrollbarThumb.addEventListener('pointercancel', () => {
+                    guideScrollbarDrag = null;
+                    guideContentScrollbarThumb.classList.remove('is-dragging');
+                });
+            }
+
+            function scrollToGuideHeading(item, updateHash) {
+                if (!guideContentWrap || !item || !item.heading) return;
+                const wrapRect = guideContentWrap.getBoundingClientRect();
+                const headingRect = item.heading.getBoundingClientRect();
+                const top = guideContentWrap.scrollTop + headingRect.top - wrapRect.top - 12;
+                guideContentWrap.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+                setActiveTocItem(item.id);
+                if (updateHash !== false && window.history && typeof window.history.replaceState === 'function') {
+                    window.history.replaceState(null, '', '#' + encodeURIComponent(item.id));
+                }
+            }
+
+            function scrollToInitialGuideHash() {
+                if (!window.location.hash || !guideTocItems.length) return false;
+                let hash = window.location.hash.slice(1);
+                try {
+                    hash = decodeURIComponent(hash);
+                } catch (error) {
+                    return false;
+                }
+                const item = guideTocItems.find((tocItem) => tocItem.id === hash);
+                if (!item) return false;
+                scrollToGuideHeading(item, false);
+                return true;
+            }
+
+            function buildGuideToc() {
+                if (!guideToc) return;
+                activeTocId = '';
+                const headings = Array.from(guideContent.querySelectorAll('h1, h2, h3'));
+                guideTocItems = headings.map((heading, index) => {
+                    const id = 'guide-heading-' + (index + 1);
+                    const level = Number(heading.tagName.slice(1)) || 1;
+                    heading.id = id;
+                    return {
+                        id,
+                        level,
+                        title: heading.textContent.trim() || ('Section ' + (index + 1)),
+                        heading,
+                        button: null,
+                    };
+                });
+
+                guideToc.innerHTML = '';
+                if (!guideTocItems.length) {
+                    guideToc.innerHTML = getGuideTocEmptyHtml();
+                    return;
+                }
+
+                const fragment = document.createDocumentFragment();
+                guideTocItems.forEach((item) => {
+                    const button = document.createElement('button');
+                    const text = document.createElement('span');
+                    button.type = 'button';
+                    button.className = 'guide-toc-link guide-toc-link--h' + Math.min(item.level, 3);
+                    button.title = item.title;
+                    text.className = 'guide-toc-text';
+                    text.textContent = item.title;
+                    button.appendChild(text);
+                    button.addEventListener('click', () => scrollToGuideHeading(item, true));
+                    item.button = button;
+                    fragment.appendChild(button);
+                });
+                guideToc.appendChild(fragment);
+
+                window.requestAnimationFrame(() => {
+                    if (!scrollToInitialGuideHash()) {
+                        updateActiveGuideToc();
+                    }
+                });
+            }
+
             function normalizeLanguage(lang) {
                 const current = String(lang || '').trim().toLowerCase();
                 if (!current) return 'zh-CN';
@@ -706,6 +1098,9 @@
                 document.title = translate('openclawGuide.windowTitle', 'OpenClaw 接入教程 - N.E.K.O.');
                 closeGuideBtn.title = translate('common.close', '关闭');
                 languageToggleBtn.title = translate('openclawGuide.languageLabel', '语言');
+                if (guideTocNav) {
+                    guideTocNav.setAttribute('aria-label', translate('openclawGuide.tocTitle', '目录'));
+                }
                 refreshThemeButton();
                 refreshLanguageButton();
             }
@@ -793,14 +1188,34 @@
                 closeGuideBtn.addEventListener('click', () => window.close());
             }
 
+            function initializeGuideTocScroll() {
+                if (!guideContentWrap) return;
+                guideContentWrap.addEventListener('scroll', handleGuideContentScroll, { passive: true });
+                window.addEventListener('resize', () => {
+                    queueGuideTocUpdate();
+                    queueGuideScrollbarUpdate();
+                });
+            }
+
             function renderGuideContent() {
                 guideContent.innerHTML = renderMarkdown(guideMarkdown);
+                buildGuideToc();
+                queueGuideScrollbarUpdate();
+                guideContent.querySelectorAll('img').forEach((image) => {
+                    if (image.complete) return;
+                    image.addEventListener('load', queueGuideScrollbarUpdate, { once: true });
+                    image.addEventListener('error', queueGuideScrollbarUpdate, { once: true });
+                });
             }
 
             async function loadGuideContent() {
                 const lang = getCurrentLanguage();
                 const requestSerial = ++guideRequestSerial;
                 guideContent.innerHTML = '<p class="guide-empty">' + escapeHtml(translate('common.loading', '加载中...')) + '</p>';
+                if (guideToc) {
+                    guideToc.innerHTML = '<p class="guide-toc-empty">' + escapeHtml(translate('common.loading', '加载中...')) + '</p>';
+                }
+                queueGuideScrollbarUpdate();
 
                 try {
                     const response = await fetch('/api/agent/openclaw/guide/content?lang=' + encodeURIComponent(lang), {
@@ -826,6 +1241,8 @@
                 initializeLanguageSelect();
                 initializeThemeToggle();
                 initializeCloseButton();
+                initializeGuideTocScroll();
+                initializeGuideContentScrollbar();
                 applyLocalizedChrome();
                 await loadGuideContent();
             }

@@ -89,6 +89,12 @@ function getWindowControlApi() {
   return (window as Window & { nekoWindowControl?: NekoWindowControlApi }).nekoWindowControl
 }
 
+function logWindowControlError(context: string, error: unknown) {
+  if (!import.meta.env.PROD) {
+    console.debug(`[PluginManager] ${context} failed after getWindowControlApi()`, error)
+  }
+}
+
 function setMaximizeState(value: boolean) {
   isMaximized.value = value
   document.documentElement.classList.toggle('neko-window-maximized', value)
@@ -101,7 +107,8 @@ async function refreshMaximizeState() {
 
   try {
     setMaximizeState(Boolean(await api.isMaximized()))
-  } catch {
+  } catch (error) {
+    logWindowControlError('refreshMaximizeState', error)
     // 非 Electron 环境下忽略窗口状态同步失败
   }
 }
@@ -112,7 +119,8 @@ async function minimizeWindow() {
 
   try {
     await api.minimize()
-  } catch {
+  } catch (error) {
+    logWindowControlError('minimizeWindow', error)
     // 非 Electron 环境下忽略窗口最小化失败
   }
 }
@@ -128,7 +136,8 @@ async function toggleMaximizeWindow() {
       return
     }
     await refreshMaximizeState()
-  } catch {
+  } catch (error) {
+    logWindowControlError('toggleMaximizeWindow', error)
     // 非 Electron 环境下忽略窗口最大化失败
   }
 }

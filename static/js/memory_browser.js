@@ -13,6 +13,7 @@
         limited: false
     };
     let memorySidebarResizeObserver = null;
+    let memoryChatPanelHeightResizeBound = false;
     let storagePreflightState = null;
     let storagePreflightBusy = false;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
@@ -79,16 +80,29 @@
 
     function initMemoryChatPanelHeightSync() {
         const sidebar = document.querySelector('.left-column');
+        teardownMemoryChatPanelHeightSync();
         if (!sidebar) return;
 
         syncMemoryChatPanelHeight();
         requestAnimationFrame(syncMemoryChatPanelHeight);
         window.setTimeout(syncMemoryChatPanelHeight, 300);
         window.addEventListener('resize', syncMemoryChatPanelHeight);
+        memoryChatPanelHeightResizeBound = true;
 
-        if (typeof ResizeObserver === 'function' && !memorySidebarResizeObserver) {
+        if (typeof ResizeObserver === 'function') {
             memorySidebarResizeObserver = new ResizeObserver(syncMemoryChatPanelHeight);
             memorySidebarResizeObserver.observe(sidebar);
+        }
+    }
+
+    function teardownMemoryChatPanelHeightSync() {
+        if (memorySidebarResizeObserver) {
+            memorySidebarResizeObserver.disconnect();
+            memorySidebarResizeObserver = null;
+        }
+        if (memoryChatPanelHeightResizeBound) {
+            window.removeEventListener('resize', syncMemoryChatPanelHeight);
+            memoryChatPanelHeightResizeBound = false;
         }
     }
 
@@ -1119,6 +1133,7 @@
         }
     }
     function closeMemoryBrowser() {
+        teardownMemoryChatPanelHeightSync();
         if (window.opener) {
             // 如果是通过 window.open() 打开的，直接关闭
             window.close();
@@ -1145,6 +1160,8 @@
     }
     // 将函数暴露到全局作用域，供 HTML onclick 调用
     window.closeMemoryBrowser = closeMemoryBrowser;
+    window.addEventListener('pagehide', teardownMemoryChatPanelHeightSync);
+    window.addEventListener('beforeunload', teardownMemoryChatPanelHeightSync);
     // 页面加载时隐藏保存按钮
     document.addEventListener('DOMContentLoaded', async function () {
         initMemoryChatPanelHeightSync();

@@ -1,5 +1,10 @@
 @import url('base.css');
 
+:root {
+    /* 页面标题栏高度用于最大化布局计算。 */
+    --titlebar-height: 70px;
+}
+
 html,
 body {
     height: 100%;
@@ -935,7 +940,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
         grid-template-columns: minmax(360px, 42%) minmax(420px, 1fr);
         column-gap: 28px;
         align-items: start;
-        min-height: calc(100vh - 70px);
+        min-height: calc(100vh - var(--titlebar-height, 70px));
         padding: 28px 36px 32px;
         box-sizing: border-box;
     }
