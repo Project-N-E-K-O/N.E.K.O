@@ -274,7 +274,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 )
         return payload
 
-    def _build_learning_context(
+    async def _build_learning_context(
         self,
         operation: str,
         *,
@@ -283,6 +283,7 @@ class StudyCompanionPlugin(NekoPluginBase):
     ) -> dict[str, Any]:
         snapshot = self._state_snapshot()
         history_limit = max(5, min(12, int(self._cfg.history_limit or 10)))
+        history = await asyncio.to_thread(self._store.list_interactions, history_limit)
         context = {
             "operation": operation,
             "input_text": input_text,
@@ -296,7 +297,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             "recent_learning_events": (snapshot.get("recent_learning_events") or [])[-8:],
             "last_ocr_text": snapshot.get("last_ocr_text") or "",
             "last_ocr_at": snapshot.get("last_ocr_at") or "",
-            "history": self._store.list_interactions(limit=history_limit),
+            "history": history,
         }
         if extra:
             context.update(extra)
@@ -330,7 +331,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     self._state.last_answer_evaluation = dict(payload)
                     self._state.last_answer_evaluated_at = reply.created_at or utc_now_iso()
                 elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-                    self._state.last_session_summary = summary
+                    self._state.last_session_summary = str(payload.get("summary") or "").strip()
                     self._state.last_session_summary_at = reply.created_at or utc_now_iso()
 
     async def _finalize_tutor_call(
@@ -370,7 +371,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         if self._agent is None or not hasattr(self._agent, "knowledge_track"):
             return
         try:
-            track_context = self._build_learning_context(
+            track_context = await self._build_learning_context(
                 LLM_OPERATION_KNOWLEDGE_TRACK,
                 input_text=reply.input_text,
                 extra={
@@ -585,7 +586,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         # Phase 3: explain with the active mode selected above.
-        tutor_context = self._build_learning_context(
+        tutor_context = await self._build_learning_context(
             LLM_OPERATION_CONCEPT_EXPLAIN,
             input_text=source_text,
             extra={
@@ -647,7 +648,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             used_ocr_fallback = bool(source_text.strip())
         with self._lock:
             active_mode = self._state.active_mode
-        tutor_context = self._build_learning_context(
+        tutor_context = await self._build_learning_context(
             LLM_OPERATION_QUESTION_GENERATE,
             input_text=source_text,
             extra={
@@ -699,11 +700,13 @@ class StudyCompanionPlugin(NekoPluginBase):
         state_question = str(current_question.get("question") or "").strip()
         state_expected = str(current_question.get("answer") or "").strip()
         resolved_question = supplied_question or state_question
+        if not resolved_question:
+            return Err(SdkError("study tutor requires a question to evaluate against"))
         resolved_expected = supplied_expected
         if not resolved_expected and (not supplied_question or supplied_question == state_question):
             resolved_expected = state_expected
         answer_text = str(answer or "").strip()
-        tutor_context = self._build_learning_context(
+        tutor_context = await self._build_learning_context(
             LLM_OPERATION_ANSWER_EVALUATE,
             input_text=answer_text,
             extra={
@@ -753,7 +756,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             active_mode = self._state.active_mode
         history = await asyncio.to_thread(self._store.list_interactions, max(5, min(30, self._cfg.history_limit)))
-        tutor_context = self._build_learning_context(
+        tutor_context = await self._build_learning_context(
             LLM_OPERATION_SUMMARIZE_SESSION,
             input_text="session",
             extra={
