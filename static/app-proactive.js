@@ -38,6 +38,8 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
+    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
@@ -67,6 +69,7 @@
     let _proactiveLeaderChannel = null;
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
+    let _chatInputSlowdownUntil = 0;
 
     function isHomeTutorialFeatureSuppressed() {
         try {
@@ -117,6 +120,12 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
+                } else if (data.type === 'chat_input_focus_slowdown'
+                        && S.proactiveChatEnabled
+                        && hasAnyChatModeEnabled()
+                        && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+                    _markChatInputSlowdownWindow(S.proactiveChatInterval);
+                    scheduleProactiveChat();
                 }
             };
         }
@@ -135,6 +144,59 @@
             });
         } catch (_) { /* ignore */ }
     }
+
+    function _isChatInputElement(element) {
+        if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
+            return false;
+        }
+        if (!element.matches(
+            '#textInputBox, ' +
+            '#react-chat-window-shell textarea.composer-input, ' +
+            '#react-chat-window-root textarea.composer-input'
+        )) {
+            return false;
+        }
+        return element.disabled !== true && element.readOnly !== true;
+    }
+
+    function _getFocusedChatInputElement() {
+        try {
+            const active = document.activeElement;
+            if (!active || !_isChatInputElement(active)) return null;
+            if (document.hasFocus && !document.hasFocus()) return null;
+            return active;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return 0;
+        }
+        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+        return _getFocusedChatInputElement()
+            ? minDelay
+            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+    }
+
+    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return;
+        }
+        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+    }
+
+    document.addEventListener('focusin', function (event) {
+        if (!_isChatInputElement(event.target)) return;
+        if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) return;
+        if (Number(S.proactiveChatInterval) > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) return;
+        _markChatInputSlowdownWindow(S.proactiveChatInterval);
+        scheduleProactiveChat();
+        _proactiveBroadcast('chat_input_focus_slowdown');
+    }, true);
 
     function _purgeStaleProactivePeers() {
         const now = Date.now();
@@ -527,7 +589,12 @@
         }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        if (inputSlowdownDelay > 0) {
+            delay = Math.max(delay, inputSlowdownDelay);
+        }
+
+        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
