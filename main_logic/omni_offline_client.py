@@ -1967,6 +1967,19 @@ class OmniOfflineClient:
             content_committed = bool(committed_text)
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
+                # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
+                # proactive 路径已经在 ``core.finish_proactive_delivery`` 上录，
+                # 这里再录会双写——这两条路径都接得到同一段 assistant 文本。
+                if completion_mode == "response":
+                    try:
+                        from memory.anti_repeat import get_anti_repeat_corpus
+                        get_anti_repeat_corpus().record_output(
+                            self.lanlan_name, committed_text, is_proactive=False,
+                        )
+                    except Exception as _exc:  # pragma: no cover
+                        logger.debug(
+                            "[AntiRepeat] record reply skipped: %s", _exc,
+                        )
             if completion_mode == "response":
                 if self.on_response_done:
                     await self.on_response_done()

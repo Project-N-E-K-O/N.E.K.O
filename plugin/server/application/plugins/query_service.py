@@ -14,7 +14,7 @@ from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
 
-_PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description"}
+_PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description", "plugin.short_description"}
 
 
 def _normalize_mapping(
@@ -163,6 +163,7 @@ def _resolve_plugin_display_fields(
     missing = "\0__missing_plugin_display_i18n__"
     name_fallback = plugin_info.get("name")
     description_fallback = plugin_info.get("description")
+    short_description_fallback = plugin_info.get("short_description")
     name_default = name_fallback if isinstance(name_fallback, str) and name_fallback else str(plugin_info.get("id") or "")
     plugin_info["name"] = plugin_i18n.t(
         "plugin.name",
@@ -178,6 +179,15 @@ def _resolve_plugin_display_fields(
         plugin_info["description"] = description
     elif isinstance(description_fallback, str):
         plugin_info["description"] = description_fallback
+    short_description = plugin_i18n.t(
+        "plugin.short_description",
+        locale=locale,
+        default=short_description_fallback if isinstance(short_description_fallback, str) and short_description_fallback else missing,
+    )
+    if short_description != missing:
+        plugin_info["short_description"] = short_description
+    elif isinstance(short_description_fallback, str):
+        plugin_info["short_description"] = short_description_fallback
 
 
 def _build_entries_from_handlers(

@@ -1663,11 +1663,12 @@ async def test_realtime_apply_tools_to_session_qwen_disables_enable_search():
 
 
 @pytest.mark.asyncio
-async def test_realtime_apply_tools_to_session_step_keeps_web_search():
-    """StepFun apply_tools 必须保留内置 web_search 工具，否则 server 会把
-    用户 disable web_search 的状态当作 mid-session 撤销，影响其他对话功能。"""
+async def test_realtime_apply_tools_to_session_step_emits_function_tools_only():
+    """stepaudio-2.5-realtime 不再支持内置 web_search；
+    apply_tools_to_session 只发送 caller 注册的 function tools，与
+    update_session 初始化路径保持一致。"""
     client, sent = _make_rt_client("step")
     await client.apply_tools_to_session()
     tools = sent[0]["session"]["tools"]
-    assert any(t.get("type") == "web_search" for t in tools)
+    assert all(t.get("type") != "web_search" for t in tools)
     assert any(t.get("type") == "function" for t in tools)

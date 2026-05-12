@@ -1140,7 +1140,7 @@ async def get_user_language_async() -> str:
 # 缓存配置
 CACHE_MAX_SIZE = 1000
 SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko', 'ru', 'es', 'pt']
-DEFAULT_LANGUAGE = 'zh-CN'
+DEFAULT_LANGUAGE = 'en'
 
 class TranslationService:
     """翻译服务类"""

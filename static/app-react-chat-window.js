@@ -2326,6 +2326,7 @@
         if (!header) return;
 
         header.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
@@ -2525,6 +2526,7 @@
         if (!shell) return;
 
         shell.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
             var target = event.target;
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             startResize(event.clientX, event.clientY, target.dataset.resizeDir);
