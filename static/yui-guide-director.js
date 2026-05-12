@@ -2226,6 +2226,17 @@
             return !!(this.destroyed || this.angryExitTriggered || this.terminationRequested);
         }
 
+        shouldReduceTutorialMotion() {
+            try {
+                return !!(
+                    window.matchMedia
+                    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                );
+            } catch (_) {
+                return false;
+            }
+        }
+
         getPreludeSceneIds() {
             if (this.tutorialManager && typeof this.tutorialManager.getYuiGuidePreludeSceneIds === 'function') {
                 return this.tutorialManager.getYuiGuidePreludeSceneIds(this.page) || [];
@@ -6695,6 +6706,7 @@
                 return restoredAll;
             };
 
+            let pluginDashboardCornerHandle = null;
             try {
                 let launchResult = await this.runPluginDashboardLaunchSequence(
                     step,
@@ -6709,6 +6721,7 @@
                     return;
                 }
                 let dashboardWindow = launchResult.pluginDashboardWindow;
+                pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId);
                 this.setPluginDashboardSkipBypassEnabled(true);
 
                 this.overlay.clearActionSpotlight();
@@ -6767,6 +6780,8 @@
                 await dashboardNarrationPromise;
                 const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
                 await this.closePluginDashboardWindowIfCreatedByGuide('插件面板预览完成');
+                await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed');
+                pluginDashboardCornerHandle = null;
                 if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
                     this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
                 }
@@ -6791,6 +6806,7 @@
                 }
                 this.overlay.clearActionSpotlight();
             } finally {
+                await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup');
                 this.setPluginDashboardSkipBypassEnabled(false);
                 await rollbackAgentSwitches();
             }
@@ -7749,6 +7765,7 @@
             return api.playIntroGreetingHug({
                 approachMs: 2200,
                 settleMs: 1250,
+                reducedMotion: this.shouldReduceTutorialMotion(),
                 isCancelled: () => this.isStopping()
             });
         }
@@ -7771,8 +7788,34 @@
             return api.playIntroGiftHeart({
                 durationMs: 2600,
                 releaseMs: 420,
+                reducedMotion: this.shouldReduceTutorialMotion(),
                 isCancelled: () => this.isStopping()
             });
+        }
+
+        async startPluginDashboardCornerPeekPerformance(runId) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
+                return null;
+            }
+            try {
+                return await api.startPluginDashboardCornerPeek({
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async stopPluginDashboardCornerPeekPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'plugin_dashboard_closed');
+            } catch (_) {}
         }
 
         async playRemainingIntroPreludeScenes(completedSceneId) {

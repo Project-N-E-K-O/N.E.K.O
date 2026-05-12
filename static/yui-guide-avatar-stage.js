@@ -18,23 +18,36 @@
     const INTRO_GREETING_HUG_RELEASE_MS = 620;
     const INTRO_GREETING_HUG_SETTLE_MS = 1250;
     const INTRO_GREETING_HUG_CLOSE_SCALE = 1.38;
-    const INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.52;
-    const INTRO_GREETING_HUG_MIN_SHIFT_PX = 320;
-    const INTRO_GREETING_HUG_MAX_SHIFT_PX = 760;
+    const INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.58;
+    const INTRO_GREETING_HUG_MIN_SHIFT_PX = 360;
+    const INTRO_GREETING_HUG_MAX_SHIFT_PX = 820;
     const INTRO_GREETING_HUG_FINAL_SCALE = 1.28;
-    const INTRO_GREETING_HUG_FINAL_SHIFT_VIEWPORT_RATIO = 0.46;
-    const INTRO_GREETING_HUG_FINAL_MIN_SHIFT_PX = 300;
-    const INTRO_GREETING_HUG_FINAL_MAX_SHIFT_PX = 620;
+    const INTRO_GREETING_HUG_FINAL_SHIFT_VIEWPORT_RATIO = 0.52;
+    const INTRO_GREETING_HUG_FINAL_MIN_SHIFT_PX = 340;
+    const INTRO_GREETING_HUG_FINAL_MAX_SHIFT_PX = 700;
     const INTRO_GIFT_HEART_READY_WAIT_MS = 700;
     const INTRO_GIFT_HEART_DURATION_MS = 2600;
     const INTRO_GIFT_HEART_RELEASE_MS = 420;
-    const INTRO_GIFT_HEART_SWAY_PX = 68;
+    const INTRO_GIFT_HEART_SWAY_PX = 118;
     const INTRO_GIFT_HEART_JUMP_UP_PX = 16;
     const INTRO_GIFT_HEART_JUMP_DOWN_PX = 18;
     const INTRO_GIFT_HEART_HOP_COUNT = 4;
-    const INTRO_GIFT_HEART_BODY_SWAY_DEG = 3.4;
+    const INTRO_GIFT_HEART_BODY_SWAY_DEG = 2.4;
     const INTRO_GIFT_HEART_EAR_WIGGLE = 0.32;
     const INTRO_GIFT_HEART_LEG_BEND = 1.15;
+    const PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS = 700;
+    const PLUGIN_DASHBOARD_CORNER_HIDE_MS = 520;
+    const PLUGIN_DASHBOARD_CORNER_APPEAR_MS = 720;
+    const PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45;
+    const PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08;
+    const PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35;
+    const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483001';
+    const YUI_GUIDE_AVATAR_ID = 'main-live2d';
+    const YUI_GUIDE_CHARACTER_ID = 'yui';
+    const YUI_GUIDE_PERFORMANCE_PRIORITY = 80;
+    const YUI_WAKEUP_PERFORMANCE_CAPABILITIES = Object.freeze(['params', 'motion', 'lookAt', 'expression']);
+    const YUI_INTRO_PERFORMANCE_CAPABILITIES = Object.freeze(['frame', 'params', 'lookAt', 'expression']);
+    const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
     const YUI_WAKEUP_PARAMS = Object.freeze({
         eyeLeft: 'ParamEyeLOpen',
         eyeRight: 'ParamEyeROpen',
@@ -93,6 +106,10 @@
         yuiRightWaveSwitch: 'Param75',
         yuiLeftWaveSwitch: 'Param77',
         yuiLeftMouthCoverAnim: 'Param94',
+        yuiRightForearmAnim: 'Param90',
+        yuiLeftForearmAnim: 'Param91',
+        yuiRightHandAnim: 'Param92',
+        yuiLeftHandAnim: 'Param93',
         yuiRightHandWave: 'Param95',
         yuiLeftHandWave: 'Param96',
         yuiLeftEarPerspective: 'Param44',
@@ -103,6 +120,23 @@
         yuiRightEarRotate: 'Param50',
         yuiRightEarWiggle1: 'Param51',
         yuiRightEarWiggle2: 'Param52',
+        hairFront: 'ParamHairFront',
+        hairSide: 'ParamHairSide',
+        hairBack: 'ParamHairBack',
+        yuiRightPonytailY: 'Param40',
+        yuiRightBowX: 'Param42',
+        yuiRightBowY: 'Param43',
+        skirtX1: 'Param54',
+        skirtX2: 'Param55',
+        skirtX3: 'Param56',
+        skirtX4: 'Param57',
+        skirtY1: 'Param58',
+        skirtY2: 'Param59',
+        skirtY3: 'Param60',
+        skirtY4: 'Param61',
+        pendantX: 'Param63',
+        clothX1: 'Param64',
+        clothY1: 'Param65',
         yuiLeftLegShadow1: 'Param_Angle_Rotation_3_ArtMesh274',
         yuiLeftLegShadow2: 'Param_Angle_Rotation_6_ArtMesh274',
         yuiLeftLegShadow3: 'Param_Angle_Rotation_9_ArtMesh274',
@@ -128,6 +162,7 @@
         'yuiRightShoeLace3',
         'yuiRightShoeLace4'
     ]);
+    const activePerformanceLocks = new Map();
     const YUI_WAKEUP_POSE_BLEND_FACTORS = Object.freeze({
         eyeLeft: 0.96,
         eyeRight: 0.96,
@@ -175,17 +210,21 @@
         yuiLeftHandWave: 1
     });
     const YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS = Object.freeze({
-        angleX: 0.58,
-        angleY: 0.58,
-        angleZ: 0.78,
-        bodyAngleX: 0.5,
-        bodyAngleY: 0.5,
-        bodyAngleZ: 0.72,
+        angleX: 1,
+        angleY: 0.9,
+        angleZ: 1,
+        bodyAngleX: 0.86,
+        bodyAngleY: 0.86,
+        bodyAngleZ: 0.28,
         yuiHeartSwitch: 1,
         yuiMouthCoverSwitch: 1,
         yuiRightWaveSwitch: 1,
         yuiLeftWaveSwitch: 1,
         yuiLeftMouthCoverAnim: 1,
+        yuiRightForearmAnim: 0.78,
+        yuiLeftForearmAnim: 0.78,
+        yuiRightHandAnim: 0.72,
+        yuiLeftHandAnim: 0.72,
         yuiRightHandWave: 1,
         yuiLeftHandWave: 1,
         yuiLeftEarPerspective: 0.78,
@@ -196,6 +235,23 @@
         yuiRightEarRotate: 0.78,
         yuiRightEarWiggle1: 0.82,
         yuiRightEarWiggle2: 0.82,
+        hairFront: 1,
+        hairSide: 1,
+        hairBack: 1,
+        yuiRightPonytailY: 1,
+        yuiRightBowX: 1,
+        yuiRightBowY: 1,
+        skirtX1: 1,
+        skirtX2: 1,
+        skirtX3: 1,
+        skirtX4: 1,
+        skirtY1: 1,
+        skirtY2: 1,
+        skirtY3: 1,
+        skirtY4: 1,
+        pendantX: 1,
+        clothX1: 1,
+        clothY1: 1,
         yuiLeftLegShadow1: 0.72,
         yuiLeftLegShadow2: 0.72,
         yuiLeftLegShadow3: 0.72,
@@ -210,6 +266,7 @@
     });
     let activeIntroGreetingHugSession = null;
     let activeIntroGiftHeartSession = null;
+    let activePluginDashboardCornerSession = null;
 
     function clamp(value, min, max) {
         const number = Number(value);
@@ -471,6 +528,105 @@
         });
     }
 
+    function getAvatarPerformanceCoordinator() {
+        const api = window.AvatarPerformance;
+        if (!api || typeof api.getDefaultCoordinator !== 'function') {
+            return null;
+        }
+        try {
+            const coordinator = api.getDefaultCoordinator();
+            return coordinator && typeof coordinator.acquire === 'function' && typeof coordinator.release === 'function'
+                ? coordinator
+                : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function createNoopPerformanceLock() {
+        return {
+            id: '',
+            release: function () {}
+        };
+    }
+
+    function acquireYuiGuidePerformanceLock(key, capabilities) {
+        const lockKey = String(key || 'home-yui-guide').trim() || 'home-yui-guide';
+        const existing = activePerformanceLocks.get(lockKey);
+        if (existing) {
+            existing.refs += 1;
+            return {
+                id: existing.session && existing.session.id ? existing.session.id : '',
+                release: function (reason) {
+                    releaseYuiGuidePerformanceLock(lockKey, reason || 'release');
+                }
+            };
+        }
+
+        const coordinator = getAvatarPerformanceCoordinator();
+        if (!coordinator) {
+            return createNoopPerformanceLock();
+        }
+
+        let session = null;
+        const record = {
+            refs: 1,
+            session: null
+        };
+        try {
+            session = coordinator.acquire({
+                owner: lockKey,
+                avatarId: YUI_GUIDE_AVATAR_ID,
+                characterId: YUI_GUIDE_CHARACTER_ID,
+                priority: YUI_GUIDE_PERFORMANCE_PRIORITY,
+                force: true,
+                capabilities: Array.isArray(capabilities) ? capabilities.slice() : [],
+                onRelease: function (releasedSession) {
+                    const current = activePerformanceLocks.get(lockKey);
+                    if (current && current.session === releasedSession) {
+                        activePerformanceLocks.delete(lockKey);
+                    }
+                }
+            });
+        } catch (_) {
+            session = null;
+        }
+        if (!session) {
+            return createNoopPerformanceLock();
+        }
+
+        record.session = session;
+        activePerformanceLocks.set(lockKey, record);
+        return {
+            id: session.id || '',
+            release: function (reason) {
+                releaseYuiGuidePerformanceLock(lockKey, reason || 'release');
+            }
+        };
+    }
+
+    function releaseYuiGuidePerformanceLock(key, reason) {
+        const lockKey = String(key || 'home-yui-guide').trim() || 'home-yui-guide';
+        const record = activePerformanceLocks.get(lockKey);
+        if (!record) {
+            return false;
+        }
+        record.refs = Math.max(0, record.refs - 1);
+        if (record.refs > 0) {
+            return true;
+        }
+        activePerformanceLocks.delete(lockKey);
+        const coordinator = getAvatarPerformanceCoordinator();
+        if (!coordinator || !record.session) {
+            return false;
+        }
+        try {
+            return coordinator.release(record.session, reason || 'release') === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function computeWakeupPose(progress, context) {
         const reducedMotion = !!(context && context.reducedMotion);
         const normalizedProgress = reducedMotion ? 1 : clamp(progress, 0, 1);
@@ -573,18 +729,20 @@
         const fromSide = hopIndex === 0 ? 0 : -hopDirection;
         const toSide = hopDirection;
         const lateral = reducedMotion ? 0 : lerp(fromSide, toSide, hopEase);
+        const lateralVelocity = reducedMotion ? 0 : (toSide - fromSide) * Math.sin(hopLocal * Math.PI);
         const airWeight = Math.sin(hopLocal * Math.PI);
         const landingWeight = Math.pow(Math.max(0, Math.cos(hopLocal * Math.PI * 2)), 10);
         const takeoffWeight = Math.pow(Math.max(0, Math.sin((1 - hopLocal) * Math.PI)), 2);
         const leanWeight = Math.sin(hopLocal * Math.PI);
-        const sway = lateral * INTRO_GIFT_HEART_SWAY_PX * heartWeight;
+        const sway = (lateral + lateralVelocity * 0.12) * INTRO_GIFT_HEART_SWAY_PX * heartWeight;
         const jump = reducedMotion ? 0 : (
             (-airWeight * INTRO_GIFT_HEART_JUMP_UP_PX)
             + (landingWeight * INTRO_GIFT_HEART_JUMP_DOWN_PX)
         ) * heartWeight;
         const bodySway = reducedMotion ? 0 : (
-            ((-hopDirection * INTRO_GIFT_HEART_BODY_SWAY_DEG) * (0.3 + leanWeight * 0.7))
-            + ((fromSide - toSide) * takeoffWeight * 0.35)
+            ((-lateral * INTRO_GIFT_HEART_BODY_SWAY_DEG) * (0.22 + leanWeight * 0.28))
+            + ((-lateralVelocity * INTRO_GIFT_HEART_BODY_SWAY_DEG) * 0.12)
+            + ((fromSide - toSide) * takeoffWeight * 0.18)
         ) * heartWeight;
         const bodySquash = landingWeight * heartWeight;
         const legBend = reducedMotion ? 0 : (
@@ -592,6 +750,40 @@
             - (airWeight * INTRO_GIFT_HEART_LEG_BEND * 0.34)
         ) * heartWeight;
         const legSwing = reducedMotion ? 0 : hopDirection * airWeight * 0.48 * heartWeight;
+        const inertialSwing = reducedMotion ? 0 : (
+            (-lateral * 1.35)
+            + (-lateralVelocity * 0.92)
+            + (hopDirection * landingWeight * 0.62)
+        ) * heartWeight;
+        const softFollow = reducedMotion ? 0 : (
+            (lateral * 0.72)
+            + (lateralVelocity * 0.38)
+        ) * heartWeight;
+        const verticalFollow = reducedMotion ? 0 : (
+            (airWeight * -0.42)
+            + (landingWeight * 0.62)
+            + (takeoffWeight * -0.18)
+        ) * heartWeight;
+        const armBounce = reducedMotion ? 0 : (
+            (airWeight * 0.11)
+            + (landingWeight * 0.22)
+            + (takeoffWeight * 0.07)
+        ) * heartWeight;
+        const armCounterSwing = reducedMotion ? 0 : (
+            (inertialSwing * 0.12)
+            + (lateralVelocity * 0.07 * heartWeight)
+            + (hopDirection * landingWeight * 0.06 * heartWeight)
+        );
+        const handBounce = reducedMotion ? 0 : (
+            (airWeight * 0.08)
+            + (landingWeight * 0.17)
+            + (takeoffWeight * 0.05)
+        ) * heartWeight;
+        const handCounterSwing = reducedMotion ? 0 : (
+            (inertialSwing * 0.09)
+            + (lateralVelocity * 0.05 * heartWeight)
+            + (hopDirection * landingWeight * 0.04 * heartWeight)
+        );
         const earPhase = normalizedProgress * Math.PI * 14;
         const earWiggle = reducedMotion ? 0 : (
             Math.sin(earPhase)
@@ -607,27 +799,48 @@
         );
 
         return {
-            angleX: (0.45 + lateral * 0.18) * heartWeight,
-            angleY: (0.7 + hopDirection * airWeight * 0.18) * heartWeight,
-            angleZ: bodySway * 0.86,
-            bodyAngleX: (0.35 - bodySquash * 0.55) * heartWeight,
-            bodyAngleY: (0.6 + lateral * 0.32) * heartWeight,
-            bodyAngleZ: bodySway,
+            angleX: (0.45 + lateral * 2.25 + lateralVelocity * 0.62) * heartWeight,
+            angleY: (0.7 + hopDirection * airWeight * 0.42 + lateral * 0.55) * heartWeight,
+            angleZ: (bodySway * 0.22) + (lateral * 0.18 * heartWeight),
+            bodyAngleX: (0.35 - bodySquash * 0.9 + airWeight * 0.34) * heartWeight,
+            bodyAngleY: (0.6 + lateral * 1.55 + lateralVelocity * 0.32) * heartWeight,
+            bodyAngleZ: bodySway * 0.34,
             yuiHeartSwitch: heartWeight,
             yuiMouthCoverSwitch: 0,
             yuiRightWaveSwitch: 0,
             yuiLeftWaveSwitch: 0,
             yuiLeftMouthCoverAnim: 0,
+            yuiRightForearmAnim: reducedMotion ? 0 : clamp((0.42 * heartWeight) + armBounce - armCounterSwing, 0, 1),
+            yuiLeftForearmAnim: reducedMotion ? 0 : clamp((0.42 * heartWeight) + armBounce + armCounterSwing, 0, 1),
+            yuiRightHandAnim: reducedMotion ? 0 : clamp((0.34 * heartWeight) + handBounce - handCounterSwing, 0, 1),
+            yuiLeftHandAnim: reducedMotion ? 0 : clamp((0.34 * heartWeight) + handBounce + handCounterSwing, 0, 1),
             yuiRightHandWave: 0,
             yuiLeftHandWave: 0,
-            yuiLeftEarPerspective: earWiggle * 0.42,
-            yuiLeftEarRotate: earWiggle,
-            yuiLeftEarWiggle1: earWiggle,
-            yuiLeftEarWiggle2: earFollow * 0.46,
-            yuiRightEarPerspective: earFollow * 0.42,
-            yuiRightEarRotate: earFollow,
-            yuiRightEarWiggle1: earFollow,
-            yuiRightEarWiggle2: earWiggle * 0.46,
+            yuiLeftEarPerspective: earWiggle * 0.72 + inertialSwing * 0.18,
+            yuiLeftEarRotate: earWiggle * 1.65 + inertialSwing * 0.35,
+            yuiLeftEarWiggle1: earWiggle * 1.55 + inertialSwing * 0.3,
+            yuiLeftEarWiggle2: earFollow * 0.92 + verticalFollow * 0.14,
+            yuiRightEarPerspective: earFollow * 0.72 + inertialSwing * 0.14,
+            yuiRightEarRotate: earFollow * 1.65 + inertialSwing * 0.32,
+            yuiRightEarWiggle1: earFollow * 1.55 + inertialSwing * 0.28,
+            yuiRightEarWiggle2: earWiggle * 0.92 + verticalFollow * 0.14,
+            hairFront: inertialSwing * 2.2 + verticalFollow * 0.55,
+            hairSide: inertialSwing * 2.65 + softFollow * 0.35,
+            hairBack: inertialSwing * 1.85 + verticalFollow * 0.72,
+            yuiRightPonytailY: verticalFollow * 1.7 + Math.abs(inertialSwing) * 0.55,
+            yuiRightBowX: inertialSwing * 1.65,
+            yuiRightBowY: verticalFollow * 1.25 + Math.abs(inertialSwing) * 0.18,
+            skirtX1: inertialSwing * 1.45,
+            skirtX2: inertialSwing * 1.85,
+            skirtX3: inertialSwing * 2.25,
+            skirtX4: inertialSwing * 2.55,
+            skirtY1: verticalFollow * 1.15 + landingWeight * 0.24 * heartWeight,
+            skirtY2: verticalFollow * 1.35 + landingWeight * 0.32 * heartWeight,
+            skirtY3: verticalFollow * 1.55 + landingWeight * 0.42 * heartWeight,
+            skirtY4: verticalFollow * 1.75 + landingWeight * 0.52 * heartWeight,
+            pendantX: inertialSwing * 1.75 + softFollow * 0.52,
+            clothX1: inertialSwing * 1.45,
+            clothY1: verticalFollow * 1.35,
             yuiLeftLegShadow1: legBend * 0.74,
             yuiLeftLegShadow2: legBend,
             yuiLeftLegShadow3: legBend * 0.62,
@@ -704,7 +917,8 @@
             x: Number.isFinite(Number(model.x)) ? Number(model.x) : 0,
             y: Number.isFinite(Number(model.y)) ? Number(model.y) : 0,
             scaleX: scaleX,
-            scaleY: scaleY
+            scaleY: scaleY,
+            rotation: Number.isFinite(Number(model.rotation)) ? Number(model.rotation) : 0
         };
     }
 
@@ -720,6 +934,21 @@
         }
         model.x = frame.x;
         model.y = frame.y;
+        if (Number.isFinite(Number(frame.rotation))) {
+            model.rotation = Number(frame.rotation);
+        }
+        return true;
+    }
+
+    function readModelAlpha(model) {
+        return Number.isFinite(Number(model && model.alpha)) ? Number(model.alpha) : 1;
+    }
+
+    function writeModelAlpha(model, alpha) {
+        if (!model || !Number.isFinite(Number(alpha))) {
+            return false;
+        }
+        model.alpha = clamp(Number(alpha), 0, 1);
         return true;
     }
 
@@ -767,6 +996,11 @@
             this.previousEyeBlinkSuspended = !!this.manager._suspendEyeBlinkOverride;
             this.poseOverrideSource = 'yui_guide_wakeup_' + this.token;
             this.usesTemporaryPoseOverride = false;
+            this.performanceLock = null;
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-wakeup';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_WAKEUP_PERFORMANCE_CAPABILITIES.slice();
             this.onInitialPose = typeof normalizedOptions.onInitialPose === 'function'
                 ? normalizedOptions.onInitialPose
                 : null;
@@ -793,6 +1027,10 @@
                 return false;
             }
 
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
             this.active = true;
             this.startedAt = this.timelineStartedAt || performance.now();
             this.manager._suspendEyeBlinkOverride = true;
@@ -839,6 +1077,10 @@
             }
             if (!preserveFinalPose) {
                 this.restoreCapturedParams();
+            }
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
             }
         }
 
@@ -1000,6 +1242,11 @@
             this.poseOverrideSource = 'yui_guide_intro_greeting_hug_' + this.token;
             this.usesTemporaryPoseOverride = false;
             this.initialModelFrame = null;
+            this.performanceLock = null;
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-intro-greeting';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_INTRO_PERFORMANCE_CAPABILITIES.slice();
             this.tick = this.tick.bind(this);
             this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
         }
@@ -1023,6 +1270,10 @@
                 return false;
             }
 
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -1062,6 +1313,10 @@
             this.restoreCapturedParams();
             if (this.result !== 'played') {
                 this.restoreModelFrame();
+            }
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
             }
         }
 
@@ -1124,6 +1379,10 @@
             this.writeWeighted('yuiRightWaveSwitch', 0, 1);
             this.writeWeighted('yuiLeftWaveSwitch', 0, 1);
             this.writeWeighted('yuiLeftMouthCoverAnim', 0, 1);
+            this.writeWeighted('yuiRightForearmAnim', 0, 1);
+            this.writeWeighted('yuiLeftForearmAnim', 0, 1);
+            this.writeWeighted('yuiRightHandAnim', 0, 1);
+            this.writeWeighted('yuiLeftHandAnim', 0, 1);
             this.writeWeighted('yuiRightHandWave', 0, 1);
             this.writeWeighted('yuiLeftHandWave', 0, 1);
             this.writeWeighted('yuiLeftEarPerspective', 0, 1);
@@ -1134,6 +1393,23 @@
             this.writeWeighted('yuiRightEarRotate', 0, 1);
             this.writeWeighted('yuiRightEarWiggle1', 0, 1);
             this.writeWeighted('yuiRightEarWiggle2', 0, 1);
+            this.writeWeighted('hairFront', 0, 1);
+            this.writeWeighted('hairSide', 0, 1);
+            this.writeWeighted('hairBack', 0, 1);
+            this.writeWeighted('yuiRightPonytailY', 0, 1);
+            this.writeWeighted('yuiRightBowX', 0, 1);
+            this.writeWeighted('yuiRightBowY', 0, 1);
+            this.writeWeighted('skirtX1', 0, 1);
+            this.writeWeighted('skirtX2', 0, 1);
+            this.writeWeighted('skirtX3', 0, 1);
+            this.writeWeighted('skirtX4', 0, 1);
+            this.writeWeighted('skirtY1', 0, 1);
+            this.writeWeighted('skirtY2', 0, 1);
+            this.writeWeighted('skirtY3', 0, 1);
+            this.writeWeighted('skirtY4', 0, 1);
+            this.writeWeighted('pendantX', 0, 1);
+            this.writeWeighted('clothX1', 0, 1);
+            this.writeWeighted('clothY1', 0, 1);
             YUI_INTRO_GIFT_HEART_LEG_PARAM_KEYS.forEach((key) => {
                 this.writeWeighted(key, 0, 1);
             });
@@ -1318,6 +1594,11 @@
             this.poseOverrideSource = 'yui_guide_intro_gift_heart_' + this.token;
             this.usesTemporaryPoseOverride = false;
             this.initialModelFrame = null;
+            this.performanceLock = null;
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-intro-greeting';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_INTRO_PERFORMANCE_CAPABILITIES.slice();
             this.tick = this.tick.bind(this);
             this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
         }
@@ -1340,6 +1621,10 @@
             if (!this.isUsable() || !this.isCurrentModel()) {
                 return false;
             }
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
             this.active = true;
             this.startedAt = performance.now();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
@@ -1378,6 +1663,10 @@
             }
             this.restoreCapturedParams();
             this.restoreModelFrame();
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
+            }
         }
 
         cancel(reason) {
@@ -1503,6 +1792,10 @@
             this.writeWeighted('yuiRightWaveSwitch', 0, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightWaveSwitch || 1));
             this.writeWeighted('yuiLeftWaveSwitch', 0, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftWaveSwitch || 1));
             this.writeWeighted('yuiLeftMouthCoverAnim', 0, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftMouthCoverAnim || 1));
+            this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightForearmAnim || 1));
+            this.writeWeighted('yuiLeftForearmAnim', pose.yuiLeftForearmAnim, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftForearmAnim || 1));
+            this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightHandAnim || 1));
+            this.writeWeighted('yuiLeftHandAnim', pose.yuiLeftHandAnim, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftHandAnim || 1));
             this.writeWeighted('yuiRightHandWave', 0, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightHandWave || 1));
             this.writeWeighted('yuiLeftHandWave', 0, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftHandWave || 1));
             this.writeWeighted('yuiLeftEarPerspective', pose.yuiLeftEarPerspective, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiLeftEarPerspective || 1));
@@ -1513,6 +1806,23 @@
             this.writeWeighted('yuiRightEarRotate', pose.yuiRightEarRotate, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightEarRotate || 1));
             this.writeWeighted('yuiRightEarWiggle1', pose.yuiRightEarWiggle1, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightEarWiggle1 || 1));
             this.writeWeighted('yuiRightEarWiggle2', pose.yuiRightEarWiggle2, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightEarWiggle2 || 1));
+            this.writeWeighted('hairFront', pose.hairFront, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.hairFront || 1));
+            this.writeWeighted('hairSide', pose.hairSide, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.hairSide || 1));
+            this.writeWeighted('hairBack', pose.hairBack, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.hairBack || 1));
+            this.writeWeighted('yuiRightPonytailY', pose.yuiRightPonytailY, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightPonytailY || 1));
+            this.writeWeighted('yuiRightBowX', pose.yuiRightBowX, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightBowX || 1));
+            this.writeWeighted('yuiRightBowY', pose.yuiRightBowY, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.yuiRightBowY || 1));
+            this.writeWeighted('skirtX1', pose.skirtX1, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtX1 || 1));
+            this.writeWeighted('skirtX2', pose.skirtX2, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtX2 || 1));
+            this.writeWeighted('skirtX3', pose.skirtX3, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtX3 || 1));
+            this.writeWeighted('skirtX4', pose.skirtX4, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtX4 || 1));
+            this.writeWeighted('skirtY1', pose.skirtY1, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtY1 || 1));
+            this.writeWeighted('skirtY2', pose.skirtY2, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtY2 || 1));
+            this.writeWeighted('skirtY3', pose.skirtY3, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtY3 || 1));
+            this.writeWeighted('skirtY4', pose.skirtY4, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.skirtY4 || 1));
+            this.writeWeighted('pendantX', pose.pendantX, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.pendantX || 1));
+            this.writeWeighted('clothX1', pose.clothX1, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.clothX1 || 1));
+            this.writeWeighted('clothY1', pose.clothY1, w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS.clothY1 || 1));
             YUI_INTRO_GIFT_HEART_LEG_PARAM_KEYS.forEach((key) => {
                 this.writeWeighted(key, pose[key], w * (YUI_INTRO_GIFT_HEART_POSE_BLEND_FACTORS[key] || 1));
             });
@@ -1530,6 +1840,367 @@
                 scaleX: this.initialModelFrame.scaleX,
                 scaleY: this.initialModelFrame.scaleY
             });
+        }
+    }
+
+    class Live2DPluginDashboardCornerSession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            this.document = normalizedOptions.document || document;
+            this.manager = context.manager;
+            this.model = context.model;
+            this.coreModel = context.coreModel;
+            this.ticker = context.ticker || null;
+            this.container = normalizedOptions.container || getLive2DContainer(this.document);
+            this.reducedMotion = !!normalizedOptions.reducedMotion;
+            this.hideMs = normalizeDuration(normalizedOptions.hideMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
+            this.appearMs = normalizeDuration(normalizedOptions.appearMs, PLUGIN_DASHBOARD_CORNER_APPEAR_MS);
+            this.totalDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
+            this.token = normalizedOptions.token || 0;
+            this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : function () { return false; };
+            this.startedAt = 0;
+            this.active = false;
+            this.finished = false;
+            this.result = 'idle';
+            this.initialModelFrame = null;
+            this.initialAlpha = 1;
+            this.initialBounds = null;
+            this.hiddenFrame = null;
+            this.cornerFrame = null;
+            this.cornerHiddenFrame = null;
+            this.originalContainerZIndex = null;
+            this.containerZIndexElevated = false;
+            this.performanceLock = null;
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-plugin-dashboard-corner';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES.slice();
+            this.phase = 'idle';
+            this.tickerAttached = false;
+            this.tick = this.tick.bind(this);
+        }
+
+        isCurrentModel() {
+            if (!this.manager || !this.model || this.model.destroyed || !this.coreModel) {
+                return false;
+            }
+            const current = getCurrentLive2DModel(this.manager);
+            return current === this.model
+                && current.internalModel
+                && current.internalModel.coreModel === this.coreModel;
+        }
+
+        start() {
+            if (!this.isCurrentModel()) {
+                return false;
+            }
+            this.initialModelFrame = readIntroGreetingHugModelFrame(this.model);
+            if (!this.initialModelFrame) {
+                return false;
+            }
+            this.initialAlpha = readModelAlpha(this.model);
+            this.initialBounds = this.readBounds();
+            this.hiddenFrame = this.resolveHiddenFrame();
+            this.cornerFrame = this.resolveCornerFrame();
+            this.cornerHiddenFrame = this.resolveCornerHiddenFrame();
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
+            this.active = true;
+            this.phase = 'enter';
+            this.startedAt = performance.now();
+            this.applyFrame(this.reducedMotion ? this.cornerFrame : this.initialModelFrame, this.reducedMotion ? 1 : this.initialAlpha);
+            if (this.reducedMotion) {
+                this.elevateContainerZIndex();
+                return true;
+            }
+            if (this.ticker && typeof this.ticker.add === 'function') {
+                this.attachTicker();
+            } else {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+            return true;
+        }
+
+        stop(reason) {
+            return this.requestStop(reason || 'stopped', true);
+        }
+
+        requestStop(reason, animateReturn) {
+            if (!this.active && this.finished) {
+                return Promise.resolve();
+            }
+            if (this.reducedMotion || !animateReturn || !this.isCurrentModel()) {
+                this.finish(reason || 'stopped');
+                return Promise.resolve();
+            }
+            if (this.phase === 'exit') {
+                return this.waitForFinish();
+            }
+            this.phase = 'exit';
+            this.result = reason || this.result || 'stopped';
+            this.startedAt = performance.now();
+            this.active = true;
+            this.applyFrame(this.cornerFrame, 1);
+            if (this.ticker && typeof this.ticker.add === 'function') {
+                this.attachTicker();
+            } else if (!this.frameId) {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+            return this.waitForFinish();
+        }
+
+        finish(reason) {
+            this.active = false;
+            this.finished = true;
+            this.phase = 'finished';
+            this.result = reason || this.result || 'stopped';
+            this.detachTicker();
+            if (this.frameId) {
+                window.cancelAnimationFrame(this.frameId);
+                this.frameId = 0;
+            }
+            this.restoreContainerZIndex();
+            this.restoreModelFrame();
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
+            }
+            if (activePluginDashboardCornerSession === this) {
+                activePluginDashboardCornerSession = null;
+            }
+        }
+
+        attachTicker() {
+            if (!this.ticker || typeof this.ticker.add !== 'function' || this.tickerAttached) {
+                return;
+            }
+            this.ticker.add(this.tick);
+            this.tickerAttached = true;
+        }
+
+        detachTicker() {
+            if (!this.ticker || typeof this.ticker.remove !== 'function' || !this.tickerAttached) {
+                return;
+            }
+            try {
+                this.ticker.remove(this.tick);
+            } catch (_) {}
+            this.tickerAttached = false;
+        }
+
+        elevateContainerZIndex() {
+            if (!this.container || !this.container.style || this.containerZIndexElevated) {
+                return false;
+            }
+            this.originalContainerZIndex = this.container.style.zIndex;
+            this.container.style.zIndex = PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX;
+            this.containerZIndexElevated = true;
+            return true;
+        }
+
+        restoreContainerZIndex() {
+            if (!this.container || !this.container.style || !this.containerZIndexElevated) {
+                return false;
+            }
+            this.container.style.zIndex = this.originalContainerZIndex || '';
+            this.originalContainerZIndex = null;
+            this.containerZIndexElevated = false;
+            return true;
+        }
+
+        cancel(reason) {
+            return this.requestStop(reason || 'cancelled', false);
+        }
+
+        waitForFinish() {
+            return new Promise((resolve) => {
+                const poll = () => {
+                    if (this.finished) {
+                        resolve();
+                        return;
+                    }
+                    window.requestAnimationFrame(poll);
+                };
+                window.requestAnimationFrame(poll);
+            });
+        }
+
+        readBounds() {
+            if (this.model && typeof this.model.getBounds === 'function') {
+                try {
+                    const bounds = this.model.getBounds();
+                    if (bounds && bounds.width > 0 && bounds.height > 0) {
+                        return {
+                            x: Number(bounds.x) || 0,
+                            y: Number(bounds.y) || 0,
+                            width: Number(bounds.width) || 0,
+                            height: Number(bounds.height) || 0
+                        };
+                    }
+                } catch (_) {}
+            }
+            return null;
+        }
+
+        getViewportSize() {
+            const screen = this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer
+                ? this.manager.pixi_app.renderer.screen
+                : null;
+            return {
+                width: Math.max(1, Number(screen && screen.width) || window.innerWidth || 1),
+                height: Math.max(1, Number(screen && screen.height) || window.innerHeight || 1)
+            };
+        }
+
+        resolveHiddenFrame() {
+            const base = this.initialModelFrame;
+            const viewport = this.getViewportSize();
+            const bounds = this.initialBounds;
+            const downShift = bounds && bounds.height > 0 ? bounds.height * 0.72 : viewport.height * 0.55;
+            return {
+                x: base.x,
+                y: base.y + Math.max(240, downShift),
+                scaleX: base.scaleX,
+                scaleY: base.scaleY,
+                rotation: base.rotation
+            };
+        }
+
+        resolveCornerFrame() {
+            const base = this.initialModelFrame;
+            const viewport = this.getViewportSize();
+            const bounds = this.initialBounds || {
+                x: base.x - viewport.width * 0.18,
+                y: base.y - viewport.height * 0.55,
+                width: viewport.width * 0.36,
+                height: viewport.height * 0.7
+            };
+            const modelCenterOffsetX = (bounds.x + bounds.width * 0.5) - base.x;
+            const modelCenterOffsetY = (bounds.y + bounds.height * 0.5) - base.y;
+            const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO);
+            const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO);
+            return {
+                x: desiredCenterX - modelCenterOffsetX,
+                y: desiredCenterY - modelCenterOffsetY,
+                scaleX: base.scaleX,
+                scaleY: base.scaleY,
+                rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)
+            };
+        }
+
+        resolveCornerHiddenFrame() {
+            const viewport = this.getViewportSize();
+            const bounds = this.initialBounds;
+            const diagonalShift = bounds && bounds.height > 0
+                ? Math.max(180, bounds.height * 0.42)
+                : Math.max(180, viewport.height * 0.32);
+            return {
+                x: this.cornerFrame.x + diagonalShift,
+                y: this.cornerFrame.y + diagonalShift,
+                scaleX: this.cornerFrame.scaleX,
+                scaleY: this.cornerFrame.scaleY,
+                rotation: this.cornerFrame.rotation
+            };
+        }
+
+        restoreModelFrame() {
+            if (!this.isCurrentModel() || !this.initialModelFrame) {
+                return false;
+            }
+            writeModelAlpha(this.model, this.initialAlpha);
+            return writeIntroGreetingHugModelFrame(this.model, this.initialModelFrame);
+        }
+
+        applyFrame(frame, alpha) {
+            if (!this.isCurrentModel() || !frame) {
+                return false;
+            }
+            writeModelAlpha(this.model, alpha);
+            return writeIntroGreetingHugModelFrame(this.model, frame);
+        }
+
+        blendFrame(fromFrame, toFrame, weight) {
+            return {
+                x: lerp(fromFrame.x, toFrame.x, weight),
+                y: lerp(fromFrame.y, toFrame.y, weight),
+                scaleX: lerp(fromFrame.scaleX, toFrame.scaleX, weight),
+                scaleY: lerp(fromFrame.scaleY, toFrame.scaleY, weight),
+                rotation: lerp(
+                    Number.isFinite(Number(fromFrame.rotation)) ? Number(fromFrame.rotation) : 0,
+                    Number.isFinite(Number(toFrame.rotation)) ? Number(toFrame.rotation) : 0,
+                    weight
+                )
+            };
+        }
+
+        tick() {
+            if (!this.active) {
+                return;
+            }
+            if (this.isCancelled()) {
+                this.cancel('cancelled');
+                return;
+            }
+            if (!this.isCurrentModel()) {
+                this.cancel('model_changed');
+                return;
+            }
+
+            const elapsed = Math.max(0, performance.now() - this.startedAt);
+            if (this.phase === 'exit') {
+                this.tickExit(elapsed);
+            } else {
+                this.tickEnter(elapsed);
+            }
+
+            if (!this.active) {
+                return;
+            }
+            if (!this.ticker) {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+        }
+
+        tickEnter(elapsed) {
+            if (elapsed <= this.hideMs) {
+                const progress = this.hideMs > 0 ? easeInOutCubic(elapsed / this.hideMs) : 1;
+                this.applyFrame(
+                    this.blendFrame(this.initialModelFrame, this.hiddenFrame, progress),
+                    lerp(this.initialAlpha, 0, progress)
+                );
+            } else if (elapsed <= this.totalDurationMs) {
+                const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
+                this.applyFrame(
+                    this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress),
+                    lerp(0, 1, progress)
+                );
+            } else {
+                this.phase = 'hold';
+                this.applyFrame(this.cornerFrame, 1);
+                this.elevateContainerZIndex();
+            }
+        }
+
+        tickExit(elapsed) {
+            if (elapsed <= this.hideMs) {
+                const progress = this.hideMs > 0 ? easeInOutCubic(elapsed / this.hideMs) : 1;
+                this.applyFrame(
+                    this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress),
+                    lerp(1, 0, progress)
+                );
+            } else if (elapsed <= this.totalDurationMs) {
+                const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
+                this.applyFrame(
+                    this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress),
+                    lerp(0, this.initialAlpha, progress)
+                );
+            } else {
+                this.finish(this.result || 'stopped');
+            }
         }
     }
 
@@ -1685,16 +2356,50 @@
         });
     }
 
+    async function startPluginDashboardCornerPeek(options) {
+        const normalizedOptions = options || {};
+        const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs);
+        if (!context) {
+            return null;
+        }
+        if (activePluginDashboardCornerSession && activePluginDashboardCornerSession.active) {
+            activePluginDashboardCornerSession.stop('replaced');
+        }
+        const session = new Live2DPluginDashboardCornerSession(context, {
+            document: normalizedOptions.document || document,
+            reducedMotion: !!normalizedOptions.reducedMotion,
+            token: normalizedOptions.token || Date.now(),
+            isCancelled: normalizedOptions.isCancelled,
+            hideMs: normalizedOptions.hideMs,
+            appearMs: normalizedOptions.appearMs
+        });
+        if (!session.start()) {
+            return null;
+        }
+        activePluginDashboardCornerSession = session;
+        return {
+            stop: function stopPluginDashboardCornerPeek(reason) {
+                return session.stop(reason || 'stopped');
+            },
+            isActive: function isPluginDashboardCornerPeekActive() {
+                return !!session.active;
+            }
+        };
+    }
+
     window.YuiGuideAvatarStage = Object.freeze({
         createWakeupSession: function createWakeupSession(context, options) {
             return new Live2DWakeupSession(context, options);
         },
         playIntroGreetingHug: playIntroGreetingHug,
         playIntroGiftHeart: playIntroGiftHeart,
+        startPluginDashboardCornerPeek: startPluginDashboardCornerPeek,
         applyIntroGreetingHugFinalPlacement: applyIntroGreetingHugFinalPlacement,
         Live2DWakeupSession: Live2DWakeupSession,
         Live2DIntroGreetingHugSession: Live2DIntroGreetingHugSession,
         Live2DIntroGiftHeartSession: Live2DIntroGiftHeartSession,
+        Live2DPluginDashboardCornerSession: Live2DPluginDashboardCornerSession,
         computeWakeupPose: computeWakeupPose,
         computeIntroGreetingHugPose: computeIntroGreetingHugPose,
         computeIntroGiftHeartPose: computeIntroGiftHeartPose,

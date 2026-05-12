@@ -450,6 +450,16 @@ _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-director.js",
 )
 
+_HOME_YUI_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "avatar-performance-stage.js",
+    "yui-guide-avatar-stage.js",
+    "yui-guide-wakeup.js",
+    "yui-guide-director.js",
+)
+
 
 def _script_tag_position(source: str, script_name: str) -> int:
     """Find the position of a `<script src="/static/{script_name}...">` tag,
@@ -473,7 +483,7 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
 
     positions = [
         _script_tag_position(source, name)
-        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        for name in (*_HOME_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
     ]
     assert positions == sorted(positions)
 
@@ -486,6 +496,7 @@ def test_home_template_loads_yui_wakeup_before_director():
         for name in (
             "yui-guide-overlay.js",
             "yui-guide-page-handoff.js",
+            "avatar-performance-stage.js",
             "yui-guide-avatar-stage.js",
             "yui-guide-wakeup.js",
             "yui-guide-director.js",
@@ -510,16 +521,36 @@ def test_yui_avatar_stage_exposes_extracted_wakeup_action():
     assert "playIntroGiftHeart" in source
     assert "computeIntroGiftHeartPose" in source
     assert "YUI_INTRO_GIFT_HEART_PARAMS" in source
+    assert "ParamHairFront" in source
+    assert "ParamHairSide" in source
+    assert "ParamHairBack" in source
+    assert "Param54" in source
+    assert "Param63" in source
+    assert "Param64" in source
     assert "Param77" in source
     assert "Param91" in source
     assert "Param93" in source
     assert "Param96" in source
+    gift_params_start = source.index("const YUI_INTRO_GIFT_HEART_PARAMS")
+    gift_params_end = source.index("const YUI_INTRO_GIFT_HEART_LEG_PARAM_KEYS", gift_params_start)
+    gift_params_source = source[gift_params_start:gift_params_end]
+    assert "yuiRightForearmAnim: 'Param90'" in gift_params_source
+    assert "yuiLeftForearmAnim: 'Param91'" in gift_params_source
+    assert "yuiRightHandAnim: 'Param92'" in gift_params_source
+    assert "yuiLeftHandAnim: 'Param93'" in gift_params_source
+    assert "armBounce" in source
+    assert "armCounterSwing" in source
+    assert "this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim" in source
+    assert "this.writeWeighted('yuiLeftHandAnim', pose.yuiLeftHandAnim" in source
     assert "frameScale" in source
     assert "frameY" in source
     assert "INTRO_GREETING_HUG_CLOSE_SCALE = 1.38" in source
-    assert "INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.52" in source
-    assert "INTRO_GREETING_HUG_MIN_SHIFT_PX = 320" in source
-    assert "INTRO_GREETING_HUG_MAX_SHIFT_PX = 760" in source
+    assert "INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.58" in source
+    assert "INTRO_GREETING_HUG_MIN_SHIFT_PX = 360" in source
+    assert "INTRO_GREETING_HUG_MAX_SHIFT_PX = 820" in source
+    assert "INTRO_GREETING_HUG_FINAL_SHIFT_VIEWPORT_RATIO = 0.52" in source
+    assert "INTRO_GREETING_HUG_FINAL_MIN_SHIFT_PX = 340" in source
+    assert "INTRO_GREETING_HUG_FINAL_MAX_SHIFT_PX = 700" in source
     assert "resolveIntroGreetingHugFrameShift" in source
     assert "initialModelFrame" in source
     assert "restoreModelFrame" in source
@@ -530,6 +561,13 @@ def test_yui_avatar_stage_exposes_extracted_wakeup_action():
     assert "isStorageLocationOverlayVisible" not in source
     assert "removeBlockingGuideOverlay" not in source
     assert "revealPreparedTutorialLive2D" not in source
+
+
+def test_yui_asset_version_includes_avatar_performance_runtime():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    assert 'static/avatar-performance-stage.js' in source
+    assert source.index('static/avatar-performance-stage.js') < source.index('static/yui-guide-avatar-stage.js')
 
 
 def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
@@ -581,12 +619,23 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     assert "preserveFinalPose" in avatar_source
     assert "YUI_WAKEUP_POSE_BLEND_FACTORS" in avatar_source
     assert "YUI_INTRO_GREETING_HUG_POSE_BLEND_FACTORS" in avatar_source
+    assert "window.AvatarPerformance" in avatar_source
+    assert "getDefaultCoordinator" in avatar_source
+    assert "YUI_WAKEUP_PERFORMANCE_CAPABILITIES" in avatar_source
+    assert "YUI_INTRO_PERFORMANCE_CAPABILITIES" in avatar_source
+    assert "acquireYuiGuidePerformanceLock" in avatar_source
+    assert "releaseYuiGuidePerformanceLock" in avatar_source
+    assert "home-yui-guide-intro-greeting" in avatar_source
     assert "this.clearTemporaryPoseOverride();" in avatar_source
     assert "this.restoreCapturedParams();" in avatar_source
     assert "suspendTemporaryMotions" not in avatar_source
     assert "resumeTemporaryMotions" not in avatar_source
     assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in avatar_source
     assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
+    assert "_temporaryPoseOverrides = new Map()" in live2d_source
+    assert "this._temporaryPoseOverrides.set(normalizedSource, entry)" in live2d_source
+    assert "Array.from(this._temporaryPoseOverrides.values())" in live2d_source
+    assert "this._temporaryPoseOverrides.delete(entry.source)" in live2d_source
     assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
     for param_id in (
         "ParamEyeLOpen",
@@ -640,6 +689,68 @@ def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
     assert "Param93" not in director_source
     assert "Param95" not in director_source
     assert "Param96" not in director_source
+
+
+def test_yui_intro_avatar_actions_respect_reduced_motion():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+
+    assert "shouldReduceTutorialMotion()" in director_source
+    assert "prefers-reduced-motion: reduce" in director_source
+    assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
+    assert "approachMs: reducedMotion ? 0" in avatar_source
+    assert "durationMs: reducedMotion ? 0" in avatar_source
+
+
+def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DPluginDashboardCornerSession" in avatar_source
+    assert "startPluginDashboardCornerPeek: startPluginDashboardCornerPeek" in avatar_source
+    assert "YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame'])" in avatar_source
+    assert "home-yui-guide-plugin-dashboard-corner" in avatar_source
+    assert "readModelAlpha" in avatar_source
+    assert "writeModelAlpha" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483001'" in avatar_source
+    assert "elevateContainerZIndex" in avatar_source
+    assert "restoreContainerZIndex" in avatar_source
+    assert "this.container.style.zIndex = PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX" in avatar_source
+    assert "this.container.style.zIndex = this.originalContainerZIndex || ''" in avatar_source
+    source_order = [
+        avatar_source.index("this.phase = 'hold'"),
+        avatar_source.index("this.elevateContainerZIndex()", avatar_source.index("this.phase = 'hold'")),
+    ]
+    assert source_order == sorted(source_order)
+    assert "const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO)" in avatar_source
+    assert "const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO)" in avatar_source
+    assert "modelCenterOffsetX" in avatar_source
+    assert "modelCenterOffsetY" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_BOTTOM_OVERHANG_PX" not in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_PADDING_PX" not in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_SCALE" not in avatar_source
+    assert "cornerScale" not in avatar_source
+    assert "scaleX: base.scaleX," in avatar_source
+    assert "scaleY: base.scaleY," in avatar_source
+    assert "rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)" in avatar_source
+    assert "this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress)" in avatar_source
+    assert "this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress)" in avatar_source
+    assert "activePluginDashboardCornerSession.stop('replaced')" in avatar_source
+
+    assert "pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId)" in director_source
+    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed')" in director_source
+    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup')" in director_source
+    assert "async stopPluginDashboardCornerPeekPerformance(handle, reason)" in director_source
+    assert "await handle.stop(reason || 'plugin_dashboard_closed')" in director_source
+    assert "isCancelled: () => runId !== this.sceneRunId || this.isStopping()" in director_source
+    assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
+
+    assert "PluginDashboardCorner" not in performance_source
+    assert "plugin-dashboard" not in performance_source
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():

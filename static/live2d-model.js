@@ -107,6 +107,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._origCoreModelUpdate = null;
     this._coreModelRef = null;
     this._temporaryPoseOverride = null;
+    this._temporaryPoseOverrides = new Map();
 
     if (this._mouthTicker && ticker) {
         try {
@@ -298,44 +299,85 @@ Live2DManager.prototype.getCurrentModel = function() {
     return this.currentModel || null;
 };
 
-// 安装短期姿态覆盖槽。用于教程苏醒这类需要在渲染前最后写入的动作，
-// 避免被视线锁、眨眼、常驻表情或 motion update 覆盖。
+// 安装短期姿态覆盖。多个来源可按注册顺序组合，避免并行动作互相顶掉。
 Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply) {
     if (typeof apply !== 'function') {
         return false;
     }
-    this._temporaryPoseOverride = {
-        source: String(source || 'temporary_pose'),
+    const normalizedSource = String(source || 'temporary_pose');
+    const entry = {
+        source: normalizedSource,
         apply: apply
     };
+    if (!this._temporaryPoseOverrides || typeof this._temporaryPoseOverrides.set !== 'function') {
+        this._temporaryPoseOverrides = new Map();
+    }
+    if (this._temporaryPoseOverrides.has(normalizedSource)) {
+        this._temporaryPoseOverrides.delete(normalizedSource);
+    }
+    this._temporaryPoseOverrides.set(normalizedSource, entry);
+    this._temporaryPoseOverride = entry;
     return true;
 };
 
 Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
+    const overrides = this._temporaryPoseOverrides;
     const active = this._temporaryPoseOverride;
-    if (!active) {
+    if ((!overrides || typeof overrides.delete !== 'function' || overrides.size === 0) && !active) {
         return;
     }
     const normalizedSource = arguments.length === 0 ? '' : String(source);
-    if (normalizedSource === '' || active.source === normalizedSource) {
+    if (overrides && typeof overrides.clear === 'function' && (overrides.size > 0 || !active)) {
+        if (normalizedSource === '') {
+            overrides.clear();
+        } else {
+            overrides.delete(normalizedSource);
+        }
+        const remaining = Array.from(overrides.values());
+        this._temporaryPoseOverride = remaining.length ? remaining[remaining.length - 1] : null;
+        return;
+    }
+    if (normalizedSource === '' || (active && active.source === normalizedSource)) {
         this._temporaryPoseOverride = null;
     }
 };
 
 Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
-    const active = this._temporaryPoseOverride;
-    if (!active || typeof active.apply !== 'function' || !coreModel) {
+    if (!coreModel) {
         return;
     }
-    try {
-        active.apply(coreModel, {
-            manager: this,
-            model: this.currentModel || null,
-            now: performance.now()
-        });
-    } catch (error) {
-        console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
-        this._temporaryPoseOverride = null;
+    const overrides = this._temporaryPoseOverrides && typeof this._temporaryPoseOverrides.values === 'function'
+        ? Array.from(this._temporaryPoseOverrides.values())
+        : [];
+    const entries = overrides.length ? overrides : (this._temporaryPoseOverride ? [this._temporaryPoseOverride] : []);
+    if (!entries.length) {
+        return;
+    }
+    const context = {
+        manager: this,
+        model: this.currentModel || null,
+        now: performance.now()
+    };
+    entries.forEach((entry) => {
+        if (!entry || typeof entry.apply !== 'function') {
+            return;
+        }
+        try {
+            entry.apply(coreModel, context);
+        } catch (error) {
+            console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
+            if (this._temporaryPoseOverrides && typeof this._temporaryPoseOverrides.delete === 'function') {
+                this._temporaryPoseOverrides.delete(entry.source);
+                const remaining = Array.from(this._temporaryPoseOverrides.values());
+                this._temporaryPoseOverride = remaining.length ? remaining[remaining.length - 1] : null;
+            } else {
+                this._temporaryPoseOverride = null;
+            }
+        }
+    });
+    if (this._temporaryPoseOverrides && this._temporaryPoseOverrides.size > 0) {
+        const remaining = Array.from(this._temporaryPoseOverrides.values());
+        this._temporaryPoseOverride = remaining[remaining.length - 1] || null;
     }
 };
 
@@ -366,6 +408,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
     this._temporaryPoseOverride = null;
+    this._temporaryPoseOverrides = new Map();
     this._temporaryMotionSuspendToken = null;
     this._idleMotionFinishHandler = null;
     this._idleMotionFinishModel = null;
