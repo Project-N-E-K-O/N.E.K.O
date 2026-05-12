@@ -117,6 +117,25 @@ def test_opt_in_enqueue_and_clear_queue(tmp_path: Path) -> None:
         store.close()
 
 
+def test_preview_builds_local_stats_summary_without_upload_queue(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store)
+        _seed_question_type(quality)
+        builder = PublicGraphContributionBuilder(store, StudyConfig(knowledge_contribution_min_sample_count=3))
+
+        preview = builder.preview(limit=5)
+
+        assert preview["stats"]
+        assert preview["summary"]["total"] >= 1
+        assert preview["queue"] == []
+        assert preview["opt_in"] is False
+        for stat in preview["stats"]:
+            builder.assert_no_raw_learning_text(stat)
+    finally:
+        store.close()
+
+
 def test_sensitive_payload_is_rejected() -> None:
     builder = PublicGraphContributionBuilder(store=None, config=StudyConfig())
     with pytest.raises(ValueError):

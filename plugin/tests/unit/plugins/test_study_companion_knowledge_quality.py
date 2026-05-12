@@ -74,6 +74,43 @@ def test_candidates_upsert_and_duplicate_keys_merge(tmp_path: Path) -> None:
         store.close()
 
 
+def test_detect_duplicate_or_reverse_edge_conflict(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store)
+        edge = quality.upsert_candidate(
+            KnowledgeCandidateType.EDGE.value,
+            {"from_topic_id": "a", "to_topic_id": "b", "relation": "prerequisite"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {},
+        )
+
+        duplicate = quality.detect_duplicate_or_conflict(
+            {
+                "item_type": KnowledgeCandidateType.EDGE.value,
+                "from_topic_id": "a",
+                "to_topic_id": "b",
+                "relation": "prerequisite",
+            }
+        )
+        conflict = quality.detect_duplicate_or_conflict(
+            {
+                "item_type": KnowledgeCandidateType.EDGE.value,
+                "from_topic_id": "b",
+                "to_topic_id": "a",
+                "relation": "prerequisite",
+            }
+        )
+
+        assert duplicate["dedupe_key"] == "a:b:prerequisite"
+        assert duplicate["duplicate"]["id"] == edge["id"]
+        assert conflict["dedupe_key"] == "b:a:prerequisite"
+        assert conflict["conflict"]["id"] == edge["id"]
+    finally:
+        store.close()
+
+
 def test_evidence_recomputes_score_and_lifecycle_thresholds(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -98,6 +135,16 @@ def test_evidence_recomputes_score_and_lifecycle_thresholds(tmp_path: Path) -> N
         trusted = quality.promote_or_deprecate(item["id"])
         assert trusted["status"] == KnowledgeCandidateStatus.TRUSTED.value
         assert trusted["positive_count"] >= 4
+
+        summary = quality.status_summary(limit=3)
+        assert summary["total"] >= 1
+        assert summary["by_status"][KnowledgeCandidateStatus.TRUSTED.value] >= 1
+        assert summary["recent_evidence"]
+
+        prompt_summary = quality.prompt_evidence_summary(topic_id="quadratic_vertex_form")
+        assert prompt_summary
+        assert prompt_summary[0]["status"] == KnowledgeCandidateStatus.TRUSTED.value
+        assert prompt_summary[0]["payload_summary"]["question_type_key"] == "transfer"
     finally:
         store.close()
 

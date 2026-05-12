@@ -16,7 +16,11 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
-from plugin.plugins.study_companion.llm_prompts import _compact_prompt_value, build_concept_explain_messages
+from plugin.plugins.study_companion.llm_prompts import (
+    _compact_prompt_value,
+    build_concept_explain_messages,
+    build_operation_messages,
+)
 from plugin.plugins.study_companion.mode_manager import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
@@ -32,7 +36,7 @@ from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
 from plugin.plugins.study_companion import service as study_service
-from plugin.plugins.study_companion.screen_classifier import classify_screen_from_ocr
+from plugin.plugins.study_companion.screen_classifier import ScreenClassification, classify_screen_from_ocr
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
 from plugin.plugins.study_companion.ui_api import build_open_ui_payload
@@ -333,19 +337,10 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert invalid.mode == MODE_COMPANION
     assert invalid.default_mode == MODE_COMPANION
 
-    direct = StudyConfig(mode="not_a_mode", default_mode="invalid", history_limit=0, llm_temperature=9.0, llm_max_tokens=0)
+    direct = StudyConfig(mode="not_a_mode", default_mode="invalid", history_limit=0)
     assert direct.mode == MODE_COMPANION
     assert direct.default_mode == MODE_COMPANION
     assert direct.history_limit == 1
-    assert direct.llm_temperature == 2.0
-    assert direct.llm_max_tokens == 1
-
-    generic_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333}})
-    assert generic_llm.llm_limits_for_operation("unsupported") == (0.6, 333)
-    assert generic_llm.llm_limits_for_operation("question_generate") == (0.6, 333)
-
-    specific_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333, "temperature_question_generate": 0.3, "max_tokens_question_generate": 444}})
-    assert specific_llm.llm_limits_for_operation("question_generate") == (0.3, 444)
 
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -371,12 +366,59 @@ def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
     assert "总结" in chinese.signals.get("summary_hits", [])
 
 
+def test_study_screen_classifier_covers_core_screen_types_and_smoothing() -> None:
+    assert classify_screen_from_ocr("", window_title="").to_payload()["screen_type"] == "idle"
+
+    question = classify_screen_from_ocr("Problem 1: What is the derivative?", window_title="Quiz exercise")
+    assert question.screen_type == "question"
+    assert question.confidence > 0.0
+
+    answering = classify_screen_from_ocr("Answer submitted\nScore: incorrect\nFeedback: retry", window_title="Answer review")
+    assert answering.screen_type in {"answering", "review"}
+    assert answering.signals["answer_hits"]
+
+    notes = classify_screen_from_ocr("Notes\nmemo outline for photosynthesis", window_title="Study note")
+    assert notes.screen_type == "notes"
+
+    reading = classify_screen_from_ocr(
+        "Chapter section lesson text definition concept " * 8,
+        window_title="Reading lesson",
+    )
+    assert reading.screen_type == "reading"
+    assert len(reading.text_excerpt) <= 143
+
+    recent = [
+        ScreenClassification(screen_type="review", confidence=0.7),
+        {"screen_type": "review", "screen_confidence": 0.72},
+        {"screen_type": "review", "confidence": 0.74},
+    ]
+    smoothed = classify_screen_from_ocr("tiny", recent_classifications=recent)
+    assert smoothed.screen_type == "review"
+    assert smoothed.signals["smoothed_from"] == "review"
+
+
 def test_compact_prompt_value_stops_at_max_depth() -> None:
     nested = {"a": {"b": {"c": {"d": "bottom"}}}}
 
     compacted = _compact_prompt_value(nested, list_limit=5, string_limit=50, max_depth=2)
 
     assert compacted == {"a": {"b": "...[max depth reached]"}}
+
+
+def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operation() -> None:
+    context = {
+        "text": "x" * 20000,
+        "language": "en",
+        "items": [{"body": "y" * 2000} for _ in range(30)],
+        **{f"k{i}": i for i in range(90)},
+    }
+
+    messages = build_operation_messages("question_generate", context)
+
+    assert messages[1]["content"].count("_prompt_truncated") == 1
+    assert len(messages[1]["content"]) <= 9500
+    with pytest.raises(ValueError):
+        build_operation_messages("unsupported", {})
 
 
 def test_study_open_ui_payload_returns_message_key() -> None:
@@ -943,6 +985,35 @@ def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     assert "ocr boom" in failed.diagnostic
 
 
+def test_ocr_pipeline_normalizes_box_objects_and_capture_failures() -> None:
+    class _Box:
+        text = "Box text"
+
+        def to_dict(self):
+            return {"text": self.text, "x": 1}
+
+    class _BrokenCapture:
+        def capture_frame(self, _target, _profile):
+            raise RuntimeError("target capture boom")
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=_FakeOcrBackend([_Box(), {"text": "Dict text", "x": 2}, "Tail"]),
+    )
+    snapshot = pipeline.snapshot_from_image(object(), backend_name="fake")
+
+    assert snapshot.status == "ok"
+    assert snapshot.backend == "fake"
+    assert snapshot.text == "Box text Dict text Tail"
+    assert snapshot.boxes == [{"text": "Box text", "x": 1}, {"text": "Dict text", "x": 2}]
+
+    broken = StudyOcrPipeline(logger=_Logger(), config=StudyConfig(), capture_backend=_BrokenCapture())
+    failed = broken.capture_snapshot(target=object())
+    assert failed.status == "capture_failed"
+    assert "target capture boom" in failed.diagnostic
+
+
 def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     def _capture_boom():
         raise RuntimeError("capture boom")
@@ -1338,6 +1409,8 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
         status = await plugin.study_status()
         assert isinstance(status, Ok)
         assert status.value["knowledge_summary"]["tracked_topic_count"] >= 1
+        assert status.value["knowledge_quality_summary"]["total"] >= 1
+        assert "anonymous_knowledge_stats_summary" in status.value
         assert status.value["weak_topics"]
         assert status.value["mastery_overview"]
     finally:
@@ -1589,9 +1662,11 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
 
     cfg_mgr = _ConfigManager()
     created_keys: list[str] = []
+    create_kwargs: list[dict[str, object]] = []
 
-    def _create_chat_llm(*, api_key: str, **_kwargs):
+    def _create_chat_llm(*, api_key: str, **kwargs):
         created_keys.append(api_key)
+        create_kwargs.append(dict(kwargs))
         return _FakeLLM(api_key)
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
@@ -1605,6 +1680,9 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert created_keys == ["old-key", "new-key"]
+    assert create_kwargs
+    assert all("temperature" not in item for item in create_kwargs)
+    assert all("max_completion_tokens" not in item for item in create_kwargs)
     assert "old-key" not in repr(agent._client_cache._cache)
     assert "new-key" not in repr(agent._client_cache._cache)
 

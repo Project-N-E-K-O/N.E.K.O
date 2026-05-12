@@ -55,8 +55,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = threading.RLock()
-        self._install_lock = threading.Lock()
-        self._rapidocr_models_lock = threading.Lock()
+        self._install_in_progress = False
+        self._rapidocr_models_in_progress = False
         self._cfg = StudyConfig()
         self._state = build_initial_state(mode=MODE_COMPANION)
         self._store = StudyStore(
@@ -901,8 +901,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["summary"],
     )
     async def study_install_tesseract(self, force: bool = False, **kwargs):
-        if not self._install_lock.acquire(blocking=False):
-            return Err(SdkError("Tesseract install is already running"))
+        with self._lock:
+            if self._install_in_progress:
+                return Err(SdkError("Tesseract install is already running"))
+            self._install_in_progress = True
         run_id = self._resolve_current_run_id(kwargs)
         try:
             from plugin.plugins.galgame_plugin.tesseract_support import install_tesseract
@@ -925,7 +927,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(f"Tesseract install failed: {exc}"))
         finally:
-            self._install_lock.release()
+            with self._lock:
+                self._install_in_progress = False
 
     @plugin_entry(
         id="study_download_rapidocr_models",
@@ -936,8 +939,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["summary"],
     )
     async def study_download_rapidocr_models(self, force: bool = False, **kwargs):
-        if not self._rapidocr_models_lock.acquire(blocking=False):
-            return Err(SdkError("RapidOCR model download is already running"))
+        with self._lock:
+            if self._rapidocr_models_in_progress:
+                return Err(SdkError("RapidOCR model download is already running"))
+            self._rapidocr_models_in_progress = True
         run_id = self._resolve_current_run_id(kwargs)
         try:
             from plugin.plugins.galgame_plugin.rapidocr_support import download_rapidocr_models
@@ -970,7 +975,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(f"RapidOCR model download failed: {exc}"))
         finally:
-            self._rapidocr_models_lock.release()
+            with self._lock:
+                self._rapidocr_models_in_progress = False
 
 
 StudyCompanionBridgePlugin = StudyCompanionPlugin

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from plugin.plugins.study_companion.fsrs_bridge import (
+    FSRSBridge,
     StudyFsrsRating,
     create_card,
     get_due_reviews,
@@ -46,3 +47,24 @@ def test_study_fsrs_retrievability_and_due_sorting() -> None:
 
     assert [item["topic_id"] for item in due] == ["old", "weak"]
     assert due[0]["priority"] > due[1]["priority"]
+
+
+def test_study_fsrs_bridge_wraps_card_rating_and_due_review_methods() -> None:
+    now = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    bridge = FSRSBridge(retention_target=0.90)
+    card = bridge.new_knowledge_card("bridge_topic", now)
+
+    updated, schedule = bridge.rate_answer(card, StudyFsrsRating.Good, now)
+    due_card = updated.__class__.from_dict(
+        {
+            **updated.to_dict(),
+            "due": (now - timedelta(days=1)).isoformat(),
+            "last_review": (now - timedelta(days=10)).isoformat(),
+            "stability": 2.0,
+        }
+    )
+    reviews = bridge.get_due_reviews([due_card], now)
+
+    assert schedule["topic_id"] == "bridge_topic"
+    assert updated.reps == 1
+    assert reviews and reviews[0]["topic_id"] == "bridge_topic"

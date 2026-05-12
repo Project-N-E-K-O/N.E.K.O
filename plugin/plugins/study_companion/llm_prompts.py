@@ -3,6 +3,28 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from config.prompts.prompts_study_companion import (
+    STUDY_ANSWER_EVALUATE_EXAMPLE,
+    STUDY_ANSWER_EVALUATE_REQUIREMENTS,
+    STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT,
+    STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE,
+    STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
+    STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE,
+    STUDY_KNOWLEDGE_TRACK_EXAMPLE,
+    STUDY_KNOWLEDGE_TRACK_REQUIREMENTS,
+    STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT,
+    STUDY_MODE_SYSTEM_GUIDANCE,
+    STUDY_PROMPT_CONTEXT_MAX_CHARS,
+    STUDY_QUESTION_GENERATE_EXAMPLE,
+    STUDY_QUESTION_GENERATE_REQUIREMENTS,
+    STUDY_QUESTION_GENERATE_SYSTEM_PROMPT,
+    STUDY_STRUCTURED_MODE_PREFIX_TEMPLATE,
+    STUDY_STRUCTURED_USER_TEMPLATE,
+    STUDY_SUMMARIZE_SESSION_EXAMPLE,
+    STUDY_SUMMARIZE_SESSION_REQUIREMENTS,
+    STUDY_SUMMARIZE_SESSION_SYSTEM_PROMPT,
+)
+
 from .constants import (
     LLM_OPERATION_ANSWER_EVALUATE,
     LLM_OPERATION_CONCEPT_EXPLAIN,
@@ -10,31 +32,9 @@ from .constants import (
     LLM_OPERATION_QUESTION_GENERATE,
     LLM_OPERATION_SUMMARIZE_SESSION,
     MODE_COMPANION,
-    MODE_INTERACTIVE,
-    MODE_TEACHING,
     SUPPORTED_LLM_OPERATIONS,
 )
 from .mode_manager import normalize_mode
-
-_PROMPT_CONTEXT_MAX_CHARS = {
-    LLM_OPERATION_CONCEPT_EXPLAIN: 12000,
-    LLM_OPERATION_QUESTION_GENERATE: 9000,
-    LLM_OPERATION_ANSWER_EVALUATE: 6000,
-    LLM_OPERATION_KNOWLEDGE_TRACK: 5000,
-    LLM_OPERATION_SUMMARIZE_SESSION: 4500,
-}
-
-CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
-    "You are a concise study tutor. Explain the concept clearly, "
-    "identify prerequisite ideas, and give one short check question. "
-    "Do not invent source material beyond the supplied text."
-)
-
-MODE_SYSTEM_GUIDANCE = {
-    MODE_COMPANION: "Keep the reply short, warm, and helpful.",
-    MODE_INTERACTIVE: "Use a discussion style, ask one short follow-up question if it helps.",
-    MODE_TEACHING: "Teach step by step with slightly more structure, then end with one short check question.",
-}
 
 
 def _json_dump(value: object) -> str:
@@ -99,7 +99,7 @@ def _compact_prompt_value(
 
 
 def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
-    limit = _PROMPT_CONTEXT_MAX_CHARS.get(operation, 8000)
+    limit = STUDY_PROMPT_CONTEXT_MAX_CHARS.get(operation, 8000)
     raw = _json_dump(context)
     if len(raw) <= limit:
         return raw
@@ -130,48 +130,7 @@ def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
 
 def _mode_guidance(mode: str) -> str:
     selected_mode = normalize_mode(mode)
-    return MODE_SYSTEM_GUIDANCE.get(selected_mode, MODE_SYSTEM_GUIDANCE[MODE_COMPANION])
-
-
-_CONCEPT_EXPLAIN_EXAMPLE = {
-    "reply": "The idea is the slope of a line at one point, so you track the instantaneous change rather than the average change.",
-}
-
-_QUESTION_GENERATE_EXAMPLE = {
-    "question": "What is the key relationship described in the source text?",
-    "answer": "The answer should restate the core rule or concept from the source text.",
-    "hint": "Look for the main definition or rule that appears most often in the source.",
-    "difficulty": 2,
-    "topic": "core concept",
-}
-
-_ANSWER_EVALUATE_EXAMPLE = {
-    "verdict": "partial",
-    "score": 68,
-    "error_type": "incomplete",
-    "feedback": "You identified the main idea, but one important step is missing.",
-    "next_action": "Ask the learner to restate the missing step in one sentence.",
-}
-
-_KNOWLEDGE_TRACK_EXAMPLE = {
-    "topic": "core concept",
-    "mastery_delta": 0.08,
-    "confidence": 0.61,
-    "weak_points": ["missing step"],
-    "next_steps": ["restate the definition", "do one more recall attempt"],
-    "session_summary_seed": {
-        "event_count": 3,
-        "last_operation": "answer_evaluate",
-    },
-}
-
-_SUMMARIZE_SESSION_EXAMPLE = {
-    "summary": "The session focused on one core concept and used a short answer check to confirm understanding.",
-    "highlights": ["The learner explained the definition correctly."],
-    "weak_points": ["One step still needs practice."],
-    "next_actions": ["Review the missing step", "Try one new recall question"],
-    "markdown": "## Summary\n\n- The session focused on one core concept.",
-}
+    return STUDY_MODE_SYSTEM_GUIDANCE.get(selected_mode, STUDY_MODE_SYSTEM_GUIDANCE[MODE_COMPANION])
 
 
 def _build_structured_messages(
@@ -183,14 +142,13 @@ def _build_structured_messages(
     example: dict[str, Any],
     mode: str = MODE_COMPANION,
 ) -> list[dict[str, str]]:
-    prompt = (
-        requirements
-        + f"{_json_dump(example)}\n\n"
-        + "context:\n"
-        + _context_json_for_prompt(operation, context)
+    prompt = STUDY_STRUCTURED_USER_TEMPLATE.format(
+        requirements=requirements,
+        example_json=_json_dump(example),
+        context_json=_context_json_for_prompt(operation, context),
     )
     if mode:
-        prompt = f"Mode: {normalize_mode(mode)}\n\n{prompt}"
+        prompt = STUDY_STRUCTURED_MODE_PREFIX_TEMPLATE.format(mode=normalize_mode(mode), prompt=prompt)
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
@@ -210,16 +168,18 @@ def build_concept_explain_messages(
     return [
         {
             "role": "system",
-            "content": f"{CONCEPT_EXPLAIN_SYSTEM_PROMPT}\nMode guidance: {_mode_guidance(selected_mode)}",
+            "content": STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE.format(
+                system_prompt=STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
+                mode_guidance=_mode_guidance(selected_mode),
+            ),
         },
         {
             "role": "user",
-            "content": (
-                f"Language: {language}\n"
-                f"Source: {source}\n"
-                f"Mode: {selected_mode}\n"
-                "Task: concept_explain\n\n"
-                f"Study text:\n{text.strip()}"
+            "content": STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE.format(
+                language=language,
+                source=source,
+                mode=selected_mode,
+                text=text.strip(),
             ),
         },
     ]
@@ -238,24 +198,10 @@ def build_question_generate_messages(
     context.setdefault("mode", normalize_mode(mode))
     return _build_structured_messages(
         operation=LLM_OPERATION_QUESTION_GENERATE,
-        system_prompt=(
-            "You are a study question generator. "
-            "Create one concise question from the supplied context. "
-            "Return exactly one valid JSON object."
-        ),
-        requirements=(
-            "Task: Generate a study question.\n"
-            "Requirements:\n"
-            "1. question: one clear question grounded in the source text.\n"
-            "2. answer: the compact reference answer.\n"
-            "3. hint: one short hint for the learner.\n"
-            "4. difficulty: integer from 1 to 5.\n"
-            "5. topic: a short label for the target concept.\n"
-            "6. Keep the output grounded in context.screen_classification when present.\n"
-            "7. Output must match this JSON structure:\n"
-        ),
+        system_prompt=STUDY_QUESTION_GENERATE_SYSTEM_PROMPT,
+        requirements=STUDY_QUESTION_GENERATE_REQUIREMENTS,
         context=context,
-        example=_QUESTION_GENERATE_EXAMPLE,
+        example=STUDY_QUESTION_GENERATE_EXAMPLE,
         mode=mode,
     )
 
@@ -277,23 +223,10 @@ def build_answer_evaluate_messages(
     context.setdefault("mode", normalize_mode(mode))
     return _build_structured_messages(
         operation=LLM_OPERATION_ANSWER_EVALUATE,
-        system_prompt=(
-            "You are a conservative study answer evaluator. "
-            "Judge only what the context supports. Return exactly one valid JSON object."
-        ),
-        requirements=(
-            "Task: Evaluate the learner's answer.\n"
-            "Requirements:\n"
-            "1. verdict must be one of: correct / partial / wrong / dont_know.\n"
-            "2. score must be an integer from 0 to 100.\n"
-            "3. error_type should be a short label such as: none / missing_step / misconception / vague / incomplete / unsupported.\n"
-            "4. feedback should be short, direct, and actionable.\n"
-            "5. next_action should state the next teaching step.\n"
-            "6. Use expected_answer and current question as the reference, but do not invent facts.\n"
-            "7. Output must match this JSON structure:\n"
-        ),
+        system_prompt=STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT,
+        requirements=STUDY_ANSWER_EVALUATE_REQUIREMENTS,
         context=context,
-        example=_ANSWER_EVALUATE_EXAMPLE,
+        example=STUDY_ANSWER_EVALUATE_EXAMPLE,
         mode=mode,
     )
 
@@ -309,23 +242,10 @@ def build_knowledge_track_messages(
     context.setdefault("mode", normalize_mode(mode))
     return _build_structured_messages(
         operation=LLM_OPERATION_KNOWLEDGE_TRACK,
-        system_prompt=(
-            "You are a lightweight study tracking backend. "
-            "Update the learner's trajectory from the supplied context. Return exactly one valid JSON object."
-        ),
-        requirements=(
-            "Task: Update lightweight knowledge tracking.\n"
-            "Requirements:\n"
-            "1. topic should be a short label.\n"
-            "2. mastery_delta should be a number from -1.0 to 1.0.\n"
-            "3. confidence should be a number from 0.0 to 1.0.\n"
-            "4. weak_points should be a short array of strings.\n"
-            "5. next_steps should be a short array of strings.\n"
-            "6. session_summary_seed should remain compact and conservative.\n"
-            "7. Output must match this JSON structure:\n"
-        ),
+        system_prompt=STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT,
+        requirements=STUDY_KNOWLEDGE_TRACK_REQUIREMENTS,
         context=context,
-        example=_KNOWLEDGE_TRACK_EXAMPLE,
+        example=STUDY_KNOWLEDGE_TRACK_EXAMPLE,
         mode=mode,
     )
 
@@ -341,23 +261,10 @@ def build_summarize_session_messages(
     context.setdefault("mode", normalize_mode(mode))
     return _build_structured_messages(
         operation=LLM_OPERATION_SUMMARIZE_SESSION,
-        system_prompt=(
-            "You are a study session summarizer. "
-            "Write a concise study summary from the supplied context. Return exactly one valid JSON object."
-        ),
-        requirements=(
-            "Task: Summarize the session.\n"
-            "Requirements:\n"
-            "1. summary: 1-4 short sentences.\n"
-            "2. highlights: short bullet-like strings that capture the learner's progress.\n"
-            "3. weak_points: short bullet-like strings that identify gaps.\n"
-            "4. next_actions: short bullet-like strings that suggest what to do next.\n"
-            "5. markdown: a compact Markdown summary suitable for display.\n"
-            "6. Use only the supplied context and keep the summary conservative.\n"
-            "7. Output must match this JSON structure:\n"
-        ),
+        system_prompt=STUDY_SUMMARIZE_SESSION_SYSTEM_PROMPT,
+        requirements=STUDY_SUMMARIZE_SESSION_REQUIREMENTS,
         context=context,
-        example=_SUMMARIZE_SESSION_EXAMPLE,
+        example=STUDY_SUMMARIZE_SESSION_EXAMPLE,
         mode=mode,
     )
 
@@ -403,8 +310,6 @@ def build_operation_messages(operation: str, context: dict[str, Any]) -> list[di
 
 
 __all__ = [
-    "CONCEPT_EXPLAIN_SYSTEM_PROMPT",
-    "MODE_SYSTEM_GUIDANCE",
     "build_answer_evaluate_messages",
     "build_concept_explain_messages",
     "build_knowledge_track_messages",

@@ -6,6 +6,21 @@ import inspect
 import re
 from typing import Any, Awaitable, Callable
 
+from config.prompts.prompts_study_companion import (
+    STUDY_EMPTY_INPUT_DEFAULT,
+    STUDY_FALLBACK_EXPLANATION_DEFAULT,
+    STUDY_FALLBACK_FEEDBACK,
+    STUDY_FALLBACK_NEXT_ACTION,
+    STUDY_FALLBACK_QUESTION_EMPTY,
+    STUDY_FALLBACK_QUESTION_TEMPLATE,
+    STUDY_FALLBACK_SUMMARY_DEFAULT,
+    STUDY_FALLBACK_SUMMARY_EMPTY,
+    STUDY_FALLBACK_SUMMARY_NEXT_ACTIONS,
+    STUDY_FALLBACK_TRACK_NEXT_STEPS_DEFAULT,
+    STUDY_FALLBACK_TRACK_NEXT_STEPS_WITH_WEAK_POINTS,
+    STUDY_JSON_CORRECTION_USER_TEMPLATE,
+    STUDY_MARKDOWN_SECTION_EMPTY_ITEM,
+)
 from plugin.sdk.plugin import SdkError
 
 from .constants import (
@@ -206,10 +221,12 @@ class _JSONCorrector:
             {
                 "role": "user",
                 "content": (
-                    f"JSON correction request {attempt}/{max_attempts}, operation={operation}.\n"
-                    f"Parse error: {_bounded_prompt_text(parse_error, max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS)}\n"
-                    "Your last response was not a valid JSON object. "
-                    "Reply with ONLY one valid JSON object and no markdown."
+                    STUDY_JSON_CORRECTION_USER_TEMPLATE.format(
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        operation=operation,
+                        parse_error=_bounded_prompt_text(parse_error, max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS),
+                    )
                 ),
             }
         )
@@ -331,14 +348,14 @@ class TutorLLMAgent:
             return study_i18n_t(
                 language,
                 "reply.empty_input",
-                default=str(values.get("default") or "Please provide text or capture a readable screen first."),
+                default=str(values.get("default") or STUDY_EMPTY_INPUT_DEFAULT),
             )
         if key == "fallback_explanation":
             first_line = str(values.get("first_line") or "").strip()
             return study_i18n_t(
                 language,
                 "reply.fallback_explanation",
-                default=str(values.get("default") or ""),
+                default=str(values.get("default") or STUDY_FALLBACK_EXPLANATION_DEFAULT),
                 first_line=first_line,
             )
         return str(values.get("default") or "")
@@ -393,12 +410,7 @@ class TutorLLMAgent:
             fallback_reply = self._localize_reply(
                 self._config.language,
                 "fallback_explanation",
-                default=(
-                    "Key text: {first_line}\n\n"
-                    "Explanation: I could not reach the configured model, so this is a local fallback. "
-                    "Read the statement once for definitions, then identify the cause, result, and any formula or term that changes the conclusion.\n\n"
-                    "Check question: What is the main term or relationship you need to remember from this text?"
-                ),
+                default=STUDY_FALLBACK_EXPLANATION_DEFAULT,
                 first_line=next((line.strip() for line in normalized.splitlines() if line.strip()), normalized[:120]),
             )
             if teaching_prefix and not fallback_reply.startswith(teaching_prefix):
@@ -616,19 +628,16 @@ class TutorLLMAgent:
         text = _as_str(context.get("source_text") or context.get("text")).strip()
         if not text:
             return {
-                "question": "",
-                "answer": "",
+                **STUDY_FALLBACK_QUESTION_EMPTY,
                 "hint": self._localize_reply(self._config.language, "empty_input"),
-                "difficulty": 1,
-                "topic": "general",
                 "screen_type": self._screen_type_from_context(context),
             }
         first_line = next((line.strip() for line in text.splitlines() if line.strip()), text[:120])
         return {
-            "question": "What is the main idea or rule in this text?",
+            "question": STUDY_FALLBACK_QUESTION_TEMPLATE["question"],
             "answer": first_line[:200],
-            "hint": "Start from the definition, formula, or repeated term in the source text.",
-            "difficulty": 2,
+            "hint": STUDY_FALLBACK_QUESTION_TEMPLATE["hint"],
+            "difficulty": STUDY_FALLBACK_QUESTION_TEMPLATE["difficulty"],
             "topic": self._guess_topic(context),
             "screen_type": self._screen_type_from_context(context),
         }
@@ -662,7 +671,11 @@ class TutorLLMAgent:
             "mastery_delta": delta,
             "confidence": 0.35,
             "weak_points": weak_points,
-            "next_steps": ["Review the latest feedback"] if weak_points else ["Continue with one more practice question"],
+            "next_steps": (
+                list(STUDY_FALLBACK_TRACK_NEXT_STEPS_WITH_WEAK_POINTS)
+                if weak_points
+                else list(STUDY_FALLBACK_TRACK_NEXT_STEPS_DEFAULT)
+            ),
             "session_summary_seed": _as_dict(context.get("session_summary_seed")),
             "screen_type": self._screen_type_from_context(context),
         }
@@ -674,9 +687,9 @@ class TutorLLMAgent:
             for item in history[:4]
             if _as_str(item.get("output_text")).strip()
         ]
-        summary = "No study interactions have been recorded yet." if not history else "This session includes recent study interactions and tutor feedback."
+        summary = STUDY_FALLBACK_SUMMARY_EMPTY if not history else STUDY_FALLBACK_SUMMARY_DEFAULT
         weak_points = _string_list(_as_dict(context.get("session_summary_seed")).get("weak_points"), limit=4)
-        next_actions = ["Review the latest feedback", "Try one recall question"]
+        next_actions = list(STUDY_FALLBACK_SUMMARY_NEXT_ACTIONS)
         markdown = self._markdown_from_summary(summary, highlights, weak_points, next_actions)
         return {
             "summary": summary,
@@ -717,29 +730,17 @@ class TutorLLMAgent:
 
     @staticmethod
     def _fallback_feedback(verdict: str, context: dict[str, Any]) -> str:
-        if verdict == "correct":
-            return "This answer matches the core idea."
-        if verdict == "partial":
-            return "This answer is on the right track, but it needs one more precise step."
-        if verdict == "dont_know":
-            return "Start with the main definition or rule from the source text."
-        return "This answer does not match the expected idea yet."
+        return STUDY_FALLBACK_FEEDBACK.get(verdict, STUDY_FALLBACK_FEEDBACK["wrong"])
 
     @staticmethod
     def _fallback_next_action(verdict: str) -> str:
-        if verdict == "correct":
-            return "Move to a slightly harder follow-up question."
-        if verdict == "partial":
-            return "Ask for the missing step and then recheck the answer."
-        if verdict == "dont_know":
-            return "Give a hint before asking the learner to try again."
-        return "Explain the misconception, then ask a simpler recall question."
+        return STUDY_FALLBACK_NEXT_ACTION.get(verdict, STUDY_FALLBACK_NEXT_ACTION["wrong"])
 
     @staticmethod
     def _markdown_from_summary(summary: str, highlights: list[str], weak_points: list[str], next_actions: list[str]) -> str:
         def _section(title: str, items: list[str]) -> str:
             if not items:
-                return f"## {title}\n\n- None recorded."
+                return f"## {title}\n\n- {STUDY_MARKDOWN_SECTION_EMPTY_ITEM}"
             return f"## {title}\n\n" + "\n".join(f"- {item}" for item in items)
 
         return "\n\n".join(
@@ -816,15 +817,12 @@ class TutorLLMAgent:
         api_key = str(api_config.get("api_key") or "").strip()
         if not base_url or not model:
             raise SdkError("missing configured summary model")
-        temperature, max_tokens = self._config.llm_limits_for_operation(operation)
         key = (
             "summary",
             operation,
             base_url,
             model,
             self._api_key_cache_fingerprint(api_key),
-            float(temperature),
-            int(max_tokens),
         )
         timeout_seconds = float(self._config.llm_call_timeout_seconds) + _LLM_CALL_TIMEOUT_GRACE_SECONDS
         llm = await self._client_cache.get_or_create(
@@ -833,8 +831,6 @@ class TutorLLMAgent:
                 model=model,
                 base_url=base_url,
                 api_key=api_key,
-                temperature=float(temperature),
-                max_completion_tokens=int(max_tokens),
                 timeout=timeout_seconds,
             ),
         )
