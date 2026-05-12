@@ -485,6 +485,10 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "for (let i = 0; i < 40; i += 1)" not in source
     assert "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})" in source
     assert "await refresh(controller.signal, { updateReply: false });" in source
+    assert "const appliedMode = String(" in source
+    assert "setStatus((prev) => ({" in source
+    assert "active_mode: appliedMode," in source
+    assert "mode: appliedMode," in source
     assert "study-panel__modes" in source
     assert "study_set_mode" in source
     assert "status.mode.companion" in source
@@ -523,6 +527,137 @@ def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
   currentMode = String(appliedMode || 'companion');
   setModeButtons(currentMode, false);
 """ in static_source
+
+
+def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const html = `<!doctype html><html><head><title>Study Companion</title></head><body>
+  <div id="statusLine"></div>
+  <div id="replyText"></div>
+  <textarea id="studyInput"></textarea>
+  <button id="refreshBtn"></button>
+  <button id="ocrBtn"></button>
+  <button id="explainBtn"></button>
+  <button id="modeCompanionBtn" data-mode="companion"></button>
+  <button id="modeInteractiveBtn" data-mode="interactive"></button>
+  <button id="modeTeachingBtn" data-mode="teaching"></button>
+</body></html>`;
+
+const i18nJs = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
+const mainJs = fs.readFileSync(process.env.STUDY_COMPANION_STATIC_JS, 'utf8');
+const enBundle = JSON.parse(fs.readFileSync(path.join(process.env.STUDY_COMPANION_I18N_DIR, 'en.json'), 'utf8'));
+
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+document.write(html);
+document.close();
+
+const runEntries = new Map();
+let activeMode = 'companion';
+let failStatusExport = false;
+window.fetch = async (rawUrl, options = {}) => {
+  const url = String(rawUrl);
+  if (url === '/plugin/study_companion/ui-api/i18n/en.json') {
+    return Response.json(enBundle);
+  }
+  if (url === '/runs' && options.method === 'POST') {
+    const body = JSON.parse(String(options.body || '{}'));
+    const runId = body.entry_id === 'study_set_mode'
+      ? 'run-mode'
+      : 'run-status';
+    runEntries.set(runId, body);
+    return Response.json({ run_id: runId, status: 'queued' });
+  }
+  if (url === '/runs/run-status') {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (url === '/runs/run-mode') {
+    return Response.json({ status: 'succeeded' });
+  }
+  if (url === '/runs/run-status/export') {
+    if (failStatusExport) {
+      return new Response('boom', { status: 500 });
+    }
+    return Response.json({
+      items: [{ type: 'json', json: { success: true, data: { status: 'ready', active_mode: activeMode } } }],
+    });
+  }
+  if (url === '/runs/run-mode/export') {
+    const run = runEntries.get('run-mode') || {};
+    activeMode = run.args.mode || activeMode;
+    return Response.json({
+      items: [{
+        type: 'json',
+        json: {
+          success: true,
+          data: {
+            changed: true,
+            old_mode: 'companion',
+            new_mode: activeMode,
+            transition_phrase: `${activeMode} mode enabled`,
+            reply: `${activeMode} mode enabled`,
+          },
+        },
+      }],
+    });
+  }
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+
+window.eval(i18nJs);
+window.eval(mainJs);
+
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+await waitFor(() => document.getElementById('statusLine').textContent.includes('Ready'), 'ready status');
+
+failStatusExport = true;
+document.getElementById('modeTeachingBtn').click();
+await waitFor(() => document.getElementById('statusLine').textContent.includes('Error'), 'status error');
+
+const teachingButton = document.querySelector('[data-mode="teaching"]');
+if (!teachingButton || teachingButton.getAttribute('aria-pressed') !== 'true') {
+  throw new Error(`teaching mode not highlighted: ${teachingButton && teachingButton.outerHTML}`);
+}
+if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-pressed') !== 'false') {
+  throw new Error('interactive mode still highlighted after failed refresh');
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_JS": str(plugin_dir / "static" / "main.js"),
+        "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
+        "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:

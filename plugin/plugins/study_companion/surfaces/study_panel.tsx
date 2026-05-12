@@ -177,6 +177,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
+      const appliedMode = String(
+        data.new_mode || (data.changed === false ? currentMode : mode) || 'companion',
+      ) as StudyMode;
+      setStatus((prev) => ({
+        ...prev,
+        active_mode: appliedMode,
+        mode: appliedMode,
+      }));
       if (data.transition_phrase) {
         setReply(data.transition_phrase);
       }
