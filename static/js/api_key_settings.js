@@ -1695,7 +1695,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    
+
 });
 
 
@@ -1753,6 +1753,18 @@ async function save_button_down(e) {
             allBookKeys[pk] = val; // include '' so backend can clear
         }
     });
+
+    // 【修复】将上方主输入框的修改强制覆盖到保存 payload 中
+    // 否则直接点保存时，后台的 assistApiKey[Provider] 会保留 Key Book 中的旧值
+    if (coreApi && coreApi !== 'free' && _apiKeyRegistry[coreApi]) {
+        if (!isFreeVersionText(apiKey)) {
+            allBookKeys[coreApi] = apiKey;
+        }
+    }
+    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi]) {
+        allBookKeys[assistApi] = assistKeyVal;
+    }
+
     const getVal = (id) => {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';

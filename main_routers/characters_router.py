@@ -32,7 +32,7 @@ import struct
 import tempfile
 import wave
 import zlib
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Request, File, UploadFile, Form
@@ -132,6 +132,125 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+_DIRECT_LINK_MAX_REDIRECTS = 10
+_DIRECT_LINK_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+class DirectLinkSecurityError(Exception):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _validate_direct_link_target(target_url: str) -> None:
+    parsed_url = urlparse(target_url)
+    if parsed_url.scheme not in ("http", "https"):
+        raise DirectLinkSecurityError("direct_link 必须是有效的HTTP/HTTPS链接", "INVALID_DIRECT_LINK")
+
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise DirectLinkSecurityError("direct_link 缺少主机名", "INVALID_DIRECT_LINK")
+    if hostname.lower() == "localhost":
+        raise DirectLinkSecurityError("direct_link 不能指向 localhost", "PRIVATE_IP_NOT_ALLOWED")
+
+    import ipaddress
+    import socket
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise DirectLinkSecurityError(
+            f"direct_link 主机无法解析: {hostname}",
+            "DIRECT_LINK_DNS_FAILED",
+        ) from exc
+
+    for _, _, _, _, sockaddr in addr_info:
+        ip = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+            or ip_obj.is_reserved
+        ):
+            raise DirectLinkSecurityError("direct_link 指向受限地址，已拒绝", "PRIVATE_IP_NOT_ALLOWED")
+
+
+def _redirect_target_from_response(response: httpx.Response) -> str:
+    location = response.headers.get("location")
+    if not location:
+        raise DirectLinkSecurityError("直链重定向响应缺少 Location 头", "DIRECT_LINK_REDIRECT_INVALID")
+
+    next_url = urljoin(str(response.url), location)
+    _validate_direct_link_target(next_url)
+    return next_url
+
+
+async def _request_direct_link_follow_redirects(
+    client: httpx.AsyncClient,
+    method: str,
+    direct_link: str,
+) -> httpx.Response:
+    current_url = direct_link
+    for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
+        _validate_direct_link_target(current_url)
+        response = await client.request(method, current_url, follow_redirects=False)
+        if response.status_code in _DIRECT_LINK_REDIRECT_STATUSES:
+            current_url = _redirect_target_from_response(response)
+            await response.aclose()
+            continue
+        return response
+    raise DirectLinkSecurityError("直链重定向次数过多", "TOO_MANY_REDIRECTS")
+
+
+async def _download_direct_link_audio(
+    client: httpx.AsyncClient,
+    direct_link: str,
+    *,
+    max_file_size: int,
+) -> tuple[str, bytes]:
+    current_url = direct_link
+    for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
+        _validate_direct_link_target(current_url)
+        async with client.stream("GET", current_url, follow_redirects=False) as download_resp:
+            if download_resp.status_code in _DIRECT_LINK_REDIRECT_STATUSES:
+                current_url = _redirect_target_from_response(download_resp)
+                continue
+
+            if download_resp.status_code != 200:
+                raise DirectLinkSecurityError(
+                    f"直链下载失败，状态码: {download_resp.status_code}",
+                    "DOWNLOAD_FAILED",
+                )
+
+            filename = "audio.wav"
+            content_disposition = download_resp.headers.get("content-disposition", "")
+            if "filename=" in content_disposition:
+                match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
+                if match:
+                    filename = match.group(1)
+            else:
+                parsed = urlparse(str(download_resp.url))
+                path_filename = parsed.path.split("/")[-1]
+                if path_filename and "." in path_filename:
+                    filename = path_filename
+
+            audio_buffer = io.BytesIO()
+            total_size = 0
+            async for chunk in download_resp.aiter_bytes(chunk_size=8192):
+                total_size += len(chunk)
+                if total_size > max_file_size:
+                    raise DirectLinkSecurityError("音频文件超过100MB限制", "FILE_TOO_LARGE")
+                audio_buffer.write(chunk)
+
+            return filename, audio_buffer.getvalue()
+
+    raise DirectLinkSecurityError("直链重定向次数过多", "TOO_MANY_REDIRECTS")
 
 
 def _voice_session_starting_response():
@@ -3443,6 +3562,14 @@ async def get_voice_preview(
                     'audio': audio_base64,
                     'mime_type': 'audio/mpeg'
                 }
+            except ValueError as e:
+                # 新增专门的客户端错误 4xx 捕获分支
+                logger.error(f"ElevenLabs 预览请求失败 (4xx): {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'ElevenLabs 请求参数或验证错误: {str(e)}',
+                    'code': 'ELEVENLABS_API_ERROR'
+                }, status_code=400)
             except Exception as e:
                 logger.error(f"ElevenLabs 预览生成失败: {e}")
                 return JSONResponse({
@@ -4242,42 +4369,13 @@ async def voice_clone_direct(request: Request):
         return JSONResponse({'error': '缺少 direct_link 参数'}, status_code=400)
     if not prefix:
         return JSONResponse({'error': '缺少 prefix 参数'}, status_code=400)
-    if not direct_link.startswith(('http://', 'https://')):
-        return JSONResponse({'error': 'direct_link 必须是有效的HTTP/HTTPS链接'}, status_code=400)
-
-    # SSRF防护：验证直链域名不是内网IP
     try:
-        from urllib.parse import urlparse
-        import socket
-        import ipaddress
-
-        parsed_url = urlparse(direct_link)
-        hostname = parsed_url.hostname
-
-        if not hostname:
-            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
-
-        # 解析域名到IP
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
-            return JSONResponse({'error': '无法解析直链域名'}, status_code=400)
-
-        # 检查每个IP是否是内网IP
-        for _, _, _, _, sockaddr in addr_info:
-            ip = sockaddr[0]
-            try:
-                ip_obj = ipaddress.ip_address(ip)
-                # 检查是否是内网、回环、链路本地、未指定或多播地址
-                if (ip_obj.is_loopback or ip_obj.is_private or
-                    ip_obj.is_link_local or ip_obj.is_unspecified or
-                    ip_obj.is_multicast):
-                    return JSONResponse({
-                        'error': '直链不能指向内网地址',
-                        'code': 'PRIVATE_IP_NOT_ALLOWED'
-                    }, status_code=400)
-            except ValueError:
-                continue
+        _validate_direct_link_target(direct_link)
+    except DirectLinkSecurityError as e:
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+        }, status_code=400)
     except Exception as e:
         logger.warning(f"SSRF检查失败: {e}")
         return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
@@ -4346,16 +4444,28 @@ async def voice_clone_direct(request: Request):
     # per-call AsyncClient: 用户粘贴直链触发的一次性克隆流程，冷路径（外部 CDN 主机）
     try:
         async with httpx.AsyncClient(timeout=30, proxy=None, trust_env=False) as client:
-            head_resp = await client.head(direct_link, follow_redirects=True)
-            if head_resp.status_code >= 400:
-                # HEAD失败，尝试GET
-                logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
-                get_resp = await client.get(direct_link, follow_redirects=True)
-                if get_resp.status_code >= 400:
-                    return JSONResponse({
-                        'error': f'直链无法访问，状态码: {get_resp.status_code}',
-                        'code': 'DIRECT_LINK_INACCESSIBLE'
-                    }, status_code=400)
+            head_resp = await _request_direct_link_follow_redirects(client, "HEAD", direct_link)
+            try:
+                if head_resp.status_code >= 400:
+                    # HEAD失败，尝试GET
+                    logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
+                    get_resp = await _request_direct_link_follow_redirects(client, "GET", direct_link)
+                    try:
+                        if get_resp.status_code >= 400:
+                            return JSONResponse({
+                                'error': f'直链无法访问，状态码: {get_resp.status_code}',
+                                'code': 'DIRECT_LINK_INACCESSIBLE'
+                            }, status_code=400)
+                    finally:
+                        await get_resp.aclose()
+            finally:
+                await head_resp.aclose()
+    except DirectLinkSecurityError as e:
+        logger.warning(f"直链安全校验失败: {e}")
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+        }, status_code=400)
     except Exception as e:
         logger.warning(f"直链验证失败: {e}")
         # 不阻断流程，只是警告
@@ -4368,45 +4478,12 @@ async def voice_clone_direct(request: Request):
             logger.info(f"开始下载直链音频: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
 
-            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
-                    if download_resp.status_code != 200:
-                        return JSONResponse({
-                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                            'code': 'DOWNLOAD_FAILED'
-                        }, status_code=400)
-
-                    # 从Content-Disposition或URL推断文件名
-                    filename = 'audio.wav'
-                    content_disposition = download_resp.headers.get('content-disposition', '')
-                    if 'filename=' in content_disposition:
-                        import re
-                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
-                        if match:
-                            filename = match.group(1)
-                    else:
-                        # 从URL路径获取文件名
-                        from urllib.parse import urlparse
-                        parsed = urlparse(direct_link)
-                        path_filename = parsed.path.split('/')[-1]
-                        if path_filename and '.' in path_filename:
-                            filename = path_filename
-
-                    # 流式读取内容并检查大小
-                    audio_buffer = io.BytesIO()
-                    total_size = 0
-                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
-                        total_size += len(chunk)
-                        if total_size > MAX_FILE_SIZE:
-                            return JSONResponse({
-                                'error': '音频文件超过100MB限制',
-                                'code': 'FILE_TOO_LARGE'
-                            }, status_code=400)
-                        audio_buffer.write(chunk)
-
-                    audio_buffer.seek(0)
-                    audio_bytes = audio_buffer.getvalue()
+                filename, audio_bytes = await _download_direct_link_audio(
+                    client,
+                    direct_link,
+                    max_file_size=MAX_FILE_SIZE,
+                )
 
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
 
@@ -4466,38 +4543,11 @@ async def voice_clone_direct(request: Request):
             MAX_FILE_SIZE = 100 * 1024 * 1024
 
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
-                    if download_resp.status_code != 200:
-                        return JSONResponse({
-                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                            'code': 'DOWNLOAD_FAILED'
-                        }, status_code=400)
-
-                    filename = 'audio.wav'
-                    content_disposition = download_resp.headers.get('content-disposition', '')
-                    if 'filename=' in content_disposition:
-                        match = re.search(r'filename=["\']?([^"\';]+)', content_disposition)
-                        if match:
-                            filename = match.group(1)
-                    else:
-                        parsed = urlparse(direct_link)
-                        path_filename = parsed.path.split('/')[-1]
-                        if path_filename and '.' in path_filename:
-                            filename = path_filename
-
-                    audio_buffer = io.BytesIO()
-                    total_size = 0
-                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
-                        total_size += len(chunk)
-                        if total_size > MAX_FILE_SIZE:
-                            return JSONResponse({
-                                'error': '音频文件超过100MB限制',
-                                'code': 'FILE_TOO_LARGE'
-                            }, status_code=400)
-                        audio_buffer.write(chunk)
-
-                    audio_buffer.seek(0)
-                    audio_bytes = audio_buffer.getvalue()
+                filename, audio_bytes = await _download_direct_link_audio(
+                    client,
+                    direct_link,
+                    max_file_size=MAX_FILE_SIZE,
+                )
 
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
@@ -4545,29 +4595,12 @@ async def voice_clone_direct(request: Request):
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
             MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
 
-            # per-call AsyncClient: 用户一次性直链下载，冷路径
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-                async with client.stream('GET', direct_link, follow_redirects=True) as download_resp:
-                    if download_resp.status_code != 200:
-                        return JSONResponse({
-                            'error': f'下载音频失败，状态码: {download_resp.status_code}',
-                            'code': 'DOWNLOAD_FAILED'
-                        }, status_code=400)
-
-                    # 流式读取内容并检查大小
-                    audio_buffer = io.BytesIO()
-                    total_size = 0
-                    async for chunk in download_resp.aiter_bytes(chunk_size=8192):
-                        total_size += len(chunk)
-                        if total_size > MAX_FILE_SIZE:
-                            return JSONResponse({
-                                'error': '音频文件超过100MB限制',
-                                'code': 'FILE_TOO_LARGE'
-                            }, status_code=400)
-                        audio_buffer.write(chunk)
-
-                    audio_buffer.seek(0)
-                    audio_bytes = audio_buffer.getvalue()
+                _, audio_bytes = await _download_direct_link_audio(
+                    client,
+                    direct_link,
+                    max_file_size=MAX_FILE_SIZE,
+                )
 
             logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
 
@@ -4615,6 +4648,13 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
+    except DirectLinkSecurityError as e:
+        logger.warning(f"{provider_label} 直链安全校验失败: {e}")
+        return JSONResponse({
+            'error': str(e),
+            'code': e.code,
+            'provider': provider,
+        }, status_code=400)
     except (MinimaxVoiceCloneError, QwenVoiceCloneError) as e:
         logger.error(f"{provider_label} 直链音色注册失败: {e}")
         error_detail = str(e)
