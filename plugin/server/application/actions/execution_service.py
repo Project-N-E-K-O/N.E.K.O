@@ -290,19 +290,30 @@ class _SystemActionHandler:
                 },
             ) from exc
 
+        reload_error: str | None = None
         try:
             await self._lifecycle.reload_plugin(plugin_id)
         except Exception as exc:
+            reload_error = str(exc) or type(exc).__name__
             logger.warning(
                 "Profile switched but reload failed for plugin {}: {}",
                 plugin_id,
-                str(exc),
+                reload_error,
             )
 
-        return ActionExecuteResponse(
-            success=True,
-            message=f"Profile switched to '{profile_name}'",
-        )
+        # The profile config DID change, so success=True is still correct.
+        # The message must surface the failed reload, though — otherwise the
+        # palette tells the user "Profile switched" while the running plugin
+        # is still on the old profile until the next manual reload.
+        if reload_error is None:
+            message = f"Profile switched to '{profile_name}'"
+        else:
+            message = (
+                f"Profile switched to '{profile_name}', but reload failed "
+                f"({reload_error}). A manual reload is required for the "
+                f"running plugin to pick up the new profile."
+            )
+        return ActionExecuteResponse(success=True, message=message)
 
     # -- Entry toggle --
 

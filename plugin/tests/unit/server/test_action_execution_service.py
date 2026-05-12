@@ -361,6 +361,35 @@ class TestDispatchRouting:
             await svc.execute("system:demo:profile", value="  ")
         assert exc_info.value.code == "INVALID_ARGUMENT"
 
+    async def test_profile_reload_failure_surfaces_in_message(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When ``set_plugin_active_profile`` succeeds but ``reload_plugin``
+        fails, the response must surface the reload failure in the message
+        rather than silently returning a misleading "Profile switched"
+        success — the running plugin is still on the old profile."""
+        # Stub out the on-disk profile switch.
+        async def fake_set_profile(plugin_id: str, profile_name: str) -> None:
+            return None
+
+        # Patch the deferred import target inside _profile.
+        import plugin.config.service as config_service_mod
+        monkeypatch.setattr(
+            config_service_mod, "set_plugin_active_profile",
+            lambda *a, **kw: None, raising=False,
+        )
+
+        class _FailingReloadLifecycle(_FakeLifecycleService):
+            async def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
+                raise RuntimeError("reload boom")
+
+        svc = _build_service(lifecycle=_FailingReloadLifecycle())
+        resp = await svc.execute("system:demo:profile", value="prod")
+        assert resp.success is True  # config did change
+        assert "reload failed" in resp.message
+        assert "prod" in resp.message
+        assert "reload boom" in resp.message
+
 
 # ── _plugin_id_from_action_id reverse lookup ────────────────────────
 

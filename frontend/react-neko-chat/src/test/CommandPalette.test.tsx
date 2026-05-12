@@ -224,8 +224,15 @@ describe('Sections', () => {
     renderPalette(allItems, prefs);
     const input = screen.getByPlaceholderText('搜索操作...');
     fireEvent.change(input, { target: { value: 'Greet' } });
-    // Should appear in search results even though hidden
-    expect(screen.getByText('Greet')).toBeInTheDocument();
+    // Should appear in search results even though hidden.
+    const label = screen.getByText('Greet');
+    expect(label).toBeInTheDocument();
+    // Lock the "greyed" visual: the row's wrap element must carry the
+    // is-hidden class. Without this, a style regression that drops the
+    // class would still leave the visibility-only assertion green.
+    const wrap = label.closest('.cp-row-wrap');
+    expect(wrap).not.toBeNull();
+    expect(wrap).toHaveClass('is-hidden');
   });
 
   it('does not duplicate pinned items in the all section', () => {
