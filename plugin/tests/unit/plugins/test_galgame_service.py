@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.galgame_plugin import service as galgame_service
+from plugin.plugins.galgame_plugin import context_builder as galgame_context_builder
 from plugin.plugins.galgame_plugin.models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -17,6 +18,7 @@ from plugin.plugins.galgame_plugin.models import (
 )
 from plugin.plugins.galgame_plugin.service import (
     build_explain_context,
+    build_suggest_context,
     build_summarize_context,
     choose_candidate,
     filter_ocr_reader_candidates,
@@ -157,6 +159,42 @@ def test_build_config_defaults_rapidocr_lang_type_to_bundled_ch() -> None:
 
     assert cfg.rapidocr_lang_type == "ch"
     assert cfg.rapidocr_lang_type == galgame_service.DEFAULT_RAPIDOCR_LANG_TYPE
+
+
+def test_build_config_reads_context_optimization_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "llm": {
+                "context_max_tokens": 4096,
+                "context_metrics_enabled": True,
+                "context_counting_mode": "token",
+            }
+        }
+    )
+    invalid = galgame_service.build_config(
+        {"llm": {"context_counting_mode": "words"}}
+    )
+
+    assert cfg.context_max_tokens == 4096
+    assert cfg.context_metrics_enabled is True
+    assert cfg.context_counting_mode == "token"
+    assert invalid.context_counting_mode == "char"
+
+
+def test_context_builder_forwards_context_builders_without_behavior_change() -> None:
+    local_state = _local_state()
+
+    assert galgame_context_builder.build_summarize_context(
+        local_state,
+        scene_id="ocr:game:scene-0001",
+    ) == build_summarize_context(local_state, scene_id="ocr:game:scene-0001")
+    assert galgame_context_builder.build_explain_context(
+        local_state,
+        line_id="ocr:line-stable",
+    ) == build_explain_context(local_state, line_id="ocr:line-stable")
+    assert galgame_context_builder.build_suggest_context(local_state) == build_suggest_context(
+        local_state
+    )
 
 
 def _candidate(
