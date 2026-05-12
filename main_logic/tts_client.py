@@ -20,7 +20,6 @@ from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.elevenlabs_tts_voices import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
-    ELEVENLABS_TTS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
     ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
     is_elevenlabs_tts_voice,
     normalize_elevenlabs_voice_id,
@@ -3318,22 +3317,10 @@ def _get_elevenlabs_options(base_url=None):
         'similarity_boost': 0.75,
         'style': 0.0,
         'use_speaker_boost': True,
-        'optimize_streaming_latency': ELEVENLABS_TTS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
     }
 
 
-_ELEVENLABS_WS_CHUNK_SCHEDULES = {
-    0: [120, 160, 250, 290],
-    1: [100, 140, 200, 260],
-    2: [80, 120, 160, 220],
-    3: [60, 90, 130, 180],
-    4: [50, 80, 110, 150],
-}
-
-
-def _elevenlabs_ws_chunk_schedule(optimize_streaming_latency: int) -> list[int]:
-    level = max(0, min(4, int(optimize_streaming_latency or 0)))
-    return list(_ELEVENLABS_WS_CHUNK_SCHEDULES.get(level, _ELEVENLABS_WS_CHUNK_SCHEDULES[0]))
+_ELEVENLABS_WS_CHUNK_SCHEDULE = [120, 160, 250, 290]
 
 
 def _elevenlabs_ws_base_url(base_url: str | None) -> str:
@@ -3370,7 +3357,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         "output_format": output_format,
     })
     ws_url = f"{ws_url}?{ws_params}"
-    chunk_schedule = _elevenlabs_ws_chunk_schedule(options['optimize_streaming_latency'])
+    chunk_schedule = list(_ELEVENLABS_WS_CHUNK_SCHEDULE)
     pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
 
     def _build_voice_settings() -> dict:
