@@ -44,6 +44,30 @@ class _Backend:
         }
 
 
+class _ConfigAwareBackend:
+    def __init__(self, config: SimpleNamespace) -> None:
+        self._config = config
+        self.calls = 0
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        del context
+        self.calls += 1
+        assert operation == "summarize_scene"
+        return {
+            "summary": (
+                f"{self._config.context_counting_mode}:"
+                f"{self._config.context_max_tokens}"
+            ),
+            "key_points": [],
+        }
+
+    async def shutdown(self) -> None:
+        return None
+
+    def consume_prompt_metadata(self) -> dict[str, Any]:
+        return {}
+
+
 class _RealPromptBackend(GalgameLLMBackend):
     async def _call_model(self, *, operation: str, messages):
         self.last_messages = messages
@@ -235,6 +259,38 @@ async def test_llm_gateway_records_cache_hit_metrics_outside_lock() -> None:
         False,
         True,
     ]
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_cache_is_scoped_to_prompt_budget_config() -> None:
+    config = _config(
+        context_counting_mode="token",
+        context_max_tokens=300,
+        llm_request_cache_ttl_seconds=60.0,
+        llm_scene_summary_cache_ttl_seconds=60.0,
+    )
+    backend = _ConfigAwareBackend(config)
+    gateway = LLMGateway(None, None, config, backend=backend)
+    context = {"scene_id": "scene-a", "recent_lines": [{"text": "same input"}]}
+
+    first = await gateway.summarize_scene(context)
+    cached = await gateway.summarize_scene(context)
+    assert first["summary"] == "token:300"
+    assert cached["summary"] == "token:300"
+    assert backend.calls == 1
+
+    next_config = _config(
+        context_counting_mode="token",
+        context_max_tokens=1000,
+        llm_request_cache_ttl_seconds=60.0,
+        llm_scene_summary_cache_ttl_seconds=60.0,
+    )
+    gateway.update_config(next_config)
+
+    after_update = await gateway.summarize_scene(context)
+
+    assert after_update["summary"] == "token:1000"
+    assert backend.calls == 2
 
 
 @pytest.mark.asyncio

@@ -87,11 +87,14 @@ class LLMGateway:
         self._context_metrics: ContextMetricsCollector | None = None
 
     def update_config(self, config) -> None:
+        old_cache_config_fingerprint = self._cache_config_fingerprint()
         self._config = config
         if not self._metrics_enabled():
             self._context_metrics = None
         if hasattr(self._backend, "_config"):
             self._backend._config = config
+        if self._cache_config_fingerprint() != old_cache_config_fingerprint:
+            self._cache.clear()
 
     @property
     def context_metrics(self) -> ContextMetricsCollector | None:
@@ -209,7 +212,11 @@ class LLMGateway:
         degraded: Callable[[str], dict[str, Any]],
     ) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        fingerprint = self._cache_fingerprint(operation, context)
+        fingerprint = self._cache_fingerprint(
+            operation,
+            context,
+            self._cache_config_fingerprint(),
+        )
         provider_key = self._provider_backoff_key()
         now = time.monotonic()
         start_time = now
@@ -267,9 +274,33 @@ class LLMGateway:
         except asyncio.CancelledError:
             return degraded("cancelled: llm request was cancelled")
 
+    def _cache_config_fingerprint(self) -> str:
+        mode = str(
+            getattr(self._config, "context_counting_mode", "char") or "char"
+        ).strip().lower()
+        if mode != "token":
+            return _stable_json_fingerprint({"context_counting_mode": "char"})
+        try:
+            budget = int(getattr(self._config, "context_max_tokens", 6000))
+        except (TypeError, ValueError):
+            budget = 6000
+        return _stable_json_fingerprint(
+            {
+                "context_counting_mode": "token",
+                "context_max_tokens": max(1, budget),
+            }
+        )
+
     @staticmethod
-    def _cache_fingerprint(operation: str, context: dict[str, Any]) -> str:
-        return f"{operation}:{_stable_json_fingerprint(context)}"
+    def _cache_fingerprint(
+        operation: str,
+        context: dict[str, Any],
+        config_fingerprint: str = "",
+    ) -> str:
+        return (
+            f"{operation}:{config_fingerprint}:"
+            f"{_stable_json_fingerprint(context)}"
+        )
 
     async def _perform_call(
         self,
