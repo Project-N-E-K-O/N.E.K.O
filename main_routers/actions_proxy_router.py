@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Query, Request
@@ -140,10 +141,18 @@ async def proxy_chat_action_execute(
         body = await request.json()
     except Exception:
         body = {}
+    # Percent-encode the action_id segment: action IDs are plugin-defined and
+    # can contain reserved URL characters (`?`, `#`, `%`, ...) that would
+    # otherwise reinterpret the outgoing path/query and turn a legitimate
+    # action into a 404 on the plugin server. `:` is the canonical separator
+    # in action IDs (e.g. `system:demo:toggle`) so we keep it unencoded for
+    # readability; everything else (including `/`) is encoded and FastAPI's
+    # `{action_id:path}` decodes on the other side.
+    encoded_action_id = quote(action_id, safe=":")
     try:
         base = await _resolve_user_plugin_base()
         async with httpx.AsyncClient(timeout=10.0, proxy=None, trust_env=False) as client:
-            resp = await client.post(f"{base}/chat/actions/{action_id}/execute", json=body)
+            resp = await client.post(f"{base}/chat/actions/{encoded_action_id}/execute", json=body)
             return _proxy_response(resp)
     except Exception as exc:
         logger.warning("Failed to proxy POST /chat/actions/%s/execute: %s", action_id, exc)

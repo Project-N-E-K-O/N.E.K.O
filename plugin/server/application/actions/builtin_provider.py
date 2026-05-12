@@ -12,9 +12,19 @@ from collections.abc import Mapping
 from typing import Any
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 from plugin.server.domain.action_models import ActionDescriptor
 
 logger = get_logger("server.application.actions.builtin_provider")
+
+
+def _resolve_default_locale() -> str:
+    try:
+        from utils.language_utils import get_global_language_full
+
+        return str(get_global_language_full() or "en")
+    except Exception:
+        return "en"
 
 
 def _collect_builtin_actions_sync(
@@ -24,6 +34,7 @@ def _collect_builtin_actions_sync(
     from plugin.core.state import state
 
     actions: list[ActionDescriptor] = []
+    locale = _resolve_default_locale()
 
     # ── Plugin lifecycle: start/stop for every registered plugin ──
     # This gives users a way to manage plugins from the command palette
@@ -40,7 +51,9 @@ def _collect_builtin_actions_sync(
         if not isinstance(meta_raw, Mapping):
             continue
         meta: dict[str, Any] = dict(meta_raw)
-        plugin_name = str(meta.get("name") or pid)
+        plugin_i18n = load_plugin_i18n_from_meta(meta)
+        resolved_name = resolve_i18n_refs(meta.get("name") or pid, plugin_i18n, locale=locale)
+        plugin_name = str(resolved_name or pid)
         is_running = pid in hosts_snapshot
 
         if is_running:

@@ -128,6 +128,36 @@ async def test_execute_forwards_path_action_id(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_execute_url_encodes_reserved_chars_in_action_id(
+    client: AsyncClient,
+    fake_plugin_client: type[_FakePluginClient],
+) -> None:
+    """Reserved URL chars in plugin-defined action IDs (`?`, `#`, `%`, `/`)
+    must be percent-encoded before the proxy forwards them, otherwise the
+    plugin server receives a different path/query and returns 404.
+
+    The `:` separator stays unencoded for readability — it's a sub-delimiter
+    that path segments allow."""
+    # Send the request with the reserved chars already percent-encoded; the
+    # FastAPI `{action_id:path}` converter decodes them and hands the raw
+    # `demo:weird?id#frag%bad` to the handler, which is what would happen if
+    # a real frontend built the URL via fetch/URL APIs.
+    response = await client.post(
+        "/chat/actions/demo:weird%3Fid%23frag%25bad/execute",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert len(fake_plugin_client.requests) == 1
+    _, forwarded_url, _ = fake_plugin_client.requests[0]
+    # `:` preserved; `?`, `#`, `%` re-encoded for the outgoing path.
+    assert forwarded_url == (
+        "http://plugin.test/chat/actions/demo:weird%3Fid%23frag%25bad/execute"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_list_degrades_to_empty_when_plugin_server_is_down(
     client: AsyncClient,
     fake_plugin_client: type[_FakePluginClient],
