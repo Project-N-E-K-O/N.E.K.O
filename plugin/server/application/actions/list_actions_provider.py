@@ -73,8 +73,11 @@ def _map_list_action(
     The caller is expected to have already resolved any ``$i18n`` refs in
     ``action`` so that ``label`` / ``description`` are plain strings.
     """
-    action_id = action.get("id")
-    if not isinstance(action_id, str) or not action_id.strip():
+    action_id_raw = action.get("id")
+    if not isinstance(action_id_raw, str):
+        return None
+    action_id = action_id_raw.strip()
+    if not action_id:
         return None
 
     kind = str(action.get("kind", "")).strip().lower()

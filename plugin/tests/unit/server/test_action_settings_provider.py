@@ -54,3 +54,51 @@ def test_optional_literal_fields_build_dropdown() -> None:
     assert descriptor is not None
     assert descriptor.control == "dropdown"
     assert descriptor.options == ["auto", "manual"]
+
+
+def test_collect_resolves_plugin_name_i18n_ref(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``$i18n`` refs in plugin meta ``name`` must be resolved before the
+    plugin_name is used as descriptor category — otherwise the command palette
+    surfaces ``{'$i18n': '...'}`` reprs."""
+    import threading
+    from unittest.mock import patch
+
+    # Plugin i18n bundle.
+    plugin_dir = tmp_path / "i18n_demo"
+    plugin_dir.mkdir()
+    translations = plugin_dir / "i18n"
+    translations.mkdir()
+    (translations / "en.json").write_text(
+        '{"plugin.name": "Resolved Demo"}', encoding="utf-8"
+    )
+    config_path = plugin_dir / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+
+    class _Settings(PluginSettings):
+        enabled: bool = SettingsField(default=False, hot=True)
+
+    class _FakeState:
+        def __init__(self) -> None:
+            self.plugin_hosts = {"demo": object()}
+            self._lock = threading.RLock()
+
+        def get_plugins_snapshot_cached(self, **_kw):
+            return {
+                "demo": {
+                    "name": {"$i18n": "plugin.name", "default": "Resolved Demo"},
+                    "config_path": str(config_path),
+                }
+            }
+
+        def acquire_plugin_hosts_read_lock(self):
+            return self._lock
+
+    fake_state = _FakeState()
+    monkeypatch.setattr(module, "resolve_settings_class", lambda pid, host=None: _Settings)
+
+    with patch("plugin.core.state.state", fake_state):
+        actions = module._collect_settings_actions_sync()
+
+    assert len(actions) == 1
+    assert actions[0].category == "Resolved Demo"
+    assert "$i18n" not in actions[0].category

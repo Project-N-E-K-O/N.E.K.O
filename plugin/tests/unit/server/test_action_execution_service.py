@@ -147,6 +147,17 @@ class TestSystemActions:
             await svc.execute("system:bad")
         assert exc_info.value.code == "ACTION_NOT_FOUND"
 
+    async def test_lifecycle_action_rejects_extra_segments(self) -> None:
+        """A crafted id like `system:demo:stop:unexpected` must NOT execute the
+        lifecycle handler — only exactly three segments are valid for
+        start/stop/reload/toggle/profile."""
+        lifecycle = _FakeLifecycleService()
+        svc = _build_service(lifecycle=lifecycle)
+        with pytest.raises(ServerDomainError) as exc_info:
+            await svc.execute("system:demo:stop:unexpected")
+        assert exc_info.value.code == "ACTION_NOT_FOUND"
+        assert lifecycle.calls == []  # the stop must not have run
+
 
 # ── Entry toggle / button tests ──────────────────────────────────────
 
@@ -222,6 +233,48 @@ class TestEntryActions:
         with pytest.raises(ServerDomainError) as exc_info:
             await svc.execute("system:demo:entry:my_svc", value=True)
         assert exc_info.value.code == "PLUGIN_NOT_RUNNING"
+
+    async def test_button_entry_preserves_unsupported_error(self) -> None:
+        """If the host has no ``trigger`` method, the handler must surface the
+        intentional ENTRY_TRIGGER_UNSUPPORTED (501) instead of collapsing it
+        into a generic ENTRY_TRIGGER_FAILED (500)."""
+        from types import SimpleNamespace
+
+        host = SimpleNamespace()  # no `trigger` attribute on purpose
+        from plugin.core.state import state as real_state
+        original_hosts = real_state.plugin_hosts
+        real_state.plugin_hosts = {"demo": host}
+        try:
+            svc = _build_service()
+            with pytest.raises(ServerDomainError) as exc_info:
+                await svc.execute("system:demo:entry:do_thing", value=None)
+            assert exc_info.value.code == "ENTRY_TRIGGER_UNSUPPORTED"
+            assert exc_info.value.status_code == 501
+        finally:
+            real_state.plugin_hosts = original_hosts
+
+    async def test_toggle_entry_preserves_unsupported_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If the host lacks ``enable_entry`` / ``disable_entry``, the handler
+        must surface ENTRY_TOGGLE_UNSUPPORTED (501) rather than wrap it as
+        ENTRY_TOGGLE_FAILED (500)."""
+        from types import SimpleNamespace
+
+        host = SimpleNamespace()  # no enable_entry / disable_entry
+        monkeypatch.setattr(
+            "plugin.server.application.actions.execution_service._is_plugin_running",
+            lambda pid: True,
+        )
+        from plugin.core.state import state as real_state
+        original_hosts = real_state.plugin_hosts
+        real_state.plugin_hosts = {"demo": host}
+        try:
+            svc = _build_service()
+            with pytest.raises(ServerDomainError) as exc_info:
+                await svc.execute("system:demo:entry:my_svc", value=True)
+            assert exc_info.value.code == "ENTRY_TOGGLE_UNSUPPORTED"
+            assert exc_info.value.status_code == 501
+        finally:
+            real_state.plugin_hosts = original_hosts
 
 
 # ── Settings handler tests ───────────────────────────────────────────

@@ -14,8 +14,18 @@ from collections.abc import Mapping
 from typing import Any, get_args, get_origin
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
 from plugin.server.domain.action_models import ActionDescriptor
 from plugin.server.infrastructure.plugin_settings_resolver import resolve_settings_class
+
+
+def _resolve_default_locale() -> str:
+    try:
+        from utils.language_utils import get_global_language_full
+
+        return str(get_global_language_full() or "en")
+    except Exception:
+        return "en"
 
 logger = get_logger("server.application.actions.settings_provider")
 
@@ -219,6 +229,7 @@ def _collect_settings_actions_sync(
     with state.acquire_plugin_hosts_read_lock():
         hosts_snapshot: dict[str, Any] = dict(state.plugin_hosts)
 
+    locale = _resolve_default_locale()
     actions: list[ActionDescriptor] = []
 
     for pid, meta_raw in plugins_snapshot.items():
@@ -234,7 +245,9 @@ def _collect_settings_actions_sync(
             continue
         meta: dict[str, Any] = dict(meta_raw)
 
-        plugin_name = str(meta.get("name") or pid)
+        plugin_i18n = load_plugin_i18n_from_meta(meta)
+        resolved_name = resolve_i18n_refs(meta.get("name") or pid, plugin_i18n, locale=locale)
+        plugin_name = str(resolved_name or pid)
 
         # Resolve the PluginSettings class
         settings_cls = resolve_settings_class(pid, host=host)

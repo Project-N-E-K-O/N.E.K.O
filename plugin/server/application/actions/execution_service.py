@@ -161,6 +161,17 @@ class _SystemActionHandler:
 
         handler = self._DISPATCH.get(action)
         if handler is not None:
+            # Lifecycle actions (start/stop/reload/toggle/profile) must have
+            # exactly three segments — reject malformed ids like
+            # `system:demo:stop:unexpected` so crafted tails cannot smuggle
+            # extra data into a privileged op.
+            if len(parts) != 3:
+                raise ServerDomainError(
+                    code="ACTION_NOT_FOUND",
+                    message=f"Action '{action_id}' not found",
+                    status_code=404,
+                    details={"action_id": action_id},
+                )
             return await handler(self, plugin_id, action_id, value)
 
         # entry:{entry_id}
@@ -305,6 +316,10 @@ class _SystemActionHandler:
                         status_code=501,
                         details={"plugin_id": plugin_id, "entry_id": entry_id},
                     )
+            except ServerDomainError:
+                # Preserve intentional domain errors (status/code) instead of
+                # collapsing them into a generic 500 ENTRY_TRIGGER_FAILED.
+                raise
             except Exception as exc:
                 raise ServerDomainError(
                     code="ENTRY_TRIGGER_FAILED",
@@ -337,6 +352,10 @@ class _SystemActionHandler:
                     status_code=501,
                     details={"plugin_id": plugin_id, "entry_id": entry_id},
                 )
+        except ServerDomainError:
+            # Preserve intentional domain errors (status/code) instead of
+            # collapsing them into a generic 500 ENTRY_TOGGLE_FAILED.
+            raise
         except Exception as exc:
             raise ServerDomainError(
                 code="ENTRY_TOGGLE_FAILED",

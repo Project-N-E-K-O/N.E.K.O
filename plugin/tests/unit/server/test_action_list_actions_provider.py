@@ -145,6 +145,26 @@ class TestMapListAction:
         assert d.action_id == "my-plugin:do_stuff"
         assert d.plugin_id == "my-plugin"
 
+    def test_action_id_whitespace_is_normalized(self) -> None:
+        """A raw id like ``"  foo  "`` must be stripped before joining with
+        plugin_id so the resulting action_id has no internal whitespace."""
+        d = module._map_list_action("demo", "Demo", {
+            "id": "  greet  ",
+            "kind": "chat_inject",
+            "label": "Greet",
+        })
+        assert d is not None
+        assert d.action_id == "demo:greet"
+        assert d.inject_text == "@demo /greet"
+
+    def test_action_id_only_whitespace_returns_none(self) -> None:
+        d = module._map_list_action("demo", "Demo", {
+            "id": "   ",
+            "kind": "chat_inject",
+            "label": "x",
+        })
+        assert d is None
+
 
 @pytest.mark.plugin_unit
 class TestCollectListActions:
