@@ -12,6 +12,7 @@
         loadFailed: false,
         limited: false
     };
+    let memorySidebarResizeObserver = null;
     let storagePreflightState = null;
     let storagePreflightBusy = false;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
@@ -63,6 +64,31 @@
         const el = document.getElementById(id);
         if (el) {
             el.textContent = text;
+        }
+    }
+
+    function syncMemoryChatPanelHeight() {
+        const main = document.querySelector('.main');
+        const sidebar = document.querySelector('.left-column');
+        if (!main || !sidebar) return;
+        const sidebarHeight = Math.ceil(sidebar.getBoundingClientRect().height);
+        if (sidebarHeight > 0) {
+            main.style.setProperty('--memory-sidebar-height', sidebarHeight + 'px');
+        }
+    }
+
+    function initMemoryChatPanelHeightSync() {
+        const sidebar = document.querySelector('.left-column');
+        if (!sidebar) return;
+
+        syncMemoryChatPanelHeight();
+        requestAnimationFrame(syncMemoryChatPanelHeight);
+        window.setTimeout(syncMemoryChatPanelHeight, 300);
+        window.addEventListener('resize', syncMemoryChatPanelHeight);
+
+        if (typeof ResizeObserver === 'function' && !memorySidebarResizeObserver) {
+            memorySidebarResizeObserver = new ResizeObserver(syncMemoryChatPanelHeight);
+            memorySidebarResizeObserver.observe(sidebar);
         }
     }
 
@@ -795,6 +821,8 @@
             }
         } catch (e) {
             ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('memory.loadFailed') : '加载失败'}</li>`;
+        } finally {
+            requestAnimationFrame(syncMemoryChatPanelHeight);
         }
     }
 
@@ -1119,6 +1147,7 @@
     window.closeMemoryBrowser = closeMemoryBrowser;
     // 页面加载时隐藏保存按钮
     document.addEventListener('DOMContentLoaded', async function () {
+        initMemoryChatPanelHeightSync();
         const storagePanelState = await initStorageLocationPanel();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);

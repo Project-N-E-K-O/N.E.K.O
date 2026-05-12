@@ -236,6 +236,10 @@ body .container-header {
     border-radius: 0 0 20px 20px;
 }
 
+.voice-register-main {
+    width: 100%;
+}
+
 .container-content > label {
     display: block;
     margin-top: 20px;
@@ -789,6 +793,10 @@ body .container-header {
     font-weight: bold;
 }
 
+.voice-list-header .btn.sm {
+    margin-top: 0;
+}
+
 .voice-list-loading {
     text-align: center;
     color: #999;
@@ -919,6 +927,61 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     text-align: center;
     color: #999;
     padding: 40px 20px;
+}
+
+@media (min-width: 980px) {
+    html.neko-window-maximized .container-content {
+        display: grid;
+        grid-template-columns: minmax(360px, 42%) minmax(420px, 1fr);
+        column-gap: 28px;
+        align-items: start;
+        min-height: calc(100vh - 70px);
+        padding: 28px 36px 32px;
+        box-sizing: border-box;
+    }
+
+    html.neko-window-maximized .voice-register-main {
+        grid-column: 1;
+        max-width: 640px;
+        min-width: 0;
+    }
+
+    html.neko-window-maximized .voice-list-section {
+        grid-column: 2;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        margin-top: 0;
+        padding-top: 0;
+        padding-left: 28px;
+        border-top: none;
+        border-left: 2px solid rgba(64, 197, 241, 0.28);
+    }
+
+    html.neko-window-maximized .field-row input,
+    html.neko-window-maximized .field-row select,
+    html.neko-window-maximized .clone-input-container,
+    html.neko-window-maximized .clone-method-toggle,
+    html.neko-window-maximized .workshop-source-card {
+        max-width: none;
+    }
+
+    html.neko-window-maximized .voice-list-bg {
+        flex: 1;
+        min-height: 280px;
+        max-height: none;
+    }
+
+    html.neko-window-maximized .voice-list-item {
+        padding: 14px 18px;
+    }
+
+    [data-theme="dark"].neko-window-maximized .voice-list-section,
+    [data-theme="dark"] .neko-window-maximized .voice-list-section {
+        border-left-color: rgba(255, 255, 255, 0.16);
+    }
 }
 
 .voice-actions {

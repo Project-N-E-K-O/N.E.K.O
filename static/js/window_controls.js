@@ -31,6 +31,14 @@
     function updateMaximizeState(isMaximized) {
         const maximizeButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="maximize"]`);
         const icon = maximizeButton ? maximizeButton.querySelector(MAXIMIZE_ICON_SELECTOR) : null;
+        const root = document.documentElement;
+        const body = document.body;
+        if (root) {
+            root.classList.toggle('neko-window-maximized', !!isMaximized);
+        }
+        if (body) {
+            body.classList.toggle('neko-window-maximized', !!isMaximized);
+        }
         if (icon) {
             icon.classList.toggle('restored', !!isMaximized);
         }
