@@ -8,9 +8,9 @@ const ENTRY_TIMEOUT_MS = {
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 60000,
-  study_generate_question: 60000,
-  study_evaluate_answer: 60000,
-  study_summarize_session: 75000,
+  study_generate_question: 75000,
+  study_evaluate_answer: 75000,
+  study_summarize_session: 90000,
 };
 let currentMode = 'companion';
 
