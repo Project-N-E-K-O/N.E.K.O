@@ -2990,16 +2990,7 @@ class ConfigManager:
         # GPT-SoVITS 配置映射
         config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
 
-        config['ELEVENLABS_ENABLED'] = _as_bool(core_cfg.get('elevenlabsEnabled', False), False)
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
-        config['ELEVENLABS_BASE_URL'] = core_cfg.get('elevenlabsBaseUrl', 'https://api.elevenlabs.io')
-        config['ELEVENLABS_MODEL'] = core_cfg.get('elevenlabsModel', 'eleven_flash_v2_5')
-        config['ELEVENLABS_OUTPUT_FORMAT'] = core_cfg.get('elevenlabsOutputFormat', 'pcm_24000')
-        config['ELEVENLABS_OPTIMIZE_STREAMING_LATENCY'] = core_cfg.get('elevenlabsOptimizeStreamingLatency', 0)
-        config['ELEVENLABS_STABILITY'] = core_cfg.get('elevenlabsStability', 0.5)
-        config['ELEVENLABS_SIMILARITY_BOOST'] = core_cfg.get('elevenlabsSimilarityBoost', 0.75)
-        config['ELEVENLABS_STYLE'] = core_cfg.get('elevenlabsStyle', 0.0)
-        config['ELEVENLABS_USE_SPEAKER_BOOST'] = _as_bool(core_cfg.get('elevenlabsUseSpeakerBoost', True), True)
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
 
         # 禁用TTS

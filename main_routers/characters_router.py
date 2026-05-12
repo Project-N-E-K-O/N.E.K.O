@@ -57,9 +57,9 @@ from main_logic.tts_client import (
     CustomTTSVoiceFetchError,
 )
 from utils.elevenlabs_tts_voices import (
-    ELEVENLABS_DEFAULT_BASE_URL,
-    ELEVENLABS_DEFAULT_MODEL,
-    ELEVENLABS_VOICE_PREFIX,
+    ELEVENLABS_TTS_DEFAULT_BASE_URL,
+    ELEVENLABS_TTS_DEFAULT_MODEL,
+    ELEVENLABS_TTS_VOICE_PREFIX,
 )
 from .agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
@@ -913,12 +913,7 @@ def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:
-    core_config = await config_manager.aget_core_config()
-    return (
-        core_config.get('ELEVENLABS_BASE_URL')
-        or core_config.get('elevenlabsBaseUrl')
-        or ELEVENLABS_DEFAULT_BASE_URL
-    ).strip().rstrip('/')
+    return ELEVENLABS_TTS_DEFAULT_BASE_URL.strip().rstrip('/')
 
 
 def _config_value_is_enabled(value) -> bool:
@@ -937,15 +932,15 @@ def _config_value_is_enabled(value) -> bool:
 
 def _prefixed_elevenlabs_voice_id(raw_voice_id: str) -> str:
     raw = (raw_voice_id or '').strip()
-    if raw.startswith(ELEVENLABS_VOICE_PREFIX):
+    if raw.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
         return raw
-    return f'{ELEVENLABS_VOICE_PREFIX}{raw}'
+    return f'{ELEVENLABS_TTS_VOICE_PREFIX}{raw}'
 
 
 def _raw_elevenlabs_voice_id(voice_id: str) -> str:
     raw = (voice_id or '').strip()
-    if raw.startswith(ELEVENLABS_VOICE_PREFIX):
-        return raw[len(ELEVENLABS_VOICE_PREFIX):].strip()
+    if raw.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
+        return raw[len(ELEVENLABS_TTS_VOICE_PREFIX):].strip()
     return raw
 
 
@@ -1003,35 +998,17 @@ async def _elevenlabs_synthesize_preview(
     if not raw_voice_id:
         return b'', 'TTS_VOICE_ID_MISSING'
 
-    core_config = await config_manager.aget_core_config()
     # 优先使用传入的 base_url，否则获取默认值并去除末尾斜杠
     base_url = (base_url or await _get_elevenlabs_base_url(config_manager)).rstrip('/')
-    model_id = (
-        core_config.get('ELEVENLABS_MODEL')
-        or core_config.get('elevenlabsModel')
-        or ELEVENLABS_DEFAULT_MODEL
-    )
-
-    def _float_opt(upper_key, lower_key, default):
-        try:
-            return float(core_config.get(upper_key, core_config.get(lower_key, default)))
-        except (TypeError, ValueError):
-            return default
-
-    def _bool_opt(upper_key, lower_key, default):
-        value = core_config.get(upper_key, core_config.get(lower_key, default))
-        if isinstance(value, str):
-            return value.lower() in ('1', 'true', 'yes', 'on')
-        return bool(value)
 
     payload = {
         "text": text,
-        "model_id": model_id,
+        "model_id": ELEVENLABS_TTS_DEFAULT_MODEL,
         "voice_settings": {
-            "stability": _float_opt('ELEVENLABS_STABILITY', 'elevenlabsStability', 0.5),
-            "similarity_boost": _float_opt('ELEVENLABS_SIMILARITY_BOOST', 'elevenlabsSimilarityBoost', 0.75),
-            "style": _float_opt('ELEVENLABS_STYLE', 'elevenlabsStyle', 0.0),
-            "use_speaker_boost": _bool_opt('ELEVENLABS_USE_SPEAKER_BOOST', 'elevenlabsUseSpeakerBoost', True),
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
         },
     }
     url = f"{base_url}/v1/text-to-speech/{raw_voice_id}"
@@ -3572,7 +3549,7 @@ async def get_voice_preview(
                     'error': f'原生音色预览生成失败: {str(e)}'
                 }, status_code=500)
 
-        if provider == 'elevenlabs' or voice_id.startswith(ELEVENLABS_VOICE_PREFIX):
+        if provider == 'elevenlabs' or voice_id.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
             try:
                 # 从 voice_data 中提取克隆时持久化的 base_url 传给 helper
                 audio_data, error_code = await _elevenlabs_synthesize_preview(

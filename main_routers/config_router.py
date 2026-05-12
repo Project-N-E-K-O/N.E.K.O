@@ -638,15 +638,6 @@ async def get_core_config_api():
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
-            "elevenlabsEnabled": core_cfg.get('elevenlabsEnabled', False),
-            "elevenlabsBaseUrl": core_cfg.get('elevenlabsBaseUrl', 'https://api.elevenlabs.io'),
-            "elevenlabsModel": core_cfg.get('elevenlabsModel', 'eleven_flash_v2_5'),
-            "elevenlabsOutputFormat": core_cfg.get('elevenlabsOutputFormat', 'pcm_24000'),
-            "elevenlabsOptimizeStreamingLatency": core_cfg.get('elevenlabsOptimizeStreamingLatency', 0),
-            "elevenlabsStability": core_cfg.get('elevenlabsStability', 0.5),
-            "elevenlabsSimilarityBoost": core_cfg.get('elevenlabsSimilarityBoost', 0.75),
-            "elevenlabsStyle": core_cfg.get('elevenlabsStyle', 0.0),
-            "elevenlabsUseSpeakerBoost": core_cfg.get('elevenlabsUseSpeakerBoost', True),
             "ttsProvider": core_cfg.get('ttsProvider', ''),
             "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
@@ -769,15 +760,6 @@ async def update_core_config(request: Request):
         if 'gptsovitsEnabled' in data:
             core_cfg['gptsovitsEnabled'] = data['gptsovitsEnabled']
         for field in (
-            'elevenlabsEnabled',
-            'elevenlabsBaseUrl',
-            'elevenlabsModel',
-            'elevenlabsOutputFormat',
-            'elevenlabsOptimizeStreamingLatency',
-            'elevenlabsStability',
-            'elevenlabsSimilarityBoost',
-            'elevenlabsStyle',
-            'elevenlabsUseSpeakerBoost',
             'ttsProvider',
         ):
             if field in data:

@@ -19,11 +19,11 @@ from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.elevenlabs_tts_voices import (
-    ELEVENLABS_DEFAULT_BASE_URL,
-    ELEVENLABS_DEFAULT_MODEL,
-    ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
-    ELEVENLABS_DEFAULT_OUTPUT_FORMAT,
-    ELEVENLABS_VOICE_PREFIX,
+    ELEVENLABS_TTS_DEFAULT_BASE_URL,
+    ELEVENLABS_TTS_DEFAULT_MODEL,
+    ELEVENLABS_TTS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
+    ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+    is_elevenlabs_tts_voice,
     normalize_elevenlabs_voice_id,
 )
 from utils.gemini_tts_voices import (
@@ -3301,83 +3301,25 @@ def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
 
 
 def _is_elevenlabs_voice_id(voice_id: str | None) -> bool:
-    return str(voice_id or '').strip().startswith(ELEVENLABS_VOICE_PREFIX)
+    return is_elevenlabs_tts_voice(voice_id)
 
 
 def _get_elevenlabs_options(base_url=None):
-    cm = get_config_manager()
-    core_cfg = cm.get_core_config()
-    try:
-        tts_config = cm.get_model_api_config('tts_custom')
-    except Exception:
-        tts_config = {}
-
     raw_base_url = (
         base_url
-        or core_cfg.get('ELEVENLABS_BASE_URL')
-        or core_cfg.get('elevenlabsBaseUrl')
-        or ''
+        or ELEVENLABS_TTS_DEFAULT_BASE_URL
     )
-    if not raw_base_url:
-        custom_url = (tts_config.get('base_url') or '').strip()
-        if 'elevenlabs.io' in custom_url:
-            raw_base_url = custom_url
-    base_url = (raw_base_url or ELEVENLABS_DEFAULT_BASE_URL).strip().rstrip('/')
-
-    provider = (
-        core_cfg.get('TTS_PROVIDER')
-        or core_cfg.get('ttsProvider')
-        or ''
-    )
-    custom_model = (tts_config.get('model') or '').strip()
-    model_name = (
-        core_cfg.get('ELEVENLABS_MODEL')
-        or core_cfg.get('elevenlabsModel')
-        or (custom_model if provider == 'elevenlabs' else '')
-        or ELEVENLABS_DEFAULT_MODEL
-    )
-    output_format = (
-        core_cfg.get('ELEVENLABS_OUTPUT_FORMAT')
-        or core_cfg.get('elevenlabsOutputFormat')
-        or ELEVENLABS_DEFAULT_OUTPUT_FORMAT
-    )
-
-    def _float_opt(upper_key, lower_key, default):
-        value = core_cfg.get(upper_key, core_cfg.get(lower_key, default))
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
-    def _bool_opt(upper_key, lower_key, default):
-        value = core_cfg.get(upper_key, core_cfg.get(lower_key, default))
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in ('1', 'true', 'yes', 'on')
-        return default
-
-    def _int_opt(upper_key, lower_key, default):
-        value = core_cfg.get(upper_key, core_cfg.get(lower_key, default))
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            return default
-        return max(0, min(4, value))
+    base_url = (raw_base_url or ELEVENLABS_TTS_DEFAULT_BASE_URL).strip().rstrip('/')
 
     return {
         'base_url': base_url,
-        'model': model_name,
-        'output_format': output_format,
-        'stability': _float_opt('ELEVENLABS_STABILITY', 'elevenlabsStability', 0.5),
-        'similarity_boost': _float_opt('ELEVENLABS_SIMILARITY_BOOST', 'elevenlabsSimilarityBoost', 0.75),
-        'style': _float_opt('ELEVENLABS_STYLE', 'elevenlabsStyle', 0.0),
-        'use_speaker_boost': _bool_opt('ELEVENLABS_USE_SPEAKER_BOOST', 'elevenlabsUseSpeakerBoost', True),
-        'optimize_streaming_latency': _int_opt(
-            'ELEVENLABS_OPTIMIZE_STREAMING_LATENCY',
-            'elevenlabsOptimizeStreamingLatency',
-            ELEVENLABS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
-        ),
+        'model': ELEVENLABS_TTS_DEFAULT_MODEL,
+        'output_format': ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+        'stability': 0.5,
+        'similarity_boost': 0.75,
+        'style': 0.0,
+        'use_speaker_boost': True,
+        'optimize_streaming_latency': ELEVENLABS_TTS_DEFAULT_OPTIMIZE_STREAMING_LATENCY,
     }
 
 
@@ -3396,7 +3338,7 @@ def _elevenlabs_ws_chunk_schedule(optimize_streaming_latency: int) -> list[int]:
 
 
 def _elevenlabs_ws_base_url(base_url: str | None) -> str:
-    raw = (base_url or ELEVENLABS_DEFAULT_BASE_URL).strip().rstrip("/")
+    raw = (base_url or ELEVENLABS_TTS_DEFAULT_BASE_URL).strip().rstrip("/")
     if raw.startswith("https://"):
         return "wss://" + raw[len("https://"):]
     if raw.startswith("http://"):

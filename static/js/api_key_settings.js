@@ -25,10 +25,6 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
-// ElevenLabs API Key 的实时草稿值，避免保存时只读到遮罩态或旧值
-let _elevenlabsApiKeyDraft = '';
-let _elevenlabsApiKeySyncing = false;
-
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -579,14 +575,10 @@ function renderKeyBook(registry, providers) {
         input.placeholder = window.t ? window.t('api.keyBookKeyPlaceholder') : 'Enter API Key';
         input.dataset.providerKey = providerKey;
         attachMaskBehavior(input);
-        if (providerKey === 'elevenlabs') {
-            bindElevenlabsApiKeySync(input);
-        }
         row.appendChild(input);
 
         container.appendChild(row);
     });
-    bindElevenlabsPanelApiKeySync();
 }
 
 /**
@@ -628,56 +620,6 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
         }
         attachMaskBehavior(input);
     }
-    if (providerKey === 'elevenlabs') {
-        const panelInput = document.getElementById('elevenlabsApiKey');
-        if (panelInput) {
-            if (panelInput !== sourceInput) {
-                setMaskedInput(panelInput, keyValue || '');
-            } else {
-                panelInput.dataset.realKey = (keyValue || '').trim();
-            }
-            attachMaskBehavior(panelInput);
-        }
-        _elevenlabsApiKeyDraft = (keyValue || '').trim();
-    }
-}
-
-function bindElevenlabsPanelApiKeySync() {
-    bindElevenlabsApiKeySync(document.getElementById('elevenlabsApiKey'));
-}
-
-function bindElevenlabsApiKeySync(input) {
-    if (!input || input.dataset.elevenlabsSyncBound === 'true') return;
-    attachMaskBehavior(input);
-    input.dataset.elevenlabsSyncBound = 'true';
-
-    const syncHandler = () => {
-        if (_elevenlabsApiKeySyncing) return;
-        _elevenlabsApiKeySyncing = true;
-        try {
-            syncKeyToBook('elevenlabs', getElevenlabsInputKey(input).value, input);
-        } finally {
-            _elevenlabsApiKeySyncing = false;
-        }
-    };
-
-    input.addEventListener('input', syncHandler);
-    input.addEventListener('change', syncHandler);
-    input.addEventListener('blur', syncHandler);
-}
-
-function getElevenlabsInputKey(input) {
-    if (!input) return { value: '', edited: false };
-
-    const rawValue = (input.value || '').trim();
-    const cachedValue = (input.dataset.realKey || '').trim();
-    const rawLooksMasked = /\*{3,}/.test(rawValue);
-
-    if (rawValue && !rawLooksMasked && rawValue !== cachedValue) {
-        return { value: rawValue, edited: true };
-    }
-
-    return { value: getRealKey(input).trim(), edited: false };
 }
 
 // ==================== Model Provider Dropdowns ====================
@@ -1204,8 +1146,6 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
-            syncElevenlabsKeyBook(data);
-
             // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
             loadGptSovitsConfig(
                 data.ttsModelUrl,
@@ -1511,11 +1451,6 @@ function toggleGptSovitsConfig() {
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
-// ==================== ElevenLabs Key Book 同步 ====================
-function syncElevenlabsKeyBook(data) {
-    syncKeyToBook('elevenlabs', data.assistApiKeyElevenlabs || '');
-}
-
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1676,8 +1611,6 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
-    bindElevenlabsPanelApiKeySync();
-
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -1882,8 +1815,6 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
-    } else if (selectedTtsProvider === 'elevenlabs') {
-        payload.ttsProvider = 'elevenlabs';
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
