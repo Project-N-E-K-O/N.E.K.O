@@ -148,7 +148,7 @@ class ElevenLabsUpstreamError(Exception):
         self.status_code = status_code
 
 
-def _validate_direct_link_target(target_url: str) -> None:
+def _direct_link_hostname(target_url: str) -> str:
     parsed_url = urlparse(target_url)
     if parsed_url.scheme not in ("http", "https"):
         raise DirectLinkSecurityError("direct_link 必须是有效的HTTP/HTTPS链接", "INVALID_DIRECT_LINK")
@@ -158,17 +158,11 @@ def _validate_direct_link_target(target_url: str) -> None:
         raise DirectLinkSecurityError("direct_link 缺少主机名", "INVALID_DIRECT_LINK")
     if hostname.lower() == "localhost":
         raise DirectLinkSecurityError("direct_link 不能指向 localhost", "PRIVATE_IP_NOT_ALLOWED")
+    return hostname
 
+
+def _assert_direct_link_addresses_safe(addr_info) -> None:
     import ipaddress
-    import socket
-
-    try:
-        addr_info = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as exc:
-        raise DirectLinkSecurityError(
-            f"direct_link 主机无法解析: {hostname}",
-            "DIRECT_LINK_DNS_FAILED",
-        ) from exc
 
     for _, _, _, _, sockaddr in addr_info:
         ip = sockaddr[0]
@@ -187,13 +181,30 @@ def _validate_direct_link_target(target_url: str) -> None:
             raise DirectLinkSecurityError("direct_link 指向受限地址，已拒绝", "PRIVATE_IP_NOT_ALLOWED")
 
 
-def _redirect_target_from_response(response: httpx.Response) -> str:
+async def _validate_direct_link_target(target_url: str) -> None:
+    hostname = _direct_link_hostname(target_url)
+
+    import socket
+
+    try:
+        loop = asyncio.get_running_loop()
+        addr_info = await loop.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise DirectLinkSecurityError(
+            f"direct_link 主机无法解析: {hostname}",
+            "DIRECT_LINK_DNS_FAILED",
+        ) from exc
+
+    _assert_direct_link_addresses_safe(addr_info)
+
+
+async def _redirect_target_from_response(response: httpx.Response) -> str:
     location = response.headers.get("location")
     if not location:
         raise DirectLinkSecurityError("直链重定向响应缺少 Location 头", "DIRECT_LINK_REDIRECT_INVALID")
 
     next_url = urljoin(str(response.url), location)
-    _validate_direct_link_target(next_url)
+    await _validate_direct_link_target(next_url)
     return next_url
 
 
@@ -207,14 +218,14 @@ async def _request_direct_link_follow_redirects(
 ) -> httpx.Response:
     current_url = direct_link
     for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
-        _validate_direct_link_target(current_url)
+        await _validate_direct_link_target(current_url)
         response = await client.send(
             client.build_request(method, current_url, headers=headers),
             follow_redirects=False,
             stream=stream,
         )
         if response.status_code in _DIRECT_LINK_REDIRECT_STATUSES:
-            current_url = _redirect_target_from_response(response)
+            current_url = await _redirect_target_from_response(response)
             await response.aclose()
             continue
         return response
@@ -229,10 +240,10 @@ async def _download_direct_link_audio(
 ) -> tuple[str, bytes]:
     current_url = direct_link
     for _ in range(_DIRECT_LINK_MAX_REDIRECTS + 1):
-        _validate_direct_link_target(current_url)
+        await _validate_direct_link_target(current_url)
         async with client.stream("GET", current_url, follow_redirects=False) as download_resp:
             if download_resp.status_code in _DIRECT_LINK_REDIRECT_STATUSES:
-                current_url = _redirect_target_from_response(download_resp)
+                current_url = await _redirect_target_from_response(download_resp)
                 continue
 
             if download_resp.status_code != 200:
@@ -4405,7 +4416,7 @@ async def voice_clone_direct(request: Request):
     if not prefix:
         return JSONResponse({'error': '缺少 prefix 参数'}, status_code=400)
     try:
-        _validate_direct_link_target(direct_link)
+        await _validate_direct_link_target(direct_link)
     except DirectLinkSecurityError as e:
         return JSONResponse({
             'error': str(e),
