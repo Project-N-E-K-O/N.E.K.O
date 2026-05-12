@@ -25,7 +25,7 @@ from .permission import PermissionManager
 from .prompting import QQAutoReplyPromptingMixin
 from .qq_client import QQClient
 from .session import QQAutoReplySessionMixin
-from .targets import QQAutoReplyTargetsMixin
+from .targets import QQAutoReplyTargetsMixin, QQAutoReplyValidationError
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict[str, Any]:
@@ -388,7 +388,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._refresh_admin_qq()
         return Ok(await self._build_dashboard_state())
 
-    @plugin_entry(id="qq_auto_reply_get_dashboard_state", name=tr("entries.get_dashboard_state.name", default="获取控制面板状态"), description=tr("entries.get_dashboard_state.description", default="返回 QQ 自动回复前端控制面板所需的完整状态。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="get_dashboard_state", name=tr("entries.get_dashboard_state.name", default="获取控制面板状态"), description=tr("entries.get_dashboard_state.description", default="返回 QQ 自动回复前端控制面板所需的完整状态。"), input_schema={"type": "object", "properties": {}})
     async def get_dashboard_state(self, **_):
         return Ok(await self._build_dashboard_state())
 
@@ -523,7 +523,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         payload["persisted"] = success
         return Ok(payload)
 
-    @plugin_entry(id="qq_auto_reply_sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新复制 NapCat 登录二维码到插件静态目录并返回最新状态。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新复制 NapCat 登录二维码到插件静态目录并返回最新状态。"), input_schema={"type": "object", "properties": {}})
     async def sync_qrcode(self, **_):
         await self._sync_napcat_qrcode_into_static()
         return Ok(await self._build_dashboard_state())
@@ -550,6 +550,92 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self._stop_auto_reply_runtime(stop_napcat=False)
         return Ok({"status": "stopped"})
 
+    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="主动发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="让 AI 生成一条私聊消息并主动发送给指定 QQ 用户。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}}, "required": ["target", "message"], "additionalProperties": False}, metadata={"timeout": 90})
+    async def send_private_proactive_message(self, target: str, message: str, **_):
+        try:
+            self._ensure_qq_client_connected()
+            resolved_qq, matched_nickname = self._resolve_private_message_target(target)
+            prompt_message = self._validate_outbound_message(message)
+            permission_level = "admin" if resolved_qq == self._admin_qq else (self.permission_mgr.get_permission_level(resolved_qq) if self.permission_mgr else "trusted")
+            if permission_level == "none":
+                permission_level = "trusted"
+            reply_text = await self._generate_reply(
+                prompt_message,
+                permission_level,
+                resolved_qq,
+                is_group=False,
+                user_nickname=matched_nickname,
+                use_memory_context=permission_level == "admin",
+                persist_memory=False,
+                ephemeral_session=True,
+            )
+            if not reply_text:
+                return Err(SdkError(f"GENERATE_FAILED: {self.i18n.t('errors.proactive_private_generate_failed', default='AI 未生成可发送的私聊内容')}"))
+            await self.qq_client.send_message(resolved_qq, reply_text)
+            return Ok({
+                "status": "sent",
+                "target": str(target or "").strip(),
+                "resolved_qq": resolved_qq,
+                "resolved_nickname": matched_nickname,
+                "message_prompt": prompt_message,
+                "generated_message": reply_text,
+            })
+        except QQAutoReplyValidationError as e:
+            code = e.code
+            message_text = str(e)
+            if code in ("NICKNAME_NOT_FOUND", "NICKNAME_AMBIGUOUS"):
+                return Err(SdkError(f"{code}: {message_text}"))
+            if code == "INVALID_TARGET":
+                return Err(SdkError(f"INVALID_TARGET: {self.i18n.t('errors.proactive_invalid_target', default=message_text)}"))
+            if code == "INVALID_MESSAGE":
+                return Err(SdkError(f"INVALID_MESSAGE: {self.i18n.t('errors.proactive_invalid_message', default=message_text)}"))
+            return Err(SdkError(f"INVALID_TARGET: {message_text}"))
+        except RuntimeError as e:
+            return Err(SdkError(f"NOT_READY: {self.i18n.t('errors.proactive_not_ready', default='{error}', error=str(e))}"))
+        except Exception as e:
+            self.logger.exception("Failed to send proactive private QQ message")
+            return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
+
+    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="主动发送群聊消息"), description=tr("entries.send_group_proactive_message.description", default="让 AI 生成一条群聊消息并主动发送给指定 QQ 群。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["group_id", "message"], "additionalProperties": False}, metadata={"timeout": 90})
+    async def send_group_proactive_message(self, group_id: str, message: str, **_):
+        try:
+            self._ensure_qq_client_connected()
+            normalized_group_id = self._validate_group_id(group_id)
+            prompt_message = self._validate_outbound_message(message)
+            reply_text = await self._generate_reply(
+                prompt_message,
+                "open",
+                self._admin_qq or "0",
+                is_group=True,
+                group_id=normalized_group_id,
+                use_memory_context=False,
+                persist_memory=False,
+                ephemeral_session=True,
+                group_facing=True,
+            )
+            if not reply_text:
+                return Err(SdkError(f"GENERATE_FAILED: {self.i18n.t('errors.proactive_group_generate_failed', default='AI 未生成可发送的群聊内容')}"))
+            await self.qq_client.send_group_message(normalized_group_id, reply_text)
+            return Ok({
+                "status": "sent",
+                "group_id": normalized_group_id,
+                "message_prompt": prompt_message,
+                "generated_message": reply_text,
+            })
+        except QQAutoReplyValidationError as e:
+            code = e.code
+            message_text = str(e)
+            if code == "INVALID_GROUP_ID":
+                return Err(SdkError(f"INVALID_GROUP_ID: {self.i18n.t('errors.proactive_invalid_group_id', default=message_text)}"))
+            if code == "INVALID_MESSAGE":
+                return Err(SdkError(f"INVALID_MESSAGE: {self.i18n.t('errors.proactive_invalid_message', default=message_text)}"))
+            return Err(SdkError(f"INVALID_GROUP_ID: {message_text}"))
+        except RuntimeError as e:
+            return Err(SdkError(f"NOT_READY: {self.i18n.t('errors.proactive_not_ready', default='{error}', error=str(e))}"))
+        except Exception as e:
+            self.logger.exception("Failed to send proactive group QQ message")
+            return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
+
     async def _stop_auto_reply_runtime(self, *, stop_napcat: bool):
         self._running = False
         if self._message_task:
@@ -573,6 +659,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if stop_napcat:
             await self._stop_managed_napcat()
         self._session_locks.clear()
+
+    def _track_handler_task(self, task: asyncio.Task) -> None:
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._on_handler_task_done)
+
+    def _on_handler_task_done(self, task: asyncio.Task) -> None:
+        self._handler_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self.logger.error(f"Message handler task failed: {exc}")
 
     async def _process_messages(self):
         while self._running:
@@ -650,10 +749,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             relay_text = f"[QQ私聊转发] 来自 {sender_id}: {message_text}"
         await self.qq_client.send_message(self._admin_qq, relay_text)
         return None
-
-    def _track_handler_task(self, task: asyncio.Task) -> None:
-        self._handler_tasks.add(task)
-        task.add_done_callback(self._handler_tasks.discard)
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         session_key = self._message_session_key(message)

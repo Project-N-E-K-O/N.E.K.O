@@ -248,7 +248,7 @@ const pluginId = 'qq_auto_reply';
 
         async function refreshQrcode() {
             state.qrcodeLoaded = true;
-            const payload = await callPlugin('qq_auto_reply_sync_qrcode', {});
+            const payload = await callPlugin('sync_qrcode', {});
             applyDashboardState(payload);
         }
 

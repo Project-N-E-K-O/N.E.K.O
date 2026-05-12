@@ -95,7 +95,8 @@ Notes:
 - Existing character persona and model configuration are reused.
 - Proactive private sending may read memory context for generation, but this action itself is not written back into memory.
 - Proactive group sending is not written into memory.
-- `qq_number` / `group_id` must be numeric strings.
+- The private entry uses `target`: it can be either a numeric QQ ID or a nickname already configured in the trusted-user list.
+- `group_id` must be a numeric string.
 - `message` cannot be empty.
 - Auto-reply must already be started and OneBot must be connected; otherwise the entry fails immediately.
 
