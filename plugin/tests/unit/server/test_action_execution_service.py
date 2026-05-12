@@ -368,11 +368,9 @@ class TestDispatchRouting:
         fails, the response must surface the reload failure in the message
         rather than silently returning a misleading "Profile switched"
         success — the running plugin is still on the old profile."""
-        # Stub out the on-disk profile switch.
-        async def fake_set_profile(plugin_id: str, profile_name: str) -> None:
-            return None
-
-        # Patch the deferred import target inside _profile.
+        # Stub out the on-disk profile switch as a sync no-op (the production
+        # call site invokes it via ``asyncio.to_thread`` so a coroutine
+        # wouldn't work here).
         import plugin.config.service as config_service_mod
         monkeypatch.setattr(
             config_service_mod, "set_plugin_active_profile",
