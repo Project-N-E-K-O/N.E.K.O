@@ -712,18 +712,33 @@ async def update_core_config(request: Request):
             stripped = value.strip()
             return bool(stripped) and ('***' in stripped or set(stripped) == {'*'})
 
+        def _normalize_core_api_key(value):
+            if _is_masked_secret(value):
+                return None
+            if value is None:
+                raise ValueError("API Key不能为null")
+            if not isinstance(value, str):
+                raise TypeError("API Key必须是字符串类型")
+            return value.strip()
+
         # 只有在启用自定义API时，才允许不设置coreApiKey
         if enable_custom_api:
             # 启用自定义API时，coreApiKey是可选的
             if 'coreApiKey' in data:
-                api_key = data['coreApiKey']
-                if not _is_masked_secret(api_key):
-                    core_cfg['coreApiKey'] = api_key.strip()
+                try:
+                    api_key = _normalize_core_api_key(data['coreApiKey'])
+                except (TypeError, ValueError) as exc:
+                    return {"success": False, "error": str(exc)}
+                if api_key is not None:
+                    core_cfg['coreApiKey'] = api_key
         else:
             # 未启用自定义API时，必须设置coreApiKey
-            api_key = data.get('coreApiKey', '')
-            if not _is_masked_secret(api_key):
-                core_cfg['coreApiKey'] = api_key.strip()
+            try:
+                api_key = _normalize_core_api_key(data.get('coreApiKey', ''))
+            except (TypeError, ValueError) as exc:
+                return {"success": False, "error": str(exc)}
+            if api_key is not None:
+                core_cfg['coreApiKey'] = api_key
         if 'coreApi' in data:
             core_cfg['coreApi'] = data['coreApi']
         if 'assistApi' in data:
