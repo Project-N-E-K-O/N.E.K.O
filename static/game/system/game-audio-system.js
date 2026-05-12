@@ -10,6 +10,19 @@
   //   该配置对象变量；只通过 window.xxx 动态读取时，补全能力会弱一些。
   // - 对外只暴露 NekoGameSystem.GameAudioSystem；BGM 播放器和音效播放器是内部实现，
   //   不作为游戏代码直接调用的公共入口。
+  //
+  // BGM 调优经验：
+  // - 普通歌单适合菜单、短循环要求不高的背景音乐；循环 BGM 适合游戏战斗/比赛这种要长期
+  //   持续播放的场景。
+  // - 循环 BGM 播放顺序为 intro -> loop -> outro：intro 只进场一次，loop 负责比赛中持续
+  //   循环，outro 只在 finishLoopedBgm() 收尾时播放。
+  // - L->L 循环尽量使用浏览器原生 audio.loop，不要等 ended 后再由 JS 重新 play；后者容易
+  //   产生可感知断点。
+  // - A->B 切换依赖交叉淡入淡出降低突兀感；如果直接 stop 旧音频再 play 新音频，会出现
+  //   空白段或“卡一下”的体感。
+  // - 预加载可以减少首次读取、解码和创建音频对象带来的停顿，但 HTMLAudio 仍不保证采样级
+  //   无缝；如果必须严格无缝，需要 Web Audio 预解码和精确调度。
+  // - MP3 自身可能有编码延迟或头尾静音；素材的剪辑点比代码更能决定最终是否无缝。
 
   const DEFAULT_BGM_VOLUME = 0.45;
   const DEFAULT_SFX_VOLUME = 0.75;
@@ -551,6 +564,7 @@
       this.currentContentSignature = '';
       this.currentTrack = null;
       this.phase = 'stopped';
+      this.fadingAudio = null;
       this.pendingFinish = false;
       this.pendingPlayAfterUnlock = false;
       this.pausedByUser = false;
@@ -561,8 +575,9 @@
 
     // 播放循环 BGM：
     // - intro：可选，只播放一次。
-    // - loop：必填，循环段；没有收尾请求时反复播放。
-    // - outro：可选，finishLoopedBgm() 请求收尾后播放。
+    // - loop：必填，循环段；没有收尾请求时使用浏览器原生 audio.loop 反复播放。
+    // - outro：可选，finishLoopedBgm() 请求收尾后，等待当前 loop 轮次结束再播放。
+    // - 切换到另一套循环 BGM 时保留旧音频做 crossfade，避免先停旧歌再开新歌造成空白。
     /**
      * 播放循环 BGM。
      *
@@ -585,7 +600,6 @@
         return Promise.resolve(true);
       }
 
-      this.stop({ fadeMs: 0 });
       this.currentConfig = normalized;
       this.currentId = id;
       this.currentContentSignature = loopedBgmIdentityFromConfig(normalized);
@@ -632,6 +646,8 @@
       this.pendingFinish = false;
       this.pendingPlayAfterUnlock = false;
       this._clearFadeTimer();
+      disposeAudio(this.fadingAudio);
+      this.fadingAudio = null;
       const audio = this.currentAudio;
       this.currentAudio = null;
       this.currentTrack = null;
@@ -654,6 +670,9 @@
       }
       if (this.phase === 'outro') return Promise.resolve(true);
       this.pendingFinish = true;
+      if (this.phase === 'loop') {
+        this.currentAudio.loop = false;
+      }
       return Promise.resolve(true);
     }
 
@@ -722,6 +741,9 @@
 
       const fadeMs = previousAudio ? this.fadeMs : 0;
       if (previousAudio && fadeMs > 0) {
+        // 循环 BGM 之间切换时，这里是主要的抗停顿路径：
+        // 新音频先启动，再把旧音频淡出。若改回先 stop 再 play，inGame -> max+angry
+        // 这类切换会更容易出现可感知空白。
         this._startCrossfade(previousAudio, audio, fadeMs);
       } else {
         disposeAudio(previousAudio);
@@ -774,7 +796,10 @@
       if (cached) this.preloadCache.delete(track.src);
       const audio = cached || this.audioFactory(track.src, track);
       audio.preload = track.preload || 'auto';
-      audio.loop = false;
+      // loop 段默认使用浏览器原生循环，避免每轮结束后再由 JS 重建音频造成明显断点。
+      // 当 finishLoopedBgm() 请求收尾时，会把 loop 关掉，等待当前轮结束后再进入 outro。
+      // 这里改善的是 L->L；L->E 仍要等 ended 事件再启动 outro，HTMLAudio 下不承诺严格无缝。
+      audio.loop = phase === 'loop' && !this.pendingFinish;
       audio.addEventListener?.('ended', () => this._handleEnded(audio, phase));
       audio.addEventListener?.('error', (event) => this._handleError(audio, event, phase));
       return audio;
@@ -822,6 +847,9 @@
     }
 
     _startCrossfade(previousAudio, nextAudio, fadeMs) {
+      this._clearFadeTimer();
+      disposeAudio(this.fadingAudio);
+      this.fadingAudio = previousAudio;
       const startedAt = Date.now();
       const previousStartVolume = Number(previousAudio.volume) || 0;
       this.fadeTimer = window.setInterval(() => {
@@ -831,7 +859,8 @@
         this._applyVolume(nextAudio, this.volume * progress);
         if (progress >= 1) {
           this._clearFadeTimer();
-          disposeAudio(previousAudio);
+          disposeAudio(this.fadingAudio);
+          this.fadingAudio = null;
           this._applyVolume(nextAudio, this.volume);
         }
       }, 50);

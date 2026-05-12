@@ -901,6 +901,7 @@
   let _lastWallBounceSfxAt = 0;
   const WALL_BOUNCE_SFX_COOLDOWN_MS = 500;
   let _startedAsMaxAngry = false;
+  let _openingMaxAngryBgmActive = false;
 
   const boundaryToggle = document.getElementById('boundary-toggle');
   boundaryToggle.addEventListener('change', () => {
@@ -925,7 +926,7 @@
     const config = {
       bgm: {
         startMenu: [],
-        inGame: [],
+        inGame: {},
         mood: {},
       },
       loopedBgm: {},
@@ -951,43 +952,95 @@
         })
       : null;
     let currentKey = '';
-    audio?.preloadSfx('ball.kick');
+
+    function isLoopedBgmConfig(value) {
+      return value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof value.loop === 'string';
+    }
+
+    function preloadBgmTree(value) {
+      if (!audio || !value) return;
+      if (isLoopedBgmConfig(value)) {
+        audio.preloadLoopedBgm(value);
+        return;
+      }
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadBgm(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadBgmTree);
+      }
+    }
+
+    function preloadSfxTree(value) {
+      if (!audio || !value) return;
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadSfx(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadSfxTree);
+      }
+    }
+
+    // 足球游戏内音频全部预载，减少第一次切换到对应 BGM / SFX 时的可感知停顿。
+    // 注意：HTMLAudio 预载不能保证采样级无缝，只能降低网络读取和首次解码等待。
+    function preloadAllAudio() {
+      preloadBgmTree(config.bgm);
+      preloadBgmTree(config.loopedBgm);
+      preloadSfxTree(config.sfx);
+    }
+
+    preloadAllAudio();
 
     function resolvePlaylist() {
       if (!_llm.gameStarted) {
-        return { key: 'startMenu', playlist: config.bgm.startMenu };
+        return { key: 'startMenu', type: 'bgm', playlist: config.bgm.startMenu };
       }
 
       const moodPlaylist = config.bgm.mood?.[moodKey];
       const difficultyName = DIFFICULTY[difficultyIdx]?.name;
-      if (
-        moodKey === 'angry' &&
-        difficultyName === 'max' &&
-        _startedAsMaxAngry &&
-        Array.isArray(moodPlaylist?.openingMax) &&
-        moodPlaylist.openingMax.length
-      ) {
-        return { key: 'mood:angry:opening-max', playlist: moodPlaylist.openingMax };
+      const isMaxAngry = moodKey === 'angry' && difficultyName === 'max';
+      if (!isMaxAngry) {
+        // 开场 max + angry 的 plus BGM 只允许覆盖“开场后连续保持 max+angry”的阶段。
+        // 一旦玩家/LLM 改过难度或心情导致离开该组合，后续再回到 max+angry 应使用普通 max BGM。
+        _openingMaxAngryBgmActive = false;
       }
       if (
-        moodKey === 'angry' &&
-        difficultyName === 'max' &&
-        Array.isArray(moodPlaylist?.max) &&
-        moodPlaylist.max.length
+        isMaxAngry &&
+        _openingMaxAngryBgmActive &&
+        moodPlaylist?.openingMax?.loop
       ) {
-        return { key: 'mood:angry:max', playlist: moodPlaylist.max };
+        return { key: 'mood:angry:opening-max', type: 'loopedBgm', config: moodPlaylist.openingMax };
+      }
+      if (
+        isMaxAngry &&
+        moodPlaylist?.max?.loop
+      ) {
+        return { key: 'mood:angry:max', type: 'loopedBgm', config: moodPlaylist.max };
       }
 
       // 正常比赛 BGM：没有命中特殊心情 / 难度 BGM 时统一回到这里。
       // 例如打破 max + angry 组合后，下一次 sync 会切换回 inGame。
-      return { key: 'inGame', playlist: config.bgm.inGame };
+      if (config.bgm.inGame?.loop) {
+        return { key: 'inGame', type: 'loopedBgm', config: config.bgm.inGame };
+      }
+      return { key: 'inGame', type: 'bgm', playlist: config.bgm.inGame || [] };
     }
 
     function sync(reason = 'sync') {
       if (!audio) return;
-      const { key: nextKey, playlist } = resolvePlaylist();
+      const { key: nextKey, type, playlist, config: loopedConfig } = resolvePlaylist();
       if (nextKey === currentKey) return;
       currentKey = nextKey;
+      if (type === 'loopedBgm') {
+        console.log(`[SoccerAudio] 切换循环 BGM=${nextKey} reason=${reason}`);
+        void audio.playLoopedBgm(loopedConfig, { id: `soccer:${nextKey}` });
+        return;
+      }
       console.log(`[SoccerAudio] 切换 BGM 歌单=${nextKey} reason=${reason} tracks=${playlist.length}`);
       void audio.playBgm(playlist, { id: `soccer:${nextKey}` });
     }
@@ -1008,6 +1061,7 @@
         Object.assign(config.loopedBgm, nextConfig.loopedBgm);
       }
       audio?.configure({ bgm: config.bgm, loopedBgm: config.loopedBgm, sfx: config.sfx });
+      preloadAllAudio();
       currentKey = '';
       sync('set-config');
     }
@@ -1091,6 +1145,16 @@
     gameSystem.soccer = gameSystem.soccer || {};
     gameSystem.soccer.audio = soccerGameAudio;
   }
+
+  // Chrome 等浏览器通常要求点击、按键、触摸这类真实用户激活后才能播放带声音音频；
+  // 鼠标移动一般不算用户激活。这里在首次激活时补一次 unlock，让之前被自动播放策略
+  // 拒绝的菜单 / 游戏 BGM 有机会恢复。
+  function unlockSoccerAudioFromUserActivation() {
+    void soccerGameAudio.unlock();
+  }
+  window.addEventListener('pointerdown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('keydown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('touchstart', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
 
   function _formatVolumePercent(value) {
     return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
@@ -1202,7 +1266,15 @@
   window.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', e => {
     if (!isGameRuntimeReady()) return;
+    if (isGameUiTarget(e.target)) return;
     if (e.key === 'r' || e.key === 'R') resetPositions();
+    // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
+    const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
+    if (difficultyHotkey) {
+      e.preventDefault();
+      setDifficulty(difficultyHotkey, 'difficulty-hotkey');
+      return;
+    }
     // 1-6 切换 AI 心情（debug）
     const idx = Number(e.key) - 1;
     if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx]);
@@ -1457,6 +1529,15 @@
   let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
+  }
+  function setDifficulty(name, reason = 'difficulty-set') {
+    const i = DIFFICULTY.findIndex(d => d.name === name);
+    if (i < 0) return false;
+    difficultyIdx = i;
+    triggerScene('diff-' + name);
+    emitEvent('difficulty-changed', { difficulty: name });
+    soccerGameAudio.sync(reason);
+    return true;
   }
 
   // 心情（只作用于 AI）。键盘 1-6 切换
@@ -2210,13 +2291,7 @@
     disableMoodRotation,
     // difficulty
     setDifficulty(name) {
-      const i = DIFFICULTY.findIndex(d => d.name === name);
-      if (i >= 0) {
-        difficultyIdx = i;
-        triggerScene('diff-' + name);
-        emitEvent('difficulty-changed', { difficulty: name });
-        soccerGameAudio.sync('difficulty-set');
-      }
+      setDifficulty(name, 'difficulty-set');
     },
     getDifficulty: () => DIFFICULTY[difficultyIdx].name,
     cycleDifficulty: () => cycleDifficulty(),
@@ -2423,6 +2498,7 @@
     _llm.gameStartedAt = 0;
     _llm.gameStartedAtEpochMs = 0;
     _startedAsMaxAngry = false;
+    _openingMaxAngryBgmActive = false;
     _llm.gameMemoryTailCount = null;
     _llm.soccerGameMemoryEnabled = _isGameMemoryEnabled();
     _llm.lastVoiceFailure = null;
@@ -3881,6 +3957,7 @@
     _llm.gameStartedAtEpochMs = Date.now();
     const openingDifficultyName = DIFFICULTY[difficultyIdx]?.name || '';
     _startedAsMaxAngry = openingDifficultyName === 'max' && moodKey === 'angry';
+    _openingMaxAngryBgmActive = _startedAsMaxAngry;
     const openingBgmReason = openingDifficultyName === 'max' && moodKey === 'angry'
       ? 'start-game-max-angry'
       : 'start-game';
