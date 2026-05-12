@@ -80,6 +80,7 @@ class StudyStore:
         with self._lock:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=10.0)
+            self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.row_factory = sqlite3.Row
             self._init_db()
             self._load_seed_if_empty()
@@ -1146,7 +1147,8 @@ class StudyStore:
         response_time_ms: int | None = None,
     ) -> None:
         session_key = str(session_id or "default")
-        topic_key = str(topic_id or "")
+        topic_key = str(topic_id or "").strip()
+        db_topic_key = topic_key or None
         with self._lock:
             conn = self._require_conn()
             conn.execute(
@@ -1159,7 +1161,7 @@ class StudyStore:
                 """,
                 (
                     session_key,
-                    topic_key,
+                    db_topic_key,
                     self._json_dumps(question or {}),
                     str(user_answer or ""),
                     self._json_dumps(eval_result or {}),

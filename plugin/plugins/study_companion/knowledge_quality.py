@@ -217,16 +217,8 @@ class KnowledgeQualityStore:
         topic_filter = str(topic_id or "").strip()
         for row in rows:
             payload = dict(row.get("payload") or {})
-            if topic_filter:
-                candidate_topic = str(
-                    payload.get("topic_id")
-                    or payload.get("from_topic_id")
-                    or payload.get("to_topic_id")
-                    or payload.get("id")
-                    or ""
-                )
-                if candidate_topic and candidate_topic != topic_filter:
-                    continue
+            if topic_filter and not self._payload_matches_topic(row.get("item_type"), payload, topic_filter):
+                continue
             result.append(
                 {
                     "id": row.get("id"),
@@ -240,6 +232,19 @@ class KnowledgeQualityStore:
                 }
             )
         return result[: max(1, int(limit))]
+
+    @staticmethod
+    def _payload_matches_topic(item_type: object, payload: dict[str, Any], topic_id: str) -> bool:
+        topic = str(topic_id or "").strip()
+        if not topic:
+            return True
+        if str(item_type or "") == KnowledgeCandidateType.EDGE.value:
+            return topic in {
+                str(payload.get("from_topic_id") or "").strip(),
+                str(payload.get("to_topic_id") or "").strip(),
+            }
+        candidate_topic = str(payload.get("topic_id") or payload.get("id") or "").strip()
+        return not candidate_topic or candidate_topic == topic
 
     @staticmethod
     def _normalize_item_type(item_type: object) -> str:

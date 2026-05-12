@@ -149,6 +149,33 @@ def test_evidence_recomputes_score_and_lifecycle_thresholds(tmp_path: Path) -> N
         store.close()
 
 
+def test_prompt_evidence_summary_includes_edges_when_topic_is_to_topic(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store)
+        edge = quality.upsert_candidate(
+            KnowledgeCandidateType.EDGE.value,
+            {
+                "from_topic_id": "linear_function_kb",
+                "to_topic_id": "quadratic_vertex_form",
+                "relation": "prerequisite",
+            },
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {"source": "llm"},
+        )
+        quality.add_evidence(edge["id"], KnowledgeEvidenceType.ANSWER_IMPROVED.value, 3.0, {"source": "eval"})
+        quality.add_evidence(edge["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 3.0, {"source": "user"})
+
+        summary = quality.prompt_evidence_summary(topic_id="quadratic_vertex_form")
+
+        assert any(item["id"] == edge["id"] for item in summary)
+        edge_summary = next(item for item in summary if item["id"] == edge["id"])
+        assert edge_summary["payload_summary"]["to_topic_id"] == "quadratic_vertex_form"
+    finally:
+        store.close()
+
+
 def test_trusted_candidate_can_deprecate_on_strong_negative_evidence(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

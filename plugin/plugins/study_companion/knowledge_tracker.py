@@ -294,10 +294,12 @@ class KnowledgeTracker:
         difficulty = _difficulty_to_float(question_payload.get("difficulty"), 0.5)
         verdict = str(eval_result.get("verdict") or "").strip().lower()
         error_type = str(eval_result.get("error_type") or "").strip() or "unknown"
+        is_known_topic = bool(self.store.get_topic(topic_id))
+        qa_topic_id = topic_id if is_known_topic else ""
         self.store.ensure_session(session_id=session_id, mode=mode)
         self.store.add_qa_record(
             session_id=session_id,
-            topic_id=topic_id,
+            topic_id=qa_topic_id,
             question=question_payload,
             user_answer=user_answer,
             eval_result=eval_result,
@@ -305,7 +307,24 @@ class KnowledgeTracker:
             response_time_ms=response_time_ms,
         )
 
-        recent = self.store.list_qa_records_for_topic(topic_id, limit=10)
+        recent = self.store.list_qa_records_for_topic(topic_id, limit=10) if qa_topic_id else []
+        if not is_known_topic:
+            if verdict in {"wrong", "partial", "dont_know"}:
+                self._record_error_candidates(
+                    topic_id=topic_id,
+                    question=question_payload,
+                    eval_result=eval_result,
+                    error_type=error_type,
+                    verdict=verdict,
+                )
+            elif verdict == "correct":
+                self._record_positive_question_type(topic_id=topic_id, question=question_payload)
+            return {
+                "topic_id": topic_id,
+                "mastery": {},
+                "wrong_question_id": "",
+                "fsrs": {},
+            }
         recent_results = [dict(item.get("eval_result") or {}) for item in recent[:-1]]
         mastery_result = {
             "verdict": verdict,

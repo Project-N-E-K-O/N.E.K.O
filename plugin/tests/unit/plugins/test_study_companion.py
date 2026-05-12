@@ -240,6 +240,17 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        row = store._require_conn().execute("PRAGMA foreign_keys").fetchone()
+        assert row is not None
+        assert int(row[0]) == 1
+    finally:
+        store.close()
+
+
 def test_build_tutor_payload_preserves_structured_summary() -> None:
     reply = TutorReply(
         operation="summarize_session",
