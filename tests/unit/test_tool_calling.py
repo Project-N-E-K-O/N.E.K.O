@@ -1664,7 +1664,7 @@ async def test_realtime_apply_tools_to_session_qwen_disables_enable_search():
 
 @pytest.mark.asyncio
 async def test_realtime_apply_tools_to_session_step_emits_function_tools_only():
-    """stepaudio-2.5-realtime 不再依赖客户端注入内置 web_search；
+    """stepaudio-2.5-realtime 不再支持内置 web_search；
     apply_tools_to_session 只发送 caller 注册的 function tools，与
     update_session 初始化路径保持一致。"""
     client, sent = _make_rt_client("step")

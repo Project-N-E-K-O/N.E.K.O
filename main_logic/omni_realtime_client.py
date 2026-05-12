@@ -477,22 +477,12 @@ class OmniRealtimeClient:
             logger.info("apply_tools_to_session: Gemini Live does not support mid-session tools update — ignoring")
             return
         api = self._api_type.lower()
-        if api == 'step':
-            # stepaudio-2.5-realtime 不再依赖客户端注入 web_search，与
+        if api == 'step' or api == 'free':
+            # stepaudio-2.5-realtime 不再支持内置 web_search，与
             # update_session 初始化路径保持一致：只发 caller 注册的
             # function tools。
             tools_payload: List[Dict[str, Any]] = self._tools_for_step()
             await self.update_session({"tools": tools_payload})
-        elif api == 'free':
-            # free (lanlan.tech 代理) 当前仍把内置 web_search 当作 tools
-            # 协议的一部分；与 update_session 初始化路径对齐，mid-session
-            # 重同步时也把它再发一次，避免被服务端当成 disable 撤销。
-            free_tools_payload: List[Dict[str, Any]] = [
-                {"type": "web_search",
-                 "function": {"description": "这个web_search用来搜索互联网的信息"}}
-            ]
-            free_tools_payload.extend(self._tools_for_step())
-            await self.update_session({"tools": free_tools_payload})
         elif api == 'gpt':
             payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
             if self.has_tools():
@@ -837,14 +827,7 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
-            free_tools: List[Dict[str, Any]] = [
-                {
-                    "type": "web_search",
-                    "function": {
-                        "description": "这个web_search用来搜索互联网的信息"
-                    }
-                }
-            ]
+            free_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools
