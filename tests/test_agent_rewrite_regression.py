@@ -506,6 +506,10 @@ def test_yui_avatar_stage_exposes_extracted_wakeup_action():
     assert "playIntroGreetingHug" in source
     assert "computeIntroGreetingHugPose" in source
     assert "YUI_INTRO_GREETING_HUG_PARAMS" in source
+    assert "class Live2DIntroGiftHeartSession" in source
+    assert "playIntroGiftHeart" in source
+    assert "computeIntroGiftHeartPose" in source
+    assert "YUI_INTRO_GIFT_HEART_PARAMS" in source
     assert "Param77" in source
     assert "Param91" in source
     assert "Param93" in source
@@ -619,14 +623,22 @@ def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
 
     assert "runIntroGreetingHugPerformance" in director_source
     assert "playIntroGreetingHug" in director_source
+    assert "runIntroGiftHeartPerformance" in director_source
+    assert "playIntroGiftHeart" in director_source
+    assert "showIntroGiftHeart" in director_source
     assert "releaseIntroGreetingHugPerformance" not in director_source
     assert "releaseIntroGreetingHug" not in director_source
     assert "holdAfterSettle" not in director_source
     assert "Promise.all([" in director_source
     assert "this.speakGuideLine(greetingReplyText" in director_source
+    assert "Param74" not in director_source
+    assert "Param75" not in director_source
     assert "Param77" not in director_source
+    assert "Param90" not in director_source
     assert "Param91" not in director_source
+    assert "Param92" not in director_source
     assert "Param93" not in director_source
+    assert "Param95" not in director_source
     assert "Param96" not in director_source
 
 

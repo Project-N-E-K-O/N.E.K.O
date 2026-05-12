@@ -29,7 +29,9 @@
 
         if (current.indexOf('ja') === 0) return 'ja';
         if (current.indexOf('en') === 0) return 'en';
+        if (current.indexOf('es') === 0) return 'es';
         if (current.indexOf('ko') === 0) return 'ko';
+        if (current.indexOf('pt') === 0) return 'pt';
         if (current.indexOf('ru') === 0) return 'ru';
         return 'zh';
     }
@@ -165,9 +167,38 @@
         const locale = resolveGuideLocale();
         if (locale === 'ja') return 'ja-JP';
         if (locale === 'en') return 'en-US';
+        if (locale === 'es') return 'es-ES';
         if (locale === 'ko') return 'ko-KR';
+        if (locale === 'pt') return 'pt-PT';
         if (locale === 'ru') return 'ru-RU';
         return 'zh-CN';
+    }
+
+    function resolveGuideAudioLocale(locale) {
+        const candidates = locale
+            ? [locale]
+            : [
+                window.i18n && window.i18n.language,
+                window.localStorage && window.localStorage.getItem('i18nextLng'),
+                document && document.documentElement && document.documentElement.lang,
+                navigator && navigator.language,
+                window.localStorage && window.localStorage.getItem('locale')
+            ];
+
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = String(candidates[index] || '').trim().toLowerCase();
+            if (!candidate || candidate === 'auto') {
+                continue;
+            }
+            if (candidate.indexOf('ja') === 0) return 'ja';
+            if (candidate.indexOf('en') === 0) return 'en';
+            if (candidate.indexOf('ko') === 0) return 'ko';
+            if (candidate.indexOf('ru') === 0) return 'ru';
+            if (candidate.indexOf('zh') === 0) return 'zh';
+            return 'en';
+        }
+
+        return 'en';
     }
 
     const DEFAULT_INTERRUPT_DISTANCE = 32;
@@ -325,7 +356,7 @@
 
         // 当前 locale 没有对应语音文件时（如 es / pt 等未提供录音的语言），
         // 默认 fallback 是英文，避免回退到中文给非中文用户带来违和感。
-        const locale = resolveGuideLocale();
+        const locale = resolveGuideAudioLocale();
         const fileName = files[locale] || files.en || '';
         const fileLocale = files[locale] ? locale : 'en';
         return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
@@ -597,6 +628,21 @@
     window.homeTutorialExperienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
 
     const GUIDE_NARRATION_TIMELINES_BY_KEY = Object.freeze({
+        intro_greeting_reply: Object.freeze({
+            fallbackDurationMs: 15020,
+            cues: Object.freeze({
+                showIntroGiftHeart: Object.freeze({
+                    at: 57 / 78,
+                    atByLocale: Object.freeze({
+                        zh: 57 / 78,
+                        ja: 88 / 117,
+                        en: 211 / 283,
+                        ko: 88 / 127,
+                        ru: 188 / 270
+                    })
+                })
+            })
+        }),
         takeover_settings_peek_intro: Object.freeze({
             fallbackDurationMs: 11877,
             cues: Object.freeze({
@@ -3880,9 +3926,13 @@
             if (!fallbackCue || !Number.isFinite(fallbackCue.at)) {
                 return null;
             }
+            const fallbackCueLocale = resolveGuideAudioLocale();
+            const localeCueAt = fallbackCue.atByLocale && Number.isFinite(fallbackCue.atByLocale[fallbackCueLocale])
+                ? fallbackCue.atByLocale[fallbackCueLocale]
+                : fallbackCue.at;
 
             return {
-                at: clamp(fallbackCue.at, 0, 1),
+                at: clamp(localeCueAt, 0, 1),
                 fallbackDurationMs: Number.isFinite(fallbackConfig.fallbackDurationMs)
                     ? Math.max(1, fallbackConfig.fallbackDurationMs)
                     : 0
@@ -4000,7 +4050,7 @@
                 return 0;
             }
 
-            const normalizedLocale = normalizeGuideLocale(locale || resolveGuideLocale());
+            const normalizedLocale = resolveGuideAudioLocale(locale || resolveGuideLocale());
             const exactDurationMs = Number.isFinite(durationConfig[normalizedLocale])
                 ? durationConfig[normalizedLocale]
                 : 0;
@@ -4008,7 +4058,9 @@
                 return exactDurationMs;
             }
 
-            const fallbackDurationMs = Number.isFinite(durationConfig.zh) ? durationConfig.zh : 0;
+            const fallbackDurationMs = Number.isFinite(durationConfig.en)
+                ? durationConfig.en
+                : (Number.isFinite(durationConfig.zh) ? durationConfig.zh : 0);
             return fallbackDurationMs > 0 ? fallbackDurationMs : 0;
         }
 
@@ -7684,7 +7736,8 @@
                 this.speakGuideLine(greetingReplyText, {
                     voiceKey: 'intro_greeting_reply'
                 }),
-                this.runIntroGreetingHugPerformance().catch(() => {})
+                this.runIntroGreetingHugPerformance().catch(() => {}),
+                this.runIntroGiftHeartPerformance().catch(() => {})
             ]);
         }
 
@@ -7694,8 +7747,30 @@
                 return null;
             }
             return api.playIntroGreetingHug({
-                approachMs: 1500,
+                approachMs: 2200,
                 settleMs: 1250,
+                isCancelled: () => this.isStopping()
+            });
+        }
+
+        async runIntroGiftHeartPerformance() {
+            if (!(await this.waitForNarrationCue(
+                'intro_greeting_reply',
+                'showIntroGiftHeart'
+            ))) {
+                return null;
+            }
+            if (this.isStopping()) {
+                return null;
+            }
+
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playIntroGiftHeart !== 'function') {
+                return null;
+            }
+            return api.playIntroGiftHeart({
+                durationMs: 2600,
+                releaseMs: 420,
                 isCancelled: () => this.isStopping()
             });
         }
