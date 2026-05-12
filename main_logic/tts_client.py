@@ -3597,8 +3597,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                                 await _send_text("".join(pending_text), current_speech_id)
                         except Exception as exc:
                             logger.warning("ElevenLabs WS flush pending text failed: %s", exc)
-                            pending_text.clear()
-                            pending_text_sid = None
+                            _enqueue_error(response_queue, {
+                                "code": "API_REQUEST_FAILED",
+                                "provider": "elevenlabs",
+                                "message": f"ElevenLabs pending text flush failed: {exc}",
+                            })
+                            response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
                             await _close_ws(send_final_empty=False, wait_for_final=False)
                             current_speech_id = None
                             continue
