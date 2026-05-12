@@ -129,6 +129,25 @@ function New-MinimalVenv {
     return $venvPython
 }
 
+function Test-SupportedKokoroModelDir {
+    param([Parameter(Mandatory = $true)][System.IO.DirectoryInfo]$Directory)
+
+    $supportedModelDirNames = @(
+        "Kokoro-82M",
+        "Kokoro-82M-v1.0",
+        "Kokoro-82M-en",
+        "Kokoro-82M-v1.1-zh"
+    )
+    if ($Directory.Name -notin $supportedModelDirNames) {
+        return $false
+    }
+
+    $configPath = Join-Path $Directory.FullName "config.json"
+    $modelFiles = @(Get-ChildItem -LiteralPath $Directory.FullName -Filter "*.pth" -File -ErrorAction SilentlyContinue)
+    $voiceFiles = @(Get-ChildItem -LiteralPath (Join-Path $Directory.FullName "voices") -Filter "*.pt" -File -ErrorAction SilentlyContinue)
+    return (Test-Path $configPath) -and $modelFiles.Count -gt 0 -and $voiceFiles.Count -gt 0
+}
+
 $packageServerDir = Join-Path $packageRoot "local_server\local_tts_server"
 New-Item -ItemType Directory -Force -Path $packageServerDir | Out-Null
 
@@ -139,11 +158,14 @@ Copy-Item -LiteralPath (Join-Path $scriptDir "start_kokoro_server.bat") -Destina
 
 if (-not $SkipModels) {
     $modelsDir = Join-Path $scriptDir "kokoro_models"
-    if (Test-Path $modelsDir) {
-        Copy-Tree -Source $modelsDir -Destination (Join-Path $packageServerDir "kokoro_models") -Exclude @("__pycache__", "*.log")
-    } else {
-        New-Item -ItemType Directory -Force -Path (Join-Path $packageServerDir "kokoro_models") | Out-Null
+    $availableModelDirs = @(
+        Get-ChildItem -LiteralPath $modelsDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-SupportedKokoroModelDir $_ }
+    )
+    if (-not (Test-Path $modelsDir) -or $availableModelDirs.Count -eq 0) {
+        throw "No supported Kokoro model directories found under $modelsDir. Pass -SkipModels only when you will provide LOCAL_TTS_KOKORO_MODEL_DIR at runtime."
     }
+    Copy-Tree -Source $modelsDir -Destination (Join-Path $packageServerDir "kokoro_models") -Exclude @("__pycache__", "*.log")
 }
 
 if (-not $SkipEnv) {

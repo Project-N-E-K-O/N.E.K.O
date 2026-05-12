@@ -235,6 +235,30 @@ function Test-VenvPython {
     }
 }
 
+function Test-NvidiaGpuAvailable {
+    $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvidiaSmi) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $output = & $nvidiaSmi.Source -L 2>$null
+            if ($LASTEXITCODE -eq 0 -and $output) {
+                return $true
+            }
+        } catch {
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+    }
+
+    try {
+        $controllers = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue
+        return [bool]($controllers | Where-Object { $_.Name -match "NVIDIA" } | Select-Object -First 1)
+    } catch {
+        return $false
+    }
+}
+
 function Ensure-LocalTtsVenv {
     if (-not (Test-Path $venvPython)) {
         Write-Host "Creating uv isolated local TTS venv: $localTtsVenv" -ForegroundColor Yellow
@@ -272,8 +296,16 @@ function Ensure-CudaTorchIfNeeded {
         return
     }
 
-    $torchProbe = Test-VenvPython "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+    $hasNvidiaGpu = Test-NvidiaGpuAvailable
+    $torchProbe = Test-VenvPython "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
     if ($torchProbe.Ok -and ($torchProbe.Text -match "True")) {
+        return
+    }
+
+    if (-not $hasNvidiaGpu) {
+        if (-not $torchProbe.Ok) {
+            Write-Host "No NVIDIA GPU detected; skipping CUDA torch install. Common deps will provide CPU torch when needed." -ForegroundColor Yellow
+        }
         return
     }
 
