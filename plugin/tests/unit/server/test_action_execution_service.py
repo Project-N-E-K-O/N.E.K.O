@@ -135,17 +135,25 @@ class TestSystemActions:
         assert resp.success is True
         assert ("reload", "demo") in lifecycle.calls
 
-    async def test_unknown_system_action_raises(self) -> None:
+    async def test_unknown_system_action_falls_through_to_list_handler(self) -> None:
+        """Once the lifecycle-keyword gate was added, ``system:demo:explode``
+        no longer matches a lifecycle action — `explode` isn't in the keyword
+        set — so it falls through to the list-action handler (which itself
+        currently raises ACTION_NOT_IMPLEMENTED). The point of this test is
+        that it does NOT raise ACTION_NOT_FOUND from the system handler."""
         svc = _build_service()
         with pytest.raises(ServerDomainError) as exc_info:
             await svc.execute("system:demo:explode")
-        assert exc_info.value.code == "ACTION_NOT_FOUND"
+        assert exc_info.value.code == "ACTION_NOT_IMPLEMENTED"
 
-    async def test_malformed_system_action_raises(self) -> None:
+    async def test_two_segment_system_action_falls_through_to_list_handler(self) -> None:
+        """``system:bad`` (2 segments) is now treated as plugin "system"
+        calling list action "bad" — no longer reserved by the system handler
+        — so the dispatch routes it to the list handler."""
         svc = _build_service()
         with pytest.raises(ServerDomainError) as exc_info:
             await svc.execute("system:bad")
-        assert exc_info.value.code == "ACTION_NOT_FOUND"
+        assert exc_info.value.code == "ACTION_NOT_IMPLEMENTED"
 
     async def test_lifecycle_action_rejects_extra_segments(self) -> None:
         """A crafted id like `system:demo:stop:unexpected` must NOT execute the
@@ -349,3 +357,94 @@ class TestDispatchRouting:
         with pytest.raises(ServerDomainError) as exc_info:
             await svc.execute("system:demo:profile", value="  ")
         assert exc_info.value.code == "INVALID_ARGUMENT"
+
+
+# ── Plugin literally named "system" — namespace collision regression ─
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+class TestSystemPluginIdNamespace:
+    """A plugin whose ``plugin_id == "system"`` must not have its actions
+    swallowed by the ``system:`` lifecycle prefix. Dispatch is structural —
+    we only treat ``system:{x}:{y}`` as a lifecycle when ``{y}`` is a known
+    lifecycle keyword."""
+
+    async def test_system_named_plugin_list_action_falls_through(self) -> None:
+        """``system:foo`` (2 segments) is a list action for plugin "system",
+        not a lifecycle call. The list handler currently raises
+        ACTION_NOT_IMPLEMENTED, which is the *correct* routing — the test
+        verifies the dispatch reaches the list handler, not the system one."""
+        svc = _build_service()
+        with pytest.raises(ServerDomainError) as exc_info:
+            await svc.execute("system:foo")
+        assert exc_info.value.code == "ACTION_NOT_IMPLEMENTED"
+
+    async def test_system_named_plugin_settings_routes_to_settings_handler(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``system:settings:enabled`` for plugin_id=="system" must reach the
+        settings handler — not get misclassified as a lifecycle 'settings'
+        action (which would fail ACTION_NOT_FOUND)."""
+        captured: dict[str, Any] = {}
+
+        async def fake_hot_update(plugin_id: str, updates: dict, mode: str) -> dict:
+            captured["plugin_id"] = plugin_id
+            captured["updates"] = updates
+            captured["mode"] = mode
+            return {"message": "ok"}
+
+        from pydantic import BaseModel, Field
+
+        class _FakeSettings(BaseModel):
+            model_config = {"toml_section": "settings"}
+            enabled: bool = Field(default=False, json_schema_extra={"hot": True})
+
+        monkeypatch.setattr(
+            "plugin.server.application.actions.execution_service.hot_update_plugin_config",
+            fake_hot_update,
+        )
+        monkeypatch.setattr(
+            "plugin.server.application.actions.execution_service.resolve_settings_class",
+            lambda pid, **kw: _FakeSettings,
+        )
+
+        svc = _build_service()
+        resp = await svc.execute("system:settings:enabled", value=True)
+        assert resp.success is True
+        assert captured["plugin_id"] == "system"
+        assert captured["updates"] == {"settings": {"enabled": True}}
+
+    async def test_lifecycle_keyword_collision_with_system_plugin_field(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Even if plugin "system" has a hot field literally named "start"
+        (which clashes with a lifecycle keyword), ``system:settings:start``
+        must still reach the settings handler because the structural form
+        ``{x}:settings:{y}`` wins over the ``system:`` prefix shortcut."""
+        captured: dict[str, Any] = {}
+
+        async def fake_hot_update(plugin_id: str, updates: dict, mode: str) -> dict:
+            captured["plugin_id"] = plugin_id
+            captured["updates"] = updates
+            return {"message": "ok"}
+
+        from pydantic import BaseModel, Field
+
+        class _FakeSettings(BaseModel):
+            model_config = {"toml_section": "settings"}
+            start: bool = Field(default=False, json_schema_extra={"hot": True})
+
+        monkeypatch.setattr(
+            "plugin.server.application.actions.execution_service.hot_update_plugin_config",
+            fake_hot_update,
+        )
+        monkeypatch.setattr(
+            "plugin.server.application.actions.execution_service.resolve_settings_class",
+            lambda pid, **kw: _FakeSettings,
+        )
+
+        svc = _build_service()
+        resp = await svc.execute("system:settings:start", value=True)
+        assert resp.success is True
+        assert captured["plugin_id"] == "system"
+        assert captured["updates"] == {"settings": {"start": True}}

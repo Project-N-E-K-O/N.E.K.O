@@ -421,6 +421,14 @@ class ActionExecutionService:
         self._system_handler = _SystemActionHandler(self._lifecycle)
         self._list_action_handler = _ListActionHandler()
 
+    # Known lifecycle keywords that authorize the ``system:`` prefix to
+    # mean "system-handler lifecycle action" rather than "plugin literally
+    # named system". Kept in sync with ``_SystemActionHandler._DISPATCH``
+    # plus the special ``entry`` form.
+    _SYSTEM_LIFECYCLE_KEYS = frozenset({
+        "start", "stop", "reload", "toggle", "profile", "entry",
+    })
+
     async def execute(
         self,
         action_id: str,
@@ -428,16 +436,31 @@ class ActionExecutionService:
     ) -> ActionExecuteResponse:
         """Parse *action_id* and dispatch to the correct handler."""
 
-        # system:{plugin_id}:{action}
-        if action_id.startswith("system:"):
+        parts = action_id.split(":")
+
+        # {plugin_id}:settings:{field} — checked first so that a plugin
+        # literally named "system" still routes its settings (e.g.
+        # ``system:settings:enabled``) to the settings handler instead of
+        # being swallowed by the lifecycle prefix below.
+        if len(parts) >= 3 and parts[1] == "settings":
+            field_name = ":".join(parts[2:])
+            return await self._settings_handler.execute(parts[0], field_name, value)
+
+        # system:{plugin_id}:{lifecycle | entry[:...]} — only treat the
+        # ``system:`` prefix as a lifecycle namespace when ``parts[2]`` is a
+        # known lifecycle keyword. Otherwise (e.g. plugin "system" exposing a
+        # list action ``foo`` as ``system:foo``) fall through to the
+        # list-action handler so that namespace doesn't become a privileged
+        # tombstone for any plugin unfortunate enough to pick the same name.
+        if (
+            action_id.startswith("system:")
+            and len(parts) >= 3
+            and parts[2] in self._SYSTEM_LIFECYCLE_KEYS
+        ):
             return await self._system_handler.execute(action_id, value)
 
-        # {plugin_id}:settings:{field}
-        parts = action_id.split(":", 2)
-        if len(parts) == 3 and parts[1] == "settings":
-            return await self._settings_handler.execute(parts[0], parts[2], value)
-
-        # {plugin_id}:{action_id} (list_action)
+        # {plugin_id}:{action_id} (list_action) — covers plugin "system"
+        # list actions like ``system:foo`` (len(parts) == 2).
         if len(parts) >= 2:
             return await self._list_action_handler.execute(action_id, value)
 

@@ -566,7 +566,7 @@ function groupItems(items: CommandItem[], mode: GroupMode): Map<string, CommandI
 /*  Collapsible plugin card (for "按插件" view)                        */
 /* ================================================================== */
 
-function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }: {
+function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps, highlightedActionId }: {
   pluginName: string;
   items: CommandItem[];
   loadingMap: Record<string, boolean>;
@@ -578,6 +578,7 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
     onNavigate: (target: string, openIn: string) => void;
     onPrefsChange: (p: UserPreferences) => void;
   };
+  highlightedActionId: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -585,9 +586,17 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
   const entryCount = items.filter(a => a.category !== '插件管理').length;
   const mgmtCount = items.filter(a => a.category === '插件管理').length;
 
+  // Auto-expand whenever keyboard nav lands on one of our rows, so the
+  // highlighted row is actually visible and Enter can find a
+  // ``.cp-row-highlighted.cp-row-clickable`` target (the keyboard handler in
+  // the parent activates via querySelector + .click()).
+  const containsHighlight = highlightedActionId != null
+    && items.some(i => i.action_id === highlightedActionId);
+  const effectivelyExpanded = expanded || containsHighlight;
+
   // Measure body height after render for smooth animation
   useEffect(() => {
-    if (!expanded) {
+    if (!effectivelyExpanded) {
       setBodyHeight(0);
       return;
     }
@@ -599,17 +608,17 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
-  }, [expanded, items.length]);
+  }, [effectivelyExpanded, items.length]);
 
   return (
-    <div className={`cp-plugin-card ${expanded ? 'is-expanded' : ''}`}>
+    <div className={`cp-plugin-card ${effectivelyExpanded ? 'is-expanded' : ''}`}>
       <button
         type="button"
         className="cp-plugin-card-header"
         onClick={() => setExpanded(e => !e)}
-        aria-expanded={expanded}
+        aria-expanded={effectivelyExpanded}
       >
-        <span className={`cp-plugin-card-chevron ${expanded ? 'is-open' : ''}`}>▸</span>
+        <span className={`cp-plugin-card-chevron ${effectivelyExpanded ? 'is-open' : ''}`}>▸</span>
         <span className="cp-plugin-card-name">{pluginName}</span>
         <span className="cp-plugin-card-counts">
           {entryCount > 0 && <span className="cp-plugin-card-badge">{entryCount}</span>}
@@ -618,16 +627,16 @@ function PluginCard({ pluginName, items, loadingMap, errorMap, sharedRowProps }:
       </button>
       <div
         className="cp-plugin-card-collapse"
-        style={{ maxHeight: expanded ? `${bodyHeight}px` : '0px' }}
+        style={{ maxHeight: effectivelyExpanded ? `${bodyHeight}px` : '0px' }}
       >
         <div className="cp-plugin-card-body" ref={bodyRef}>
           {items.map((item, i) => (
-            <div key={item.action_id} className="cp-card-item-stagger" style={expanded ? { animationDelay: `${i * 30}ms` } : undefined}>
+            <div key={item.action_id} className="cp-card-item-stagger" style={effectivelyExpanded ? { animationDelay: `${i * 30}ms` } : undefined}>
               <CommandRow
                 item={item}
                 loading={!!loadingMap[item.action_id]}
                 error={errorMap[item.action_id] ?? null}
-                highlighted={false}
+                highlighted={item.action_id === highlightedActionId}
                 {...sharedRowProps}
               />
             </div>
@@ -814,6 +823,13 @@ export default function CommandPalette({
   const showFilterTabs = viewMode === 'byFunction' && !slashMode;
   const showGrouped = viewMode === 'byPlugin' && !isSearching;
 
+  // Currently highlighted item identifier — flow into PluginCard so grouped
+  // rendering can still light up the right row (and so Enter can find a
+  // ``.cp-row-highlighted.cp-row-clickable`` to click).
+  const highlightedActionId = highlightIdx >= 0 && highlightIdx < displayItems.length
+    ? displayItems[highlightIdx].action_id
+    : null;
+
   const renderGrouped = (items: CommandItem[]) => {
     const groups = groupItems(items, 'byPlugin');
     // Resolve display name: use category from first non-management item, fallback to plugin_id
@@ -828,6 +844,7 @@ export default function CommandPalette({
           loadingMap={loadingMap}
           errorMap={errorMap}
           sharedRowProps={sharedRowProps}
+          highlightedActionId={highlightedActionId}
         />
       );
     });

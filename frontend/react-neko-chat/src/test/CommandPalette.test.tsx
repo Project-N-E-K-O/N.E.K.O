@@ -345,3 +345,27 @@ describe('Slider control', () => {
     expect(input).toHaveAttribute('max', '100');
   });
 });
+
+describe('Grouped view keyboard activation', () => {
+  it('activates the highlighted row via Enter even when rendered grouped', async () => {
+    // Use only the chat_inject item so Enter activation calls onInjectText
+    // (button/instant items have other code paths; chat_inject is the
+    // simplest one to assert on). The keyboard handler in CommandPalette
+    // dispatches Enter by clicking the `.cp-row-highlighted.cp-row-clickable`
+    // element, which only resolves if PluginCard actually passes the
+    // highlighted prop through to its children.
+    const { onInjectText } = renderPalette([inject]);
+
+    // Switch to "按插件" (byPlugin) view. The button text is "🧩 按插件";
+    // match by regex so the leading emoji doesn't trip exact-match.
+    fireEvent.click(screen.getByRole('button', { name: /按插件/ }));
+
+    const input = screen.getByPlaceholderText('搜索操作...');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(onInjectText).toHaveBeenCalledWith('@Demo /greet');
+    });
+  });
+});
