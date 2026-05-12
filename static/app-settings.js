@@ -415,11 +415,9 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：检查用户地区，中国用户自动开启自主视觉
-                if (_isUserRegionChina()) {
-                    S.proactiveVisionEnabled = true;
-                    console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
-                }
+                // 首次启动：隐私模式一律默认关闭（即 proactiveVisionEnabled 默认开启），
+                // 不再按用户语言/地区区分
+                S.proactiveVisionEnabled = true;
 
                 // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
                 S.proactiveMusicEnabled = true;
