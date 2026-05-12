@@ -3323,11 +3323,11 @@ def _get_elevenlabs_options(base_url=None):
 
 
 _ELEVENLABS_WS_CHUNK_SCHEDULES = {
-    0: [120, 160, 250, 290],
-    1: [100, 140, 200, 260],
-    2: [80, 120, 160, 220],
-    3: [60, 90, 130, 180],
-    4: [50, 80, 110, 150],
+    0: [95, 130, 210, 260],
+    1: [85, 120, 180, 240],
+    2: [70, 105, 145, 200],
+    3: [55, 80, 115, 160],
+    4: [45, 70, 100, 135],
 }
 
 
@@ -3539,6 +3539,8 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             if ws is None:
                 raise RuntimeError("ElevenLabs WS is not connected")
             payload = {"text": text}
+            if text and text.strip():
+                payload["try_trigger_generation"] = True
             if final and text:
                 payload["flush"] = True
             await ws.send(json.dumps(payload))
