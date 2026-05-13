@@ -925,7 +925,7 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
-    if (window.nekoYuiGuideFaceForwardLock === true) {
+    if (window.nekoYuiGuideFaceForwardLock === true && window.nekoYuiGuideIntroVoiceLookAtActive !== true) {
         this._lookAtTargetX = 0;
         this._lookAtTargetY = 0;
         this._lookAtCurrentX = 0;
@@ -2077,6 +2077,9 @@ Live2DManager.prototype.installMouthOverride = function() {
                     return;
                 }
                 origCoreModelUpdate();
+                if (typeof this._applyTemporaryPoseOverride === 'function') {
+                    this._applyTemporaryPoseOverride(currentCoreModel);
+                }
             } catch (e) {
                 // 立即清理覆盖，避免无限递归
                 console.warn('调用保存的原始 update 方法失败，清理覆盖:', e.message || e);

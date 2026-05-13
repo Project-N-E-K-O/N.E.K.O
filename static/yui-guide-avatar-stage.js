@@ -246,6 +246,16 @@
         yuiRightHandWave: 'Param95',
         yuiLeftHandWave: 'Param96'
     });
+    const YUI_INTRO_VOICE_LOOK_AT_PARAMS = Object.freeze({
+        angleX: 'ParamAngleX',
+        angleY: 'ParamAngleY',
+        angleZ: 'ParamAngleZ',
+        eyeBallX: 'ParamEyeBallX',
+        eyeBallY: 'ParamEyeBallY',
+        bodyAngleX: 'ParamBodyAngleX',
+        bodyAngleY: 'ParamBodyAngleY',
+        bodyAngleZ: 'ParamBodyAngleZ'
+    });
     const YUI_ANGRY_EXIT_PARAMS = Object.freeze({
         angleX: 'ParamAngleX',
         angleY: 'ParamAngleY',
@@ -503,6 +513,7 @@
     let activeSettingsPeekPanicSession = null;
     let activeInterruptResistSession = null;
     let activeAngryExitSession = null;
+    let activeIntroVoiceLookAtSession = null;
     let activePluginDashboardCornerSession = null;
 
     function clamp(value, min, max) {
@@ -3814,6 +3825,393 @@
         }
     }
 
+    class Live2DIntroVoiceLookAtSession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            this.document = normalizedOptions.document || document;
+            this.manager = context.manager;
+            this.model = context.model;
+            this.coreModel = context.coreModel;
+            this.ticker = context.ticker || null;
+            this.container = normalizedOptions.container || getLive2DContainer(this.document);
+            this.getPoint = typeof normalizedOptions.getPoint === 'function'
+                ? normalizedOptions.getPoint
+                : function () { return null; };
+            this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : function () { return false; };
+            this.performanceLock = null;
+            this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-intro-voice-look-at';
+            this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES.slice();
+            this.poseOverrideSource = 'home-yui-guide-intro-voice-look-at-' + (normalizedOptions.token || Date.now());
+            this.params = scanMappedLive2DParams(this.coreModel, YUI_INTRO_VOICE_LOOK_AT_PARAMS);
+            this.stage = null;
+            this.stageSession = null;
+            this.active = false;
+            this.finished = false;
+            this.result = 'idle';
+            this.frameId = 0;
+            this.tickerAttached = false;
+            this.introVoiceLookAtFlagEnabled = false;
+            this.latestPoint = null;
+            this.usesTemporaryPoseOverride = false;
+            this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
+            this.tick = this.tick.bind(this);
+        }
+
+        isCurrentModel() {
+            if (!this.manager || !this.model || this.model.destroyed || !this.coreModel) {
+                return false;
+            }
+            const current = getCurrentLive2DModel(this.manager);
+            return current === this.model
+                && current.internalModel
+                && current.internalModel.coreModel === this.coreModel;
+        }
+
+        createStage() {
+            const api = window.AvatarPerformance;
+            if (!api || typeof api.createLive2DPerformance !== 'function') {
+                return null;
+            }
+            try {
+                return api.createLive2DPerformance({
+                    profile: {
+                        lookAt: {
+                            maxAngleX: 10,
+                            maxAngleY: 6,
+                            maxEyeX: 0.34,
+                            maxEyeY: 0.24,
+                            headWeight: 0.82,
+                            eyeWeight: 1
+                        }
+                    },
+                    driverOptions: {
+                        managerResolver: () => this.manager,
+                        containerResolver: () => this.container
+                    }
+                });
+            } catch (_) {
+                return null;
+            }
+        }
+
+        normalizePoint(point) {
+            if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
+                return null;
+            }
+            return {
+                x: Number(point.x),
+                y: Number(point.y)
+            };
+        }
+
+        enableIntroVoiceLookAtFlag() {
+            if (this.introVoiceLookAtFlagEnabled) {
+                return;
+            }
+            const current = Number(window.nekoYuiGuideIntroVoiceLookAtActiveCount || 0);
+            window.nekoYuiGuideIntroVoiceLookAtActiveCount = Math.max(0, current) + 1;
+            window.nekoYuiGuideIntroVoiceLookAtActive = true;
+            this.introVoiceLookAtFlagEnabled = true;
+        }
+
+        releaseIntroVoiceLookAtFlag() {
+            if (!this.introVoiceLookAtFlagEnabled) {
+                return;
+            }
+            const current = Number(window.nekoYuiGuideIntroVoiceLookAtActiveCount || 0);
+            const next = Math.max(0, current - 1);
+            window.nekoYuiGuideIntroVoiceLookAtActiveCount = next;
+            window.nekoYuiGuideIntroVoiceLookAtActive = next > 0;
+            this.introVoiceLookAtFlagEnabled = false;
+        }
+
+        resetFocusController() {
+            const model = this.model;
+            const focusController = model
+                && model.internalModel
+                && model.internalModel.focusController
+                ? model.internalModel.focusController
+                : null;
+            if (!focusController) {
+                return;
+            }
+            try {
+                focusController.targetX = 0;
+                focusController.targetY = 0;
+                if (Number.isFinite(Number(focusController.x))) {
+                    focusController.x = 0;
+                }
+                if (Number.isFinite(Number(focusController.y))) {
+                    focusController.y = 0;
+                }
+            } catch (_) {}
+        }
+
+        installTemporaryPoseOverride() {
+            if (!this.manager || typeof this.manager.setTemporaryPoseOverride !== 'function') {
+                return false;
+            }
+            try {
+                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        clearTemporaryPoseOverride() {
+            if (!this.manager || typeof this.manager.clearTemporaryPoseOverride !== 'function') {
+                return;
+            }
+            try {
+                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+            } catch (_) {}
+        }
+
+        restoreCapturedParams() {
+            if (!this.isCurrentModel()) {
+                return;
+            }
+            Object.keys(this.params).forEach((key) => {
+                const meta = this.params[key];
+                writeParam(this.coreModel, meta, meta.initial);
+            });
+        }
+
+        getLookAtOrigin() {
+            const normalizePoint = function (point) {
+                if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
+                    return null;
+                }
+                return {
+                    x: Number(point.x),
+                    y: Number(point.y)
+                };
+            };
+            try {
+                if (this.manager && typeof this.manager.getBubbleAnchorGeometryInfo === 'function') {
+                    const geometry = this.manager.getBubbleAnchorGeometryInfo();
+                    const headPoint = normalizePoint(
+                        geometry && (geometry.headAnchor || geometry.rawHeadAnchor)
+                    );
+                    if (headPoint) {
+                        return headPoint;
+                    }
+                }
+            } catch (_) {}
+            try {
+                if (this.manager && typeof this.manager.getHeadScreenAnchor === 'function') {
+                    const headPoint = normalizePoint(this.manager.getHeadScreenAnchor());
+                    if (headPoint) {
+                        return headPoint;
+                    }
+                }
+            } catch (_) {}
+            try {
+                if (this.model && typeof this.model.getBounds === 'function') {
+                    const bounds = this.model.getBounds();
+                    if (
+                        bounds
+                        && Number.isFinite(Number(bounds.left))
+                        && Number.isFinite(Number(bounds.right))
+                        && Number.isFinite(Number(bounds.top))
+                        && Number.isFinite(Number(bounds.bottom))
+                        && Number(bounds.right) > Number(bounds.left)
+                        && Number(bounds.bottom) > Number(bounds.top)
+                    ) {
+                        return {
+                            x: (Number(bounds.left) + Number(bounds.right)) / 2,
+                            y: (Number(bounds.top) + Number(bounds.bottom)) / 2
+                        };
+                    }
+                }
+            } catch (_) {}
+            const rect = this.container && typeof this.container.getBoundingClientRect === 'function'
+                ? this.container.getBoundingClientRect()
+                : null;
+            if (rect && rect.width > 0 && rect.height > 0) {
+                return {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                };
+            }
+            return {
+                x: (window.innerWidth || 1) / 2,
+                y: (window.innerHeight || 1) / 2
+            };
+        }
+
+        computeLookAtPose(point) {
+            const origin = this.getLookAtOrigin();
+            const normalizeX = Math.max(96, (window.innerWidth || 1) * 0.22);
+            const normalizeY = Math.max(96, (window.innerHeight || 1) * 0.24);
+            const normX = clamp((point.x - origin.x) / normalizeX, -1, 1);
+            const normY = clamp((origin.y - point.y) / normalizeY, -1, 1);
+            return {
+                angleX: normX * 24,
+                angleY: normY * 14,
+                angleZ: -normX * 6,
+                eyeBallX: normX * 0.95,
+                eyeBallY: normY * 0.68,
+                bodyAngleX: normX * 7,
+                bodyAngleY: normY * 4,
+                bodyAngleZ: -normX * 2.8
+            };
+        }
+
+        writeWeighted(key, targetValue, weight) {
+            const meta = this.params[key];
+            if (!meta) {
+                return;
+            }
+            const current = readParam(this.coreModel, meta);
+            const blended = lerp(current, targetValue, weight);
+            writeParam(this.coreModel, meta, blended);
+        }
+
+        applyPose(pose, weight) {
+            const w = clamp(weight, 0, 1);
+            this.writeWeighted('angleX', pose.angleX, w);
+            this.writeWeighted('angleY', pose.angleY, w);
+            this.writeWeighted('angleZ', pose.angleZ, w);
+            this.writeWeighted('eyeBallX', pose.eyeBallX, w);
+            this.writeWeighted('eyeBallY', pose.eyeBallY, w);
+            this.writeWeighted('bodyAngleX', pose.bodyAngleX, w);
+            this.writeWeighted('bodyAngleY', pose.bodyAngleY, w);
+            this.writeWeighted('bodyAngleZ', pose.bodyAngleZ, w);
+        }
+
+        applyTemporaryPose(coreModel) {
+            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel() || !this.latestPoint) {
+                return;
+            }
+            this.applyPose(this.computeLookAtPose(this.latestPoint), 1);
+        }
+
+        start() {
+            if (!this.isCurrentModel()) {
+                return false;
+            }
+            this.performanceLock = acquireYuiGuidePerformanceLock(
+                this.performanceLockKey,
+                this.performanceLockCapabilities
+            );
+            this.stage = this.createStage();
+            if (this.stage && typeof this.stage.acquire === 'function') {
+                try {
+                    this.stageSession = this.stage.acquire('home-yui-guide-intro-voice-look-at', {
+                        priority: YUI_GUIDE_PERFORMANCE_PRIORITY,
+                        force: true,
+                        capabilities: this.performanceLockCapabilities.slice()
+                    });
+                } catch (_) {
+                    this.stageSession = null;
+                }
+            }
+
+            this.active = true;
+            this.finished = false;
+            this.result = 'playing';
+            this.enableIntroVoiceLookAtFlag();
+            this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
+            this.applyCurrentPoint();
+            if (this.ticker && typeof this.ticker.add === 'function') {
+                this.attachTicker();
+            } else {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+            return true;
+        }
+
+        applyCurrentPoint() {
+            if (!this.active) {
+                return false;
+            }
+            const point = this.normalizePoint(this.getPoint());
+            if (!point) {
+                return false;
+            }
+            this.latestPoint = point;
+            if (this.model && typeof this.model.focus === 'function') {
+                try {
+                    this.model.focus(point.x, point.y);
+                } catch (_) {}
+            }
+            if (!this.usesTemporaryPoseOverride) {
+                this.applyPose(this.computeLookAtPose(point), 1);
+            }
+            return true;
+        }
+
+        attachTicker() {
+            if (!this.ticker || typeof this.ticker.add !== 'function' || this.tickerAttached) {
+                return;
+            }
+            this.ticker.add(this.tick);
+            this.tickerAttached = true;
+        }
+
+        detachTicker() {
+            if (!this.ticker || typeof this.ticker.remove !== 'function' || !this.tickerAttached) {
+                return;
+            }
+            try {
+                this.ticker.remove(this.tick);
+            } catch (_) {}
+            this.tickerAttached = false;
+        }
+
+        tick() {
+            if (!this.active) {
+                return;
+            }
+            if (this.isCancelled() || !this.isCurrentModel()) {
+                this.stop('cancelled');
+                return;
+            }
+            this.applyCurrentPoint();
+            if (!this.tickerAttached) {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+        }
+
+        stop(reason) {
+            if (this.finished) {
+                return Promise.resolve();
+            }
+            this.active = false;
+            this.finished = true;
+            this.result = reason || this.result || 'stopped';
+            this.detachTicker();
+            if (this.frameId) {
+                window.cancelAnimationFrame(this.frameId);
+                this.frameId = 0;
+            }
+            if (this.stage && this.stageSession && this.stageSession.id) {
+                try {
+                    this.stage.release(this.stageSession.id, reason || 'stopped');
+                } catch (_) {}
+            }
+            this.clearTemporaryPoseOverride();
+            this.restoreCapturedParams();
+            this.resetFocusController();
+            this.releaseIntroVoiceLookAtFlag();
+            this.stageSession = null;
+            this.stage = null;
+            if (this.performanceLock && typeof this.performanceLock.release === 'function') {
+                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock = null;
+            }
+            if (activeIntroVoiceLookAtSession === this) {
+                activeIntroVoiceLookAtSession = null;
+            }
+            return Promise.resolve();
+        }
+    }
+
     function applyIntroGreetingHugFinalPlacement(options) {
         const normalizedOptions = options || {};
         const context = getLive2DContext();
@@ -3964,6 +4362,35 @@
             };
             window.requestAnimationFrame(poll);
         });
+    }
+
+    async function startIntroVoiceCursorLookAt(options) {
+        const normalizedOptions = options || {};
+        const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, LIVE2D_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs);
+        if (!context) {
+            return null;
+        }
+        if (activeIntroVoiceLookAtSession && activeIntroVoiceLookAtSession.active) {
+            activeIntroVoiceLookAtSession.stop('replaced');
+        }
+        const session = new Live2DIntroVoiceLookAtSession(context, {
+            document: normalizedOptions.document || document,
+            getPoint: normalizedOptions.getPoint,
+            isCancelled: normalizedOptions.isCancelled
+        });
+        if (!session.start()) {
+            return null;
+        }
+        activeIntroVoiceLookAtSession = session;
+        return {
+            stop: function stopIntroVoiceCursorLookAt(reason) {
+                return session.stop(reason || 'stopped');
+            },
+            isActive: function isIntroVoiceCursorLookAtActive() {
+                return !!session.active;
+            }
+        };
     }
 
     async function startPluginDashboardCornerPeek(options) {
@@ -4132,6 +4559,7 @@
         },
         playIntroGreetingHug: playIntroGreetingHug,
         playIntroGiftHeart: playIntroGiftHeart,
+        startIntroVoiceCursorLookAt: startIntroVoiceCursorLookAt,
         playSettingsPeekPanic: playSettingsPeekPanic,
         playInterruptResist: playInterruptResist,
         playAngryExit: playAngryExit,
@@ -4140,6 +4568,7 @@
         Live2DWakeupSession: Live2DWakeupSession,
         Live2DIntroGreetingHugSession: Live2DIntroGreetingHugSession,
         Live2DIntroGiftHeartSession: Live2DIntroGiftHeartSession,
+        Live2DIntroVoiceLookAtSession: Live2DIntroVoiceLookAtSession,
         Live2DSettingsPeekPanicSession: Live2DSettingsPeekPanicSession,
         Live2DInterruptResistSession: Live2DInterruptResistSession,
         Live2DAngryExitSession: Live2DAngryExitSession,

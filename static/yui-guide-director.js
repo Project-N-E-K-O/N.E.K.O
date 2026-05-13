@@ -239,6 +239,10 @@
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
+    const RETURN_PETAL_ASSET_URLS = Object.freeze([
+        '/static/assets/tutorial/petals/yui-guide-petal-1.png',
+        '/static/assets/tutorial/petals/yui-guide-petal-2.png'
+    ]);
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
@@ -653,6 +657,12 @@
             fallbackDurationMs: 13923,
             cues: Object.freeze({
                 showSecondLine: Object.freeze({ at: 7450 / 13923 })
+            })
+        }),
+        takeover_return_control: Object.freeze({
+            fallbackDurationMs: 11938,
+            cues: Object.freeze({
+                returnPetalTransition: Object.freeze({ at: 0.6 })
             })
         })
     });
@@ -2172,6 +2182,8 @@
             this.manualPluginDashboardOpenUserClicked = false;
             this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
+            this.returnPetalTransitionActive = false;
+            this.returnPetalTransitionOpacityRestores = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
@@ -2553,6 +2565,557 @@
                 x: window.innerWidth / 2,
                 y: window.innerHeight / 2
             };
+        }
+
+        getReturnPetalTransitionOrigin() {
+            const prefix = this.resolveModelPrefix();
+            const manager = prefix === 'live2d'
+                ? window.live2dManager
+                : (prefix === 'vrm' ? window.vrmManager : window.mmdManager);
+            try {
+                if (manager && typeof manager.getModelScreenBounds === 'function') {
+                    const bounds = manager.getModelScreenBounds();
+                    if (
+                        bounds
+                        && Number.isFinite(Number(bounds.centerX))
+                        && Number.isFinite(Number(bounds.centerY))
+                    ) {
+                        return {
+                            x: Number(bounds.centerX),
+                            y: Number(bounds.centerY)
+                        };
+                    }
+                }
+            } catch (_) {}
+
+            const modelRect = this.resolveRect('#' + prefix + '-container');
+            if (modelRect) {
+                return {
+                    x: modelRect.left + modelRect.width / 2,
+                    y: modelRect.top + modelRect.height / 2
+                };
+            }
+
+            return this.getViewportCenter();
+        }
+
+        getReturnPetalTransitionModel() {
+            const candidates = [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager
+            ];
+            for (let index = 0; index < candidates.length; index += 1) {
+                const manager = candidates[index];
+                if (!manager) {
+                    continue;
+                }
+                try {
+                    if (typeof manager.getCurrentModel === 'function') {
+                        const model = manager.getCurrentModel();
+                        if (model && Number.isFinite(Number(model.alpha))) {
+                            return model;
+                        }
+                    }
+                    if (manager.currentModel && Number.isFinite(Number(manager.currentModel.alpha))) {
+                        return manager.currentModel;
+                    }
+                } catch (_) {}
+            }
+            return null;
+        }
+
+        collectReturnPetalTransitionManagers() {
+            return [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager
+            ].filter(Boolean);
+        }
+
+        getReturnPetalTransitionOpacityElements() {
+            const prefix = this.resolveModelPrefix();
+            const selectors = [
+                '#' + prefix + '-container',
+                '#' + prefix + '-canvas',
+                '#live2d-container',
+                '#live2d-canvas',
+                '#vrm-container',
+                '#vrm-canvas',
+                '#mmd-container',
+                '#mmd-canvas'
+            ];
+            const elements = [];
+            for (let index = 0; index < selectors.length; index += 1) {
+                const selector = selectors[index];
+                const element = document.querySelector(selector);
+                if (element && typeof element.getBoundingClientRect === 'function') {
+                    const rect = element.getBoundingClientRect();
+                    if (rect && rect.width > 0 && rect.height > 0) {
+                        elements.push(element);
+                    }
+                }
+            }
+            this.collectReturnPetalTransitionManagers().forEach((manager) => {
+                if (manager.pixi_app && manager.pixi_app.view) {
+                    elements.push(manager.pixi_app.view);
+                }
+                if (manager.renderer && manager.renderer.domElement) {
+                    elements.push(manager.renderer.domElement);
+                }
+                if (manager.canvas) {
+                    elements.push(manager.canvas);
+                }
+                if (manager.container) {
+                    elements.push(manager.container);
+                }
+            });
+            return elements.filter((element, index) => elements.indexOf(element) === index);
+        }
+
+        prepareReturnPetalTransitionOpacityTargets(model) {
+            const elements = this.getReturnPetalTransitionOpacityElements();
+            const targets = [];
+
+            this.collectReturnPetalTransitionManagers().forEach((manager) => {
+                if (manager && manager._canvasRevealTimer) {
+                    clearTimeout(manager._canvasRevealTimer);
+                    manager._canvasRevealTimer = null;
+                }
+            });
+
+            if (elements.length > 0) {
+                elements.forEach((element) => {
+                    const computedOpacity = parseFloat(window.getComputedStyle(element).opacity);
+                    const fromOpacity = Number.isFinite(computedOpacity) ? computedOpacity : 1;
+                    const originalInlineOpacity = element.style.opacity;
+                    const originalInlineTransition = element.style.transition;
+                    targets.push({
+                        apply: (opacity) => {
+                            element.style.setProperty('transition', 'none', 'important');
+                            element.style.setProperty('opacity', String(clamp(opacity, 0, 1)), 'important');
+                        },
+                        restore: () => {
+                            if (originalInlineTransition) {
+                                element.style.setProperty('transition', originalInlineTransition);
+                            } else {
+                                element.style.removeProperty('transition');
+                            }
+                            if (originalInlineOpacity) {
+                                element.style.setProperty('opacity', originalInlineOpacity);
+                            } else {
+                                element.style.removeProperty('opacity');
+                            }
+                        },
+                        from: fromOpacity
+                    });
+                });
+            }
+
+            if (model && Number.isFinite(Number(model.alpha))) {
+                const fromAlpha = Number(model.alpha);
+                targets.push({
+                    apply: (opacity) => {
+                        try {
+                            model.alpha = opacity;
+                        } catch (_) {}
+                    },
+                    restore: () => {
+                        try {
+                            model.alpha = fromAlpha;
+                        } catch (_) {}
+                    },
+                    from: fromAlpha
+                });
+            }
+
+            this.returnPetalTransitionOpacityRestores = targets.map((target) => target.restore);
+            return targets;
+        }
+
+        restoreReturnPetalTransitionOpacityTargets() {
+            const restores = Array.isArray(this.returnPetalTransitionOpacityRestores)
+                ? this.returnPetalTransitionOpacityRestores
+                : [];
+            this.returnPetalTransitionOpacityRestores = null;
+            document.body.classList.remove('yui-guide-return-petal-fade');
+            document.body.style.removeProperty('--yui-guide-return-avatar-opacity');
+            restores.forEach((restore) => {
+                try {
+                    restore();
+                } catch (_) {}
+            });
+        }
+
+        loadReturnPetalSprites() {
+            if (this.returnPetalSpritePromise) {
+                return this.returnPetalSpritePromise;
+            }
+
+            this.returnPetalSpritePromise = Promise.all(RETURN_PETAL_ASSET_URLS.map((url) => {
+                return new Promise((resolve) => {
+                    const image = new Image();
+                    image.decoding = 'async';
+                    image.onload = () => {
+                        resolve({
+                            image: image,
+                            width: image.naturalWidth || image.width || 1,
+                            height: image.naturalHeight || image.height || 1
+                        });
+                    };
+                    image.onerror = () => {
+                        console.warn('[YuiGuide] 花瓣贴图加载失败:', url);
+                        resolve(null);
+                    };
+                    image.src = url;
+                });
+            })).then((sprites) => sprites.filter(Boolean));
+
+            return this.returnPetalSpritePromise;
+        }
+
+        getReturnPetalTransitionRemainingMs(voiceKey, fallbackText) {
+            const playbackSnapshot = this.voiceQueue && typeof this.voiceQueue.capturePlaybackSnapshot === 'function'
+                ? this.voiceQueue.capturePlaybackSnapshot()
+                : null;
+            if (
+                playbackSnapshot
+                && playbackSnapshot.voiceKey === voiceKey
+                && Number.isFinite(playbackSnapshot.durationMs)
+                && playbackSnapshot.durationMs > 0
+            ) {
+                return Math.max(
+                    0,
+                    Math.round(playbackSnapshot.durationMs - Math.max(0, playbackSnapshot.currentTimeMs || 0))
+                );
+            }
+
+            const fullDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(fallbackText || '')
+                || 0;
+            const cueMs = this.resolveGuideVoiceCueTargetMs(
+                voiceKey,
+                'returnPetalTransition',
+                fullDurationMs,
+                fallbackText || ''
+            );
+            return Math.max(0, Math.round(fullDurationMs - cueMs));
+        }
+
+        fadeReturnPetalTransitionModelOut(durationMs) {
+            const model = this.getReturnPetalTransitionModel();
+            const targets = this.prepareReturnPetalTransitionOpacityTargets(model);
+            if (targets.length <= 0 || typeof window.requestAnimationFrame !== 'function') {
+                return Promise.resolve(false);
+            }
+
+            const duration = this.shouldReduceTutorialMotion()
+                ? Math.min(320, Math.max(160, Number(durationMs) || 260))
+                : Math.max(240, Number(durationMs) || 920);
+            const startedAt = performance.now();
+            document.body.classList.add('yui-guide-return-petal-fade');
+            document.body.style.setProperty('--yui-guide-return-avatar-opacity', '1');
+            return new Promise((resolve) => {
+                const tick = (now) => {
+                    if (this.destroyed) {
+                        resolve(false);
+                        return;
+                    }
+                    const progress = duration > 0 ? clamp((now - startedAt) / duration, 0, 1) : 1;
+                    const opacity = 1 - progress;
+                    document.body.style.setProperty('--yui-guide-return-avatar-opacity', String(clamp(opacity, 0, 1)));
+                    targets.forEach((target) => target.apply(target.from * opacity));
+                    if (progress >= 1) {
+                        resolve(true);
+                        return;
+                    }
+                    window.requestAnimationFrame(tick);
+                };
+                window.requestAnimationFrame(tick);
+            });
+        }
+
+        createReturnPetalTransition(origin, options) {
+            const root = this.overlay && typeof this.overlay.ensureRoot === 'function'
+                ? this.overlay.ensureRoot()
+                : null;
+            const stage = root ? root.querySelector('.yui-guide-stage') : null;
+            if (!stage) {
+                return null;
+            }
+
+            const oldLayer = stage.querySelector('.yui-guide-petal-transition');
+            if (oldLayer && oldLayer.parentNode) {
+                oldLayer.parentNode.removeChild(oldLayer);
+            }
+
+            const layer = document.createElement('div');
+            layer.className = 'yui-guide-petal-transition';
+            layer.setAttribute('aria-hidden', 'true');
+            const width = Math.max(1, window.innerWidth || 1);
+            const height = Math.max(1, window.innerHeight || 1);
+            const start = origin || this.getViewportCenter();
+            const reducedMotion = this.shouldReduceTutorialMotion();
+            const normalizedOptions = options || {};
+            const transitionMs = reducedMotion
+                ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                : clamp(Math.round(Number(normalizedOptions.durationMs) || 1600), 900, 2600);
+            const canvas = document.createElement('canvas');
+            canvas.className = 'yui-guide-petal-canvas';
+            const pixelRatio = 1;
+            canvas.width = Math.round(width * pixelRatio);
+            canvas.height = Math.round(height * pixelRatio);
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            layer.appendChild(canvas);
+
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                return null;
+            }
+            ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+            const cellSize = reducedMotion ? 150 : (width <= 768 ? 104 : 118);
+            const columns = Math.max(7, Math.ceil(width / cellSize) + 2);
+            const rows = Math.max(5, Math.ceil(height / cellSize) + 2);
+            const count = columns * rows;
+            const cellWidth = width / Math.max(1, columns - 2);
+            const cellHeight = height / Math.max(1, rows - 2);
+            const emitterRadiusX = reducedMotion ? 12 : Math.max(18, Math.min(width, height) * 0.035);
+            const emitterRadiusY = reducedMotion ? 18 : Math.max(28, Math.min(width, height) * 0.055);
+            const rightArcX = Math.min(width + 220, start.x + Math.max(width * 0.38, 320));
+            const arcLiftBase = reducedMotion ? 56 : Math.max(150, height * 0.23);
+            const perspectiveStrength = reducedMotion ? 0.26 : 0.52;
+            const petals = [];
+            const petalSprites = Array.isArray(normalizedOptions.sprites)
+                ? normalizedOptions.sprites
+                : [];
+            if (petalSprites.length <= 0) {
+                return null;
+            }
+
+            for (let index = 0; index < count; index += 1) {
+                const col = index % columns;
+                const row = Math.floor(index / columns);
+                const gridEndX = clamp((col - 0.5) * cellWidth + (Math.random() - 0.5) * cellWidth * 0.82, -76, width + 76);
+                const gridEndY = clamp((row - 0.5) * cellHeight + (Math.random() - 0.5) * cellHeight * 0.82, -76, height + 76);
+                const emitterAngle = Math.random() * Math.PI * 2;
+                const emitterDistance = Math.sqrt(Math.random());
+                const startX = start.x + Math.cos(emitterAngle) * emitterRadiusX * emitterDistance;
+                const startY = start.y + Math.sin(emitterAngle) * emitterRadiusY * emitterDistance;
+                const rightControlX = clamp(
+                    rightArcX + (Math.random() - 0.5) * Math.max(120, width * 0.12),
+                    -80,
+                    width + 240
+                );
+                const rightControlY = clamp(
+                    start.y - arcLiftBase * (0.7 + Math.random() * 0.65),
+                    -120,
+                    height + 120
+                );
+                const finalX = gridEndX - Math.max(width * 0.08, 80) * (0.25 + Math.random() * 0.8);
+                const finalY = gridEndY + (Math.random() - 0.5) * Math.max(80, height * 0.1);
+                const sprite = petalSprites[Math.floor(Math.random() * petalSprites.length)];
+                const aspect = sprite.width / Math.max(1, sprite.height);
+                const baseLongSide = (reducedMotion ? 20 : 24) + Math.random() * (reducedMotion ? 12 : 20);
+                const baseHeight = aspect >= 1 ? baseLongSide / aspect : baseLongSide;
+                const baseWidth = aspect >= 1 ? baseLongSide : baseLongSide * aspect;
+                const maxScale = (reducedMotion ? 1.35 : 1.85) + Math.random() * (reducedMotion ? 0.55 : 0.85);
+                petals.push({
+                    x0: startX,
+                    y0: startY,
+                    controlX: rightControlX,
+                    controlY: rightControlY,
+                    x1: finalX,
+                    y1: finalY,
+                    rotationX: Math.random() * Math.PI * 2,
+                    rotationY: Math.random() * Math.PI * 2,
+                    rotationZ: Math.random() * Math.PI * 2,
+                    angularVelocityX: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.8 : 2.5),
+                    angularVelocityY: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.8 : 2.2),
+                    angularVelocityZ: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.5 : 1.6),
+                    baseWidth: baseWidth,
+                    baseHeight: baseHeight,
+                    scaleMin: reducedMotion ? 0.04 : 0.025,
+                    scaleMax: maxScale,
+                    noisePhaseX: Math.random() * Math.PI * 2,
+                    noisePhaseY: Math.random() * Math.PI * 2,
+                    noiseAmpX: (reducedMotion ? 18 : Math.max(34, width * 0.035)) * (0.45 + Math.random()),
+                    noiseAmpY: (reducedMotion ? 14 : Math.max(28, height * 0.034)) * (0.45 + Math.random()),
+                    zStart: 0,
+                    zEnd: 1,
+                    delay: (index / count) * transitionMs * 0.025 + Math.random() * transitionMs * 0.018,
+                    duration: transitionMs * (1.28 + Math.random() * 0.16),
+                    sprite: sprite,
+                    alpha: 0.86 + Math.random() * 0.14
+                });
+            }
+
+            let animationFrame = 0;
+            let finishedCover = false;
+            const startedAt = performance.now();
+            const fadeDurationMs = transitionMs;
+            const smoothstep = (value) => value * value * (3 - (2 * value));
+            const mix = (from, to, amount) => from + ((to - from) * amount);
+            const bezier = (from, control, to, amount) => {
+                const inv = 1 - amount;
+                return (inv * inv * from) + (2 * inv * amount * control) + (amount * amount * to);
+            };
+            const drawPetal = (petal, x, y, rotationX, rotationY, rotationZ, scale, alpha) => {
+                const flipX = Math.max(0.18, Math.abs(Math.cos(rotationY)));
+                const flipY = Math.max(0.28, Math.abs(Math.cos(rotationX)));
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.translate(x, y);
+                ctx.rotate(rotationZ);
+                ctx.scale(scale * flipX, scale * flipY);
+                ctx.drawImage(
+                    petal.sprite.image,
+                    -petal.baseWidth / 2,
+                    -petal.baseHeight / 2,
+                    petal.baseWidth,
+                    petal.baseHeight
+                );
+                ctx.restore();
+            };
+            const drawFrame = (now) => {
+                ctx.clearRect(0, 0, width, height);
+                let allSettled = true;
+                const globalProgress = clamp((now - startedAt) / fadeDurationMs, 0, 1);
+                const globalFade = 1 - globalProgress;
+                petals.forEach((petal) => {
+                    const local = clamp((now - startedAt - petal.delay) / petal.duration, 0, 1);
+                    if (local <= 0) {
+                        allSettled = false;
+                        return;
+                    }
+                    if (local < 1) {
+                        allSettled = false;
+                    }
+                    const flow = smoothstep(local);
+                    const z = mix(petal.zStart, petal.zEnd, flow);
+                    const spread = local * local;
+                    const x = bezier(petal.x0, petal.controlX, petal.x1, flow)
+                        + Math.sin((local * Math.PI * 2.2) + petal.noisePhaseX) * petal.noiseAmpX * spread;
+                    const y = bezier(petal.y0, petal.controlY, petal.y1, flow)
+                        - Math.sin(local * Math.PI) * arcLiftBase * 0.18
+                        + Math.cos((local * Math.PI * 1.9) + petal.noisePhaseY) * petal.noiseAmpY * spread;
+                    const endBoost = smoothstep(clamp((local - 0.8) / 0.2, 0, 1));
+                    const perspectiveScale = 1 + (z * perspectiveStrength) + (endBoost * (reducedMotion ? 0.3 : 0.62));
+                    const lifetimeScale = petal.scaleMin + ((petal.scaleMax - petal.scaleMin) * Math.pow(local, 2));
+                    const scale = lifetimeScale * perspectiveScale;
+                    const elapsedSeconds = Math.max(0, now - startedAt - petal.delay) / 1000;
+                    const rotationX = petal.rotationX + petal.angularVelocityX * elapsedSeconds;
+                    const rotationY = petal.rotationY + petal.angularVelocityY * elapsedSeconds;
+                    const rotationZ = petal.rotationZ + petal.angularVelocityZ * elapsedSeconds;
+                    const alpha = petal.alpha * Math.min(1, local * 8) * globalFade;
+                    drawPetal(petal, x, y, rotationX, rotationY, rotationZ, scale, alpha);
+                });
+
+                if (!allSettled && !this.destroyed && layer.parentNode) {
+                    animationFrame = window.requestAnimationFrame(drawFrame);
+                } else {
+                    finishedCover = true;
+                }
+            };
+
+            stage.appendChild(layer);
+            window.requestAnimationFrame(() => {
+                layer.classList.add('is-active');
+                animationFrame = window.requestAnimationFrame(drawFrame);
+            });
+
+            const coverDelayMs = Math.round(transitionMs * (reducedMotion ? 1.12 : 1.36));
+            return {
+                cover: () => new Promise((resolve) => {
+                    window.setTimeout(() => {
+                        if (!finishedCover) {
+                            finishedCover = true;
+                        }
+                        resolve();
+                    }, coverDelayMs);
+                }),
+                finish: () => new Promise((resolve) => {
+                    if (animationFrame) {
+                        window.cancelAnimationFrame(animationFrame);
+                        animationFrame = 0;
+                    }
+                    layer.classList.add('is-exiting');
+                    window.setTimeout(() => {
+                        if (layer.parentNode) {
+                            layer.parentNode.removeChild(layer);
+                        }
+                        resolve();
+                    }, reducedMotion ? 220 : 520);
+                })
+            };
+        }
+
+        async restoreTutorialAvatarForReturnPetalTransition() {
+            if (
+                !this.tutorialManager
+                || typeof this.tutorialManager.restoreTutorialAvatarOverride !== 'function'
+            ) {
+                return false;
+            }
+
+            try {
+                await this.tutorialManager.restoreTutorialAvatarOverride();
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 花瓣转场期间恢复新手教程前模型失败:', error);
+                return false;
+            }
+        }
+
+        async playReturnPetalTransition(options) {
+            if (this.returnPetalTransitionActive || this.destroyed) {
+                return;
+            }
+
+            this.returnPetalTransitionActive = true;
+            const normalizedOptions = options || {};
+            const loadedPetalSprites = await this.loadReturnPetalSprites();
+            if (this.destroyed) {
+                this.returnPetalTransitionActive = false;
+                return;
+            }
+            const transitionDurationMs = this.shouldReduceTutorialMotion()
+                ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                : clamp(Math.round(Number(normalizedOptions.durationMs) || 4800), 2600, 7600);
+            const transition = this.createReturnPetalTransition(
+                this.getReturnPetalTransitionOrigin(),
+                {
+                    durationMs: transitionDurationMs,
+                    sprites: loadedPetalSprites
+                }
+            );
+            if (!transition) {
+                await this.fadeReturnPetalTransitionModelOut(transitionDurationMs);
+                await this.restoreTutorialAvatarForReturnPetalTransition();
+                this.restoreReturnPetalTransitionOpacityTargets();
+                this.returnPetalTransitionActive = false;
+                return;
+            }
+
+            try {
+                await Promise.all([
+                    transition.cover(),
+                    this.fadeReturnPetalTransitionModelOut(transitionDurationMs)
+                ]);
+                if (this.destroyed) {
+                    return;
+                }
+                await this.restoreTutorialAvatarForReturnPetalTransition();
+                if (this.destroyed) {
+                    return;
+                }
+                this.restoreReturnPetalTransitionOpacityTargets();
+                await transition.finish();
+            } finally {
+                this.restoreReturnPetalTransitionOpacityTargets();
+                this.returnPetalTransitionActive = false;
+            }
         }
 
         resolveGuideCopy(textKey, fallbackText) {
@@ -5828,6 +6391,9 @@
                 );
             };
             const guardFailed = () => runId !== this.sceneRunId || this.isStopping();
+            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                isCancelled: () => guardFailed()
+            });
             const createToggleSpotlightTarget = (key, element) => {
                 const rect = this.getElementRect(element);
                 if (!rect) {
@@ -5844,91 +6410,97 @@
                     radius: 18
                 });
             };
-
-            const catPawButton = await this.waitForVisibleTarget([
-                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
-                () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
-                () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
-                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
-            ], 2200);
-            if (!catPawButton || guardFailed()) {
-                return false;
-            }
-            this.setSpotlightGeometryHint(catPawButton, {
-                padding: 4,
-                geometry: 'circle'
-            });
-            this.addRetainedExtraSpotlight(catPawButton);
-
-            const openedAgentPanel = await this.performHighlightedApiClick({
-                target: catPawButton,
-                durationMs: scaleSceneMs(1500, 900, 2600),
-                runId: runId,
-                action: () => this.openAgentPanel()
-            });
-            if (!openedAgentPanel || guardFailed()) {
-                return false;
-            }
-
-            const agentMasterToggle = await this.waitForElement(() => {
-                const toggleItem = this.getAgentToggleElement('agent-master');
-                return this.getElementRect(toggleItem) ? toggleItem : null;
-            }, 4000);
-            if (!agentMasterToggle || guardFailed()) {
-                return false;
-            }
-            const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
-            this.addRetainedExtraSpotlight(agentMasterSpotlight);
-
-            const enabledAgentMaster = await this.performHighlightedApiClick({
-                target: agentMasterSpotlight,
-                durationMs: scaleSceneMs(1200, 760, 2200),
-                runId: runId,
-                action: async () => {
-                    const enabled = await this.setAgentMasterEnabled(true);
-                    if (!enabled) {
-                        return false;
-                    }
-                    return !!(await this.waitForAgentToggleState('agent-master', true, 1800));
+            try {
+                const catPawButton = await this.waitForVisibleTarget([
+                    () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                    () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
+                    () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
+                    () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
+                ], 2200);
+                if (!catPawButton || guardFailed()) {
+                    return false;
                 }
-            });
-            if (!enabledAgentMaster || guardFailed()) {
-                return false;
-            }
+                this.setSpotlightGeometryHint(catPawButton, {
+                    padding: 4,
+                    geometry: 'circle'
+                });
+                this.addRetainedExtraSpotlight(catPawButton);
 
-            if (!(await this.waitForSceneDelay(scaleSceneMs(240, 120, 600))) || guardFailed()) {
-                return false;
-            }
-
-            const keyboardToggle = await this.waitForElement(() => {
-                const toggleItem = this.getAgentToggleElement('agent-keyboard');
-                return this.getElementRect(toggleItem) ? toggleItem : null;
-            }, 2400);
-            if (!keyboardToggle || guardFailed()) {
-                return false;
-            }
-            const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
-            this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
-            this.removeRetainedExtraSpotlight(agentMasterSpotlight);
-
-            const enabledKeyboardControl = await this.performHighlightedApiClick({
-                target: keyboardToggleSpotlight,
-                durationMs: scaleSceneMs(520, 320, 950),
-                runId: runId,
-                action: async () => {
-                    const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
-                    if (!enabled) {
-                        return false;
-                    }
-                    return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
+                const openedAgentPanel = await this.performHighlightedApiClick({
+                    target: catPawButton,
+                    durationMs: scaleSceneMs(1500, 900, 2600),
+                    runId: runId,
+                    action: () => this.openAgentPanel()
+                });
+                if (!openedAgentPanel || guardFailed()) {
+                    return false;
                 }
-            });
-            if (!enabledKeyboardControl || guardFailed()) {
-                return false;
-            }
 
-            await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
-            return !guardFailed();
+                const agentMasterToggle = await this.waitForElement(() => {
+                    const toggleItem = this.getAgentToggleElement('agent-master');
+                    return this.getElementRect(toggleItem) ? toggleItem : null;
+                }, 4000);
+                if (!agentMasterToggle || guardFailed()) {
+                    return false;
+                }
+                const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
+                this.addRetainedExtraSpotlight(agentMasterSpotlight);
+
+                const enabledAgentMaster = await this.performHighlightedApiClick({
+                    target: agentMasterSpotlight,
+                    durationMs: scaleSceneMs(1200, 760, 2200),
+                    runId: runId,
+                    action: async () => {
+                        const enabled = await this.setAgentMasterEnabled(true);
+                        if (!enabled) {
+                            return false;
+                        }
+                        return !!(await this.waitForAgentToggleState('agent-master', true, 1800));
+                    }
+                });
+                if (!enabledAgentMaster || guardFailed()) {
+                    return false;
+                }
+
+                if (!(await this.waitForSceneDelay(scaleSceneMs(240, 120, 600))) || guardFailed()) {
+                    return false;
+                }
+
+                const keyboardToggle = await this.waitForElement(() => {
+                    const toggleItem = this.getAgentToggleElement('agent-keyboard');
+                    return this.getElementRect(toggleItem) ? toggleItem : null;
+                }, 2400);
+                if (!keyboardToggle || guardFailed()) {
+                    return false;
+                }
+                const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
+                this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
+                this.removeRetainedExtraSpotlight(agentMasterSpotlight);
+
+                const enabledKeyboardControl = await this.performHighlightedApiClick({
+                    target: keyboardToggleSpotlight,
+                    durationMs: scaleSceneMs(520, 320, 950),
+                    runId: runId,
+                    action: async () => {
+                        const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
+                        if (!enabled) {
+                            return false;
+                        }
+                        return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
+                    }
+                });
+                if (!enabledKeyboardControl || guardFailed()) {
+                    return false;
+                }
+
+                await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
+                return !guardFailed();
+            } finally {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'takeover_keyboard_control_complete'
+                );
+            }
         }
 
         async runPluginDashboardLaunchSequence(step, performance, runId) {
@@ -6848,379 +7420,389 @@
             this.customSecondarySpotlightTarget = null;
             const settingsButton = this.resolveElement(performance.cursorTarget || step.anchor);
             const settingsSpotlightTarget = this.getFloatingButtonShell(settingsButton) || settingsButton;
+            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+            });
             this.setSpotlightGeometryHint(settingsSpotlightTarget, {
                 padding: 4,
                 geometry: 'circle'
             });
-            if (settingsSpotlightTarget) {
-                this.addRetainedExtraSpotlight(settingsSpotlightTarget);
-            }
-            const introText = this.resolvePerformanceBubbleText(performance);
-            await this.closeAgentPanel();
-            this.clearPreciseHighlights();
-            this.clearSceneExtraSpotlights();
-            this.overlay.clearActionSpotlight();
-            this.highlightChatWindow();
-
-            if (introText) {
-                const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
-                this.appendGuideChatMessage(introText, {
-                    textKey: performance.bubbleTextKey || '',
-                    voiceKey: introVoiceKey
-                });
-            }
-            if (performance.emotion) {
-                this.applyGuideEmotion(performance.emotion);
-            }
-
-            const waitWithWallClockTimeout = async (promise, timeoutMs, label) => {
-                let timedOut = false;
-                const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 1000));
-                let timeoutId = 0;
-                const timeoutPromise = new Promise((resolve) => {
-                    timeoutId = window.setTimeout(() => {
-                        timeoutId = 0;
-                        timedOut = true;
-                        console.warn('[YuiGuide] settings peek 等待超时，继续后续流程:', label || 'unknown');
-                        resolve(null);
-                    }, normalizedTimeoutMs);
-                });
-                try {
-                    const result = await Promise.race([
-                        Promise.resolve(promise).catch((error) => {
-                            console.warn('[YuiGuide] settings peek 等待失败，继续后续流程:', label || 'unknown', error);
-                            return null;
-                        }),
-                        timeoutPromise
-                    ]);
-                    return timedOut ? null : result;
-                } finally {
-                    if (timeoutId) {
-                        window.clearTimeout(timeoutId);
-                    }
+            try {
+                if (settingsSpotlightTarget) {
+                    this.addRetainedExtraSpotlight(settingsSpotlightTarget);
                 }
-            };
-            const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
-            const introVoiceDurationMs = this.getGuideVoiceDurationMs(introVoiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(introText || '');
-            const introNarrationPromise = this.speakGuideLine(introText || '', {
-                voiceKey: introVoiceKey
-            }).catch((error) => {
-                console.warn('[YuiGuide] 设置一瞥首句旁白失败，继续流程:', error);
-            });
-            if (!(await this.waitForNarrationCue(
-                introVoiceKey,
-                'openSettingsPanel'
-            ))) {
-                this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
+                const introText = this.resolvePerformanceBubbleText(performance);
+                await this.closeAgentPanel();
+                this.clearPreciseHighlights();
+                this.clearSceneExtraSpotlights();
                 this.overlay.clearActionSpotlight();
                 this.highlightChatWindow();
-                return;
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
 
-            const openedSettings = settingsButton
-                ? await this.performHighlightedApiClick({
-                    target: settingsButton,
-                    durationMs: 900,
-                    runId: runId,
-                    action: () => this.openSettingsPanel()
-                })
-                : await this.openSettingsPanel();
-            if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
-                if (!openedSettings) {
+                if (introText) {
+                    const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
+                    this.appendGuideChatMessage(introText, {
+                        textKey: performance.bubbleTextKey || '',
+                        voiceKey: introVoiceKey
+                    });
+                }
+                if (performance.emotion) {
+                    this.applyGuideEmotion(performance.emotion);
+                }
+
+                const waitWithWallClockTimeout = async (promise, timeoutMs, label) => {
+                    let timedOut = false;
+                    const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 1000));
+                    let timeoutId = 0;
+                    const timeoutPromise = new Promise((resolve) => {
+                        timeoutId = window.setTimeout(() => {
+                            timeoutId = 0;
+                            timedOut = true;
+                            console.warn('[YuiGuide] settings peek 等待超时，继续后续流程:', label || 'unknown');
+                            resolve(null);
+                        }, normalizedTimeoutMs);
+                    });
+                    try {
+                        const result = await Promise.race([
+                            Promise.resolve(promise).catch((error) => {
+                                console.warn('[YuiGuide] settings peek 等待失败，继续后续流程:', label || 'unknown', error);
+                                return null;
+                            }),
+                            timeoutPromise
+                        ]);
+                        return timedOut ? null : result;
+                    } finally {
+                        if (timeoutId) {
+                            window.clearTimeout(timeoutId);
+                        }
+                    }
+                };
+                const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
+                const introVoiceDurationMs = this.getGuideVoiceDurationMs(introVoiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(introText || '');
+                const introNarrationPromise = this.speakGuideLine(introText || '', {
+                    voiceKey: introVoiceKey
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 设置一瞥首句旁白失败，继续流程:', error);
+                });
+                if (!(await this.waitForNarrationCue(
+                    introVoiceKey,
+                    'openSettingsPanel'
+                ))) {
                     this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
                     this.overlay.clearActionSpotlight();
                     this.highlightChatWindow();
+                    return;
                 }
-                return;
-            }
-
-            const characterMenuReadyPromise = this.waitForVisibleTarget([
-                () => this.getSettingsPeekTargets().characterMenu
-            ], 1000);
-            await waitWithWallClockTimeout(
-                introNarrationPromise,
-                Math.max(4200, introVoiceDurationMs + 1400),
-                'settings_intro_narration'
-            );
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            let settingsPeekHighlightsCleared = false;
-            let settingsPanelClosed = false;
-            const clearSettingsPeekHighlights = () => {
-                if (settingsPeekHighlightsCleared) {
+                if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
-                settingsPeekHighlightsCleared = true;
-                this.clearSceneExtraSpotlights();
-                this.clearVirtualSpotlight('settings-character-children-bundle');
-                this.clearVirtualSpotlight('settings-entry-bundle');
-                this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
-                this.clearPreciseHighlights();
-                this.customSecondarySpotlightTarget = null;
-                this.overlay.clearActionSpotlight();
-                if (!this.isStopping()) {
-                    this.highlightChatWindow();
-                }
-            };
-            const closeSettingsPeekPanel = async () => {
-                if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                const openedSettings = settingsButton
+                    ? await this.performHighlightedApiClick({
+                        target: settingsButton,
+                        durationMs: 900,
+                        runId: runId,
+                        action: () => this.openSettingsPanel()
+                    })
+                    : await this.openSettingsPanel();
+                if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
+                    if (!openedSettings) {
+                        this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
+                        this.overlay.clearActionSpotlight();
+                        this.highlightChatWindow();
+                    }
                     return;
                 }
 
-                settingsPanelClosed = true;
-                this.collapseCharacterSettingsSidePanel();
-                await this.closeSettingsPanel().catch(() => {});
-                this.forceHideManagedPanel('settings');
-            };
-
-            let characterMenu = await characterMenuReadyPromise;
-            if (!characterMenu) {
-                characterMenu = await this.waitForVisibleTarget([
+                const characterMenuReadyPromise = this.waitForVisibleTarget([
                     () => this.getSettingsPeekTargets().characterMenu
-                ], 400);
-            }
-            if (!characterMenu) {
-                console.warn('[YuiGuide] 设置一瞥未找到角色设置入口，跳过细节展示');
-                clearSettingsPeekHighlights();
-                await closeSettingsPeekPanel();
-                return;
-            }
-
-            const sidePanelReady = await this.ensureCharacterSettingsSidePanelVisible();
-
-            let appearanceItem = null;
-            let voiceCloneItem = null;
-            const detailTargetTimeoutMs = sidePanelReady ? 900 : 1200;
-            [appearanceItem, voiceCloneItem] = await Promise.all([
-                this.waitForVisibleTarget([
-                    () => this.getSettingsPeekTargets().appearanceItem
-                ], detailTargetTimeoutMs),
-                this.waitForVisibleTarget([
-                    () => this.getSettingsPeekTargets().voiceCloneItem
-                ], detailTargetTimeoutMs)
-            ]);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            const detailText = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT
-            );
-            const detailTextPart1 = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
-            );
-            const detailTextPart2 = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
-            );
-            const detailVoiceKey = 'takeover_settings_peek_detail';
-            const detailVoiceDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(detailText || '');
-            const detailCueConfig = getGuideAudioCueConfig(detailVoiceKey);
-            const secondLineCue = detailCueConfig && detailCueConfig.showSecondLine
-                && Number.isFinite(detailCueConfig.showSecondLine.at)
-                ? clamp(detailCueConfig.showSecondLine.at, 0.1, 0.9)
-                : 0.54;
-            const detailPart1StreamDurationMs = detailTextPart2
-                ? Math.max(900, Math.round(detailVoiceDurationMs * secondLineCue))
-                : detailVoiceDurationMs;
-            const detailPart2StreamDurationMs = detailTextPart2
-                ? Math.max(900, Math.round(detailVoiceDurationMs * (1 - secondLineCue)))
-                : 0;
-            this.appendGuideChatMessage(detailTextPart1 || detailText, {
-                textKey: detailTextPart1
-                    ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
-                    : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                voiceKey: detailVoiceKey,
-                streamDurationMs: detailPart1StreamDurationMs
-            });
-
-            let settingsDetailSecondLineDisplayed = false;
-            let settingsPeekPanicMotionTargetRect = null;
-            const appendSettingsDetailSecondLine = () => {
-                if (
-                    settingsDetailSecondLineDisplayed
-                    || runId !== this.sceneRunId
-                    || this.isStopping()
-                    || !detailTextPart2
-                ) {
-                    return;
-                }
-
-                settingsDetailSecondLineDisplayed = true;
-                this.appendGuideChatMessage(detailTextPart2, {
-                    textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                    voiceKey: detailVoiceKey,
-                    streamDurationMs: detailPart2StreamDurationMs
-                });
-                this.runSettingsPeekPanicPerformance({
-                    runId: runId,
-                    targetRect: settingsPeekPanicMotionTargetRect,
-                    totalDurationMs: detailPart2StreamDurationMs
-                }).catch(() => {});
-            };
-            const narrationPromise = this.speakGuideLine(detailText, {
-                voiceKey: detailVoiceKey
-            }).catch((error) => {
-                console.warn('[YuiGuide] 设置一瞥细节旁白失败，继续流程:', error);
-            }).finally(() => {
-                appendSettingsDetailSecondLine();
+                ], 1000);
+                await waitWithWallClockTimeout(
+                    introNarrationPromise,
+                    Math.max(4200, introVoiceDurationMs + 1400),
+                    'settings_intro_narration'
+                );
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
-                this.collapseCharacterSettingsSidePanel();
-                clearSettingsPeekHighlights();
-                return closeSettingsPeekPanel();
-            });
-            const guardedNarrationPromise = waitWithWallClockTimeout(
-                narrationPromise,
-                Math.max(5000, detailVoiceDurationMs + 1800),
-                'settings_detail_narration'
-            ).finally(() => {
-                appendSettingsDetailSecondLine();
-                if (runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-
-                this.collapseCharacterSettingsSidePanel();
-                clearSettingsPeekHighlights();
-                return closeSettingsPeekPanel();
-            });
-            const secondLineDisplayPromise = (async () => {
-                if (!(await this.waitForNarrationCue(
-                    detailVoiceKey,
-                    'showSecondLine'
-                ))) {
-                    return;
-                }
-
-                appendSettingsDetailSecondLine();
-            })();
-            const guardedSecondLineDisplayPromise = waitWithWallClockTimeout(
-                secondLineDisplayPromise,
-                Math.max(1800, Math.round(detailVoiceDurationMs * secondLineCue) + 1400),
-                'settings_detail_second_line'
-            );
-
-            this.overlay.clearActionSpotlight();
-
-            if (characterMenu) {
-                this.applyGuideHighlights({ primary: characterMenu });
-            }
-
-            if (characterMenu && runId === this.sceneRunId && !this.isStopping()) {
-                await this.moveCursorToElement(characterMenu, 900);
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            let settingsButtonTarget = null;
-            let characterChildrenBundle = null;
-            ({
-                settingsButton: settingsButtonTarget,
-                characterMenu,
-                appearanceItem,
-                voiceCloneItem,
-                characterChildrenBundle
-            } = this.refreshSettingsPeekSpotlights(settingsButton));
-            if (!characterMenu) {
-                console.warn('[YuiGuide] 设置一瞥角色入口消失，跳过细节展示');
-                clearSettingsPeekHighlights();
-                await closeSettingsPeekPanel();
-                return;
-            }
-
-            const sidePanel = this.getCharacterSettingsSidePanel();
-            const panelRect = sidePanel && this.isElementVisible(sidePanel) ? this.getElementRect(sidePanel) : null;
-            const itemUnionRect = unionRects([
-                this.getElementRect(appearanceItem),
-                this.getElementRect(voiceCloneItem)
-            ]);
-            const fallbackRect = this.getElementRect(characterChildrenBundle)
-                || this.getElementRect(characterMenu)
-                || this.getElementRect(settingsButtonTarget);
-            const motionRect = panelRect || itemUnionRect || fallbackRect;
-            settingsPeekPanicMotionTargetRect = motionRect || null;
-            const centerX = motionRect
-                ? motionRect.left + motionRect.width / 2
-                : window.innerWidth / 2;
-            const centerY = motionRect
-                ? motionRect.top + motionRect.height / 2
-                : window.innerHeight / 2;
-            const radiusX = panelRect
-                ? panelRect.width / 2 * 1.4
-                : (itemUnionRect ? Math.max(90, itemUnionRect.width / 2 * 1.3) : 90);
-            const radiusY = panelRect
-                ? panelRect.height / 2 * 1.4
-                : (itemUnionRect ? Math.max(60, itemUnionRect.height / 2 * 1.3) : 60);
-            if (motionRect) {
-                while (!this.isStopping()) {
-                    const movedToCenter = await this.cursor.moveToPoint(centerX, centerY, {
-                        durationMs: 700,
-                        pauseCheck: () => this.scenePausedForResistance,
-                        cancelCheck: () => this.isStopping()
-                    });
-                    if (movedToCenter) {
-                        break;
-                    }
-                    if (!this.scenePausedForResistance) {
-                        break;
-                    }
-                    await this.waitUntilSceneResumed();
-                }
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            const cycleMs = 5600;
-            const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
-            const actionPromise = (async () => {
-                while (runId === this.sceneRunId && !ellipseAbortCheck()) {
-                    const moved = await this.cursor.runPauseAwareEllipse(
-                        centerX,
-                        centerY,
-                        radiusX,
-                        radiusY,
-                        cycleMs,
-                        ellipseAbortCheck,
-                        () => this.scenePausedForResistance,
-                        () => this.isStopping()
-                    );
-                    if (!moved && this.isStopping()) {
+                let settingsPeekHighlightsCleared = false;
+                let settingsPanelClosed = false;
+                const clearSettingsPeekHighlights = () => {
+                    if (settingsPeekHighlightsCleared) {
                         return;
                     }
-                    if (!moved) {
-                        if (ellipseAbortCheck()) {
-                            return;
+
+                    settingsPeekHighlightsCleared = true;
+                    this.clearSceneExtraSpotlights();
+                    this.clearVirtualSpotlight('settings-character-children-bundle');
+                    this.clearVirtualSpotlight('settings-entry-bundle');
+                    this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
+                    this.clearPreciseHighlights();
+                    this.customSecondarySpotlightTarget = null;
+                    this.overlay.clearActionSpotlight();
+                    if (!this.isStopping()) {
+                        this.highlightChatWindow();
+                    }
+                };
+                const closeSettingsPeekPanel = async () => {
+                    if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    settingsPanelClosed = true;
+                    this.collapseCharacterSettingsSidePanel();
+                    await this.closeSettingsPanel().catch(() => {});
+                    this.forceHideManagedPanel('settings');
+                };
+
+                let characterMenu = await characterMenuReadyPromise;
+                if (!characterMenu) {
+                    characterMenu = await this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().characterMenu
+                    ], 400);
+                }
+                if (!characterMenu) {
+                    console.warn('[YuiGuide] 设置一瞥未找到角色设置入口，跳过细节展示');
+                    clearSettingsPeekHighlights();
+                    await closeSettingsPeekPanel();
+                    return;
+                }
+
+                const sidePanelReady = await this.ensureCharacterSettingsSidePanelVisible();
+
+                let appearanceItem = null;
+                let voiceCloneItem = null;
+                const detailTargetTimeoutMs = sidePanelReady ? 900 : 1200;
+                [appearanceItem, voiceCloneItem] = await Promise.all([
+                    this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().appearanceItem
+                    ], detailTargetTimeoutMs),
+                    this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().voiceCloneItem
+                    ], detailTargetTimeoutMs)
+                ]);
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                const detailText = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT
+                );
+                const detailTextPart1 = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
+                );
+                const detailTextPart2 = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
+                );
+                const detailVoiceKey = 'takeover_settings_peek_detail';
+                const detailVoiceDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(detailText || '');
+                const detailCueConfig = getGuideAudioCueConfig(detailVoiceKey);
+                const secondLineCue = detailCueConfig && detailCueConfig.showSecondLine
+                    && Number.isFinite(detailCueConfig.showSecondLine.at)
+                    ? clamp(detailCueConfig.showSecondLine.at, 0.1, 0.9)
+                    : 0.54;
+                const detailPart1StreamDurationMs = detailTextPart2
+                    ? Math.max(900, Math.round(detailVoiceDurationMs * secondLineCue))
+                    : detailVoiceDurationMs;
+                const detailPart2StreamDurationMs = detailTextPart2
+                    ? Math.max(900, Math.round(detailVoiceDurationMs * (1 - secondLineCue)))
+                    : 0;
+                this.appendGuideChatMessage(detailTextPart1 || detailText, {
+                    textKey: detailTextPart1
+                        ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
+                        : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                    voiceKey: detailVoiceKey,
+                    streamDurationMs: detailPart1StreamDurationMs
+                });
+
+                let settingsDetailSecondLineDisplayed = false;
+                let settingsPeekPanicMotionTargetRect = null;
+                const appendSettingsDetailSecondLine = () => {
+                    if (
+                        settingsDetailSecondLineDisplayed
+                        || runId !== this.sceneRunId
+                        || this.isStopping()
+                        || !detailTextPart2
+                    ) {
+                        return;
+                    }
+
+                    settingsDetailSecondLineDisplayed = true;
+                    this.appendGuideChatMessage(detailTextPart2, {
+                        textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                        voiceKey: detailVoiceKey,
+                        streamDurationMs: detailPart2StreamDurationMs
+                    });
+                    this.runSettingsPeekPanicPerformance({
+                        runId: runId,
+                        targetRect: settingsPeekPanicMotionTargetRect,
+                        totalDurationMs: detailPart2StreamDurationMs
+                    }).catch(() => {});
+                };
+                const narrationPromise = this.speakGuideLine(detailText, {
+                    voiceKey: detailVoiceKey
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 设置一瞥细节旁白失败，继续流程:', error);
+                }).finally(() => {
+                    appendSettingsDetailSecondLine();
+                    if (runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    this.collapseCharacterSettingsSidePanel();
+                    clearSettingsPeekHighlights();
+                    return closeSettingsPeekPanel();
+                });
+                const guardedNarrationPromise = waitWithWallClockTimeout(
+                    narrationPromise,
+                    Math.max(5000, detailVoiceDurationMs + 1800),
+                    'settings_detail_narration'
+                ).finally(() => {
+                    appendSettingsDetailSecondLine();
+                    if (runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    this.collapseCharacterSettingsSidePanel();
+                    clearSettingsPeekHighlights();
+                    return closeSettingsPeekPanel();
+                });
+                const secondLineDisplayPromise = (async () => {
+                    if (!(await this.waitForNarrationCue(
+                        detailVoiceKey,
+                        'showSecondLine'
+                    ))) {
+                        return;
+                    }
+
+                    appendSettingsDetailSecondLine();
+                })();
+                const guardedSecondLineDisplayPromise = waitWithWallClockTimeout(
+                    secondLineDisplayPromise,
+                    Math.max(1800, Math.round(detailVoiceDurationMs * secondLineCue) + 1400),
+                    'settings_detail_second_line'
+                );
+
+                this.overlay.clearActionSpotlight();
+
+                if (characterMenu) {
+                    this.applyGuideHighlights({ primary: characterMenu });
+                }
+
+                if (characterMenu && runId === this.sceneRunId && !this.isStopping()) {
+                    await this.moveCursorToElement(characterMenu, 900);
+                }
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                let settingsButtonTarget = null;
+                let characterChildrenBundle = null;
+                ({
+                    settingsButton: settingsButtonTarget,
+                    characterMenu,
+                    appearanceItem,
+                    voiceCloneItem,
+                    characterChildrenBundle
+                } = this.refreshSettingsPeekSpotlights(settingsButton));
+                if (!characterMenu) {
+                    console.warn('[YuiGuide] 设置一瞥角色入口消失，跳过细节展示');
+                    clearSettingsPeekHighlights();
+                    await closeSettingsPeekPanel();
+                    return;
+                }
+
+                const sidePanel = this.getCharacterSettingsSidePanel();
+                const panelRect = sidePanel && this.isElementVisible(sidePanel) ? this.getElementRect(sidePanel) : null;
+                const itemUnionRect = unionRects([
+                    this.getElementRect(appearanceItem),
+                    this.getElementRect(voiceCloneItem)
+                ]);
+                const fallbackRect = this.getElementRect(characterChildrenBundle)
+                    || this.getElementRect(characterMenu)
+                    || this.getElementRect(settingsButtonTarget);
+                const motionRect = panelRect || itemUnionRect || fallbackRect;
+                settingsPeekPanicMotionTargetRect = motionRect || null;
+                const centerX = motionRect
+                    ? motionRect.left + motionRect.width / 2
+                    : window.innerWidth / 2;
+                const centerY = motionRect
+                    ? motionRect.top + motionRect.height / 2
+                    : window.innerHeight / 2;
+                const radiusX = panelRect
+                    ? panelRect.width / 2 * 1.4
+                    : (itemUnionRect ? Math.max(90, itemUnionRect.width / 2 * 1.3) : 90);
+                const radiusY = panelRect
+                    ? panelRect.height / 2 * 1.4
+                    : (itemUnionRect ? Math.max(60, itemUnionRect.height / 2 * 1.3) : 60);
+                if (motionRect) {
+                    while (!this.isStopping()) {
+                        const movedToCenter = await this.cursor.moveToPoint(centerX, centerY, {
+                            durationMs: 700,
+                            pauseCheck: () => this.scenePausedForResistance,
+                            cancelCheck: () => this.isStopping()
+                        });
+                        if (movedToCenter) {
+                            break;
                         }
                         if (!this.scenePausedForResistance) {
-                            return;
+                            break;
                         }
                         await this.waitUntilSceneResumed();
                     }
                 }
-            })();
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
 
-            await Promise.all([guardedNarrationPromise, actionPromise, guardedSecondLineDisplayPromise]);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
+                const cycleMs = 5600;
+                const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
+                const actionPromise = (async () => {
+                    while (runId === this.sceneRunId && !ellipseAbortCheck()) {
+                        const moved = await this.cursor.runPauseAwareEllipse(
+                            centerX,
+                            centerY,
+                            radiusX,
+                            radiusY,
+                            cycleMs,
+                            ellipseAbortCheck,
+                            () => this.scenePausedForResistance,
+                            () => this.isStopping()
+                        );
+                        if (!moved && this.isStopping()) {
+                            return;
+                        }
+                        if (!moved) {
+                            if (ellipseAbortCheck()) {
+                                return;
+                            }
+                            if (!this.scenePausedForResistance) {
+                                return;
+                            }
+                            await this.waitUntilSceneResumed();
+                        }
+                    }
+                })();
+
+                await Promise.all([guardedNarrationPromise, actionPromise, guardedSecondLineDisplayPromise]);
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+                this.cleanupTutorialReturnButtons();
+                clearSettingsPeekHighlights();
+                // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
+                await closeSettingsPeekPanel();
+            } finally {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'settings_peek_complete'
+                );
             }
-            this.cleanupTutorialReturnButtons();
-            clearSettingsPeekHighlights();
-            // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
-            await closeSettingsPeekPanel();
         }
 
         beginTerminationVisualCleanup() {
@@ -7832,6 +8414,55 @@
             });
         }
 
+        async startIntroVoiceCursorLookAtPerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
+                return null;
+            }
+            try {
+                return await api.startIntroVoiceCursorLookAt({
+                    getPoint: () => this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                        ? this.overlay.getCursorPosition()
+                        : null,
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 语音入口目光跟随动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async startGhostCursorLookAtPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const cancelCheck = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : () => this.isStopping();
+            try {
+                return await api.startIntroVoiceCursorLookAt({
+                    getPoint: () => this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                        ? this.overlay.getCursorPosition()
+                        : null,
+                    isCancelled: cancelCheck
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] Ghost cursor 目光跟随动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async stopIntroVoiceCursorLookAtPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'intro_voice_showcase_complete');
+            } catch (_) {}
+        }
+
         async startPluginDashboardCornerPeekPerformance(runId) {
             const api = window.YuiGuideAvatarStage;
             if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
@@ -8066,16 +8697,24 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            await Promise.all([
-                this.speakGuideLine(introText, {
-                    voiceKey: introStep.performance.voiceKey,
-                    minDurationMs: 4200
-                }),
-                this.runIntroVoiceControlButtonShowcase(
-                    introStep.performance.voiceKey,
-                    introText
-                ).catch(() => {})
-            ]);
+            const introVoiceLookAtHandle = await this.startIntroVoiceCursorLookAtPerformance();
+            try {
+                await Promise.all([
+                    this.speakGuideLine(introText, {
+                        voiceKey: introStep.performance.voiceKey,
+                        minDurationMs: 4200
+                    }),
+                    this.runIntroVoiceControlButtonShowcase(
+                        introStep.performance.voiceKey,
+                        introText
+                    ).catch(() => {})
+                ]);
+            } finally {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    introVoiceLookAtHandle,
+                    'intro_voice_showcase_complete'
+                );
+            }
             if (this.isStopping()) {
                 return;
             }
@@ -8119,16 +8758,24 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            await Promise.all([
-                this.speakGuideLine(introText || '', {
-                    voiceKey: introStep.performance.voiceKey,
-                    minDurationMs: 4200
-                }),
-                this.runIntroVoiceControlButtonShowcase(
-                    introStep.performance.voiceKey,
-                    introText || ''
-                ).catch(() => {})
-            ]);
+            const introVoiceLookAtHandle = await this.startIntroVoiceCursorLookAtPerformance();
+            try {
+                await Promise.all([
+                    this.speakGuideLine(introText || '', {
+                        voiceKey: introStep.performance.voiceKey,
+                        minDurationMs: 4200
+                    }),
+                    this.runIntroVoiceControlButtonShowcase(
+                        introStep.performance.voiceKey,
+                        introText || ''
+                    ).catch(() => {})
+                ]);
+            } finally {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    introVoiceLookAtHandle,
+                    'intro_voice_showcase_complete'
+                );
+            }
             if (this.isStopping()) {
                 return;
             }
@@ -8461,6 +9108,7 @@
                 this.applyGuideEmotion(performance.emotion);
             }
 
+            let returnControlPetalTransitionPromise = null;
             if (!shouldNarrateDuringMove) {
                 if (bubbleText && shouldNarrateInChat) {
                     this.appendGuideChatMessage(bubbleText, {
@@ -8469,9 +9117,36 @@
                     });
                     this.overlay.hideBubble();
                 }
-                await this.speakGuideLine(bubbleText || '', {
-                    voiceKey: performance.voiceKey
-                });
+                if (stepId === 'takeover_return_control') {
+                    const voiceKey = performance.voiceKey || '';
+                    const narrationPromise = this.speakGuideLine(bubbleText || '', {
+                        voiceKey: voiceKey
+                    });
+                    returnControlPetalTransitionPromise = (async () => {
+                        await this.waitForNarrationCue(voiceKey, 'returnPetalTransition');
+                        if (runId !== this.sceneRunId || this.destroyed || this.isStopping()) {
+                            return;
+                        }
+                        this.cursor.hide();
+                        this.overlay.clearPersistentSpotlight();
+                        this.overlay.clearActionSpotlight();
+                        this.disableInterrupts();
+                        this.closeManagedPanels().catch((error) => {
+                            console.warn('[YuiGuide] 第6段花瓣转场时关闭面板失败:', error);
+                        });
+                        const remainingMs = this.getReturnPetalTransitionRemainingMs(voiceKey, bubbleText || '');
+                        await this.playReturnPetalTransition({
+                            durationMs: remainingMs
+                        });
+                    })().catch((error) => {
+                        console.warn('[YuiGuide] 第6段花瓣转场失败:', error);
+                    });
+                    await narrationPromise;
+                } else {
+                    await this.speakGuideLine(bubbleText || '', {
+                        voiceKey: performance.voiceKey
+                    });
+                }
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -8487,6 +9162,22 @@
             }
 
             if (stepId === 'takeover_return_control') {
+                if (returnControlPetalTransitionPromise) {
+                    await this.closeManagedPanels();
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                    this.overlay.clearPersistentSpotlight();
+                    this.overlay.clearActionSpotlight();
+                    this.cursor.hide();
+                    this.disableInterrupts();
+                    await returnControlPetalTransitionPromise;
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                    this.overlay.setTakingOver(false);
+                    return;
+                }
                 await this.closeManagedPanels();
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
@@ -8524,6 +9215,10 @@
                 this.cursor.hide();
                 this.overlay.clearActionSpotlight();
                 this.disableInterrupts();
+                await this.playReturnPetalTransition();
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
                 this.overlay.setTakingOver(false);
             }
 
