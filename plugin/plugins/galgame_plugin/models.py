@@ -552,7 +552,6 @@ class GalgameOcrReaderConfig:
     ocr_reader_backend_selection_explicit: bool = False
     ocr_reader_capture_backend: str = "smart"
     ocr_reader_capture_backend_explicit: bool = False
-    ocr_reader_tesseract_path: str = ""
     ocr_reader_install_manifest_url: str = ""
     ocr_reader_install_target_dir: str = ""
     ocr_reader_install_timeout_seconds: float = 300.0
@@ -686,7 +685,6 @@ class GalgameConfig:
             "ocr_reader",
             "ocr_reader_capture_backend_explicit",
         ),
-        "ocr_reader_tesseract_path": ("ocr_reader", "ocr_reader_tesseract_path"),
         "ocr_reader_install_manifest_url": ("ocr_reader", "ocr_reader_install_manifest_url"),
         "ocr_reader_install_target_dir": ("ocr_reader", "ocr_reader_install_target_dir"),
         "ocr_reader_install_timeout_seconds": (

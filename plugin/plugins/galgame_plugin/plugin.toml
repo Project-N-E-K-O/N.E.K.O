@@ -84,7 +84,6 @@ renpy = []
 enabled = true
 backend_selection = "rapidocr"
 capture_backend = "dxcam"
-tesseract_path = ""
 install_manifest_url = ""
 install_target_dir = ""
 install_timeout_seconds = 60

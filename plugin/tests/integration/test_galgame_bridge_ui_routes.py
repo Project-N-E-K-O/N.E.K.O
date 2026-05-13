@@ -132,7 +132,6 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert "Textractor" in response.text
     assert 'id="rapidocrCard"' in response.text
     assert 'id="dxcamCard"' in response.text
-    assert 'id="tesseractCard"' in response.text
     assert 'id="textractorCard"' in response.text
     assert "OCR 截图校准" in response.text
     assert 'id="primaryDiagnosisPanel"' in response.text
@@ -156,13 +155,11 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "const RUNS_URL = '/runs';" in response.text
     # rapidocr / dxcam install URLs and restore state helpers removed —
     # both packages are now bundled main-program deps (see pyproject.toml
-    # [dependency-groups] galgame). Only textractor + tesseract retain
-    # runtime install machinery (they're native binaries, not Python wheels).
-    assert "const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;" in response.text
+    # [dependency-groups] galgame). Only textractor retains runtime install
+    # machinery; RapidOCR models use the same task lifecycle.
     assert "const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;" in response.text
     assert "new EventSource(" in response.text
     assert "restoreTextractorInstallState" in response.text
-    assert "restoreTesseractInstallState" in response.text
     assert "session.json" not in response.text
     assert "events.jsonl" not in response.text
     assert "galgame_get_status" in response.text
@@ -186,7 +183,6 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "excluded_non_game_process" in response.text
     assert "rapidocr" in response.text
     assert "dxcam" in response.text
-    assert "tesseract" in response.text
     assert "textractor" in response.text
     assert "function uiT(" in response.text
     assert "getInstallUIConfig" in response.text
@@ -253,7 +249,6 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
     assert bundle["ui.button.collapse"]
     # `ui.install.rapidocr.action` removed (no in-app install action). Use a
     # remaining install-namespace key that exists in all 5 locales.
-    assert bundle["ui.install.tesseract.action"]
 
     missing_response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
@@ -328,36 +323,6 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seeds_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_create_run(payload, *, client_host):
-        del client_host
-        assert payload.plugin_id == "galgame_plugin"
-        assert payload.entry_id == "galgame_install_tesseract"
-        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 300.0}}
-        return RunCreateResponse(run_id="run-tesseract-1", status="queued")
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
-
-    response = await plugin_ui_async_client.post(
-        "/plugin/galgame_plugin/ui-api/tesseract/install",
-        json={"force": True},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-tesseract-1"
-    assert payload["state"]["kind"] == "tesseract"
-    saved = install_task_module.load_install_task_state("run-tesseract-1", kind="tesseract")
-    assert saved is not None
-    assert saved["message"] == "Tesseract install queued"
-
-
-@pytest.mark.asyncio
 async def test_study_companion_install_routes_map_to_study_entries(
     plugin_ui_async_client: AsyncClient,
     galgame_install_runtime_root: Path,
@@ -372,10 +337,6 @@ async def test_study_companion_install_routes_map_to_study_entries(
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
-    tesseract_response = await plugin_ui_async_client.post(
-        "/plugin/study_companion/ui-api/tesseract/install",
-        json={"force": True},
-    )
     rapidocr_response = await plugin_ui_async_client.post(
         "/plugin/study_companion/ui-api/rapidocr-models",
         json={"force": False},
@@ -385,23 +346,13 @@ async def test_study_companion_install_routes_map_to_study_entries(
         json={"force": True},
     )
 
-    assert tesseract_response.status_code == 200
     assert rapidocr_response.status_code == 200
     assert textractor_response.status_code == 404
     assert seen == [
-        ("study_companion", "study_install_tesseract", {"force": True, "_ctx": {"entry_timeout": 300.0}}),
         ("study_companion", "study_download_rapidocr_models", {"force": False, "_ctx": {"entry_timeout": 600.0}}),
     ]
-    assert tesseract_response.json()["state"]["kind"] == "tesseract"
-    assert tesseract_response.json()["state"]["plugin_id"] == "study_companion"
     assert rapidocr_response.json()["state"]["kind"] == "rapidocr_models"
     assert rapidocr_response.json()["state"]["plugin_id"] == "study_companion"
-    assert install_task_module.load_install_task_state("run-study_install_tesseract", kind="tesseract") is None
-    assert install_task_module.load_install_task_state(
-        "run-study_install_tesseract",
-        kind="tesseract",
-        plugin_id="study_companion",
-    ) is not None
     assert install_task_module.load_install_task_state(
         "run-study_download_rapidocr_models",
         kind="rapidocr_models",
@@ -463,57 +414,12 @@ async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_befor
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _unexpected_get_run)
 
-    # Path traversal guard test re-targeted at tesseract since rapidocr/dxcam
-    # install routes were removed (those packages are now bundled main deps).
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/..."
+        "/plugin/galgame_plugin/ui-api/textractor/install/..."
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid Tesseract install task_id"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_status_route_reads_persisted_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-2",
-        kind="tesseract",
-        run_id="run-tesseract-2",
-        status="running",
-        phase="languages",
-        message="Downloading jpn.traineddata",
-        progress=0.66,
-        downloaded_bytes=66,
-        total_bytes=100,
-        asset_name="jpn.traineddata",
-    )
-
-    def _fake_get_run(run_id: str) -> RunRecord:
-        assert run_id == "run-tesseract-2"
-        return _running_install_run(
-            run_id,
-            entry_id="galgame_install_tesseract",
-            stage="languages",
-            message="Downloading jpn.traineddata",
-        )
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/run-tesseract-2"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "running"
-    assert payload["phase"] == "languages"
-    assert payload["downloaded_bytes"] == 66
+    assert response.json()["detail"] == "Invalid Textractor install task_id"
 
 
 @pytest.mark.asyncio
@@ -542,71 +448,44 @@ async def test_galgame_plugin_textractor_install_latest_route_returns_latest_sta
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_latest_route_returns_latest_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-latest",
-        kind="tesseract",
-        run_id="run-tesseract-latest",
-        status="completed",
-        phase="completed",
-        message="Tesseract installation completed",
-        progress=1.0,
-    )
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/latest"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-tesseract-latest"
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "completed"
-
-
-@pytest.mark.asyncio
 async def test_install_latest_routes_are_namespaced_by_plugin_id(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
     galgame_install_runtime_root: Path,
 ) -> None:
     install_task_module.update_install_task_state(
-        "run-galgame-tesseract-latest",
-        kind="tesseract",
+        "run-galgame-models-latest",
+        kind="rapidocr_models",
         plugin_id="galgame_plugin",
-        run_id="run-galgame-tesseract-latest",
+        run_id="run-galgame-models-latest",
         status="completed",
         phase="completed",
-        message="Galgame Tesseract installation completed",
+        message="Galgame RapidOCR model download completed",
         progress=1.0,
     )
     install_task_module.update_install_task_state(
-        "run-study-tesseract-latest",
-        kind="tesseract",
+        "run-study-models-latest",
+        kind="rapidocr_models",
         plugin_id="study_companion",
-        run_id="run-study-tesseract-latest",
+        run_id="run-study-models-latest",
         status="completed",
         phase="completed",
-        message="Study Tesseract installation completed",
+        message="Study RapidOCR model download completed",
         progress=1.0,
     )
 
     galgame_response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/latest"
+        "/plugin/galgame_plugin/ui-api/rapidocr-models/latest"
     )
     study_response = await plugin_ui_async_client.get(
-        "/plugin/study_companion/ui-api/tesseract/install/latest"
+        "/plugin/study_companion/ui-api/rapidocr-models/latest"
     )
 
     assert galgame_response.status_code == 200
     assert study_response.status_code == 200
-    assert galgame_response.json()["task_id"] == "run-galgame-tesseract-latest"
+    assert galgame_response.json()["task_id"] == "run-galgame-models-latest"
     assert galgame_response.json()["plugin_id"] == "galgame_plugin"
-    assert study_response.json()["task_id"] == "run-study-tesseract-latest"
+    assert study_response.json()["task_id"] == "run-study-models-latest"
     assert study_response.json()["plugin_id"] == "study_companion"
 
 
@@ -658,43 +537,11 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_get_run)
 
-    # Re-targeted at tesseract since rapidocr install route was removed.
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/missing-stream-task/stream"
+        "/plugin/galgame_plugin/ui-api/textractor/install/missing-stream-task/stream"
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Tesseract install task 'missing-stream-task' not found"
+    assert response.json()["detail"] == "Textractor install task 'missing-stream-task' not found"
 
 
-@pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_stream_route_emits_sse_payload(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-stream",
-        kind="tesseract",
-        run_id="run-tesseract-stream",
-        status="completed",
-        phase="completed",
-        message="Tesseract installation completed",
-        progress=1.0,
-    )
-
-    async with plugin_ui_async_client.stream(
-        "GET",
-        "/plugin/galgame_plugin/ui-api/tesseract/install/run-tesseract-stream/stream",
-    ) as response:
-        assert response.status_code == 200
-        body = ""
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                body = line[len("data: "):]
-                break
-
-    payload = json.loads(body)
-    assert payload["task_id"] == "run-tesseract-stream"
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "completed"

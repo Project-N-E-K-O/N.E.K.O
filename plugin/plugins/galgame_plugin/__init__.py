@@ -133,7 +133,6 @@ from .service import (
 )
 from .state import GalgameSharedState, build_initial_state
 from .store import GalgameStore
-from .tesseract_support import install_tesseract
 from .textractor_support import install_textractor
 from .ui_api import build_open_ui_payload
 from .screen_classifier import classify_screen_from_ocr, normalize_screen_type
@@ -153,7 +152,7 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
         return
 
 
-_OCR_BACKEND_SELECTIONS = {"auto", "rapidocr", "tesseract"}
+_OCR_BACKEND_SELECTIONS = {"auto", "rapidocr"}
 _OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}
 
 
@@ -794,7 +793,6 @@ class GalgamePlugin(NekoPluginBase):
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
         self._textractor_install_lock = threading.Lock()
-        self._tesseract_install_lock = threading.Lock()
         # rapidocr/dxcam *install* locks removed: both bundled into main program.
         # rapidocr_models download lock is separate — it's not installing the
         # package, it's pulling the user-selected language pack into the
@@ -2898,18 +2896,6 @@ class GalgamePlugin(NekoPluginBase):
                     "detail": "config_not_loaded",
                     "runtime_error": "",
                 },
-                "tesseract": {
-                    "install_supported": False,
-                    "installed": False,
-                    "can_install": False,
-                    "detected_path": "",
-                    "target_dir": "",
-                    "expected_executable_path": "",
-                    "tessdata_dir": "",
-                    "required_languages": [],
-                    "missing_languages": [],
-                    "detail": "config_not_loaded",
-                },
                 "textractor": {
                     "install_supported": False,
                     "installed": False,
@@ -4238,7 +4224,6 @@ class GalgamePlugin(NekoPluginBase):
                 bool(getattr(self._cfg, "ocr_reader_enabled", False))
                 and bool(getattr(self._cfg, "ocr_reader_enabled_explicit", False))
             )
-            or str(getattr(self._cfg, "ocr_reader_tesseract_path", "") or "").strip()
             or str(getattr(self._cfg, "ocr_reader_install_target_dir", "") or "").strip()
             or str(getattr(self._cfg, "rapidocr_install_target_dir", "") or "").strip()
             or (
@@ -4250,7 +4235,7 @@ class GalgamePlugin(NekoPluginBase):
                 and str(getattr(self._cfg, "ocr_reader_backend_selection", "") or "")
                 .strip()
                 .lower()
-                in {"rapidocr", "tesseract"}
+                in {"rapidocr"}
             )
             or (
                 bool(getattr(self._cfg, "ocr_reader_capture_backend_explicit", False))
@@ -4604,52 +4589,6 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._format_install_entry_error("textractor", "Textractor", exc)))
         finally:
             self._textractor_install_lock.release()
-
-    @plugin_entry(
-        id="galgame_install_tesseract",
-        name=tr("entries.galgame_install_tesseract.name", default='安装 Tesseract'),
-        description=tr("entries.galgame_install_tesseract.description", default='检测并下载安装本地 Tesseract OCR，随后刷新 galgame_plugin 的 OCR 状态。'),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "force": {"type": "boolean", "default": False},
-            },
-        },
-        timeout=300.0,
-        llm_result_fields=["summary"],
-    )
-    async def galgame_install_tesseract(self, force: bool = False, **_):
-        if self._cfg is None:
-            return Err(SdkError(self._not_configured_message()))
-        if not self._tesseract_install_lock.acquire(blocking=False):
-            return Err(SdkError(self._install_in_progress_message("Tesseract")))
-        current_run_id = self._resolve_current_run_id(_)
-        progress_callback = self._resolve_install_progress_callback(current_run_id)
-        try:
-            install_result = await install_tesseract(
-                logger=self.logger,
-                configured_path=self._cfg.ocr_reader_tesseract_path,
-                install_target_dir_raw=self._cfg.ocr_reader_install_target_dir,
-                manifest_url=self._cfg.ocr_reader_install_manifest_url,
-                timeout_seconds=self._cfg.ocr_reader_install_timeout_seconds,
-                languages=self._cfg.ocr_reader_languages,
-                force=bool(force),
-                task_id=current_run_id or None,
-                progress_callback=progress_callback,
-            )
-            clear_install_inspection_cache()
-            await self._poll_bridge(force=True)
-            return Ok(
-                {
-                    "summary": str(install_result.get("summary") or self._install_ok_message("tesseract", "Tesseract")),
-                    "install_result": install_result,
-                    "status": await self._build_status_payload_async(),
-                }
-            )
-        except Exception as exc:
-            return Err(SdkError(self._format_install_entry_error("tesseract", "Tesseract", exc)))
-        finally:
-            self._tesseract_install_lock.release()
 
     # NOTE: galgame_install_rapidocr / galgame_install_dxcam SDK actions removed —
     # both packages are now bundled into the main program (see pyproject.toml

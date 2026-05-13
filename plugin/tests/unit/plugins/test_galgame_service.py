@@ -78,7 +78,6 @@ def _patch_status_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(galgame_service, "inspect_dxcam_installation", lambda: {})
     monkeypatch.setattr(galgame_service, "inspect_textractor_installation", lambda **kwargs: {})
     monkeypatch.setattr(galgame_service, "inspect_rapidocr_installation", lambda **kwargs: {})
-    monkeypatch.setattr(galgame_service, "inspect_tesseract_installation", lambda **kwargs: {})
     monkeypatch.setattr(galgame_service, "_current_process_performance", lambda: {})
 
 

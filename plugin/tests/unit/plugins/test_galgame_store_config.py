@@ -100,7 +100,7 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path
             {
                 "galgame": {"reader_mode": "auto"},
                 "ocr_reader": {
-                    "backend_selection": "tesseract",
+                    "backend_selection": "auto",
                     "capture_backend": "smart",
                     "poll_interval_seconds": 2.0,
                     "trigger_mode": "interval",

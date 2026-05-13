@@ -30,6 +30,9 @@ DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
 # better quality but requires a download for everything (no bundled v5).
 DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv4"
 
+_BAIDU_YUN_RAPIDOCR_URL = "https://pan.baidu.com/s/1ItWTATwjtCnOCjWutPSXQQ"
+_BAIDU_YUN_RAPIDOCR_CODE = "neko"
+
 # Models hosted on RapidAI's ModelScope mirror. URL pattern stable as of
 # RapidOCR v3.8.0 (the registry source). Each entry's `name` is the on-disk
 # filename (also forms the URL leaf) and is what we pass to RapidOCR via

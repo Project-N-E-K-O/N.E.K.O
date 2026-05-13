@@ -15,7 +15,6 @@ _LOCAL_RAPIDOCR_INFERENCE_LOCK = _ocr_reader._RAPIDOCR_INFERENCE_LOCK
 OcrBackend = _ocr_reader.OcrBackend
 OcrTextBox = _ocr_reader.OcrTextBox
 _RapidOcrToken = _ocr_reader._RapidOcrToken
-TesseractOcrBackend = _ocr_reader.TesseractOcrBackend
 RapidOcrBackend = _ocr_reader.RapidOcrBackend
 
 _score_ocr_text = _ocr_reader._score_ocr_text
@@ -68,7 +67,6 @@ __all__ = [
     "OcrBackend",
     "OcrTextBox",
     "RapidOcrBackend",
-    "TesseractOcrBackend",
     "_CJK_CHAR_RE_PATTERN",
     "_KANA_CHAR_RE_PATTERN",
     "_LOCAL_RAPIDOCR_INFERENCE_LOCK",

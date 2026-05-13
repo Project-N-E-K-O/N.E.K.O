@@ -3,13 +3,11 @@ const RUNS_URL = '/runs';
 const UI_API_BASE = `/plugin/${PLUGIN_ID}/ui-api`;
 const TUTORIAL_STATUS_URL = `${UI_API_BASE}/tutorial/status`;
 const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
-// rapidocr / dxcam install URLs gone — both are bundled main-program deps
-// (see pyproject.toml [dependency-groups] galgame). Only textractor +
-// tesseract still need the runtime-install UI. RapidOCR adds a
-// model-download UI for non-bundled language packs — same task lifecycle
-// pattern as install tasks (POST to base, GET base/{task_id}).
+// rapidocr / dxcam install URLs gone - both are bundled main-program deps
+// (see pyproject.toml [dependency-groups] galgame). Textractor still uses
+// runtime install. RapidOCR adds a model-download UI for non-bundled language
+// packs using the same task lifecycle pattern as install tasks.
 const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
-const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;
 const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;
 const INSTALL_TERMINAL_STATUSES = new Set(['completed', 'failed', 'canceled']);
 const INSTALL_COMPLETED_REFRESH_GRACE_SECONDS = 15;
@@ -101,19 +99,6 @@ function clearSkipOnboarding() {
 
 function getInstallUIConfig() {
   return {
-    tesseract: {
-      kind: 'tesseract',
-      label: 'Tesseract',
-      url: TESSERACT_INSTALL_URL,
-      storageKey: `${PLUGIN_ID}:tesseract_install_task_id`,
-      domPrefix: 'tesseract',
-      actionText: uiT('ui.install.tesseract.action', '一键安装 Tesseract'),
-      retryText: uiT('ui.install.tesseract.retry', '重试安装 Tesseract'),
-      runningText: uiT('ui.install.running', '后台安装中...'),
-      queuedFlash: uiT('ui.install.tesseract.queued', '已创建后台安装任务，接下来会通过 HTTPS 下载 Tesseract 和语言包，并通过 SSE 推送实时进度。'),
-      successFlash: uiT('ui.install.tesseract.success', 'Tesseract 安装完成'),
-      failureFlash: uiT('ui.install.tesseract.failure', 'Tesseract 安装失败'),
-    },
     textractor: {
       kind: 'textractor',
       label: 'Textractor',
@@ -169,7 +154,6 @@ function createInstallRuntimeState() {
 const installRuntime = {
   rapidocr: createInstallRuntimeState(),
   dxcam: createInstallRuntimeState(),
-  tesseract: createInstallRuntimeState(),
   textractor: createInstallRuntimeState(),
   rapidocr_models: createInstallRuntimeState(),
 };
@@ -602,9 +586,6 @@ const FIELD_LABELS_ZH = {
   memory_reader_status: 'Memory Reader 状态',
   memory_reader_detail: 'Memory Reader 详情',
   memory_reader_process: 'Memory Reader 进程',
-  tesseract_installed: 'Tesseract 已安装',
-  tesseract_detail: 'Tesseract 详情',
-  tesseract_missing_languages: 'Tesseract 缺失语言',
   textractor_installed: 'Textractor 已安装',
   textractor_detail: 'Textractor 详情',
   last_error: '最近错误',
@@ -644,7 +625,6 @@ const FIELD_LABELS_ZH = {
   backend_detail: '后端详情',
   backend_path: '后端路径',
   backend_model: '后端模型',
-  tesseract_path: 'Tesseract 路径',
   languages: '语言',
   takeover_reason: '接管原因',
   target_selection_mode: '目标选择模式',
@@ -759,7 +739,6 @@ const ACTION_LABELS_ZH = {
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
   install_rapidocr: '查看 RapidOCR 状态',
-  install_tesseract: '一键安装 Tesseract',
   install_dxcam: '查看 DXcam 状态',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
@@ -1842,10 +1821,8 @@ function buildFirstRunSteps(status = {}) {
   const detail = textValue(runtime.target_selection_detail);
   const lastExcludeReason = textValue(runtime.last_exclude_reason);
   const rapidocr = status.rapidocr || {};
-  const tesseract = status.tesseract || {};
   const dxcam = status.dxcam || {};
   const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
-  const tesseractSupported = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
   const rapidocrModelsMissing = hasMissingRapidOcrModelFiles(rapidocr);
   const rapidocrUsable = isRapidOcrUsable(rapidocr);
@@ -1856,13 +1833,7 @@ function buildFirstRunSteps(status = {}) {
   // gates download (e.g. permanent network block) would still hand the
   // user a "Download Now" CTA that points at a hidden button.
   const rapidocrModelsDownloadable = rapidocrModelsMissing && Boolean(rapidocr.can_download_models);
-  // Route the install_ocr CTA:
-  //   - download_rapidocr_models when models are missing AND auto-download is possible
-  //   - null (no primary button) when models are missing but auto-download isn't —
-  //     the body copy directs the user to the manual recovery path on the banner;
-  //     don't offer install_tesseract as a fake "fix" for a rapidocr-models problem
-  //   - install_rapidocr if a runtime install path is somehow still available (legacy)
-  //   - install_tesseract as last-resort fallback (rapidocr completely unavailable)
+  // Route the install_ocr CTA to RapidOCR models/download state only.
   let ocrInstallAction;
   if (rapidocrModelsDownloadable) {
     ocrInstallAction = 'download_rapidocr_models';
@@ -1871,18 +1842,11 @@ function buildFirstRunSteps(status = {}) {
   } else if (rapidocrSupported) {
     ocrInstallAction = 'install_rapidocr';
   } else {
-    ocrInstallAction = 'install_tesseract';
+    ocrInstallAction = null;
   }
-  // Don't let an installed Tesseract short-circuit ocrReady when rapidocr
-  // models are missing — the install_ocr step would never appear, and the
-  // PR's whole point is to surface the model-download / manual-recovery
-  // CTA when the user-selected language pack isn't on disk. Tesseract is
-  // a fallback for `rapidocr COMPLETELY unavailable`, not for `rapidocr is
-  // there but the configured model isn't`.
   const ocrReady = Boolean(
     rapidocrUsable
-    || (!rapidocrModelsMissing && tesseract.installed)
-    || (!rapidocrSupported && !tesseractSupported && !rapidocrModelsMissing)
+    || (!rapidocrSupported && !rapidocrModelsMissing)
   );
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
@@ -1937,10 +1901,8 @@ function buildFirstRunSteps(status = {}) {
           version: rapidocr.ocr_version || 'PP-OCRv4',
         },
       );
-    } else if (ocrInstallAction === 'install_tesseract') {
-      body = uiT('ui.first_run.install_ocr.pending_tesseract', '前往"依赖安装"面板一键安装 Tesseract。');
     } else {
-      body = uiT('ui.first_run.install_ocr.pending', '前往"依赖安装"面板一键安装 RapidOCR。');
+      body = uiT('ui.first_run.install_ocr.pending', '前往"依赖安装"面板检查 RapidOCR 状态。');
     }
     steps.push({
       key: 'install_ocr',
@@ -2019,7 +1981,7 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
     // can't auto-download — in that case skip the primary button and
     // show only refresh_all; the body copy already points the user at
     // the RapidOCR banner for manual recovery, and a fake "Install
-    // Tesseract" CTA here would mislead.
+    // RapidOCR runtime install CTA here would mislead.
     const installAction = firstIncomplete.installAction;
     if (installAction) {
       let installActionKey;
@@ -2027,9 +1989,6 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
       if (installAction === 'download_rapidocr_models') {
         installActionKey = 'ui.first_run.action.download_rapidocr_models';
         fallbackLabel = '立即下载模型';
-      } else if (installAction === 'install_tesseract') {
-        installActionKey = 'ui.first_run.action.install_tesseract';
-        fallbackLabel = primaryActionLabel(installAction);
       } else {
         installActionKey = 'ui.first_run.action.install_rapidocr';
         fallbackLabel = primaryActionLabel(installAction);
@@ -2278,7 +2237,6 @@ function pipelineStateLabel(state) {
 function buildOcrPipelineSteps(status = {}) {
   const runtime = status.ocr_reader_runtime || {};
   const rapidocr = status.rapidocr || {};
-  const tesseract = status.tesseract || {};
   const detail = textValue(runtime.target_selection_detail);
   const contextState = textValue(status.ocr_context_state || runtime.ocr_context_state);
   const lastExcludeReason = textValue(runtime.last_exclude_reason);
@@ -2430,7 +2388,7 @@ function buildOcrPipelineSteps(status = {}) {
       body: uiT('ui.pipeline.ocr.ok_body', '识别阶段正常。'),
       meta: ocrBackend,
     };
-  } else if (!rapidocr.installed && !tesseract.installed) {
+  } else if (!rapidocr.installed) {
     ocrStep = {
       key: 'ocr',
       state: 'warning',
@@ -2603,7 +2561,7 @@ function installTaskDisplayState(kind) {
 
 function dependencySummaryItem(kind, status = {}) {
   const taskKind = kind === 'rapidocr' ? 'rapidocr_models' : kind;
-  if (taskKind === 'tesseract' || taskKind === 'textractor' || taskKind === 'rapidocr_models') {
+  if (taskKind === 'textractor' || taskKind === 'rapidocr_models') {
     const taskState = installTaskDisplayState(taskKind);
     const rapidocr = kind === 'rapidocr' ? (status.rapidocr || {}) : {};
     const rapidocrModelsStillMissing = kind !== 'rapidocr'
@@ -2659,24 +2617,6 @@ function dependencySummaryItem(kind, status = {}) {
       : { kind, label: 'DXcam', state: 'warning', labelText: uiT('ui.install.summary.not_found', '未检测到'), needsAttention: true };
   }
 
-  if (kind === 'tesseract') {
-    const tesseract = status.tesseract || {};
-    const missingLanguages = Array.isArray(tesseract.missing_languages) ? tesseract.missing_languages : [];
-    if (tesseract.installed && !missingLanguages.length) {
-      return { kind, label: 'Tesseract', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false };
-    }
-    if (tesseract.installed && missingLanguages.length) {
-      return {
-        kind,
-        label: 'Tesseract',
-        state: 'warning',
-        labelText: uiTf('ui.install.summary.missing_languages', '缺少语言包 {languages}', { languages: missingLanguages.join(', ') }),
-        needsAttention: true,
-      };
-    }
-    return { kind, label: 'Tesseract', state: 'missing', labelText: uiT('ui.install.summary.missing', '未安装'), needsAttention: true };
-  }
-
   const textractor = status.textractor || {};
   return textractor.installed
     ? { kind, label: 'Textractor', state: 'installed', labelText: uiT('ui.install.summary.installed', '已安装'), needsAttention: false }
@@ -2688,7 +2628,7 @@ function renderInstallCompactSummary(status = {}) {
   if (!summary) {
     return;
   }
-  const ocrItems = ['rapidocr', 'dxcam', 'tesseract'].map((kind) => dependencySummaryItem(kind, status));
+  const ocrItems = ['rapidocr', 'dxcam'].map((kind) => dependencySummaryItem(kind, status));
   const memoryItems = ['textractor'].map((kind) => dependencySummaryItem(kind, status));
   const renderGroup = (label, items) => `
     <span class="install-summary-group">
@@ -3789,10 +3729,9 @@ function renderPluginUnavailable(error) {
   const PROMPT_LABELS = {
     rapidocr: 'RapidOCR',
     dxcam: 'DXcam',
-    tesseract: 'Tesseract',
     textractor: 'Textractor',
   };
-  for (const kind of ['rapidocr', 'dxcam', 'tesseract', 'textractor']) {
+  for (const kind of ['rapidocr', 'dxcam', 'textractor']) {
     const card = document.getElementById(`${kind}Card`);
     if (!card) {
       continue;
@@ -3812,7 +3751,7 @@ function renderPluginUnavailable(error) {
         card.hidden = true;
         card.style.display = 'none';
       }
-    } else if (kind === 'tesseract' || kind === 'textractor') {
+    } else if (kind === 'textractor') {
       const { button, card } = getInstallNodes(kind);
       if (card) {
         card.hidden = true;
@@ -4028,10 +3967,6 @@ async function restoreTextractorInstallState() {
 // restoreRapidOcrInstallState / restoreDxcamInstallState removed — both
 // kinds no longer have install machinery (bundled into main program).
 
-async function restoreTesseractInstallState() {
-  await restoreInstallState('tesseract');
-}
-
 async function restoreRapidOcrModelsState() {
   // Same lifecycle as the install task kinds: re-fetch persisted task,
   // reconnect SSE if still running, surface the failure card on terminal
@@ -4133,7 +4068,6 @@ function renderStatus(status) {
   const rapidocr = status.rapidocr || {};
   const dxcam = status.dxcam || {};
   const textractor = status.textractor || {};
-  const tesseract = status.tesseract || {};
   const performance = status.performance || {};
 
   const memoryReaderProcess = memoryReaderRuntime.process_name
@@ -4142,7 +4076,6 @@ function renderStatus(status) {
   const ocrTarget = ocrRuntime.process_name
     ? `${ocrRuntime.process_name} (${ocrRuntime.pid || 0})`
     : '';
-  const missingLanguages = (tesseract.missing_languages || []).join(', ');
   const performanceProcess = performance.process_name
     ? `${performance.process_name} (${performance.pid || 0})`
     : String(performance.pid || '');
@@ -4307,8 +4240,6 @@ function renderStatus(status) {
     { label: 'memory_reader_status', value: memoryReaderRuntime.status || '' },
     { label: 'memory_reader_process', value: memoryReaderProcess || '' },
     { label: 'memory_reader_engine', value: memoryReaderRuntime.engine || '' },
-    { label: 'tesseract_installed', value: String(Boolean(tesseract.installed)) },
-    { label: 'tesseract_missing_languages', value: missingLanguages || '(none)' },
     { label: 'textractor_installed', value: String(Boolean(textractor.installed)) },
     { label: 'last_error', value: status.last_error?.message || '' },
   ];
@@ -4385,7 +4316,6 @@ function renderStatus(status) {
     { label: 'last_text_ts', value: memoryReaderRuntime.last_text_ts || '' },
     { label: 'last_text_recent', value: String(Boolean(memoryReaderRuntime.last_text_recent)) },
     { label: 'last_text_age_seconds', value: formatFixedNumber(memoryReaderRuntime.last_text_age_seconds, 1) },
-    { label: 'tesseract_detail', value: tesseract.detail || '' },
     { label: 'textractor_detail', value: textractor.detail || '' },
   ];
   renderStatusGrid(userStatusRows, debugStatusRows);
@@ -4397,7 +4327,6 @@ function renderStatus(status) {
   syncAutoRefreshIntervalForStatus(status);
   renderRapidOcr(status);
   renderDxcam(status);
-  renderTesseract(status);
   renderTextractor(status);
   renderMemoryReaderTargetStatus(status);
   renderOcrWindowTargetStatus(status);
@@ -4789,7 +4718,6 @@ function renderOcrRuntime(status) {
     { label: 'backend_detail', value: fromOcr('backend_detail') || '' },
     { label: 'backend_path', value: fromOcr('backend_path') || '' },
     { label: 'backend_model', value: fromOcr('backend_model') || '' },
-    { label: 'tesseract_path', value: fromOcr('tesseract_path') || '' },
     { label: 'languages', value: fromOcr('languages') || '' },
     { label: 'takeover_reason', value: runtime.takeover_reason || '' },
     { label: 'target_selection_mode', value: fromWindow('selection_mode', 'target_selection_mode') || '' },
@@ -5253,7 +5181,7 @@ function renderRapidOcr(status) {
   const rapidocrUsable = isRapidOcrUsable(rapidocr);
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
-  const usingFallback = runtime.backend_kind === 'tesseract';
+  const manualGuide = status.download_guide?.rapidocr_models || {};
   applyRapidOcrModelsGate(rapidocr);
   const lastTask = installRuntime.rapidocr_models.state;
   const modelState = lastTask;
@@ -5314,6 +5242,9 @@ function renderRapidOcr(status) {
     metaText = [
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
       rapidocr.model_download_source ? `${uiT('ui.install.rapidocr.download_source', '下载来源')}: ${rapidocr.model_download_source}` : '',
+      manualGuide.url ? `${uiT('ui.install.manual_download_url', '手动下载')}: ${manualGuide.url}` : '',
+      manualGuide.code ? `${uiT('ui.install.manual_download_code', '提取码')}: ${manualGuide.code}` : '',
+      manualGuide.target_dir ? `${uiT('ui.install.manual_target_dir', '放置目录')}: ${manualGuide.target_dir}` : '',
       !canDownloadModels ? manualRecoveryBody : '',
       downloadFailed ? `${uiT('ui.install.last_error', '上次错误')}: ${modelState.error || modelState.message || ''}` : '',
     ].filter(Boolean).join('\n');
@@ -5322,9 +5253,7 @@ function renderRapidOcr(status) {
     chipText = uiT('ui.install.status.ready', '已就绪');
     descText = usingRapidOcr
       ? uiT('ui.install.rapidocr.active_title', 'RapidOCR 已接管当前 OCR Reader')
-      : usingFallback
-        ? `${uiT('ui.install.rapidocr.fallback_body', 'RapidOCR 已就绪，但本帧 OCR 回退到了 Tesseract。原因')}: ${runtime.backend_detail || rapidocr.detail || uiT('ui.status.unknown', '未知')}。`
-        : uiT('ui.install.rapidocr.ready_body', 'RapidOCR 已就绪。无 SDK 且无有效内存文本时，它会优先于 Tesseract 作为 OCR Reader 的主后端。');
+      : uiT('ui.install.rapidocr.ready_body', 'RapidOCR 已就绪。无 SDK 且无有效内存文本时，它会作为 OCR Reader 后端。');
     metaText = [
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
@@ -5526,86 +5455,10 @@ function renderDxcam(status) {
   rebindCardButton('printwindowUseBtn', () => setOcrBackendSelection({ captureBackend: 'printwindow' }));
 }
 
-function renderTesseract(status) {
-  const tesseract = status.tesseract || {};
-  const runtime = status.ocr_reader_runtime || {};
-  const card = document.getElementById('tesseractCard');
-  const chip = document.getElementById('tesseractCardChip');
-  const desc = document.getElementById('tesseractCardDesc');
-  const meta = document.getElementById('tesseractCardMeta');
-  const actions = document.getElementById('tesseractCardActions');
-  if (!card || !chip || !desc || !meta || !actions) {
-    return;
-  }
-
-  const installState = getInstallState('tesseract').state;
-  const installable = Boolean(tesseract.install_supported) && Boolean(tesseract.can_install);
-  const installed = Boolean(tesseract.installed);
-  const missingLanguages = tesseract.missing_languages || [];
-  const selectedBackend = status.ocr_backend_selection || 'auto';
-  const buttons = [
-    `<button id="tesseractUseBtn" class="secondary" ${(!installed || selectedBackend === 'tesseract') ? 'disabled' : ''}>${escapeHtml(selectedBackend === 'tesseract' ? uiT('ui.install.tesseract.using', '正在使用 Tesseract') : uiT('ui.install.tesseract.use', '使用 Tesseract'))}</button>`,
-    installButtonHtml('tesseract', installable, installed),
-  ].filter(Boolean);
-
-  let cardStatus = 'warning';
-  let chipText = uiT('ui.install.status.not_installed', '未安装');
-  let descText = '';
-  let metaText = '';
-
-  if (!tesseract.install_supported) {
-    cardStatus = 'neutral';
-    chipText = uiT('ui.install.status.unsupported', '平台不支持');
-    descText = uiT('ui.install.tesseract.unsupported_body', 'Tesseract 目前只保留为 OCR Reader 的兼容兜底，本地自动安装也只在 Windows 上提供。');
-  } else if (installed) {
-    cardStatus = 'ok';
-    chipText = uiT('ui.install.status.installed', '已安装');
-    descText = runtime.backend_kind === 'tesseract'
-      ? uiT('ui.install.tesseract.active_title', 'Tesseract 正在作为兼容兜底工作')
-      : uiT('ui.install.tesseract.ready_title', 'Tesseract 已就绪，等待必要时回退');
-    metaText = tesseract.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${tesseract.detected_path}` : '';
-  } else if (tesseract.detail === 'missing_languages') {
-    cardStatus = 'warning';
-    chipText = uiT('ui.install.status.languages_missing', '语言缺失');
-    descText = `${uiT('ui.install.tesseract.missing_languages_body_prefix', '当前缺少')} ${missingLanguages.join(', ') || uiT('ui.install.language_pack', '语言包')}。${uiT('ui.install.tesseract.missing_languages_body_suffix', '安装流程会按默认语言 chi_sim+jpn+eng 补齐兼容兜底所需文件。')}`;
-    metaText = tesseract.tessdata_dir ? `${uiT('ui.install.tessdata_dir', 'tessdata 目录')}: ${tesseract.tessdata_dir}` : '';
-  } else {
-    descText = uiT('ui.install.tesseract.not_ready_body', '这不会阻止 RapidOCR 作为主后端工作，但当 RapidOCR 缺失或运行异常时，将无法自动回退到本地 Tesseract。');
-    metaText = tesseract.expected_executable_path ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${tesseract.expected_executable_path}` : '';
-  }
-
-  if (installState && !isInstallTaskTerminal(installState)) {
-    cardStatus = 'neutral';
-    chipText = uiT('ui.install.status.installing', '安装中');
-    descText = uiT('ui.install.tesseract.installing_body', '安装器和语言包下载都通过 HTTPS 进行，当前页面会通过 SSE 接收实时进度；即使刷新页面，也会尝试恢复最近的安装状态。');
-  } else if (installState && installState.status === 'failed') {
-    cardStatus = 'error';
-    chipText = uiT('ui.install.status.failed', '安装失败');
-    descText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
-  } else if (installState && installState.status === 'completed' && !installed) {
-    cardStatus = 'neutral';
-    chipText = uiT('ui.install.status.completed', '已完成');
-    descText = installState.message || uiT('ui.install.task_done_refreshing', '安装任务已结束，正在等待插件状态刷新。');
-  }
-
-  card.className = `install-card ${cardStatus}`;
-  chip.textContent = chipText;
-  desc.textContent = descText;
-  meta.textContent = metaText;
-  syncActionButtons(actions, buttons.join(''));
-  if (installed) {
-    const nodes = getInstallNodes('tesseract');
-    if (nodes.card) nodes.card.hidden = true;
-  } else {
-    renderInstallTaskState('tesseract');
-  }
-  rebindCardButton('tesseractUseBtn', () => setOcrBackendSelection({ backendSelection: 'tesseract' }));
-  rebindCardButton('tesseractInstallBtn', () => startInstall('tesseract', false));
-}
-
 function renderTextractor(status) {
   const textractor = status.textractor || {};
   const runtime = status.memory_reader_runtime || {};
+  const manualGuide = status.download_guide?.textractor || {};
   const card = document.getElementById('textractorCard');
   const chip = document.getElementById('textractorCardChip');
   const desc = document.getElementById('textractorCardDesc');
@@ -5637,7 +5490,12 @@ function renderTextractor(status) {
     metaText = textractor.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${textractor.detected_path}` : '';
   } else {
     descText = uiT('ui.install.textractor.missing_body', 'Textractor 仅影响实验性 Memory Reader 链路，不影响当前 Bridge SDK > OCR Reader 的正式运行顺序。');
-    metaText = textractor.expected_executable_path ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${textractor.expected_executable_path}` : '';
+    metaText = [
+      textractor.expected_executable_path ? `${uiT('ui.install.expected_path', '预期安装位置')}: ${textractor.expected_executable_path}` : '',
+      manualGuide.url ? `${uiT('ui.install.manual_download_url', '手动下载')}: ${manualGuide.url}` : '',
+      manualGuide.code ? `${uiT('ui.install.manual_download_code', '提取码')}: ${manualGuide.code}` : '',
+      manualGuide.target_dir ? `${uiT('ui.install.manual_target_dir', '放置目录')}: ${manualGuide.target_dir}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   if (installState && !isInstallTaskTerminal(installState)) {
@@ -6434,7 +6292,7 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
   // re-snap the viewport to plugin settings on the next frame and undo
   // that careful scroll. The opt-out lets such callers reuse the existing
   // positioning. The default `navigate: true` preserves the original
-  // tesseract/textractor install flow behavior.
+  // textractor install flow behavior.
   if (navigate) {
     navigateToInstallPanel(kind);
   }
@@ -7185,9 +7043,6 @@ async function handleDiagnosisAction(action) {
     case 'recalibrate_ocr':
       await autoRecalibrateOcrDialogueProfile();
       break;
-    case 'install_tesseract':
-      await startInstall('tesseract', false);
-      break;
     case 'download_rapidocr_models':
       navigateToInstallPanel('rapidocr', { scrollToSection: false });
       expandAndScrollTo('rapidocrCard');
@@ -7227,7 +7082,6 @@ async function handleDiagnosisAction(action) {
 
 function isFirstRunInstallAction(action) {
   return action === 'install_rapidocr'
-    || action === 'install_tesseract'
     || action === 'install_dxcam'
     || action === 'download_rapidocr_models';
 }
@@ -7395,7 +7249,6 @@ async function initialize() {
     })
   ));
   runBackgroundTask('restore install states', () => Promise.all([
-    restoreTesseractInstallState(),
     restoreTextractorInstallState(),
     restoreRapidOcrModelsState(),
   ]));

@@ -22,8 +22,10 @@ from .memory_reader import (
 )
 
 DEFAULT_TEXTRACTOR_RELEASE_API_URL = (
-    "https://api.github.com/repos/Artikash/Textractor/releases/latest"
+    "https://api.github.com/repos/MomiJiSan/NekoTextractor/releases/latest"
 )
+_BAIDU_YUN_TEXTTRACTOR_URL = "https://pan.baidu.com/s/____"
+_BAIDU_YUN_TEXTTRACTOR_CODE = "____"
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 

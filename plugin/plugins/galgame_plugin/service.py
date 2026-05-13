@@ -61,16 +61,21 @@ from .dependency_status import (
 from .dxcam_support import inspect_dxcam_installation
 from .reader import expand_bridge_root, normalize_text, read_session_json
 from .rapidocr_support import (
+    _BAIDU_YUN_RAPIDOCR_CODE,
+    _BAIDU_YUN_RAPIDOCR_URL,
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
     DEFAULT_RAPIDOCR_OCR_VERSION,
     inspect_rapidocr_installation,
+    resolve_rapidocr_model_cache_dir,
 )
-from .tesseract_support import inspect_tesseract_installation
 from .textractor_support import (
+    _BAIDU_YUN_TEXTTRACTOR_CODE,
+    _BAIDU_YUN_TEXTTRACTOR_URL,
     DEFAULT_TEXTRACTOR_RELEASE_API_URL,
     inspect_textractor_installation,
+    resolve_textractor_install_target,
 )
 
 _logger = logging.getLogger(__name__)
@@ -106,6 +111,52 @@ def _cached_install_inspection(
 def clear_install_inspection_cache() -> None:
     with _INSTALL_INSPECT_CACHE_LOCK:
         _INSTALL_INSPECT_CACHE.clear()
+
+
+def _build_download_guide_payload(
+    *,
+    config: GalgameConfig,
+    textractor: dict[str, Any],
+    rapidocr: dict[str, Any],
+) -> dict[str, Any]:
+    textractor_target = str(
+        textractor.get("target_dir")
+        or resolve_textractor_install_target(config.memory_reader_install_target_dir)
+        or ""
+    )
+    rapidocr_target = str(
+        rapidocr.get("model_cache_dir")
+        or resolve_rapidocr_model_cache_dir(config.rapidocr_install_target_dir)
+        or ""
+    )
+    textractor_available = (
+        bool(_BAIDU_YUN_TEXTTRACTOR_URL)
+        and "____" not in _BAIDU_YUN_TEXTTRACTOR_URL
+        and bool(_BAIDU_YUN_TEXTTRACTOR_CODE)
+        and _BAIDU_YUN_TEXTTRACTOR_CODE != "____"
+        and not bool(textractor.get("installed"))
+    )
+    rapidocr_available = (
+        bool(_BAIDU_YUN_RAPIDOCR_URL)
+        and bool(_BAIDU_YUN_RAPIDOCR_CODE)
+        and not bool(rapidocr.get("installed"))
+    )
+    return {
+        "textractor": {
+            "available": textractor_available,
+            "url": _BAIDU_YUN_TEXTTRACTOR_URL,
+            "code": _BAIDU_YUN_TEXTTRACTOR_CODE,
+            "target_dir": textractor_target,
+            "note": "Download TextractorCLI.exe manually and place it in the target directory.",
+        },
+        "rapidocr_models": {
+            "available": rapidocr_available,
+            "url": _BAIDU_YUN_RAPIDOCR_URL,
+            "code": _BAIDU_YUN_RAPIDOCR_CODE,
+            "target_dir": rapidocr_target,
+            "note": "Download the RapidOCR model files manually and place them in the model cache directory.",
+        },
+    }
 
 
 def _current_process_performance() -> dict[str, Any]:
@@ -343,7 +394,7 @@ def _coerce_bool(value: object, default: bool) -> bool:
 
 def _coerce_ocr_backend_selection(value: object, default: str = "auto") -> str:
     normalized = str(value or default).strip().lower()
-    if normalized in {"auto", "rapidocr", "tesseract"}:
+    if normalized in {"auto", "rapidocr"}:
         return normalized
     return default
 
@@ -719,7 +770,6 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             "smart",
         ),
         ocr_reader_capture_backend_explicit="capture_backend" in ocr_reader_obj,
-        ocr_reader_tesseract_path=str(ocr_reader_obj.get("tesseract_path") or ""),
         ocr_reader_install_manifest_url=str(
             ocr_reader_obj.get("install_manifest_url") or ""
         ).strip(),
@@ -2273,19 +2323,6 @@ def _build_status_payload_unchecked(
     rapidocr["auto_detect_last_lang"] = str(
         getattr(config, "rapidocr_auto_detect_last_lang", "") or ""
     )
-    tesseract = _cached_install_inspection(
-        (
-            "tesseract",
-            config.ocr_reader_tesseract_path,
-            config.ocr_reader_install_target_dir,
-            config.ocr_reader_languages,
-        ),
-        lambda: inspect_tesseract_installation(
-            configured_path=config.ocr_reader_tesseract_path,
-            install_target_dir_raw=config.ocr_reader_install_target_dir,
-            languages=config.ocr_reader_languages,
-        ),
-    )
     ocr_runtime = copy_for_payload(state.ocr_reader_runtime)
     ocr_runtime_obj = ocr_runtime if isinstance(ocr_runtime, dict) else {}
     last_error = copy_for_payload(state.last_error)
@@ -2526,7 +2563,11 @@ def _build_status_payload_unchecked(
         "dxcam": dxcam,
         "rapidocr": rapidocr,
         "textractor": textractor,
-        "tesseract": tesseract,
+        "download_guide": _build_download_guide_payload(
+            config=config,
+            textractor=textractor,
+            rapidocr=rapidocr,
+        ),
         # Recompute dependency_status off the just-inspected payload so the
         # UI doesn't show "缺依赖" warnings for components that just finished
         # installing (state.dependency_status is updated lazily, this is the
