@@ -4950,19 +4950,37 @@ async def _do_restore_agent_intent() -> None:
         return
     logger.info("[Agent] Restoring agent intent: %s", intent)
 
-    # 1. Master gate first — sub flags need analyzer_enabled to actually
-    # have effect. We call agent_command directly (it's a plain async fn
-    # despite the FastAPI decorator) with _persist_intent=False so the
-    # replay doesn't re-write what we just read.
-    if intent.get("analyzer_enabled"):
-        try:
-            await agent_command({
-                "command": "set_agent_enabled",
-                "enabled": True,
-                "_persist_intent": False,
-            })
-        except Exception as exc:
-            logger.warning("[Agent] Failed to restore analyzer_enabled: %s", exc)
+    # Master gate is the runtime prerequisite for *any* sub component:
+    # sub-flag intents only matter when the master switch is ON. Since
+    # set_agent_enabled(False) no longer wipes sub-flag intent, it's a
+    # legitimate persisted state to have e.g. ``analyzer_enabled=False``
+    # alongside ``user_plugin_enabled=True`` (the user toggled the master
+    # off but kept their sub-flag preferences). In that case we must NOT
+    # spin up plugin lifecycle / probe LLM / fire openclaw probe — the
+    # user explicitly disabled the master. Sub-flag intents stay in the
+    # file untouched, so the next time the user turns the master back on
+    # those flags will activate via the normal toggle path.
+    master_enabled = bool(intent.get("analyzer_enabled"))
+    if not master_enabled:
+        logger.info(
+            "[Agent] Restore: analyzer_enabled intent is %s, skipping sub-flag restore",
+            intent.get("analyzer_enabled"),
+        )
+        return
+
+    # Master ON — call agent_command directly (plain async fn despite the
+    # FastAPI decorator) with _persist_intent=False so the replay doesn't
+    # re-write what we just read.
+    try:
+        await agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+    except Exception as exc:
+        logger.warning("[Agent] Failed to restore analyzer_enabled: %s", exc)
+        # Master gate failed to activate → don't even try sub flags
+        return
 
     # 2. Two fully-independent parallel tracks. CU/BU are LLM-coupled
     # (probe-gated). user_plugin runs on its own lifecycle and explicitly

@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -577,6 +576,117 @@ async def test_restore_llm_dependent_module_not_loaded_is_permanent(
 
     assert ari.get_intent("computer_use_enabled") is False
     assert ari.get_intent("browser_use_enabled") is False
+
+
+@pytest.mark.asyncio
+async def test_restore_skipped_when_master_intent_off(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Per Codex P1: if persisted intent has ``analyzer_enabled=False`` but
+    sub flags True (a legitimate state now that master OFF preserves sub
+    intent), restore must NOT spin up plugin lifecycle / LLM probe / openclaw
+    probe — master is the runtime gate. Sub-flag intents stay in the file
+    untouched."""
+    from app import agent_runtime_intent as ari
+    from app import agent_server as srv_mod
+
+    ari.set_intent("analyzer_enabled", False)
+    ari.set_intent("computer_use_enabled", True)
+    ari.set_intent("user_plugin_enabled", True)
+    ari.set_intent("openclaw_enabled", True)
+
+    # If any of these get called, the master-gate skip was missed.
+    agent_command_calls = []
+    set_flags_calls = []
+    llm_dependent_calls = []
+    user_plugin_calls = []
+
+    async def _fake_agent_command(payload):
+        agent_command_calls.append(payload)
+        return {"success": True}
+
+    async def _fake_set_flags(payload):
+        set_flags_calls.append(payload)
+        return {"success": True}
+
+    async def _fake_llm_dependent(intent):
+        llm_dependent_calls.append(intent)
+
+    async def _fake_user_plugin():
+        user_plugin_calls.append(True)
+
+    monkeypatch.setattr(srv_mod, "agent_command", _fake_agent_command)
+    monkeypatch.setattr(srv_mod, "set_agent_flags", _fake_set_flags)
+    monkeypatch.setattr(srv_mod, "_restore_llm_dependent_flags", _fake_llm_dependent)
+    monkeypatch.setattr(srv_mod, "_restore_user_plugin", _fake_user_plugin)
+
+    await srv_mod._do_restore_agent_intent()
+
+    # Nothing should fire when master intent is False
+    assert agent_command_calls == []
+    assert set_flags_calls == []
+    assert llm_dependent_calls == []
+    assert user_plugin_calls == []
+
+    # Sub-flag intents untouched — they stay so next master ON re-activates
+    assert ari.get_intent("computer_use_enabled") is True
+    assert ari.get_intent("user_plugin_enabled") is True
+    assert ari.get_intent("openclaw_enabled") is True
+    assert ari.get_intent("analyzer_enabled") is False
+
+
+@pytest.mark.asyncio
+async def test_restore_skipped_when_master_intent_never_set(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When master intent is None (never toggled), default-deny: don't spin
+    up sub components. User can turn master on explicitly to activate them."""
+    from app import agent_runtime_intent as ari
+    from app import agent_server as srv_mod
+
+    # Master intent NOT set; sub flags set.
+    ari.set_intent("user_plugin_enabled", True)
+    assert ari.get_intent("analyzer_enabled") is None
+
+    user_plugin_calls = []
+
+    async def _fake_user_plugin():
+        user_plugin_calls.append(True)
+
+    monkeypatch.setattr(srv_mod, "_restore_user_plugin", _fake_user_plugin)
+
+    await srv_mod._do_restore_agent_intent()
+    assert user_plugin_calls == []
+
+
+@pytest.mark.asyncio
+async def test_restore_proceeds_when_master_intent_on(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Sanity counter-test: master=True + user_plugin=True must trigger
+    user_plugin restore. (Pairs with the master-OFF skip test above.)"""
+    from app import agent_runtime_intent as ari
+    from app import agent_server as srv_mod
+
+    ari.set_intent("analyzer_enabled", True)
+    ari.set_intent("user_plugin_enabled", True)
+
+    user_plugin_calls = []
+
+    async def _fake_agent_command(payload):
+        return {"success": True}
+
+    async def _fake_user_plugin():
+        user_plugin_calls.append(True)
+
+    monkeypatch.setattr(srv_mod, "agent_command", _fake_agent_command)
+    monkeypatch.setattr(srv_mod, "_restore_user_plugin", _fake_user_plugin)
+
+    await srv_mod._do_restore_agent_intent()
+    # Give the parallel task a tick to schedule
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert user_plugin_calls == [True]
 
 
 def test_check_connectivity_failure_classifies_reason(monkeypatch: pytest.MonkeyPatch):
