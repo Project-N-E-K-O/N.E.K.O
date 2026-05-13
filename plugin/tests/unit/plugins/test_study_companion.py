@@ -232,12 +232,45 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.append_interaction(kind="concept_explain", input_text="a", output_text="b", history_limit=2)
     store.append_interaction(kind="concept_explain", input_text="c", output_text="d", history_limit=2)
     store.append_interaction(kind="concept_explain", input_text="e", output_text="f", history_limit=2)
+    store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+    store.ensure_session(session_id="session-1", mode="interactive")
+    store.add_qa_record(
+        session_id="session-1",
+        topic_id="photosynthesis_topic",
+        question={"question": "What is photosynthesis?"},
+        user_answer="Plants make sugar.",
+        eval_result={"verdict": "correct"},
+        mode="interactive",
+    )
+    store.append_review_log(
+        topic_id="photosynthesis_topic",
+        card_id=None,
+        rating=3,
+        scheduled_days=1,
+        actual_days=0,
+    )
+    candidate = store.upsert_candidate_item(
+        item_type="topic",
+        payload={"topic_id": "photosynthesis_topic", "name": "Photosynthesis"},
+        source="test",
+        dedupe_key="topic:photosynthesis",
+    )
+    store.add_knowledge_evidence(
+        item_id=candidate["id"],
+        event_type="mentioned",
+        weight=0.2,
+        context={"source": "unit"},
+    )
 
     assert store.load_config(StudyConfig()).language == "en"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
     assert [item["input_text"] for item in store.list_interactions(limit=10)] == ["e", "c"]
     exported = store.export_json()
     assert exported["config"]["language"] == "en"
+    assert exported["sessions"][0]["id"] == "session-1"
+    assert exported["qa_records"][0]["question"]["question"] == "What is photosynthesis?"
+    assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
+    assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()
 
 

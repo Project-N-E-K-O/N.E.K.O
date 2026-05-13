@@ -29,6 +29,13 @@ def _safe_key(value: object) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
+def _anonymous_topic_key(value: object, *, fallback: object = "") -> str:
+    text = _normalized(value) or _normalized(fallback)
+    if not text:
+        return ""
+    return f"topic:{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}"
+
+
 def _score_bucket(score: object) -> str:
     try:
         value = float(score)
@@ -152,12 +159,14 @@ class PublicGraphContributionBuilder:
         }
         if item_type == KnowledgeCandidateType.TOPIC.value:
             topic_id = str(source.get("topic_id") or source.get("id") or "").strip()
-            base["topic_id"] = topic_id or f"candidate:{hashlib.sha1(str(candidate.get('dedupe_key') or candidate.get('id')).encode('utf-8')).hexdigest()[:12]}"
+            base["topic_id"] = _anonymous_topic_key(topic_id, fallback=candidate.get("dedupe_key") or candidate.get("id"))
+            if not base["topic_id"]:
+                return {}
             return base
         if item_type == KnowledgeCandidateType.EDGE.value:
             edge = {
-                "from_topic_id": str(source.get("from_topic_id") or "").strip(),
-                "to_topic_id": str(source.get("to_topic_id") or "").strip(),
+                "from_topic_id": _anonymous_topic_key(source.get("from_topic_id")),
+                "to_topic_id": _anonymous_topic_key(source.get("to_topic_id")),
                 "relation": _safe_key(source.get("relation")),
             }
             if not edge["from_topic_id"] or not edge["to_topic_id"] or not edge["relation"]:
@@ -165,7 +174,7 @@ class PublicGraphContributionBuilder:
             base["edge"] = edge
             return base
         if item_type == KnowledgeCandidateType.MISCONCEPTION.value:
-            topic_id = str(source.get("topic_id") or "").strip()
+            topic_id = _anonymous_topic_key(source.get("topic_id"))
             key = _safe_key(source.get("misconception_key") or source.get("key") or source.get("text"))
             if not topic_id or not key:
                 return {}
@@ -173,7 +182,7 @@ class PublicGraphContributionBuilder:
             base["misconception_key"] = key
             return base
         if item_type == KnowledgeCandidateType.QUESTION_TYPE.value:
-            topic_id = str(source.get("topic_id") or "").strip()
+            topic_id = _anonymous_topic_key(source.get("topic_id"))
             key = _safe_key(source.get("question_type_key") or source.get("key") or source.get("type") or source.get("text"))
             if not topic_id or not key:
                 return {}

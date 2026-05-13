@@ -904,7 +904,20 @@ class StudyStore:
             ).fetchall()
         return [item for item in (self._candidate_from_row(row) for row in rows) if item is not None]
 
-    def list_knowledge_evidence(self, item_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+    def list_knowledge_evidence(self, item_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        item_key = str(item_id or "").strip()
+        if not item_key:
+            with self._lock:
+                rows = self._require_conn().execute(
+                    """
+                    SELECT *
+                    FROM knowledge_evidence
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (max(1, int(limit)),),
+                ).fetchall()
+            return [item for item in (self._evidence_from_row(row) for row in rows) if item is not None]
         with self._lock:
             rows = self._require_conn().execute(
                 """
@@ -914,7 +927,7 @@ class StudyStore:
                 ORDER BY id ASC
                 LIMIT ?
                 """,
-                (str(item_id or ""), max(1, int(limit))),
+                (item_key, max(1, int(limit))),
             ).fetchall()
         return [item for item in (self._evidence_from_row(row) for row in rows) if item is not None]
 
@@ -1239,6 +1252,32 @@ class StudyStore:
             )
             self._require_conn().commit()
 
+    def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._require_conn().execute(
+                """
+                SELECT *
+                FROM sessions
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "mode": str(row["mode"] or ""),
+                "started_at": str(row["started_at"] or ""),
+                "ended_at": str(row["ended_at"] or ""),
+                "duration_minutes": safe_float(row["duration_minutes"], 0.0),
+                "question_count": safe_int(row["question_count"], 0),
+                "topics_touched": self._json_loads(row["topics_touched"], []),
+                "summary_markdown": str(row["summary_markdown"] or ""),
+                "notes_exported": bool(row["notes_exported"]),
+            }
+            for row in rows
+        ]
+
     def add_qa_record(
         self,
         *,
@@ -1295,6 +1334,19 @@ class StudyStore:
             )
             conn.commit()
 
+    def list_qa_records(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._require_conn().execute(
+                """
+                SELECT *
+                FROM qa_records
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [item for item in (self._qa_record_from_row(row) for row in rows) if item is not None]
+
     def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._require_conn().execute(
@@ -1307,22 +1359,22 @@ class StudyStore:
                 """,
                 (str(topic_id or ""), max(1, int(limit))),
             ).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in reversed(rows):
-            result.append(
-                {
-                    "id": int(row["id"]),
-                    "session_id": str(row["session_id"]),
-                    "topic_id": str(row["topic_id"] or ""),
-                    "question": self._json_loads(row["question"], {}),
-                    "user_answer": str(row["user_answer"] or ""),
-                    "eval_result": self._json_loads(row["eval_result"], {}),
-                    "mode": str(row["mode"] or ""),
-                    "response_time_ms": int(row["response_time_ms"] or 0),
-                    "created_at": str(row["created_at"] or ""),
-                }
-            )
-        return result
+        return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
+
+    def _qa_record_from_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "session_id": str(row["session_id"]),
+            "topic_id": str(row["topic_id"] or ""),
+            "question": self._json_loads(row["question"], {}),
+            "user_answer": str(row["user_answer"] or ""),
+            "eval_result": self._json_loads(row["eval_result"], {}),
+            "mode": str(row["mode"] or ""),
+            "response_time_ms": int(row["response_time_ms"] or 0),
+            "created_at": str(row["created_at"] or ""),
+        }
 
     def add_wrong_question(
         self,
@@ -1585,6 +1637,30 @@ class StudyStore:
             )
             conn.commit()
 
+    def list_review_log(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._require_conn().execute(
+                """
+                SELECT *
+                FROM review_log
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "topic_id": str(row["topic_id"]),
+                "card_id": int(row["card_id"]) if row["card_id"] is not None else None,
+                "rating": int(row["rating"] or 0),
+                "scheduled_days": int(row["scheduled_days"] or 0),
+                "actual_days": int(row["actual_days"] or 0),
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in rows
+        ]
+
     def export_json(self) -> dict[str, Any]:
         return {
             STORE_CONFIG: self.get_raw(STORE_CONFIG) or {},
@@ -1594,7 +1670,11 @@ class StudyStore:
             "mastery_overview": self.list_mastery_overview(limit=5000),
             "wrong_questions": self.list_wrong_questions(limit=5000),
             "fsrs_cards": self.list_fsrs_cards(limit=5000),
+            "sessions": self.list_sessions(limit=5000),
+            "qa_records": self.list_qa_records(limit=5000),
+            "review_log": self.list_review_log(limit=5000),
             "candidate_knowledge_items": self.list_candidate_items(limit=5000),
+            "knowledge_evidence": self.list_knowledge_evidence(limit=5000),
             "anonymous_knowledge_stats": self.list_anonymous_knowledge_stats(limit=5000),
             "knowledge_contribution_queue": self.list_knowledge_contribution_queue(limit=5000),
         }

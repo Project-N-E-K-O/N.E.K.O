@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,53 @@ def test_builds_anonymous_stats_without_raw_learning_text(tmp_path: Path) -> Non
                     "score_bucket",
                 }
             )
+    finally:
+        store.close()
+
+
+def test_topic_refs_are_anonymized_in_contribution_payloads(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store)
+        raw_topic = "alice_private_calculus_goal"
+        raw_related = "bob_secret_prerequisite"
+        topic = quality.upsert_candidate(
+            KnowledgeCandidateType.TOPIC.value,
+            {"topic_id": raw_topic, "name": "Alice Private Calculus Goal"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {},
+        )
+        edge = quality.upsert_candidate(
+            KnowledgeCandidateType.EDGE.value,
+            {"from_topic_id": raw_related, "to_topic_id": raw_topic, "relation": "prerequisite"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {},
+        )
+        misconception = quality.upsert_candidate(
+            KnowledgeCandidateType.MISCONCEPTION.value,
+            {"topic_id": raw_topic, "misconception_key": "sign_error"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {},
+        )
+        for item in (topic, edge, misconception):
+            quality.add_evidence(item["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 1.0, {})
+
+        stats = PublicGraphContributionBuilder(store, StudyConfig()).build_anonymous_stats(min_sample_count=1)
+        rendered = json.dumps(stats, ensure_ascii=False)
+
+        assert raw_topic not in rendered
+        assert raw_related not in rendered
+        assert "topic:" in rendered
+        for stat in stats:
+            payload = stat["payload"]
+            if "topic_id" in payload:
+                assert payload["topic_id"].startswith("topic:")
+            if "edge" in payload:
+                assert payload["edge"]["from_topic_id"].startswith("topic:")
+                assert payload["edge"]["to_topic_id"].startswith("topic:")
     finally:
         store.close()
 
