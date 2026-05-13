@@ -546,7 +546,7 @@ class PluginCliService:
                         )
                     return f"{exc.code}: {exc.message}"
             except Exception:
-                pass
+                pass  # classification failed; use generic fallback below
             return f"unexpected: {exc}"
 
     def _domain_error_from_exception(self, exc: Exception, *, action: str) -> ServerDomainError:

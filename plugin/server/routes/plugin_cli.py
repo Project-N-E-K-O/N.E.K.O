@@ -360,3 +360,32 @@ async def plugin_cli_download(
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+# ── Legacy route aliases (backward compatibility with existing frontend) ──
+
+@router.post("/plugin-cli/pack", response_model=PluginCliBuildResponse, include_in_schema=False)
+async def plugin_cli_pack_legacy(
+    payload: PluginCliBuildRequest,
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Legacy alias for /plugin-cli/build."""
+    return await plugin_cli_build(payload, _)
+
+
+@router.post("/plugin-cli/unpack", response_model=PluginCliInstallResponse, include_in_schema=False)
+async def plugin_cli_unpack_legacy(
+    payload: PluginCliInstallRequest,
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Legacy alias for /plugin-cli/install."""
+    return await plugin_cli_install(payload, _)
+
+
+@router.post("/plugin-cli/upload-and-unpack", response_model=PluginCliUploadAndInstallResponse, include_in_schema=False)
+async def plugin_cli_upload_and_unpack_legacy(
+    file: UploadFile = File(...),
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Legacy alias for /plugin-cli/upload-and-install."""
+    return await plugin_cli_upload_and_install(file, _)

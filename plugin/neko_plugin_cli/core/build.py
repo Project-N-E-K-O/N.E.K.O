@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import BuildResult, PayloadBuildResult, PluginSource
-from .normalize import normalize_archive_key, normalize_relative_posix
+from .normalize import normalize_relative_posix
 from .build_rules import BuildRuleSet, load_build_rules, should_skip_path
 from .dependencies import (
     validate_payload_dependency_layout,

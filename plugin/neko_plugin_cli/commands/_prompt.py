@@ -127,7 +127,7 @@ def _fallback_checkbox(message: str, choices: list[dict[str, str]], *, defaults:
             if 0 <= idx < len(choices):
                 selected.append(choices[idx]["value"])
         except ValueError:
-            pass
+            pass  # skip non-numeric tokens silently
     return selected
 
 

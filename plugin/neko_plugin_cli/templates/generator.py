@@ -45,7 +45,6 @@ class PluginSpec:
     @property
     def class_name(self) -> str:
         # Split on both _ and - for CamelCase conversion
-        import re
         parts = re.split(r"[_-]", self.plugin_id)
         return "".join(p.capitalize() for p in parts if p) + "Plugin"
 
@@ -679,7 +678,13 @@ jobs:
 # ---------------------------------------------------------------------------
 
 def _escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
 
 
 def _write_support_file(path: Path, content: str, *, created: list[Path], overwrite: bool) -> None:

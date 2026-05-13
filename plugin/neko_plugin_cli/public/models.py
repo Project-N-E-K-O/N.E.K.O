@@ -50,4 +50,13 @@ __all__ = [
     "StringList",
     "InstalledPlugin",
     "InstallResult",
+    # Legacy aliases (backward compatibility)
+    "PackResult",
+    "UnpackResult",
+    "UnpackedPlugin",
 ]
+
+# Legacy aliases
+PackResult = BuildResult
+UnpackResult = InstallResult
+UnpackedPlugin = InstalledPlugin

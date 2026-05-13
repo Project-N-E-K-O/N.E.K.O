@@ -90,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         import shtab
         shtab.add_argument_to(parser)
     except ImportError:
-        pass
+        pass  # shtab is optional; shell completion simply won't be available
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 

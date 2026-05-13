@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional
 import re
 
 try:

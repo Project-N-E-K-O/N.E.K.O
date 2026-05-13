@@ -538,7 +538,7 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
     seen_ids: dict[str, str] = {}
     for path in sorted(plugin_dir.rglob("*.py")):
         relative = path.relative_to(plugin_dir)
-        if any(part in {"__pycache__", ".venv", "venv"} for part in relative.parts):
+        if any(part in {"__pycache__", ".venv", "venv", "vendor"} for part in relative.parts):
             continue
         tree = _parse_python_file(path, issues, label=str(relative))
         if tree is None:
