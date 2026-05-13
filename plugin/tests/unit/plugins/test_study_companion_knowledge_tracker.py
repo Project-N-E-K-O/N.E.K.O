@@ -53,9 +53,13 @@ def test_mastery_tracker_levels_confidence_and_false_mastery() -> None:
 
 def test_difficulty_integer_levels_are_scaled_from_one_to_five() -> None:
     assert _difficulty_to_float(1) == 0.2
+    assert _difficulty_to_float(1.0) == 0.2
     assert _difficulty_to_float("1") == 0.2
+    assert _difficulty_to_float("1.0") == 0.2
     assert _difficulty_to_float(3) == 0.6
+    assert _difficulty_to_float(3.0) == 0.6
     assert _difficulty_to_float(5) == 1.0
+    assert _difficulty_to_float(5.0) == 1.0
     assert _difficulty_to_float(0.5) == 0.5
 
 
@@ -195,7 +199,7 @@ def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: 
         store.close()
 
 
-def test_easy_integer_difficulty_does_not_resolve_wrong_question_as_hard_evidence(tmp_path: Path) -> None:
+def test_easy_level_difficulty_does_not_resolve_wrong_question_as_hard_evidence(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
@@ -215,7 +219,7 @@ def test_easy_integer_difficulty_does_not_resolve_wrong_question_as_hard_evidenc
         for _ in range(3):
             tracker.on_answer(
                 topic_id="linear_function_kb",
-                question={"question": "k 是什么？", "answer": "斜率", "difficulty": 1},
+                question={"question": "k 是什么？", "answer": "斜率", "difficulty": 1.0},
                 user_answer="斜率",
                 eval_result={"verdict": "correct", "score": 90, "error_type": "none"},
                 mode="interactive",

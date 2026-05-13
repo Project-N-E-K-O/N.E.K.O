@@ -259,10 +259,11 @@ def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> No
         for index in range(12):
             topic_id = f"topic_{index}"
             store.ensure_topic(topic_id=topic_id, name=f"Topic {index}")
+            mastery = 1.0 if index < 8 else 0.0
             store.append_mastery_snapshot(
                 {
                     "topic_id": topic_id,
-                    "mastery": 0.75,
+                    "mastery": mastery,
                     "accuracy": 0.8,
                     "recency": 0.7,
                     "consistency": 0.6,
@@ -277,6 +278,7 @@ def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> No
 
         assert len(store.list_mastery_overview(limit=8)) == 8
         assert summary["tracked_topic_count"] == 12
+        assert summary["average_mastery"] == 0.6667
     finally:
         store.close()
 

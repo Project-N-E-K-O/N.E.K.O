@@ -39,14 +39,18 @@ def _slug(value: str) -> str:
 
 
 def _difficulty_to_float(value: object, default: float = 0.5) -> float:
+    if isinstance(value, bool):
+        return default
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return default
     text = str(value).strip()
-    is_integer_level = isinstance(value, int) and not isinstance(value, bool)
-    is_string_integer_level = bool(re.fullmatch(r"[1-5]", text))
-    if number > 1.0 or is_integer_level or is_string_integer_level:
+    is_level_value = number.is_integer() and 1.0 <= number <= 5.0
+    is_integer_level = isinstance(value, int)
+    is_float_integer_level = isinstance(value, float) and is_level_value
+    is_string_integer_level = bool(re.fullmatch(r"[1-5](?:\.0+)?", text)) and is_level_value
+    if number > 1.0 or is_integer_level or is_float_integer_level or is_string_integer_level:
         number = number / 5.0
     return _clamp(number, 0.1, 1.0)
 
@@ -458,7 +462,7 @@ class KnowledgeTracker:
         return {
             "topic_count": self.store.count_topics(),
             "tracked_topic_count": self.store.count_tracked_mastery_topics(),
-            "average_mastery": round(sum(float(item.get("mastery") or 0.0) for item in overview) / max(1, len(overview)), 4),
+            "average_mastery": round(float(self.store.average_latest_mastery()), 4),
             "weak_topic_count": len(weak),
             "due_review_count": len(review),
             "last_updated_at": overview[0].get("updated_at") if overview else "",

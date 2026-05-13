@@ -716,6 +716,21 @@ class StudyStore:
             ).fetchone()
         return int(row["count"] if row is not None else 0)
 
+    def average_latest_mastery(self) -> float:
+        with self._lock:
+            row = self._require_conn().execute(
+                """
+                SELECT AVG(ms.mastery) AS average_mastery
+                FROM mastery_snapshots ms
+                JOIN (
+                    SELECT topic_id, MAX(id) AS max_id
+                    FROM mastery_snapshots
+                    GROUP BY topic_id
+                ) latest ON latest.max_id = ms.id
+                """
+            ).fetchone()
+        return float(row["average_mastery"] or 0.0) if row is not None else 0.0
+
     def upsert_candidate_item(
         self,
         *,
