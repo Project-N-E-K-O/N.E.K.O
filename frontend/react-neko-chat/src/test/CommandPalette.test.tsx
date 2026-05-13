@@ -412,4 +412,49 @@ describe('Grouped view keyboard activation', () => {
       expect(onInjectText).toHaveBeenCalledWith('@Demo /greet');
     });
   });
+
+  it('moves the highlight in the same order as grouped rows', () => {
+    const alphaFirst: CommandItem = {
+      ...inject,
+      action_id: 'alpha:first',
+      label: 'Alpha First',
+      category: 'Alpha',
+      plugin_id: 'alpha',
+      inject_text: '@Alpha /first',
+      priority: 30,
+    };
+    const betaFirst: CommandItem = {
+      ...inject,
+      action_id: 'beta:first',
+      label: 'Beta First',
+      category: 'Beta',
+      plugin_id: 'beta',
+      inject_text: '@Beta /first',
+      priority: 20,
+    };
+    const alphaSecond: CommandItem = {
+      ...inject,
+      action_id: 'alpha:second',
+      label: 'Alpha Second',
+      category: 'Alpha',
+      plugin_id: 'alpha',
+      inject_text: '@Alpha /second',
+      priority: 10,
+    };
+
+    renderPalette([alphaFirst, betaFirst, alphaSecond]);
+    fireEvent.click(screen.getByRole('button', { name: /按插件/ }));
+
+    const search = screen.getByPlaceholderText('搜索操作...');
+    const row = (label: string) => screen.getByRole('button', { name: new RegExp(label) });
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(row('Alpha First')).toHaveClass('cp-row-highlighted');
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(row('Alpha Second')).toHaveClass('cp-row-highlighted');
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(row('Beta First')).toHaveClass('cp-row-highlighted');
+  });
 });

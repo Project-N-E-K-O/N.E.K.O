@@ -764,7 +764,10 @@ export default function CommandPalette({
     // "按插件" mode: show all, no filter tabs
     if (viewMode === 'byPlugin') {
       const sorted = [...visible].sort(sortByPriority);
-      return { displayItems: sorted, hasResults: sorted.length > 0 };
+      const ordered = isSearching
+        ? sorted
+        : Array.from(groupItems(sorted, 'byPlugin').values()).flat();
+      return { displayItems: ordered, hasResults: ordered.length > 0 };
     }
 
     // "按功能" mode: apply filter tab
