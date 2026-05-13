@@ -443,8 +443,16 @@ def _get_telemetry_branch(config_dir: Path) -> str:
         peer = _read()
         if peer is not None:
             return _telemetry_branch_cache.setdefault(cache_key, peer)
-        # 回读失败兜底：返回本进程抽到的值。短期不一致总比拒绝上报好；下次
-        # 启动 fast path 会读到磁盘上的固化值，最终收敛。
+        # peer 是 None 说明文件存在但内容不在 _TELEMETRY_BRANCHES 里（截断/损坏/
+        # 跨版本残留）。这种情况下若只返回本进程抽到的值不修盘，下次进程重启会
+        # 再走一次「读到坏值 → fast path miss → slow path 拿到 FileExistsError →
+        # 重抽」，cohort 在多次启动间反复翻滚。覆盖修盘保证只有这一次重抽，
+        # 之后就稳定。
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(branch)
+        except Exception as e:
+            logger.debug(f"Token tracker: failed to heal corrupt branch file: {e}")
         return _telemetry_branch_cache.setdefault(cache_key, branch)
     except Exception as e:
         # 写盘失败不致命：进程级缓存 setdefault 保证同一进程后续所有调用方拿到

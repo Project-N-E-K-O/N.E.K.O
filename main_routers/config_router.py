@@ -412,7 +412,12 @@ async def get_conversation_settings():
             from utils.token_tracker import get_telemetry_branch
             telemetry_branch = await asyncio.to_thread(get_telemetry_branch)
         except Exception:
-            telemetry_branch = "main"
+            # 故意返回 None：前端只在 telemetryBranch 是字符串时清掉首启 pending
+            # marker；如果这里 fallback 到 "main"，瞬时报错会被当成「控制组分流
+            # 已决议」永久锁住，下次也不会重试。返 None 让前端保留 pending、
+            # 下次 fetch 成功再决议
+            logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
+            telemetry_branch = None
         return {"success": True, "settings": settings, "telemetryBranch": telemetry_branch}
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
