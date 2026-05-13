@@ -377,27 +377,59 @@ _TELEMETRY_BRANCHES: tuple = ("main",)
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
-    """读取或抽签生成 A/B test 分支标识，持久化在 config_dir 下。"""
-    try:
-        p = config_dir / _TELEMETRY_BRANCH_FILE
-        if p.exists():
-            value = p.read_text(encoding="utf-8").strip()
-            if value and len(value) <= 64:
-                return value
-    except Exception:
-        pass
+    """读取或抽签生成 A/B test 分支标识，持久化在 config_dir 下。
+
+    多进程冷启动安全：用 ``O_CREAT | O_EXCL`` 原子创建保证只有一个进程能写入；
+    其它并发进程拿到 FileExistsError 后回读同一文件，确保 device-stable
+    cohorting（同 device 不同 worker 不会落到不同 branch）。同款模式见
+    _file_lock 的实现。
+    """
+    p = config_dir / _TELEMETRY_BRANCH_FILE
+
+    def _read() -> Optional[str]:
+        try:
+            if p.exists():
+                value = p.read_text(encoding="utf-8").strip()
+                if value and len(value) <= 64:
+                    return value
+        except Exception:
+            pass
+        return None
+
+    # Fast path：文件已存在直接读
+    cached = _read()
+    if cached is not None:
+        return cached
 
     branch = secrets.choice(_TELEMETRY_BRANCHES) if _TELEMETRY_BRANCHES else "main"
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / _TELEMETRY_BRANCH_FILE).write_text(branch, encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Token tracker: failed to create config dir for branch file: {e}")
+
+    # Slow path：原子创建。两个进程同时走到这里只有一个成功，另一个回读拿到
+    # 同一 branch，保证 device-stable。
+    try:
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, branch.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return branch
+    except FileExistsError:
+        # 另一个进程抢先写了 —— 回读它写的值，确保两个进程返回同一 branch
+        peer = _read()
+        if peer is not None:
+            return peer
+        # 回读失败兜底：返回本进程抽到的值。短期不一致总比拒绝上报好；下次
+        # 启动 fast path 会读到磁盘上的固化值，最终收敛。
+        return branch
     except Exception as e:
         # 写盘失败不致命：单次进程内继续用抽到的分支上报，下次启动会再抽。
-        # 同一设备多次抽签可能落到不同分支，但只要 _TELEMETRY_BRANCHES 只有一项
-        # 就不会有偏差；将来扩展时若写盘长期失败，server 看到的将是分布噪声而非
-        # 错误数据。
+        # 当前 _TELEMETRY_BRANCHES 只有一项，写失败不会有可观偏差；扩展后若
+        # 写盘长期失败，server 看到的将是分布噪声而非错误数据。
         logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
-    return branch
+        return branch
 
 
 def _get_telemetry_locale() -> str:
