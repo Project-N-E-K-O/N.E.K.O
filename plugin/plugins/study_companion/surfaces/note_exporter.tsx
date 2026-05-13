@@ -9,6 +9,9 @@ const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
   { value: 'docx', label: 'DOCX' },
   { value: 'xmind', label: 'XMind' },
 ];
+const POLL_INTERVAL_MS = 350;
+const DEFAULT_EXPORT_TIMEOUT_MS = 80_000;
+const POLL_TIMEOUT_BUFFER_MS = 5_000;
 
 async function readJsonResponse(response: Response, label: string) {
   if (!response.ok) {
@@ -17,7 +20,7 @@ async function readJsonResponse(response: Response, label: string) {
   return await response.json();
 }
 
-async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
+async function callPlugin(entryId: string, args: Record<string, unknown> = {}, timeoutMs = DEFAULT_EXPORT_TIMEOUT_MS) {
   const createResp = await fetch('/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -28,8 +31,9 @@ async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
   if (!runId) {
     throw new Error('Run id missing');
   }
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
+  const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
     const run = await readJsonResponse(await fetch(`/runs/${runId}`), 'Run poll');
     if (run.status === 'succeeded') {
       const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`), 'Run export');
@@ -56,6 +60,14 @@ function text(props: PluginSurfaceProps, key: string, fallback: string) {
 
 function getExportEntry(props: PluginSurfaceProps) {
   return (props.entries || []).find((entry: any) => entry.id === 'study_export_notes');
+}
+
+function getEntryTimeoutMs(entry: any) {
+  const timeoutSeconds = Number(entry?.timeout);
+  if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+    return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;
+  }
+  return DEFAULT_EXPORT_TIMEOUT_MS;
 }
 
 function getAllowedFormats(props: PluginSurfaceProps): ExportFormat[] {
@@ -98,6 +110,8 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const allowedFormats = getAllowedFormats(props);
+  const exportEntry = getExportEntry(props);
+  const pollTimeoutMs = getEntryTimeoutMs(exportEntry);
   const selectedFmt = allowedFormats.includes(fmt as ExportFormat) ? fmt : allowedFormats[0] || 'markdown';
   const exportUnavailable = allowedFormats.length === 0;
   const xmindUnavailable = !exportUnavailable && !allowedFormats.includes('xmind');
@@ -111,7 +125,7 @@ export default function NoteExporter(props: PluginSurfaceProps) {
     setBusy(true);
     setStatus(text(props, 'ui.status.exporting', 'Exporting...'));
     try {
-      const payload = await callPlugin('study_export_notes', { fmt: selectedFmt, style, preview_only: previewOnly });
+      const payload = await callPlugin('study_export_notes', { fmt: selectedFmt, style, preview_only: previewOnly }, pollTimeoutMs);
       setMarkdown(payload.markdown || '');
       if (!previewOnly && payload.content_base64) {
         downloadBase64File(payload.content_base64, payload.filename, payload.content_type);

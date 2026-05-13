@@ -900,6 +900,22 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "status.mode.companion" in source
 
 
+def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "note_exporter.tsx").read_text(encoding="utf-8")
+
+    assert "DEFAULT_EXPORT_TIMEOUT_MS = 80_000" in source
+    assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
+    assert "const timeoutSeconds = Number(entry?.timeout);" in source
+    assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
+    assert "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
+    assert "while (Date.now() < deadline)" in source
+    assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
+    assert "}, pollTimeoutMs);" in source
+    assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
+    assert "for (let i = 0; i < 40; i += 1)" not in source
+
+
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
