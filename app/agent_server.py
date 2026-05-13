@@ -3539,6 +3539,13 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     """
     if not Modules.task_executor:
         raise HTTPException(503, "Task executor not ready")
+    # Master gate first: with the new semantics where set_agent_enabled(False)
+    # no longer wipes sub-flag state, ``user_plugin_enabled`` can legitimately
+    # stay True after the master is turned off. Without this check, requests
+    # would slip through to a plugin lifecycle that ``_ensure_plugin_lifecycle
+    # _stopped`` has already torn down, producing confusing failures.
+    if not Modules.analyzer_enabled:
+        raise HTTPException(403, "Agent master switch is off")
     # 当后端显式关闭用户插件功能时，直接拒绝调用，避免绕过前端开关
     if not Modules.agent_flags.get("user_plugin_enabled", False):
         raise HTTPException(403, "User plugin is disabled")

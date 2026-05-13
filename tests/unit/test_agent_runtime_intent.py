@@ -251,9 +251,15 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     async def _noop_admin(*args, **kwargs):
         return {"success": True}
 
+    async def _plugin_lifecycle_started_ok(*args, **kwargs):
+        # Must return True so the background _bg_plugin_enable task in
+        # set_agent_flags doesn't flip ``user_plugin_enabled`` back to
+        # False and create a race against the test's assertions.
+        return True
+
     monkeypatch.setattr(srv, "_emit_agent_status_update", _noop_async)
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _noop_async)
-    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", lambda: _noop_async() or asyncio.sleep(0))
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _plugin_lifecycle_started_ok)
     monkeypatch.setattr(srv, "admin_control", _noop_admin)
     monkeypatch.setattr(srv, "_cancel_openclaw_enable_probe", lambda: None)
     monkeypatch.setattr(srv, "_try_refresh_computer_use_adapter", lambda force=False: False)
