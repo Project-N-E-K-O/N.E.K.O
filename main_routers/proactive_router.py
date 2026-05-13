@@ -21,7 +21,7 @@ URL convention: 路由声明不带末尾斜杠（与 ``main_routers/config_route
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
 
@@ -140,16 +140,25 @@ def _filter_proactive_subset(settings: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in settings.items() if k in _PROACTIVE_FIELDS}
 
 
-async def _readback_subset(payload_keys) -> dict[str, Any]:
-    """保存后回读 ``aload_global_conversation_settings``，仅返回
-    payload 涉及且**真实落盘**的字段。
+async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """保存后回读，返回 ``(applied, rejected)``。
 
-    ``save_global_conversation_settings`` 会对字段做第二轮类型 + 范围
-    过滤（bool 必须是 bool、interval 必须是 1<=int<=3600 等），被丢弃
-    的字段不应在 ``applied`` 中出现，否则调用方会误判为生效。
+    判定规则是**按值比较**而非按 key 存在：
+    ``save_global_conversation_settings`` 做第二轮类型/范围过滤时，被
+    丢弃的字段会保留原磁盘旧值；若仅判断 key 是否存在，那么"旧值已在
+    磁盘上 + 新值被拒"的场景会被误标为已生效（applied 显示的是旧值
+    而非调用方传入的新值）。改成 ``latest[k] == payload[k]`` 比较，
+    新旧值不一致时确诊为 rejected。
     """
     latest = await aload_global_conversation_settings()
-    return {k: latest[k] for k in payload_keys if k in latest}
+    applied: dict[str, Any] = {}
+    rejected: list[str] = []
+    for k, v in payload.items():
+        if k in latest and latest[k] == v:
+            applied[k] = latest[k]
+        else:
+            rejected.append(k)
+    return applied, rejected
 
 
 def _infer_mode(settings: dict[str, Any]) -> str:
@@ -201,8 +210,13 @@ async def set_proactive_mode(request: Request):
         if not await asyncio.to_thread(save_global_conversation_settings, dict(preset)):
             return {"success": False, "error": "保存失败"}
 
-        applied = await _readback_subset(preset.keys())
-        return {"success": True, "mode": mode, "applied": applied}
+        applied, rejected = await _readback_persisted(preset)
+        result: dict[str, Any] = {"success": True, "mode": mode, "applied": applied}
+        if rejected:
+            # 预设里所有字段都应是合法值；若仍出现 rejected，多半是
+            # _ALLOWED_CONVERSATION_SETTINGS 漂移，需要 server 端跟进。
+            result["rejected"] = rejected
+        return result
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -243,11 +257,11 @@ async def update_proactive_settings(request: Request):
         if not await asyncio.to_thread(save_global_conversation_settings, payload):
             return {"success": False, "error": "保存失败"}
 
-        applied = await _readback_subset(payload.keys())
-        rejected = [k for k in payload.keys() if k not in applied]
+        applied, rejected = await _readback_persisted(payload)
         result: dict[str, Any] = {"success": True, "applied": applied}
         if rejected:
-            # 字段类型/范围不合法时静默被底层丢弃；明确告知调用方避免误判。
+            # 字段类型/范围不合法被底层丢弃，或磁盘旧值与传入值不符。
+            # 明确告知调用方避免误判为生效。
             result["rejected"] = rejected
         if rejected_user_owned:
             # 用户绝对控制权字段被拒：调用方应通过 UI 引导用户自行设置。
