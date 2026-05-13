@@ -1367,16 +1367,23 @@ class StudyStore:
         return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
 
     def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        topic_key = str(topic_id or "").strip()
+        topic_predicate = "topic_id = ?"
+        params: list[Any] = [topic_key]
+        if not topic_key:
+            topic_predicate = "topic_id IS NULL"
+            params = []
+        params.append(max(1, int(limit)))
         with self._lock:
             rows = self._require_conn().execute(
-                """
+                f"""
                 SELECT *
                 FROM qa_records
-                WHERE topic_id = ?
+                WHERE {topic_predicate}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (str(topic_id or ""), max(1, int(limit))),
+                tuple(params),
             ).fetchall()
         return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
 
@@ -1456,7 +1463,11 @@ class StudyStore:
                 SELECT *
                 FROM wrong_questions
                 WHERE {where}
-                ORDER BY updated_at DESC, created_at DESC
+                ORDER BY
+                    CASE WHEN status = 'retrying' THEN 1 ELSE 0 END DESC,
+                    last_retry_at DESC,
+                    created_at DESC,
+                    id DESC
                 LIMIT ?
                 """,
                 tuple(params),
@@ -1609,12 +1620,17 @@ class StudyStore:
             )
             self._require_conn().commit()
 
-    def list_fsrs_cards(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
-                (max(1, int(limit)),),
-            ).fetchall()
+            if limit is None:
+                rows = self._require_conn().execute(
+                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC",
+                ).fetchall()
+            else:
+                rows = self._require_conn().execute(
+                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
         return [
             {
                 "id": int(row["id"]),

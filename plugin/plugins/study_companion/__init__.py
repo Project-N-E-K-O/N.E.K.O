@@ -457,12 +457,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         track_payload = dict(track_reply.payload or {})
         eval_payload = dict(eval_reply.payload or {})
         current_question = dict(context.get("current_question") or {})
-        question_text = str(context.get("question") or current_question.get("question") or "").strip()
-        question_payload = {
-            **current_question,
-            "question": question_text,
-            "answer": str(context.get("expected_answer") or current_question.get("answer") or ""),
-        }
+        question_payload = dict(context.get("question_payload") or current_question)
+        question_text = str(context.get("question") or question_payload.get("question") or current_question.get("question") or "").strip()
+        question_payload["question"] = question_text
+        question_payload["answer"] = str(context.get("expected_answer") or question_payload.get("answer") or current_question.get("answer") or "")
         topic = str(
             question_payload.get("topic")
             or track_payload.get("topic")
@@ -826,6 +824,14 @@ class StudyCompanionPlugin(NekoPluginBase):
         if not resolved_expected and (not supplied_question or supplied_question == state_question):
             resolved_expected = state_expected
         answer_text = str(answer or "").strip()
+        using_current_question = not supplied_question or supplied_question == state_question
+        question_payload = dict(current_question) if using_current_question else {}
+        question_payload.update(
+            {
+                "question": resolved_question,
+                "answer": resolved_expected,
+            }
+        )
         tutor_context = await self._build_learning_context(
             LLM_OPERATION_ANSWER_EVALUATE,
             input_text=answer_text,
@@ -833,7 +839,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "question": resolved_question,
                 "expected_answer": resolved_expected,
                 "answer": answer_text,
-                "current_question": current_question,
+                "current_question": current_question if using_current_question else {},
+                "question_payload": question_payload,
+                "question_source": "current_question" if using_current_question else "supplied",
                 "mode": active_mode,
             },
         )

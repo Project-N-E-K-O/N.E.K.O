@@ -121,6 +121,40 @@ def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
         store.close()
 
 
+def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        now = datetime.now(timezone.utc)
+        due_at = (now - timedelta(days=3)).isoformat().replace("+00:00", "Z")
+        future_at = (now + timedelta(days=3650)).isoformat().replace("+00:00", "Z")
+        reviewed_at = now.isoformat().replace("+00:00", "Z")
+
+        due_topic_id = "zz_due_beyond_1000"
+        store.ensure_topic(topic_id=due_topic_id, name="Due Beyond 1000")
+        due_card = tracker.fsrs.new_knowledge_card(due_topic_id).to_dict()
+        due_card["due"] = due_at
+        due_card["last_review"] = (now - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+        due_card["stability"] = 2.0
+        store.upsert_fsrs_card(topic_id=due_topic_id, card=due_card, last_rating=3)
+
+        for index in range(1000):
+            topic_id = f"fresh_topic_{index:04d}"
+            store.ensure_topic(topic_id=topic_id, name=f"Fresh Topic {index}")
+            card = tracker.fsrs.new_knowledge_card(topic_id).to_dict()
+            card["due"] = future_at
+            card["last_review"] = reviewed_at
+            card["stability"] = 10000.0
+            store.upsert_fsrs_card(topic_id=topic_id, card=card, last_rating=3)
+
+        queue = tracker.get_review_queue(limit=1)
+
+        assert [item["topic_id"] for item in queue] == [due_topic_id]
+        assert queue[0]["topic"]["name"] == "Due Beyond 1000"
+    finally:
+        store.close()
+
+
 def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -224,6 +258,10 @@ def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
 
         questions = [json.loads(row[0])["question"] for row in rows]
         assert questions == ["unknown q1", "unknown q2"]
+        assert [item["question"]["question"] for item in store.list_qa_records_for_topic("", limit=5)] == [
+            "unknown q1",
+            "unknown q2",
+        ]
     finally:
         store.close()
 
@@ -442,6 +480,62 @@ def test_correct_answer_advances_only_one_wrong_question_per_error_type(tmp_path
         assert len(advanced) == 1
         assert len(untouched) == 1
         assert {first_id, second_id} == set(by_id)
+    finally:
+        store.close()
+
+
+def test_get_retry_wrong_question_matches_correct_selection_order(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        retry_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "retry candidate", "difficulty": 3},
+            user_answer="wrong",
+            expected_answer="right",
+            error_type="misunderstanding",
+            verdict="wrong",
+        )
+        active_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "recent active", "difficulty": 3},
+            user_answer="wrong",
+            expected_answer="right",
+            error_type="misunderstanding",
+            verdict="wrong",
+        )
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE wrong_questions
+                SET status = 'retrying',
+                    last_retry_at = datetime('now', '-1 day'),
+                    created_at = datetime('now', '-2 days'),
+                    updated_at = datetime('now', '-2 days')
+                WHERE id = ?
+                """,
+                (retry_id,),
+            )
+            conn.execute(
+                """
+                UPDATE wrong_questions
+                SET created_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (active_id,),
+            )
+
+        assert store.get_retry_wrong_question("linear_function_kb")["id"] == retry_id
+
+        store.record_wrong_question_correct(
+            topic_id="linear_function_kb",
+            error_type="misunderstanding",
+            difficulty=3,
+        )
+        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying"))
+        by_id = {row["id"]: row for row in rows}
+        assert by_id[retry_id]["consecutive_correct"] == 1
+        assert by_id[active_id]["consecutive_correct"] == 0
     finally:
         store.close()
 

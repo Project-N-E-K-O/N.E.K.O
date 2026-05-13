@@ -441,17 +441,16 @@ class KnowledgeTracker:
         }
 
     def get_review_queue(self, limit: int = 10) -> list[dict[str, Any]]:
-        rows = self.store.list_fsrs_cards(limit=1000)
+        rows = self.store.list_fsrs_cards(limit=None)
         reviews = self.fsrs.get_due_reviews([row["card"] for row in rows])
-        topics = {topic["id"]: topic for topic in self.store.list_topics(limit=1000)}
         result: list[dict[str, Any]] = []
         for item in reviews[: max(1, int(limit))]:
-            topic = topics.get(str(item.get("topic_id") or ""), {})
+            topic = self.store.get_topic(str(item.get("topic_id") or "")) or {}
             result.append({**item, "topic": topic})
         return result
 
     def count_due_reviews(self) -> int:
-        rows = self.store.list_fsrs_cards(limit=5000)
+        rows = self.store.list_fsrs_cards(limit=None)
         return len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
 
     def get_weak_topics(self, limit: int = 5) -> list[dict[str, Any]]:

@@ -1513,6 +1513,102 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
 
 
 @pytest.mark.asyncio
+async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TrackingTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="The answer confuses organelles.",
+                payload={
+                    "verdict": "wrong",
+                    "score": 10,
+                    "error_type": "organelle_function",
+                    "feedback": "The nucleus stores genetic material.",
+                    "next_action": "Review nucleus function.",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="cell nucleus",
+                payload={
+                    "topic": "cell_nucleus",
+                    "mastery_delta": -0.1,
+                    "confidence": 0.8,
+                    "weak_points": ["organelle_function"],
+                    "next_steps": ["Review nucleus function"],
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _TrackingTutorAgent()
+
+    try:
+        plugin._store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+        plugin._store.ensure_topic(topic_id="cell_nucleus", name="Cell nucleus")
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What process converts light to chemical energy?",
+                "answer": "Photosynthesis",
+                "topic": "photosynthesis_topic",
+                "difficulty": 2,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What organelle stores genetic material?",
+            answer="The mitochondria.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert plugin._agent.evaluations[-1][3]["current_question"] == {}
+        assert plugin._agent.evaluations[-1][3]["question_payload"] == {
+            "question": "What organelle stores genetic material?",
+            "answer": "",
+        }
+        assert plugin._store.get_latest_mastery("photosynthesis_topic") is None
+        assert plugin._store.get_fsrs_card("photosynthesis_topic") is None
+        assert plugin._store.list_wrong_questions(topic_id="photosynthesis_topic") == []
+        assert plugin._store.get_latest_mastery("cell_nucleus") is not None
+        assert plugin._store.get_fsrs_card("cell_nucleus") is not None
+        assert plugin._store.list_wrong_questions(topic_id="cell_nucleus")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_evaluate_answer_persists_knowledge_tracking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
