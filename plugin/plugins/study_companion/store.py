@@ -391,8 +391,8 @@ class StudyStore:
             "name": str(row["name"]),
             "subject": str(row["subject"]),
             "chapter": str(row["chapter"] or ""),
-            "depth": safe_int(row["depth"] or 1, 1),
-            "difficulty": safe_float(row["difficulty"] or 0.5, 0.5),
+            "depth": safe_int(row["depth"], 1),
+            "difficulty": safe_float(row["difficulty"], 0.5),
             "prerequisites": StudyStore._json_loads(row["prerequisites"], []),
             "related": StudyStore._json_loads(row["related"], []),
             "typical_misconceptions": StudyStore._json_loads(row["typical_misconceptions"], []),
@@ -477,8 +477,8 @@ class StudyStore:
                         "name": name,
                         "subject": str(item.get("subject") or payload.get("subject") or "math"),
                         "chapter": str(item.get("chapter") or ""),
-                        "depth": safe_int(item.get("depth") or 1, 1),
-                        "difficulty": safe_float(item.get("difficulty") or 0.5, 0.5),
+                        "depth": safe_int(item.get("depth"), 1),
+                        "difficulty": safe_float(item.get("difficulty"), 0.5),
                         "prerequisites": item.get("prerequisites") if isinstance(item.get("prerequisites"), list) else [],
                         "related": item.get("related") if isinstance(item.get("related"), list) else [],
                         "typical_misconceptions": item.get("typical_misconceptions") if isinstance(item.get("typical_misconceptions"), list) else [],
@@ -650,8 +650,8 @@ class StudyStore:
                     name,
                     str(topic.get("subject") or "math"),
                     str(topic.get("chapter") or ""),
-                    safe_int(topic.get("depth") or 1, 1),
-                    safe_float(topic.get("difficulty") or 0.5, 0.5),
+                    safe_int(topic.get("depth"), 1),
+                    safe_float(topic.get("difficulty"), 0.5),
                     self._json_dumps(topic.get("prerequisites") if isinstance(topic.get("prerequisites"), list) else []),
                     self._json_dumps(topic.get("related") if isinstance(topic.get("related"), list) else []),
                     self._json_dumps(
@@ -1442,12 +1442,18 @@ class StudyStore:
             ).fetchall()
             matched_generic_correct = False
             current_error_type = str(error_type or "none").strip()
+            processed_error_types: set[str] = set()
             for row in rows:
                 if current_error_type in {"", "none"}:
                     if matched_generic_correct:
                         continue
                     matched_generic_correct = True
-                elif current_error_type != str(row["error_type"] or ""):
+                    row_error_type = str(row["error_type"] or "")
+                else:
+                    row_error_type = str(row["error_type"] or "")
+                    if current_error_type != row_error_type:
+                        continue
+                if row_error_type in processed_error_types:
                     continue
                 consecutive = int(row["consecutive_correct"] or 0) + 1
                 max_difficulty = max(int(row["max_correct_difficulty"] or 0), int(difficulty or 0))
@@ -1491,6 +1497,7 @@ class StudyStore:
                         """,
                         (status, consecutive, max_difficulty, str(row["id"])),
                     )
+                processed_error_types.add(row_error_type)
             self._require_conn().commit()
 
     def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:

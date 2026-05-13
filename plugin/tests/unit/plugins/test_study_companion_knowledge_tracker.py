@@ -365,6 +365,44 @@ def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(tmp_p
         store.close()
 
 
+def test_correct_answer_advances_only_one_wrong_question_per_error_type(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        first_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "first misconception", "difficulty": 3},
+            user_answer="wrong",
+            expected_answer="right",
+            error_type="misunderstanding",
+            verdict="wrong",
+        )
+        second_id = store.add_wrong_question(
+            topic_id="linear_function_kb",
+            question={"question": "second misconception", "difficulty": 3},
+            user_answer="wrong",
+            expected_answer="right",
+            error_type="misunderstanding",
+            verdict="wrong",
+        )
+
+        store.record_wrong_question_correct(
+            topic_id="linear_function_kb",
+            error_type="misunderstanding",
+            difficulty=3,
+        )
+
+        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying"))
+        by_id = {row["id"]: row for row in rows}
+        advanced = [row for row in rows if row["consecutive_correct"] == 1]
+        untouched = [row for row in rows if row["consecutive_correct"] == 0]
+
+        assert len(advanced) == 1
+        assert len(untouched) == 1
+        assert {first_id, second_id} == set(by_id)
+    finally:
+        store.close()
+
+
 def test_knowledge_seed_loads_idempotently(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -415,5 +453,18 @@ def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(tmp_path: P
         assert runtime_topic is not None
         assert runtime_topic["depth"] == 1
         assert runtime_topic["difficulty"] == 0.5
+
+        store.upsert_topic(
+            {
+                "id": "zero_numeric_topic",
+                "name": "Zero Numeric Topic",
+                "depth": 0,
+                "difficulty": 0.0,
+            }
+        )
+        zero_topic = store.get_topic("zero_numeric_topic")
+        assert zero_topic is not None
+        assert zero_topic["depth"] == 0
+        assert zero_topic["difficulty"] == 0.0
     finally:
         store.close()
