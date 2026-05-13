@@ -125,13 +125,19 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Self-check：预设里不应混入用户绝对控制权字段。每次模块加载时校验，
-# 把"加预设时忘了筛"这种回归挡在导入阶段，而不是用户调 set_mode 才暴露。
+# Self-check：预设里不应混入用户绝对控制权字段，也不应有拼写错误/不可写字段。
+# 每次模块加载时校验，把"加预设时忘了筛"和"键名打错被静默忽略"这两类回归
+# 都挡在导入阶段，而不是用户调 set_mode 才暴露。
 for _mode_name, _preset in PROACTIVE_PRESETS.items():
     _leaked = set(_preset.keys()) & _USER_OWNED_FIELDS
     if _leaked:
         raise RuntimeError(
             f"PROACTIVE_PRESETS[{_mode_name!r}] 不应包含用户专有字段: {sorted(_leaked)}"
+        )
+    _unknown = set(_preset.keys()) - _PROACTIVE_WRITABLE_FIELDS
+    if _unknown:
+        raise RuntimeError(
+            f"PROACTIVE_PRESETS[{_mode_name!r}] 包含未知/不可写字段: {sorted(_unknown)}"
         )
 
 
