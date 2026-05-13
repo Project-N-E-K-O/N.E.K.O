@@ -69,6 +69,11 @@ from config.prompts.prompts_sys import (
     CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
 )
+from config.prompts.prompts_memory import (
+    RECALL_MEMORY_TOOL_DESCRIPTION,
+    RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
+    RECALL_MEMORY_TOOL_NO_RESULT,
+)
 
 
 # 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
@@ -814,6 +819,12 @@ class LLMSessionManager:
         # sync_message_queue 控制消息更原子：meta 与 turn end 事件
         # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
         self._pending_turn_meta: Optional[dict] = None
+
+        # 内置 pseudo 工具（目前只有 recall_memory）。在 __init__ 末尾注册
+        # 一份占位，此时 user_language 还可能是 None → 短码兜底回退 'en'；
+        # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
+        # 已知的 user_language。
+        self._register_builtin_tools()
 
     def _fire_task(self, coro):
         """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
@@ -2536,6 +2547,56 @@ class LLMSessionManager:
         """
         return await self.tool_registry.execute(call)
 
+    # ------------------------------------------------------------------
+    # 内置 pseudo 工具：recall_memory
+    # ------------------------------------------------------------------
+    # 机制层占位：先让 offline / realtime 两条路径都能 register、把
+    # description / parameters 推到 wire、收到模型的 tool call、回 result。
+    # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
+    # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
+
+    def _register_builtin_tools(self) -> None:
+        """Re-register 内置工具，description / parameter doc 走当前
+        ``user_language``。直接调 ``tool_registry.register(replace=True)``
+        而不是公共的 ``register_tool``，避免在 __init__ / start_session 等
+        热路径里 fire 不必要的 ``_sync_tools_to_active_session``——本方法的
+        调用方负责决定要不要 sync。
+        """
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        recall_tool = ToolDefinition(
+            name="recall_memory",
+            description=_loc(RECALL_MEMORY_TOOL_DESCRIPTION, _lang),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": _loc(RECALL_MEMORY_TOOL_QUERY_DESCRIPTION, _lang),
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=self._handle_recall_memory_call,
+            metadata={"source": "builtin"},
+        )
+        self.tool_registry.register(recall_tool, replace=True)
+
+    async def _handle_recall_memory_call(self, arguments: dict) -> str:
+        """``recall_memory`` 的占位 handler —— 总是返回"没有找到相关记忆"。
+
+        机制验证用：让模型决定何时调用、我们能拿到 arguments、把固定
+        字符串回喂模型。日志里打 query 方便观察模型在什么场景下会去
+        recall，给后续接真实检索提供取数依据。
+        """
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        query = ""
+        if isinstance(arguments, dict):
+            raw_query = arguments.get("query")
+            if isinstance(raw_query, str):
+                query = raw_query.strip()
+        logger.info("[recall_memory] called with query=%r → pseudo empty result", query)
+        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
+
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """把 registry 当前状态同步给所有活跃的 client。
 
@@ -3561,6 +3622,11 @@ class LLMSessionManager:
             
                 # Create into a LOCAL variable — not self.session yet
                 new_session = None
+                # 在抓快照前先把内置工具的 description 对齐到当前
+                # user_language —— __init__ 时 user_language 可能还是 None
+                # 走的英文占位，这里 user_language 已经定型了，重新注册
+                # 一份覆盖 registry 里的旧描述，再被下面的 snapshot 读走。
+                self._register_builtin_tools()
                 # Snapshot the registry once per session create so the
                 # tools list seen by the wire matches what the registry
                 # held at connect time. ``set_tools`` keeps it live for
@@ -4013,6 +4079,9 @@ class LLMSessionManager:
             # 根据input_mode创建对应类型的pending session
             # 复用 main session 的 ToolRegistry 状态（registry 是 manager 级，
             # 跨 session 持久），保证热切换前后工具集合保持一致。
+            # 热切换可能跨语言（用户切了 user_language 后再热切换猫娘），
+            # 抓快照前 refresh 一下内置工具的 description。
+            self._register_builtin_tools()
             _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
@@ -6152,6 +6221,14 @@ class LLMSessionManager:
             logger.info(f"用户语言已设置为: {normalized_lang}")
 
         # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
+
+        # 内置工具的 description / 参数说明是按 user_language 渲染的，
+        # 这里换语言后重新注册一份覆盖 registry 旧描述，并 fire-and-forget
+        # 推到当前 active / pending session 的 wire 上（OmniRealtimeClient
+        # 支持 session.update 携带新 tools；OmniOfflineClient 下次 stream_text
+        # 自动用最新 _tool_definitions）。
+        self._register_builtin_tools()
+        self._fire_task(self._sync_tools_to_active_session())
     
     async def send_status(self, message: str):
         """发送状态消息到前端。message 应为 JSON 字符串 {"code": "XXX", "details": {...}}，前端通过 i18next 翻译。"""

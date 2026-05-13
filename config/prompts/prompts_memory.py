@@ -2658,3 +2658,43 @@ def get_memory_recall_rerank_prompt(lang: str = "zh") -> str:
 
 
 memory_recall_rerank_prompt = MEMORY_RECALL_RERANK_PROMPT["zh"]
+
+
+# =====================================================================
+# ======= Recall-memory tool (function/tool call) =====================
+# =====================================================================
+# 给所有文本/语音模型注册的"回忆"工具：模型决定何时调用，
+# 当前先做成 pseudo tool —— 无论传什么参数都返回"没有找到相关记忆"，
+# 等机制层在 offline / realtime 两条路径上都跑通了再接真实检索后端。
+# description / 参数说明走 _loc 按 user_language 渲染（短码：
+# zh/en/ja/ko/ru/es/pt）。
+
+RECALL_MEMORY_TOOL_DESCRIPTION = {
+    "zh": "回忆与当前对话相关的过往记忆。当你需要查阅之前的对话内容、用户偏好、过去发生的事情，或对当前话题缺少必要背景时调用此工具。",
+    "en": "Recall past memories relevant to the current conversation. Call this when you need earlier dialogue content, user preferences, things that happened before, or background context you currently lack.",
+    "ja": "現在の会話に関連する過去の記憶を呼び出します。以前の会話内容、ユーザーの好み、過去の出来事、または現在の話題に必要な背景が不足している時にこのツールを呼び出してください。",
+    "ko": "현재 대화와 관련된 과거 기억을 떠올립니다. 이전 대화 내용, 사용자 선호, 과거 있었던 일, 또는 현재 주제에 필요한 배경 정보가 부족할 때 이 도구를 호출하세요.",
+    "ru": "Вспомнить прошлые воспоминания, связанные с текущим разговором. Вызывайте, когда нужны прежние реплики, предпочтения пользователя, прошлые события или фоновый контекст, которого вам сейчас не хватает.",
+    "es": "Recordar memorias pasadas relevantes para la conversación actual. Llama a esta herramienta cuando necesites contenido previo, preferencias del usuario, cosas que pasaron antes o contexto que te falte.",
+    "pt": "Recordar memórias passadas relevantes para a conversa atual. Chame esta ferramenta quando precisar de conteúdo anterior, preferências do usuário, coisas que aconteceram antes ou contexto que esteja faltando.",
+}
+
+RECALL_MEMORY_TOOL_QUERY_DESCRIPTION = {
+    "zh": "要回忆的关键词、问题或话题。用一两句话简洁概括，例如\"上次提到的旅行计划\"或\"用户对咖啡的喜好\"。",
+    "en": "Keyword, question, or topic to recall. Keep it to a sentence or two, e.g. \"the travel plan mentioned earlier\" or \"the user's coffee preferences\".",
+    "ja": "思い出したいキーワード、質問、話題。一、二文で簡潔にまとめてください。例：「以前話した旅行計画」「ユーザーのコーヒーの好み」。",
+    "ko": "떠올리려는 키워드, 질문, 주제. 한두 문장으로 간결하게 적으세요. 예: \"이전에 언급한 여행 계획\", \"사용자의 커피 취향\".",
+    "ru": "Ключевое слово, вопрос или тема для воспоминания. Сформулируйте в одно-два предложения, например «упомянутый ранее план поездки» или «предпочтения пользователя в кофе».",
+    "es": "Palabra clave, pregunta o tema a recordar. Una o dos frases breves, p. ej. \"el plan de viaje mencionado antes\" o \"las preferencias de café del usuario\".",
+    "pt": "Palavra-chave, pergunta ou tópico a recordar. Uma ou duas frases curtas, p. ex. \"o plano de viagem mencionado antes\" ou \"as preferências de café do usuário\".",
+}
+
+RECALL_MEMORY_TOOL_NO_RESULT = {
+    "zh": "没有找到相关记忆。",
+    "en": "No relevant memory found.",
+    "ja": "関連する記憶が見つかりませんでした。",
+    "ko": "관련된 기억을 찾지 못했습니다.",
+    "ru": "Соответствующих воспоминаний не найдено.",
+    "es": "No se encontró ninguna memoria relevante.",
+    "pt": "Nenhuma memória relevante encontrada.",
+}
