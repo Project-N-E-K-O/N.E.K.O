@@ -432,6 +432,79 @@
     "free": {
       "inherits": "step",
       "catalog_prefix": "免费 API"
+    },
+    "gemini": {
+      "catalog_prefix": "Gemini",
+      "default_voice": "Leda",
+      "default_male_voice": "Puck",
+      "voices": {
+        "Achernar": "Female",
+        "Achird": "Male",
+        "Algenib": "Male",
+        "Algieba": "Male",
+        "Alnilam": "Male",
+        "Aoede": "Female",
+        "Autonoe": "Female",
+        "Callirrhoe": "Female",
+        "Charon": "Male",
+        "Despina": "Female",
+        "Enceladus": "Male",
+        "Erinome": "Female",
+        "Fenrir": "Male",
+        "Gacrux": "Female",
+        "Iapetus": "Male",
+        "Kore": "Female",
+        "Laomedeia": "Female",
+        "Leda": "Female",
+        "Orus": "Male",
+        "Pulcherrima": "Female",
+        "Puck": "Male",
+        "Rasalgethi": "Male",
+        "Sadachbia": "Male",
+        "Sadaltager": "Male",
+        "Schedar": "Male",
+        "Sulafat": "Female",
+        "Umbriel": "Male",
+        "Vindemiatrix": "Female",
+        "Zephyr": "Female",
+        "Zubenelgenubi": "Male"
+      },
+      "aliases": {
+        "male": "Puck",
+        "man": "Puck",
+        "masculine": "Puck",
+        "男": "Puck",
+        "男声": "Puck",
+        "中文男": "Puck",
+        "female": "Leda",
+        "woman": "Leda",
+        "feminine": "Leda",
+        "女": "Leda",
+        "女声": "Leda",
+        "中文女": "Leda"
+      }
+    },
+    "grok": {
+      "catalog_prefix": "Grok",
+      "default_voice": "eve",
+      "default_male_voice": "leo",
+      "voices": {
+        "eve": "Female",
+        "ara": "Female",
+        "leo": "Male",
+        "rex": "Male",
+        "sal": "Male"
+      },
+      "aliases": {
+        "male": "leo",
+        "man": "leo",
+        "男": "leo",
+        "男声": "leo",
+        "female": "eve",
+        "woman": "eve",
+        "女": "eve",
+        "女声": "eve"
+      }
     }
   }
 }
