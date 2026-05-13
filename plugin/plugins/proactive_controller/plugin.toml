@@ -1,0 +1,28 @@
+[plugin]
+name = "主动搭话控制器"
+description = "系统级控制器：管理主动搭话的模式与频率。其他插件可通过 call_entry 调用 set_mode/set_settings/get_state，集中调度主动搭话开关。默认所有主动搭话关闭。"
+short_description = "Central control plane for proactive-chat modes. Other plugins call set_mode / set_settings / get_state to adjust how/when the AI initiates conversation."
+keywords = ["主动搭话", "proactive", "搭话", "mode", "frequency", "频率", "controller", "调度"]
+version = "0.1.0"
+id = "proactive_controller"
+entry = "plugin.plugins.proactive_controller:ProactiveControllerPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[proactive_controller]
+default_mode_on_first_run = "off"
+api_base = "http://127.0.0.1"
+api_timeout_seconds = 5.0

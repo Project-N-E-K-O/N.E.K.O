@@ -1,0 +1,4 @@
+{
+  "plugin.name": "能動会話コントローラ",
+  "plugin.description": "システムレベルの能動会話モード／頻度の集中管理。他プラグインは set_mode / set_settings / get_state を呼び出して制御できる"
+}

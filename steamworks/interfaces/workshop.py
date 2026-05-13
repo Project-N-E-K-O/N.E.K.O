@@ -298,6 +298,25 @@ class SteamWorkshop(object):
         return self.steam.Workshop_SuspendDownloads(paused)
 
 
+    def DownloadItem(self, published_file_id: int, high_priority: bool = False) -> bool:
+        """Request that Steam download a subscribed Workshop item.
+
+        SteamworksPy's bundled native wrapper does not export
+        ``Workshop_DownloadItem``, so we route through a direct ctypes
+        bridge into ``libsteam_api`` (``_native_ugc.download_item``).
+
+        Returns True if Steam accepted the request. The download proceeds
+        asynchronously in the Steam client; poll ``GetItemState`` /
+        ``GetItemDownloadInfo`` to track completion.
+
+        :param published_file_id: int
+        :param high_priority: bool
+        :return: bool
+        """
+        from steamworks._native_ugc import download_item as _download_item
+        return _download_item(int(published_file_id), bool(high_priority))
+
+
     def GetSubscribedItems(self, max_items: int = 0) -> list:
         """Get a list of published file IDs that the user is subscribed to
 

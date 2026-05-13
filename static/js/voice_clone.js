@@ -623,7 +623,7 @@ if (window.i18n && window.i18n.isInitialized) {
                 // 本地TTS服务器(ws/wss协议)不需要云端API Key
                 const ttsUrl = cfg.ttsModelUrl || '';
                 const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl || cfg.assistApiKeyElevenlabs);
                 if (!hasCloneApi) {
                     const modal = document.getElementById('noApiModal');
                     if (modal) modal.style.display = 'flex';
@@ -652,11 +652,18 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         const keyMap = {
             'minimax': 'voice.minimaxApiRequired',
             'minimax_intl': 'voice.minimaxIntlApiRequired',
+            'elevenlabs': 'voice.elevenlabsApiRequired',
+        };
+        const fallbackMap = {
+            'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         };
         const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
         span.setAttribute('data-i18n', i18nKey);
         if (window.t) {
-            span.textContent = window.t(i18nKey);
+            const translated = window.t(i18nKey);
+            span.textContent = (translated && translated !== i18nKey) ? translated : (fallbackMap[provider] || translated);
+        } else if (fallbackMap[provider]) {
+            span.textContent = fallbackMap[provider];
         }
         // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
     }

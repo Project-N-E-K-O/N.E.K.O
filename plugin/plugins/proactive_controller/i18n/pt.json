@@ -1,0 +1,4 @@
+{
+  "plugin.name": "Controlador de chat proativo",
+  "plugin.description": "Plano de controle no nível do sistema para o modo e a frequência do chat proativo. Outros plugins podem chamar set_mode / set_settings / get_state"
+}
