@@ -565,12 +565,18 @@
                         window.scheduleProactiveChat();
                     }
                 }
+            }).finally(() => {
+                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能
+                // 比 GET 先到，把首启控制组默认值写到服务器；GET 回来读到自家 echo
+                // 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 还落上，
+                // cohort 直接污染。GET 走 finally 后周期同步才安全
+                startPeriodicSync();
             });
-
-            // 启动定期同步到服务器
-            startPeriodicSync();
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
+            // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
+            // 避免用户的本地修改永远上不了服务器
+            startPeriodicSync();
         }
     }
 
