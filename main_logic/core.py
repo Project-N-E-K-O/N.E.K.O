@@ -3298,12 +3298,25 @@ class LLMSessionManager:
                 idle_seconds = time.time() - last_activity
                 if idle_seconds < IDLE_SESSION_RESET_THRESHOLD_SECONDS:
                     continue
+                # 快照当前 session：传给 end_session 的 expected_session 守卫，
+                # 在 end_session 内部多个 await 期间若用户触发新一轮 start_session
+                # 把 self.session 换掉了，end_session 会早退而不会误清新 session
+                # 或 _starting_session_count guard（参见 end_session 6011-6013 注释）。
+                session_snapshot = self.session
                 logger.info(
                     "[%s] idle_session_reset: 用户静默 %.0fs ≥ %ds，主动关闭 session 让下一条消息刷新上下文",
                     self.lanlan_name, idle_seconds, IDLE_SESSION_RESET_THRESHOLD_SECONDS,
                 )
                 try:
-                    await self.end_session()
+                    # by_server=True：抑制末尾的 CHARACTER_LEFT 状态推送，把本路径
+                    # 与用户主动离开的语义区分开。reset_starting_count=False：
+                    # expected_session 早退已经把 race 兜住了，再叠一层保险防止
+                    # await 期间挤进来的新 start_session guard 被清零。
+                    await self.end_session(
+                        by_server=True,
+                        expected_session=session_snapshot,
+                        reset_starting_count=False,
+                    )
                 except Exception as e:
                     logger.warning("[%s] idle_session_reset: end_session 失败: %s", self.lanlan_name, e)
             except asyncio.CancelledError:
@@ -5690,6 +5703,11 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
+                    # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
+                    # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
+                    self.last_user_activity_time = time.time()
+
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
