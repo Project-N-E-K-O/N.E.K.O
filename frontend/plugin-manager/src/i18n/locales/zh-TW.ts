@@ -17,9 +17,6 @@ export default {
     back: '返回',
     submit: '提交',
     close: '關閉',
-    minimize: '最小化',
-    maximize: '最大化',
-    restore: '還原',
     success: '成功',
     error: '錯誤',
     warning: '警告',
@@ -42,7 +39,61 @@ export default {
     serverLogs: '伺服器日誌',
     adapters: '適配器',
     adapterUI: '適配器介面',
-    packageManager: '包管理'
+    packageManager: '包管理',
+    market: '外掛市集'
+  },
+  market: {
+    title: '取得新外掛',
+    subtitle: '從外掛市集瀏覽與安裝外掛',
+    getNewPlugins: '取得新外掛',
+    openMarket: '開啟外掛市集',
+    closeMarket: '收起外掛市集',
+    openInBrowser: '在瀏覽器開啟',
+    searchPlaceholder: '搜尋外掛...',
+    notConfigured: '外掛市集未設定',
+    configHint: '請在環境變數中設定 NEKO_MARKET_URL',
+    noResults: '找不到外掛',
+    install: '安裝',
+    installed: '已安裝',
+    installing: '安裝中...',
+    installSuccess: '安裝工作已建立: {name}',
+    installFailed: '安裝失敗',
+    noDownloadUrl: '此外掛沒有可用的下載網址',
+    pairRequired: '需要配對 Bridge Token',
+    recommended: '推薦',
+    allPlugins: '全部外掛',
+    noDescription: '暫無說明',
+    unknownAuthor: '未知',
+    filterRules: '篩選規則',
+    filterRulesTitle: '搜尋語法',
+    filterRulesHint: '點擊規則插入搜尋框，支援 key:value 組合，加 - 前綴表示排除',
+    filterGroups: {
+      state: '狀態',
+      zone: '專區',
+      meta: '元資料'
+    },
+    filterLabels: {
+      recommended: '推薦外掛',
+      installed: '已安裝',
+      uninstalled: '未安裝',
+      tag: '標籤',
+      author: '作者',
+      name: '名稱',
+      versionGte: '版本 ≥',
+      hasRepo: '含倉庫',
+      hasTags: '含標籤'
+    },
+    zones: {
+      game: '遊戲',
+      companion: '夥伴',
+      function: '功能',
+      entertainment: '娛樂',
+      tool: '工具'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: '下載量',
+    sortTopRated: '評分',
+    sortName: '名稱'
   },
   auth: {
     unauthorized: '未授權存取',
@@ -168,6 +219,10 @@ export default {
     typePlugin: '外掛',
     typeAdapter: '適配器',
     typeExtension: '擴充功能',
+    layoutList: '列表',
+    layoutSingle: '單排',
+    layoutDouble: '雙排',
+    layoutCompact: '緊湊',
     openPackageManager: '包管理',
     closePackageManager: '收起包管理',
     packageManagerOpened: '包管理已展開',
@@ -192,12 +247,12 @@ export default {
     batchNoReloadable: '選取的外掛中沒有執行中的',
     import: '匯入',
     importing: '匯入中…',
-    importSuccess: '已匯入 {name}，解包了 {count} 個外掛',
+    importSuccess: '已匯入 {name}，安裝了 {count} 個外掛',
     importFailed: '匯入失敗',
     export: '匯出',
     exportSuccess: '已匯出 {count} 個套件',
     exportFailed: '匯出失敗',
-    exportPackFailed: '打包失敗，無法匯出',
+    exportBuildFailed: '構建失敗，無法匯出',
     filterRuleGroups: {
       state: '狀態',
       type: '類型',
@@ -228,7 +283,7 @@ export default {
       runtime: '執行',
       plugin: '擴充功能'
     },
-    pack: '打包外掛',
+    build: '構建外掛',
     delete: '刪除外掛',
     disableExtension: '停用擴充功能',
     enableExtension: '啟用擴充功能',
@@ -329,107 +384,6 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已傳送取消請求'
   },
-  packageManager: {
-    resultDialog: {
-      title: '封裝結果記錄',
-      subtitle: '保留最近 {count} 筆執行結果',
-      empty: '執行封裝管理操作後，這裡會顯示記錄',
-      viewDetails: '查看詳情',
-      detailTitle: '結果詳情',
-      summaryTitle: '明細',
-      notesTitle: '注意',
-      rawJsonTitle: '原始結果 JSON',
-      kinds: {
-        pack: '封裝',
-        inspect: '檢查',
-        verify: '驗證',
-        unpack: '解包',
-        analyze: '分析',
-      },
-      inspect: {
-        packageId: '封裝 ID',
-        packageType: '類型',
-        version: '版本',
-        schemaVersion: 'Schema',
-        hashCheck: 'Hash 驗證',
-        profiles: 'Profiles',
-        packageTypes: {
-          bundle: '整合包',
-          plugin: '外掛包',
-        },
-        hashStatus: {
-          notChecked: '未驗證',
-          passed: '通過',
-          failed: '失敗',
-        },
-      },
-      metrics: {
-        pack: {
-          type: '類型',
-          succeeded: '成功',
-          failed: '失敗',
-          containsPlugins: '包含外掛',
-          status: '狀態',
-          complete: '完成',
-          partialFailed: '部分失敗',
-        },
-        inspect: {
-          pluginCount: '外掛數',
-          profileCount: 'Profiles',
-          hash: 'Hash',
-        },
-        unpack: {
-          processedPlugins: '已處理外掛',
-          conflictStrategy: '衝突策略',
-          hash: 'Hash',
-        },
-        analyze: {
-          pluginCount: '外掛數',
-          commonDependencies: '共同依賴',
-          sharedDependencies: '共享依賴',
-        },
-      },
-      highlights: {
-        pack: {
-          bundlePluginId: '整合包 ID',
-          bundleName: '整合包名稱',
-          bundleVersion: '整合包版本',
-          outputPath: '輸出路徑',
-          firstPlugin: '第一個外掛',
-          latestPackagePath: '最新封裝路徑',
-        },
-        inspect: {
-          packageId: '封裝 ID',
-          packageType: '封裝類型',
-          version: '版本',
-        },
-        unpack: {
-          packageId: '封裝 ID',
-          pluginsRoot: '外掛目錄',
-          profilesRoot: 'Profiles 目錄',
-        },
-        analyze: {
-          currentSdk: '目前 SDK 支援',
-          supported: '全部支援',
-          unsupported: '存在不相容',
-          matchingVersions: '推薦組合',
-        },
-      },
-      list: {
-        pluginPrefix: '外掛：',
-        profilePrefix: '設定：',
-        renamedSuffix: '（已重新命名）',
-        arrow: '->',
-      },
-      warnings: {
-        bundleNeedsTwoPlugins: '整合包通常應至少包含兩個外掛',
-        verifyFailed: '封裝未通過 hash 驗證，請不要直接匯入執行環境',
-        inspectHashFailed: '目前封裝 hash 驗證失敗，內容可能已被修改',
-        analyzeSdkMismatch: '目前 SDK 版本不被所有外掛共同支援',
-        analyzeSharedDependencies: '偵測到 {count} 個共享依賴，整合時需要重點檢查版本約束',
-      },
-    },
-  },
   status: {
     running: '執行中',
     stopped: '已停止',
@@ -459,12 +413,12 @@ export default {
     pluginStarted: '外掛啟動成功',
     pluginStopped: '外掛已停止',
     pluginReloaded: '外掛重新載入成功',
-    pluginPacked: '外掛已打包：{packageName}',
+    pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     startFailed: '啟動失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
-    packFailed: '打包外掛失敗',
+    buildFailed: '構建外掛失敗',
     deleteFailed: '刪除外掛失敗',
     pluginDisabled: '外掛已停用，請先啟用',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
@@ -532,19 +486,19 @@ export default {
       },
       lines: {
         introActivationHint: '點一下這裡，我就能開始說話啦～',
-        introGreetingReply: '微風、陽光，還有剛剛好出現的你。初次見面，我是林悠怡，未來的日子請多關照喵！我把關於這裡的一切都寫進新手指南裡啦！就當作是我們相遇的第一份小禮物，請查收吧！',
-        introBasic: '這裡有一個神奇的小按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！',
-        takeoverCaptureCursor: '超級魔法開關出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！',
-        takeoverPluginPreviewHome: '還沒完呢！你快看快看，這裡還有超多好玩的外掛呢！',
-        takeoverPluginPreviewDashboard: '有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼！',
-        takeoverSettingsPeekIntro: '當然啦，如果你想讓本喵多和你聊聊天，也不是不行啦。給我多準備點小魚乾吧，嘿嘿。好了，不逗你啦，設定都在這個齒輪裡。',
-        takeoverSettingsPeekDetail: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘，或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉，快關掉！',
-        takeoverSettingsPeekDetailPart1: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘，或是修改記憶？',
-        takeoverSettingsPeekDetailPart2: '等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉，快關掉！',
-        takeoverReturnControl: '好啦好啦，不霸佔你的電腦啦！控制權還給你了喵！可不許趁我不注意亂點奇怪的設定哦！之後的日子也請你多多關照了喵！',
-        interruptResistLight1: '喂！不要拽我啦，現在還沒輪到你的回合呢！',
-        interruptResistLight3: '等一下啦！還沒結束呢，不要這麼隨便打斷我啦！',
-        interruptAngryExit: '人類！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！',
+        introGreetingReply: '歡迎回家，喵~ 外面的世界很辛苦吧？在這個專屬我們的小窩裡，你可以放下所有的煩惱哦。我是林悠怡，接下來的熟悉過程請放心交給我，我會一步步牽著您的手慢慢來的。',
+        introBasic: '這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！',
+        takeoverCaptureCursor: '超級魔法按鈕出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！',
+        takeoverPluginPreviewHome: '還沒完呢！你快看快看，這裡還有超～～多好玩的外掛呢！',
+        takeoverPluginPreviewDashboard: '有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼～',
+        takeoverSettingsPeekIntro: '當然啦，如果你想讓本喵多和你聊聊天也不是不行啦，給我多準備點小魚乾吧，嘿嘿，好了不逗你啦，設定都在這個齒輪裡。',
+        takeoverSettingsPeekDetail: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！',
+        takeoverSettingsPeekDetailPart1: '你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？',
+        takeoverSettingsPeekDetailPart2: '等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！',
+        takeoverReturnControl: '好啦好啦，不霸佔你的電腦啦～控制權還給你了喵！可不許趁我不注意亂點奇怪的設定哦！之後的日子也請你多多關照了喵～',
+        interruptResistLight1: '喂！不要拉我啦，還沒輪到你的回合呢！',
+        interruptResistLight3: '等一下啦！還沒結束呢，不要隨便打斷我啦！',
+        interruptAngryExit: '人類~~~~！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！',
         introPractice: '現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～',
       },
     }
@@ -559,79 +513,79 @@ export default {
     steps: {
       start: {
         title: '從這裡開始',
-        body: '這個按鈕可隨時重播外掛管理器導覽。播放期間切換語言時，導覽也會跟著切到新語言。'
+        body: '點這個按鈕就可以隨時重新播放外掛管理器的教程，不會自動打擾你喵。'
       },
       stats: {
         title: '外掛總覽',
-        body: '這些卡片會彙總總數、執行中、已停止和崩潰的外掛，先幫你判斷外掛服務整體狀態。'
+        body: '這裡會顯示外掛總數、執行中、已停止和崩潰數量，讓你一眼看出目前狀態。'
       },
       metrics: {
         title: '效能監控',
-        body: '這裡會顯示 CPU、記憶體、執行緒和活躍外掛數。當 galgame OCR 或 Agent 感覺變慢時，先看這裡。'
+        body: '這裡展示外掛服務整體的 CPU、記憶體、執行緒和活躍外掛情況，排查問題時很有用。'
       },
       server: {
         title: '伺服器資訊',
-        body: '你可以在這裡確認 SDK 版本、外掛數量和更新時間，判斷後端外掛服務是否可用。'
+        body: '這裡可以看到 SDK 版本、外掛數量和更新時間，用來確認目前外掛服務是否正常。'
       },
       plugins: {
         title: '外掛列表入口',
-        body: '從左側的外掛管理可以啟動、停止、重載、設定外掛，也能打開 galgame_plugin 的 UI 和導覽。'
+        body: '要啟動、停止、配置外掛，或者查看單個外掛日誌，就從左側的外掛管理進入。'
       },
       pluginWorkbench: {
         title: '外掛管理工作台',
-        body: '這裡集中管理一般外掛、適配器和擴充。galgame_plugin、彈幕、MCP 等外掛都會在這裡。'
+        body: '這裡集中展示外掛、適配器和擴展，是日常管理外掛的主要頁面。'
       },
       pluginFilters: {
         title: '篩選和搜尋',
-        body: '可以依名稱、狀態、類型或進階規則快速篩選。要找 galgame_plugin 時，直接搜 galgame 就可以。'
+        body: '可以按名稱、狀態、類型或進階規則篩選外掛，外掛很多時會特別好用。'
       },
       pluginLayout: {
         title: '視圖佈局',
-        body: '可以切換列表、單欄、雙欄和緊湊版面。外掛很多時，雙欄或緊湊版面能減少捲動。'
+        body: '這裡可以切換列表、單排、雙排和緊湊佈局，按你的螢幕空間調整顯示方式。'
       },
       pluginContextMenu: {
         title: '右鍵操作',
-        body: '對外掛按右鍵可以打開詳情、設定、日誌、UI 或導覽，也能執行啟動、停止和重載。'
+        body: '對外掛右鍵可以快速開啟詳情、配置、日誌，也能執行啟停、重載等常用操作。'
       },
       packageManager: {
         title: '包管理側欄',
-        body: '封裝管理器會重用目前的篩選與多選結果，建立單一外掛包或 bundle，也能處理本地封裝。'
+        body: '包管理會復用目前篩選和選擇結果，用來構建、檢查、校驗或安裝外掛包。'
       },
       packageOperations: {
         title: '包管理操作區',
-        body: '可以封裝已選、單個或全部外掛，建立 bundle，檢查與驗證封裝，解包，或分析 bundle 依賴。'
+        body: '這裡可以選擇構建模式、檢查外掛包、安裝或分析整合包；本指南不會自動執行危險操作。'
       },
       pluginDetail: {
         title: '外掛詳情頁',
-        body: '詳情頁會顯示 UI、導覽、基本資訊、入口、效能、設定和日誌。galgame_plugin 的主面板在 UI 分頁。'
+        body: '進入詳情頁後可以查看外掛元資訊、入口點、效能、配置和日誌。'
       },
       pluginDetailActions: {
         title: '詳情頁操作',
-        body: '右上角的操作會套用到目前外掛。除錯 galgame_plugin 時，先確認它正在執行，再打開 UI 或日誌。'
+        body: '右上角保留了針對目前外掛的快捷操作，適合在確認詳情後再啟動、停止或重載。'
       },
       runs: {
         title: '運行記錄',
-        body: '執行記錄會顯示外掛入口任務的歷史與即時狀態，例如安裝 OCR 依賴、解釋台詞或總結場景。'
+        body: '運行記錄會展示外掛入口任務的執行歷史和即時狀態。'
       },
       runsList: {
         title: '運行列表',
-        body: '請在左側選擇一次任務執行。安裝、分析或 Agent 入口完成後，可以在這裡回看結果。'
+        body: '左側列表用於選擇某次運行，重新整理按鈕可以同步最新記錄。'
       },
       runsDetail: {
         title: '運行詳情',
-        body: '詳情面板會顯示階段、進度、錯誤和匯出內容。取消只會出現在可中止的長任務上。'
+        body: '右側會顯示階段、進度、錯誤和導出物；取消按鈕只對可取消任務出現。'
       },
       logs: {
         title: '伺服器日誌',
-        body: '伺服器日誌可查看整個外掛服務的輸出。galgame_plugin 專屬日誌也能從詳情頁開啟。'
+        body: '伺服器日誌可以幫助你查看外掛服務本身的輸出和錯誤。'
       },
       logToolbar: {
         title: '日誌篩選工具',
-        body: '可以依等級、關鍵字和行數篩選，也能切換自動捲動。除錯時建議用外掛 ID 當關鍵字。'
+        body: '這裡可以按級別、關鍵字和行數篩選日誌，也可以控制是否自動捲動。'
       },
       logList: {
         title: '日誌列表',
-        body: '日誌會顯示時間、來源、等級與訊息。OCR、Memory Reader、Agent、套件管理器的錯誤通常都能先在這裡找到。'
+        body: '日誌列表按時間展示來源、級別和訊息，是排查外掛問題的第一站。'
       }
     }
   }

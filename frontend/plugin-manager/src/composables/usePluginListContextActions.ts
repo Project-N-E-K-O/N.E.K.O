@@ -2,7 +2,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { deletePlugin } from '@/api/plugins'
-import { packPluginCli } from '@/api/pluginCli'
+import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -59,7 +59,7 @@ export function usePluginListContextActions() {
       })
       actions.push(
         {
-          id: 'pack',
+          id: 'build',
           kind: 'builtin',
         },
         {
@@ -92,7 +92,7 @@ export function usePluginListContextActions() {
     })
     actions.push(
       {
-        id: 'pack',
+        id: 'build',
         kind: 'builtin',
       },
       {
@@ -129,8 +129,8 @@ export function usePluginListContextActions() {
         return t('plugins.stop')
       case 'reload':
         return t('plugins.reload')
-      case 'pack':
-        return t('plugins.pack')
+      case 'build':
+        return t('plugins.build')
       case 'delete':
         return t('plugins.delete')
       case 'enable_extension':
@@ -296,18 +296,18 @@ export function usePluginListContextActions() {
         await pluginStore.reload(plugin.id)
         ElMessage.success(t('messages.pluginReloaded'))
         return
-      case 'pack': {
-        const result = await packPluginCli({
+      case 'build': {
+        const result = await buildPluginCli({
           mode: 'single',
           plugin: plugin.id,
         })
-        const packedItem = result.packed.find(item => item.plugin_id === plugin.id) || result.packed[0]
-        if (!packedItem) {
-          throw new Error(result.failed[0]?.error || t('messages.packFailed'))
+        const builtItem = result.built.find(item => item.plugin_id === plugin.id) || result.built[0]
+        if (!builtItem) {
+          throw new Error(result.failed[0]?.error || t('messages.buildFailed'))
         }
         ElMessage.success(
-          t('messages.pluginPacked', {
-            packageName: resolvePackageDisplayName(packedItem.package_path),
+          t('messages.pluginBuilt', {
+            packageName: resolvePackageDisplayName(builtItem.package_path),
           }),
         )
         return

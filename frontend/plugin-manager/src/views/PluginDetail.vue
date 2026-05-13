@@ -11,7 +11,7 @@
         <div class="card-header" data-yui-guide-id="plugin-detail-header">
           <div class="header-left" data-yui-guide-id="plugin-detail-title">
             <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
-            <h2>{{ pluginName }}</h2>
+            <h2>{{ plugin.name }}</h2>
           </div>
           <div data-yui-guide-id="plugin-detail-actions">
             <PluginActions :plugin-id="pluginId" />
@@ -91,7 +91,7 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ pluginDescription }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ plugin.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
                 <el-tag size="small" :type="pluginTypeTagType">
                   {{ $t(pluginTypeText) }}
@@ -119,21 +119,21 @@
             </el-descriptions>
 
             <!-- 普通插件：显示绑定的 Extension 列表 -->
-            <div v-if="!isExtension && localizedBoundExtensions.length > 0" class="bound-extensions">
-              <h4 class="bound-extensions-title">{{ $t('plugins.boundExtensions') }} ({{ localizedBoundExtensions.length }})</h4>
+            <div v-if="!isExtension && boundExtensions.length > 0" class="bound-extensions">
+              <h4 class="bound-extensions-title">{{ $t('plugins.boundExtensions') }} ({{ boundExtensions.length }})</h4>
               <div class="bound-extensions-list">
                 <el-card
-                  v-for="ext in localizedBoundExtensions"
+                  v-for="ext in boundExtensions"
                   :key="ext.id"
                   shadow="hover"
                   class="bound-ext-card"
                   @click="goToPlugin(ext.id)"
                 >
                   <div class="bound-ext-info">
-                    <span class="bound-ext-name">{{ ext.localizedName }}</span>
+                    <span class="bound-ext-name">{{ ext.name }}</span>
                     <StatusIndicator :status="ext.status || 'pending'" />
                   </div>
-                  <p class="bound-ext-desc">{{ ext.localizedDescription }}</p>
+                  <p class="bound-ext-desc">{{ ext.description || $t('common.noData') }}</p>
                 </el-card>
               </div>
             </div>
@@ -174,7 +174,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
@@ -188,13 +187,11 @@ import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { get } from '@/api'
-import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
-const { t, locale } = useI18n()
 
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
@@ -213,28 +210,6 @@ const hasStaticUI = ref(false)
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
-})
-
-const pluginName = computed(() => {
-  const current = plugin.value
-  if (!current) return ''
-  return resolvePluginI18nMessage(
-    current.i18n,
-    'plugin.name',
-    locale.value,
-    current.name || current.id,
-  )
-})
-
-const pluginDescription = computed(() => {
-  const current = plugin.value
-  if (!current) return t('common.noData')
-  return resolvePluginI18nMessage(
-    current.i18n,
-    'plugin.description',
-    locale.value,
-    current.description || t('common.noData'),
-  )
 })
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
@@ -260,19 +235,6 @@ const pluginTypeTagType = computed(() => {
 const boundExtensions = computed(() => {
   if (!plugin.value || isExtension.value) return []
   return pluginStore.getExtensionsForHost(pluginId.value)
-})
-
-const localizedBoundExtensions = computed(() => {
-  return boundExtensions.value.map((ext) => ({
-    ...ext,
-    localizedName: resolvePluginI18nMessage(ext.i18n, 'plugin.name', locale.value, ext.name),
-    localizedDescription: resolvePluginI18nMessage(
-      ext.i18n,
-      'plugin.description',
-      locale.value,
-      ext.description || t('common.noData'),
-    ),
-  }))
 })
 
 // 确保 status 始终是字符串类型
@@ -328,7 +290,7 @@ async function fetchSurfaces() {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId, String(locale.value))
+    const info = await getPluginUiSurfaceInfo(currentPluginId)
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
@@ -390,10 +352,6 @@ watch(pluginId, async () => {
   } finally {
     loading.value = false
   }
-})
-
-watch(locale, async () => {
-  await fetchSurfaces()
 })
 </script>
 

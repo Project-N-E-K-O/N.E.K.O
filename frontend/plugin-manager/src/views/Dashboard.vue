@@ -145,14 +145,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { i18n } from '@/i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { getServerInfo } from '@/api/plugins'
-import {
-  startPluginDashboardTutorial,
-  type PluginDashboardLocalTutorialStep,
-} from '@/yui-guide-runtime'
+import { startPluginDashboardTutorial, type PluginDashboardLocalTutorialStep } from '@/yui-guide-runtime'
 import { PluginStatus, METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
 import { Box, VideoPlay, CloseBold, WarningFilled, Connection, Lightning, Refresh } from '@element-plus/icons-vue'
@@ -247,71 +243,70 @@ async function handleRefreshMetrics() {
   await fetchGlobalMetrics()
 }
 
-function buildTutorialSteps(): PluginDashboardLocalTutorialStep[] {
-  const tt = i18n.global.t as typeof t
-  return [
+function handleStartTutorial() {
+  const steps: PluginDashboardLocalTutorialStep[] = [
     {
       targetId: 'plugin-dashboard-guide-button',
-      title: tt('yuiTutorial.steps.start.title'),
-      body: tt('yuiTutorial.steps.start.body'),
+      title: t('yuiTutorial.steps.start.title'),
+      body: t('yuiTutorial.steps.start.body'),
       motion: 'click',
       durationMs: 1800,
     },
     {
       targetId: 'plugin-dashboard-stats',
-      title: tt('yuiTutorial.steps.stats.title'),
-      body: tt('yuiTutorial.steps.stats.body'),
+      title: t('yuiTutorial.steps.stats.title'),
+      body: t('yuiTutorial.steps.stats.body'),
       motion: 'ellipse',
       durationMs: 2400,
     },
     {
       targetId: 'plugin-dashboard-metrics',
-      title: tt('yuiTutorial.steps.metrics.title'),
-      body: tt('yuiTutorial.steps.metrics.body'),
+      title: t('yuiTutorial.steps.metrics.title'),
+      body: t('yuiTutorial.steps.metrics.body'),
       motion: 'ellipse',
       durationMs: 2400,
     },
     {
       targetId: 'plugin-dashboard-server',
-      title: tt('yuiTutorial.steps.server.title'),
-      body: tt('yuiTutorial.steps.server.body'),
+      title: t('yuiTutorial.steps.server.title'),
+      body: t('yuiTutorial.steps.server.body'),
       motion: 'point',
       durationMs: 2200,
     },
     {
       targetId: 'sidebar-plugins',
-      title: tt('yuiTutorial.steps.plugins.title'),
-      body: tt('yuiTutorial.steps.plugins.body'),
+      title: t('yuiTutorial.steps.plugins.title'),
+      body: t('yuiTutorial.steps.plugins.body'),
       route: '/plugins',
       motion: 'click',
       durationMs: 2200,
     },
     {
       targetId: 'plugin-list-workbench',
-      title: tt('yuiTutorial.steps.pluginWorkbench.title'),
-      body: tt('yuiTutorial.steps.pluginWorkbench.body'),
+      title: t('yuiTutorial.steps.pluginWorkbench.title'),
+      body: t('yuiTutorial.steps.pluginWorkbench.body'),
       route: '/plugins',
       motion: 'ellipse',
       durationMs: 2400,
     },
     {
       targetId: 'plugin-list-filter-input',
-      title: tt('yuiTutorial.steps.pluginFilters.title'),
-      body: tt('yuiTutorial.steps.pluginFilters.body'),
+      title: t('yuiTutorial.steps.pluginFilters.title'),
+      body: t('yuiTutorial.steps.pluginFilters.body'),
       route: '/plugins',
       durationMs: 2200,
     },
     {
       targetId: 'plugin-list-layout-mode',
-      title: tt('yuiTutorial.steps.pluginLayout.title'),
-      body: tt('yuiTutorial.steps.pluginLayout.body'),
+      title: t('yuiTutorial.steps.pluginLayout.title'),
+      body: t('yuiTutorial.steps.pluginLayout.body'),
       route: '/plugins',
       durationMs: 2200,
     },
     {
       targetId: 'plugin-list-context-menu',
-      title: tt('yuiTutorial.steps.pluginContextMenu.title'),
-      body: tt('yuiTutorial.steps.pluginContextMenu.body'),
+      title: t('yuiTutorial.steps.pluginContextMenu.title'),
+      body: t('yuiTutorial.steps.pluginContextMenu.body'),
       route: '/plugins',
       action: 'show-plugin-context-menu',
       waitMs: 360,
@@ -320,8 +315,8 @@ function buildTutorialSteps(): PluginDashboardLocalTutorialStep[] {
     },
     {
       targetId: 'package-manager-root',
-      title: tt('yuiTutorial.steps.packageManager.title'),
-      body: tt('yuiTutorial.steps.packageManager.body'),
+      title: t('yuiTutorial.steps.packageManager.title'),
+      body: t('yuiTutorial.steps.packageManager.body'),
       route: '/plugins',
       action: 'open-package-panel',
       waitMs: 420,
@@ -329,15 +324,15 @@ function buildTutorialSteps(): PluginDashboardLocalTutorialStep[] {
     },
     {
       targetId: 'package-manager-operations',
-      title: tt('yuiTutorial.steps.packageOperations.title'),
-      body: tt('yuiTutorial.steps.packageOperations.body'),
+      title: t('yuiTutorial.steps.packageOperations.title'),
+      body: t('yuiTutorial.steps.packageOperations.body'),
       route: '/plugins?tab=packages',
       durationMs: 2400,
     },
     {
       targetId: 'plugin-detail-header',
-      title: tt('yuiTutorial.steps.pluginDetail.title'),
-      body: tt('yuiTutorial.steps.pluginDetail.body'),
+      title: t('yuiTutorial.steps.pluginDetail.title'),
+      body: t('yuiTutorial.steps.pluginDetail.body'),
       route: '/plugins',
       action: 'open-first-plugin-detail',
       waitMs: 700,
@@ -346,66 +341,64 @@ function buildTutorialSteps(): PluginDashboardLocalTutorialStep[] {
     },
     {
       targetId: 'plugin-detail-actions',
-      title: tt('yuiTutorial.steps.pluginDetailActions.title'),
-      body: tt('yuiTutorial.steps.pluginDetailActions.body'),
+      title: t('yuiTutorial.steps.pluginDetailActions.title'),
+      body: t('yuiTutorial.steps.pluginDetailActions.body'),
       allowMissing: true,
       durationMs: 2200,
     },
     {
       targetId: 'sidebar-runs',
-      title: tt('yuiTutorial.steps.runs.title'),
-      body: tt('yuiTutorial.steps.runs.body'),
+      title: t('yuiTutorial.steps.runs.title'),
+      body: t('yuiTutorial.steps.runs.body'),
       route: '/runs',
       motion: 'click',
       durationMs: 2200,
     },
     {
       targetId: 'runs-list-panel',
-      title: tt('yuiTutorial.steps.runsList.title'),
-      body: tt('yuiTutorial.steps.runsList.body'),
+      title: t('yuiTutorial.steps.runsList.title'),
+      body: t('yuiTutorial.steps.runsList.body'),
       route: '/runs',
       durationMs: 2400,
     },
     {
       targetId: 'runs-detail-panel',
-      title: tt('yuiTutorial.steps.runsDetail.title'),
-      body: tt('yuiTutorial.steps.runsDetail.body'),
+      title: t('yuiTutorial.steps.runsDetail.title'),
+      body: t('yuiTutorial.steps.runsDetail.body'),
       route: '/runs',
       durationMs: 2400,
     },
     {
       targetId: 'sidebar-server-logs',
-      title: tt('yuiTutorial.steps.logs.title'),
-      body: tt('yuiTutorial.steps.logs.body'),
+      title: t('yuiTutorial.steps.logs.title'),
+      body: t('yuiTutorial.steps.logs.body'),
       route: '/logs/_server',
       motion: 'click',
       durationMs: 2200,
     },
     {
       targetId: 'log-viewer-toolbar',
-      title: tt('yuiTutorial.steps.logToolbar.title'),
-      body: tt('yuiTutorial.steps.logToolbar.body'),
+      title: t('yuiTutorial.steps.logToolbar.title'),
+      body: t('yuiTutorial.steps.logToolbar.body'),
       route: '/logs/_server',
       durationMs: 2400,
     },
     {
       targetId: 'log-list',
-      title: tt('yuiTutorial.steps.logList.title'),
-      body: tt('yuiTutorial.steps.logList.body'),
+      title: t('yuiTutorial.steps.logList.title'),
+      body: t('yuiTutorial.steps.logList.body'),
       route: '/logs/_server',
       durationMs: 2400,
     },
   ]
-}
 
-function handleStartTutorial() {
-  startPluginDashboardTutorial(() => ({
-    steps: buildTutorialSteps(),
+  startPluginDashboardTutorial({
+    steps,
     labels: {
-      skip: i18n.global.t('yuiTutorial.dismiss'),
-      keyboardHint: i18n.global.t('yuiTutorial.keyboardSkipHint'),
+      skip: t('yuiTutorial.dismiss'),
+      keyboardHint: t('yuiTutorial.keyboardSkipHint'),
     },
-  }))
+  })
 }
 
 function startAutoRefresh() {
