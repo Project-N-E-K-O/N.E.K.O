@@ -924,6 +924,7 @@
     const gameSystem = window.NekoGameSystem || {};
     const audioConfig = gameSystem.soccer?.audioConfig || {};
     const config = {
+      audioMix: {},
       bgm: {
         startMenu: [],
         inGame: { variants: [] },
@@ -938,6 +939,7 @@
     const audio = typeof gameSystem.GameAudioSystem === 'function'
       ? new gameSystem.GameAudioSystem({
           config: {
+            audioMix: config.audioMix,
             bgm: config.bgm,
             loopedBgm: config.loopedBgm,
             sfx: config.sfx,
@@ -946,15 +948,28 @@
           sfxStorageKey: 'neko.soccerGameAudio.sfxVolume',
           fadeMs: 900,
           onBgmError: (event, context) => {
-            console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', context?.track?.src || event);
+            console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', describeAudioFailure(event, context));
           },
           onSfxError: (event, context) => {
-            console.warn('[SoccerAudio] SFX 播放失败:', context?.track?.src || event);
+            console.warn('[SoccerAudio] SFX 播放失败:', describeAudioFailure(event, context));
           },
         })
       : null;
     let currentKey = '';
+    let preloadRunId = 0;
     const selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
+
+    function describeAudioFailure(event, context) {
+      const audio = context?.audio || null;
+      const mediaError = audio?.error || null;
+      return {
+        src: context?.track?.src || audio?.currentSrc || audio?.src || '',
+        code: mediaError?.code || '',
+        message: mediaError?.message || event?.message || event?.type || String(event || ''),
+        networkState: audio?.networkState,
+        readyState: audio?.readyState,
+      };
+    }
 
     function isLoopedBgmConfig(value) {
       return value &&
@@ -991,14 +1006,33 @@
 
     // 足球游戏内音频全部预载，减少第一次切换到对应 BGM / SFX 时的可感知停顿。
     // 注意：HTMLAudio 预载不能保证采样级无缝，只能降低网络读取和首次解码等待。
+    function schedulePreloadJobs(jobs) {
+      const runId = ++preloadRunId;
+      const schedule = (callback) => {
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(callback, { timeout: 500 });
+          return;
+        }
+        window.setTimeout(callback, 120);
+      };
+      const runNext = (index) => {
+        if (runId !== preloadRunId || index >= jobs.length) return;
+        jobs[index]();
+        schedule(() => runNext(index + 1));
+      };
+      runNext(0);
+    }
+
     function preloadAllAudio() {
-      preloadBgmTree({
-        ...config.bgm,
-        // 正常比赛 BGM 是页面级随机二选一；预加载只加载本次页面实际会用到的那一套。
-        inGame: selectedInGameBgm,
-      });
-      preloadBgmTree(config.loopedBgm);
-      preloadSfxTree(config.sfx);
+      schedulePreloadJobs([
+        () => preloadBgmTree(config.bgm.startMenu),
+        () => preloadBgmTree(selectedInGameBgm),
+        () => preloadBgmTree(config.bgm.difficulty),
+        () => preloadBgmTree(config.bgm.mood),
+        () => preloadBgmTree(config.bgm.result),
+        () => preloadBgmTree(config.loopedBgm),
+        () => preloadSfxTree(config.sfx),
+      ]);
     }
 
     function pickPageInGameBgm(inGameConfig) {
@@ -1080,10 +1114,18 @@
       if (nextConfig.sfx && typeof nextConfig.sfx === 'object') {
         Object.assign(config.sfx, nextConfig.sfx);
       }
+      if (nextConfig.audioMix && typeof nextConfig.audioMix === 'object') {
+        config.audioMix = {
+          ...config.audioMix,
+          ...nextConfig.audioMix,
+          bgm: { ...(config.audioMix?.bgm || {}), ...(nextConfig.audioMix.bgm || {}) },
+          sfx: { ...(config.audioMix?.sfx || {}), ...(nextConfig.audioMix.sfx || {}) },
+        };
+      }
       if (nextConfig.loopedBgm && typeof nextConfig.loopedBgm === 'object') {
         Object.assign(config.loopedBgm, nextConfig.loopedBgm);
       }
-      audio?.configure({ bgm: config.bgm, loopedBgm: config.loopedBgm, sfx: config.sfx });
+      audio?.configure({ audioMix: config.audioMix, bgm: config.bgm, loopedBgm: config.loopedBgm, sfx: config.sfx });
       preloadAllAudio();
       currentKey = '';
       sync('set-config');

@@ -40,6 +40,51 @@
     return Math.max(0, Math.min(1, numberValue));
   }
 
+  function readNonNegativeNumber(value, fallback = 1) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return fallback;
+    return Math.max(0, numberValue);
+  }
+
+  function decibelsToMultiplier(value, fallback = 1) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return fallback;
+    return 10 ** (numberValue / 20);
+  }
+
+  function normalizeVolumeMix(value = {}) {
+    return {
+      baseVolume: clamp01(value.baseVolume, 1),
+      maxVolume: clamp01(value.maxVolume, 1),
+    };
+  }
+
+  function resolveMixedVolume(userVolume, mix, track, options = {}, progress = 1) {
+    const baseVolume = clamp01(mix?.baseVolume, 1);
+    const maxVolume = clamp01(mix?.maxVolume, 1);
+    const resourceMultiplier = readNonNegativeNumber(
+      track?.volumeMultiplier ?? track?.volumeScale,
+      1
+    );
+    const resourceGainMultiplier = Number.isFinite(Number(track?.computedGainMultiplier))
+      ? readNonNegativeNumber(track.computedGainMultiplier, 1)
+      : decibelsToMultiplier(track?.gainDb, 1);
+    const playMultiplier = readNonNegativeNumber(
+      options.volumeMultiplier ?? options.playMultiplier,
+      1
+    );
+    const fadeProgress = clamp01(progress, 1);
+    return Math.min(
+      maxVolume,
+      clamp01(userVolume, 1)
+        * baseVolume
+        * resourceGainMultiplier
+        * resourceMultiplier
+        * playMultiplier
+        * fadeProgress
+    );
+  }
+
   function readStoredVolume(storageKey, fallback) {
     try {
       const stored = window.localStorage?.getItem(storageKey);
@@ -74,7 +119,12 @@
     if (!track || typeof track !== 'object') return null;
     const src = String(track.src || track.url || '').trim();
     if (!src) return null;
-    return { ...track, src };
+    const normalized = { ...track, src };
+    const gainDb = Number(normalized.gainDb);
+    if (Number.isFinite(gainDb)) {
+      normalized.computedGainMultiplier = decibelsToMultiplier(gainDb, 1);
+    }
+    return normalized;
   }
 
   function normalizeAudioList(value) {
@@ -83,11 +133,26 @@
     return track ? [track] : [];
   }
 
+  function inheritTrackMixOptions(track, parent) {
+    if (!track || !parent || typeof parent !== 'object') return track;
+    const inherited = { ...track };
+    if (inherited.gainDb === undefined && parent.gainDb !== undefined) {
+      inherited.gainDb = parent.gainDb;
+    }
+    if (inherited.volumeMultiplier === undefined && parent.volumeMultiplier !== undefined) {
+      inherited.volumeMultiplier = parent.volumeMultiplier;
+    }
+    if (inherited.volumeScale === undefined && parent.volumeScale !== undefined) {
+      inherited.volumeScale = parent.volumeScale;
+    }
+    return inherited;
+  }
+
   function normalizeLoopedBgmConfig(value) {
     if (!value || typeof value !== 'object') return null;
-    const intro = normalizeTrack(value.intro);
-    const loop = normalizeTrack(value.loop);
-    const outro = normalizeTrack(value.outro);
+    const intro = inheritTrackMixOptions(normalizeTrack(value.intro), value);
+    const loop = inheritTrackMixOptions(normalizeTrack(value.loop), value);
+    const outro = inheritTrackMixOptions(normalizeTrack(value.outro), value);
     if (!loop) return null;
     return { intro, loop, outro };
   }
@@ -145,6 +210,7 @@
       this.persistVolume = options.persistVolume !== false;
       this.loopPlaylist = options.loopPlaylist !== false;
       this.onError = typeof options.onError === 'function' ? options.onError : null;
+      this.mix = normalizeVolumeMix(options.mix);
 
       this.volume = options.volume !== undefined
         ? clamp01(options.volume, DEFAULT_BGM_VOLUME)
@@ -155,6 +221,7 @@
       this.currentSignature = '';
       this.currentContentSignature = '';
       this.currentTrack = null;
+      this.currentOptions = {};
       this.currentLoopPlaylist = this.loopPlaylist;
       this.lastTrackBySignature = new Map();
       this.preloadCache = new Map();
@@ -188,6 +255,7 @@
         this.currentSignature = '';
         this.currentContentSignature = '';
         this.currentTrack = null;
+        this.currentOptions = {};
         this.stop();
         return Promise.resolve(false);
       }
@@ -201,6 +269,7 @@
       this.currentPlaylist = normalized;
       this.currentSignature = signature;
       this.currentContentSignature = playlistSignature(normalized);
+      this.currentOptions = { volumeMultiplier: options.volumeMultiplier ?? options.playMultiplier };
       const repeatOption = options.repeat === undefined ? options.loop : options.repeat;
       this.currentLoopPlaylist = repeatOption === undefined ? this.loopPlaylist : Boolean(repeatOption);
       this.pausedByUser = false;
@@ -227,8 +296,13 @@
     setVolume(volume) {
       this.volume = clamp01(volume, this.volume);
       if (this.persistVolume) writeStoredVolume(this.storageKey, this.volume);
-      this._applyVolume(this.currentAudio, this.volume);
+      this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
       return this.volume;
+    }
+
+    setMix(mix = {}) {
+      this.mix = normalizeVolumeMix(mix);
+      this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
     }
 
     pause() {
@@ -250,6 +324,7 @@
       this.currentAudio = null;
       this.fadingAudio = null;
       this.currentTrack = null;
+      this.currentOptions = {};
       if (options.notifyWaiters !== false) this._resolveEndWaiters(false);
     }
 
@@ -261,6 +336,7 @@
       this.currentPlaylist = [];
       this.currentSignature = '';
       this.currentContentSignature = '';
+      this.currentOptions = {};
       this.lastTrackBySignature.clear();
     }
 
@@ -327,6 +403,9 @@
 
     _crossfadeTo(track, options = {}) {
       if (!track || !track.src) return Promise.resolve(false);
+      const volumeOptions = {
+        volumeMultiplier: options.volumeMultiplier ?? options.playMultiplier ?? this.currentOptions.volumeMultiplier,
+      };
 
       this._clearFadeTimer();
       const previousAudio = this.currentAudio;
@@ -335,18 +414,18 @@
       this.currentTrack = track;
       this.lastTrackBySignature.set(this.currentSignature, track);
 
-      this._applyVolume(nextAudio, previousAudio ? 0 : this.volume);
+      this._applyVolume(nextAudio, previousAudio ? 0 : 1, track, volumeOptions);
 
       const playPromise = this._safePlay(nextAudio);
       const fadeMs = Math.max(0, Number(options.fadeMs ?? this.fadeMs) || 0);
       if (!previousAudio || fadeMs <= 0) {
         disposeAudio(previousAudio);
-        this._applyVolume(nextAudio, this.volume);
+        this._applyVolume(nextAudio, 1, track, volumeOptions);
         return playPromise;
       }
 
       this.fadingAudio = previousAudio;
-      this._startCrossfade(previousAudio, nextAudio, fadeMs);
+      this._startCrossfade(previousAudio, nextAudio, fadeMs, track, volumeOptions);
       return playPromise;
     }
 
@@ -384,21 +463,21 @@
       this._preloadTrack(nextTrack);
     }
 
-    _startCrossfade(previousAudio, nextAudio, fadeMs) {
+    _startCrossfade(previousAudio, nextAudio, fadeMs, nextTrack, nextOptions) {
       const startedAt = Date.now();
       const previousStartVolume = Number(previousAudio.volume) || 0;
 
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyVolume(previousAudio, previousStartVolume * (1 - progress));
-        this._applyVolume(nextAudio, this.volume * progress);
+        this._applyRawVolume(previousAudio, previousStartVolume * (1 - progress));
+        this._applyVolume(nextAudio, progress, nextTrack, nextOptions);
 
         if (progress >= 1) {
           this._clearFadeTimer();
           disposeAudio(previousAudio);
           if (this.fadingAudio === previousAudio) this.fadingAudio = null;
-          this._applyVolume(nextAudio, this.volume);
+          this._applyVolume(nextAudio, 1, nextTrack, nextOptions);
         }
       }, 50);
     }
@@ -471,7 +550,12 @@
       }
     }
 
-    _applyVolume(audio, volume) {
+    _applyVolume(audio, progress = 1, track = this.currentTrack, options = {}) {
+      if (!audio) return;
+      audio.volume = resolveMixedVolume(this.volume, this.mix, track, options, progress);
+    }
+
+    _applyRawVolume(audio, volume) {
       if (!audio) return;
       audio.volume = clamp01(volume, this.volume);
     }
@@ -493,6 +577,7 @@
       this.persistVolume = options.persistVolume !== false;
       this.maxConcurrent = Math.max(1, Number(options.maxConcurrent || 12) || 12);
       this.onError = typeof options.onError === 'function' ? options.onError : null;
+      this.mix = normalizeVolumeMix(options.mix);
       this.volume = options.volume !== undefined
         ? clamp01(options.volume, DEFAULT_SFX_VOLUME)
         : (this.persistVolume ? readStoredVolume(this.storageKey, DEFAULT_SFX_VOLUME) : DEFAULT_SFX_VOLUME);
@@ -529,6 +614,10 @@
       return this.volume;
     }
 
+    setMix(mix = {}) {
+      this.mix = normalizeVolumeMix(mix);
+    }
+
     destroy() {
       this.destroyed = true;
       for (const audio of this.baseCache.values()) disposeAudio(audio);
@@ -548,7 +637,7 @@
       if (this.baseCache.has(track.src)) return this.baseCache.get(track.src);
       const audio = this.audioFactory(track.src, track);
       audio.preload = track.preload || 'auto';
-      audio.volume = this.volume;
+      audio.volume = 0;
       try {
         audio.load?.();
       } catch (_err) {
@@ -569,7 +658,10 @@
       const audio = typeof base.cloneNode === 'function'
         ? base.cloneNode(true)
         : this.audioFactory(track.src, track);
-      audio.volume = clamp01(options.volume, this.volume);
+      const userVolume = options.volume === undefined
+        ? this.volume
+        : clamp01(options.volume, this.volume);
+      audio.volume = resolveMixedVolume(userVolume, this.mix, track, options);
       this.active.add(audio);
 
       const cleanup = () => this._releaseInstance(audio);
@@ -610,6 +702,7 @@
         ? options.audioFactory
         : (src) => new Audio(src);
       this.onError = typeof options.onError === 'function' ? options.onError : null;
+      this.mix = normalizeVolumeMix(options.mix);
       this.volume = options.volume !== undefined
         ? clamp01(options.volume, DEFAULT_BGM_VOLUME)
         : DEFAULT_BGM_VOLUME;
@@ -618,6 +711,7 @@
       this.currentId = '';
       this.currentContentSignature = '';
       this.currentTrack = null;
+      this.currentOptions = {};
       this.phase = 'stopped';
       this.fadingAudio = null;
       this.pendingFinish = false;
@@ -658,6 +752,7 @@
       this.currentConfig = normalized;
       this.currentId = id;
       this.currentContentSignature = loopedBgmIdentityFromConfig(normalized);
+      this.currentOptions = { volumeMultiplier: options.volumeMultiplier ?? options.playMultiplier };
       this.pendingFinish = false;
       this.pausedByUser = false;
       return this._playPhase(normalized.intro ? 'intro' : 'loop');
@@ -692,8 +787,13 @@
 
     setVolume(volume) {
       this.volume = clamp01(volume, this.volume);
-      this._applyVolume(this.currentAudio, this.volume);
+      this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
       return this.volume;
+    }
+
+    setMix(mix = {}) {
+      this.mix = normalizeVolumeMix(mix);
+      this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
     }
 
     // 立即停止循环 BGM。用于强制退出页面、强制切换到普通 BGM 等场景。
@@ -709,6 +809,7 @@
       this.currentConfig = null;
       this.currentId = '';
       this.currentContentSignature = '';
+      this.currentOptions = {};
       this.phase = 'stopped';
       const fadeMs = Math.max(0, Number(options.fadeMs ?? 0) || 0);
       if (audio && fadeMs > 0) this._fadeOutAndDispose(audio, fadeMs);
@@ -791,7 +892,7 @@
       this.currentAudio = audio;
       this.currentTrack = track;
       this.phase = phase;
-      this._applyVolume(audio, previousAudio ? 0 : this.volume);
+      this._applyVolume(audio, previousAudio ? 0 : 1, track, this.currentOptions);
       const playPromise = this._safePlay(audio);
 
       const fadeMs = previousAudio ? this.fadeMs : 0;
@@ -802,7 +903,7 @@
         this._startCrossfade(previousAudio, audio, fadeMs);
       } else {
         disposeAudio(previousAudio);
-        this._applyVolume(audio, this.volume);
+        this._applyVolume(audio, 1, track, this.currentOptions);
       }
       return playPromise;
     }
@@ -896,9 +997,9 @@
       }
     }
 
-    _applyVolume(audio, volume) {
+    _applyVolume(audio, progress = 1, track = this.currentTrack, options = {}) {
       if (!audio) return;
-      audio.volume = clamp01(volume, this.volume);
+      audio.volume = resolveMixedVolume(this.volume, this.mix, track, options, progress);
     }
 
     _startCrossfade(previousAudio, nextAudio, fadeMs) {
@@ -910,13 +1011,13 @@
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyVolume(previousAudio, previousStartVolume * (1 - progress));
-        this._applyVolume(nextAudio, this.volume * progress);
+        this._applyRawVolume(previousAudio, previousStartVolume * (1 - progress));
+        this._applyVolume(nextAudio, progress, this.currentTrack, this.currentOptions);
         if (progress >= 1) {
           this._clearFadeTimer();
           disposeAudio(this.fadingAudio);
           this.fadingAudio = null;
-          this._applyVolume(nextAudio, this.volume);
+          this._applyVolume(nextAudio, 1, this.currentTrack, this.currentOptions);
         }
       }, 50);
     }
@@ -927,7 +1028,7 @@
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyVolume(audio, startVolume * (1 - progress));
+        this._applyRawVolume(audio, startVolume * (1 - progress));
         if (progress >= 1) {
           this._clearFadeTimer();
           disposeAudio(audio);
@@ -940,25 +1041,37 @@
       window.clearInterval(this.fadeTimer);
       this.fadeTimer = null;
     }
+
+    _applyRawVolume(audio, volume) {
+      if (!audio) return;
+      audio.volume = clamp01(volume, this.volume);
+    }
   }
 
   class GameAudioSystem {
     constructor(options = {}) {
       this.config = { bgm: {}, loopedBgm: {}, sfx: {} };
+      this.audioMix = {
+        bgm: normalizeVolumeMix(options.bgmMix || options.audioMix?.bgm),
+        sfx: normalizeVolumeMix(options.sfxMix || options.audioMix?.sfx),
+      };
       this.bgm = new GameBgmPlayer({
         ...options,
         volume: options.bgmVolume ?? options.volume,
+        mix: this.audioMix.bgm,
         storageKey: options.bgmStorageKey || DEFAULT_BGM_STORAGE_KEY,
         onError: options.onBgmError || options.onError,
       });
       this.loopedBgm = new GameLoopedBgmPlayer({
         ...options,
         volume: this.bgm.volume,
+        mix: this.audioMix.bgm,
         onError: options.onLoopedBgmError || options.onBgmError || options.onError,
       });
       this.sfx = new GameSfxPlayer({
         ...options,
         volume: options.sfxVolume,
+        mix: this.audioMix.sfx,
         storageKey: options.sfxStorageKey || DEFAULT_SFX_STORAGE_KEY,
         onError: options.onSfxError || options.onError,
       });
@@ -969,6 +1082,7 @@
      * 注册游戏音频资源。
      *
      * @param {Object} config 配置对象。
+     * @param {Object} [config.audioMix] 本游戏混音基准与上限配置。
      * @param {Object} [config.bgm] 普通 BGM 资源树。
      * @param {Object} [config.loopedBgm] 循环 BGM 资源树，叶子为 { intro?, loop, outro? }。
      * @param {Object} [config.sfx] 短音效资源树。
@@ -976,11 +1090,37 @@
      */
     configure(config = {}) {
       this.config = {
+        audioMix: config.audioMix || {},
         bgm: config.bgm || {},
         loopedBgm: config.loopedBgm || {},
         sfx: config.sfx || {},
       };
+      this.setAudioMix(this.config.audioMix);
       return this.config;
+    }
+
+    /**
+     * 设置本游戏混音基准。
+     *
+     * 音量条仍保存 0 到 1；audioMix 决定“音量条 100%”在本游戏里实际输出多大。
+     * 单个资源没写 gainDb / volumeMultiplier 时默认不额外增益 / 衰减。
+     *
+     * @param {Object} [audioMix] 混音配置。
+     * @param {Object} [audioMix.bgm] BGM 混音配置。
+     * @param {number} [audioMix.bgm.baseVolume] BGM 基准音量，默认 1。
+     * @param {number} [audioMix.bgm.maxVolume] BGM 最终上限，默认 1。
+     * @param {Object} [audioMix.sfx] SFX 混音配置。
+     * @param {number} [audioMix.sfx.baseVolume] SFX 基准音量，默认 1。
+     * @param {number} [audioMix.sfx.maxVolume] SFX 最终上限，默认 1。
+     */
+    setAudioMix(audioMix = {}) {
+      this.audioMix = {
+        bgm: normalizeVolumeMix(audioMix.bgm),
+        sfx: normalizeVolumeMix(audioMix.sfx),
+      };
+      this.bgm.setMix(this.audioMix.bgm);
+      this.loopedBgm.setMix(this.audioMix.bgm);
+      this.sfx.setMix(this.audioMix.sfx);
     }
 
     /**
