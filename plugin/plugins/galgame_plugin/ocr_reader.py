@@ -7299,7 +7299,18 @@ class OcrReaderManager:
             return _TickPreflightResult(result=result, should_return=True)
 
         backend_plan_started_at = self._time_fn()
-        backend_plan = await asyncio.to_thread(self._resolve_backend_plan)
+        if self._custom_ocr_backend:
+            backend_plan = SelectedOcrBackendPlan(
+                selection="custom",
+                primary=OcrBackendDescriptor(
+                    kind=str(self._runtime.backend_kind or "custom"),
+                    backend=self._ocr_backend,
+                    detail=str(self._runtime.backend_detail or "custom_backend"),
+                    available=True,
+                ),
+            )
+        else:
+            backend_plan = await asyncio.to_thread(self._resolve_backend_plan)
         backend_plan_duration = max(0.0, self._time_fn() - backend_plan_started_at)
         if not backend_plan.primary.available:
             self._runtime = self._build_runtime(
@@ -8294,10 +8305,7 @@ class OcrReaderManager:
         detail = str(inspection.get("detail") or "missing")
         if not enabled:
             detail = "disabled_by_config"
-        available = enabled and (
-            bool(inspection.get("installed"))
-            or detail == "missing_model_files"
-        )
+        available = enabled and bool(inspection.get("installed"))
         return OcrBackendDescriptor(
             kind="rapidocr",
             backend=self._rapidocr_backend_for_config(),

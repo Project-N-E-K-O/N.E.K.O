@@ -4428,10 +4428,10 @@ def test_install_task_runtime_root_uses_app_docs_dir(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr")
+    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr_models")
 
     assert state_path == (
-        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr-installs" / "run-1.json"
+        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr_models-installs" / "run-1.json"
     )
 
 
@@ -5247,6 +5247,35 @@ async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     assert second.runtime["ocr_context_state"] == "stable"
 
 
+def test_rapidocr_missing_model_files_are_not_marked_available(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            rapidocr_install_target_dir=str(tmp_path / "RapidOCR"),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+
+    descriptor = manager._rapidocr_descriptor(
+        {
+            "installed": False,
+            "detail": "missing_model_files",
+            "detected_path": "",
+            "selected_model": "PP-OCRv5/ch/mobile",
+        },
+        enabled=True,
+    )
+
+    assert descriptor.available is False
+    assert descriptor.detail == "missing_model_files"
+
+
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_target(
     tmp_path: Path,
@@ -5578,8 +5607,8 @@ async def test_ocr_reader_manager_blocks_text_that_looks_like_neko_plugin_ui(
         capture_backend=_FakeCaptureBackend(),
         ocr_backend=_FakeOcrBackend(
             [
-                "RapidOCR install queued task",
-                "RapidOCR install queued task",
+                "RapidOCR model download queued task",
+                "RapidOCR model download queued task",
             ]
         ),
         writer=writer,

@@ -3005,7 +3005,7 @@ async def test_install_textractor_entry_uses_ctx_run_id_fallback(
     assert observed["task_id"] == "run-123"
 
 
-# NOTE: tests for galgame_install_rapidocr / galgame_install_dxcam SDK actions
+# NOTE: tests for RapidOCR / DXcam runtime SDK install actions
 # removed — both packages are now bundled main-program deps (see pyproject.toml
 # [dependency-groups] galgame). The runtime install flow they exercised no
 # longer exists.

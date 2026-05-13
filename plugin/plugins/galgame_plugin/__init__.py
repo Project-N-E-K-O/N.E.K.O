@@ -4590,7 +4590,7 @@ class GalgamePlugin(NekoPluginBase):
         finally:
             self._textractor_install_lock.release()
 
-    # NOTE: galgame_install_rapidocr / galgame_install_dxcam SDK actions removed —
+    # NOTE: RapidOCR / DXcam runtime SDK install actions removed —
     # both packages are now bundled into the main program (see pyproject.toml
     # [dependency-groups] galgame). Run `uv sync --group galgame` for source
     # installs; packaged builds always include them.
@@ -4598,7 +4598,7 @@ class GalgamePlugin(NekoPluginBase):
     @plugin_entry(
         id="galgame_download_rapidocr_models",
         name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
-        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从百度云下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
         input_schema={
             "type": "object",
             "properties": {

@@ -132,7 +132,7 @@ function getInstallUIConfig() {
       actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
       retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
       runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
-      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从 ModelScope 拉取缺失的模型文件，并通过 SSE 推送实时进度。'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从百度云拉取缺失的模型文件，并通过 SSE 推送实时进度。'),
       successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
       failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
     },
@@ -152,7 +152,6 @@ function createInstallRuntimeState() {
 }
 
 const installRuntime = {
-  rapidocr: createInstallRuntimeState(),
   dxcam: createInstallRuntimeState(),
   textractor: createInstallRuntimeState(),
   rapidocr_models: createInstallRuntimeState(),
@@ -738,7 +737,6 @@ const ACTION_LABELS_ZH = {
   recalibrate_ocr: '重新截图校准',
   line_details: '查看识别详情',
   choice_advisor: '切换到自动推进模式',
-  install_rapidocr: '查看 RapidOCR 状态',
   install_dxcam: '查看 DXcam 状态',
   refresh_status: '刷新状态',
   start_recognition: '开始自动识别',
@@ -785,6 +783,20 @@ function advanceSpeedLabel(key, fallback = '') {
 
 function dataSourceLabel(key, fallback = '') {
   return uiDynamicT('ui.data_source', key, DATA_SOURCE_LABELS_ZH[key] || fallback || key);
+}
+
+function captureBackendLabel(key, fallback = '') {
+  const normalized = textValue(key).toLowerCase();
+  const labels = {
+    auto: uiT('ui.capture_backend.auto', '自动'),
+    smart: uiT('ui.capture_backend.smart', 'Smart'),
+    dxcam: uiT('ui.capture_backend.dxcam', 'DXcam'),
+    mss: uiT('ui.capture_backend.mss', 'MSS'),
+    imagegrab: uiT('ui.capture_backend.mss', 'MSS'),
+    pyautogui: uiT('ui.capture_backend.pyautogui', 'PyAutoGUI'),
+    printwindow: uiT('ui.capture_backend.printwindow', 'PrintWindow'),
+  };
+  return labels[normalized] || fallback || key || uiT('ui.status.unknown', '未知');
 }
 
 function readerModeLabel(key, fallback = '') {
@@ -1126,34 +1138,12 @@ function updateSettingsDirtyHint(message = '') {
   hint.textContent = message || uiT('ui.settings.dirty', '有未保存设置');
 }
 
-function shouldOfferRapidOcrInstall(status = {}) {
-  const rapidocr = status.rapidocr || {};
-  return Boolean(status.rapidocr_enabled) && rapidocr.installed !== true;
-}
-
 function hasMissingRapidOcrModelFiles(rapidocr = {}) {
   return rapidocr.detail === 'missing_model_files';
 }
 
 function isRapidOcrUsable(rapidocr = {}) {
   return Boolean(rapidocr.installed) && !hasMissingRapidOcrModelFiles(rapidocr);
-}
-
-function withRapidOcrInstallAction(diagnosis, status = {}) {
-  if (!diagnosis || !shouldOfferRapidOcrInstall(status)) {
-    return diagnosis;
-  }
-  const actions = Array.isArray(diagnosis.actions) ? diagnosis.actions : [];
-  if (actions.some((action) => action && action.id === 'install_rapidocr')) {
-    return diagnosis;
-  }
-  return {
-    ...diagnosis,
-    actions: [
-      diagnosisAction('install_rapidocr'),
-      ...actions,
-    ],
-  };
 }
 
 function textValue(value) {
@@ -1316,8 +1306,12 @@ function normalizePrimaryDiagnosis(diagnosis) {
     return null;
   }
   const severity = textValue(diagnosis.severity);
-  const title = textValue(diagnosis.title);
-  const body = textValue(diagnosis.message || diagnosis.body);
+  const rawTitle = textValue(diagnosis.title);
+  const rawBody = textValue(diagnosis.message || diagnosis.body);
+  const titleKey = textValue(diagnosis.title_i18n_key || diagnosis.title_key);
+  const bodyKey = textValue(diagnosis.message_i18n_key || diagnosis.body_i18n_key || diagnosis.message_key || diagnosis.body_key);
+  const title = titleKey ? uiT(titleKey, rawTitle) : rawTitle;
+  const body = bodyKey ? uiT(bodyKey, rawBody) : rawBody;
   if (!title && !body) {
     return null;
   }
@@ -1347,9 +1341,9 @@ function normalizePrimaryDiagnosis(diagnosis) {
 function buildPrimaryDiagnosis(status = {}) {
   const backendDiagnosis = normalizePrimaryDiagnosis(status.primary_diagnosis);
   if (backendDiagnosis) {
-    return withRapidOcrInstallAction(backendDiagnosis, status);
+    return backendDiagnosis;
   }
-  const diagnose = (diagnosis) => withRapidOcrInstallAction(diagnosis, status);
+  const diagnose = (diagnosis) => diagnosis;
 
   const runtime = status.ocr_reader_runtime || {};
   const detail = textValue(runtime.target_selection_detail);
@@ -1796,9 +1790,6 @@ function renderFirstRunGuideLegacy(status = {}) {
   if (onboardingActions) {
     const firstIncomplete = steps[firstIncompleteIndex];
     const actions = [];
-    if (firstIncompleteIndex === 1) {
-      actions.push(`<button class="primary" data-first-run-action="install_rapidocr">${escapeHtml(primaryActionLabel('install_rapidocr'))}</button>`);
-    }
     if (!steps[2].done) {
       actions.push(`<button class="primary" data-first-run-action="select_ocr_window">${escapeHtml(primaryActionLabel('select_ocr_window'))}</button>`);
       actions.push(`<button class="secondary" data-first-run-action="refresh_ocr_windows">${escapeHtml(primaryActionLabel('refresh_ocr_windows'))}</button>`);
@@ -1822,7 +1813,6 @@ function buildFirstRunSteps(status = {}) {
   const lastExcludeReason = textValue(runtime.last_exclude_reason);
   const rapidocr = status.rapidocr || {};
   const dxcam = status.dxcam || {};
-  const rapidocrSupported = Boolean(rapidocr.install_supported) && Boolean(rapidocr.can_install);
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
   const rapidocrModelsMissing = hasMissingRapidOcrModelFiles(rapidocr);
   const rapidocrUsable = isRapidOcrUsable(rapidocr);
@@ -1838,15 +1828,13 @@ function buildFirstRunSteps(status = {}) {
   if (rapidocrModelsDownloadable) {
     ocrInstallAction = 'download_rapidocr_models';
   } else if (rapidocrModelsMissing) {
-    ocrInstallAction = null;
-  } else if (rapidocrSupported) {
-    ocrInstallAction = 'install_rapidocr';
+    ocrInstallAction = 'show_rapidocr_models_guide';
   } else {
     ocrInstallAction = null;
   }
   const ocrReady = Boolean(
     rapidocrUsable
-    || (!rapidocrSupported && !rapidocrModelsMissing)
+    || (!rapidocrModelsMissing && rapidocr.detail !== 'missing')
   );
   const captureReady = Boolean(dxcam.installed || !dxcamSupported);
   const hasGame = Boolean(
@@ -1882,7 +1870,7 @@ function buildFirstRunSteps(status = {}) {
       const sizeMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
       body = uiTf(
         'ui.first_run.install_ocr.pending_models',
-        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。',
+        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从百度云拉取约 {size} MB 的模型文件。',
         {
           lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
@@ -1977,23 +1965,12 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
   const actions = [];
 
   if (firstIncomplete.key === 'install_ocr') {
-    // installAction may be null when models are missing but the backend
-    // can't auto-download — in that case skip the primary button and
-    // show only refresh_all; the body copy already points the user at
-    // the RapidOCR banner for manual recovery, and a fake "Install
-    // RapidOCR runtime install CTA here would mislead.
     const installAction = firstIncomplete.installAction;
     if (installAction) {
-      let installActionKey;
-      let fallbackLabel;
-      if (installAction === 'download_rapidocr_models') {
-        installActionKey = 'ui.first_run.action.download_rapidocr_models';
-        fallbackLabel = '立即下载模型';
-      } else {
-        installActionKey = 'ui.first_run.action.install_rapidocr';
-        fallbackLabel = primaryActionLabel(installAction);
-      }
-      actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(uiT(installActionKey, fallbackLabel))}</button>`);
+      const actionLabel = installAction === 'download_rapidocr_models'
+        ? uiT('ui.first_run.action.download_rapidocr_models', '立即下载模型')
+        : uiT('ui.first_run.action.show_rapidocr_models_guide', '查看手动下载说明');
+      actions.push(`<button class="primary" data-first-run-action="${escapeHtml(installAction)}">${escapeHtml(actionLabel)}</button>`);
     }
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
@@ -5267,7 +5244,7 @@ function renderRapidOcr(status) {
   } else {
     cardStatus = 'warning';
     chipText = uiT('ui.install.status.not_found', '未检测到');
-    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 现在随主程序打包。如果你跑的是打包版本，请重新下载安装包；如果是源码运行，请执行 `uv sync --group galgame` 后重启。');
+    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需自动下载，默认优先百度云。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
   }
 
   if (modelState && !isInstallTaskTerminal(modelState)) {
@@ -5398,21 +5375,29 @@ function renderDxcam(status) {
   const dxcam = status.dxcam || {};
   const runtime = status.ocr_reader_runtime || {};
   const card = document.getElementById('dxcamCard');
+  const title = document.getElementById('dxcamCardTitle');
   const chip = document.getElementById('dxcamCardChip');
   const desc = document.getElementById('dxcamCardDesc');
   const meta = document.getElementById('dxcamCardMeta');
   const actions = document.getElementById('dxcamCardActions');
-  if (!card || !chip || !desc || !meta || !actions) {
+  if (!card || !title || !chip || !desc || !meta || !actions) {
     return;
   }
 
   const installed = Boolean(dxcam.installed);
-  const selectedCaptureBackend = status.ocr_capture_backend_selection || 'auto';
+  const selectedCaptureBackend = textValue(status.ocr_capture_backend_selection || 'auto');
   const usingDxcam = runtime.capture_backend_kind === 'dxcam';
-  const captureBackendText = runtime.capture_backend_kind || (
-    selectedCaptureBackend === 'dxcam'
-      ? uiT('ui.install.dxcam.selected_waiting', 'DXcam 已选择，等待下一次 OCR 截图确认')
-      : uiT('ui.status.unknown', '未知')
+  const activeCaptureBackend = textValue(runtime.capture_backend_kind);
+  const selectedBackendLabel = captureBackendLabel(selectedCaptureBackend);
+  const activeBackendLabel = activeCaptureBackend
+    ? captureBackendLabel(activeCaptureBackend)
+    : uiT('ui.install.capture_backend.waiting_active', '等待下一次 OCR 截图确认');
+  const detailText = textValue(runtime.capture_backend_detail || runtime.ocr_capture_backend_detail);
+  const blockedText = textValue(status.ocr_capture_backend_block_reason || runtime.ocr_window_capture_block_reason);
+  title.textContent = uiTf(
+    'ui.install.capture_backend.card_title_with_backend',
+    '截图后端：{backend}',
+    { backend: activeCaptureBackend ? activeBackendLabel : selectedBackendLabel },
   );
   const captureActive = (value) => (
     value === 'mss'
@@ -5430,21 +5415,39 @@ function renderDxcam(status) {
 
   if (!dxcam.install_supported) {
     card.className = 'install-card neutral';
-    chip.textContent = uiT('ui.install.status.unsupported', '平台不支持');
-    desc.textContent = uiT('ui.install.dxcam.unsupported_body', 'DXcam 仅用于 Windows 桌面捕获。当前平台会自动使用 mss / pyautogui 等跨平台后端。');
-    meta.textContent = '';
+    chip.textContent = activeCaptureBackend
+      ? uiT('ui.install.status.ready', '已就绪')
+      : uiT('ui.install.status.unsupported', '平台不支持');
+    desc.textContent = uiTf(
+      'ui.install.capture_backend.desc',
+      '当前选择：{selected}；实际后端：{active}。',
+      { selected: selectedBackendLabel, active: activeBackendLabel },
+    );
+    meta.textContent = uiT('ui.install.capture_backend.dxcam_unsupported_meta', 'DXcam 当前平台不可用；可继续使用 MSS、PyAutoGUI 或 PrintWindow。');
   } else if (installed) {
     card.className = `install-card ${usingDxcam ? 'ok' : 'neutral'}`;
     chip.textContent = uiT('ui.install.status.ready', '已就绪');
-    desc.textContent = usingDxcam
-      ? uiT('ui.install.dxcam.active_body', '当前截图后端使用 DXcam。它仍要求游戏窗口前台可见，不做后台捕获或绕过。')
-      : `${uiT('ui.install.dxcam.ready_body_prefix', 'DXcam 已就绪。当前截图后端')}: ${captureBackendText}。`;
-    meta.textContent = dxcam.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${dxcam.detected_path}` : '';
+    desc.textContent = uiTf(
+      'ui.install.capture_backend.desc',
+      '当前选择：{selected}；实际后端：{active}。',
+      { selected: selectedBackendLabel, active: activeBackendLabel },
+    );
+    meta.textContent = detailText
+      ? uiTf('ui.install.capture_backend.detail_meta', '后端详情：{detail}', { detail: detailText })
+      : uiT('ui.install.capture_backend.visible_window_meta', '截图要求游戏窗口可见；不会绕过系统后台截图限制。');
   } else {
     card.className = 'install-card warning';
-    chip.textContent = uiT('ui.install.status.not_found', '未检测到');
-    desc.textContent = uiT('ui.install.dxcam.bundled_hint', 'DXcam 现在随主程序打包（仅 Windows）。如果你跑的是打包版本，请重新下载安装包；如果是源码运行，请执行 `uv sync --group galgame` 后重启。截图链会自动 fallback 到 MSS / PyAutoGUI。');
-    meta.textContent = '';
+    chip.textContent = activeCaptureBackend
+      ? uiT('ui.install.status.ready', '已就绪')
+      : uiT('ui.install.status.not_found', '未检测到');
+    desc.textContent = uiTf(
+      'ui.install.capture_backend.desc',
+      '当前选择：{selected}；实际后端：{active}。',
+      { selected: selectedBackendLabel, active: activeBackendLabel },
+    );
+    meta.textContent = blockedText
+      ? uiTf('ui.install.capture_backend.blocked_meta', '后端受阻：{detail}', { detail: blockedText })
+      : uiT('ui.install.capture_backend.dxcam_missing_meta', 'DXcam 不可用时会继续使用 MSS、PyAutoGUI 或 PrintWindow 等截图后端。');
   }
 
   rebindCardButton('smartCaptureUseBtn', () => setOcrBackendSelection({ captureBackend: 'smart' }));
@@ -7048,6 +7051,11 @@ async function handleDiagnosisAction(action) {
       expandAndScrollTo('rapidocrCard');
       await startInstall('rapidocr_models', false, { navigate: false });
       break;
+    case 'show_rapidocr_models_guide':
+      navigateToInstallPanel('rapidocr', { scrollToSection: false });
+      expandAndScrollTo('rapidocrCard');
+      setFlash(uiT('ui.flash.rapidocr_manual_guide_revealed', '已定位到 RapidOCR 模型说明。请按卡片中的百度云链接和目录提示手动放置模型。'), 'info');
+      break;
     case 'install_dxcam':
       navigateToInstallPanel('dxcam', { scrollToSection: false });
       expandAndScrollTo('dxcamCard');
@@ -7056,11 +7064,6 @@ async function handleDiagnosisAction(action) {
     case 'capture_backend':
       revealCaptureBackendSettings();
       setFlash(uiT('ui.flash.capture_backend_settings_revealed', '已定位到截图方式设置。可以切换 DXcam、MSS、PyAutoGUI 或 PrintWindow。'), 'info');
-      break;
-    case 'install_rapidocr':
-      navigateToInstallPanel('rapidocr', { scrollToSection: false });
-      expandAndScrollTo('rapidocrCard');
-      setFlash(uiT('ui.flash.rapidocr_hint_revealed', '已定位到 RapidOCR 状态卡片。请按卡片说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
       break;
     case 'install_textractor':
       await startInstall('textractor', false);
@@ -7081,9 +7084,9 @@ async function handleDiagnosisAction(action) {
 }
 
 function isFirstRunInstallAction(action) {
-  return action === 'install_rapidocr'
-    || action === 'install_dxcam'
-    || action === 'download_rapidocr_models';
+  return action === 'install_dxcam'
+    || action === 'download_rapidocr_models'
+    || action === 'show_rapidocr_models_guide';
 }
 
 function handleFirstRunActionClick(button, action) {

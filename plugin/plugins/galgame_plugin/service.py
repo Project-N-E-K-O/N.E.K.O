@@ -1210,13 +1210,21 @@ def _primary_diagnosis(
     title: str,
     message: str,
     actions: list[dict[str, str]],
+    *,
+    title_i18n_key: str = "",
+    message_i18n_key: str = "",
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "severity": severity,
         "title": title,
         "message": message,
         "actions": actions,
     }
+    if title_i18n_key:
+        payload["title_i18n_key"] = title_i18n_key
+    if message_i18n_key:
+        payload["message_i18n_key"] = message_i18n_key
+    return payload
 
 
 def _status_text(value: Any) -> str:
@@ -1239,6 +1247,15 @@ def _is_textractor_missing_error_message(message: str) -> bool:
             "textractor" in normalized
             and ("missing" in normalized or "invalid" in normalized)
         )
+    )
+
+
+def _is_self_ui_guard_message(message: str) -> bool:
+    normalized = _status_text(message).lower()
+    return (
+        "ocr_reader ignored text that looks like the n.e.k.o plugin ui"
+        in normalized
+        or "self_ui_guard" in normalized
     )
 
 
@@ -1473,6 +1490,7 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         item for item in inspection_failed_dependencies if item in {"rapidocr", "dxcam"}
     ]
     textractor_last_error_signal = _is_textractor_missing_error_message(last_error_message)
+    self_ui_guard_signal = _is_self_ui_guard_message(last_error_message)
     textractor_missing_signal = (
         memory_runtime_detail == "invalid_textractor_path"
         or _status_text(textractor_obj.get("detail")) == "missing"
@@ -1492,7 +1510,10 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
     )
     generic_last_error_message = (
         ""
-        if textractor_last_error_signal and not memory_reader_path_active
+        if (
+            self_ui_guard_signal
+            or (textractor_last_error_signal and not memory_reader_path_active)
+        )
         else last_error_message
     )
 
@@ -1538,6 +1559,25 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
                 _diagnosis_action("install_textractor", "安装 Textractor"),
                 _diagnosis_action("refresh_all", "刷新全部"),
             ],
+        )
+
+    if self_ui_guard_signal:
+        return _primary_diagnosis(
+            "warning",
+            "OCR 截到了插件 UI，已忽略",
+            (
+                "OCR Reader 识别到的文字像 N.E.K.O 插件管理页，而不是游戏画面。"
+                "这次结果已被丢弃，避免把插件界面文字写成台词。"
+                "请切回游戏窗口，或重新选择 OCR 目标窗口。"
+            ),
+            [
+                _diagnosis_action("focus_game", "切回游戏窗口"),
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("refresh_ocr_windows", "刷新窗口"),
+                _diagnosis_action("debug_details", "查看调试详情"),
+            ],
+            title_i18n_key="ui.diag.self_ui_guard.title",
+            message_i18n_key="ui.diag.self_ui_guard.body",
         )
 
     if generic_last_error_message:
@@ -2349,6 +2389,13 @@ def _build_status_payload_unchecked(
         if str(ocr_runtime_obj.get("stable_ocr_block_reason") or "") == "waiting_for_repeat"
         else 0.0
     )
+    last_stable_history_line = _latest_stable_history_line(state.history_lines)
+    if (
+        last_stable_history_line
+        and isinstance(ocr_runtime_obj, dict)
+        and not _line_text_from_status(ocr_runtime_obj.get("last_stable_line"))
+    ):
+        ocr_runtime_obj["last_stable_line"] = copy_for_payload(last_stable_history_line)
     local_state = {
         "latest_snapshot": copy_for_payload(state.latest_snapshot),
         "history_observed_lines": copy_for_payload(state.history_observed_lines),
@@ -2764,6 +2811,23 @@ def resolve_effective_current_line(local_state: dict[str, Any]) -> dict[str, Any
             )
             return result
     return None
+
+
+def _latest_stable_history_line(history_lines: Any) -> dict[str, Any]:
+    if not isinstance(history_lines, list):
+        return {}
+    for item in reversed(history_lines):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "")
+        line_id = str(item.get("line_id") or "")
+        if not text or not line_id:
+            continue
+        result = dict(item)
+        result["source"] = str(result.get("source") or "stable")
+        result["stability"] = str(result.get("stability") or "stable")
+        return result
+    return {}
 
 
 def build_ocr_context_diagnostic(local_state: dict[str, Any]) -> str:

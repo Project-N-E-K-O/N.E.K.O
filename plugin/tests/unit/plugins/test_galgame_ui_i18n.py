@@ -45,8 +45,34 @@ def test_galgame_ui_i18n_has_install_and_static_shell_keys() -> None:
 
     assert bundle["ui.app.title"] == "Galgame Play Assistant"
     assert bundle["ui.button.collapse"] == "Collapse"
-    assert bundle["ui.install.rapidocr.action"] == "Install RapidOCR"
+    assert bundle["ui.install.rapidocr.download_models.action"] == "Download Models Now"
+    assert bundle["ui.first_run.action.show_rapidocr_models_guide"] == "View Manual Download Guide"
     assert bundle["ui.flash.plugin_not_started"].startswith("Plugin not started")
+
+
+def test_galgame_ui_i18n_rapidocr_copy_is_not_left_half_deleted() -> None:
+    forbidden_fragments = [
+        "stable capture,.",
+        "fell back to. Reason",
+        "回退到了。原因",
+        "优先 兜底",
+        "では にフォールバック",
+        "し をフォールバック",
+        "에서는로",
+        "우선하고를",
+        "откат на. Причина",
+        "приоритетом RapidOCR и резервом",
+    ]
+    for locale in EXPECTED_LOCALES:
+        bundle = json.loads((UI_I18N_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+        for key in [
+            "ui.install.ocr_desc",
+            "ui.install.ocr_auto.title",
+            "ui.install.rapidocr.fallback_body",
+            "ui.install.rapidocr.ready_body",
+        ]:
+            value = bundle[key]
+            assert not any(fragment in value for fragment in forbidden_fragments), (locale, key, value)
 
 
 def test_galgame_ui_i18n_has_dynamic_dashboard_keys() -> None:
@@ -95,3 +121,17 @@ def test_galgame_ui_i18n_script_maps_manager_locales_to_ui_bundles() -> None:
         "add('ru');",
     ]:
         assert expected in script
+
+
+def test_galgame_ui_first_run_has_manual_rapidocr_model_cta() -> None:
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "galgame_plugin"
+        / "static"
+        / "main.js"
+    ).read_text(encoding="utf-8")
+
+    assert "show_rapidocr_models_guide" in script
+    assert "ui.first_run.action.show_rapidocr_models_guide" in script
+    assert "ui.flash.rapidocr_manual_guide_revealed" in script
