@@ -656,7 +656,13 @@
             // 屏幕专注态固定模式下不动 level（由 next_schedule_fixed_mode
             // 反向通知后续 reset），让用户离开屏幕态回到常规态时 backoff
             // 不会带着旧值。
-            if (triggered && !S.proactiveFixedScheduleMode) {
+            //
+            // ⚠️ 用本轮调度时捕获的 ``fixedMode`` 而非已被响应同步过的
+            // ``S.proactiveFixedScheduleMode``：本轮的 level 推进决策应该基于
+            // 「这一 round 是按哪种模式调度的」而不是「返回后的最新模式」。
+            // 否则 fixed → tier 切换的那一跳会误升一级，下一轮 tier 不能从
+            // 干净的 base 起步。CodeRabbit Minor review: PR #1327。
+            if (triggered && !fixedMode) {
                 var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
                 var currentCap1 = currentCaps.cap1;
                 var currentCap2 = currentCaps.cap2;
