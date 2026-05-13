@@ -3,7 +3,10 @@
 
   // 游戏音频配置规则：
   // - 音频配置归各游戏自己维护，不做一个全项目游戏音频总配置文件。
-  // - 各游戏使用统一配置形状：{ bgm: {...}, loopedBgm: {...}, sfx: {...} }。
+  // - 各游戏使用统一配置形状：{ bgm: {...}, sfx: {...} }。
+  // - loopedBgm 是可选的“命名循环 BGM 注册表”，只有需要 playLoopedBgm('a.b') 这种
+  //   字符串路径调用时才放进配置；如果游戏自己在 bgm 下组织 { intro, loop, outro } 并
+  //   直接传给 playLoopedBgm(config)，不需要额外写 loopedBgm。
   // - 游戏音频系统只负责播放注册资源；什么时候播、为什么播，由具体游戏代码决定。
   // - 具体游戏可以把配置单独放在 static/game/games/<gameType>/ 下，再由页面加载。
   // - 如果希望 VS Code 在写 gameAudioConfig.bgm. 时给下拉提示，游戏代码应直接引用
@@ -152,9 +155,11 @@
       this.currentSignature = '';
       this.currentContentSignature = '';
       this.currentTrack = null;
+      this.currentLoopPlaylist = this.loopPlaylist;
       this.lastTrackBySignature = new Map();
       this.preloadCache = new Map();
       this.fadeTimer = null;
+      this.endWaiters = [];
       this.pendingPlayAfterUnlock = false;
       this.destroyed = false;
       this.pausedByUser = false;
@@ -168,6 +173,8 @@
      * @param {string} [options.id] 本次播放身份；用于判重，避免同一套 BGM 重复启动。
      * @param {boolean} [options.force] 是否强制重播同一套 BGM。
      * @param {number} [options.fadeMs] 本次切换淡入淡出时间。
+     * @param {boolean} [options.repeat] 是否在当前普通 BGM 歌单结束后继续循环；默认使用播放器配置。
+     * @param {boolean} [options.loop] repeat 的旧别名；避免和 playLoopedBgm 的 loop 段混用。
      * @returns {Promise<boolean>} 是否成功发起播放。
      */
     playPlaylist(playlist, options = {}) {
@@ -190,13 +197,16 @@
         return Promise.resolve(true);
       }
 
+      this._resolveEndWaiters(false);
       this.currentPlaylist = normalized;
       this.currentSignature = signature;
       this.currentContentSignature = playlistSignature(normalized);
+      const repeatOption = options.repeat === undefined ? options.loop : options.repeat;
+      this.currentLoopPlaylist = repeatOption === undefined ? this.loopPlaylist : Boolean(repeatOption);
       this.pausedByUser = false;
       const nextTrack = this._pickTrack(normalized, signature);
       const result = this._crossfadeTo(nextTrack, options);
-      this._preloadNextTrack();
+      if (this.currentLoopPlaylist) this._preloadNextTrack();
       return result;
     }
 
@@ -232,7 +242,7 @@
       return this._safePlay(this.currentAudio);
     }
 
-    stop() {
+    stop(options = {}) {
       this.pendingPlayAfterUnlock = false;
       this._clearFadeTimer();
       disposeAudio(this.currentAudio);
@@ -240,6 +250,7 @@
       this.currentAudio = null;
       this.fadingAudio = null;
       this.currentTrack = null;
+      if (options.notifyWaiters !== false) this._resolveEndWaiters(false);
     }
 
     destroy() {
@@ -258,6 +269,31 @@
         return Promise.resolve(false);
       }
       return this._safePlay(this.currentAudio);
+    }
+
+    /**
+     * 等待当前普通 BGM 自然播放结束。
+     *
+     * 主要用于一次性结算音乐：调用方可以先 playBgm(..., { repeat: false })，
+     * 再等待它自然 ended。若 BGM 被 stop / destroy / 新 BGM 替换，则返回 false。
+     *
+     * @param {Object} [options] 等待选项。
+     * @param {number} [options.timeoutMs] 最长等待毫秒数；不传则不设置超时。
+     * @returns {Promise<boolean>} true 表示自然播完，false 表示被中断或超时。
+     */
+    waitForEnd(options = {}) {
+      if (this.destroyed || !this.currentAudio) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const waiter = { resolve, timer: null };
+        const timeoutMs = Math.max(0, Number(options.timeoutMs || 0) || 0);
+        if (timeoutMs > 0) {
+          waiter.timer = globalThis.setTimeout?.(() => {
+            this._removeEndWaiter(waiter);
+            resolve(false);
+          }, timeoutMs) || null;
+        }
+        this.endWaiters.push(waiter);
+      });
     }
 
     getCurrentSrc() {
@@ -368,7 +404,12 @@
     }
 
     _handleEnded(audio) {
-      if (audio !== this.currentAudio || this.pausedByUser || !this.loopPlaylist) return;
+      if (audio !== this.currentAudio || this.pausedByUser) return;
+      if (!this.currentLoopPlaylist) {
+        this._resolveEndWaiters(true);
+        this.stop({ notifyWaiters: false });
+        return;
+      }
       const nextTrack = this._pickTrack(this.currentPlaylist, this.currentSignature);
       this._crossfadeTo(nextTrack);
       this._preloadNextTrack();
@@ -413,6 +454,20 @@
       } catch (_err) {
         this.pendingPlayAfterUnlock = true;
         return Promise.resolve(false);
+      }
+    }
+
+    _removeEndWaiter(waiter) {
+      const index = this.endWaiters.indexOf(waiter);
+      if (index >= 0) this.endWaiters.splice(index, 1);
+      if (waiter.timer) globalThis.clearTimeout?.(waiter.timer);
+    }
+
+    _resolveEndWaiters(value) {
+      const waiters = this.endWaiters.splice(0);
+      for (const waiter of waiters) {
+        if (waiter.timer) globalThis.clearTimeout?.(waiter.timer);
+        waiter.resolve(Boolean(value));
       }
     }
 
@@ -936,6 +991,8 @@
      * @param {string} [options.id] 直接传歌单时可指定身份；传 key 时默认用 key。
      * @param {boolean} [options.force] 是否强制重播同一套 BGM。
      * @param {number} [options.fadeMs] 本次切换淡入淡出时间。
+     * @param {boolean} [options.repeat] 是否在当前普通 BGM 歌单结束后继续循环。
+     * @param {boolean} [options.loop] repeat 的旧别名；避免和 playLoopedBgm 的 loop 段混用。
      * @returns {Promise<boolean>} 是否成功发起播放。
      */
     playBgm(keyOrPlaylist, options = {}) {
@@ -945,6 +1002,19 @@
         id: typeof keyOrPlaylist === 'string' ? keyOrPlaylist : options.id,
         ...options,
       });
+    }
+
+    /**
+     * 等待当前普通 BGM 自然播放结束。
+     *
+     * 主要用于一次性结算音乐；循环 BGM 不会自然结束，调用方不要用它等待循环 BGM。
+     *
+     * @param {Object} [options] 等待选项。
+     * @param {number} [options.timeoutMs] 最长等待毫秒数；不传则不设置超时。
+     * @returns {Promise<boolean>} true 表示自然播完，false 表示被中断或超时。
+     */
+    waitForBgmEnd(options = {}) {
+      return this.bgm.waitForEnd(options);
     }
 
     /**

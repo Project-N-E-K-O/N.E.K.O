@@ -926,7 +926,9 @@
     const config = {
       bgm: {
         startMenu: [],
-        inGame: {},
+        inGame: { variants: [] },
+        difficulty: {},
+        result: {},
         mood: {},
       },
       loopedBgm: {},
@@ -952,6 +954,7 @@
         })
       : null;
     let currentKey = '';
+    const selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
 
     function isLoopedBgmConfig(value) {
       return value &&
@@ -989,9 +992,20 @@
     // 足球游戏内音频全部预载，减少第一次切换到对应 BGM / SFX 时的可感知停顿。
     // 注意：HTMLAudio 预载不能保证采样级无缝，只能降低网络读取和首次解码等待。
     function preloadAllAudio() {
-      preloadBgmTree(config.bgm);
+      preloadBgmTree({
+        ...config.bgm,
+        // 正常比赛 BGM 是页面级随机二选一；预加载只加载本次页面实际会用到的那一套。
+        inGame: selectedInGameBgm,
+      });
       preloadBgmTree(config.loopedBgm);
       preloadSfxTree(config.sfx);
+    }
+
+    function pickPageInGameBgm(inGameConfig) {
+      const variants = Array.isArray(inGameConfig?.variants) ? inGameConfig.variants : [];
+      if (!variants.length) return isLoopedBgmConfig(inGameConfig) ? inGameConfig : null;
+      const index = Math.floor(Math.random() * variants.length);
+      return variants[Math.min(index, variants.length - 1)];
     }
 
     preloadAllAudio();
@@ -1022,13 +1036,22 @@
       ) {
         return { key: 'mood:angry:max', type: 'loopedBgm', config: moodPlaylist.max };
       }
+      if (
+        difficultyName === 'lv4' &&
+        moodKey !== 'angry' &&
+        moodKey !== 'sad' &&
+        config.bgm.difficulty?.lv4NonAngry?.loop
+      ) {
+        return { key: 'difficulty:lv4:non-angry', type: 'loopedBgm', config: config.bgm.difficulty.lv4NonAngry };
+      }
 
       // 正常比赛 BGM：没有命中特殊心情 / 难度 BGM 时统一回到这里。
       // 例如打破 max + angry 组合后，下一次 sync 会切换回 inGame。
-      if (config.bgm.inGame?.loop) {
-        return { key: 'inGame', type: 'loopedBgm', config: config.bgm.inGame };
+      if (selectedInGameBgm?.loop) {
+        const selectedId = selectedInGameBgm.id || 'selected';
+        return { key: `inGame:${selectedId}`, type: 'loopedBgm', config: selectedInGameBgm };
       }
-      return { key: 'inGame', type: 'bgm', playlist: config.bgm.inGame || [] };
+      return { key: 'inGame', type: 'bgm', playlist: [] };
     }
 
     function sync(reason = 'sync') {
@@ -1078,6 +1101,14 @@
       return audio ? audio.playSfx(keyOrAudio, options) : Promise.resolve(false);
     }
 
+    function playBgm(keyOrPlaylist, options = {}) {
+      return audio ? audio.playBgm(keyOrPlaylist, options) : Promise.resolve(false);
+    }
+
+    function waitForBgmEnd(options = {}) {
+      return audio ? audio.waitForBgmEnd(options) : Promise.resolve(false);
+    }
+
     function playLoopedBgm(keyOrConfig, options = {}) {
       return audio ? audio.playLoopedBgm(keyOrConfig, options) : Promise.resolve(false);
     }
@@ -1125,6 +1156,8 @@
       config,
       sync,
       setConfig,
+      playBgm,
+      waitForBgmEnd,
       playSfx,
       playLoopedBgm,
       stopLoopedBgm,
@@ -3976,6 +4009,10 @@
   // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
 
   let _manualEndInFlight = false;
+  function _waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
@@ -3988,13 +4025,35 @@
       const v = window.t(fullKey);
       return (v && v !== fullKey) ? v : fallback;
     };
+    let closeDelayMs = 600;
     try {
       window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
         reason: 'manual_user_exit',
         postgameProactive: false,
       });
-      soccerGameAudio.stop();
+      const playerWon = Number(state.score.player || 0) > Number(state.score.ai || 0);
+      const playerWinBgm = soccerGameAudio.config.bgm.result?.playerWin;
+      if (playerWon && Array.isArray(playerWinBgm) && playerWinBgm.length) {
+        const started = await soccerGameAudio.playBgm(playerWinBgm, {
+          id: 'soccer:result:player-win',
+          repeat: false,
+          fadeMs: 250,
+        });
+        // 胜利结算 BGM 按 max(2.6 秒, BGM 播放完成) 后再返回。
+        // timeoutMs 只是异常兜底，避免浏览器没有 fired ended 时永久卡在退出流程。
+        if (started) {
+          await Promise.all([
+            _waitMs(2600),
+            soccerGameAudio.waitForBgmEnd({ timeoutMs: 120000 }),
+          ]);
+          closeDelayMs = 0;
+        } else {
+          closeDelayMs = 2600;
+        }
+      } else {
+        soccerGameAudio.stop();
+      }
     } finally {
       window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
@@ -4011,7 +4070,7 @@
             window.location.assign('/');
           }
         }, 150);
-      }, 600);
+      }, closeDelayMs);
     }
   }
 
