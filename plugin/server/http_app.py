@@ -101,6 +101,27 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not _EMBEDDED_BY_AGENT:
         await lifecycle_startup()
 
+    # Install-source lock subsystem: tracks plugin provenance (builtin/manual/
+    # imported/market). Runs after lifecycle_startup so filesystem state is stable.
+    try:
+        from plugin.server.application.install_source import (
+            StartupReconciler,
+            build_install_source_manager,
+            set_global_manager,
+        )
+        _install_source_mgr = build_install_source_manager()
+        await StartupReconciler(_install_source_mgr).run()
+        set_global_manager(_install_source_mgr)
+    except Exception as exc:
+        logger.error(
+            "InstallSourceManager init failed, subsystem degraded: {}", exc,
+        )
+        try:
+            from plugin.server.application.install_source import set_global_manager
+            set_global_manager(None)
+        except Exception:
+            pass  # already in degraded mode
+
     # Write bridge token file for Market frontend / URI handler
     try:
         from plugin.server.routes.market_bridge import write_bridge_token_file
