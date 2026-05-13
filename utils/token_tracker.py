@@ -373,7 +373,10 @@ def _get_anonymous_device_id() -> str:
 # ---------------------------------------------------------------------------
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
-_TELEMETRY_BRANCHES: tuple = ("main",)
+# A/B 池：
+#   - "main"：控制组，沿用历史默认（隐私模式按用户地区分流，仅中国地区默认关闭）
+#   - "privacy_default_off_v1"：实验组，隐私模式一律默认关闭
+_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v1")
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
@@ -430,6 +433,16 @@ def _get_telemetry_branch(config_dir: Path) -> str:
         # 写盘长期失败，server 看到的将是分布噪声而非错误数据。
         logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
         return branch
+
+
+def get_telemetry_branch() -> str:
+    """对外暴露的 A/B test 分支读取入口。
+
+    `_get_telemetry_branch` 是内部实现（参数化 config_dir，方便测试）；本函数从
+    全局 config_manager 取 config_dir 后转发。前端通过 API 拿到 branch 后可在
+    首次启动时按分支选择默认行为，与 token tracker 自身上报的 branch 保持一致。
+    """
+    return _get_telemetry_branch(get_config_manager().config_dir)
 
 
 def _get_telemetry_locale() -> str:

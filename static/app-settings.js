@@ -17,6 +17,11 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
+    // first-launch 标记：让服务器返回 telemetryBranch 后，能识别这次是不是首启，
+    // 决定要不要对实验组追加「隐私模式默认关闭」覆写
+    let _isFirstLaunch = false;
+    // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
+    const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
 
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
@@ -59,9 +64,14 @@
             });
             if (!response.ok) return null;
             const data = await response.json();
-            if (data.success && data.settings && Object.keys(data.settings).length > 0) {
-                return data.settings;
-            }
+            if (!data.success) return null;
+            const hasSettings = data.settings && Object.keys(data.settings).length > 0;
+            const telemetryBranch = (typeof data.telemetryBranch === 'string' && data.telemetryBranch) || null;
+            if (!hasSettings && !telemetryBranch) return null;
+            return {
+                settings: hasSettings ? data.settings : null,
+                telemetryBranch
+            };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
         }
@@ -415,9 +425,14 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：隐私模式一律默认关闭（即 proactiveVisionEnabled 默认开启），
-                // 不再按用户语言/地区区分
-                S.proactiveVisionEnabled = true;
+                // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
+                // 地区默认关闭）。实验组（privacy_default_off_v1）的「一律默认关闭」
+                // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
+                // 异步合并块。
+                _isFirstLaunch = true;
+                if (_isUserRegionChina()) {
+                    S.proactiveVisionEnabled = true;
+                }
 
                 // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
                 S.proactiveMusicEnabled = true;
@@ -462,10 +477,27 @@
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
         try {
-            loadSettingsFromServer().then(serverSettings => {
+            loadSettingsFromServer().then(serverResult => {
+                if (!serverResult) return;
+                const serverSettings = serverResult.settings;
+                const telemetryBranch = serverResult.telemetryBranch;
+                let hasUpdate = false;
+
+                // A/B test 覆写：首启 + 实验组 + 服务器没有用户既有偏好时，
+                // 把隐私模式默认关闭（proactiveVisionEnabled = true）。已有云端
+                // 偏好的用户和控制组保持各自原状不动。
+                const noServerVisionPref = !serverSettings ||
+                    serverSettings.proactiveVisionEnabled === undefined;
+                if (_isFirstLaunch && telemetryBranch === _PRIVACY_OFF_BRANCH && noServerVisionPref) {
+                    if (S.proactiveVisionEnabled !== true) {
+                        S.proactiveVisionEnabled = true;
+                        hasUpdate = true;
+                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
+                    }
+                }
+
                 if (serverSettings) {
                     // 用服务器设置覆盖本地设置
-                    let hasUpdate = false;
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
@@ -479,30 +511,31 @@
                     if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
-                    if (hasUpdate) {
-                        console.log('[app-settings] 已从服务器合并对话设置');
-                        // 同步 window 镜像变量，防止 saveSettings() 回滚
-                        window.proactiveChatEnabled = S.proactiveChatEnabled;
-                        window.proactiveVisionEnabled = S.proactiveVisionEnabled;
-                        window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
-                        window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
-                        window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
-                        window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
-                        window.proactiveMusicEnabled = S.proactiveMusicEnabled;
-                        window.mergeMessagesEnabled = S.mergeMessagesEnabled;
-                        window.focusModeEnabled = S.focusModeEnabled;
-                        window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
-                        window.proactiveChatInterval = S.proactiveChatInterval;
-                        window.proactiveVisionInterval = S.proactiveVisionInterval;
-                        window.textGuardMaxLength = S.textGuardMaxLength;
-                        // 同步回 localStorage
-                        saveSettings();
-                        // 重新初始化主动搭话调度器（使用最新标志）
-                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
-                            window.appProactive.scheduleProactiveChat();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            window.scheduleProactiveChat();
-                        }
+                }
+
+                if (hasUpdate) {
+                    console.log('[app-settings] 已从服务器合并对话设置');
+                    // 同步 window 镜像变量，防止 saveSettings() 回滚
+                    window.proactiveChatEnabled = S.proactiveChatEnabled;
+                    window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                    window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
+                    window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
+                    window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
+                    window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
+                    window.proactiveMusicEnabled = S.proactiveMusicEnabled;
+                    window.mergeMessagesEnabled = S.mergeMessagesEnabled;
+                    window.focusModeEnabled = S.focusModeEnabled;
+                    window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
+                    window.proactiveChatInterval = S.proactiveChatInterval;
+                    window.proactiveVisionInterval = S.proactiveVisionInterval;
+                    window.textGuardMaxLength = S.textGuardMaxLength;
+                    // 同步回 localStorage
+                    saveSettings();
+                    // 重新初始化主动搭话调度器（使用最新标志）
+                    if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                        window.appProactive.scheduleProactiveChat();
+                    } else if (typeof window.scheduleProactiveChat === 'function') {
+                        window.scheduleProactiveChat();
                     }
                 }
             });
