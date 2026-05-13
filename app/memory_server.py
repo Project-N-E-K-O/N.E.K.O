@@ -2532,17 +2532,27 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
 
 
 async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
-    """后台异步：事实提取 + 反馈检查 + 复读嗅探。失败静默跳过。
+    """后台异步：counter bump + 复读嗅探 + 反馈检查。失败静默跳过。
 
     认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
     memory-evidence-rfc 接入点：
       - 每轮 tick 给 signal-extraction loop 的 turn counter +1
       - check_feedback 的 confirmed/denied/ignored 三值分别派 evidence 信号
       - 如果 user message 命中 NEGATIVE_KEYWORDS，触发快速 LLM target check
+
+    历史 — 函数名带 ``extract_facts`` 是 PR-1 (RFC #928) 引入时的命名，
+    当时 step 1 还跑 ``fact_store.extract_facts`` (Stage-1) 兼容 legacy
+    "每轮抽 fact" 体验。RFC §3.4.3 标题原话："**不**在对话主路径上每轮
+    运行 extract_facts——太贵。改为背景调度"，因此 Stage-1+Stage-2 batch
+    抽取从一开始就有专职 background loop ``_periodic_signal_extraction_loop``
+    负责，per-turn 这条本来就是过渡期 legacy。step 1 已于本次 commit
+    迁完，函数名留作历史以减少 outbox handler 注册路径的重命名波及。
     """
     user_msgs = _extract_user_messages(messages)
 
-    # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）
+    # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
+    # 靠这个 counter 在累积 10 turn 时触发 Stage-1+Stage-2，所以 per-turn
+    # bump 是 RFC 设计意图保留下来的，不能省。
     try:
         if user_msgs:
             _signal_check_record_turn(lanlan_name)
@@ -2555,17 +2565,20 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
     # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
     powerful_enabled = await _ais_powerful_memory_enabled()
 
-    try:
-        # 1. 事实提取（legacy flow；真正的 Stage-1+Stage-2 走
-        #    _periodic_signal_extraction_loop。这里保留 Stage-1-only 以便
-        #    短期行为不变，facts.json 在每轮对话后仍及时更新。）
-        await fact_store.extract_facts(messages, lanlan_name)
-    except Exception as e:
-        logger.warning(f"[MemoryServer] 事实提取失败: {e}")
+    # NOTE: 历史 step 1 (fact_store.extract_facts Stage-1 per-turn 抽取)
+    # 已剥离——RFC §3.4.3 明确"per-turn extract_facts 太贵，改为背景调度"，
+    # 单 turn 输入 2-4 条消息抽 fact yield 极低且无上下文；batch 路径在
+    # `_periodic_signal_extraction_loop` 里从 ``time_indexed.db`` 拉过去
+    # 窗口的全部 user messages 跑 Stage-1+Stage-2，质量和成本都更好。
+    # PR-1 当时为"短期行为不变 / facts.json 每轮及时更新"暂留 step 1；
+    # PR cba377c5（"hotswap timing"）的 /cache+/settle bug 让 step 1 已经
+    # 46 天没跑过，借这次回收 cache 端点落 db 的机会一起完成 RFC 迁移。
 
     try:
         # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目 +
-        #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）
+        #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）。
+        #    本地 BM25，无 LLM 调用，per-turn 跑是必要的——5h 窗口逻辑
+        #    依赖即时更新。
         ai_response = _extract_ai_response(messages)
         if ai_response:
             await persona_manager.arecord_mentions(lanlan_name, ai_response)
@@ -2704,8 +2717,33 @@ register_outbox_handler(OP_EXTRACT_FACTS, _outbox_extract_facts_handler)
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
-    """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
-    供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
+    """每轮 turn end 的"轻量持久化"端点：写 recent.json + 落 time_indexed.db
+    + 登记 per-turn signals outbox op（counter bump + 本地复读嗅探 +
+    check_feedback）。**不**跑 Stage-1 fact_extract LLM——RFC §3.4.3
+    明确"per-turn extract_facts 太贵，改为背景调度"，batch 抽取由
+    ``_periodic_signal_extraction_loop`` 在累积 10 turn 或 5 min idle 时
+    从 ``time_indexed.db`` 拉窗口跑 Stage-1+Stage-2；也**不**跑 review LLM
+    重写历史（那一类仍由 /settle 在 renew session 时跑）。
+
+    历史 — commit cba377c5（"Fix/memory hotswap timing"，2026-03-29）引入
+    /settle 时把"补完 cache 留下的 LLM 后续操作"全 gate 在 ``if input_history``
+    后面，但 cross_server 的标准节奏是"turn end /cache → renew session
+    /settle(msgs=0)"，settle 永远收 msgs=0，于是 ``store_conversation`` 和
+    outbox extract 都被静默跳过：``time_indexed.db`` 永不创建（time
+    perception 失效）+ ``outbox.ndjson`` / ``events.ndjson`` / ``facts.json``
+    全部不建（长期记忆 + evidence-RFC 链路完全空转），**且 batch loop 依赖
+    db 拉历史也一并瘫痪**。
+
+    修法把 store + post-turn signals 搬回 cache 端点；同时 PR-1 当时为
+    "短期行为不变"暂留的 Stage-1 per-turn fact_extract（``legacy flow``）
+    一并迁完——RFC 原本就计划只让 ``_periodic_signal_extraction_loop`` 跑
+    fact extraction。``astore_conversation`` 是 SQLite INSERT（~ms 量级），
+    ``_spawn_outbox_extract_facts`` 现内部只跑 counter bump + 本地复读嗅探
+    + check_feedback（LLM 仅在 surfaced 有 pending 时才跑），是 ndjson
+    append + spawn background task（不阻塞响应）。``cache`` 保持"前台无
+    LLM 延迟"的轻量语义，**且比 PR-1 实现更轻**——单 turn fact_extract
+    LLM 浪费已彻底去除。
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _touch_activity()
     try:
@@ -2715,11 +2753,18 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         if _has_human_messages(input_history):
             await _aclear_review_clean(lanlan_name)
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
+        uid = str(uuid4())
         async with _get_settle_lock(lanlan_name):
             await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+            # store_conversation 必须在 lock 内、与 update_history 串行：和
+            # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+            await time_manager.astore_conversation(uid, input_history, lanlan_name)
+        # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
+        # 阻塞下一轮 /cache 写盘。
+        await _spawn_outbox_extract_facts(lanlan_name, input_history)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
-        logger.error(f"[MemoryServer] cache 失败: {e}")
+        logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 

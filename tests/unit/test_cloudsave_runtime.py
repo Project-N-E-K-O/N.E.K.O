@@ -647,6 +647,43 @@ def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_l
 
 
 @pytest.mark.unit
+def test_bootstrap_heals_orphan_restart_pending_marker(tmp_path):
+    """``restart_pending:`` marker 残留 + 没有真 pending 的 storage_migration.json
+    时，bootstrap 必须把 mode 自愈回 normal——否则用户撞到 fire-and-forget
+    shutdown / launcher 接力失败 / 强杀 等任一场景就会被永久钉在 readonly，
+    memory server 所有写盘静默失败（见 time_indexed.db 不更新导致 gap 永远算成
+    3 天以上的 bug 报告）。
+
+    与 ``test_bootstrap_preserves_restart_pending_maintenance_mode`` 对偶：那个
+    用例创建了真 pending 的 migration checkpoint，本用例只留 marker。
+    """
+    cm = _make_config_manager(tmp_path)
+    anchor_base = tmp_path / "anchor-base"
+    anchor_base.mkdir(parents=True, exist_ok=True)
+    cm._get_standard_data_directory_candidates = lambda: [anchor_base]
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        ROOT_MODE_NORMAL,
+        bootstrap_local_cloudsave_environment,
+        set_root_mode,
+    )
+
+    set_root_mode(
+        cm,
+        ROOT_MODE_MAINTENANCE_READONLY,
+        last_migration_source=str(cm.app_docs_dir),
+        last_migration_result=f"restart_pending:{tmp_path / 'orphan-target'}",
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["root_state"]["mode"] == ROOT_MODE_NORMAL
+    # _recover_stale_write_blocking_mode 写入的标记，方便运维从日志/state 追溯
+    assert result["root_state"]["last_migration_result"].startswith("recovered_stale_mode:")
+
+
+@pytest.mark.unit
 def test_should_write_root_mode_normal_after_startup_only_when_mode_is_normal():
     from utils.cloudsave_runtime import (
         ROOT_MODE_DEFERRED_INIT,
