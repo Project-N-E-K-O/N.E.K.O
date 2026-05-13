@@ -506,15 +506,22 @@
 
                 // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
                 // 分支 = 实验组 + 服务器没有云端 vision 偏好 + 用户没在 fetch 间隙
-                // 手动切 toggle，才把隐私模式默认关掉。升级用户没有 pending marker
-                // 不会被误覆写；offline 首启把 marker 留在 localStorage，下次在线启动再补
+                // 手动切 toggle + 本地 vision 值仍等于控制组默认（即用户也没在之前的
+                // offline session 里改过），才把隐私模式默认关掉。升级用户没有 pending
+                // marker 不会被误覆写；offline 首启把 marker 留在 localStorage，下次
+                // 在线启动再补；offline 期间用户改过 toggle 时本地值跟控制组默认会拉
+                // 开差距，保留用户选择
                 const noServerVisionPref = !serverSettings ||
                     serverSettings.proactiveVisionEnabled === undefined;
                 const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
+                const controlGroupDefaultVision = _isUserRegionChina();
+                const localVisionMatchesControlDefault =
+                    S.proactiveVisionEnabled === controlGroupDefaultVision;
                 if (_firstLaunchPending
                         && telemetryBranch === _PRIVACY_OFF_BRANCH
                         && noServerVisionPref
-                        && !userToggledDuringFetch) {
+                        && !userToggledDuringFetch
+                        && localVisionMatchesControlDefault) {
                     if (S.proactiveVisionEnabled !== true) {
                         S.proactiveVisionEnabled = true;
                         hasUpdate = true;

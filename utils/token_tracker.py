@@ -405,10 +405,14 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     p = config_dir / _TELEMETRY_BRANCH_FILE
 
     def _read() -> Optional[str]:
+        # 严格校验：只接受已知 branch 值。文件被截断/损坏成任意字符串时直接当
+        # 「没文件」处理，让 slow path 重新抽签写入；否则进程级缓存会固化脏值，
+        # 前端首启分流和遥测 cohort 全跟着错。append-only 池下迁移期老分支也
+        # 该保留在 _TELEMETRY_BRANCHES 里，所以这里不会误杀历史值。
         try:
             if p.exists():
                 value = p.read_text(encoding="utf-8").strip()
-                if value and len(value) <= 64:
+                if value in _TELEMETRY_BRANCHES:
                     return value
         except Exception:
             pass
