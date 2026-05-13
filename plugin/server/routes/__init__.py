@@ -15,6 +15,7 @@ from plugin.server.routes.websocket import router as websocket_router
 from plugin.server.routes.plugin_ui import router as plugin_ui_router
 from plugin.server.routes.plugin_cli import router as plugin_cli_router
 from plugin.server.routes.llm_tools import router as llm_tools_router
+from plugin.server.routes.market_bridge import router as market_bridge_router
 
 __all__ = [
     'health_router',
@@ -29,4 +30,5 @@ __all__ = [
     'plugin_ui_router',
     'plugin_cli_router',
     'llm_tools_router',
+    'market_bridge_router',
 ]
