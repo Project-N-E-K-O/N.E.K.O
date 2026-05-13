@@ -2370,6 +2370,8 @@
     if (shouldShow) {
       moodDebugPanel.dataset.collapsed = readMoodDebugCollapsed() ? 'true' : 'false';
       disableMoodRotation({ force: true });
+    } else if (!_llm.keepMoodRotationDisabled) {
+      enableMoodRotation(20);
     }
     if (persist) {
       try {
