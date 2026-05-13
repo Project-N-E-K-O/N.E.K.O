@@ -364,28 +364,57 @@ async def plugin_cli_download(
 
 # ── Legacy route aliases (backward compatibility with existing frontend) ──
 
-@router.post("/plugin-cli/pack", response_model=PluginCliBuildResponse, include_in_schema=False)
+
+@router.post("/plugin-cli/pack", include_in_schema=False)
 async def plugin_cli_pack_legacy(
     payload: PluginCliBuildRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Legacy alias for /plugin-cli/build."""
-    return await plugin_cli_build(payload, _)
+    """Legacy alias for /plugin-cli/build. Translates response keys."""
+    result = await plugin_cli_build(payload, _)
+    # Translate new keys to legacy keys expected by frontend
+    if isinstance(result, dict):
+        translated = dict(result)
+        if "built" in translated:
+            translated["packed"] = translated.pop("built")
+        if "built_count" in translated:
+            translated["packed_count"] = translated.pop("built_count")
+        return translated
+    return result
 
 
-@router.post("/plugin-cli/unpack", response_model=PluginCliInstallResponse, include_in_schema=False)
+@router.post("/plugin-cli/unpack", include_in_schema=False)
 async def plugin_cli_unpack_legacy(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Legacy alias for /plugin-cli/install."""
-    return await plugin_cli_install(payload, _)
+    """Legacy alias for /plugin-cli/install. Translates response keys."""
+    result = await plugin_cli_install(payload, _)
+    # Translate new keys to legacy keys expected by frontend
+    if isinstance(result, dict):
+        translated = dict(result)
+        if "installed_plugins" in translated:
+            translated["unpacked_plugins"] = translated.pop("installed_plugins")
+        if "installed_plugin_count" in translated:
+            translated["unpacked_plugin_count"] = translated.pop("installed_plugin_count")
+        return translated
+    return result
 
 
-@router.post("/plugin-cli/upload-and-unpack", response_model=PluginCliUploadAndInstallResponse, include_in_schema=False)
+@router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
+    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Legacy alias for /plugin-cli/upload-and-install."""
-    return await plugin_cli_upload_and_install(file, _)
+    """Legacy alias for /plugin-cli/upload-and-install. Translates response keys."""
+    result = await plugin_cli_upload_and_install(file, on_conflict=on_conflict, _=_)
+    # Translate nested install keys
+    if isinstance(result, dict) and isinstance(result.get("install"), dict):
+        install = dict(result["install"])
+        if "installed_plugins" in install:
+            install["unpacked_plugins"] = install.pop("installed_plugins")
+        if "installed_plugin_count" in install:
+            install["unpacked_plugin_count"] = install.pop("installed_plugin_count")
+        result = {**result, "install": install}
+    return result
