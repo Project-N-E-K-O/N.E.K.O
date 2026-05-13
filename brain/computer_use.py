@@ -625,23 +625,33 @@ class ComputerUseAdapter:
             try:
                 current_sig = (base_url.rstrip("/"), api_key, model)
                 if self._llm_client is None or self._llm_client_sig != current_sig:
+                    # CRITICAL: keep the client instance's default timeout at
+                    # 65.0s, NOT ``timeout_s``. ``self._llm_client`` is reused
+                    # by the live ``_call_llm`` path (line ~1123) which calls
+                    # ``invoke_raw(messages, ...)`` WITHOUT a per-call
+                    # ``timeout=`` kwarg, so it inherits the instance default.
+                    # If we cached a 4s-default client here, real GUI Agent
+                    # requests would time out after 4 seconds and break the
+                    # whole feature. The fast-probe behavior is achieved
+                    # purely by the per-call ``timeout=timeout_s`` argument
+                    # on the ping's ``invoke_raw`` below, which routes
+                    # through ``_params()`` without mutating the instance.
                     self._llm_client = create_chat_llm(
                         model=model,
                         base_url=base_url,
                         api_key=api_key,
-                        timeout=timeout_s,
+                        timeout=65.0,
                         max_retries=0,
                         temperature=0,
                     )
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
-                # Pass per-call overrides into invoke_raw so they hit
-                # _params() locally instead of mutating self._llm_client —
-                # this ping runs from a background thread and the live
-                # _call_llm path uses self.max_completion_tokens=6000;
-                # writing the 5-token ping budget back to the instance
-                # would clip a concurrent real request to 5 tokens.
+                # Per-call overrides via invoke_raw's **kwargs path: routes
+                # both max_completion_tokens AND timeout through _params()
+                # locally, NOT writing back to the instance. This means a
+                # 4s probe ping running concurrently with a real 60s GUI
+                # request won't clip the latter's budget or timeout.
                 resp = self._llm_client.invoke_raw(
                     [{"role": "user", "content": "ok"}],
                     max_completion_tokens=LLM_PING_MAX_TOKENS,
