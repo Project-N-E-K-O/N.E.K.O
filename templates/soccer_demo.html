@@ -107,6 +107,7 @@
     color: rgba(255,255,255,0.85); font: 13px/1.4 sans-serif;
     background: rgba(0,0,0,0.45); padding: 6px 12px; border-radius: 6px;
     user-select: none; -webkit-user-select: none;
+    pointer-events: auto;
   }
   #controls label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
   #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
@@ -129,6 +130,52 @@
   #voice-controls input { min-width: 210px; padding: 4px 7px; }
   #voice-status {
     grid-column: 1 / -1; opacity: 0.75; font-size: 12px;
+  }
+  #mood-debug-panel {
+    display: none;
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    gap: 7px;
+    min-width: 260px;
+    position: relative;
+    z-index: 45;
+    pointer-events: auto;
+  }
+  #mood-debug-panel[data-debug-visible="true"] {
+    display: grid;
+  }
+  .mood-debug-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font: 600 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.92);
+  }
+  .mood-debug-actions {
+    display: flex; align-items: center; gap: 5px;
+  }
+  #mood-debug-panel[data-collapsed="true"] .mood-debug-body {
+    display: none;
+  }
+  .mood-debug-body {
+    display: grid; gap: 7px;
+  }
+  .mood-debug-row {
+    display: flex; flex-wrap: wrap; gap: 5px;
+  }
+  #mood-debug-panel button {
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+    background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.92);
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer; padding: 4px 7px;
+    pointer-events: auto;
+  }
+  #mood-debug-panel button[data-active="true"] {
+    background: rgba(255,255,255,0.28);
+    border-color: rgba(255,255,255,0.56);
+  }
+  #mood-debug-readout {
+    margin: 0; padding: 6px 7px; border-radius: 5px;
+    background: rgba(0,0,0,0.30); color: rgba(255,255,255,0.86);
+    font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
+    white-space: pre-wrap;
   }
   #exit-to-start-button {
     position: fixed; right: 12px; top: 12px; z-index: 35;
@@ -251,6 +298,36 @@
     <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
     <button id="voice-send-button" type="button">Send</button>
     <div id="voice-status">Debug STT: hidden</div>
+  </div>
+  <div id="mood-debug-panel" aria-hidden="true">
+    <div class="mood-debug-title">
+      <span>心情调试</span>
+      <div class="mood-debug-actions">
+        <button type="button" data-debug-action="collapse">收起</button>
+        <button type="button" data-debug-action="hide">隐藏</button>
+      </div>
+    </div>
+    <div class="mood-debug-body">
+      <div class="mood-debug-row" aria-label="心情">
+        <button type="button" data-debug-mood="calm">平静</button>
+        <button type="button" data-debug-mood="happy">开心</button>
+        <button type="button" data-debug-mood="angry">生气</button>
+        <button type="button" data-debug-mood="relaxed">放松</button>
+        <button type="button" data-debug-mood="sad">悲伤</button>
+        <button type="button" data-debug-mood="surprised">惊讶</button>
+      </div>
+      <div class="mood-debug-row" aria-label="难度">
+        <button type="button" data-debug-difficulty="max">最高</button>
+        <button type="button" data-debug-difficulty="lv2">二档</button>
+        <button type="button" data-debug-difficulty="lv3">三档</button>
+        <button type="button" data-debug-difficulty="lv4">四档</button>
+      </div>
+      <div class="mood-debug-row" aria-label="控制">
+        <button type="button" data-debug-action="rotation-toggle">随机心情：关</button>
+        <button type="button" data-debug-action="clear-startle">清空受惊冷却</button>
+      </div>
+      <pre id="mood-debug-readout">心情调试已隐藏</pre>
+    </div>
   </div>
 </div>
 <!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
@@ -763,12 +840,12 @@
  *     场面控制:         'long-attack-possession' / 'long-defense-possession'（按 allowAttack 分支）
  *     观察玩家:         'player-idle' / 'player-charging-long' / 'close-proximity'
  *     空场氛围:         'free-ball' / 'score-boring' / 'no-goal-1min'
- *     物理彩蛋:         'fast-ball' / 'startle' / 'zoneout' / 'unstick'
+ *     物理彩蛋:         'fast-ball' / 'startle-direct' / 'startle-graze' / 'zoneout' / 'unstick'
  *     档位切换:         'diff-max' / 'diff-lv2' / 'diff-lv3' / 'diff-lv4'
  *     心情切换:         'mood-calm' / 'mood-happy' / 'mood-angry' / 'mood-relaxed' / 'mood-sad' / 'mood-surprised'
  *
  *  ── Debug
- *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, ballGhost }
+ *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, startle, ballGhost }
  *
  *  ── 键盘（debug 快捷键）
  *     1-6   切换心情（同 setMood）
@@ -873,6 +950,8 @@
   const voiceTextInput = document.getElementById('voice-text-input');
   const voiceSendButton = document.getElementById('voice-send-button');
   const voiceStatusEl = document.getElementById('voice-status');
+  const moodDebugPanel = document.getElementById('mood-debug-panel');
+  const moodDebugReadout = document.getElementById('mood-debug-readout');
   const startButton = document.getElementById('soccer-start-button');
   const exitToStartButton = document.getElementById('exit-to-start-button');
   const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
@@ -881,6 +960,17 @@
     voiceControls.dataset.debugVisible = 'true';
     voiceControls.setAttribute('aria-hidden', 'false');
     console.log('[SoccerVoice][DebugSTT] 调试控件已显示 | 来源=debug_stt/localStorage');
+  }
+  const debugMoodVisible = new URLSearchParams(window.location.search).get('debug_mood') === '1' ||
+    window.localStorage?.getItem('soccerDebugMood') === '1';
+  const debugMoodCollapsed = window.localStorage?.getItem('soccerDebugMoodCollapsed') === '1';
+  let moodDebugMode = debugMoodVisible;
+  let moodDebugRotationEnabled = false;
+  if (debugMoodVisible && moodDebugPanel) {
+    moodDebugPanel.dataset.debugVisible = 'true';
+    moodDebugPanel.dataset.collapsed = debugMoodCollapsed ? 'true' : 'false';
+    moodDebugPanel.setAttribute('aria-hidden', 'false');
+    console.log('[SoccerMoodDebug] 调试面板已显示 | 来源=debug_mood/localStorage');
   }
   const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
   const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #exit-to-start-button');
@@ -959,7 +1049,7 @@
     if (e.key === 'r' || e.key === 'R') resetPositions();
     // 1-6 切换 AI 心情（debug）
     const idx = Number(e.key) - 1;
-    if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx]);
+    if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx], { manual: true });
   });
 
   // 通用踢球：从 kicker 中心向 (aimX, aimY) 踢；dirX/dirY 为单位向量，球得到一次性大冲量。
@@ -980,6 +1070,8 @@
     // 边界系统：记录最后触球方
     _outOfBoundsSide = isPlayer ? 'player' : 'ai';
     lastTouchSide = isPlayer ? 'player' : 'ai';
+    lastPlayerKickAtMs = isPlayer ? performance.now() : 0;
+    playerKickWallBounceForStartle = false;
     logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
     markBallTouched();
     emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
@@ -1120,13 +1212,15 @@
     }
 
     // ── 默认模式：墙壁反弹 ──
-    if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; }
-    if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; }
+    let bouncedOffWall = false;
+    if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; bouncedOffWall = true; }
+    if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; bouncedOffWall = true; }
     const inGoalBand = (b.y > goalY1 && b.y < goalY2);
     if (!inGoalBand) {
-      if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; }
-      if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; }
+      if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
+      if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
     }
+    if (bouncedOffWall) markPlayerKickWallBounceForStartle();
   }
 
   // 球"幽灵"时间：大于 0 时球临时穿透所有角色（unstick 用，让球能从死角飞出去）
@@ -1218,17 +1312,42 @@
   };
   const MOOD_KEYS = ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'];
   let moodKey = 'calm';
-  function setMood(name) {
+  function isAutomaticMoodBlocked(opts = {}) {
+    return moodDebugMode && opts.manual !== true && opts.force !== true && !moodDebugRotationEnabled;
+  }
+
+  function setMood(name, opts = {}) {
     if (!MOODS[name]) return;
+    if (isAutomaticMoodBlocked(opts)) return false;
     moodKey = name;
     // 同步 L2D 表情（复用项目原有 setEmotion）
     const emotion = MOODS[name].emotion;
     try { window.live2dManager?.setEmotion?.(emotion); } catch (_) {}
+    return true;
   }
 
-  // startle：检测球加速度，突变时冻结 AI 一段时间
+  // startle：惊讶心情下，球高速撞来/擦身掠过时冻结 AI 一小段时间。
+  // 以前用“速度变化 / dt”当加速度，墙壁反弹和踢球瞬间都会误触发；这里改成
+  // 基于球速 + 未来近距离轨迹的几何判定。
   let aiFreezeSec = 0;
-  let lastBallVx = 0, lastBallVy = 0;
+  const STARTLE_RULE = {
+    directSpeedMin: 700,
+    grazeSpeedMin: 850,
+    lookaheadSec: 0.55,
+    directPadding: 8,
+    grazeOuterPadding: 70,
+    directCooldownBase: 8,
+    grazeCooldownBase: 10,
+    cooldownRandomExtra: 5,
+    mutualLockSec: 2,
+    playerKickTriggerWindowSec: 1,
+    freezeSec: 0.25,
+  };
+  let startleDirectCdSec = 0;
+  let startleGrazeCdSec = 0;
+  let startleMutualLockSec = 0;
+  let lastPlayerKickAtMs = 0;
+  let playerKickWallBounceForStartle = false;
   // zoneout：sad 模式下周期性走神
   let zoneoutCooldown = 3 + Math.random() * 2;
 
@@ -1320,18 +1439,91 @@
     while (GAME_EVENTS.length > 5) GAME_EVENTS.shift();
   }
 
-  // 心情逐帧副作用：startle（惊讶，球速突变冻结）/ zoneout（悲伤，周期性走神）
-  function aiMoodTick(dt) {
-    const mood = MOODS[moodKey];
-    const b = state.ball;
-    const dVx = b.vx - lastBallVx, dVy = b.vy - lastBallVy;
-    const accelMag = Math.hypot(dVx, dVy) / Math.max(dt, 0.001);
-    lastBallVx = b.vx; lastBallVy = b.vy;
+  function decayStartleCooldowns(dt) {
+    startleDirectCdSec = Math.max(0, startleDirectCdSec - dt);
+    startleGrazeCdSec = Math.max(0, startleGrazeCdSec - dt);
+    startleMutualLockSec = Math.max(0, startleMutualLockSec - dt);
+  }
 
-    if (mood.style === 'startle' && accelMag > 4000 && aiFreezeSec <= 0) {
-      aiFreezeSec = 0.25;
-      aiKickCd = 0;
-      triggerScene('startle');
+  function rollStartleCooldown(baseSec) {
+    return baseSec + Math.random() * STARTLE_RULE.cooldownRandomExtra;
+  }
+
+  function projectedBallPassNearAi() {
+    const b = state.ball;
+    const speed = Math.hypot(b.vx, b.vy);
+    if (speed < Math.min(STARTLE_RULE.directSpeedMin, STARTLE_RULE.grazeSpeedMin)) return null;
+
+    const acx = state.ai.x + CFG.charSize / 2;
+    const acy = state.ai.y + CFG.charSize / 2;
+    const relX = b.x - acx;
+    const relY = b.y - acy;
+    const speedSq = speed * speed;
+    const tClosest = -(relX * b.vx + relY * b.vy) / speedSq;
+    if (tClosest <= 0 || tClosest > STARTLE_RULE.lookaheadSec) return null;
+
+    const closestX = relX + b.vx * tClosest;
+    const closestY = relY + b.vy * tClosest;
+    const closestDist = Math.hypot(closestX, closestY);
+    const bodyRadius = CFG.charSize / 2 + CFG.ballRadius;
+    const directRadius = bodyRadius + STARTLE_RULE.directPadding;
+    const grazeRadius = bodyRadius + STARTLE_RULE.grazeOuterPadding;
+
+    return { speed, tClosest, closestDist, directRadius, grazeRadius };
+  }
+
+  function playerKickStartleWindowRemainingSec(now = performance.now()) {
+    if (!lastPlayerKickAtMs) return 0;
+    const elapsedSec = (now - lastPlayerKickAtMs) / 1000;
+    return Math.max(0, STARTLE_RULE.playerKickTriggerWindowSec - elapsedSec);
+  }
+
+  function markPlayerKickWallBounceForStartle() {
+    if (lastTouchSide === 'player' && playerKickStartleWindowRemainingSec() > 0) {
+      playerKickWallBounceForStartle = true;
+    }
+  }
+
+  function triggerStartle(kind, cooldownBaseSec) {
+    aiFreezeSec = STARTLE_RULE.freezeSec;
+    aiKickCd = 0;
+    const cooldownSec = rollStartleCooldown(cooldownBaseSec);
+    if (kind === 'startle-direct') startleDirectCdSec = cooldownSec;
+    else startleGrazeCdSec = cooldownSec;
+    startleMutualLockSec = STARTLE_RULE.mutualLockSec;
+    triggerScene(kind, { cooldownSec });
+  }
+
+  // 心情逐帧副作用：startle（惊讶，被高速球吓到）/ zoneout（悲伤，周期性走神）
+  function aiMoodTick(dt) {
+    decayStartleCooldowns(dt);
+    const mood = MOODS[moodKey];
+
+    if (
+      mood.style === 'startle' &&
+      lastTouchSide === 'player' &&
+      playerKickStartleWindowRemainingSec() > 0 &&
+      aiFreezeSec <= 0 &&
+      startleMutualLockSec <= 0
+    ) {
+      const pass = projectedBallPassNearAi();
+      if (pass) {
+        if (
+          startleDirectCdSec <= 0 &&
+          !playerKickWallBounceForStartle &&
+          pass.speed >= STARTLE_RULE.directSpeedMin &&
+          pass.closestDist <= pass.directRadius
+        ) {
+          triggerStartle('startle-direct', STARTLE_RULE.directCooldownBase);
+        } else if (
+          startleGrazeCdSec <= 0 &&
+          pass.speed >= STARTLE_RULE.grazeSpeedMin &&
+          pass.closestDist > pass.directRadius &&
+          pass.closestDist <= pass.grazeRadius
+        ) {
+          triggerStartle('startle-graze', STARTLE_RULE.grazeCooldownBase);
+        }
+      }
     }
     if (mood.style === 'zoneout') {
       zoneoutCooldown -= dt;
@@ -1497,6 +1689,8 @@
     'no-goal-1min': '长时间无进球',
     'fast-ball': '球速很快',
     'startle': '猫娘受惊',
+    'startle-direct': '猫娘被高速球撞来吓到',
+    'startle-graze': '猫娘被高速擦身球吓到',
     'zoneout': '猫娘走神',
     'unstick': '球脱困',
     'out-of-bounds': '球出界',
@@ -1642,6 +1836,8 @@
     'no-goal-1min':  ['要不……平局？', '手累了……'],
     'fast-ball':     ['好猛！', '哇！'],
     'startle':       ['！', '吓我一跳'],
+    'startle-direct':['哇！别撞我！', '吓、吓死我了！'],
+    'startle-graze': ['刚刚擦过去了？！', '别从我旁边飞啦！'],
     'zoneout':       ['……啊？在打球呢。', '嗯？到哪了'],
     'unstick':       ['！球怎么不动了', '球卡了？'],
     'diff-max':      ['热身好了哦', '认真模式~'],
@@ -1660,7 +1856,7 @@
     'own-goal-by-ai': 9, 'own-goal-by-player': 9,
     'diff-max': 7, 'diff-lv2': 7, 'diff-lv3': 7, 'diff-lv4': 7,
     'mood-happy': 6, 'mood-angry': 6, 'mood-sad': 6, 'mood-surprised': 6, 'mood-relaxed': 6, 'mood-calm': 6,
-    'unstick': 5, 'startle': 5, 'zoneout': 5,
+    'unstick': 5, 'startle': 5, 'startle-direct': 5, 'startle-graze': 5, 'zoneout': 5,
     'steal': 4, 'stolen': 4, 'shot-miss': 4,
     'long-attack-possession': 3, 'long-defense-possession': 3,
     'close-proximity': 3, 'fast-ball': 3,
@@ -1674,12 +1870,12 @@
     'close-proximity': 12, 'fast-ball': 10,
     'player-idle': 20, 'player-charging-long': 15,
     'free-ball': 20, 'score-boring': 30, 'no-goal-1min': 60,
-    'startle': 6, 'zoneout': 6, 'unstick': 4,
+    'startle': 6, 'startle-direct': 8, 'startle-graze': 10, 'zoneout': 6, 'unstick': 4,
   };
   const QUICK_LINE_KEYS = [
     'goal-scored', 'goal-conceded', 'own-goal-by-ai', 'own-goal-by-player',
     'steal', 'stolen', 'player-idle', 'player-charging-long',
-    'free-ball', 'startle', 'zoneout',
+    'free-ball', 'startle-direct', 'startle-graze', 'zoneout',
   ];
 
   function applyGeneratedQuickLines(lines = {}) {
@@ -1724,7 +1920,7 @@
   }
   loadGeneratedQuickLines();
 
-  function triggerScene(kind) {
+  function triggerScene(kind, opts = {}) {
     const pool = LINES[kind];
     if (!pool || !pool.length) return false;
     const text = pool[Math.floor(Math.random() * pool.length)];
@@ -1732,7 +1928,7 @@
       kind,
       priority: PRIORITY[kind] || 0,
       cooldownKey: kind,
-      cooldownSec: COOLDOWN[kind] || 0,
+      cooldownSec: opts.cooldownSec ?? COOLDOWN[kind] ?? 0,
       waitForLLM: LLM_INTERCEPT_KINDS.has(kind),
     });
   }
@@ -1825,25 +2021,38 @@
   //  心情 20s 随机轮换
   // ═══════════════════════════════════════════════════════════════════════════
   let moodRotateTimer = null;
-  function enableMoodRotation(intervalSec = 20) {
-    disableMoodRotation();
+  function enableMoodRotation(intervalSec = 20, opts = {}) {
+    if (moodDebugMode) {
+      if (opts.manual !== true) return !!moodRotateTimer;
+      moodDebugRotationEnabled = true;
+    }
+    if (moodRotateTimer) { clearInterval(moodRotateTimer); moodRotateTimer = null; }
     moodRotateTimer = setInterval(() => {
       const others = MOOD_KEYS.filter(k => k !== moodKey);
       const next = others[Math.floor(Math.random() * others.length)];
-      setMood(next);
+      setMood(next, { source: 'rotation' });
     }, intervalSec * 1000);
+    return true;
   }
-  function disableMoodRotation() {
+  function disableMoodRotation(opts = {}) {
+    if (moodDebugMode) {
+      if (opts.manual !== true && opts.force !== true) return !moodRotateTimer;
+      moodDebugRotationEnabled = false;
+    }
     if (moodRotateTimer) { clearInterval(moodRotateTimer); moodRotateTimer = null; }
+    return true;
   }
 
   // 心情切换时播"mood-XX"气泡（重写 setMood 让它走一下这个钩子）
   const __setMoodBase = setMood;
-  setMood = function(name) {
-    if (!MOODS[name] || name === moodKey) { __setMoodBase(name); return; }
-    __setMoodBase(name);
+  setMood = function(name, opts = {}) {
+    if (!MOODS[name]) return false;
+    if (name === moodKey) return __setMoodBase(name, opts);
+    const changed = __setMoodBase(name, opts);
+    if (!changed) return false;
     triggerScene('mood-' + name);
     emitEvent('mood-changed', { mood: name });
+    return true;
   };
 
   const __cycleDiffBase = cycleDifficulty;
@@ -1938,6 +2147,108 @@
     emitEvent('ai-avatar-changed', { type, path });
   }
 
+  function roundDebugNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(0, n).toFixed(2) : '0.00';
+  }
+
+  function clearStartleCooldowns() {
+    startleDirectCdSec = 0;
+    startleGrazeCdSec = 0;
+    startleMutualLockSec = 0;
+    updateMoodDebugPanel();
+  }
+
+  function getMoodDebugSnapshot() {
+    const b = state.ball;
+    return {
+      debugMode: moodDebugMode,
+      mood: moodKey,
+      difficulty: DIFFICULTY[difficultyIdx].name,
+      moodRotation: moodRotateTimer ? 'on' : 'off',
+      moodRotationDebugEnabled: moodDebugRotationEnabled,
+      aiMode,
+      lastTouchSide,
+      playerKickStartleWindowSec: Number(roundDebugNumber(playerKickStartleWindowRemainingSec())),
+      playerKickWallBounceForStartle,
+      aiFreezeSec: Number(roundDebugNumber(aiFreezeSec)),
+      aiKickCdSec: Number(roundDebugNumber(aiKickCd)),
+      aiWindupSec: Number(roundDebugNumber(aiWindupRemaining)),
+      startleDirectCdSec: Number(roundDebugNumber(startleDirectCdSec)),
+      startleGrazeCdSec: Number(roundDebugNumber(startleGrazeCdSec)),
+      startleMutualLockSec: Number(roundDebugNumber(startleMutualLockSec)),
+      zoneoutCooldownSec: Number(roundDebugNumber(zoneoutCooldown)),
+      ballSpeed: Math.round(Math.hypot(b.vx, b.vy)),
+      ballGhost: ballGhostSec > 0,
+    };
+  }
+
+  function setMoodDebugVisible(visible = true, persist = false) {
+    if (!moodDebugPanel) return false;
+    const shouldShow = !!visible;
+    moodDebugMode = shouldShow;
+    moodDebugPanel.dataset.debugVisible = shouldShow ? 'true' : 'false';
+    moodDebugPanel.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+    if (shouldShow) disableMoodRotation({ force: true });
+    if (persist) {
+      try {
+        if (shouldShow) window.localStorage?.setItem('soccerDebugMood', '1');
+        else window.localStorage?.removeItem('soccerDebugMood');
+      } catch (_) { /* storage can be unavailable */ }
+    }
+    updateMoodDebugPanel();
+    return shouldShow;
+  }
+
+  function setMoodDebugCollapsed(collapsed = true, persist = false) {
+    if (!moodDebugPanel) return false;
+    const shouldCollapse = !!collapsed;
+    moodDebugPanel.dataset.collapsed = shouldCollapse ? 'true' : 'false';
+    if (persist) {
+      try {
+        if (shouldCollapse) window.localStorage?.setItem('soccerDebugMoodCollapsed', '1');
+        else window.localStorage?.removeItem('soccerDebugMoodCollapsed');
+      } catch (_) { /* storage can be unavailable */ }
+    }
+    updateMoodDebugPanel();
+    return shouldCollapse;
+  }
+
+  function updateMoodDebugPanel() {
+    if (!moodDebugPanel || moodDebugPanel.dataset.debugVisible !== 'true') return;
+    const snapshot = getMoodDebugSnapshot();
+    const collapsed = moodDebugPanel.dataset.collapsed === 'true';
+    const collapseButton = moodDebugPanel.querySelector('[data-debug-action="collapse"]');
+    if (collapseButton) {
+      collapseButton.textContent = collapsed ? '展开' : '收起';
+      collapseButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    moodDebugPanel.querySelectorAll('[data-debug-mood]').forEach(btn => {
+      btn.dataset.active = btn.dataset.debugMood === moodKey ? 'true' : 'false';
+    });
+    moodDebugPanel.querySelectorAll('[data-debug-difficulty]').forEach(btn => {
+      btn.dataset.active = btn.dataset.debugDifficulty === snapshot.difficulty ? 'true' : 'false';
+    });
+    const rotationToggleButton = moodDebugPanel.querySelector('[data-debug-action="rotation-toggle"]');
+    if (rotationToggleButton) {
+      const rotationOn = snapshot.moodRotation === 'on';
+      rotationToggleButton.dataset.active = rotationOn ? 'true' : 'false';
+      rotationToggleButton.textContent = rotationOn ? '随机心情：开' : '随机心情：关';
+    }
+    if (moodDebugReadout) {
+      moodDebugReadout.textContent = [
+        `测试=${snapshot.debugMode ? '开' : '关'}  心情=${snapshot.mood}  难度=${snapshot.difficulty}  随机=${snapshot.moodRotation === 'on' ? '开' : '关'}`,
+        `AI状态=${snapshot.aiMode}  最后触球=${snapshot.lastTouchSide || '-'}  受惊窗口=${roundDebugNumber(snapshot.playerKickStartleWindowSec)}s  撞墙=${snapshot.playerKickWallBounceForStartle ? '是' : '否'}`,
+        `冻结=${roundDebugNumber(snapshot.aiFreezeSec)}s`,
+        `踢球冷却=${roundDebugNumber(snapshot.aiKickCdSec)}s  前摇=${roundDebugNumber(snapshot.aiWindupSec)}s`,
+        `直撞受惊冷却=${roundDebugNumber(snapshot.startleDirectCdSec)}s`,
+        `擦身受惊冷却=${roundDebugNumber(snapshot.startleGrazeCdSec)}s`,
+        `受惊互斥锁=${roundDebugNumber(snapshot.startleMutualLockSec)}s`,
+        `走神冷却=${roundDebugNumber(snapshot.zoneoutCooldownSec)}s  球速=${snapshot.ballSpeed}`,
+      ].join('\n');
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  对外接口
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1945,7 +2256,7 @@
     MOODS: Object.freeze(MOOD_KEYS.slice()),
     DIFFICULTIES: Object.freeze(DIFFICULTY.map(d => d.name)),
     // mood
-    setMood: (name) => setMood(name),
+    setMood: (name, opts = {}) => setMood(name, opts),
     getMood: () => moodKey,
     enableMoodRotation,
     disableMoodRotation,
@@ -1987,12 +2298,85 @@
     // 供外部调试：获取内部状态（只读快照）
     _snapshot: () => ({ mood: moodKey, difficulty: DIFFICULTY[difficultyIdx].name,
                         round: state.round,
-                        score: { ...state.score }, aiMode, aiFreezeSec,
+                        score: { ...state.score }, aiMode, aiFreezeSec, lastTouchSide,
+                        playerKickStartleWindowSec: playerKickStartleWindowRemainingSec(),
+                        playerKickWallBounceForStartle,
+                        startle: {
+                          directCdSec: startleDirectCdSec,
+                          grazeCdSec: startleGrazeCdSec,
+                          mutualLockSec: startleMutualLockSec,
+                        },
+                        zoneoutCooldownSec: zoneoutCooldown,
                         ballGhost: ballGhostSec > 0 }),
   };
 
-  // 默认开启 20s 心情轮换
-  enableMoodRotation(20);
+  function handleMoodDebugButton(btn) {
+    if (!btn) return;
+    const mood = btn.dataset.debugMood;
+    const difficulty = btn.dataset.debugDifficulty;
+    const action = btn.dataset.debugAction;
+    if (mood) {
+      window.SoccerDemo.setMood(mood, { manual: true });
+    } else if (difficulty) {
+      window.SoccerDemo.setDifficulty(difficulty);
+    } else if (action === 'rotation-toggle') {
+      if (moodRotateTimer) window.SoccerDemo.disableMoodRotation({ manual: true });
+      else window.SoccerDemo.enableMoodRotation(20, { manual: true });
+    } else if (action === 'clear-startle') {
+      clearStartleCooldowns();
+    } else if (action === 'collapse') {
+      setMoodDebugCollapsed(moodDebugPanel.dataset.collapsed !== 'true', true);
+    } else if (action === 'hide') {
+      setMoodDebugVisible(false, true);
+    }
+    updateMoodDebugPanel();
+  }
+
+  moodDebugPanel?.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleMoodDebugButton(btn);
+    });
+  });
+
+  window.SoccerDemoDebug = {
+    show(persist = true) { return setMoodDebugVisible(true, persist); },
+    hide(persist = true) { return setMoodDebugVisible(false, persist); },
+    collapse(persist = true) { return setMoodDebugCollapsed(true, persist); },
+    expand(persist = true) { return setMoodDebugCollapsed(false, persist); },
+    toggle(persist = true) {
+      return setMoodDebugVisible(moodDebugPanel?.dataset.debugVisible !== 'true', persist);
+    },
+    mood(name) {
+      window.SoccerDemo.setMood(name, { manual: true });
+      updateMoodDebugPanel();
+      return getMoodDebugSnapshot();
+    },
+    difficulty(name) { window.SoccerDemo.setDifficulty(name); updateMoodDebugPanel(); return getMoodDebugSnapshot(); },
+    rotation(enabled = true) {
+      if (enabled) window.SoccerDemo.enableMoodRotation(20, { manual: true });
+      else window.SoccerDemo.disableMoodRotation({ manual: true });
+      updateMoodDebugPanel();
+      return getMoodDebugSnapshot();
+    },
+    clearStartleCooldowns() { clearStartleCooldowns(); return getMoodDebugSnapshot(); },
+    snapshot: getMoodDebugSnapshot,
+    log() {
+      const snapshot = getMoodDebugSnapshot();
+      if (console.table) console.table(snapshot);
+      else console.log(snapshot);
+      return snapshot;
+    },
+  };
+  updateMoodDebugPanel();
+
+  // 默认开启 20s 心情轮换；debug_mood 测试模式下保持手动控制。
+  if (!moodDebugMode) enableMoodRotation(20);
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  LLM 接入（A+B 双簧模式）
@@ -2114,8 +2498,11 @@
     aiWindupTotal = 0;
     ballGhostSec = 0;
     lastTouchSide = null;
-    lastBallVx = 0;
-    lastBallVy = 0;
+    lastPlayerKickAtMs = 0;
+    playerKickWallBounceForStartle = false;
+    startleDirectCdSec = 0;
+    startleGrazeCdSec = 0;
+    startleMutualLockSec = 0;
     zoneoutCooldown = 3 + Math.random() * 2;
     aiMode = 'attack';
     aiReactSec = 0;
@@ -2129,7 +2516,8 @@
 
     difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
     __setMoodBase('calm');
-    if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
+    if (moodDebugMode || _llm.keepMoodRotationDisabled) SoccerDemo.disableMoodRotation();
+    else SoccerDemo.enableMoodRotation(20);
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
     Object.assign(speechState, {
       ballInOppHalfSec: 0,
@@ -2585,14 +2973,14 @@
     _llm.preGameContextError = String(routeState?.pre_game_context_error || '');
     _llm.keepMoodRotationDisabled = !!(ctx && ctx.gameStance && ctx.gameStance !== 'neutral_play');
 
-    if (_llm.keepMoodRotationDisabled) {
+    if (moodDebugMode || _llm.keepMoodRotationDisabled) {
       SoccerDemo.disableMoodRotation();
     } else {
       SoccerDemo.enableMoodRotation(20);
     }
 
     if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
-      SoccerDemo.setMood(ctx.initialMood);
+      SoccerDemo.setMood(ctx.initialMood, { source: 'pregame' });
     }
     if (ctx?.initialDifficulty && _isValidSoccerDifficulty(ctx.initialDifficulty)) {
       SoccerDemo.setDifficulty(ctx.initialDifficulty);
@@ -3443,9 +3831,10 @@
       if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood)) {
         const beforeMood = SoccerDemo.getMood();
         SoccerDemo.disableMoodRotation();
-        SoccerDemo.setMood(result.control.mood);
-        applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
-        if (!_llm.keepMoodRotationDisabled) {
+        const moodChanged = SoccerDemo.setMood(result.control.mood, { source: 'llm-control' });
+        if (moodChanged) applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
+        else ignored.push(`心情=${result.control.mood}（调试随机关闭）`);
+        if (!moodDebugMode && !_llm.keepMoodRotationDisabled) {
           setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
         }
       } else if (result.control.mood) {
@@ -3865,6 +4254,7 @@
     // 说话子系统：场景轮询 + 气泡同步到 AI 头顶
     speechTick(dt);
     positionBubble();
+    updateMoodDebugPanel();
 
     render();
     requestAnimationFrame(loop);
