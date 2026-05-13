@@ -1793,8 +1793,26 @@ svg {
 }
 
 .chat-window.chat-surface-mode-compact {
-  grid-template-rows: 1fr auto;
+  height: auto;
+  grid-template-rows: auto auto;
   background: transparent;
+}
+
+.app-shell.chat-surface-mode-compact {
+  height: auto;
+  position: relative;
+  overflow: visible;
+}
+
+.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 16px);
+  width: min(100%, 420px);
+  transform: translateX(-50%);
+  overflow: visible;
+  z-index: 4;
+  pointer-events: auto;
 }
 
 .chat-window.chat-surface-mode-compact .window-topbar {
@@ -1804,15 +1822,25 @@ svg {
 .chat-window.chat-surface-mode-compact .chat-body {
   background: transparent;
   pointer-events: none;
+  display: block;
+  min-height: 0;
+}
+
+.chat-window.chat-surface-mode-compact .window-topbar {
+  display: none;
 }
 
 .chat-window.chat-surface-mode-compact .compact-chat-stage {
-  min-height: 12px;
+  display: block;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
 }
 
 .chat-window.chat-surface-mode-compact .composer-panel {
   padding: 0;
   background: transparent;
+  gap: 0;
 }
 
 .chat-window.chat-surface-mode-compact .composer {
@@ -1824,6 +1852,8 @@ svg {
   display: flex;
   justify-content: center;
   padding-top: 4px;
+  width: 100%;
+  overflow: visible;
 }
 
 .compact-chat-capsule-shell .compact-chat-choice-anchor {
@@ -1832,6 +1862,8 @@ svg {
   bottom: calc(100% + 12px);
   width: min(100%, 420px);
   transform: translateX(-50%);
+  overflow: visible;
+  z-index: 3;
 }
 
 .compact-chat-capsule {
@@ -1885,6 +1917,8 @@ svg {
   padding-top: 4px;
   background: transparent;
   box-shadow: none;
+  width: 100%;
+  overflow: visible;
 }
 
 .compact-chat-input-shell .composer-choice-layer[data-choice-layer-open="false"] {
@@ -1897,6 +1931,8 @@ svg {
   bottom: calc(100% + 12px);
   width: min(100%, 420px);
   transform: translateX(-50%);
+  overflow: visible;
+  z-index: 3;
 }
 
 .compact-chat-inline-input {

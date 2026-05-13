@@ -83,6 +83,16 @@
         return normalizeCompactChatState(state.compactChatState);
     }
 
+    function isHomeCompactSurfaceRoute() {
+        var body = document.body;
+        return !!(
+            body
+            && body.classList.contains('subtitle-web-host')
+            && !body.classList.contains('electron-chat-window')
+            && getCurrentChatSurfaceMode() === 'compact'
+        );
+    }
+
     function getNextChatSurfaceMode(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
         var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
@@ -145,10 +155,26 @@
     var MOBILE_EXPAND_CLICK_GUARD_MS = 700;
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
+    var COMPACT_MINIMIZE_BALL_GAP = 18;
+    var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
+    var COMPACT_MINIMIZE_BALL_VERTICAL_RATIO = 0.62;
+    var COMPACT_SURFACE_MAX_WIDTH = 430;
+    var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
+    var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
+    var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
+    var COMPACT_SURFACE_CENTER_FOLLOW = 0.48;
+    var COMPACT_SURFACE_EDGE_FOLLOW = 0.24;
+    var COMPACT_SURFACE_CLOSEUP_FOLLOW = 0.16;
+    var COMPACT_SURFACE_BOTTOM_RATIO = 0.84;
+    var COMPACT_SURFACE_CLOSEUP_BOTTOM_RATIO = 0.76;
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
+    var compactMinimizeBallFrame = 0;
+    var compactMinimizeBallSnapshot = '';
+    var compactSurfaceAnchorSnapshot = '';
 
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
@@ -171,6 +197,297 @@
             return false;
         }
         return window.innerWidth <= 768;
+    }
+
+    function isCompactHomeMinimizeBallEnabled() {
+        var overlay = getOverlay();
+        return !!(
+            isHomeCompactSurfaceRoute()
+            && overlay
+            && !overlay.hidden
+            && !minimized
+        );
+    }
+
+    function isHomeCompactMinimizeBallRoute() {
+        var overlay = getOverlay();
+        var body = document.body;
+        return !!(
+            body
+            && body.classList.contains('subtitle-web-host')
+            && !body.classList.contains('electron-chat-window')
+            && overlay
+            && !overlay.hidden
+        );
+    }
+
+    function isVisibleElementById(id) {
+        var element = $(id);
+        return !!(
+            element
+            && typeof element.getClientRects === 'function'
+            && element.getClientRects().length > 0
+        );
+    }
+
+    function getCompactMinimizeBallAvatarBounds() {
+        var hostWindow = window;
+        var candidates = [
+            { containerId: 'mmd-container', manager: hostWindow.mmdManager },
+            { containerId: 'vrm-container', manager: hostWindow.vrmManager },
+            { containerId: 'live2d-container', manager: hostWindow.live2dManager }
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var candidate = candidates[i];
+            var manager = candidate.manager;
+            var model = manager && typeof manager.getCurrentModel === 'function'
+                ? manager.getCurrentModel()
+                : manager && manager.currentModel;
+            if (!manager || !model || typeof manager.getModelScreenBounds !== 'function') {
+                continue;
+            }
+            if (!isVisibleElementById(candidate.containerId)) {
+                continue;
+            }
+            try {
+                var bounds = manager.getModelScreenBounds();
+                if (bounds && bounds.width > 0 && bounds.height > 0) {
+                    return bounds;
+                }
+            } catch (_) {}
+        }
+
+        return null;
+    }
+
+    function getCompactMinimizeBallPlacement(bounds) {
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+            return null;
+        }
+
+        var left = bounds.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_GAP;
+        var top = bounds.top + bounds.height * COMPACT_MINIMIZE_BALL_VERTICAL_RATIO - (MINIMIZED_SIZE / 2);
+        var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
+        var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
+        return {
+            left: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(left, maxLeft)),
+            top: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(top, maxTop))
+        };
+    }
+
+    function getCompactMinimizeBallTarget() {
+        if (!isHomeCompactMinimizeBallRoute()) {
+            return null;
+        }
+
+        var bounds = getCompactMinimizeBallAvatarBounds();
+        if (!bounds) {
+            return null;
+        }
+
+        var placement = getCompactMinimizeBallPlacement(bounds);
+        if (!placement) {
+            return null;
+        }
+
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: placement.left,
+            top: placement.top
+        };
+    }
+
+    function getCompactSurfaceMetrics() {
+        var shell = getShell();
+        var rect = shell ? shell.getBoundingClientRect() : null;
+        var width = isMobileWidth()
+            ? Math.max(280, window.innerWidth - 16)
+            : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
+        var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
+        return {
+            width: width,
+            height: height
+        };
+    }
+
+    function getCompactSurfaceTarget() {
+        var metrics = getCompactSurfaceMetrics();
+        var viewportWidth = window.innerWidth;
+        var viewportHeight = window.innerHeight;
+        var fallbackTop = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_TOP,
+            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+        );
+
+        if (isMobileWidth()) {
+            return {
+                width: metrics.width,
+                left: 8,
+                top: fallbackTop
+            };
+        }
+
+        var bounds = getCompactMinimizeBallAvatarBounds();
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+            return {
+                width: metrics.width,
+                left: Math.max(
+                    COMPACT_SURFACE_VIEWPORT_PAD_X,
+                    Math.min(
+                        Math.round((viewportWidth - metrics.width) / 2),
+                        viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X
+                    )
+                ),
+                top: fallbackTop
+            };
+        }
+
+        var avatarCenterX = bounds.left + (bounds.width / 2);
+        var viewportCenterX = viewportWidth / 2;
+        var edgeDistance = Math.min(bounds.left, viewportWidth - bounds.right);
+        var closeupRatio = bounds.height / Math.max(viewportHeight, 1);
+        var followStrength = COMPACT_SURFACE_CENTER_FOLLOW;
+
+        if (edgeDistance < 96) {
+            followStrength = COMPACT_SURFACE_EDGE_FOLLOW;
+        }
+        if (closeupRatio > 0.78) {
+            followStrength = Math.min(followStrength, COMPACT_SURFACE_CLOSEUP_FOLLOW);
+        }
+
+        var surfaceCenterX = viewportCenterX + ((avatarCenterX - viewportCenterX) * followStrength);
+        var left = Math.round(surfaceCenterX - (metrics.width / 2));
+        left = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_X,
+            Math.min(left, viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X)
+        );
+
+        var bottomRatio = closeupRatio > 0.78
+            ? COMPACT_SURFACE_CLOSEUP_BOTTOM_RATIO
+            : COMPACT_SURFACE_BOTTOM_RATIO;
+        var desiredBottom = bounds.top + (bounds.height * bottomRatio);
+        var bottom = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_TOP + metrics.height,
+            Math.min(desiredBottom, viewportHeight - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM)
+        );
+
+        return {
+            width: metrics.width,
+            left: Math.round(left),
+            top: Math.round(bottom - metrics.height)
+        };
+    }
+
+    function clearCompactSurfaceAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        shell.style.removeProperty('--compact-surface-left');
+        shell.style.removeProperty('--compact-surface-top');
+        shell.style.removeProperty('--compact-surface-width');
+        compactSurfaceAnchorSnapshot = '';
+    }
+
+    function syncCompactSurfaceAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        if (!isCompactHomeMinimizeBallEnabled()) {
+            clearCompactSurfaceAnchor();
+            return;
+        }
+
+        var target = getCompactSurfaceTarget();
+        if (!target) {
+            clearCompactSurfaceAnchor();
+            return;
+        }
+
+        var snapshot = [
+            Math.round(target.left),
+            Math.round(target.top),
+            Math.round(target.width)
+        ].join(':');
+        if (snapshot === compactSurfaceAnchorSnapshot) {
+            return;
+        }
+
+        compactSurfaceAnchorSnapshot = snapshot;
+        shell.style.setProperty('--compact-surface-left', Math.round(target.left) + 'px');
+        shell.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
+        shell.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
+    }
+
+    function clearCompactMinimizeBallAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        shell.style.removeProperty('--compact-minimize-ball-left');
+        shell.style.removeProperty('--compact-minimize-ball-top');
+        compactMinimizeBallSnapshot = '';
+    }
+
+    function syncCompactMinimizeBallAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        if (!isCompactHomeMinimizeBallEnabled()) {
+            clearCompactMinimizeBallAnchor();
+            return;
+        }
+
+        var bounds = getCompactMinimizeBallAvatarBounds();
+        if (!bounds) {
+            clearCompactMinimizeBallAnchor();
+            return;
+        }
+
+        var placement = getCompactMinimizeBallPlacement(bounds);
+        if (!placement) {
+            clearCompactMinimizeBallAnchor();
+            return;
+        }
+
+        var snapshot = Math.round(placement.left) + ':' + Math.round(placement.top);
+        if (snapshot === compactMinimizeBallSnapshot) {
+            return;
+        }
+
+        compactMinimizeBallSnapshot = snapshot;
+        shell.style.setProperty('--compact-minimize-ball-left', Math.round(placement.left) + 'px');
+        shell.style.setProperty('--compact-minimize-ball-top', Math.round(placement.top) + 'px');
+    }
+
+    function stopCompactMinimizeBallTracking() {
+        if (compactMinimizeBallFrame) {
+            window.cancelAnimationFrame(compactMinimizeBallFrame);
+            compactMinimizeBallFrame = 0;
+        }
+        clearCompactMinimizeBallAnchor();
+        clearCompactSurfaceAnchor();
+    }
+
+    function scheduleCompactMinimizeBallTracking() {
+        if (!isCompactHomeMinimizeBallEnabled()) {
+            stopCompactMinimizeBallTracking();
+            return;
+        }
+        if (compactMinimizeBallFrame) {
+            return;
+        }
+
+        var loop = function () {
+            compactMinimizeBallFrame = 0;
+            if (!isCompactHomeMinimizeBallEnabled()) {
+                stopCompactMinimizeBallTracking();
+                return;
+            }
+            syncCompactSurfaceAnchor();
+            syncCompactMinimizeBallAnchor();
+            compactMinimizeBallFrame = window.requestAnimationFrame(loop);
+        };
+
+        syncCompactSurfaceAnchor();
+        syncCompactMinimizeBallAnchor();
+        compactMinimizeBallFrame = window.requestAnimationFrame(loop);
     }
 
     function clearMobileExpandVisualGuard() {
@@ -1915,12 +2232,38 @@
     // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
     // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
     function getMinimizedTarget(rect) {
+        var compactBallTarget = getCompactMinimizeBallTarget();
+        if (compactBallTarget) {
+            return compactBallTarget;
+        }
+
         // 桌面端和移动端统一使用 50px 圆形悬浮球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
+
+    function getExpandedTargetFromSavedState() {
+        var shell = getShell();
+        if (!shell) return null;
+        if (isMobileWidth()) return null;
+
+        var width = savedShellSize ? parseFloat(savedShellSize.width) : NaN;
+        var height = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
+        if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+            var rect = shell.getBoundingClientRect();
+            width = rect.width;
+            height = rect.height;
+        }
+
+        return {
+            width: width,
+            height: height,
+            left: savedShellPosition ? savedShellPosition.left : 0,
+            top: savedShellPosition ? savedShellPosition.top : 0
         };
     }
 
@@ -2045,6 +2388,8 @@
             // 5. 设置目标 transform，触发动画
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
+                    shell.style.left = targetLeft + 'px';
+                    shell.style.top = targetTop + 'px';
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -2064,6 +2409,8 @@
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
                 shell.classList.remove('is-mobile-content-capped');
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
                 // 将位置设为对话框左下角
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
@@ -2090,11 +2437,14 @@
             // ---- 展开动画：从最小化态（桌面圆球 / 手机底部胶囊）展开 ----
             var curRect = shell.getBoundingClientRect();
             var ballLeft = curRect.left;
+            var collapsedTop = curRect.top;
             // 桌面圆球的 height≈50，手机胶囊的 height≈48；curRect 直接反映真实值
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
+            shell.style.removeProperty('right');
+            shell.style.removeProperty('bottom');
             if (isMobileWidth()) {
                 // 手机端：宽度由 CSS calc(100vw - 12px) 控制，清除内联宽度
                 shell.style.removeProperty('width');
@@ -2119,6 +2469,11 @@
             // 先设临时位置以获取真实尺寸
             shell.style.left = '0px';
             shell.style.top = '0px';
+            var expandedTarget = getExpandedTargetFromSavedState();
+            if (expandedTarget) {
+                shell.style.left = expandedTarget.left + 'px';
+                shell.style.top = expandedTarget.top + 'px';
+            }
             shell.style.transform = 'none';
             void shell.offsetHeight;
             var expandedRect = shell.getBoundingClientRect();
@@ -2130,6 +2485,8 @@
                 if (savedShellPosition) {
                     shell.style.left = savedShellPosition.left + 'px';
                     shell.style.top = savedShellPosition.top + 'px';
+                } else if (!isMobileWidth()) {
+                    restorePosition();
                 }
                 savedShellSize = null;
                 savedShellPosition = null;
@@ -2146,10 +2503,14 @@
             // 球的左下角 = 展开后对话框的左下角
             var expandedLeft = ballLeft;
             var expandedTop = ballBottom - expandedRect.height;
+            if (expandedTarget) {
+                expandedLeft = expandedTarget.left;
+                expandedTop = expandedTarget.top;
+            }
 
             // 先不 clamp，让动画从球位置自然展开，动画结束后再 clamp
-            shell.style.left = expandedLeft + 'px';
-            shell.style.top = expandedTop + 'px';
+            shell.style.left = ballLeft + 'px';
+            shell.style.top = collapsedTop + 'px';
             shell.style.transform = 'none';
             void shell.offsetHeight;
 
@@ -2170,6 +2531,8 @@
             // 动画到 identity（展开到完整尺寸）
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
+                    shell.style.left = expandedLeft + 'px';
+                    shell.style.top = expandedTop + 'px';
                     shell.style.transform = 'scale(1, 1)';
                 });
             });
@@ -2192,10 +2555,23 @@
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
+                    if (isMobileWidth()) {
+                        restorePosition();
+                        return;
+                    }
+                    if (isHomeCompactSurfaceRoute()) {
+                        return;
+                    }
+                    var targetPosition = savedShellPosition
+                        ? { left: savedShellPosition.left, top: savedShellPosition.top }
+                        : null;
                     var r = shell.getBoundingClientRect();
-                    var clamped = clampPosition(r.left, r.top);
+                    var clamped = clampPosition(
+                        targetPosition ? targetPosition.left : r.left,
+                        targetPosition ? targetPosition.top : r.top
+                    );
                     applyPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive && !isMobileWidth()) {
+                    if (!window._chatAdapterActive) {
                         persistPosition(clamped.left, clamped.top);
                     }
                 });
@@ -2272,6 +2648,7 @@
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
             shell.setAttribute('data-compact-chat-state', getCurrentCompactChatState());
         }
+        scheduleCompactMinimizeBallTracking();
     }
 
     function toggleMinimized() {
@@ -2362,6 +2739,8 @@
                     shell.style.left = savedShellPosition.left + 'px';
                     shell.style.top = savedShellPosition.top + 'px';
                 }
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
                 shell.style.transform = 'none';
             }
             minimized = false;
@@ -2375,6 +2754,7 @@
         overlay.hidden = true;
         resetCompactChatState();
         document.body.classList.remove('react-chat-window-open');
+        stopCompactMinimizeBallTracking();
         clearMobileContentCap();
         handleAvatarToolStateChange({
             active: false,
@@ -2881,6 +3261,7 @@
         });
 
         window.addEventListener('resize', function () {
+            scheduleCompactMinimizeBallTracking();
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
@@ -2908,6 +3289,7 @@
                     }
                 } else {
                     restorePosition();
+                    syncCompactSurfaceAnchor();
                     scheduleMobileContentLayout();
                 }
             }

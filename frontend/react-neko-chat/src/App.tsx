@@ -91,6 +91,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): { author: string; te
     if (!message) continue;
     const text = getMessageBlockPreviewText(message);
     if (!text) continue;
+
     return {
       author: message.author,
       text: truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
@@ -1908,6 +1909,7 @@ export default function App({
       ) : null}
     </div>
   );
+  const compactChoiceLayerNode = isCompactSurface ? choiceLayerNode : null;
 
   const messageListNode = (
     <MessageList
@@ -1948,6 +1950,7 @@ export default function App({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
     >
+      {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (
         <span
           key={drop.id}
@@ -2110,7 +2113,6 @@ export default function App({
                 className="compact-chat-capsule-shell"
                 data-compact-chat-state={effectiveCompactChatState}
               >
-                {choiceLayerNode}
                 <button
                   className="compact-chat-capsule compact-chat-capsule-button"
                   type="button"
@@ -2129,7 +2131,6 @@ export default function App({
                 data-compact-chat-state={effectiveCompactChatState}
                 onBlurCapture={scheduleCompactInputCollapse}
               >
-                {choiceLayerNode}
                 <div className="compact-chat-inline-input">
                   <textarea
                     className="composer-input"
