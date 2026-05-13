@@ -25,13 +25,5 @@ def normalize_elevenlabs_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     return raw, False
 
 
-def is_elevenlabs_tts_voice(voice_id: str | None) -> bool:
-    return normalize_elevenlabs_tts_voice(voice_id)[1]
-
-
 def normalize_elevenlabs_voice_id(voice_id: str | None) -> str:
     return normalize_elevenlabs_tts_voice(voice_id)[0]
-
-
-def is_elevenlabs_voice_id(voice_id: str | None) -> bool:
-    return is_elevenlabs_tts_voice(voice_id)

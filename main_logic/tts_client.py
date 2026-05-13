@@ -21,7 +21,6 @@ from utils.config_manager import get_config_manager
 from utils.elevenlabs_tts_voices import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
-    is_elevenlabs_tts_voice,
     normalize_elevenlabs_voice_id,
 )
 from utils.gemini_tts_voices import (
@@ -3305,10 +3304,6 @@ def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
     return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
 
 
-def _is_elevenlabs_voice_id(voice_id: str | None) -> bool:
-    return is_elevenlabs_tts_voice(voice_id)
-
-
 def _get_elevenlabs_options(base_url=None):
     raw_base_url = (
         base_url
@@ -3813,19 +3808,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         return dummy_tts_worker, None, None
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
-    # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
+    # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
     voice_meta = None
 
-    if _is_elevenlabs_voice_id(voice_id):
-        logger.info("Detected ElevenLabs voice_id, using ElevenLabs TTS Worker")
-        elevenlabs_options = _get_elevenlabs_options()
-        return (
-            partial(elevenlabs_tts_worker, base_url=elevenlabs_options['base_url']),
-            _resolve_elevenlabs_api_key(cm),
-            'elevenlabs',
-        )
-
-    # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
+    # 优先检查克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
@@ -3833,7 +3819,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
             # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
             # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
-            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
+            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax/ElevenLabs 检测", voice_id)
         elif voice_meta.get('provider', '').startswith('minimax'):
             provider = voice_meta['provider']
             logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
@@ -3845,6 +3831,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             )
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
+        elif voice_meta.get('provider') == 'elevenlabs':
+            logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", voice_id)
+            elevenlabs_options = _get_elevenlabs_options()
+            base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
+            worker = partial(elevenlabs_tts_worker, base_url=base_url)
+            return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
