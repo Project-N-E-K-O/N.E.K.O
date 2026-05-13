@@ -3917,12 +3917,12 @@
             "title": "Como jogar",
             "move": "Mova o mouse para guiar o jogador.",
             "charge": "Perto da bola, segure o botão esquerdo para carregar e solte para chutar.",
-            "range": "O chute só dispara a até 90px da bola.",
+            "range": "O chute só dispara a até {{distance}} da bola.",
             "reset": "Pressione R para resetar a bola e as posições.",
             "ai": "O humor e a dificuldade da NEKO mudam conforme a partida."
         },
         "hint": {
-            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤90px da bola) · R = reset",
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤{{distance}} da bola) · R = reset",
             "aiMood": "O humor e a dificuldade da NEKO mudam conforme a partida"
         },
         "debugControls": {

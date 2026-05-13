@@ -309,7 +309,7 @@
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
-  <div data-i18n="soccer.hint.controls">鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
+  <div data-i18n="soccer.hint.controls" data-i18n-params='{"distance":"90px"}'>鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
   <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
 <!-- Debug 控件区：开发用；基础控件也走 i18n，避免非中文 locale 混杂硬编码。 -->
@@ -372,7 +372,7 @@
         <ul>
           <li data-i18n="soccer.startTutorial.move">移动鼠标引导玩家角色。</li>
           <li data-i18n="soccer.startTutorial.charge">靠近球时按住左键蓄力，松开射门。</li>
-          <li data-i18n="soccer.startTutorial.range">离球 90px 内才会触发踢球。</li>
+          <li data-i18n="soccer.startTutorial.range" data-i18n-params='{"distance":"90px"}'>离球 90px 内才会触发踢球。</li>
           <li data-i18n="soccer.startTutorial.reset">按 R 可以复位球和双方位置。</li>
           <li data-i18n="soccer.startTutorial.ai">NEKO 的心情和难度会随局势变化。</li>
         </ul>
@@ -909,6 +909,7 @@
     (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
     fallback,
   );
+  const _soccerI18nParam = (name) => '{' + '{' + name + '}' + '}';
   const _i18n = (key, fallback, params) => {
     const fullKey = `soccer.${key}`;
     if (typeof window.t === 'function') {
@@ -918,7 +919,7 @@
     return _formatI18nFallback(fallback, params);
   };
   const SOCCER_DOM_I18N_FALLBACKS = {
-    'soccer.hint.controls': '鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位',
+    'soccer.hint.controls': '鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ' + _soccerI18nParam('distance') + ' 内触发）· R 复位',
     'soccer.hint.aiMood': 'NEKO 的心情和难度会随局势变化',
     'soccer.debugControls.bounds': '启用边界（出界规则）',
     'soccer.debugControls.voiceOutput': '播放 LLM 台词（项目语音）',
@@ -930,7 +931,7 @@
     'soccer.startTutorial.title': '玩法说明',
     'soccer.startTutorial.move': '移动鼠标引导玩家角色。',
     'soccer.startTutorial.charge': '靠近球时按住左键蓄力，松开射门。',
-    'soccer.startTutorial.range': '离球 90px 内才会触发踢球。',
+    'soccer.startTutorial.range': '离球 ' + _soccerI18nParam('distance') + ' 内才会触发踢球。',
     'soccer.startTutorial.reset': '按 R 可以复位球和双方位置。',
     'soccer.startTutorial.ai': 'NEKO 的心情和难度会随局势变化。',
     'soccer.startScreen.startButton': '开始',
@@ -946,7 +947,12 @@
       const fallback = SOCCER_DOM_I18N_FALLBACKS[key];
       if (!fallback) return;
       const current = String(el.textContent || '').trim();
-      if (!current || current === key) el.textContent = fallback;
+      if (!current || current === key) {
+        let params = {};
+        try { params = JSON.parse(el.getAttribute('data-i18n-params') || '{}'); }
+        catch (_) { params = {}; }
+        el.textContent = _formatI18nFallback(fallback, params);
+      }
     });
     document.querySelectorAll('[data-i18n-placeholder^="soccer."]').forEach((el) => {
       const key = el.getAttribute('data-i18n-placeholder');
@@ -3145,7 +3151,9 @@
     _llm.preGameContextError = String(routeState?.pre_game_context_error || '');
     _llm.keepMoodRotationDisabled = !!(ctx && ctx.gameStance && ctx.gameStance !== 'neutral_play');
 
-    if (moodDebugMode || _llm.keepMoodRotationDisabled) {
+    if (moodDebugMode) {
+      SoccerDemo.disableMoodRotation({ force: true });
+    } else if (_llm.keepMoodRotationDisabled) {
       SoccerDemo.disableMoodRotation();
     } else {
       SoccerDemo.enableMoodRotation(20);

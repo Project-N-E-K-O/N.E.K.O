@@ -3917,12 +3917,12 @@
             "title": "Cómo jugar",
             "move": "Mueve el ratón para guiar al jugador.",
             "charge": "Cerca del balón, mantén clic izquierdo para cargar y suelta para disparar.",
-            "range": "El disparo solo se activa a 90px o menos del balón.",
+            "range": "El disparo solo se activa a {{distance}} o menos del balón.",
             "reset": "Pulsa R para reiniciar el balón y las posiciones.",
             "ai": "El ánimo y la dificultad de NEKO cambian según el partido."
         },
         "hint": {
-            "controls": "Ratón = guiar al jugador · Mantén clic izquierdo = cargar, suelta = disparo (se activa a ≤90px del balón) · R = reset",
+            "controls": "Ratón = guiar al jugador · Mantén clic izquierdo = cargar, suelta = disparo (se activa a ≤{{distance}} del balón) · R = reset",
             "aiMood": "El ánimo y la dificultad de NEKO cambian según el partido"
         },
         "debugControls": {

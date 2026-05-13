@@ -3917,12 +3917,12 @@
             "title": "How to play",
             "move": "Move the mouse to guide the player.",
             "charge": "Hold left click near the ball to charge, then release to shoot.",
-            "range": "Kicking only triggers within 90px of the ball.",
+            "range": "Kicking only triggers within {{distance}} of the ball.",
             "reset": "Press R to reset the ball and both players.",
             "ai": "NEKO's mood and difficulty change with the match."
         },
         "hint": {
-            "controls": "Mouse = guide the player · Hold left click = charge, release = shoot (triggers within 90px of the ball) · R = reset",
+            "controls": "Mouse = guide the player · Hold left click = charge, release = shoot (triggers within {{distance}} of the ball) · R = reset",
             "aiMood": "NEKO's mood and difficulty change with the match"
         },
         "debugControls": {
