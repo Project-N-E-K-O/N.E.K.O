@@ -79,6 +79,28 @@ _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
 
 
+def _safe_get_workshop_install_folder(steamworks, item_id_int: int) -> str:
+    """安全读取订阅物品的安装目录路径。
+
+    与订阅列表流程（``get_subscribed_workshop_items``）保持一致：在物品
+    刚刚取消订阅 / 安装目录被 Steam 清理的窗口期，``GetItemInstallInfo``
+    可能抛 ``FileNotFoundError`` / ``OSError``；这种情况按"未安装"降级
+    处理而不是 500，否则前端在轮询下载状态时会随机炸。
+    """
+    if steamworks is None:
+        return ''
+    try:
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int) or {}
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug(f"GetItemInstallInfo({item_id_int}) 目录已不存在（可能刚取消订阅）: {exc}")
+        return ''
+    except Exception as exc:
+        logger.warning(f"GetItemInstallInfo({item_id_int}) 失败: {exc}")
+        return ''
+    folder = install_info.get('folder') if isinstance(install_info, dict) else ''
+    return folder if isinstance(folder, str) else ''
+
+
 def _is_workshop_item_install_complete(item_state: int, installed_folder: str | None) -> bool:
     """判断订阅物品是否已在本地完成安装且无待更新。
 
@@ -1930,8 +1952,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
         }, status_code=409)
 
     # 已安装且不需要更新 → 直接返回成功，避免误导前端"正在下载"。
-    install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int) or {}
-    folder = install_info.get('folder') if isinstance(install_info, dict) else ''
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
     if _is_workshop_item_install_complete(item_state, folder):
         return {
             "success": True,
@@ -1947,7 +1968,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
         steamworks,
         item_id_int,
         item_state,
-        folder if isinstance(folder, str) else None,
+        folder or None,
         high_priority=high_priority,
     )
 
@@ -1998,9 +2019,8 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
             last_state = int(steamworks.Workshop.GetItemState(item_id_int))
         except Exception:
             pass
-        info = steamworks.Workshop.GetItemInstallInfo(item_id_int) or {}
-        folder_now = info.get('folder') if isinstance(info, dict) else ''
-        if isinstance(folder_now, str) and folder_now:
+        folder_now = _safe_get_workshop_install_folder(steamworks, item_id_int)
+        if folder_now:
             last_folder = folder_now
         if _is_workshop_item_install_complete(last_state, last_folder):
             return {
@@ -2055,13 +2075,14 @@ def get_workshop_item_download_status(item_id: str):
         logger.debug(f"GetItemState({item_id_int}) 失败: {exc}")
         item_state = 0
 
-    install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int) or {}
-    folder = install_info.get('folder') if isinstance(install_info, dict) else ''
-    if not isinstance(folder, str):
-        folder = ''
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
     installed = _is_workshop_item_install_complete(item_state, folder)
 
-    download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) 失败: {exc}")
+        download_info = {}
     if isinstance(download_info, dict):
         downloaded = int(download_info.get('downloaded', 0) or 0)
         total = int(download_info.get('total', 0) or 0)
