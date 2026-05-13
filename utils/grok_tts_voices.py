@@ -6,9 +6,13 @@ into the registry so `core._has_custom_tts()` correctly classifies them as
 native (not custom), and `get_tts_worker` dispatches to
 `grok_streaming_tts_worker` instead of falling through to `cosyvoice_vc_tts_worker`.
 
-音色 ID、性别标签和默认值读取自 config/api_providers.json 的
-native_tts_voice_providers.grok，避免把 voice 列表写死在 Python 里。
-配置缺失时 GROK_PROVIDER=None，调用方会回退到 strip(voice_id) 后透传。
+音色 ID、性别标签和默认值优先读取自 config/api_providers.json 的
+native_tts_voice_providers.grok。fallback 常量是 PR #1336 之前的硬编码目录的
+副本，仅在 JSON 加载失败时兜底——此时 provider 仍必须留在 registry 里，
+否则 `is_native_voice("leo", "grok")` 返 False，`core._has_custom_tts()` 把
+eve/leo 之类内置音色当 custom，最终 `get_tts_worker` 路由到
+`cosyvoice_vc_tts_worker` 而非 `grok_streaming_tts_worker`，比"丢失目录"
+更隐蔽的 routing 回归。
 
 Voice list reference: xAI `GET /v1/tts/voices` (eve / ara / leo / rex / sal).
 The upstream API expects lowercase voice ids; we mirror that in the catalog.
@@ -23,6 +27,29 @@ from utils.native_voice_registry import (
 FALLBACK_GROK_TTS_DEFAULT_VOICE = "eve"
 FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE = "leo"
 
+# 与 api_providers.json 的 native_tts_voice_providers.grok.voices 保持同形；
+# config 是权威源，这份是 JSON 加载失败时的兜底，保证 provider 始终注册。
+# Gender 标签是 best-effort 推断（xAI 文档只列 voice_id + name + language），
+# 仅用于 UI 展示，routing/dispatch 只看 key。
+_FALLBACK_GROK_TTS_VOICE_GENDERS: dict[str, str] = {
+    "eve": "Female",
+    "ara": "Female",
+    "leo": "Male",
+    "rex": "Male",
+    "sal": "Male",
+}
+
+_FALLBACK_GROK_TTS_VOICE_ALIASES: dict[str, str] = {
+    "male": FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE,
+    "man": FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE,
+    "男": FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE,
+    "男声": FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE,
+    "female": FALLBACK_GROK_TTS_DEFAULT_VOICE,
+    "woman": FALLBACK_GROK_TTS_DEFAULT_VOICE,
+    "女": FALLBACK_GROK_TTS_DEFAULT_VOICE,
+    "女声": FALLBACK_GROK_TTS_DEFAULT_VOICE,
+}
+
 
 def _load_provider_config() -> dict:
     return get_native_tts_voice_provider_config("grok")
@@ -30,15 +57,14 @@ def _load_provider_config() -> dict:
 
 _CFG = _load_provider_config()
 
-# Gender labels are best-effort inferences from the canonical given-name
-# associations — xAI's docs only list voice_id + name + language, not gender.
-# The labels feed the UI display only; routing/dispatch only consult the keys.
-GROK_TTS_VOICE_GENDERS: dict[str, str] = _CFG.get("voices") or {}
-GROK_TTS_DEFAULT_VOICE = _CFG.get("default_voice") or FALLBACK_GROK_TTS_DEFAULT_VOICE
+GROK_TTS_VOICE_GENDERS: dict[str, str] = (
+    _CFG.get("voices") or _FALLBACK_GROK_TTS_VOICE_GENDERS
+)
+GROK_TTS_DEFAULT_VOICE = (
+    _CFG.get("default_voice") or FALLBACK_GROK_TTS_DEFAULT_VOICE
+)
 GROK_TTS_DEFAULT_MALE_VOICE = (
-    _CFG.get("default_male_voice")
-    or FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE
-    or GROK_TTS_DEFAULT_VOICE
+    _CFG.get("default_male_voice") or FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE
 )
 
 
@@ -52,13 +78,14 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _create_provider() -> NativeVoiceProvider | None:
-    if not GROK_TTS_VOICE_GENDERS or not GROK_TTS_DEFAULT_VOICE:
-        return None
+def _create_provider() -> NativeVoiceProvider:
+    """Always succeed — provider 必须留在 registry，否则下游 routing 会
+    把 eve/leo 这种内置 voice 当 custom 走 cosyvoice。"""
+    aliases_source = _CFG.get("aliases") or _FALLBACK_GROK_TTS_VOICE_ALIASES
     return NativeVoiceProvider(
         key="grok",
         catalog=GROK_TTS_VOICE_GENDERS,
-        aliases=_build_aliases(_CFG.get("aliases") or {}),
+        aliases=_build_aliases(aliases_source),
         default_voice=GROK_TTS_DEFAULT_VOICE,
         default_male_voice=GROK_TTS_DEFAULT_MALE_VOICE,
         catalog_prefix=_CFG.get("catalog_prefix") or "Grok",
@@ -69,9 +96,7 @@ def _create_provider() -> NativeVoiceProvider | None:
 
 
 GROK_PROVIDER = _create_provider()
-
-if GROK_PROVIDER is not None:
-    register_provider(GROK_PROVIDER)
+register_provider(GROK_PROVIDER)
 
 
 def normalize_grok_tts_voice(voice_id: str | None) -> tuple[str, bool]:
@@ -83,13 +108,5 @@ def normalize_grok_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     parameter, because the routing layer accepts aliases like ``male`` /
     ``女声`` (via `NativeVoiceProvider.is_voice`) but xAI's endpoint only
     accepts canonical ids (eve/ara/leo/rex/sal) or 8-char custom voice ids.
-
-    Empty / unrecognized input always resolves to ``GROK_TTS_DEFAULT_VOICE``
-    (eve by default) so grok_streaming_tts_worker never forwards an empty
-    ``voice`` query param — even on the degraded code path where
-    ``api_providers.json`` failed to load and `GROK_PROVIDER` is None.
     """
-    if GROK_PROVIDER is None:
-        normalized = (voice_id or "").strip()
-        return (normalized or GROK_TTS_DEFAULT_VOICE), False
     return GROK_PROVIDER.normalize(voice_id)

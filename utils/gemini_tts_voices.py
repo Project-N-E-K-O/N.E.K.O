@@ -7,9 +7,13 @@ registry and keeps a couple of short aliases for code that's already
 Gemini-bound by virtue of speaking Gemini's wire format (the
 `gemini_tts_worker` HTTP call and the Gemini Live `speech_config` setup).
 
-音色 ID、展示性别和默认值读取自 config/api_providers.json 的
-native_tts_voice_providers.gemini，避免再次硬编码 voice 列表。
-fallback 常量只在配置整体加载失败时兜底，正常分发都来自 JSON。
+音色 ID、展示性别和默认值优先读取自 config/api_providers.json 的
+native_tts_voice_providers.gemini，避免修改音色清单要动 Python 代码。
+fallback 常量是 PR #1290 之前的硬编码目录的副本，仅在 JSON 加载失败时兜底
+—— 此时 provider 仍必须留在 registry 里，否则
+`resolve_native_voice_for_routing("gemini", ...)` 会判 native=False，
+`core._has_custom_tts()` 把内置音色当 custom，最终把 Puck/Leda 也路由到
+cosyvoice_vc_tts_worker，比"丢失目录元数据"更隐蔽的 routing 回归。
 
 Voice list reference: https://ai.google.dev/gemini-api/docs/speech-generation
 """
@@ -25,6 +29,58 @@ GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 FALLBACK_GEMINI_TTS_DEFAULT_VOICE = "Leda"
 FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE = "Puck"
 
+# 与 api_providers.json 的 native_tts_voice_providers.gemini.voices 保持
+# 同形；config 是权威源，这份是 JSON 加载失败时的兜底，保证 provider 始终
+# 注册成功、routing 不退化到 cosyvoice。两边漂移的代价仅仅是"新版 JSON
+# 加的音色在 config 缺失时不可见"，比 routing 走错路要轻。
+_FALLBACK_GEMINI_TTS_VOICE_GENDERS: dict[str, str] = {
+    "Achernar": "Female",
+    "Achird": "Male",
+    "Algenib": "Male",
+    "Algieba": "Male",
+    "Alnilam": "Male",
+    "Aoede": "Female",
+    "Autonoe": "Female",
+    "Callirrhoe": "Female",
+    "Charon": "Male",
+    "Despina": "Female",
+    "Enceladus": "Male",
+    "Erinome": "Female",
+    "Fenrir": "Male",
+    "Gacrux": "Female",
+    "Iapetus": "Male",
+    "Kore": "Female",
+    "Laomedeia": "Female",
+    "Leda": "Female",
+    "Orus": "Male",
+    "Pulcherrima": "Female",
+    "Puck": "Male",
+    "Rasalgethi": "Male",
+    "Sadachbia": "Male",
+    "Sadaltager": "Male",
+    "Schedar": "Male",
+    "Sulafat": "Female",
+    "Umbriel": "Male",
+    "Vindemiatrix": "Female",
+    "Zephyr": "Female",
+    "Zubenelgenubi": "Male",
+}
+
+_FALLBACK_GEMINI_TTS_VOICE_ALIASES: dict[str, str] = {
+    "male": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "man": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "masculine": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "男": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "男声": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "中文男": FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE,
+    "female": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "woman": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "feminine": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "女": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "女声": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+    "中文女": FALLBACK_GEMINI_TTS_DEFAULT_VOICE,
+}
+
 
 def _load_provider_config() -> dict:
     return get_native_tts_voice_provider_config("gemini")
@@ -32,16 +88,14 @@ def _load_provider_config() -> dict:
 
 _CFG = _load_provider_config()
 
-# Public catalog mirror — kept for callers (and tests) that still read voice
-# metadata directly. Empty when the JSON config is missing, which means
-# Gemini TTS is effectively unavailable; we don't pre-fill from code so the
-# failure surfaces instead of silently using stale data.
-GEMINI_TTS_VOICE_GENDERS: dict[str, str] = _CFG.get("voices") or {}
-GEMINI_TTS_DEFAULT_VOICE = _CFG.get("default_voice") or FALLBACK_GEMINI_TTS_DEFAULT_VOICE
+GEMINI_TTS_VOICE_GENDERS: dict[str, str] = (
+    _CFG.get("voices") or _FALLBACK_GEMINI_TTS_VOICE_GENDERS
+)
+GEMINI_TTS_DEFAULT_VOICE = (
+    _CFG.get("default_voice") or FALLBACK_GEMINI_TTS_DEFAULT_VOICE
+)
 GEMINI_TTS_DEFAULT_MALE_VOICE = (
-    _CFG.get("default_male_voice")
-    or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
-    or GEMINI_TTS_DEFAULT_VOICE
+    _CFG.get("default_male_voice") or FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE
 )
 
 
@@ -56,13 +110,15 @@ def _build_aliases(configured: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _create_provider() -> NativeVoiceProvider | None:
-    if not GEMINI_TTS_VOICE_GENDERS or not GEMINI_TTS_DEFAULT_VOICE:
-        return None
+def _create_provider() -> NativeVoiceProvider:
+    """Always succeed — provider 必须留在 registry 里，否则下游 routing 会
+    把内置 Gemini 音色误判为 custom。catalog/默认值上面已经走过 config →
+    fallback 的 OR 链，到这里保证非空。"""
+    aliases_source = _CFG.get("aliases") or _FALLBACK_GEMINI_TTS_VOICE_ALIASES
     return NativeVoiceProvider(
         key="gemini",
         catalog=GEMINI_TTS_VOICE_GENDERS,
-        aliases=_build_aliases(_CFG.get("aliases") or {}),
+        aliases=_build_aliases(aliases_source),
         default_voice=GEMINI_TTS_DEFAULT_VOICE,
         default_male_voice=GEMINI_TTS_DEFAULT_MALE_VOICE,
         catalog_prefix=_CFG.get("catalog_prefix") or "Gemini",
@@ -73,29 +129,14 @@ def _create_provider() -> NativeVoiceProvider | None:
 
 
 GEMINI_PROVIDER = _create_provider()
-
-if GEMINI_PROVIDER is not None:
-    register_provider(GEMINI_PROVIDER)
+register_provider(GEMINI_PROVIDER)
 
 
 def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     """Wire-format helper for Gemini-bound code paths (gemini_tts_worker,
-    omni_realtime_client). Cross-cutting code should go through the registry.
-
-    Empty / unrecognized input always resolves to ``GEMINI_TTS_DEFAULT_VOICE``
-    (Leda by default) so callers like gemini_tts_worker never send an empty
-    ``voiceName`` to the Gemini API — even on the degraded code path where
-    ``api_providers.json`` failed to load and `GEMINI_PROVIDER` is None.
-    Matches the behavior NativeVoiceProvider.normalize() provides in the
-    happy path.
-    """
-    if GEMINI_PROVIDER is None:
-        normalized = (voice_id or "").strip()
-        return (normalized or GEMINI_TTS_DEFAULT_VOICE), False
+    omni_realtime_client). Cross-cutting code should go through the registry."""
     return GEMINI_PROVIDER.normalize(voice_id)
 
 
 def is_gemini_tts_voice(voice_id: str | None) -> bool:
-    if GEMINI_PROVIDER is None:
-        return False
     return GEMINI_PROVIDER.is_voice(voice_id)
