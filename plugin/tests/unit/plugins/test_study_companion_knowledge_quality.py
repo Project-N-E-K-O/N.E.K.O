@@ -176,6 +176,39 @@ def test_prompt_evidence_summary_includes_edges_when_topic_is_to_topic(tmp_path:
         store.close()
 
 
+def test_prompt_evidence_summary_filters_topic_before_limit(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        quality = KnowledgeQualityStore(store)
+        target = quality.upsert_candidate(
+            KnowledgeCandidateType.QUESTION_TYPE.value,
+            {"topic_id": "quadratic_vertex_form", "question_type_key": "older_matching"},
+            "llm",
+            KnowledgeEvidenceType.MENTIONED.value,
+            {"source": "llm"},
+        )
+        quality.add_evidence(target["id"], KnowledgeEvidenceType.ANSWER_IMPROVED.value, 3.0, {"source": "eval"})
+        quality.add_evidence(target["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 3.0, {"source": "user"})
+
+        for index in range(6):
+            unrelated = quality.upsert_candidate(
+                KnowledgeCandidateType.QUESTION_TYPE.value,
+                {"topic_id": f"unrelated_{index}", "question_type_key": f"newer_{index}"},
+                "llm",
+                KnowledgeEvidenceType.MENTIONED.value,
+                {"source": "llm"},
+            )
+            quality.add_evidence(unrelated["id"], KnowledgeEvidenceType.ANSWER_IMPROVED.value, 3.0, {"source": "eval"})
+            quality.add_evidence(unrelated["id"], KnowledgeEvidenceType.USER_CONFIRMED.value, 3.0, {"source": "user"})
+
+        summary = quality.prompt_evidence_summary(topic_id="quadratic_vertex_form", limit=3)
+
+        assert [item["id"] for item in summary] == [target["id"]]
+        assert summary[0]["payload_summary"]["question_type_key"] == "older_matching"
+    finally:
+        store.close()
+
+
 def test_trusted_candidate_can_deprecate_on_strong_negative_evidence(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

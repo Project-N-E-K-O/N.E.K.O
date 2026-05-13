@@ -457,7 +457,7 @@ class KnowledgeTracker:
         review = self.get_review_queue(limit=limit)
         return {
             "topic_count": self.store.count_topics(),
-            "tracked_topic_count": len(overview),
+            "tracked_topic_count": self.store.count_tracked_mastery_topics(),
             "average_mastery": round(sum(float(item.get("mastery") or 0.0) for item in overview) / max(1, len(overview)), 4),
             "weak_topic_count": len(weak),
             "due_review_count": len(review),

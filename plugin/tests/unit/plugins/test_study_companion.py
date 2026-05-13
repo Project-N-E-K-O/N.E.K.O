@@ -38,6 +38,7 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
@@ -247,6 +248,35 @@ def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
         row = store._require_conn().execute("PRAGMA foreign_keys").fetchone()
         assert row is not None
         assert int(row[0]) == 1
+    finally:
+        store.close()
+
+
+def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        for index in range(12):
+            topic_id = f"topic_{index}"
+            store.ensure_topic(topic_id=topic_id, name=f"Topic {index}")
+            store.append_mastery_snapshot(
+                {
+                    "topic_id": topic_id,
+                    "mastery": 0.75,
+                    "accuracy": 0.8,
+                    "recency": 0.7,
+                    "consistency": 0.6,
+                    "confidence": 0.9,
+                    "level": "mastered",
+                    "attempts": 3,
+                    "flags": [],
+                }
+            )
+
+        summary = KnowledgeTracker(store).get_status_summary(limit=8)
+
+        assert len(store.list_mastery_overview(limit=8)) == 8
+        assert summary["tracked_topic_count"] == 12
     finally:
         store.close()
 

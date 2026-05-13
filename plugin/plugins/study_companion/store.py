@@ -13,6 +13,7 @@ from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, build_co
 
 _DROP = object()
 _STATE_ITEM_FLOAT_KEYS = {"at", "created_at", "updated_at", "expires_at", "lock_until"}
+_DEFAULT_APPEND_ONLY_HISTORY_LIMIT = 5000
 
 
 def safe_float(value: Any, default: Any = 0.0) -> Any:
@@ -308,6 +309,31 @@ class StudyStore:
         if column in {str(row["name"]) for row in rows}:
             return
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _trim_append_only_rows(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        group_column: str,
+        group_value: str,
+        history_limit: int,
+    ) -> None:
+        limit = max(1, int(history_limit))
+        conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE {group_column} = ?
+              AND id NOT IN (
+                  SELECT id
+                  FROM {table}
+                  WHERE {group_column} = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (group_value, group_value, limit),
+        )
 
     def _load_seed_if_empty(self) -> None:
         if not self.seed_json_path.is_file():
@@ -683,6 +709,13 @@ class StudyStore:
             row = self._require_conn().execute("SELECT COUNT(*) AS count FROM topics").fetchone()
         return int(row["count"] if row is not None else 0)
 
+    def count_tracked_mastery_topics(self) -> int:
+        with self._lock:
+            row = self._require_conn().execute(
+                "SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots"
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
     def upsert_candidate_item(
         self,
         *,
@@ -741,6 +774,7 @@ class StudyStore:
         event_type: str,
         weight: float,
         context: dict[str, Any] | None = None,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
     ) -> dict[str, Any]:
         item_key = str(item_id or "").strip()
         if not item_key:
@@ -758,6 +792,13 @@ class StudyStore:
                     float(weight or 0.0),
                     self._json_dumps(context or {}),
                 ),
+            )
+            self._trim_append_only_rows(
+                conn,
+                table="knowledge_evidence",
+                group_column="item_id",
+                group_value=item_key,
+                history_limit=history_limit,
             )
             conn.commit()
             row = conn.execute("SELECT * FROM knowledge_evidence WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
@@ -787,6 +828,7 @@ class StudyStore:
         *,
         statuses: tuple[str, ...] | list[str] | None = None,
         item_type: str | None = None,
+        topic_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         params: list[Any] = []
@@ -799,6 +841,23 @@ class StudyStore:
         if item_type:
             clauses.append("item_type = ?")
             params.append(str(item_type))
+        topic_value = str(topic_id or "").strip()
+        if topic_value:
+            clauses.append(
+                """
+                (
+                    (item_type = 'edge' AND (
+                        json_extract(payload_json, '$.from_topic_id') = ?
+                        OR json_extract(payload_json, '$.to_topic_id') = ?
+                    ))
+                    OR (item_type != 'edge' AND (
+                        json_extract(payload_json, '$.topic_id') = ?
+                        OR json_extract(payload_json, '$.id') = ?
+                    ))
+                )
+                """
+            )
+            params.extend([topic_value, topic_value, topic_value, topic_value])
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, int(limit)))
         with self._lock:
@@ -1043,9 +1102,16 @@ class StudyStore:
             self._require_conn().commit()
         return int(cursor.rowcount or 0)
 
-    def append_mastery_snapshot(self, snapshot: dict[str, Any]) -> None:
+    def append_mastery_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+    ) -> None:
+        topic_key = str(snapshot.get("topic_id") or "")
         with self._lock:
-            self._require_conn().execute(
+            conn = self._require_conn()
+            conn.execute(
                 """
                 INSERT INTO mastery_snapshots (
                     topic_id, mastery, accuracy, recency, consistency,
@@ -1054,7 +1120,7 @@ class StudyStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (
-                    str(snapshot.get("topic_id") or ""),
+                    topic_key,
                     float(snapshot.get("mastery") or 0.0),
                     float(snapshot.get("accuracy") or 0.0),
                     float(snapshot.get("recency") or 0.0),
@@ -1065,7 +1131,14 @@ class StudyStore:
                     self._json_dumps(snapshot.get("flags") if isinstance(snapshot.get("flags"), list) else []),
                 ),
             )
-            self._require_conn().commit()
+            self._trim_append_only_rows(
+                conn,
+                table="mastery_snapshots",
+                group_column="topic_id",
+                group_value=topic_key,
+                history_limit=history_limit,
+            )
+            conn.commit()
 
     def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1145,6 +1218,7 @@ class StudyStore:
         eval_result: dict[str, Any],
         mode: str,
         response_time_ms: int | None = None,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
     ) -> None:
         session_key = str(session_id or "default")
         topic_key = str(topic_id or "").strip()
@@ -1181,6 +1255,14 @@ class StudyStore:
                 """,
                 (self._json_dumps(touched), session_key),
             )
+            if db_topic_key is not None:
+                self._trim_append_only_rows(
+                    conn,
+                    table="qa_records",
+                    group_column="topic_id",
+                    group_value=db_topic_key,
+                    history_limit=history_limit,
+                )
             conn.commit()
 
     def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -1445,16 +1527,26 @@ class StudyStore:
         rating: int,
         scheduled_days: int,
         actual_days: int,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
     ) -> None:
+        topic_key = str(topic_id or "")
         with self._lock:
-            self._require_conn().execute(
+            conn = self._require_conn()
+            conn.execute(
                 """
                 INSERT INTO review_log (topic_id, card_id, rating, scheduled_days, actual_days, created_at)
                 VALUES (?, ?, ?, ?, ?, datetime('now'))
                 """,
-                (str(topic_id or ""), card_id, int(rating or 0), int(scheduled_days or 0), int(actual_days or 0)),
+                (topic_key, card_id, int(rating or 0), int(scheduled_days or 0), int(actual_days or 0)),
             )
-            self._require_conn().commit()
+            self._trim_append_only_rows(
+                conn,
+                table="review_log",
+                group_column="topic_id",
+                group_value=topic_key,
+                history_limit=history_limit,
+            )
+            conn.commit()
 
     def export_json(self) -> dict[str, Any]:
         return {

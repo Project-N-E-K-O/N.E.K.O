@@ -166,10 +166,16 @@ class KnowledgeQualityStore:
         self,
         statuses: tuple[str, ...] | list[str] | None = None,
         item_type: str | None = None,
+        topic_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         normalized_type = self._normalize_item_type(item_type) if item_type else None
-        return self._store.list_candidate_items(statuses=statuses, item_type=normalized_type, limit=limit)
+        return self._store.list_candidate_items(
+            statuses=statuses,
+            item_type=normalized_type,
+            topic_id=topic_id,
+            limit=limit,
+        )
 
     def promote_or_deprecate(self, item_id: str) -> dict[str, Any]:
         return self.recompute_score(item_id)
@@ -211,6 +217,7 @@ class KnowledgeQualityStore:
     def prompt_evidence_summary(self, *, topic_id: str = "", limit: int = 8) -> list[dict[str, Any]]:
         rows = self.list_candidates(
             statuses=(KnowledgeCandidateStatus.ACTIVE.value, KnowledgeCandidateStatus.TRUSTED.value),
+            topic_id=topic_id,
             limit=limit,
         )
         result: list[dict[str, Any]] = []
@@ -244,7 +251,7 @@ class KnowledgeQualityStore:
                 str(payload.get("to_topic_id") or "").strip(),
             }
         candidate_topic = str(payload.get("topic_id") or payload.get("id") or "").strip()
-        return not candidate_topic or candidate_topic == topic
+        return candidate_topic == topic
 
     @staticmethod
     def _normalize_item_type(item_type: object) -> str:
