@@ -4399,28 +4399,43 @@ async def proactive_chat(request: Request):
         # 命题冲突（用户最长会话段反而最安静）。改用：
         #   1. 前端 reset backoffLevel=0 并按 baseInterval 等间隔触发
         #      （由响应里的 next_schedule_fixed_mode=True 通知前端切换）
-        #   2. 后端在 LLM 调用前 sleep [0, 0.5 * baseInterval]，把每轮
-        #      实际间隔抹成 [base, 1.5×base] 的均匀分布
-        # 总效果：屏幕态平均间隔 ≈ 1.25×base，且有自然的随机抖动。
+        #   2. 后端在 LLM 调用前 sleep uniform(0, 0.5 * baseInterval)，把每轮
+        #      实际间隔从 base 抹成 [base, 1.5*base] 的均匀分布
+        # 总效果：屏幕态平均间隔 ≈ 1.25*base，且有自然的随机抖动。
         # skip_probability（仅 immersive_horror=0.3）作为正交机制保留。
+        #
+        # ⚠️ 标志位 vs sleep 拆开：anti_slack_pending / work_break_pending
+        # 是 focused_work 下的 must-fire 提醒（紧跟在下一段 4425+），本身
+        # 时间敏感，不能被这里的随机抖动延后。但前端 fixed_mode 标志位
+        # 仍然要设——否则 must-fire 走 _end_proactive 时响应里会带回
+        # next_schedule_fixed_mode=False，前端误切回 tier backoff，让用户
+        # 离开 must-fire 状态后又被退避机制吞掉一段时间。
+        # Codex P2 + CodeRabbit Major review。
         if (
             activity_snapshot is not None
             and activity_snapshot.propensity == 'restricted_screen_only'
         ):
             _next_schedule_fixed_mode = True
-            try:
-                _base_interval_raw = data.get('base_interval_seconds')
-                _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
-            except (TypeError, ValueError):
-                _base_interval = 0.0
-            # 上限兜底：base 过大时把 0.5×base 截到 60s，避免极端配置
-            # （比如 user 把 proactiveChatInterval 调到 300s）让后端
-            # 单请求占连接十分钟。
-            if _base_interval > 0:
-                _jitter_max = min(_base_interval * 0.5, 60.0)
-                _jitter = random.uniform(0.0, _jitter_max)
-                print(f"[{lanlan_name}] propensity=restricted_screen_only, 后端注入 {_jitter:.2f}s 间隔抖动（base={_base_interval:.1f}s）")
-                await asyncio.sleep(_jitter)
+            _has_must_fire = (
+                activity_snapshot.anti_slack_pending is not None
+                or activity_snapshot.work_break_pending is not None
+            )
+            if _has_must_fire:
+                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有 must-fire 提醒待发，跳过本轮抖动 sleep")
+            else:
+                try:
+                    _base_interval_raw = data.get('base_interval_seconds')
+                    _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
+                except (TypeError, ValueError):
+                    _base_interval = 0.0
+                # 上限兜底：base 过大时把 0.5*base 截到 60s，避免极端配置
+                # （比如 user 把 proactiveChatInterval 调到 300s）让后端
+                # 单请求占连接十分钟。
+                if _base_interval > 0:
+                    _jitter_max = min(_base_interval * 0.5, 60.0)
+                    _jitter = random.uniform(0.0, _jitter_max)
+                    print(f"[{lanlan_name}] propensity=restricted_screen_only, 后端注入 {_jitter:.2f}s 间隔抖动（base={_base_interval:.1f}s）")
+                    await asyncio.sleep(_jitter)
 
         # ========== Must-fire: break-reminder branches ==========
         # Anti-slack outranks water-break (transition trigger more

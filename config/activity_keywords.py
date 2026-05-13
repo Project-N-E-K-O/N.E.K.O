@@ -301,7 +301,9 @@ OWN_APP_PROCESS_NAMES: list[str] = [
 #   competitive            → propensity=restricted_screen_only, skip 0.0,
 #                            tone=terse  (LoL team fight, CS round, etc.)
 #                            screen-only 的安静感由 /proactive_chat 的
-#                            base×1.25 + 后端抖动机制承担，skip 不再叠加。
+#                            前端固定 base_interval + 后端 uniform(0, 0.5*base)
+#                            抖动承担（实际间隔 [base, 1.5*base]，0.5*base 上限
+#                            兜底 60s）；skip 不再叠加。
 #   immersive horror       → propensity=restricted_screen_only, skip 0.3,
 #                            tone=hushed (silent hill, RE2, etc.) —
 #                            氛围比信息密度更怕打扰，保留整轮 skip

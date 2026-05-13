@@ -673,6 +673,11 @@
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
+                // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
+                // 语音模式在后端走 voice fast path（system_router.py 4222 行附近），
+                // 在 propensity / restricted_screen_only / 抖动 sleep 这一整套门
+                // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
+                // 既然两边都不读，发了也是冗余字段。
                 var resp = await fetch('/api/proactive_chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
