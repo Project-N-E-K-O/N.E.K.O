@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import hashlib
+import logging
 import re
 from typing import Any, Protocol
 
 from plugin.sdk.plugin import SdkError
 
-from .llm_prompts import build_prompt_messages
+from .llm_prompts import build_prompt_messages_with_metadata
 from utils.config_manager import get_config_manager
 from utils.file_utils import robust_json_loads
 from utils.llm_client import ChatOpenAI, create_chat_llm
@@ -24,6 +26,10 @@ _JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS = 12000
 _JSON_CORRECTION_ERROR_MAX_CHARS = 600
 _LLM_CALL_MAX_ATTEMPTS = 3
 _LLM_CALL_RETRY_BASE_DELAY_SECONDS = 0.25
+_PROMPT_METADATA: ContextVar[dict[str, Any] | None] = ContextVar(
+    "galgame_prompt_metadata",
+    default=None,
+)
 
 
 class LoggerLike(Protocol):
@@ -215,6 +221,11 @@ class GalgameLLMBackend:
             except Exception:
                 pass
 
+    def consume_prompt_metadata(self) -> dict[str, Any]:
+        metadata = _PROMPT_METADATA.get()
+        _PROMPT_METADATA.set(None)
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
     async def shutdown(self) -> None:
         async with self._cache_lock():
             llms = list(self._llm_cache.values())
@@ -314,7 +325,7 @@ class GalgameLLMBackend:
             {
                 "role": "user",
                 "content": (
-                    f"JSON correction request {attempt}/{max_attempts}, operation={operation}.\n"
+                    f"JSON 修正请求 {attempt}/{max_attempts}, operation={operation}.\n"
                     f"Parse error: {bounded_error}\n"
                     "Your last response was not a valid JSON object. "
                     "Reply with ONLY a valid JSON object — "
@@ -403,7 +414,10 @@ class GalgameLLMBackend:
                         exc,
                     )
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning(
+                        "galgame logger.warning failed during LLM retry logging",
+                        exc_info=True,
+                    )
                 await asyncio.sleep(delay)
         raise last_exc or RuntimeError("galgame LLM call failed")
 
@@ -437,7 +451,9 @@ class GalgameLLMBackend:
         operation: str,
         context: dict[str, Any],
     ) -> list[dict[str, str]]:
-        return build_prompt_messages(operation, context)
+        result = build_prompt_messages_with_metadata(operation, context, self._config)
+        _PROMPT_METADATA.set(dict(result.metadata))
+        return result.messages
 
     def _parse_json_object(self, raw_text: str) -> dict[str, Any]:
         text = _strip_code_fences(raw_text)

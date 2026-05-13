@@ -38,6 +38,8 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
+    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
@@ -67,6 +69,7 @@
     let _proactiveLeaderChannel = null;
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
+    let _chatInputSlowdownUntil = 0;
 
     function isHomeTutorialFeatureSuppressed() {
         try {
@@ -117,6 +120,12 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
+                } else if (data.type === 'chat_input_focus_slowdown'
+                        && S.proactiveChatEnabled
+                        && hasAnyChatModeEnabled()
+                        && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+                    _markChatInputSlowdownWindow(S.proactiveChatInterval);
+                    scheduleProactiveChat();
                 }
             };
         }
@@ -135,6 +144,59 @@
             });
         } catch (_) { /* ignore */ }
     }
+
+    function _isChatInputElement(element) {
+        if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
+            return false;
+        }
+        if (!element.matches(
+            '#textInputBox, ' +
+            '#react-chat-window-shell textarea.composer-input, ' +
+            '#react-chat-window-root textarea.composer-input'
+        )) {
+            return false;
+        }
+        return element.disabled !== true && element.readOnly !== true;
+    }
+
+    function _getFocusedChatInputElement() {
+        try {
+            const active = document.activeElement;
+            if (!active || !_isChatInputElement(active)) return null;
+            if (document.hasFocus && !document.hasFocus()) return null;
+            return active;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return 0;
+        }
+        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+        return _getFocusedChatInputElement()
+            ? minDelay
+            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+    }
+
+    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
+        const interval = Number(baseIntervalSeconds);
+        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
+            return;
+        }
+        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+    }
+
+    document.addEventListener('focusin', function (event) {
+        if (!_isChatInputElement(event.target)) return;
+        if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) return;
+        if (Number(S.proactiveChatInterval) > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) return;
+        _markChatInputSlowdownWindow(S.proactiveChatInterval);
+        scheduleProactiveChat();
+        _proactiveBroadcast('chat_input_focus_slowdown');
+    }, true);
 
     function _purgeStaleProactivePeers() {
         const now = Date.now();
@@ -481,6 +543,14 @@
         //
         // 单调性: 固定 M1 使 delay(T) ≈ base + T×(M1-1)，
         //         ∂delay/∂base = 1 > 0，base 越高期望 delay 越高。
+        //
+        // ── 固定间隔分支 (proactiveFixedScheduleMode) ──
+        // 当后端 propensity=restricted_screen_only（屏幕专注态：gaming /
+        // focused_work）时，常规退避会让搭话间隔指数级增长，跟陪伴产品
+        // 命题冲突。前端跳过 tier backoff，按 baseInterval 等间隔触发，
+        // 后端在 /proactive_chat 入口注入 [0, 0.5×base] sleep 把实际间隔
+        // 抹成 [base, 1.5×base] 均匀分布。详见 main_routers/system_router.py
+        // 的 restricted_screen_only 处理段。
 
         var baseInterval = S.proactiveChatInterval;
         var BACKOFF_TARGET = 120;
@@ -500,10 +570,18 @@
         var cap1 = caps.cap1;
         var cap2 = caps.cap2;
 
+        var fixedMode = !!S.proactiveFixedScheduleMode;
         var level = S.proactiveChatBackoffLevel;
         var delay;
 
-        if (level < cap1) {
+        if (fixedMode) {
+            // 屏幕专注态：跳过 tier backoff，重置 level，按 baseInterval 等间隔
+            // 触发。抖动完全交给后端（[0, 0.5×base] sleep），前端不做乘性抖动，
+            // 否则两层叠加会让方差大于设计目标。
+            S.proactiveChatBackoffLevel = 0;
+            level = 0;
+            delay = baseInterval * 1000;
+        } else if (level < cap1) {
             // Tier 1: base × M1^level，确定性爬升
             delay = (baseInterval * 1000) * Math.pow(BACKOFF_M1, level);
         } else {
@@ -514,7 +592,10 @@
         }
 
         // 对 delay 做 ±12% 乘性随机抖动，避免节奏过于机械
-        delay *= 1 + (Math.random() - 0.5) * 0.24;
+        // 固定模式下抖动由后端注入，前端不再叠加
+        if (!fixedMode) {
+            delay *= 1 + (Math.random() - 0.5) * 0.24;
+        }
 
         // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
@@ -527,7 +608,18 @@
         }
         delay += startupDelay;
 
-        console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒）');
+        // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
+        // 不管处于屏幕专注态还是常规态。两边都套这个下限。
+        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        if (inputSlowdownDelay > 0) {
+            delay = Math.max(delay, inputSlowdownDelay);
+        }
+
+        if (fixedMode) {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（屏幕专注态固定间隔，base=' + baseInterval + 's，level 已重置，后端注入抖动，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
+        } else {
+            console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
+        }
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -561,7 +653,16 @@
             //   tier 1 (level < cap1): 每次必升 — 确定性爬升阶段
             //   tier 2 (cap1 ≤ level < cap2): 9% 概率升级 — 慢区，长时间停留
             //   tier 3 (level ≥ cap2): 每次必升 — 快区，快速逼近 60min 硬顶
-            if (triggered) {
+            // 屏幕专注态固定模式下不动 level（由 next_schedule_fixed_mode
+            // 反向通知后续 reset），让用户离开屏幕态回到常规态时 backoff
+            // 不会带着旧值。
+            //
+            // ⚠️ 用本轮调度时捕获的 ``fixedMode`` 而非已被响应同步过的
+            // ``S.proactiveFixedScheduleMode``：本轮的 level 推进决策应该基于
+            // 「这一 round 是按哪种模式调度的」而不是「返回后的最新模式」。
+            // 否则 fixed → tier 切换的那一跳会误升一级，下一轮 tier 不能从
+            // 干净的 base 起步。CodeRabbit Minor review: PR #1327。
+            if (triggered && !fixedMode) {
                 var currentCaps = computeBackoffCaps(S.proactiveChatInterval);
                 var currentCap1 = currentCaps.cap1;
                 var currentCap2 = currentCaps.cap2;
@@ -647,6 +748,11 @@
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
+                // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
+                // 语音模式在后端走 voice fast path（system_router.py 4222 行附近），
+                // 在 propensity / restricted_screen_only / 抖动 sleep 这一整套门
+                // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
+                // 既然两边都不读，发了也是冗余字段。
                 var resp = await fetch('/api/proactive_chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -756,7 +862,11 @@
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage
+                i18n_language: i18nLanguage,
+                // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
+                // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
+                // 时忽略此字段。
+                base_interval_seconds: S.proactiveChatInterval
             };
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
@@ -916,6 +1026,20 @@
             requestSent = true;
 
             var result = await response.json();
+
+            // 同步下一轮调度模式：后端在 propensity=restricted_screen_only
+            // 时会把这个字段置 true，前端 scheduleProactiveChat 据此跳过
+            // tier backoff、按 baseInterval 等间隔触发。
+            //
+            // 字段缺席 ≠ 模式应该回退。短路响应路径（409 try_start_proactive
+            // 冲突、voice fast path、game-route active 早退）都不走 _end_proactive，
+            // 也就拿不到这个字段——但用户的活动状态没变，把模式硬重置成 false
+            // 会让一次并发冲突就把客户端踢出 fixed 模式、被 tier backoff 吞几轮。
+            // 改为：只有显式收到 boolean 才同步，缺席时保留旧状态。
+            // Codex P2 review: PR #1327。
+            if (typeof result.next_schedule_fixed_mode === 'boolean') {
+                S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
+            }
 
             if (result.success) {
                 if (result.action === 'chat') {

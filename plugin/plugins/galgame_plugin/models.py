@@ -520,6 +520,9 @@ class GalgameLLMConfig:
     llm_temperature_default: float = 0.0
     llm_max_tokens_agent_reply: int = 900
     llm_max_tokens_default: int = 1200
+    context_max_tokens: int = 6000
+    context_metrics_enabled: bool = False
+    context_counting_mode: str = "char"
 
 
 @dataclass(slots=True)
@@ -642,6 +645,9 @@ class GalgameConfig:
         "llm_temperature_default": ("llm", "llm_temperature_default"),
         "llm_max_tokens_agent_reply": ("llm", "llm_max_tokens_agent_reply"),
         "llm_max_tokens_default": ("llm", "llm_max_tokens_default"),
+        "context_max_tokens": ("llm", "context_max_tokens"),
+        "context_metrics_enabled": ("llm", "context_metrics_enabled"),
+        "context_counting_mode": ("llm", "context_counting_mode"),
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),

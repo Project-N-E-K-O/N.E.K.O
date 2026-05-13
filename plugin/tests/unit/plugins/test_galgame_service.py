@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.galgame_plugin import service as galgame_service
+from plugin.plugins.galgame_plugin import context_builder as galgame_context_builder
 from plugin.plugins.galgame_plugin.models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -17,6 +18,7 @@ from plugin.plugins.galgame_plugin.models import (
 )
 from plugin.plugins.galgame_plugin.service import (
     build_explain_context,
+    build_suggest_context,
     build_summarize_context,
     choose_candidate,
     filter_ocr_reader_candidates,
@@ -157,6 +159,87 @@ def test_build_config_defaults_rapidocr_lang_type_to_bundled_ch() -> None:
 
     assert cfg.rapidocr_lang_type == "ch"
     assert cfg.rapidocr_lang_type == galgame_service.DEFAULT_RAPIDOCR_LANG_TYPE
+
+
+def test_build_config_reads_context_optimization_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "llm": {
+                "context_max_tokens": 4096,
+                "context_metrics_enabled": True,
+                "context_counting_mode": "token",
+            }
+        }
+    )
+    invalid = galgame_service.build_config(
+        {"llm": {"context_counting_mode": "words"}}
+    )
+
+    assert cfg.context_max_tokens == 4096
+    assert cfg.context_metrics_enabled is True
+    assert cfg.context_counting_mode == "token"
+    assert invalid.context_counting_mode == "char"
+
+
+def test_context_builder_forwards_context_builders_without_behavior_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_state = _local_state()
+    merge_from_scene_ids = ["ocr:game:scene-0000"]
+    summarize_result = {"sentinel": "summarize"}
+    explain_result = {"sentinel": "explain"}
+    suggest_result = {"sentinel": "suggest"}
+    calls: dict[str, object] = {}
+
+    def fake_build_summarize_context(
+        received_local_state: dict[str, object],
+        *,
+        scene_id: str,
+        merge_from_scene_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        calls["summarize"] = (received_local_state, scene_id, merge_from_scene_ids)
+        return summarize_result
+
+    def fake_build_explain_context(
+        received_local_state: dict[str, object],
+        *,
+        line_id: str,
+    ) -> dict[str, str]:
+        calls["explain"] = (received_local_state, line_id)
+        return explain_result
+
+    def fake_build_suggest_context(received_local_state: dict[str, object]) -> dict[str, str]:
+        calls["suggest"] = (received_local_state,)
+        return suggest_result
+
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_summarize_context",
+        fake_build_summarize_context,
+    )
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_explain_context",
+        fake_build_explain_context,
+    )
+    monkeypatch.setattr(
+        galgame_context_builder,
+        "build_suggest_context",
+        fake_build_suggest_context,
+    )
+
+    assert build_summarize_context(
+        local_state,
+        scene_id="ocr:game:scene-0001",
+        merge_from_scene_ids=merge_from_scene_ids,
+    ) is summarize_result
+    assert build_explain_context(local_state, line_id="ocr:line-stable") is explain_result
+    assert build_suggest_context(local_state) is suggest_result
+    assert calls == {
+        "summarize": (local_state, "ocr:game:scene-0001", merge_from_scene_ids),
+        "explain": (local_state, "ocr:line-stable"),
+        "suggest": (local_state,),
+    }
 
 
 def _candidate(
