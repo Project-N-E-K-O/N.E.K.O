@@ -17,11 +17,11 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // first-launch 标记：让服务器返回 telemetryBranch 后，能识别这次是不是首启，
-    // 决定要不要对实验组追加「隐私模式默认关闭」覆写
-    let _isFirstLaunch = false;
     // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
     const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
+    // localStorage marker：记下「上次成功观察到的 telemetryBranch」。让 offline 首启
+    // 错过 branch 后续启动时还能补回覆写，否则实验组用户会被永远锁在控制组默认值上
+    const _BRANCH_OBSERVED_KEY = '_neko_telemetry_branch_observed';
 
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
@@ -429,7 +429,6 @@
                 // 地区默认关闭）。实验组（privacy_default_off_v1）的「一律默认关闭」
                 // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
                 // 异步合并块。
-                _isFirstLaunch = true;
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
                 }
@@ -476,6 +475,12 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+        // 捕获 fetch 发起时的 vision 值：若用户在 fetch 返回前手动切了 toggle，
+        // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
+        const _visionAtFetchStart = S.proactiveVisionEnabled;
+        const _branchAlreadyObserved = (() => {
+            try { return localStorage.getItem(_BRANCH_OBSERVED_KEY); } catch (_) { return null; }
+        })();
         try {
             loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
@@ -483,17 +488,28 @@
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
 
-                // A/B test 覆写：首启 + 实验组 + 服务器没有用户既有偏好时，
-                // 把隐私模式默认关闭（proactiveVisionEnabled = true）。已有云端
-                // 偏好的用户和控制组保持各自原状不动。
+                // A/B test 覆写：分支 = 实验组 + 本机还没观察并落定过这个分支 +
+                // 服务器没有用户既有 vision 偏好 + 用户没在 fetch 间隙手动切 toggle，
+                // 才把隐私模式默认关掉。用 localStorage marker 跨启动幂等：offline
+                // 首启错过覆写时，下次在线再补；marker 写入后不再重复覆写。
                 const noServerVisionPref = !serverSettings ||
                     serverSettings.proactiveVisionEnabled === undefined;
-                if (_isFirstLaunch && telemetryBranch === _PRIVACY_OFF_BRANCH && noServerVisionPref) {
+                const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
+                const branchAlreadyApplied = _branchAlreadyObserved === telemetryBranch;
+                if (telemetryBranch === _PRIVACY_OFF_BRANCH
+                        && !branchAlreadyApplied
+                        && noServerVisionPref
+                        && !userToggledDuringFetch) {
                     if (S.proactiveVisionEnabled !== true) {
                         S.proactiveVisionEnabled = true;
                         hasUpdate = true;
                         console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
                     }
+                }
+                // 不论是否触发覆写，只要 server 给了 branch 就落 marker，保证
+                // 下次启动不再尝试，控制组用户也只查一次
+                if (telemetryBranch && !branchAlreadyApplied) {
+                    try { localStorage.setItem(_BRANCH_OBSERVED_KEY, telemetryBranch); } catch (_) {}
                 }
 
                 if (serverSettings) {
