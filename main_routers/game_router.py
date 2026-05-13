@@ -86,7 +86,7 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
     "steal", "stolen", "player-idle", "player-charging-long",
-    "free-ball", "startle", "zoneout",
+    "free-ball", "startle-direct", "startle-graze", "zoneout",
 }
 
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6

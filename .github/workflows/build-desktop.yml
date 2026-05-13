@@ -364,8 +364,13 @@ jobs:
           # from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
           # Gate by RUNNER_OS: all platforms' libs are checked into the repo, but
           # feeding a Linux ELF .so to a macOS Nuitka build trips an arch-mismatch FATAL.
+          # The --include-package=steamworks above also makes Nuitka pick up every
+          # native lib in steamworks/ as package data, so strip the wrong-platform
+          # copies from the source tree before invoking nuitka.
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
+            rm -f steamworks/SteamworksPy.so steamworks/libsteam_api.so \
+                  steamworks/SteamworksPy64.dll steamworks/steam_api64.dll steamworks/steam_api64.lib
             if [ -f "steamworks/libsteam_api.dylib" ]; then
               NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.dylib=libsteam_api.dylib"
             fi
@@ -373,6 +378,8 @@ jobs:
               NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/SteamworksPy.dylib=SteamworksPy.dylib"
             fi
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            rm -f steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib \
+                  steamworks/SteamworksPy64.dll steamworks/steam_api64.dll steamworks/steam_api64.lib
             if [ -f "steamworks/libsteam_api.so" ]; then
               NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steamworks/libsteam_api.so=libsteam_api.so"
             fi
@@ -437,6 +444,10 @@ jobs:
           rem from the exe sibling dir (see steamworks/__init__.py), so dest stays at root.
           rem Guard with `if exist` to mirror the Unix branch — keeps the build
           rem soft on incidental missing libs instead of fataling in Nuitka.
+          rem --include-package=steamworks pulls in every native lib in steamworks/
+          rem as package data; strip the non-Windows copies so Nuitka can't trip
+          rem an arch check on them (mirrors the Unix branch's rm step).
+          del /q steamworks\SteamworksPy.so steamworks\libsteam_api.so steamworks\SteamworksPy.dylib steamworks\libsteam_api.dylib 2>nul
           if exist "steamworks\steam_api64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.dll=steam_api64.dll
           if exist "steamworks\steam_api64.lib" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/steam_api64.lib=steam_api64.lib
           if exist "steamworks\SteamworksPy64.dll" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steamworks/SteamworksPy64.dll=SteamworksPy64.dll

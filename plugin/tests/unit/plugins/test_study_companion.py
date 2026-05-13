@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 import subprocess
@@ -16,7 +17,11 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins.study_companion import StudyCompanionPlugin
-from plugin.plugins.study_companion.llm_prompts import _compact_prompt_value, build_concept_explain_messages
+from plugin.plugins.study_companion.llm_prompts import (
+    _compact_prompt_value,
+    build_concept_explain_messages,
+    build_operation_messages,
+)
 from plugin.plugins.study_companion.mode_manager import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
@@ -27,12 +32,19 @@ from plugin.plugins.study_companion.mode_manager import (
     mode_label,
     normalize_mode,
 )
+from plugin.plugins.study_companion.knowledge_quality import (
+    KnowledgeCandidateStatus,
+    KnowledgeCandidateType,
+    KnowledgeEvidenceType,
+    KnowledgeQualityStore,
+)
+from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
 from plugin.plugins.study_companion import service as study_service
-from plugin.plugins.study_companion.screen_classifier import classify_screen_from_ocr
+from plugin.plugins.study_companion.screen_classifier import ScreenClassification, classify_screen_from_ocr
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
 from plugin.plugins.study_companion.ui_api import build_open_ui_payload
@@ -220,13 +232,163 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.append_interaction(kind="concept_explain", input_text="a", output_text="b", history_limit=2)
     store.append_interaction(kind="concept_explain", input_text="c", output_text="d", history_limit=2)
     store.append_interaction(kind="concept_explain", input_text="e", output_text="f", history_limit=2)
+    store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+    store.ensure_session(session_id="session-1", mode="interactive")
+    store.add_qa_record(
+        session_id="session-1",
+        topic_id="photosynthesis_topic",
+        question={"question": "What is photosynthesis?"},
+        user_answer="Plants make sugar.",
+        eval_result={"verdict": "correct"},
+        mode="interactive",
+    )
+    store.append_review_log(
+        topic_id="photosynthesis_topic",
+        card_id=None,
+        rating=3,
+        scheduled_days=1,
+        actual_days=0,
+    )
+    candidate = store.upsert_candidate_item(
+        item_type="topic",
+        payload={"topic_id": "photosynthesis_topic", "name": "Photosynthesis"},
+        source="test",
+        dedupe_key="topic:photosynthesis",
+    )
+    store.add_knowledge_evidence(
+        item_id=candidate["id"],
+        event_type="mentioned",
+        weight=0.2,
+        context={"source": "unit"},
+    )
+    for index in range(2):
+        store.add_qa_record(
+            session_id="session-1",
+            topic_id="photosynthesis_topic",
+            question={"question": f"Recent QA {index}"},
+            user_answer="answer",
+            eval_result={"verdict": "correct"},
+            mode="interactive",
+        )
+        store.append_review_log(
+            topic_id="photosynthesis_topic",
+            card_id=None,
+            rating=index + 1,
+            scheduled_days=index + 1,
+            actual_days=0,
+        )
+        store.add_knowledge_evidence(
+            item_id=candidate["id"],
+            event_type="mentioned",
+            weight=0.3 + index,
+            context={"index": index},
+        )
 
     assert store.load_config(StudyConfig()).language == "en"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
     assert [item["input_text"] for item in store.list_interactions(limit=10)] == ["e", "c"]
     exported = store.export_json()
     assert exported["config"]["language"] == "en"
+    assert exported["sessions"][0]["id"] == "session-1"
+    assert [item["question"]["question"] for item in store.list_qa_records(limit=2)] == ["Recent QA 0", "Recent QA 1"]
+    assert [item["rating"] for item in store.list_review_log(limit=2)] == [1, 2]
+    assert [item["context"].get("index") for item in store.list_knowledge_evidence(limit=2)] == [0, 1]
+    assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
+    assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
+    assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()
+
+
+def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "Seed Topic",
+                "subject": "math",
+                "chapter": "Seed Chapter",
+                "depth": 2,
+                "difficulty": 0.7,
+                "prerequisites": [{"id": "pre_seed", "required_mastery": 0.5}],
+                "related": [{"id": "related_seed", "relation": "next"}],
+                "typical_misconceptions": ["seed misconception"],
+                "source": "seed",
+            }
+        )
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "Runtime Topic",
+                "subject": "science",
+                "chapter": "Runtime Chapter",
+                "depth": 5,
+                "difficulty": 0.2,
+                "prerequisites": [{"id": "pre_runtime", "required_mastery": 0.9}],
+                "related": [{"id": "related_runtime", "relation": "runtime"}],
+                "typical_misconceptions": ["runtime misconception"],
+                "source": "runtime",
+            }
+        )
+
+        topic = store.get_topic("seed_topic")
+        assert topic is not None
+        assert topic["name"] == "Seed Topic"
+        assert topic["subject"] == "math"
+        assert topic["chapter"] == "Seed Chapter"
+        assert topic["depth"] == 2
+        assert topic["difficulty"] == 0.7
+        assert topic["prerequisites"] == [{"id": "pre_seed", "required_mastery": 0.5}]
+        assert topic["related"] == [{"id": "related_seed", "relation": "next"}]
+        assert topic["typical_misconceptions"] == ["seed misconception"]
+        assert topic["source"] == "seed"
+    finally:
+        store.close()
+
+
+def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        row = store._require_conn().execute("PRAGMA foreign_keys").fetchone()
+        assert row is not None
+        assert int(row[0]) == 1
+    finally:
+        store.close()
+
+
+def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        for index in range(12):
+            topic_id = f"topic_{index}"
+            store.ensure_topic(topic_id=topic_id, name=f"Topic {index}")
+            mastery = 1.0 if index < 8 else 0.0
+            store.append_mastery_snapshot(
+                {
+                    "topic_id": topic_id,
+                    "mastery": mastery,
+                    "accuracy": 0.8,
+                    "recency": 0.7,
+                    "consistency": 0.6,
+                    "confidence": 0.9,
+                    "level": "mastered",
+                    "attempts": 3,
+                    "flags": [],
+                }
+            )
+
+        summary = KnowledgeTracker(store).get_status_summary(limit=8)
+
+        assert len(store.list_mastery_overview(limit=8)) == 8
+        assert summary["tracked_topic_count"] == 12
+        assert summary["average_mastery"] == 0.6667
+        assert summary["weak_topic_count"] == 4
+        assert len(KnowledgeTracker(store).get_weak_topics(limit=2)) == 2
+    finally:
+        store.close()
 
 
 def test_build_tutor_payload_preserves_structured_summary() -> None:
@@ -319,6 +481,9 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
+    fsrs_config = build_config({"fsrs": {"retention_target": 0.88, "auto_optimize_interval_days": 14}})
+    assert fsrs_config.fsrs_retention_target == 0.88
+    assert fsrs_config.fsrs_auto_optimize_interval_days == 14
     llm_section_legacy_timeout = build_config({"llm": {"llm_call_timeout_seconds": 84}})
     assert llm_section_legacy_timeout.llm_call_timeout_seconds == 84
 
@@ -330,19 +495,10 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert invalid.mode == MODE_COMPANION
     assert invalid.default_mode == MODE_COMPANION
 
-    direct = StudyConfig(mode="not_a_mode", default_mode="invalid", history_limit=0, llm_temperature=9.0, llm_max_tokens=0)
+    direct = StudyConfig(mode="not_a_mode", default_mode="invalid", history_limit=0)
     assert direct.mode == MODE_COMPANION
     assert direct.default_mode == MODE_COMPANION
     assert direct.history_limit == 1
-    assert direct.llm_temperature == 2.0
-    assert direct.llm_max_tokens == 1
-
-    generic_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333}})
-    assert generic_llm.llm_limits_for_operation("unsupported") == (0.6, 333)
-    assert generic_llm.llm_limits_for_operation("question_generate") == (0.6, 333)
-
-    specific_llm = build_config({"llm": {"temperature": 0.6, "max_tokens": 333, "temperature_question_generate": 0.3, "max_tokens_question_generate": 444}})
-    assert specific_llm.llm_limits_for_operation("question_generate") == (0.3, 444)
 
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -358,6 +514,43 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         store.close()
 
 
+def test_trusted_knowledge_candidate_is_deprecated_after_conflict(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    quality = KnowledgeQualityStore(store, trusted_negative_threshold=1)
+
+    try:
+        payload = {
+            "subject": "math",
+            "topic_id": "linear_equation",
+            "name": "linear equation",
+        }
+        candidate = store.upsert_candidate_item(
+            item_type=KnowledgeCandidateType.TOPIC.value,
+            payload=payload,
+            source="unit-test",
+            dedupe_key="math:linear equation",
+            status=KnowledgeCandidateStatus.TRUSTED.value,
+        )
+
+        assert candidate["status"] == KnowledgeCandidateStatus.TRUSTED.value
+        assert quality.prompt_evidence_summary(topic_id="linear_equation")
+
+        quality.add_evidence(
+            candidate["id"],
+            KnowledgeEvidenceType.CONFLICT_DETECTED.value,
+            -1.0,
+            {"source": "unit-test"},
+        )
+
+        updated = store.get_candidate_item(candidate["id"])
+        assert updated is not None
+        assert updated["status"] == KnowledgeCandidateStatus.DEPRECATED.value
+        assert quality.prompt_evidence_summary(topic_id="linear_equation") == []
+    finally:
+        store.close()
+
+
 def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
     english = classify_screen_from_ocr("## Summary\n\nThe learner reviewed photosynthesis.")
     assert english.screen_type == "summary"
@@ -368,12 +561,59 @@ def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
     assert "总结" in chinese.signals.get("summary_hits", [])
 
 
+def test_study_screen_classifier_covers_core_screen_types_and_smoothing() -> None:
+    assert classify_screen_from_ocr("", window_title="").to_payload()["screen_type"] == "idle"
+
+    question = classify_screen_from_ocr("Problem 1: What is the derivative?", window_title="Quiz exercise")
+    assert question.screen_type == "question"
+    assert question.confidence > 0.0
+
+    answering = classify_screen_from_ocr("Answer submitted\nScore: incorrect\nFeedback: retry", window_title="Answer review")
+    assert answering.screen_type in {"answering", "review"}
+    assert answering.signals["answer_hits"]
+
+    notes = classify_screen_from_ocr("Notes\nmemo outline for photosynthesis", window_title="Study note")
+    assert notes.screen_type == "notes"
+
+    reading = classify_screen_from_ocr(
+        "Chapter section lesson text definition concept " * 8,
+        window_title="Reading lesson",
+    )
+    assert reading.screen_type == "reading"
+    assert len(reading.text_excerpt) <= 143
+
+    recent = [
+        ScreenClassification(screen_type="review", confidence=0.7),
+        {"screen_type": "review", "screen_confidence": 0.72},
+        {"screen_type": "review", "confidence": 0.74},
+    ]
+    smoothed = classify_screen_from_ocr("tiny", recent_classifications=recent)
+    assert smoothed.screen_type == "review"
+    assert smoothed.signals["smoothed_from"] == "review"
+
+
 def test_compact_prompt_value_stops_at_max_depth() -> None:
     nested = {"a": {"b": {"c": {"d": "bottom"}}}}
 
     compacted = _compact_prompt_value(nested, list_limit=5, string_limit=50, max_depth=2)
 
     assert compacted == {"a": {"b": "...[max depth reached]"}}
+
+
+def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operation() -> None:
+    context = {
+        "text": "x" * 20000,
+        "language": "en",
+        "items": [{"body": "y" * 2000} for _ in range(30)],
+        **{f"k{i}": i for i in range(90)},
+    }
+
+    messages = build_operation_messages("question_generate", context)
+
+    assert messages[1]["content"].count("_prompt_truncated") == 1
+    assert len(messages[1]["content"]) <= 9500
+    with pytest.raises(ValueError):
+        build_operation_messages("unsupported", {})
 
 
 def test_study_open_ui_payload_returns_message_key() -> None:
@@ -940,6 +1180,35 @@ def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     assert "ocr boom" in failed.diagnostic
 
 
+def test_ocr_pipeline_normalizes_box_objects_and_capture_failures() -> None:
+    class _Box:
+        text = "Box text"
+
+        def to_dict(self):
+            return {"text": self.text, "x": 1}
+
+    class _BrokenCapture:
+        def capture_frame(self, _target, _profile):
+            raise RuntimeError("target capture boom")
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=_FakeOcrBackend([_Box(), {"text": "Dict text", "x": 2}, "Tail"]),
+    )
+    snapshot = pipeline.snapshot_from_image(object(), backend_name="fake")
+
+    assert snapshot.status == "ok"
+    assert snapshot.backend == "fake"
+    assert snapshot.text == "Box text Dict text Tail"
+    assert snapshot.boxes == [{"text": "Box text", "x": 1}, {"text": "Dict text", "x": 2}]
+
+    broken = StudyOcrPipeline(logger=_Logger(), config=StudyConfig(), capture_backend=_BrokenCapture())
+    failed = broken.capture_snapshot(target=object())
+    assert failed.status == "capture_failed"
+    assert "target capture boom" in failed.diagnostic
+
+
 def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     def _capture_boom():
         raise RuntimeError("capture boom")
@@ -1210,6 +1479,48 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
 
 
 @pytest.mark.asyncio
+async def test_learning_context_builds_question_params_off_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _ThreadCheckingTracker:
+        def __init__(self, event_loop_thread_id: int) -> None:
+            self.event_loop_thread_id = event_loop_thread_id
+            self.calls: list[tuple[str, bool]] = []
+
+        def get_next_question_params(self, topic_id: str = "") -> dict[str, object]:
+            self.calls.append((topic_id, threading.get_ident() != self.event_loop_thread_id))
+            return {"target_topic_id": topic_id, "threaded": self.calls[-1][1]}
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    tracker = _ThreadCheckingTracker(threading.get_ident())
+    plugin._knowledge_tracker = tracker  # type: ignore[assignment]
+
+    try:
+        context = await plugin._build_learning_context(
+            "question_generate",
+            input_text="二次函数",
+            extra={"topic_hint": "quadratic_vertex_form"},
+        )
+
+        assert context["knowledge_question_params"]["target_topic_id"] == "quadratic_vertex_form"
+        assert tracker.calls == [("quadratic_vertex_form", True)]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_custom_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1245,6 +1556,199 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
         assert fake_agent.evaluations[-1][0] == "What organelle stores genetic material?"
         assert fake_agent.evaluations[-1][2] == ""
         assert fake_agent.evaluations[-1][3]["expected_answer"] == ""
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TrackingTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="The answer confuses organelles.",
+                payload={
+                    "verdict": "wrong",
+                    "score": 10,
+                    "error_type": "organelle_function",
+                    "feedback": "The nucleus stores genetic material.",
+                    "next_action": "Review nucleus function.",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="cell nucleus",
+                payload={
+                    "topic": "cell_nucleus",
+                    "mastery_delta": -0.1,
+                    "confidence": 0.8,
+                    "weak_points": ["organelle_function"],
+                    "next_steps": ["Review nucleus function"],
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _TrackingTutorAgent()
+
+    try:
+        plugin._store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+        plugin._store.ensure_topic(topic_id="cell_nucleus", name="Cell nucleus")
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What process converts light to chemical energy?",
+                "answer": "Photosynthesis",
+                "topic": "photosynthesis_topic",
+                "difficulty": 2,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What organelle stores genetic material?",
+            answer="The mitochondria.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert plugin._agent.evaluations[-1][3]["current_question"] == {}
+        assert plugin._agent.evaluations[-1][3]["question_payload"] == {
+            "question": "What organelle stores genetic material?",
+            "answer": "",
+        }
+        assert plugin._store.get_latest_mastery("photosynthesis_topic") is None
+        assert plugin._store.get_fsrs_card("photosynthesis_topic") is None
+        assert plugin._store.list_wrong_questions(topic_id="photosynthesis_topic") == []
+        assert plugin._store.get_latest_mastery("cell_nucleus") is not None
+        assert plugin._store.get_fsrs_card("cell_nucleus") is not None
+        assert plugin._store.list_wrong_questions(topic_id="cell_nucleus")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_evaluate_answer_persists_knowledge_tracking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TrackingTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="符号方向反了",
+                payload={
+                    "verdict": "wrong",
+                    "score": 20,
+                    "error_type": "sign_reversal",
+                    "feedback": "符号方向反了",
+                    "next_action": "复习顶点式中的 h",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="二次函数顶点式",
+                payload={
+                    "topic": "quadratic_vertex_form",
+                    "mastery_delta": -0.1,
+                    "confidence": 0.7,
+                    "weak_points": ["sign_reversal"],
+                    "next_steps": ["复习顶点式"],
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_TEACHING},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _TrackingTutorAgent()
+
+    try:
+        with plugin._lock:
+            plugin._state.current_question = {
+                "question": "二次函数 y=a(x-h)^2+k 的顶点是什么？",
+                "answer": "(h,k)",
+                "topic": "quadratic_vertex_form",
+                "difficulty": 3,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(answer="(-h,k)", _ctx={"run_id": "answer-run-1"})
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["verdict"] == "wrong"
+
+        mastery = plugin._store.get_latest_mastery("quadratic_vertex_form")
+        assert mastery is not None
+        assert mastery["level"] in {"薄弱", "进行中", "未接触"}
+        assert plugin._store.get_fsrs_card("quadratic_vertex_form") is not None
+        assert plugin._store.list_wrong_questions(topic_id="quadratic_vertex_form")
+        session = next(item for item in plugin._store.list_sessions() if item["id"] == "answer-run-1")
+        assert session["question_count"] == 1
+        assert session["topics_touched"] == ["quadratic_vertex_form"]
+
+        status = await plugin.study_status()
+        assert isinstance(status, Ok)
+        assert status.value["knowledge_summary"]["tracked_topic_count"] >= 1
+        assert status.value["knowledge_quality_summary"]["total"] >= 1
+        assert "anonymous_knowledge_stats_summary" in status.value
+        assert status.value["weak_topics"]
+        assert status.value["mastery_overview"]
     finally:
         await plugin.shutdown()
 
@@ -1494,9 +1998,11 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
 
     cfg_mgr = _ConfigManager()
     created_keys: list[str] = []
+    create_kwargs: list[dict[str, object]] = []
 
-    def _create_chat_llm(*, api_key: str, **_kwargs):
+    def _create_chat_llm(*, api_key: str, **kwargs):
         created_keys.append(api_key)
+        create_kwargs.append(dict(kwargs))
         return _FakeLLM(api_key)
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
@@ -1510,6 +2016,9 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert created_keys == ["old-key", "new-key"]
+    assert create_kwargs
+    assert all("temperature" not in item for item in create_kwargs)
+    assert all("max_completion_tokens" not in item for item in create_kwargs)
     assert "old-key" not in repr(agent._client_cache._cache)
     assert "new-key" not in repr(agent._client_cache._cache)
 
@@ -1542,6 +2051,10 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert status.value["active_mode"] == MODE_COMPANION
     assert "mode_started_at" in status.value
     assert "recent_mode_switches" in status.value
+    assert status.value["knowledge_summary"]["topic_count"] >= 120
+    assert "review_queue" in status.value
+    assert "weak_topics" in status.value
+    assert "mastery_overview" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
 

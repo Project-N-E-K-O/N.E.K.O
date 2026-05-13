@@ -3913,9 +3913,58 @@
             "ready": "准备完成",
             "startButton": "开始"
         },
+        "startTutorial": {
+            "title": "玩法说明",
+            "move": "移动鼠标引导玩家角色。",
+            "charge": "靠近球时按住左键蓄力，松开射门。",
+            "range": "离球 {{distance}} 内才会触发踢球。",
+            "reset": "按 R 可以复位球和双方位置。",
+            "ai": "NEKO 的心情和难度会随局势变化。"
+        },
         "hint": {
-            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位",
-            "aiMood": "1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档"
+            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤{{distance}} 触发）· R 复位",
+            "aiMood": "NEKO 的心情和难度会随局势变化"
+        },
+        "debugControls": {
+            "bounds": "启用边界（出界规则）",
+            "voiceOutput": "播放 LLM 台词（项目语音）",
+            "voiceButton": "调试语音",
+            "voicePlaceholder": "调试：输入最终转写后回车",
+            "send": "发送",
+            "voiceStatusHidden": "调试 STT：隐藏"
+        },
+        "debug": {
+            "mouse": "鼠标：{{x}}, {{y}}",
+            "playerCenter": "玩家中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  状态：{{mode}}",
+            "state": "回合：{{round}}  难度：{{difficulty}}  心情：{{mood}}  蓄力：{{charge}}%",
+            "ball": "球：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "第 {{round}} 回合"
+        },
+        "moods": {
+            "calm": "平静",
+            "happy": "开心",
+            "angry": "生气",
+            "relaxed": "放松",
+            "sad": "悲伤",
+            "surprised": "惊讶"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "二档",
+            "lv3": "三档",
+            "lv4": "四档"
+        },
+        "aiModes": {
+            "attack": "进攻",
+            "defend": "防守",
+            "clear": "解围"
+        },
+        "debugEvents": {
+            "player-kick": "玩家踢球",
+            "ai-kick": "AI 踢球",
+            "unstick": "球脱困"
         },
         "loading": {
             "beginStartDefault": "分析开局上下文…",
