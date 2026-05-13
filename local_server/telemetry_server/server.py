@@ -125,19 +125,25 @@ async def submit_telemetry(request: Request):
     if storage.is_duplicate_batch(batch_id):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
-    # steam_user_id 边界校验：Steam64 是 u64，合法范围 1..2^64-1。HMAC
-    # secret 在开源客户端里可读，被泄露后伪造请求是有概率事件；空值 / 非纯
-    # 数字 / 超长串 / 数值零（"0" / "00" 等 Steamworks "无用户" sentinel）/
-    # 超 u64 上限（20 位数最大 99..9 远超 2^64-1）都视作无效，落库前归零。
-    # 否则伪造请求可用 "0" 或 "99999999999999999999" 把已存在的合法
-    # steam_user_id 覆盖（UPSERT preserve-known 只挡空 string）。
+    # steam_user_id 边界校验 + 归一化：
+    # - Steam64 是 u64，合法范围 1..2^64-1。HMAC secret 在开源客户端里可读，
+    #   被泄露后伪造请求是有概率事件。
+    # - 空值 / 非纯数字 / 超长串 / 数值零（"0" / "00" 等 Steamworks "无用户"
+    #   sentinel）/ 超 u64 上限（"99999999999999999999" 等）都视作无效，归零。
+    # - 通过校验后用 ``str(int(...))`` 归一化为 canonical 十进制，否则伪造
+    #   请求可送 "00076561198000000000" 把同账号 string-based join 拆成两个
+    #   不同的 device↔account 维度。
+    # len<=20 是 cheap pre-check 避免对超长 isdigit 串做大整数转换（DoS guard）。
     steam_user_id = submission.payload.steam_user_id
-    if steam_user_id and not (
-        steam_user_id.isdigit()
-        and len(steam_user_id) <= 20
-        and 0 < int(steam_user_id) < (1 << 64)
-    ):
-        steam_user_id = ""
+    if steam_user_id:
+        if (
+            steam_user_id.isdigit()
+            and len(steam_user_id) <= 20
+            and 0 < int(steam_user_id) < (1 << 64)
+        ):
+            steam_user_id = str(int(steam_user_id))
+        else:
+            steam_user_id = ""
 
     # 存储
     try:
