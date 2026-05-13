@@ -146,21 +146,33 @@ def _filter_proactive_subset(settings: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in settings.items() if k in _PROACTIVE_FIELDS}
 
 
+def _value_matches(actual: Any, expected: Any) -> bool:
+    """type-aware equality：避免 Python 的 ``True == 1`` / ``False == 0`` 陷阱。
+
+    ``save_global_conversation_settings`` 的 bool 字段校验是
+    ``isinstance(v, bool)``，会拒绝整数 ``0/1``；但若仅用 ``==`` 比较，
+    磁盘上的 ``True`` 与传入的 ``1`` 仍会被判等，回报"已生效"——这是
+    Codex 指出的同类问题。要求 ``type()`` 完全一致即可彻底切断。
+    """
+    return type(actual) is type(expected) and actual == expected
+
+
 async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """保存后回读，返回 ``(applied, rejected)``。
 
-    判定规则是**按值比较**而非按 key 存在：
-    ``save_global_conversation_settings`` 做第二轮类型/范围过滤时，被
-    丢弃的字段会保留原磁盘旧值；若仅判断 key 是否存在，那么"旧值已在
-    磁盘上 + 新值被拒"的场景会被误标为已生效（applied 显示的是旧值
-    而非调用方传入的新值）。改成 ``latest[k] == payload[k]`` 比较，
-    新旧值不一致时确诊为 rejected。
+    判定规则是**按值 + 按类型严格比较**：
+    - 按值比较：``save_global_conversation_settings`` 做第二轮过滤时，被
+      丢弃的字段会保留原磁盘旧值；若仅判断 key 是否存在，"旧值已在磁盘
+      上 + 新值被拒"会被误标为已生效。
+    - 按类型比较：Python 中 ``True == 1`` / ``False == 0``；传 int ``1``
+      给 bool 字段时 saver 会拒，但磁盘 ``True`` 与传入 ``1`` 仍会
+      ``==`` 判等。``_value_matches`` 强制 ``type()`` 一致来切断这层陷阱。
     """
     latest = await aload_global_conversation_settings()
     applied: dict[str, Any] = {}
     rejected: list[str] = []
     for k, v in payload.items():
-        if k in latest and latest[k] == v:
+        if k in latest and _value_matches(latest[k], v):
             applied[k] = latest[k]
         else:
             rejected.append(k)
