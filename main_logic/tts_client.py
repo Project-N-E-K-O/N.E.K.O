@@ -43,15 +43,19 @@ logger = get_module_logger(__name__, "Main")
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
 
-def _record_tts_telemetry(model_name: str, text: str):
+def _record_tts_telemetry(model_name: str, char_count: int):
     """Record TTS usage telemetry via TokenTracker.
 
     TTS providers (CosyVoice, CogTTS, GPT-SoVITS, etc.) bill per character,
     not per token, so we report the input length on the dedicated
     `prompt_chars` field instead of squatting in `prompt_tokens`. Token
     aggregates stay clean for actual LLM usage tracking.
+
+    Telemetry hard rule: this helper takes a count only. Never pass synthesized
+    text or any substring of it — only ``len(text)``. Sending raw content into
+    the tracker risks leaking user utterances through the remote uploader.
     """
-    if not text or not text.strip():
+    if char_count <= 0:
         return
     try:
         from utils.token_tracker import TokenTracker
@@ -61,7 +65,7 @@ def _record_tts_telemetry(model_name: str, text: str):
             completion_tokens=0,
             total_tokens=0,
             call_type='tts',
-            prompt_chars=len(text),
+            prompt_chars=int(char_count),
         )
     except Exception:
         pass
@@ -934,7 +938,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "type": "tts.text.delta",
                         "data": {"session_id": session_id, "text": pending_text_buffer},
                     }))
-                    _record_tts_telemetry("stepfun", pending_text_buffer)
+                    _record_tts_telemetry("stepfun", len(pending_text_buffer))
                 except Exception as e:
                     # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
                     # 返回 False 让 sid=None/文本发送路径都走 continue 触发重连。
@@ -1256,7 +1260,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         }
                     }
                     await ws.send(json.dumps(text_event))
-                    _record_tts_telemetry("stepfun", tts_text)
+                    _record_tts_telemetry("stepfun", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -1605,7 +1609,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # 按到达顺序处理，多 delta 等价单 delta。
                     for delta in _grok_chunk_text_delta(payload_text):
                         await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
-                    _record_tts_telemetry("grok", payload_text)
+                    _record_tts_telemetry("grok", len(payload_text))
                 except Exception as e:
                     logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
                     # send 失败时把内容放回 pending（绑定当前 sid），等下次重连后重发。
@@ -1725,7 +1729,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": pending_text_buffer,
                     }))
-                    _record_tts_telemetry("qwen", pending_text_buffer)
+                    _record_tts_telemetry("qwen", len(pending_text_buffer))
                 except Exception as e:
                     # append 发失败时连接多半已断，调用方不能继续发 commit；
                     # 返回 False 让 sid=None/文本路径走 continue 触发重连。
@@ -1999,7 +2003,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": tts_text
                     }))
-                    _record_tts_telemetry("qwen", tts_text)
+                    _record_tts_telemetry("qwen", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -2198,7 +2202,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
-        _record_tts_telemetry("cosyvoice", char_buffer)
+        _record_tts_telemetry("cosyvoice", len(char_buffer))
         last_streaming_call_time = time.time()
         char_buffer = ""
 
@@ -2321,7 +2325,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
-                _record_tts_telemetry("cosyvoice", char_buffer)
+                _record_tts_telemetry("cosyvoice", len(char_buffer))
                 last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
@@ -2422,7 +2426,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     )
                     return
 
-                _record_tts_telemetry("cogtts", text[:1024])
+                # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
+                # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
+                # 长输入会高估实际计费/上行的字符数。
+                _record_tts_telemetry("cogtts", min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
 
@@ -2638,7 +2645,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                         raise
 
             if audio_data:
-                _record_tts_telemetry("gemini", text)
+                _record_tts_telemetry("gemini", len(text))
                 audio_array = np.frombuffer(audio_data, dtype=np.int16)
                 resampled_bytes = _resample_audio(audio_array, 24000, 48000)
                 response_queue.put(resampled_bytes)
@@ -2694,7 +2701,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 input=text,
                 response_format="pcm",
             ) as response:
-                _record_tts_telemetry("gpt-4o-mini-tts", text)
+                _record_tts_telemetry("gpt-4o-mini-tts", len(text))
                 async for chunk in response.iter_bytes(chunk_size=4096):
                     if chunk:
                         audio_array = np.frombuffer(chunk, dtype=np.int16)
@@ -2963,7 +2970,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if _ws_is_open(ws):
                     try:
                         await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
-                        _record_tts_telemetry("gptsovits", tts_text)
+                        _record_tts_telemetry("gptsovits", len(tts_text))
                         # TTS 文本原文不写 logger
                         logger.debug(f"[GPT-SoVITS v3] append (len={len(tts_text)} chars)")
                         print(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
@@ -3092,7 +3099,7 @@ async def _minimax_sse_synthesize(
                 _enqueue_error(response_queue, f"MiniMax TTS API错误 ({resp.status_code}): {error_text[:300]}")
                 return
 
-            _record_tts_telemetry("minimax", text)
+            _record_tts_telemetry("minimax", len(text))
 
             content_type = resp.headers.get("content-type", "").lower()
 
@@ -3262,6 +3269,10 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             # sid is None 是 end-of-utterance 信号，dummy 不做任何处理
             if sid == "__interrupt__" or sid is None:
                 continue
+            # 即便不合成音频也上报字符数 + 调用次数，方便分析"配置成无 TTS"
+            # 的用户产生了多少假装合成的请求；只传 len()，不传原文。
+            if tts_text:
+                _record_tts_telemetry("dummy", len(tts_text))
         except Exception as e:
             logger.error(f"Dummy TTS Worker 错误: {e}")
             break
@@ -3655,7 +3666,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if ws:
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
-                    _record_tts_telemetry("local_cosyvoice", tts_text)
+                    _record_tts_telemetry("local_cosyvoice", len(tts_text))
                     # TTS 文本原文不写 logger
                     logger.debug(f"发送合成片段 (len={len(tts_text)} chars)")
                     print(f"发送合成片段: {tts_text}")
