@@ -114,6 +114,45 @@ const hammerOverlayTransformOrigin = {
   y: 118,
 };
 
+type NavigationLocation = Pick<Location, 'hostname'>;
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+  return /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+export function resolveQuickActionNavigationTarget(
+  target: string,
+  currentLocation: NavigationLocation = window.location,
+): string | null {
+  if (!target) return null;
+  if (target.startsWith('//')) return null;
+  const isRelative = target.startsWith('/') || target.startsWith('./') || target.startsWith('../');
+  const isHttp = /^https?:\/\//i.test(target);
+  if (!isRelative && !isHttp) return null;
+  if (!isHttp) return target;
+
+  try {
+    const targetUrl = new URL(target);
+    const currentHostname = currentLocation.hostname;
+    if (
+      targetUrl.pathname.startsWith('/plugin/')
+      && currentHostname
+      && isLoopbackHostname(targetUrl.hostname)
+      && !isLoopbackHostname(currentHostname)
+    ) {
+      targetUrl.hostname = currentHostname;
+      return targetUrl.toString();
+    }
+    return target;
+  } catch {
+    return null;
+  }
+}
+
 const avatarToolSoundPaths = {
   lollipopBite: '/static/sounds/avatar-tools/lollipop-bite.mp3',
   coinDrop: '/static/sounds/avatar-tools/coin-drop.mp3',
@@ -1562,15 +1601,12 @@ export default function App({
   }, []);
 
   const handleQuickActionNavigate = useCallback((target: string, openIn: string) => {
-    if (!target) return;
-    if (target.startsWith('//')) return;
-    const isRelative = target.startsWith('/') || target.startsWith('./') || target.startsWith('../');
-    const isHttp = /^https?:\/\//i.test(target);
-    if (!isRelative && !isHttp) return;
+    const resolvedTarget = resolveQuickActionNavigationTarget(target);
+    if (!resolvedTarget) return;
     if (openIn === 'same_tab') {
-      window.location.href = target;
+      window.location.href = resolvedTarget;
     } else {
-      window.open(target, '_blank', 'noopener,noreferrer');
+      window.open(resolvedTarget, '_blank', 'noopener,noreferrer');
     }
   }, []);
 

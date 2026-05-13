@@ -1,6 +1,27 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import App from './App';
+import App, { resolveQuickActionNavigationTarget } from './App';
 import { parseChatMessage } from './message-schema';
+
+describe('resolveQuickActionNavigationTarget', () => {
+  it('rewrites loopback plugin UI links to the current remote host', () => {
+    expect(resolveQuickActionNavigationTarget(
+      'http://127.0.0.1:48916/plugin/demo/ui/',
+      { hostname: '192.168.1.20' },
+    )).toBe('http://192.168.1.20:48916/plugin/demo/ui/');
+  });
+
+  it('keeps local and non-plugin quick action links unchanged', () => {
+    expect(resolveQuickActionNavigationTarget(
+      'http://127.0.0.1:48916/plugin/demo/ui/',
+      { hostname: 'localhost' },
+    )).toBe('http://127.0.0.1:48916/plugin/demo/ui/');
+    expect(resolveQuickActionNavigationTarget(
+      'http://127.0.0.1:48916/admin',
+      { hostname: '192.168.1.20' },
+    )).toBe('http://127.0.0.1:48916/admin');
+    expect(resolveQuickActionNavigationTarget('/plugin/demo/ui/')).toBe('/plugin/demo/ui/');
+  });
+});
 
 describe('App', () => {
   it('renders the empty state when there are no messages', () => {
