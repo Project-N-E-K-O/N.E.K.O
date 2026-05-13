@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import aiohttp
+from fastapi import APIRouter
+from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel
+
+from plugin.logging_config import get_logger
+
+router = APIRouter(tags=["bilibili-i18n"])
+logger = get_logger("bilibili.i18n_routes")
+
+_I18N_DIR = Path(__file__).resolve().parent / "i18n"
+_ALLOWED_LOCALES = {"zh-CN", "en", "ja", "ko", "zh-TW", "ru"}
+
+
+class BgLlmTestRequest(BaseModel):
+    url: str = ""
+    api_key: str = ""
+    model: str = ""
+
+
+@router.get("/plugin/bilibili_danmaku/ui-api/locale")
+async def get_bili_locale() -> JSONResponse:
+    try:
+        from utils.language_utils import get_global_language_full
+
+        locale = str(get_global_language_full() or "zh-CN")
+    except Exception:
+        locale = "zh-CN"
+    return JSONResponse({"locale": _normalize_locale(locale)})
+
+
+@router.get("/plugin/bilibili_danmaku/ui-api/i18n/{locale}.json")
+async def get_bili_i18n(locale: str) -> Response:
+    normalized = str(locale or "").strip()
+    if ".." in normalized or "/" in normalized or "\\" in normalized:
+        return Response(status_code=404)
+    if normalized not in _ALLOWED_LOCALES:
+        return Response(status_code=404)
+    file = _I18N_DIR / f"{normalized}.json"
+    if not file.is_file():
+        return Response(status_code=404)
+    return FileResponse(file)
+
+
+@router.post("/plugin/bilibili_danmaku/ui-api/test-bg-llm")
+async def test_bg_llm(req: BgLlmTestRequest) -> JSONResponse:
+    """Test background LLM connectivity by making a minimal chat completion request.
+
+    Mirrors the main project's /api/config/test_connectivity behaviour:
+    sends a single-turn "hi" with max_tokens=1 and classifies the response.
+    Falls back to saved config.json if form params are empty.
+    """
+    url = req.url.strip() if req.url else ""
+    api_key = req.api_key.strip() if req.api_key else ""
+    model = req.model.strip() if req.model else ""
+
+    # Fall back to saved config if form fields are empty
+    if not url or not api_key:
+        try:
+            config_path = Path(__file__).resolve().parent / "data" / "config.json"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                cloud = saved.get("background_llm", {}).get("cloud", {})
+                if not url:
+                    url = (cloud.get("url") or "").strip()
+                if not api_key:
+                    api_key = (cloud.get("api_key") or "").strip()
+                if not model:
+                    model = (cloud.get("model") or "").strip()
+        except Exception as exc:
+            logger.warning("failed to read saved bg llm config: {}", exc)
+
+    if not url:
+        return JSONResponse(
+            {"success": False, "error": "请先填写 API 地址", "error_code": "missing_params"}
+        )
+
+    # Build full chat/completions URL
+    api_url = url.rstrip("/")
+    if not api_url.endswith("/chat/completions"):
+        if api_url.endswith("/v1"):
+            api_url += "/chat/completions"
+        else:
+            api_url += "/v1/chat/completions"
+
+    payload = {
+        "model": model or "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload, headers=headers, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return JSONResponse({"success": True})
+                if resp.status in (401, 403):
+                    body = await resp.text()
+                    return JSONResponse(
+                        {"success": False, "error": "API Key 无效或已过期", "error_code": "auth_failed", "detail": body[:300]}
+                    )
+                body = await resp.text()
+                return JSONResponse(
+                    {"success": False, "error": f"HTTP {resp.status}", "error_code": "http_error", "detail": body[:300]}
+                )
+    except asyncio.TimeoutError:
+        return JSONResponse({"success": False, "error": "请求超时（10秒）", "error_code": "timeout"})
+    except aiohttp.ClientConnectorError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str:
+            return JSONResponse({"success": False, "error": "域名解析失败", "error_code": "dns_error"})
+        return JSONResponse({"success": False, "error": f"无法连接到目标服务器", "error_code": "connection_refused"})
+    except aiohttp.ClientError as e:
+        return JSONResponse({"success": False, "error": f"请求失败: {e}", "error_code": "request_error"})
+    except Exception as e:
+        logger.exception("unexpected error testing bg llm")
+        return JSONResponse({"success": False, "error": str(e), "error_code": "unknown"})
+
+
+def _normalize_locale(locale: str) -> str:
+    normalized = str(locale or "").strip().replace("_", "-").lower()
+    if normalized == "zh" or normalized.startswith("zh-"):
+        if normalized in ("zh-tw", "zh-hk", "zh-mo"):
+            return "zh-TW"
+        return "zh-CN"
+    if normalized.startswith("en"):
+        return "en"
+    if normalized.startswith("ja"):
+        return "ja"
+    if normalized.startswith("ko"):
+        return "ko"
+    if normalized.startswith("ru"):
+        return "ru"
+    return "zh-CN"

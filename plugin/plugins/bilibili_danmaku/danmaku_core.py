@@ -75,11 +75,15 @@ class ConnectionState:
 
 
 # ── WebSocket 弹幕服务器 ──────────────────────────────────────────
-WS_URL = "wss://broadcastlv.chat.bilibili.com/sub"
-# 备用地址
+# 最可靠的服务器（始终作为最终保底）
+WS_MAIN_URL = "wss://broadcastlv.chat.bilibili.com/sub"
+# 备用地址（按可靠性排序）
 WS_FALLBACK_URLS = [
-    "wss://tx-gz-live-comet-01.chat.bilibili.com/sub",
     "wss://broadcastlv.chat.bilibili.com/sub",
+    "wss://tx-gz-live-comet-01.chat.bilibili.com/sub",
+    "wss://live-comet-01.chat.bilibili.com/sub",
+    "wss://live-comet-02.chat.bilibili.com/sub",
+    "wss://broadcastlv.chat.bilibili.com/sub",  # 最终保底
 ]
 
 # ── 数据包协议常量 ────────────────────────────────────────────────
@@ -177,6 +181,9 @@ class DanmakuListener:
 
         # 连接状态
         self._connection_state = ConnectionState.DISCONNECTED
+
+        # 直播结束标记：收到 PREPARING 后置位，阻止重连循环
+        self._live_ended: bool = False
         self._current_server: str = ""  # 当前连接的服务器地址
         self._viewer_count: int = 0  # 当前观看人数（人气值）
 
@@ -416,10 +423,18 @@ class DanmakuListener:
                 if hosts:
                     # 构建所有服务器的 URL 列表
                     for host in hosts:
+                        # B站 API 可能返回 wss_port=0, 此时降级尝试 port 字段或默认 443
                         wss_port = host.get("wss_port", 0)
-                        if wss_port:
-                            ws_url = f"wss://{host['host']}:{wss_port}/sub"
-                            servers.append((ws_url, host['host'], wss_port))
+                        if not wss_port:
+                            wss_port = host.get("port", 443)
+                        if not wss_port:
+                            wss_port = 443
+                        ws_url = f"wss://{host['host']}:{wss_port}/sub"
+                        servers.append((ws_url, host['host'], wss_port))
+                    # 始终加入最可靠的 broadcastlv 作为保底（去重）
+                    main_host = "broadcastlv.chat.bilibili.com"
+                    if not any(s[1] == main_host for s in servers):
+                        servers.append((f"wss://{main_host}/sub", main_host, 443))
                     self._log(f"弹幕服务器列表: {[s[1] + ':' + str(s[2]) for s in servers]}")
                     return servers, token
             else:
@@ -467,13 +482,14 @@ class DanmakuListener:
             "type": 2,
             "key": token,
         }
-        # buvid3 有值时加入认证包（B站新版要求）
+        # buvid3 有值时加入认证包（同时兼容新旧字段名）
         if buvid3:
             body["buvid"] = buvid3
+            body["buvid3"] = buvid3  # 新版 B站 协议需要
 
         self._log(
             f"认证包信息: uid={uid}, room={real_room_id}, "
-            f"buvid={'有' if buvid3 else '⚠️无'}, "
+            f"buvid3={'有' if buvid3 else '⚠️无'}, "
             f"token={'有(' + str(len(token)) + '字节)' if token else '⚠️无(空token)'}"
         )
         return json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -528,6 +544,8 @@ class DanmakuListener:
                     time_str = datetime.now().strftime("%H:%M:%S")
 
                 medal_text = ""
+                medal_level = 0
+                medal_name = ""
                 if len(info) > 3 and isinstance(info[3], list) and len(info[3]) >= 2:
                     try:
                         medal_level = int(info[3][0])
@@ -543,9 +561,18 @@ class DanmakuListener:
                     "user_name": user_name,
                     "user_level": user_level,
                     "medal_text": medal_text,
-                    "medal_level": 0,
-                    "medal_name": "",
+                    "medal_level": medal_level,
+                    "medal_name": medal_name,
                 })
+
+                # LiveDanmaku 事件（增强协议）
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_danmaku(data)
+                    if ld.text:
+                        await self._emit("on_event", "DANMU_MSG", ld)
+                except Exception:
+                    pass
 
             elif cmd == "SEND_GIFT":
                 inner = data.get("data", {})
@@ -555,9 +582,16 @@ class DanmakuListener:
                     "gift_name": inner.get("giftName", "未知礼物"),
                     "num": inner.get("num", 1),
                     "coin_type": inner.get("coin_type", "silver"),
-                    "total_coin": inner.get("total_coin", 0),  # 总金瓜子数（所有礼物的价值总和）
-                    "price": inner.get("price", 0),            # 单价（金瓜子）
+                    "total_coin": inner.get("total_coin", 0),
+                    "price": inner.get("price", 0),
                 })
+
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_gift(data)
+                    await self._emit("on_event", "SEND_GIFT", ld)
+                except Exception:
+                    pass
 
             elif cmd == "SUPER_CHAT_MESSAGE":
                 inner = data.get("data", {})
@@ -570,6 +604,13 @@ class DanmakuListener:
                     "start_time": inner.get("start_time", 0),
                 })
 
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_sc(data)
+                    await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
+                except Exception:
+                    pass
+
             elif cmd == "INTERACT_WORD":
                 inner = data.get("data", {})
                 user_name = inner.get("uname", "未知")
@@ -579,14 +620,153 @@ class DanmakuListener:
                 elif msg_type == 2:
                     await self._emit("on_follow", user_name)
 
+                try:
+                    from .livedanmaku import LiveDanmaku as _LD
+                    ld = _LD.from_interact(data)
+                    await self._emit("on_event", "INTERACT_WORD", ld)
+                except Exception:
+                    pass
+
             elif cmd == "LIVE":
                 await self._emit("on_live")
 
             elif cmd == "PREPARING":
+                self._live_ended = True
                 await self._emit("on_preparing")
+
+            # ── 新增协议指令（MagicalDanmaku 增强） ────────────────────────
+            elif cmd in self._CMD_HANDLERS:
+                handler = self._CMD_HANDLERS[cmd]
+                try:
+                    ld = handler(self, data)
+                    if ld:
+                        await self._emit("on_event", cmd, ld)
+                except Exception as e:
+                    self._log(f"增强协议处理 {cmd} 异常: {e}", "debug")
 
         except Exception as e:
             self._log(f"分发消息 {cmd} 异常: {e}", "debug")
+
+    # ── 增强协议指令处理器 ─────────────────────────────────────
+
+    def _handle_guard_buy(data: dict):
+        """GUARD_BUY — 上舰（大航海）"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_guard_buy(data)
+
+    def _handle_entry_effect(data: dict):
+        """ENTRY_EFFECT — 高能用户进场特效"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_entry_effect(data)
+
+    def _handle_combo_send(data: dict):
+        """COMBO_SEND — 礼物连击"""
+        from .livedanmaku import LiveDanmaku as _LD, GiftInfo, MessageType, MedalInfo
+        d = data.get("data", {})
+        return _LD(
+            msg_type=MessageType.MSG_GIFT,
+            uid=int(d.get("uid", 0)),
+            nickname=str(d.get("uname", "")),
+            text=f"连击 {d.get('combo_num', 1)} 个 {d.get('gift_name', '礼物')}",
+            room_id=int(data.get("room_id", 0)),
+            guard_level=int(d.get("guard_level", 0)),
+            user_level=int(d.get("level", 0)),
+            gift=GiftInfo(
+                gift_id=int(d.get("gift_id", 0)),
+                gift_name=str(d.get("gift_name", "礼物")),
+                num=int(d.get("combo_num", 1)),
+                total_coin=int(d.get("total_coin", 0)),
+            ),
+            medal=MedalInfo(
+                name=str(d.get("medal_info", {}).get("medal_name", "")),
+                level=int(d.get("medal_info", {}).get("medal_level", 0)),
+            ) if d.get("medal_info") else None,
+        )
+
+    def _handle_like(data: dict):
+        """LIKE_INFO_V3_CLICK — 点赞"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_like(data)
+
+    def _handle_online_rank(data: dict):
+        """ONLINE_RANK_V2 / ONLINE_RANK_TOP3 — 高能榜"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_online_rank(data)
+
+    def _handle_notice(data: dict):
+        """NOTICE_MSG — 公告"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_notice(data)
+
+    def _handle_anchor_lot(data: dict):
+        """ANCHOR_LOT_START / ANCHOR_LOT_END — 天选抽奖"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_anchor_lot(data)
+
+    def _handle_block(data: dict):
+        """ROOM_BLOCK_MSG — 禁言"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_block(data)
+
+    def _handle_watched_change(data: dict):
+        """WATCHED_CHANGE — 看过人数变化"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_watched_change(data)
+
+    def _handle_room_update(data: dict):
+        """ROOM_REAL_TIME_MESSAGE_UPDATE — 直播间实时数据更新"""
+        from .livedanmaku import LiveDanmaku as _LD, MessageType
+        d = data.get("data", {})
+        return _LD(
+            msg_type=MessageType.MSG_EXTRA,
+            uid=0,
+            nickname="",
+            text=f"直播间实时更新: {d.get('fans', 0)}粉丝, {d.get('room_id', '?')}",
+            room_id=int(data.get("room_id", 0)),
+            extra_json=__import__('json').dumps(data, ensure_ascii=False),
+        )
+
+    def _handle_room_change(data: dict):
+        """ROOM_CHANGE — 直播间信息变更"""
+        from .livedanmaku import LiveDanmaku as _LD, MessageType
+        d = data.get("data", {})
+        changes = []
+        if "title" in d:
+            changes.append(f"标题: {d['title']}")
+        if "area_name" in d:
+            changes.append(f"分区: {d['area_name']}")
+        text = "直播间变更: " + "; ".join(changes) if changes else "直播间信息更新"
+        return _LD(
+            msg_type=MessageType.MSG_EXTRA,
+            uid=0,
+            nickname="",
+            text=text,
+            room_id=int(data.get("room_id", 0)),
+            extra_json=__import__('json').dumps(data, ensure_ascii=False),
+        )
+
+    def _handle_sc_jpn(data: dict):
+        """SUPER_CHAT_MESSAGE_JPN — 日文 SC（复用 SC handler）"""
+        from .livedanmaku import LiveDanmaku as _LD
+        return _LD.from_sc(data)
+
+    # ── CMD 分发字典 ──────────────────────────────────────────
+    _CMD_HANDLERS = {
+        "GUARD_BUY": _handle_guard_buy,
+        "ENTRY_EFFECT": _handle_entry_effect,
+        "COMBO_SEND": _handle_combo_send,
+        "LIKE_INFO_V3_CLICK": _handle_like,
+        "ONLINE_RANK_V2": _handle_online_rank,
+        "ONLINE_RANK_TOP3": _handle_online_rank,
+        "NOTICE_MSG": _handle_notice,
+        "ANCHOR_LOT_START": _handle_anchor_lot,
+        "ANCHOR_LOT_END": _handle_anchor_lot,
+        "ROOM_BLOCK_MSG": _handle_block,
+        "WATCHED_CHANGE": _handle_watched_change,
+        "ROOM_REAL_TIME_MESSAGE_UPDATE": _handle_room_update,
+        "ROOM_CHANGE": _handle_room_change,
+        "SUPER_CHAT_MESSAGE_JPN": _handle_sc_jpn,
+    }
 
     async def _process_packet(self, raw: bytes):
         """处理单个数据包"""
@@ -650,8 +830,9 @@ class DanmakuListener:
         """启动监听（带自动重连，直到 stop() 被调用）"""
         import websockets
 
-        # 重置停止事件
+        # 重置停止事件和直播结束标记
         self._stop_event.clear()
+        self._live_ended = False
         self.running = True
         self._connection_state = ConnectionState.CONNECTING
 
@@ -785,7 +966,12 @@ class DanmakuListener:
                     if self._stop_event.is_set():
                         break
 
-                    # 否则是服务器正常断开（直播结束等），继续尝试下一个服务器
+                    # 直播结束：收到 PREPARING 后不再重连
+                    if self._live_ended:
+                        self._log(f"直播已结束，停止重连", "info")
+                        break
+
+                    # 否则是服务器正常断开，继续尝试下一个服务器
                     if had_authenticated:
                         self._log(f"服务器 [{host}:{port}] 连接已正常关闭，尝试下一个...", "info")
                     continue

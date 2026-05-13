@@ -140,6 +140,7 @@
     }
 
     .status-dot.error { background: var(--danger); }
+    .status-dot.warning { background: var(--warning); box-shadow: 0 0 0 4px rgba(255, 184, 0, 0.2); }
 
     @keyframes statusPulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(255, 184, 0, 0.4); }
@@ -864,13 +865,13 @@
   <div class="card">
     <div class="card-title" data-i18n="ai.title">AI 推送设置</div>
     <div style="margin-bottom:18px;">
-      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="ai.interval_label">推送间隔（秒）</label>
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="ai.interval_label">推送间隔 / 统一时间窗口（秒）</label>
       <div class="slider-row">
         <input type="range" id="intervalSlider" min="5" max="180" value="10" step="5">
         <span class="slider-value" id="intervalDisplay">10s</span>
         <button class="btn btn-ghost btn-sm" onclick="saveInterval()" data-i18n="ui.save">保存</button>
       </div>
-      <div class="slider-hint" data-i18n="ai.interval_hint">弹幕推送给 AI 的时间间隔，建议 10-30 秒</div>
+      <div class="slider-hint" data-i18n="ai.interval_hint">控制弹幕聚合时间窗口和推送间隔，同时影响背景LLM和降级模式。建议 10-30 秒</div>
     </div>
     <div style="margin-bottom:18px;">
       <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="ai.max_len_label">弹幕最大长度</label>
@@ -1068,6 +1069,70 @@
       <div class="slider-hint" data-i18n="bgllm.max_samples_hint">弹幕采样池最大容量</div>
     </div>
 
+    <div style="margin-bottom:16px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.gift_window_label">礼物聚合窗口（秒）</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmGiftWindowSlider" min="1" max="30" value="5" step="1">
+        <span class="slider-value" id="bgLlmGiftWindowDisplay">5s</span>
+      </div>
+      <div class="slider-hint" data-i18n="bgllm.gift_window_hint">同一送礼人多短时间内合并为一条推送</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.gift_cooldown_label">礼物推送冷却（秒）</label>
+      <div class="slider-row">
+        <input type="range" id="bgLlmGiftCooldownSlider" min="1" max="60" value="15" step="1">
+        <span class="slider-value" id="bgLlmGiftCooldownDisplay">15s</span>
+      </div>
+      <div class="slider-hint" data-i18n="bgllm.gift_cooldown_hint">同类礼物推送最短间隔，避免刷屏</div>
+    </div>
+
+    <div class="login-toggle" onclick="toggleBgLlmAgent()" style="margin-bottom:0;">
+      <span style="font-size:0.8rem;font-weight:500;" data-i18n="bgllm.agent_toggle">Agent 调度参数（推送冷却 / 待机 / 记忆）</span>
+      <span class="login-toggle-text" id="bgLlmAgentToggleText" data-i18n="ui.expand">点击展开 ▼</span>
+    </div>
+    <div class="login-panel" id="bgLlmAgentPanel">
+      <div style="margin-bottom:14px;">
+        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.agent_push_cooldown_label">Agent 推送冷却（秒）</label>
+        <div class="slider-row">
+          <input type="range" id="bgLlmAgentPushCooldownSlider" min="5" max="60" value="12" step="1">
+          <span class="slider-value" id="bgLlmAgentPushCooldownDisplay">12s</span>
+        </div>
+        <div class="slider-hint" data-i18n="bgllm.agent_push_cooldown_hint">Agent 推送 IntelligenceCard 的最短间隔</div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.agent_silent_label">静默推送间隔（秒）</label>
+        <div class="slider-row">
+          <input type="range" id="bgLlmAgentSilentSlider" min="60" max="600" value="300" step="30">
+          <span class="slider-value" id="bgLlmAgentSilentDisplay">300s</span>
+        </div>
+        <div class="slider-hint" data-i18n="bgllm.agent_silent_hint">直播间超过此秒数无人发言时推送静默提醒</div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.agent_standby_label">连续异常阈值</label>
+        <div class="slider-row">
+          <input type="range" id="bgLlmAgentStandbySlider" min="3" max="20" value="5" step="1">
+          <span class="slider-value" id="bgLlmAgentStandbyDisplay">5</span>
+        </div>
+        <div class="slider-hint" data-i18n="bgllm.agent_standby_hint">连续 N 次推送/tick 异常后进入待机模式</div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.agent_recovery_label">待机恢复间隔（秒）</label>
+        <div class="slider-row">
+          <input type="range" id="bgLlmAgentRecoverySlider" min="10" max="120" value="30" step="5">
+          <span class="slider-value" id="bgLlmAgentRecoveryDisplay">30s</span>
+        </div>
+        <div class="slider-hint" data-i18n="bgllm.agent_recovery_hint">待机后每隔 N 秒自动尝试恢复</div>
+      </div>
+      <div style="margin-bottom:0;">
+        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:10px;font-weight:500;" data-i18n="bgllm.agent_memory_ttl_label">记忆存活时间（秒）</label>
+        <div class="slider-row">
+          <input type="range" id="bgLlmAgentMemoryTtlSlider" min="300" max="7200" value="3600" step="300">
+          <span class="slider-value" id="bgLlmAgentMemoryTtlDisplay">3600s</span>
+        </div>
+        <div class="slider-hint" data-i18n="bgllm.agent_memory_ttl_hint">话题/密度记忆的过期时间（秒），超过后自动清理</div>
+      </div>
+    </div>
+
     <div class="login-toggle" onclick="toggleBgLlmAdvanced()" style="margin-bottom:0;">
       <span style="font-size:0.8rem;font-weight:500;" data-i18n="bgllm.advanced_toggle">进阶设置（画像 / 知识库 / 提示词）</span>
       <span class="login-toggle-text" id="bgLlmAdvToggleText" data-i18n="ui.expand">点击展开 ▼</span>
@@ -1094,6 +1159,121 @@
           data-i18n-placeholder="bgllm.prompt_template_placeholder" placeholder="自定义 System Prompt 模板，留空使用默认。&#10;示例：你是 {name}，一只可爱的猫娘主播。&#10;知识库参考：{knowledge_context}&#10;请根据弹幕生成引导词。"></textarea>
       </div>
     </div>
+      <!-- 事件通知开关 -->
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+      <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:8px;font-weight:500;" data-i18n="bgllm.event_notify_label">事件通知设置</label>
+      <div class="toggle-wrap">
+        <div class="toggle-switch active" id="eventWelcomeToggle" onclick="toggleEventNotify('welcome_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_welcome">进场欢迎</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch active" id="eventFollowToggle" onclick="toggleEventNotify('follow_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_follow">关注感谢</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch active" id="eventLiveToggle" onclick="toggleEventNotify('live_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_live">开播/下播</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch active" id="eventGuardBuyToggle" onclick="toggleEventNotify('guard_buy_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_guard_buy">上舰通知</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch" id="eventLikeToggle" onclick="toggleEventNotify('like_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_like">点赞通知</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch" id="eventRankingToggle" onclick="toggleEventNotify('ranking_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_ranking">高能榜</span>
+      </div>
+      <div class="toggle-wrap">
+        <div class="toggle-switch" id="eventBlockToggle" onclick="toggleEventNotify('block_enabled', this)">
+          <span class="knob"></span>
+        </div>
+        <span class="toggle-label" data-i18n="bgllm.event_block">禁言通知</span>
+      </div>
+      <div class="toggle-wrap">
+        	      <div class="toggle-wrap">
+	        <div class="toggle-switch" id="eventWatchedToggle" onclick="toggleEventNotify('watched_enabled', this)">
+	          <span class="knob"></span>
+	        </div>
+	        <span class="toggle-label" data-i18n="bgllm.event_watched">看过人数</span>
+	      </div>
+
+	      <div class="login-toggle" onclick="toggleEventNotifyDetail()" style="margin-top:14px;margin-bottom:0;">
+	        <span style="font-size:0.8rem;font-weight:500;" data-i18n="bgllm.event_detail_toggle">事件冷却 / 优先级 / 模板</span>
+	        <span class="login-toggle-text" id="eventNotifyDetailText" data-i18n="ui.expand">点击展开 ▼</span>
+	      </div>
+	      <div class="login-panel" id="eventNotifyDetailPanel">
+
+	        <div style="margin-bottom:12px;margin-top:14px;">
+	          <label style="font-size:0.85rem;font-weight:600;color:var(--text);display:block;margin-bottom:8px;" data-i18n="bgllm.event_cooldowns_title">冷却时间（秒）</label>
+	          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;">
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_welcome">进场</label><input type="number" id="cooldown_welcome" value="10" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_follow">关注</label><input type="number" id="cooldown_follow" value="30" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_live_status">直播状态</label><input type="number" id="cooldown_live_status" value="60" min="1" max="600" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift">礼物</label><input type="number" id="cooldown_gift" value="5" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+t	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift_min_rmb">礼物最低价值(元)</label><input type="number" id="gift_min_rmb" value="0" min="0" max="10000" step="0.1" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_sc">SC</label><input type="number" id="cooldown_sc" value="3" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_guard_buy">上舰</label><input type="number" id="cooldown_guard_buy" value="30" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_entry_effect">进场特效</label><input type="number" id="cooldown_entry_effect" value="10" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_like">点赞</label><input type="number" id="cooldown_like" value="60" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_ranking">高能榜</label><input type="number" id="cooldown_ranking" value="120" min="1" max="600" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_lottery">抽奖</label><input type="number" id="cooldown_lottery" value="10" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_notice">通知</label><input type="number" id="cooldown_notice" value="30" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	          </div>
+	        </div>
+
+	        <div style="margin-bottom:12px;">
+	          <label style="font-size:0.85rem;font-weight:600;color:var(--text);display:block;margin-bottom:8px;" data-i18n="bgllm.event_priorities_title">优先级（数字越大越优先）</label>
+	          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;">
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_welcome">进场</label><input type="number" id="priority_welcome" value="2" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_follow">关注</label><input type="number" id="priority_follow" value="3" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_live">直播</label><input type="number" id="priority_live" value="6" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift">礼物</label><input type="number" id="priority_gift" value="9" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_sc">SC</label><input type="number" id="priority_sc" value="9" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_guard_buy">上舰</label><input type="number" id="priority_guard_buy" value="7" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_entry_effect">进场特效</label><input type="number" id="priority_entry_effect" value="4" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_like">点赞</label><input type="number" id="priority_like" value="1" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_ranking">高能榜</label><input type="number" id="priority_ranking" value="3" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_lottery">抽奖</label><input type="number" id="priority_lottery" value="5" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_block">禁言</label><input type="number" id="priority_block" value="4" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_notice">通知</label><input type="number" id="priority_notice" value="3" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_watched">看过人数</label><input type="number" id="priority_watched" value="1" min="1" max="10" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	          </div>
+	        </div>
+
+	        <div style="margin-bottom:0;">
+	          <label style="font-size:0.85rem;font-weight:600;color:var(--text);display:block;margin-bottom:8px;" data-i18n="bgllm.event_templates_title">推送模板（支持 <code>{user_name}</code> 等占位符）</label>
+	          <div class="input-group" style="margin-bottom:8px;">
+	            <label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_welcome_template">进场欢迎</label>
+	            <input type="text" id="template_welcome" value="欢迎 {user_name} 进入直播间！" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;">
+	          </div>
+	          <div class="input-group" style="margin-bottom:8px;">
+	            <label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_follow_template">关注感谢</label>
+	            <input type="text" id="template_follow" value="感谢 {user_name} 关注主播！" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;">
+	          </div>
+	          <div class="input-group">
+	            <label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_live_start">开播</label>
+	            <input type="text" id="template_live_start" value="主播开播啦！" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;">
+	          </div>
+	        </div>
+
+	      </div>
+	    </div>    </div>
+
   </div>
 
 </div>
@@ -1232,7 +1412,7 @@
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span> ${useNeko ? I18n.t('room.sending_neko', '交给NEKO中...') : I18n.t('room.sending', '发送中...')}`;
     try {
-      const data = await callPlugin('send_danmaku', { message });
+      const data = await callPlugin(useNeko ? 'ask_neko_send_danmaku' : 'send_danmaku', { message });
       toast(data.message || (useNeko ? I18n.t('room.sent_neko', '已交给 NEKO 处理') : I18n.t('room.sent', '弹幕已发送')), 'success');
       input.value = '';
       await refreshStatus(true, true);
@@ -1291,6 +1471,10 @@
     const val = parseInt(document.getElementById('intervalSlider').value);
     try {
       const data = await callPlugin('set_interval', { seconds: val });
+      // 同步更新统一时间窗口
+      try {
+        await callPlugin('update_guidance_config', { window_size: val });
+      } catch (_) {}
       toast(data.message || (I18n.t('ai.interval_set', '已设置为 ') + val + I18n.t('ai.interval_unit', ' 秒')), 'success');
     } catch (e) {
       toast(I18n.t('error.set_failed', '设置失败：') + e.message, 'error');
@@ -1380,23 +1564,60 @@
       const bg = data.background_llm;
       const enabled = bg.enabled === true;
       syncBgLlmToggle(enabled);
+      const health = bg.health || 'unknown';
 
       const dot = document.getElementById('bgLlmDot');
       dot.className = 'status-dot';
       if (enabled) {
-        dot.classList.add('connected');
-        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 ' + I18n.t('bgllm.enabled', '已启用');
+        if (health === 'healthy') {
+          dot.classList.add('connected');
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 ' + I18n.t('bgllm.enabled', '已启用');
+        } else if (health === 'degraded') {
+          dot.classList.add('connected');
+          dot.style.opacity = '0.6';
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE1 ' + I18n.t('bgllm.degraded', '降级运行');
+        } else if (health === 'timeout') {
+          dot.classList.add('warning');
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE0 ' + I18n.t('bgllm.timeout', '连接超时');
+        } else if (health === 'connection_error') {
+          dot.classList.add('error');
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 ' + I18n.t('bgllm.connection_error', '连接失败');
+        } else {
+          dot.classList.add('connected');
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE2 ' + I18n.t('bgllm.enabled', '已启用');
+        }
         const poolInfo = bg.llm_pool_size !== undefined
           ? `${I18n.t('bgllm.pool', '池')}: ${bg.llm_pool_size}/${bg.llm_pool_threshold}`
           : `${I18n.t('bgllm.threshold', '阈值')}: ${bg.window_size ?? '—'}${I18n.t('bgllm.count_unit', '条')}`;
+        const failInfo = (health === 'degraded' || health === 'timeout') ? ` · ${I18n.t('bgllm.fails', '失败')}: ${bg.fail_streak ?? '—'}` : '';
         document.getElementById('bgLlmStats').textContent =
           `${poolInfo} · ${I18n.t('bgllm.samples', '采样')}: ${bg.max_samples ?? '—'}` +
-          (bg.llm_stats ? ` · ${I18n.t('bgllm.llm_calls', 'LLM调用')}: ${bg.llm_stats.total_calls ?? 0}` : '');
+          (bg.llm_stats ? ` · ${I18n.t('bgllm.llm_calls', 'LLM调用')}: ${bg.llm_stats.total_calls ?? 0}` : '') + failInfo;
       } else {
         dot.classList.add('error');
-        document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 ' + I18n.t('bgllm.disabled', '未启用');
-        document.getElementById('bgLlmStats').textContent = I18n.t('bgllm.disabled_hint', '请在下方配置 Cloud API 并连接后启用');
+        if (health === 'timeout') {
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDFE0 ' + I18n.t('bgllm.timeout_disabled', '连接超时（已自动切换降级模式）');
+          document.getElementById('bgLlmStats').textContent = I18n.t('bgllm.timeout_disabled_hint', '背景LLM连续失败或超时，已自动切换到降级模式。请检查API配置后重新启用');
+        } else if (health === 'connection_error') {
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 ' + I18n.t('bgllm.connection_error_disabled', '连接失败');
+          document.getElementById('bgLlmStats').textContent = I18n.t('bgllm.connection_error_hint', 'API 连通性验证未通过，请检查地址和 Key');
+        } else {
+          document.getElementById('bgLlmStatus').textContent = '\uD83D\uDD34 ' + I18n.t('bgllm.disabled', '未启用');
+          document.getElementById('bgLlmStats').textContent = I18n.t('bgllm.disabled_hint', '请在下方配置 Cloud API 并连接后启用');
+        }
       }
+    }
+
+    if (data.event_notify) {
+      const en = data.event_notify;
+      syncToggle('eventWelcomeToggle', en.welcome_enabled !== false);
+      syncToggle('eventFollowToggle', en.follow_enabled !== false);
+      syncToggle('eventLiveToggle', en.live_enabled !== false);
+      syncToggle('eventGuardBuyToggle', en.guard_buy_enabled !== false);
+      syncToggle('eventLikeToggle', en.like_enabled === true);
+      syncToggle('eventRankingToggle', en.ranking_enabled === true);
+      syncToggle('eventBlockToggle', en.block_enabled === true);
+      syncToggle('eventWatchedToggle', en.watched_enabled === true);
     }
 
     updateLoginBadge(data.logged_in === true);
@@ -1820,8 +2041,8 @@
     const resultBox = document.getElementById('biliToolResult');
     resultBox.innerHTML = renderToolEmpty(useNeko ? I18n.t('write_tools.submitted_neko', '已提交给 NEKO...') : I18n.t('tool.calling', '调用中...'));
     try {
-      // ask_neko_bili_* 前缀表示让 NEKO 生成人设化内容，此处复用对应接口
-      const actualEntry = entry.replace(/^ask_neko_bili_/, 'bili_');
+      // ask_neko_bili_* 前缀表示让 NEKO 生成人设化内容
+      const actualEntry = useNeko ? 'ask_neko_' + entry : entry;
       const args = parseToolArgs(entry);
       const data = await callPlugin(actualEntry, args);
       const html = renderBiliToolResult(actualEntry, data);
@@ -1921,6 +2142,38 @@
       document.getElementById('bgLlmMaxSamplesSlider').value = ms;
       document.getElementById('bgLlmMaxSamplesDisplay').textContent = ms;
 
+      // Gift aggregation
+      const gw = config.gift_window_size !== undefined ? config.gift_window_size : 5;
+      document.getElementById('bgLlmGiftWindowSlider').value = gw;
+      document.getElementById('bgLlmGiftWindowDisplay').textContent = gw + 's';
+
+      const gc = config.gift_cooldown !== undefined ? config.gift_cooldown : 15;
+      document.getElementById('bgLlmGiftCooldownSlider').value = gc;
+      document.getElementById('bgLlmGiftCooldownDisplay').textContent = gc + 's';
+
+      // Agent config
+      const agent = config.agent || {};
+      const apc = agent.push_cooldown || 12;
+      document.getElementById('bgLlmAgentPushCooldownSlider').value = apc;
+      document.getElementById('bgLlmAgentPushCooldownDisplay').textContent = apc + 's';
+
+      const asi = agent.silent_push_after || 300;
+      document.getElementById('bgLlmAgentSilentSlider').value = asi;
+      document.getElementById('bgLlmAgentSilentDisplay').textContent = asi + 's';
+
+      const ast = agent.standby_threshold || 5;
+      document.getElementById('bgLlmAgentStandbySlider').value = ast;
+      document.getElementById('bgLlmAgentStandbyDisplay').textContent = ast;
+
+      const arc = agent.recovery_interval || 30;
+      document.getElementById('bgLlmAgentRecoverySlider').value = arc;
+      document.getElementById('bgLlmAgentRecoveryDisplay').textContent = arc + 's';
+
+      const amt = agent.memory_ttl || 3600;
+      document.getElementById('bgLlmAgentMemoryTtlSlider').value = amt;
+      document.getElementById('bgLlmAgentMemoryTtlDisplay').textContent = amt + 's';
+
+      // Advanced settings
       const nekoNameEl = document.getElementById('bgLlmNekoName');
       if (nekoNameEl) nekoNameEl.value = config.neko_name || '';
 
@@ -1930,8 +2183,49 @@
       document.getElementById('bgLlmProfile').value = config.user_profile || '';
       document.getElementById('bgLlmPromptTemplate').value = config.prompt_template || '';
 
+      // Event notify details
+      const en = config.event_notify || {};
+      const cd = en.cooldowns || {};
+      const setCd = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      setCd('cooldown_welcome', cd.welcome ?? 10);
+      setCd('cooldown_follow', cd.follow ?? 30);
+      setCd('cooldown_live_status', cd.live_status ?? 60);
+      setCd('cooldown_gift', cd.gift ?? 5);
+      setCd('cooldown_sc', cd.sc ?? 3);
+      setCd('cooldown_guard_buy', cd.guard_buy ?? 30);
+      setCd('cooldown_entry_effect', cd.entry_effect ?? 10);
+      setCd('cooldown_like', cd.like ?? 60);
+      setCd('cooldown_ranking', cd.ranking ?? 120);
+      setCd('cooldown_lottery', cd.lottery ?? 10);
+      setCd('cooldown_notice', cd.notice ?? 30);
+      const giftMinRmbEl = document.getElementById("gift_min_rmb");
+      if (giftMinRmbEl) giftMinRmbEl.value = en.gift_min_rmb ?? 0;
+
+      const pr = en.priority || {};
+      const setPr = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      setPr('priority_welcome', pr.welcome ?? 2);
+      setPr('priority_follow', pr.follow ?? 3);
+      setPr('priority_live', pr.live ?? 6);
+      setPr('priority_gift', pr.gift ?? 9);
+      setPr('priority_sc', pr.sc ?? 9);
+      setPr('priority_guard_buy', pr.guard_buy ?? 7);
+      setPr('priority_entry_effect', pr.entry_effect ?? 4);
+      setPr('priority_like', pr.like ?? 1);
+      setPr('priority_ranking', pr.ranking ?? 3);
+      setPr('priority_lottery', pr.lottery ?? 5);
+      setPr('priority_block', pr.block ?? 4);
+      setPr('priority_notice', pr.notice ?? 3);
+      setPr('priority_watched', pr.watched ?? 1);
+
+      const tmpl = en.templates || {};
+      const setTmpl = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      setTmpl('template_welcome', tmpl.welcome || '');
+      setTmpl('template_follow', tmpl.follow || '');
+      setTmpl('template_live_start', tmpl.live_start || '');
+
       const enabled = data.enabled === true;
       syncBgLlmToggle(enabled);
+      const health = bg.health || 'unknown';
 
       const dot = document.getElementById('bgLlmDot');
       dot.className = 'status-dot';
@@ -1957,10 +2251,72 @@
       const apiKey = document.getElementById('bgLlmApiKey').value.trim();
       const windowSize = parseInt(document.getElementById('bgLlmWindowSlider').value);
       const maxSamples = parseInt(document.getElementById('bgLlmMaxSamplesSlider').value);
+
+      // Gift aggregation
+      const giftWindowSize = parseFloat(document.getElementById('bgLlmGiftWindowSlider').value);
+      const giftCooldown = parseFloat(document.getElementById('bgLlmGiftCooldownSlider').value);
+
+      // Agent config
+      const agent = {
+        push_cooldown: parseInt(document.getElementById('bgLlmAgentPushCooldownSlider').value),
+        silent_push_after: parseInt(document.getElementById('bgLlmAgentSilentSlider').value),
+        standby_threshold: parseInt(document.getElementById('bgLlmAgentStandbySlider').value),
+        recovery_interval: parseInt(document.getElementById('bgLlmAgentRecoverySlider').value),
+        memory_ttl: parseInt(document.getElementById('bgLlmAgentMemoryTtlSlider').value),
+      };
+
+      // Advanced settings
       const nekoName = (document.getElementById('bgLlmNekoName')?.value || '').trim();
       const knowledgeCtx = (document.getElementById('bgLlmKnowledge')?.value || '').trim();
       const userProfile = document.getElementById('bgLlmProfile').value.trim();
       const promptTemplate = document.getElementById('bgLlmPromptTemplate').value.trim();
+
+      // Event notify full config (cooldowns + priorities + templates)
+      const getVal = (id, fallback) => {
+        const el = document.getElementById(id);
+        return el ? (parseFloat(el.value) || fallback) : fallback;
+      };
+      const getStr = (id, fallback) => {
+        const el = document.getElementById(id);
+        return el ? (el.value.trim() || fallback) : fallback;
+      };
+
+      const event_notify = {
+        cooldowns: {
+          welcome: getVal('cooldown_welcome', 10),
+          follow: getVal('cooldown_follow', 30),
+          live_status: getVal('cooldown_live_status', 60),
+          gift: getVal('cooldown_gift', 5),
+          sc: getVal('cooldown_sc', 3),
+          guard_buy: getVal('cooldown_guard_buy', 30),
+          entry_effect: getVal('cooldown_entry_effect', 10),
+          like: getVal('cooldown_like', 60),
+          ranking: getVal('cooldown_ranking', 120),
+          lottery: getVal('cooldown_lottery', 10),
+          notice: getVal('cooldown_notice', 30),
+        },
+        gift_min_rmb: parseFloat(document.getElementById("gift_min_rmb")?.value || 0),
+        priority: {
+          welcome: getVal('priority_welcome', 2),
+          follow: getVal('priority_follow', 3),
+          live: getVal('priority_live', 6),
+          gift: getVal('priority_gift', 9),
+          sc: getVal('priority_sc', 9),
+          guard_buy: getVal('priority_guard_buy', 7),
+          entry_effect: getVal('priority_entry_effect', 4),
+          like: getVal('priority_like', 1),
+          ranking: getVal('priority_ranking', 3),
+          lottery: getVal('priority_lottery', 5),
+          block: getVal('priority_block', 4),
+          notice: getVal('priority_notice', 3),
+          watched: getVal('priority_watched', 1),
+        },
+        templates: {
+          welcome: getStr('template_welcome', '欢迎 {user_name} 进入直播间！'),
+          follow: getStr('template_follow', '感谢 {user_name} 关注主播！'),
+          live_start: getStr('template_live_start', '主播开播啦！'),
+        },
+      };
 
       const enabled = document.getElementById('bgLlmToggle').classList.contains('active');
       const config = {
@@ -1968,10 +2324,14 @@
         cloud: { url: apiUrl, model: model },
         window_size: windowSize,
         max_samples: maxSamples,
+        gift_window_size: giftWindowSize,
+        gift_cooldown: giftCooldown,
+        agent: agent,
         neko_name: nekoName,
         knowledge_context: knowledgeCtx,
         user_profile: userProfile,
         prompt_template: promptTemplate,
+        event_notify: event_notify,
       };
       if (apiKey) {
         config.cloud.api_key = apiKey;
@@ -2074,10 +2434,42 @@
     text.textContent = panel.classList.contains('open') ? I18n.t('ui.collapse', '点击收起 ▲') : I18n.t('ui.expand', '点击展开 ▼');
   }
 
+  function toggleBgLlmAgent() {
+    const panel = document.getElementById('bgLlmAgentPanel');
+    const text = document.getElementById('bgLlmAgentToggleText');
+    panel.classList.toggle('open');
+    text.textContent = panel.classList.contains('open') ? I18n.t('ui.collapse', '点击收起 ▲') : I18n.t('ui.expand', '点击展开 ▼');
+  }
+
+  function toggleEventNotifyDetail() {
+    const panel = document.getElementById('eventNotifyDetailPanel');
+    const text = document.getElementById('eventNotifyDetailText');
+    panel.classList.toggle('open');
+    text.textContent = panel.classList.contains('open') ? I18n.t('ui.collapse', '点击收起 ▲') : I18n.t('ui.expand', '点击展开 ▼');
+  }
+
   // ---------- 背景LLM 配置结束 ----------
 
-  document.addEventListener('DOMContentLoaded', () => {
-    // Slider preview wiring is locale-independent — fine to run immediately.
+
+  function syncToggle(id, enabled) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active', !!enabled);
+  }
+
+  async function toggleEventNotify(key, el) {
+    const newVal = !el.classList.contains('active');
+    el.classList.toggle('active');
+    const cfg = {};
+    cfg[key] = newVal;
+    try {
+      await callPlugin('update_guidance_config', cfg);
+    } catch (e) {
+      console.error('toggleEventNotify failed', e);
+      el.classList.toggle('active');
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('intervalSlider').addEventListener('input', e => {
       document.getElementById('intervalDisplay').textContent = e.target.value + 's';
     });
@@ -2090,29 +2482,36 @@
     document.getElementById('bgLlmMaxSamplesSlider').addEventListener('input', e => {
       document.getElementById('bgLlmMaxSamplesDisplay').textContent = e.target.value;
     });
+    document.getElementById('bgLlmGiftWindowSlider').addEventListener('input', e => {
+      document.getElementById('bgLlmGiftWindowDisplay').textContent = e.target.value + 's';
+    });
+    document.getElementById('bgLlmGiftCooldownSlider').addEventListener('input', e => {
+      document.getElementById('bgLlmGiftCooldownDisplay').textContent = e.target.value + 's';
+    });
+    document.getElementById('bgLlmAgentPushCooldownSlider').addEventListener('input', e => {
+      document.getElementById('bgLlmAgentPushCooldownDisplay').textContent = e.target.value + 's';
+    });
+    document.getElementById('bgLlmAgentSilentSlider').addEventListener('input', e => {
+      document.getElementById('bgLlmAgentSilentDisplay').textContent = e.target.value + 's';
+    });
+    document.getElementById('bgLlmAgentStandbySlider').addEventListener('input', e => {
+      document.getElementById('bgLlmAgentStandbyDisplay').textContent = e.target.value;
+    });
+    document.getElementById('bgLlmAgentRecoverySlider').addEventListener('input', e => {
+      document.getElementById('bgLlmAgentRecoveryDisplay').textContent = e.target.value + 's';
+    });
+    document.getElementById('bgLlmAgentMemoryTtlSlider').addEventListener('input', e => {
+      document.getElementById('bgLlmAgentMemoryTtlDisplay').textContent = e.target.value + 's';
+    });
 
-    // The first dynamic render must wait for the locale bundle, otherwise
-    // console / status / bgLLM config text renders with the Chinese fallbacks
-    // under non-default locales and is never re-translated. `I18n.whenReady`
-    // runs the callback synchronously if the bundle already arrived, or
-    // queues it on the `i18n-ready` event otherwise — covers either race
-    // between this DOMContentLoaded handler and i18n.js's async init().
-    const runFirstRender = async () => {
-      loadBgLLMConfig();
-      const status = await refreshStatus();
-      addSystemMsg(I18n.t('console.ready', '控制台已就绪'));
-      if (status?.listening || status?.connecting) {
-        resumePolling();
-      } else {
-        pausePolling();
-      }
-    };
-    if (window.I18n?.whenReady) {
-      I18n.whenReady(runFirstRender);
+    loadBgLLMConfig();
+
+    const status = await refreshStatus();
+    addSystemMsg(I18n.t('console.ready', '控制台已就绪'));
+    if (status?.listening || status?.connecting) {
+      resumePolling();
     } else {
-      // i18n.js failed to load — render with hard-coded fallbacks so the
-      // page is at least usable.
-      runFirstRender();
+      pausePolling();
     }
   });
 </script>

@@ -16,7 +16,7 @@ from typing import Optional
 
 from .aggregator import BatchedDanmaku
 from .llm_client import LLMClient
-from .user_profile import UserProfileTracker
+from .user_profile import UserRecordManager
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class GuidanceOrchestrator:
         llm_client: LLMClient,
         knowledge_context: str = "",
         degrade_on_empty: bool = True,
-        tracker: Optional[UserProfileTracker] = None,
+        tracker: Optional[UserRecordManager] = None,
         neko_name: str = "",
         prompt_template: str = "",
     ):
@@ -60,6 +60,7 @@ class GuidanceOrchestrator:
         self.total_processed = 0
         self.llm_success = 0
         self.degraded = 0
+        self.last_was_llm = False  # 最后一条引导词是否由 LLM 生成（供上级检测超时）
 
     # ── 占位符替换 ────────────────────────────────────────────────────────────
 
@@ -121,13 +122,16 @@ class GuidanceOrchestrator:
 
         if guidance:
             self.llm_success += 1
+            self.last_was_llm = True
             return guidance
 
         # 2. LLM 失败，降级
         if self.degrade_on_empty:
             self.degraded += 1
+            self.last_was_llm = False
             return self._degrade_summary(batch)
 
+        self.last_was_llm = False
         return None
 
     async def generate_from_texts(
@@ -153,13 +157,16 @@ class GuidanceOrchestrator:
 
         if guidance:
             self.llm_success += 1
+            self.last_was_llm = True
             return guidance
 
         if self.degrade_on_empty:
             self.degraded += 1
+            self.last_was_llm = False
             texts_for_stats = danmaku_texts[:30]  # 降级时也只取前30
             return self._simple_stat_summary(texts_for_stats, total_original_count)
 
+        self.last_was_llm = False
         return None
 
     def _degrade_summary(self, batch: BatchedDanmaku) -> str:

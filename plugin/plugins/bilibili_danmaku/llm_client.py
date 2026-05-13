@@ -2,21 +2,20 @@
 LLM 调用客户端
 
 功能：
-- 真实 HTTP 调用公司自建 LLM API
-- 超时控制（asyncio.wait_for）
-- 重试机制
+- 使用 OpenAI SDK（ChatOpenAI，来自主项目 utils/llm_client）调用 LLM API
+- 超时控制、重试机制（SDK 内置）
 - 构建 Prompt：弹幕总结 + 专属知识库参考
 - 失败返回 None（上游编排器处理降级）
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from typing import Optional
 
-import aiohttp
+from utils.llm_client import ChatOpenAI
+
+import time as _time
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +41,13 @@ class LLMClient:
 
     def __init__(
         self,
-        api_url: str = "https://api.deepseek.com/v1/chat/completions",
+        api_url: str = "https://api.deepseek.com/v1",
         api_key: str = "",
         model: str = "deepseek-chat",
         timeout_sec: float = 10.0,
         retry_times: int = 2,
         max_tokens: int = 512,
-        temperature: float = 0.7,
+        temperature: float | None = None,
     ):
         self.api_url = api_url
         self.api_key = api_key
@@ -63,12 +62,50 @@ class LLMClient:
         self.success_calls = 0
         self.failed_calls = 0
 
+    async def test_connection(self) -> dict:
+        """测试 API 连通性。
+
+        发送最小 chat completion 请求，不重试，5 秒超时。
+        不更新 total_calls / success_calls / failed_calls 统计。
+
+        Returns:
+            {"success": True, "elapsed": float} 或
+            {"success": False, "error": str, "error_code": str}
+        """
+        try:
+            start = _time.monotonic()
+            client = ChatOpenAI(
+                model=self.model,
+                base_url=self.api_url,
+                api_key=self.api_key,
+                max_completion_tokens=5,
+                max_retries=0,
+                timeout=5.0,
+            )
+            await client.ainvoke([{"role": "user", "content": "hi"}])
+            elapsed = _time.monotonic() - start
+            return {"success": True, "elapsed": round(elapsed, 2)}
+        except Exception as e:
+            err_str = str(e).lower()
+            if "401" in err_str or "unauthorized" in err_str:
+                return {"success": False, "error": "API Key 无效或已过期", "error_code": "auth_failed"}
+            if "429" in err_str:
+                # Rate limit: key 有效但限流，当作成功
+                return {"success": True, "elapsed": 0}
+            if "timeout" in err_str or "timed out" in err_str:
+                return {"success": False, "error": "连接超时（5秒）", "error_code": "timeout"}
+            if "getaddrinfo" in err_str or "name or service not known" in err_str:
+                return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+            if "refused" in err_str or "connection" in err_str:
+                return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+            return {"success": False, "error": str(e)[:200], "error_code": "unknown"}
+
     @classmethod
     def from_config(cls, config: dict) -> "LLMClient":
         """从配置字典创建客户端
 
         config 格式（兼容两种来源）:
-        1. 直接从 config_enhanced.json 的 cloud 字段传入:
+        1. 直接从 config.json 的 cloud 字段传入:
            {"url": "https://api.deepseek.com", "api_key": "sk-xxx", ...}
         2. 从 _init_background_llm 传入 background_llm 全量:
            {"cloud": {"url": "...", "api_key": "..."}, ...}
@@ -80,12 +117,9 @@ class LLMClient:
         else:
             cloud = config            # 已经是 cloud 子对象
         api_url = cloud.get("url", "https://api.deepseek.com").rstrip("/")
-        # 构造 OpenAI 兼容的 chat/completions 路径
-        if not api_url.endswith("/chat/completions"):
-            if api_url.endswith("/v1"):
-                api_url = api_url + "/chat/completions"
-            else:
-                api_url = api_url + "/v1/chat/completions"
+        # SDK 自动处理 /chat/completions 路径，不需要手动拼接
+        if api_url.endswith("/chat/completions"):
+            api_url = api_url[: -len("/chat/completions")]
         api_key = cloud.get("api_key", "")
         model = cloud.get("model", "deepseek-chat")
         timeout_sec = float(cloud.get("timeout_sec", 10))
@@ -138,85 +172,33 @@ class LLMClient:
         return await self._call_llm(messages)
 
     async def _call_llm(self, messages: list[dict]) -> Optional[str]:
-        """执行 LLM API 调用，含重试和超时"""
+        """执行 LLM API 调用，使用 OpenAI SDK（重试由 SDK 内置处理）"""
         self.total_calls += 1
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "stream": False,
-        }
+        client = ChatOpenAI(
+            model=self.model,
+            base_url=self.api_url,
+            api_key=self.api_key,
+            max_completion_tokens=self.max_tokens,
+            temperature=self.temperature,
+            max_retries=self.retry_times,
+            timeout=self.timeout_sec,
+        )
+        try:
+            resp = await client.ainvoke(messages)
+            text = resp.content
+            if not text:
+                self.failed_calls += 1
+                logger.warning("[LLMClient] API 返回空内容")
+                return None
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+            self.success_calls += 1
+            return text.strip()
 
-        last_error: Optional[str] = None
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(self.retry_times + 1):
-                try:
-                    timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
-                    async with session.post(
-                        self.api_url,
-                        json=payload,
-                        headers=headers,
-                        timeout=timeout,
-                    ) as resp:
-                        if resp.status != 200:
-                            body = await resp.text()
-                            last_error = f"HTTP {resp.status}: {body[:200]}"
-                            logger.warning(
-                                "[LLMClient] 请求失败 (attempt %d/%d): %s",
-                                attempt + 1, self.retry_times + 1, last_error,
-                            )
-                            await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
-                            continue
-
-                        data = await resp.json()
-                        choices = data.get("choices") or []
-                        text = (choices[0] if choices else {}).get("message", {}).get("content", "")
-                        if not text:
-                            last_error = "API 返回空内容"
-                            await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
-                            continue
-
-                        self.success_calls += 1
-                        return text.strip()
-
-                except asyncio.TimeoutError:
-                    last_error = f"超时 (>{self.timeout_sec}s)"
-                    logger.warning(
-                        "[LLMClient] 超时 (attempt %d/%d)",
-                        attempt + 1, self.retry_times + 1,
-                    )
-                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
-                    continue
-
-                except aiohttp.ClientError as e:
-                    last_error = str(e)[:200]
-                    logger.warning(
-                        "[LLMClient] 网络错误 (attempt %d/%d): %s",
-                        attempt + 1, self.retry_times + 1, last_error,
-                    )
-                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
-                    continue
-
-                except Exception as e:
-                    last_error = str(e)[:200]
-                    logger.error(
-                        "[LLMClient] 未知错误 (attempt %d/%d): %s",
-                        attempt + 1, self.retry_times + 1, last_error,
-                    )
-                    await asyncio.sleep(min(0.5 * (2 ** attempt), 5.0))
-                    continue
-
-        # 所有重试都失败
-        self.failed_calls += 1
-        logger.error("[LLMClient] 所有重试都失败，最后错误: %s", last_error)
-        return None
+        except Exception as e:
+            self.failed_calls += 1
+            logger.error("[LLMClient] 调用失败: %s", e)
+            return None
 
     def get_stats(self) -> dict:
         """获取调用统计"""
