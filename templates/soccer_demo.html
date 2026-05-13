@@ -594,6 +594,30 @@
     }
   };
 
+  function pauseAiAvatarRenderer(type) {
+    try {
+      if (type === 'live2d') {
+        window.live2dManager?.pauseRendering?.();
+      } else if (type === 'vrm') {
+        window.aiVrmManager?.pauseRendering?.();
+      }
+    } catch (e) {
+      console.warn(`[soccer_demo] pause AI ${type} renderer failed:`, e);
+    }
+  }
+
+  function resumeAiAvatarRenderer(type) {
+    try {
+      if (type === 'live2d') {
+        window.live2dManager?.resumeRendering?.();
+      } else if (type === 'vrm') {
+        window.aiVrmManager?.resumeRendering?.();
+      }
+    } catch (e) {
+      console.warn(`[soccer_demo] resume AI ${type} renderer failed:`, e);
+    }
+  }
+
   async function ensureAiLive2dReady() {
     if (!window.live2dManager) throw new Error('live2dManager missing');
     await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
@@ -695,6 +719,7 @@
           setStatus('loading AI VRM…');
           if (typeof VRMManager === 'undefined') throw new Error('VRMManager class not found');
           window.aiVrmManager = window.aiVrmManager || new VRMManager();
+          pauseAiAvatarRenderer('live2d');
           await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, aiVrmPath, {
             canvasId: 'ai-l2d-canvas',
             containerId: 'ai-l2d-container',
@@ -712,6 +737,7 @@
 
       if (!loadedAiAvatar) {
         setStatus('loading AI Live2D…');
+        pauseAiAvatarRenderer('vrm');
         await ensureAiLive2dReady();
         // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
         // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
@@ -1992,38 +2018,52 @@
     if (!path) throw new Error('ai avatar: path required');
     if (type === 'vrm') {
       if (typeof VRMManager === 'undefined') throw new Error('ai avatar: VRMManager class not found');
+      const previousType = window.__SoccerAiAvatar?.type;
       window.aiVrmManager = window.aiVrmManager || new VRMManager();
-      await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, path, {
-        canvasId: 'ai-l2d-canvas',
-        containerId: 'ai-l2d-container',
-        label: 'AI VRM',
-      });
+      pauseAiAvatarRenderer('live2d');
+      try {
+        await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, path, {
+          canvasId: 'ai-l2d-canvas',
+          containerId: 'ai-l2d-container',
+          label: 'AI VRM',
+        });
+      } catch (e) {
+        if (previousType === 'live2d') resumeAiAvatarRenderer('live2d');
+        throw e;
+      }
       window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
       window.__SoccerAiAvatar = { type: 'vrm', path, ready: true };
       emitEvent('ai-avatar-changed', { type, path });
       return;
     }
     if (type !== 'live2d') throw new Error('ai avatar: only live2d/vrm supported');
-    await ensureAiLive2dReady();
-    // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
-    // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
-    const loadPromise = window.live2dManager.loadModel(path);
-    loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
-    await new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
-      const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
-      const tick = () => {
-        const m = window.live2dManager.currentModel;
-        const curUrl = m?.internalModel?.settings?.url || '';
-        // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
-        const urlMatches = curUrl === path || curUrl.endsWith(path);
-        if (m && m.width > 0 && (urlMatches || !startedWithSameModel)) return resolve();
-        if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
-        setTimeout(tick, 150);
-      };
-      tick();
-    });
+    const previousType = window.__SoccerAiAvatar?.type;
+    pauseAiAvatarRenderer('vrm');
+    try {
+      await ensureAiLive2dReady();
+      // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
+      // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
+      const loadPromise = window.live2dManager.loadModel(path);
+      loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
+      await new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
+        const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
+        const tick = () => {
+          const m = window.live2dManager.currentModel;
+          const curUrl = m?.internalModel?.settings?.url || '';
+          // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
+          const urlMatches = curUrl === path || curUrl.endsWith(path);
+          if (m && m.width > 0 && (urlMatches || !startedWithSameModel)) return resolve();
+          if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
+          setTimeout(tick, 150);
+        };
+        tick();
+      });
+    } catch (e) {
+      if (previousType === 'vrm') resumeAiAvatarRenderer('vrm');
+      throw e;
+    }
     fitAiLive2dModel();
     window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
     window.__SoccerAiAvatar = { type: 'live2d', path, ready: true };
