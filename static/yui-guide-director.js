@@ -1014,6 +1014,10 @@
                 return null;
             }
 
+            if (this.guideInterruptPresentationActive) {
+                return null;
+            }
+
             if (typeof window.requestAnimationFrame !== 'function'
                 || !window.LanLan1
                 || typeof window.LanLan1.setMouth !== 'function') {
@@ -2159,6 +2163,7 @@
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.activeGuideEmotion = '';
+            this.guideInterruptPresentationActive = false;
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -2554,9 +2559,16 @@
             return translateGuideText(textKey, fallbackText);
         }
 
-        applyGuideEmotion(emotion) {
+        applyGuideEmotion(emotion, options) {
             const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
             if (!normalizedEmotion) {
+                return;
+            }
+
+            const normalizedOptions = options || {};
+            const allowDuringInterrupt = !!normalizedOptions.allowDuringInterrupt;
+
+            if (this.guideInterruptPresentationActive && !allowDuringInterrupt) {
                 return;
             }
 
@@ -2565,8 +2577,22 @@
         }
 
         clearGuidePresentation() {
+            if (this.guideInterruptPresentationActive) {
+                return;
+            }
             this.activeGuideEmotion = '';
             this.emotionBridge.clear();
+        }
+
+        beginGuideInterruptPresentation() {
+            this.guideInterruptPresentationActive = true;
+            this.voiceQueue.stopGuideMouthMotion();
+            this.activeGuideEmotion = '';
+            this.emotionBridge.clear();
+        }
+
+        endGuideInterruptPresentation() {
+            this.guideInterruptPresentationActive = false;
         }
 
         captureCurrentGuidePresentationSnapshot() {
@@ -3833,6 +3859,7 @@
             this.scenePausedForResistance = true;
             this.scenePausedAt = Date.now();
             this.cursor.cancel();
+            this.beginGuideInterruptPresentation();
         }
 
         resumeCurrentSceneAfterResistance() {
@@ -3842,6 +3869,7 @@
 
             this.scenePausedForResistance = false;
             this.scenePausedAt = 0;
+            this.endGuideInterruptPresentation();
             const resolvers = this.scenePauseResolvers.slice();
             this.scenePauseResolvers = [];
             resolvers.forEach((resolve) => {
@@ -4313,6 +4341,10 @@
 
         restoreCurrentScenePresentation(options) {
             if (this.destroyed || this.angryExitTriggered || !this.currentStep) {
+                return;
+            }
+
+            if (this.guideInterruptPresentationActive) {
                 return;
             }
 
@@ -7013,6 +7045,7 @@
             });
 
             let settingsDetailSecondLineDisplayed = false;
+            let settingsPeekPanicMotionTargetRect = null;
             const appendSettingsDetailSecondLine = () => {
                 if (
                     settingsDetailSecondLineDisplayed
@@ -7029,6 +7062,11 @@
                     voiceKey: detailVoiceKey,
                     streamDurationMs: detailPart2StreamDurationMs
                 });
+                this.runSettingsPeekPanicPerformance({
+                    runId: runId,
+                    targetRect: settingsPeekPanicMotionTargetRect,
+                    totalDurationMs: detailPart2StreamDurationMs
+                }).catch(() => {});
             };
             const narrationPromise = this.speakGuideLine(detailText, {
                 voiceKey: detailVoiceKey
@@ -7113,6 +7151,7 @@
                 || this.getElementRect(characterMenu)
                 || this.getElementRect(settingsButtonTarget);
             const motionRect = panelRect || itemUnionRect || fallbackRect;
+            settingsPeekPanicMotionTargetRect = motionRect || null;
             const centerX = motionRect
                 ? motionRect.left + motionRect.width / 2
                 : window.innerWidth / 2;
@@ -7805,6 +7844,80 @@
                 });
             } catch (error) {
                 console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runSettingsPeekPanicPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playSettingsPeekPanic !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            try {
+                return await api.playSettingsPeekPanic({
+                    targetRect: normalizedOptions.targetRect || null,
+                    totalDurationMs: normalizedOptions.totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => (
+                        (Number.isFinite(normalizedOptions.runId) && normalizedOptions.runId !== this.sceneRunId)
+                        || this.isStopping()
+                    )
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 设置一瞥慌乱动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runInterruptResistPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playInterruptResist !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const voiceDurationMs = normalizedOptions.voiceKey
+                ? this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
+                : 0;
+            const totalDurationMs = Number.isFinite(normalizedOptions.totalDurationMs)
+                ? Math.max(0, Math.round(normalizedOptions.totalDurationMs))
+                : (voiceDurationMs > 0 ? clamp(Math.round(voiceDurationMs), 960, 7600) : undefined);
+            try {
+                return await api.playInterruptResist({
+                    pointerX: normalizedOptions.x,
+                    pointerY: normalizedOptions.y,
+                    totalDurationMs: totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 轻微打断动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runAngryExitPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playAngryExit !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const voiceDurationMs = normalizedOptions.voiceKey
+                ? this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
+                : 0;
+            const totalDurationMs = Number.isFinite(normalizedOptions.totalDurationMs)
+                ? Math.max(0, Math.round(normalizedOptions.totalDurationMs))
+                : (voiceDurationMs > 0 ? clamp(Math.round(voiceDurationMs), 1200, 16000) : undefined);
+            try {
+                return await api.playAngryExit({
+                    pointerX: normalizedOptions.x,
+                    pointerY: normalizedOptions.y,
+                    totalDurationMs: totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 生气退出动作启动失败:', error);
                 return null;
             }
         }
@@ -8706,16 +8819,24 @@
                 voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || '',
                 streamPauseWithScene: false
             });
-            this.applyGuideEmotion(performance.emotion || 'surprised');
+            this.applyGuideEmotion(performance.emotion || 'surprised', {
+                allowDuringInterrupt: true
+            });
             const cursorResistancePromise = suppressCursorReaction
                 ? Promise.resolve()
                 : this.cursor.resistTo(x, y);
             const resistanceVoiceKey = resistanceVoiceKeys[resistanceVoiceIndex] || '';
+            const interruptPerformancePromise = this.runInterruptResistPerformance({
+                x: x,
+                y: y,
+                voiceKey: resistanceVoiceKey
+            }).catch(() => null);
             return Promise.all([
                 this.voiceQueue.speak(message, {
                     voiceKey: resistanceVoiceKey
                 }),
-                cursorResistancePromise
+                cursorResistancePromise,
+                interruptPerformancePromise
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
                 const didRestorePresentationSnapshot = this.restoreGuidePresentationSnapshot(presentationSnapshot);
@@ -8747,10 +8868,14 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
+            this.beginGuideInterruptPresentation();
 
             const angryStep = this.getStep('interrupt_angry_exit');
             const performance = (angryStep && angryStep.performance) || {};
             const bubbleText = this.resolvePerformanceBubbleText(performance);
+            const lastPointerPoint = this.lastPointerPoint && Number.isFinite(this.lastPointerPoint.x) && Number.isFinite(this.lastPointerPoint.y)
+                ? this.lastPointerPoint
+                : null;
 
             this.overlay.setTakingOver(true);
             this.overlay.setAngry(true);
@@ -8762,10 +8887,20 @@
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
-            this.applyGuideEmotion(performance.emotion || 'angry');
-            await this.speakGuideLine(bubbleText || '', {
-                voiceKey: performance.voiceKey
+            this.applyGuideEmotion(performance.emotion || 'angry', {
+                allowDuringInterrupt: true
             });
+            const angryExitPerformancePromise = this.runAngryExitPerformance({
+                x: lastPointerPoint ? lastPointerPoint.x : null,
+                y: lastPointerPoint ? lastPointerPoint.y : null,
+                voiceKey: performance.voiceKey
+            }).catch(() => null);
+            await Promise.all([
+                this.speakGuideLine(bubbleText || '', {
+                    voiceKey: performance.voiceKey
+                }),
+                angryExitPerformancePromise
+            ]);
             this.notifyPluginDashboardNarrationFinished();
             if (this.destroyed) {
                 return;

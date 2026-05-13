@@ -716,7 +716,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
     assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
     assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
-    assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483001'" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647'" in avatar_source
     assert "elevateContainerZIndex" in avatar_source
     assert "restoreContainerZIndex" in avatar_source
     assert "this.container.style.zIndex = PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX" in avatar_source
@@ -751,6 +751,62 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
 
     assert "PluginDashboardCorner" not in performance_source
     assert "plugin-dashboard" not in performance_source
+
+
+def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DSettingsPeekPanicSession" in avatar_source
+    assert "playSettingsPeekPanic: playSettingsPeekPanic" in avatar_source
+    assert "computeSettingsPeekPanicPose" in avatar_source
+    assert "home-yui-guide-settings-panic" in avatar_source
+    assert "Param72" in avatar_source
+    assert "Param73" in avatar_source
+    assert "Param69" in avatar_source
+    assert "Param83" in avatar_source
+    assert "Param85" in avatar_source
+    assert "Param90" in avatar_source
+    assert "Param91" in avatar_source
+    assert "Param92" in avatar_source
+    assert "Param93" in avatar_source
+    assert "Param95" in avatar_source
+    assert "Param96" in avatar_source
+
+    assert "async runSettingsPeekPanicPerformance(options)" in director_source
+    assert "this.runSettingsPeekPanicPerformance({" in director_source
+    assert "runId: runId," in director_source
+    assert "targetRect: settingsPeekPanicMotionTargetRect" in director_source
+    assert "settingsPeekPanicMotionTargetRect = motionRect || null;" in director_source
+
+    assert "SettingsPeekPanic" not in performance_source
+    assert "settings-panic" not in performance_source
+
+
+def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert ": ['frame', 'params'];" in avatar_source
+    assert "guideInterruptPresentationActive = true;" in director_source
+    assert "guideInterruptPresentationActive = false;" in director_source
+    assert "allowDuringInterrupt" in director_source
+    assert "if (this.guideInterruptPresentationActive) {" in director_source
+    assert "this.emotionBridge.clear();" in director_source
+    assert "startGuideMouthMotion(voiceKey, options)" in director_source
+    assert "this.applyGuideEmotion(performance.emotion || 'surprised', {" in director_source
+    assert "this.applyGuideEmotion(performance.emotion || 'angry', {" in director_source
+    assert "return null;" in director_source
+    assert "restoreCurrentScenePresentation(options)" in director_source
+
+    assert "home-yui-guide-interrupt-resist" in avatar_source
+    assert "home-yui-guide-angry-exit" in avatar_source
+
+    assert "guideInterruptPresentationActive" not in performance_source
+    assert "interrupt-resist" not in performance_source
+    assert "angry-exit" not in performance_source
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
