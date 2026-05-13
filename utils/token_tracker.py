@@ -378,6 +378,12 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #   - "privacy_default_off_v1"：实验组，隐私模式一律默认关闭
 _TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v1")
 
+# 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
+# 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
+# 前端 `/conversation-settings` 拿到不同分支，A/B 归因被打散。dict.setdefault
+# 在 CPython GIL 下是原子的，足以扛住模块内的并发首抽。
+_telemetry_branch_cache: dict = {}
+
 
 def _get_telemetry_branch(config_dir: Path) -> str:
     """读取或抽签生成 A/B test 分支标识，持久化在 config_dir 下。
@@ -386,7 +392,16 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     其它并发进程拿到 FileExistsError 后回读同一文件，确保 device-stable
     cohorting（同 device 不同 worker 不会落到不同 branch）。同款模式见
     _file_lock 的实现。
+
+    进程级缓存：首次 resolve 后落 `_telemetry_branch_cache`，后续调用直接命中。
+    主要为只读 FS / 权限错误等持久化失败的环境兜底——多 cohort 下没有这层缓存，
+    每次 `secrets.choice` 都会重抽，同一进程内不同调用方会观察到不同分支。
     """
+    cache_key = str(config_dir)
+    cached_proc = _telemetry_branch_cache.get(cache_key)
+    if cached_proc is not None:
+        return cached_proc
+
     p = config_dir / _TELEMETRY_BRANCH_FILE
 
     def _read() -> Optional[str]:
@@ -402,7 +417,7 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     # Fast path：文件已存在直接读
     cached = _read()
     if cached is not None:
-        return cached
+        return _telemetry_branch_cache.setdefault(cache_key, cached)
 
     branch = secrets.choice(_TELEMETRY_BRANCHES) if _TELEMETRY_BRANCHES else "main"
     try:
@@ -418,21 +433,22 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             os.write(fd, branch.encode("utf-8"))
         finally:
             os.close(fd)
-        return branch
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
     except FileExistsError:
         # 另一个进程抢先写了 —— 回读它写的值，确保两个进程返回同一 branch
         peer = _read()
         if peer is not None:
-            return peer
+            return _telemetry_branch_cache.setdefault(cache_key, peer)
         # 回读失败兜底：返回本进程抽到的值。短期不一致总比拒绝上报好；下次
         # 启动 fast path 会读到磁盘上的固化值，最终收敛。
-        return branch
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
     except Exception as e:
-        # 写盘失败不致命：单次进程内继续用抽到的分支上报，下次启动会再抽。
-        # 当前 _TELEMETRY_BRANCHES 只有一项，写失败不会有可观偏差；扩展后若
-        # 写盘长期失败，server 看到的将是分布噪声而非错误数据。
+        # 写盘失败不致命：进程级缓存 setdefault 保证同一进程后续所有调用方拿到
+        # 相同分支，TokenTracker 上报和前端 API 不会互相打架。下次进程重启时若
+        # 写盘仍然失败，缓存重新随机抽——按设计这就是 server 端看到的分布噪声
+        # 来源，不构成「同一 install 多个分支」的错误数据。
         logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
-        return branch
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
 
 
 def get_telemetry_branch() -> str:

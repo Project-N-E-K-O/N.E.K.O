@@ -524,8 +524,14 @@
                 // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
                 // 不管是否实际触发覆写），清掉 pending marker；下次启动不再尝试。
                 // GET 失败则 marker 留着，下次在线启动重新决议
-                if (telemetryBranch && _firstLaunchPending) {
+                const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
+                if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
+                    // 首启 branch 决议完后强制 POST 一次：控制组没有 server merge、也没
+                    // 触发 A/B 覆写时 hasUpdate 仍是 false，若用户在 60s periodic 之前关掉
+                    // app，首启的本地默认值就永远到不了服务器。这里 hasUpdate=true 让下方
+                    // saveSettings 走完整路径推一次
+                    hasUpdate = true;
                 }
 
                 if (serverSettings) {
