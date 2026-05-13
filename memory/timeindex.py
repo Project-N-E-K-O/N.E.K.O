@@ -193,9 +193,15 @@ class TimeIndexedMemory:
             return False
 
     async def _aensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
-        """异步版本：把阻塞的 engine 创建丢到线程池。"""
-        if lanlan_name in self.engines and lanlan_name in self.db_paths:
-            return True
+        """异步版本：把阻塞的 engine 创建丢到线程池。
+
+        以前在这里有个 ``if lanlan_name in self.engines and lanlan_name in self.db_paths:
+        return True`` 的早期短路，把 cache hit 的判定挡在 sync 实现之外——这条
+        路径会绕过 ``_ensure_engine_exists`` 新增的 path-drift 自检（cached db_path
+        vs 当前 memory_dir 推导出的 expected 不一致时 dispose 重建）。当前没有
+        async 调用方走这条入口，但为了避免未来加进来后 drift 检测被静默废掉，
+        删掉短路统一委托给 sync 实现。
+        """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(self, lanlan_name: str):

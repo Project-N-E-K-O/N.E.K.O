@@ -114,15 +114,15 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_extract_facts_and_check_feedback_does_not_run_stage1_legacy():
-    """Stage-1 per-turn fact_extract 已按 RFC §3.4.3 迁移到
-    ``_periodic_signal_extraction_loop``——``_extract_facts_and_check_feedback``
+async def test_extract_facts_and_check_feedback_skips_stage1_when_powerful_memory_on():
+    """powerful_memory ON 模式：Stage-1 per-turn fact_extract 已按 RFC §3.4.3
+    迁到 ``_periodic_signal_extraction_loop`` 做 batch 抽取，per-turn 主路径
     不应再调 ``fact_store.extract_facts``。
 
-    Pin 这条不变量：任何后续 refactor 不小心把 Stage-1 加回去（出于"保留
-    PR-1 时的 facts.json per-turn 及时更新"理由），都会被这个用例抓到。
-    Per-turn 重新跑 Stage-1 等同于回退到 RFC 之前的设计——每 turn 浪费一
-    次 yield 极低、无上下文的 LLM 抽取（详见 RFC §3.4.3 + 3.4.5 cost 估算）。
+    Pin 这条不变量：任何后续 refactor 把 ON-mode 的 Stage-1 加回 per-turn
+    主路径（出于"保留 PR-1 时 facts.json 每轮及时更新"理由），都会被这个用例
+    抓到——每 turn 浪费一次 yield 极低、无上下文的 LLM 抽取（详见 RFC
+    §3.4.3 + 3.4.5 cost 估算）。
 
     本用例仍允许 counter bump + 复读嗅探 + check_feedback——它们是 RFC
     设计内明确保留的 per-turn 操作。
@@ -150,12 +150,52 @@ async def test_extract_facts_and_check_feedback_does_not_run_stage1_legacy():
          patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=True)):
         await memory_server._extract_facts_and_check_feedback(payload_messages, "测试角色")
 
-    # Stage-1 per-turn fact_extract 一定不能被调
+    # ON-mode 下 Stage-1 per-turn fact_extract 一定不能被调（交给 batch loop）
     fake_fact_store.extract_facts.assert_not_awaited()
     # 但复读嗅探 + surfaced 检查仍必须 per-turn 跑
     fake_persona_manager.arecord_mentions.assert_awaited()
     fake_reflection_engine.arecord_mentions.assert_awaited()
     fake_reflection_engine.aload_surfaced.assert_awaited_once_with("测试角色")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_extract_facts_and_check_feedback_keeps_stage1_when_powerful_memory_off():
+    """powerful_memory OFF 模式：``_periodic_signal_extraction_loop`` 整段停
+    （见 ``if not powerful_enabled: continue``），per-turn Stage-1 是 fact
+    extraction 的唯一兜底路径，必须保留——否则 OFF 模式用户的 facts.json
+    完全停止更新（chatgpt-codex-connector PR #1346 抓到的 regression）。
+
+    本用例钉住 ON/OFF 不对称：ON 委托给 batch loop，OFF 跑 legacy per-turn。
+    """
+    from app import memory_server
+
+    fake_fact_store = MagicMock()
+    fake_fact_store.extract_facts = AsyncMock(return_value=[])
+    fake_persona_manager = MagicMock()
+    fake_persona_manager.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine = MagicMock()
+    fake_reflection_engine.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+
+    from utils.llm_client import HumanMessage, AIMessage
+    payload_messages = [
+        HumanMessage(content="测试用户消息"),
+        AIMessage(content="测试回复"),
+    ]
+
+    with patch.object(memory_server, "fact_store", fake_fact_store), \
+         patch.object(memory_server, "persona_manager", fake_persona_manager), \
+         patch.object(memory_server, "reflection_engine", fake_reflection_engine), \
+         patch.object(memory_server, "_signal_check_record_turn", MagicMock(return_value=None)), \
+         patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
+        await memory_server._extract_facts_and_check_feedback(payload_messages, "测试角色")
+
+    # OFF-mode 下 batch loop 不跑——per-turn Stage-1 必须 fallback
+    fake_fact_store.extract_facts.assert_awaited_once()
+    # 复读嗅探仍 per-turn 跑（与 ON-mode 同款）
+    fake_persona_manager.arecord_mentions.assert_awaited()
+    fake_reflection_engine.arecord_mentions.assert_awaited()
 
 
 @pytest.mark.unit
@@ -190,12 +230,25 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
     持锁内串行——和 /process / /renew / /settle 对偶，避免并发 cache 把
     db 写顺序打乱（同时也防止 cache 和 settle 抢着写同一份 recent.json）。
 
-    具体校验：astore_conversation 一定在 update_history 之后被 await，
-    且整个流程内 settle_lock 是被锁住的。
+    显式校验 lock observability：patch ``_get_settle_lock`` 成可观测的 async
+    context manager，断言 lock-enter 在 update_history / astore_conversation
+    之前发生、lock-exit 在它们之后但在 spawn_outbox 之前发生。否则未来如果
+    有人把前两步移到 ``async with`` 外面但保留顺序，纯顺序断言会漏检。
     """
     from app import memory_server
 
     order: list[str] = []
+
+    class _ObservableLock:
+        async def __aenter__(self):
+            order.append("lock_enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            order.append("lock_exit")
+            return None
+
+    observable_lock = _ObservableLock()
 
     async def _fake_update_history(*args, **kwargs):
         order.append("update_history")
@@ -220,12 +273,19 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server, "_spawn_outbox_extract_facts", AsyncMock(side_effect=_fake_spawn)), \
-         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)):
+         patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)), \
+         patch.object(memory_server, "_get_settle_lock", MagicMock(return_value=observable_lock)):
         await memory_server.cache_conversation(request, "测试角色")
 
-    # update_history → astore_conversation 严格串行（同一 settle lock 内）
-    # spawn_outbox 在 lock 外，但仍然在前两个之后
-    assert order == ["update_history", "astore_conversation", "spawn_outbox"]
+    # 严格契约：lock-enter → update_history → astore_conversation → lock-exit → spawn_outbox
+    # 前 4 步必须夹在 enter/exit 之间（串行 + lock 内），spawn_outbox 在 lock 外。
+    assert order == [
+        "lock_enter",
+        "update_history",
+        "astore_conversation",
+        "lock_exit",
+        "spawn_outbox",
+    ]
 
 
 @pytest.mark.unit

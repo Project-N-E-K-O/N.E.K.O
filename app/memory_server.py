@@ -2565,14 +2565,21 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
     # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
     powerful_enabled = await _ais_powerful_memory_enabled()
 
-    # NOTE: 历史 step 1 (fact_store.extract_facts Stage-1 per-turn 抽取)
-    # 已剥离——RFC §3.4.3 明确"per-turn extract_facts 太贵，改为背景调度"，
-    # 单 turn 输入 2-4 条消息抽 fact yield 极低且无上下文；batch 路径在
-    # `_periodic_signal_extraction_loop` 里从 ``time_indexed.db`` 拉过去
-    # 窗口的全部 user messages 跑 Stage-1+Stage-2，质量和成本都更好。
-    # PR-1 当时为"短期行为不变 / facts.json 每轮及时更新"暂留 step 1；
-    # PR cba377c5（"hotswap timing"）的 /cache+/settle bug 让 step 1 已经
-    # 46 天没跑过，借这次回收 cache 端点落 db 的机会一起完成 RFC 迁移。
+    # Step 1 — per-turn Stage-1 fact extraction：只在 powerful_memory **关闭**
+    # 时跑（OFF-mode baseline fallback）。ON-mode 下 fact extraction 完全交给
+    # ``_periodic_signal_extraction_loop`` 跑 batch Stage-1+Stage-2（RFC §3.4.3
+    # 设计意图："不在对话主路径上每轮运行 extract_facts——太贵。改为背景调度"，
+    # batch 路径带上下文、质量更高、cost 更低）。
+    #
+    # OFF-mode 下 batch loop 整段停（见 _periodic_signal_extraction_loop 的
+    # `if not powerful_enabled: continue` 分支），如果这里也跳过，facts.json
+    # 就完全无路径更新——这是 chatgpt-codex-connector PR #1346 抓到的 regression。
+    # OFF-mode 保留 legacy per-turn Stage-1，let user 仍能拿到基础 fact 累积。
+    if not powerful_enabled:
+        try:
+            await fact_store.extract_facts(messages, lanlan_name)
+        except Exception as e:
+            logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
 
     try:
         # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目 +
