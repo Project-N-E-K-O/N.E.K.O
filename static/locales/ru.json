@@ -1418,7 +1418,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (Китай)",
-            "minimax_intl": "MiniMax (Международная)"
+            "minimax_intl": "MiniMax (Международная)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
@@ -1874,6 +1875,7 @@
         "nativePresetVoicesGeneric": "Нативные предустановленные голоса",
         "savedVoiceFallback": "Текущий сохранённый голос",
         "gptsovitsVoices": "Голоса GPT-SoVITS",
+        "elevenlabsVoices": "Голоса ElevenLabs",
         "gsvDiagNotEnabled": "GPT-SoVITS не включён (включите его в настройках API)",
         "gsvDiagUrlMissing": "URL GPT-SoVITS не настроен (укажите его в настройках API)",
         "gsvDiagUrlInvalid": "URL GPT-SoVITS не задан или не использует http(s)",

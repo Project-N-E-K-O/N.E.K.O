@@ -1418,7 +1418,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (국제판)"
+            "minimax_intl": "MiniMax (국제판)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
@@ -1874,6 +1875,7 @@
         "nativePresetVoicesGeneric": "네이티브 프리셋 음성",
         "savedVoiceFallback": "현재 저장된 음성",
         "gptsovitsVoices": "GPT-SoVITS 음성",
+        "elevenlabsVoices": "ElevenLabs 음성",
         "gsvDiagNotEnabled": "GPT-SoVITS가 비활성화되어 있습니다 (API 설정에서 활성화하세요)",
         "gsvDiagUrlMissing": "GPT-SoVITS URL이 설정되지 않았습니다 (API 설정에서 입력하세요)",
         "gsvDiagUrlInvalid": "GPT-SoVITS URL이 비어 있거나 http(s)가 아닙니다",
