@@ -519,6 +519,32 @@ def _is_steam_sdk_engaged() -> bool:
     return False
 
 
+def _get_telemetry_steam_user_id() -> str:
+    """读取当前会话的 Steam64 user id，作为字符串返回。
+
+    返回非空 string 表示 Steamworks SDK 真的从 Steam 客户端拿到了登录用户；
+    返回空 string 表示 SDK 没起来 / Steam 客户端没开 / 源码模式没初始化
+    SDK 等情形。
+
+    用 string 而非 int 上报，避免 Steam64（u64，常超过 2^53）在某些 JSON
+    消费方（JS / 部分 SDK）里精度丢失。
+    """
+    try:
+        from utils.steam_state import get_steamworks
+        sw = get_steamworks()
+        if sw is None:
+            return ""
+        try:
+            sid = int(sw.Users.GetSteamID() or 0)
+        except Exception:
+            return ""
+        if sid > 0:
+            return str(sid)
+    except Exception:
+        pass
+    return ""
+
+
 def _get_telemetry_distribution() -> str:
     """识别发行渠道：steam / release / source。
 
@@ -1071,6 +1097,7 @@ class TokenTracker:
             telemetry_locale = _get_telemetry_locale()
             telemetry_timezone = _get_telemetry_timezone()
             telemetry_distribution = _get_telemetry_distribution()
+            telemetry_steam_user_id = _get_telemetry_steam_user_id()
 
             payload = {
                 "device_id": self._device_id,
@@ -1085,6 +1112,9 @@ class TokenTracker:
                 "locale": telemetry_locale,
                 "timezone": telemetry_timezone,
                 "distribution": telemetry_distribution,
+                # 仅在 Steamworks SDK 起来 + 拿到 Steam64 时填值，其它情况为
+                # 空 string。server 端按 preserve-known 处理：空值不覆写历史。
+                "steam_user_id": telemetry_steam_user_id,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }

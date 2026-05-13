@@ -138,6 +138,7 @@ async def submit_telemetry(request: Request):
             locale=submission.payload.locale,
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
+            steam_user_id=submission.payload.steam_user_id,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
