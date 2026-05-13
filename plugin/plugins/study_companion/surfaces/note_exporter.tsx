@@ -1,6 +1,15 @@
 import { useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
+type ExportFormat = 'markdown' | 'pdf' | 'docx' | 'xmind';
+
+const EXPORT_FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'pdf', label: 'PDF' },
+  { value: 'docx', label: 'DOCX' },
+  { value: 'xmind', label: 'XMind' },
+];
+
 async function readJsonResponse(response: Response, label: string) {
   if (!response.ok) {
     throw new Error(`${label} failed: HTTP ${response.status}`);
@@ -45,6 +54,26 @@ function text(props: PluginSurfaceProps, key: string, fallback: string) {
   return value && value !== key ? value : fallback;
 }
 
+function getExportEntry(props: PluginSurfaceProps) {
+  return (props.entries || []).find((entry: any) => entry.id === 'study_export_notes');
+}
+
+function getAllowedFormats(props: PluginSurfaceProps): ExportFormat[] {
+  const entry = getExportEntry(props);
+  if (!entry) {
+    return [];
+  }
+  const schemaEnum = entry.input_schema?.properties?.fmt?.enum;
+  if (Array.isArray(schemaEnum)) {
+    const knownFormats = EXPORT_FORMAT_OPTIONS.map((option) => option.value);
+    return schemaEnum.filter((value: unknown): value is ExportFormat => knownFormats.includes(value as ExportFormat));
+  }
+  const xmindEnabled = Boolean(props.config?.value?.doc_export?.xmind_enabled);
+  return EXPORT_FORMAT_OPTIONS
+    .filter((option) => option.value !== 'xmind' || xmindEnabled)
+    .map((option) => option.value);
+}
+
 function downloadBase64File(contentBase64: string, filename: string, contentType: string) {
   const binary = window.atob(contentBase64);
   const bytes = new Uint8Array(binary.length);
@@ -68,12 +97,21 @@ export default function NoteExporter(props: PluginSurfaceProps) {
   const [markdown, setMarkdown] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const allowedFormats = getAllowedFormats(props);
+  const selectedFmt = allowedFormats.includes(fmt as ExportFormat) ? fmt : allowedFormats[0] || 'markdown';
+  const exportUnavailable = allowedFormats.length === 0;
+  const xmindUnavailable = !exportUnavailable && !allowedFormats.includes('xmind');
+  const statusText = status || (exportUnavailable ? text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled') : '');
 
   async function exportNotes(previewOnly: boolean) {
+    if (exportUnavailable) {
+      setStatus(text(props, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled'));
+      return;
+    }
     setBusy(true);
     setStatus(text(props, 'ui.status.exporting', 'Exporting...'));
     try {
-      const payload = await callPlugin('study_export_notes', { fmt, style, preview_only: previewOnly });
+      const payload = await callPlugin('study_export_notes', { fmt: selectedFmt, style, preview_only: previewOnly });
       setMarkdown(payload.markdown || '');
       if (!previewOnly && payload.content_base64) {
         downloadBase64File(payload.content_base64, payload.filename, payload.content_type);
@@ -91,31 +129,31 @@ export default function NoteExporter(props: PluginSurfaceProps) {
       <header className="study-panel__header">
         <div>
           <h1>{text(props, 'ui.surface.note_exporter', 'Note Exporter')}</h1>
-          <span>{status}</span>
+          <span>{statusText}</span>
         </div>
       </header>
       <section className="study-panel__state">
         <label>
           <span>{text(props, 'ui.label.format', 'Format')}</span>
-          <select value={fmt} disabled={busy} onChange={(event) => setFmt(event.target.value)}>
-            <option value="markdown">Markdown</option>
-            <option value="pdf">PDF</option>
-            <option value="docx">DOCX</option>
-            <option value="xmind">XMind</option>
+          <select value={selectedFmt} disabled={busy || exportUnavailable} onChange={(event) => setFmt(event.target.value)}>
+            {EXPORT_FORMAT_OPTIONS
+              .filter((option) => allowedFormats.includes(option.value))
+              .map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
+        {xmindUnavailable ? <span>{text(props, 'ui.status.xmind_disabled', 'XMind export is disabled by doc_export.xmind_enabled')}</span> : null}
         <label>
           <span>{text(props, 'ui.label.style', 'Style')}</span>
-          <select value={style} disabled={busy} onChange={(event) => setStyle(event.target.value)}>
+          <select value={style} disabled={busy || exportUnavailable} onChange={(event) => setStyle(event.target.value)}>
             <option value="neko">Neko</option>
             <option value="academic">Academic</option>
             <option value="compact">Compact</option>
           </select>
         </label>
-        <button type="button" disabled={busy} onClick={() => exportNotes(true)}>
+        <button type="button" disabled={busy || exportUnavailable} onClick={() => exportNotes(true)}>
           {text(props, 'ui.button.preview', 'Preview')}
         </button>
-        <button type="button" disabled={busy} onClick={() => exportNotes(false)}>
+        <button type="button" disabled={busy || exportUnavailable} onClick={() => exportNotes(false)}>
           {text(props, 'ui.button.export', 'Export')}
         </button>
       </section>

@@ -2139,6 +2139,8 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
     try:
         entries = plugin.collect_entries()
         assert "study_export_notes" in entries
+        export_formats = entries["study_export_notes"].meta.input_schema["properties"]["fmt"]["enum"]
+        assert export_formats == ["markdown", "pdf", "docx"]
         plugin._store.append_interaction(
             kind="concept_explain",
             input_text="derivative",
@@ -2166,6 +2168,34 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert isinstance(preview, Ok)
         assert preview.value["opt_in"] is True
         assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is True
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_doc_export_schema_includes_xmind_only_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+            "doc_export": {"enabled": True, "xmind_enabled": True},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        entries = plugin.collect_entries()
+        export_formats = entries["study_export_notes"].meta.input_schema["properties"]["fmt"]["enum"]
+        assert export_formats == ["markdown", "pdf", "docx", "xmind"]
     finally:
         await plugin.shutdown()
 
