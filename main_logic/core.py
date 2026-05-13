@@ -427,6 +427,14 @@ from main_logic.agent_event_bus import publish_analyze_request_reliably
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
+# 用户静默达到此阈值 → 后台 loop 主动 end_session，让下一条消息触发
+# start_session(new=False) 重新拉 /new_dialog 注入新鲜时间/长间隔提示/节日
+# 上下文，解决长挂机 session 上下文僵化（"猫娘还停留在前一晚"）的问题。
+# 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
+# 一整轮。
+IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
+IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
+
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
 # 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
@@ -754,6 +762,11 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
+        # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
+        # 单例），无 active session 时 sleep 后继续轮询。
+        self._idle_session_reset_task: Optional[asyncio.Task] = None
 
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
@@ -3253,6 +3266,51 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self._memory_error_retry_after = 0
 
+    def _ensure_idle_session_reset_loop(self) -> None:
+        """Lazily 启动 idle reset 后台任务。idempotent，重复调用安全。"""
+        if self._idle_session_reset_task is not None and not self._idle_session_reset_task.done():
+            return
+        try:
+            self._idle_session_reset_task = asyncio.create_task(self._idle_session_reset_loop())
+        except RuntimeError:
+            # 极端情况：没有 running event loop（不该发生于 start_session 路径）
+            logger.debug("[%s] _ensure_idle_session_reset_loop: no running loop, skip", self.lanlan_name)
+
+    async def _idle_session_reset_loop(self) -> None:
+        """周期检查用户静默时长，超阈值则主动 end_session 让下一条消息触发新鲜
+        /new_dialog 上下文注入。守卫：响应中 / takeover / session 启动中 / 无活动
+        时间戳 → 跳过本轮，下一轮再判。
+        """
+        while True:
+            try:
+                await asyncio.sleep(IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS)
+                if not self.is_active or self.session is None:
+                    continue
+                if self._starting_session_count > 0:
+                    continue
+                if self._takeover_active:
+                    continue
+                if getattr(self.session, '_is_responding', False):
+                    continue
+                last_activity = self.last_user_activity_time
+                if last_activity is None:
+                    continue
+                idle_seconds = time.time() - last_activity
+                if idle_seconds < IDLE_SESSION_RESET_THRESHOLD_SECONDS:
+                    continue
+                logger.info(
+                    "[%s] idle_session_reset: 用户静默 %.0fs ≥ %ds，主动关闭 session 让下一条消息刷新上下文",
+                    self.lanlan_name, idle_seconds, IDLE_SESSION_RESET_THRESHOLD_SECONDS,
+                )
+                try:
+                    await self.end_session()
+                except Exception as e:
+                    logger.warning("[%s] idle_session_reset: end_session 失败: %s", self.lanlan_name, e)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
@@ -3281,6 +3339,8 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 首次 start_session 起算，让 idle reset loop 永久存活
+        self._ensure_idle_session_reset_loop()
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
