@@ -454,6 +454,155 @@
     statusEl.textContent = s;
     window.__SoccerLoading?.set('assets', s);
   };
+  window.__SoccerAiAvatar = window.__SoccerAiAvatar || { type: 'none', path: '', ready: false };
+  const markAiAvatar = (type, path, ready = true) => {
+    window.__SoccerAiAvatar = { type, path: path || '', ready: !!ready };
+  };
+
+  async function fetchSoccerCharacterInfo() {
+    try {
+      const url = new URL('/api/game/soccer/character', window.location.origin);
+      const lanlanName = window.lanlan_config?.lanlan_name || '';
+      if (lanlanName && lanlanName !== 'soccer_demo') {
+        url.searchParams.set('lanlan_name', lanlanName);
+      }
+      const charResp = await fetch(url.toString());
+      if (!charResp.ok) return {};
+      return await charResp.json();
+    } catch (e) {
+      console.warn('[soccer_demo] 获取角色信息失败:', e);
+      return {};
+    }
+  }
+
+  function prefersAiVrm(charData) {
+    const modelType = String(charData?.model_type || '').toLowerCase();
+    const subType = String(charData?.live3d_sub_type || '').toLowerCase();
+    return !!charData?.vrm_path && (
+      modelType === 'vrm' || (modelType === 'live3d' && subType === 'vrm')
+    );
+  }
+
+  function fitVrmManagerCamera(manager, containerId, label = 'VRM') {
+    const THREE = window.THREE;
+    const vrm = manager?.currentModel?.vrm;
+    if (!THREE || !manager?.camera || !vrm?.scene) return;
+
+    vrm.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const mid = new THREE.Vector3();
+    box.getCenter(mid);
+    vrm.scene.position.x -= mid.x;
+    vrm.scene.position.z -= mid.z;
+    vrm.scene.position.y -= box.min.y;
+    vrm.scene.updateMatrixWorld(true);
+
+    const box2 = new THREE.Box3().setFromObject(vrm.scene);
+    const h = box2.max.y - box2.min.y;
+    const w = Math.max(box2.max.x - box2.min.x, box2.max.z - box2.min.z);
+    const cam = manager.camera;
+    const fovRad = cam.fov * Math.PI / 180;
+    const container = document.getElementById(containerId);
+    const aspect = container?.clientWidth && container?.clientHeight
+      ? container.clientWidth / container.clientHeight
+      : 200 / 300;
+    cam.aspect = aspect;
+    const visibleH = h * 1.15;
+    const dist = visibleH / (2 * Math.tan(fovRad / 2));
+    const lookY = visibleH / 2;
+    cam.position.set(0, lookY, dist);
+    cam.lookAt(0, lookY, 0);
+    cam.updateProjectionMatrix();
+    console.log(`[soccer_demo] fit ${label}: h=`, h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
+  }
+
+  window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager(manager, path, {
+    canvasId,
+    containerId,
+    label = 'VRM',
+    playIdle = true,
+  } = {}) {
+    if (!manager) throw new Error(`${label}: VRM manager missing`);
+    if (!path) throw new Error(`${label}: VRM path required`);
+    if (!canvasId || !containerId) throw new Error(`${label}: canvas/container required`);
+    if (!manager.scene || !manager.camera || !manager.renderer) {
+      await manager.core.init(canvasId, containerId, null, { embed: true });
+    }
+    const [{ GLTFLoader }, vrmModule] = await Promise.all([
+      import('three/addons/loaders/GLTFLoader.js'),
+      import('@pixiv/three-vrm'),
+    ]);
+    const loader = new GLTFLoader();
+    loader.register(p => new vrmModule.VRMLoaderPlugin(p));
+    const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
+    const vrm = gltf.userData.vrm;
+    if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
+
+    if (manager.currentModel?.vrm?.scene) {
+      const oldScene = manager.currentModel.vrm.scene;
+      manager.scene.remove(oldScene);
+      try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
+      catch (e) { console.warn(`[${label}] deepDispose failed:`, e); }
+    }
+
+    manager.scene.add(vrm.scene);
+    manager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
+    vrm.scene.visible = true;
+    fitVrmManagerCamera(manager, containerId, label);
+
+    if (manager.renderer?.domElement) {
+      manager.renderer.domElement.style.opacity = '1';
+      manager.renderer.domElement.style.display = 'block';
+    }
+    if (typeof manager.startAnimateLoop === 'function' && !manager._animationFrameId) {
+      manager.startAnimateLoop();
+    }
+    if (typeof manager._initMouseLookAtTracking === 'function') {
+      manager._initMouseLookAtTracking();
+    }
+    if (manager.interaction?.enableMouseTracking) {
+      manager.interaction.enableMouseTracking(true);
+    }
+    if (manager._cursorFollow?.setEnabled) {
+      manager._cursorFollow.setEnabled(true);
+    }
+    const modelName = path.split('/').pop()?.replace(/\.vrm$/i, '') || '';
+    try { await manager.expression?.loadMoodMap?.(modelName); }
+    catch (e) { console.warn(`[${label}] mood map load failed:`, e); }
+
+    if (playIdle) {
+      try {
+        await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+          loop: true, immediate: true, isIdle: true,
+        });
+      } catch (animErr) {
+        console.warn(`[${label}] idle animation failed (will keep T-pose):`, animErr);
+      }
+    }
+    return manager.currentModel;
+  };
+
+  window.__SoccerSetAiVrmFocus = function setAiVrmFocus(tx, ty) {
+    const follow = window.aiVrmManager?._cursorFollow;
+    if (!follow) return;
+    follow._rawMouseX = tx;
+    follow._rawMouseY = ty;
+    follow._hasPointerInput = true;
+    follow._lastPointerMoveAt = performance.now();
+    if (follow.setEnabled && !follow.isEnabled?.()) {
+      follow.setEnabled(true);
+    }
+  };
+
+  window.__SoccerSetAiEmotion = function setAiEmotion(emotion) {
+    try {
+      if (window.__SoccerAiAvatar?.type === 'vrm') {
+        window.aiVrmManager?.expression?.setMood?.(emotion);
+        return;
+      }
+      window.live2dManager?.setEmotion?.(emotion);
+    } catch (_) {}
+  };
 
   // 等 vrm 模块链加载完
   await new Promise(resolve => {
@@ -562,99 +711,118 @@
     }
     setStatus('VRM ready');
 
-    // --- 接当前猫娘 Live2D 作为 AI ---
+    // --- 接当前猫娘头像作为 AI：当前支持 Live2D / VRM；MMD 继续回退到 Live2D ---
     try {
-      setStatus('loading AI Live2D…');
-      if (!window.live2dManager) throw new Error('live2dManager missing');
-      // 显式传 width/height，避免某些环境 window.screen.width=0 导致 canvas 变 1x1
-      await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
-        width: 200,
-        height: 300,
-      });
-      // loadModel 内部会调几个桌宠 UI 钩子（浮动按钮、锁图标、返回按钮），demo 里不需要，空实现绕过
-      const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
-      for (const name of uiStubs) {
-        if (typeof window.live2dManager[name] !== 'function') {
-          window.live2dManager[name] = () => {};
+      const charData = await fetchSoccerCharacterInfo();
+      let loadedAiAvatar = false;
+
+      if (prefersAiVrm(charData)) {
+        try {
+          const aiVrmPath = charData.vrm_path;
+          setStatus('loading AI VRM…');
+          if (typeof VRMManager === 'undefined') throw new Error('VRMManager class not found');
+          window.aiVrmManager = window.aiVrmManager || new VRMManager();
+          await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, aiVrmPath, {
+            canvasId: 'ai-l2d-canvas',
+            containerId: 'ai-l2d-container',
+            label: 'AI VRM',
+          });
+          window.__focusL2DAt = (tx, ty) => window.__SoccerSetAiVrmFocus(tx, ty);
+          markAiAvatar('vrm', aiVrmPath, true);
+          loadedAiAvatar = true;
+          console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.lanlan_name, aiVrmPath);
+        } catch (vrmErr) {
+          markAiAvatar('vrm', charData.vrm_path || '', false);
+          console.warn('[soccer_demo] AI VRM 加载失败，回退 Live2D:', vrmErr);
         }
       }
-      // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
-      // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
-      // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
-      let aiL2dPath = '/static/mao_pro/mao_pro.model3.json';
-      try {
-        const charResp = await fetch('/api/game/soccer/character');
-        if (charResp.ok) {
-          const charData = await charResp.json();
-          if (charData.live2d_path) {
-            aiL2dPath = charData.live2d_path;
-            console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
+
+      if (!loadedAiAvatar) {
+        setStatus('loading AI Live2D…');
+        if (!window.live2dManager) throw new Error('live2dManager missing');
+        // 显式传 width/height，避免某些环境 window.screen.width=0 导致 canvas 变 1x1
+        await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
+          width: 200,
+          height: 300,
+        });
+        // loadModel 内部会调几个桌宠 UI 钩子（浮动按钮、锁图标、返回按钮），demo 里不需要，空实现绕过
+        const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
+        for (const name of uiStubs) {
+          if (typeof window.live2dManager[name] !== 'function') {
+            window.live2dManager[name] = () => {};
           }
         }
-      } catch (e) {
-        console.warn('[soccer_demo] 获取角色信息失败，使用默认 mao_pro:', e);
-      }
-      const loadPromise = window.live2dManager.loadModel(aiL2dPath);
-      loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
-      await new Promise((resolve, reject) => {
-        const t0 = Date.now();
-        const tick = () => {
-          if (window.live2dManager?.currentModel?.width > 0) return resolve();
-          if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
-          setTimeout(tick, 200);
-        };
-        tick();
-      });
-      console.log('[soccer_demo] L2D currentModel ready');
-
-      // 适配：缩放 + 底部对齐（脚落在 canvas 底部，留一点 margin）
-      const l2dModel = window.live2dManager.currentModel;
-      if (l2dModel && l2dModel.width && l2dModel.height) {
-        const canvasW = 200, canvasH = 300, margin = 6;
-        const s = Math.min(
-          (canvasW - margin * 2) / l2dModel.width,
-          (canvasH - margin * 2) / l2dModel.height
-        );
-        l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
-        // 注意：L2D model 有 anchor（mao_pro 是 0.65, 0.75），model.x/y 是 anchor 点位置，
-        // 不是左上角。要把 bounds 放到指定位置，得加上 width*anchor.x / height*anchor.y 补偿。
-        const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
-        const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
-        const boundsX = (canvasW - l2dModel.width) / 2;
-        const boundsY = canvasH - margin - l2dModel.height;
-        l2dModel.x = boundsX + l2dModel.width * ax;
-        l2dModel.y = boundsY + l2dModel.height * ay;
-        // 强制可见：loadModel 内部的 "3 frame rAF 等待 + CSS fade-in" 在 rAF 被 throttle 的
-        // 环境（后台/headless）下不会完成，alpha 会一直卡在 0.001、canvas opacity=0。
-        // 直接置 1 绕过，真浏览器里原流程会同样置 1，不冲突。
-        l2dModel.alpha = 1;
-        if (window.live2dManager.pixi_app?.view) {
-          window.live2dManager.pixi_app.view.style.opacity = '1';
+        // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
+        // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
+        // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
+        let aiL2dPath = charData.live2d_path || '/static/mao_pro/mao_pro.model3.json';
+        if (charData.live2d_path) {
+          console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
         }
-        console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
-      }
+        const loadPromise = window.live2dManager.loadModel(aiL2dPath);
+        loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
+        await new Promise((resolve, reject) => {
+          const t0 = Date.now();
+          const tick = () => {
+            if (window.live2dManager?.currentModel?.width > 0) return resolve();
+            if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
+            setTimeout(tick, 200);
+          };
+          tick();
+        });
+        console.log('[soccer_demo] L2D currentModel ready');
 
-      // AI 注视控制：每帧从游戏 loop 调用 window.__focusL2DAt(targetScreenX, targetScreenY)
-      // 直接走 focusController，避免 model.focus 按 200x300 canvas 归一化导致的"超出=锁边"
-      const aiCanvas = document.getElementById('ai-l2d-canvas');
-      window.__focusL2DAt = (tx, ty) => {
-        const mm = window.live2dManager?.currentModel;
-        const fc = mm?.internalModel?.focusController;
-        if (!fc) return;
-        const rect = aiCanvas.getBoundingClientRect();
-        if (rect.width < 10) return; // 容器还没被 transform 到场上
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const reach = 400; // 多少屏幕像素等价于最大转头角度
-        const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
-        const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach)); // L2D Y 轴向上为正
-        fc.focus(nx, ny);
-      };
+        // 适配：缩放 + 底部对齐（脚落在 canvas 底部，留一点 margin）
+        const l2dModel = window.live2dManager.currentModel;
+        if (l2dModel && l2dModel.width && l2dModel.height) {
+          const canvasW = 200, canvasH = 300, margin = 6;
+          const s = Math.min(
+            (canvasW - margin * 2) / l2dModel.width,
+            (canvasH - margin * 2) / l2dModel.height
+          );
+          l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
+          // 注意：L2D model 有 anchor（mao_pro 是 0.65, 0.75），model.x/y 是 anchor 点位置，
+          // 不是左上角。要把 bounds 放到指定位置，得加上 width*anchor.x / height*anchor.y 补偿。
+          const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
+          const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
+          const boundsX = (canvasW - l2dModel.width) / 2;
+          const boundsY = canvasH - margin - l2dModel.height;
+          l2dModel.x = boundsX + l2dModel.width * ax;
+          l2dModel.y = boundsY + l2dModel.height * ay;
+          // 强制可见：loadModel 内部的 "3 frame rAF 等待 + CSS fade-in" 在 rAF 被 throttle 的
+          // 环境（后台/headless）下不会完成，alpha 会一直卡在 0.001、canvas opacity=0。
+          // 直接置 1 绕过，真浏览器里原流程会同样置 1，不冲突。
+          l2dModel.alpha = 1;
+          if (window.live2dManager.pixi_app?.view) {
+            window.live2dManager.pixi_app.view.style.opacity = '1';
+          }
+          console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
+        }
+
+        // AI 注视控制：每帧从游戏 loop 调用 window.__focusL2DAt(targetScreenX, targetScreenY)
+        // 直接走 focusController，避免 model.focus 按 200x300 canvas 归一化导致的"超出=锁边"
+        const aiCanvas = document.getElementById('ai-l2d-canvas');
+        window.__focusL2DAt = (tx, ty) => {
+          const mm = window.live2dManager?.currentModel;
+          const fc = mm?.internalModel?.focusController;
+          if (!fc) return;
+          const rect = aiCanvas.getBoundingClientRect();
+          if (rect.width < 10) return; // 容器还没被 transform 到场上
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          const reach = 400; // 多少屏幕像素等价于最大转头角度
+          const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
+          const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach)); // L2D Y 轴向上为正
+          fc.focus(nx, ny);
+        };
+        markAiAvatar('live2d', aiL2dPath, true);
+      }
 
       setStatus('all ready');
-    } catch (l2dErr) {
-      console.error('[soccer_demo] L2D failed:', l2dErr);
-      setStatus('L2D failed: ' + (l2dErr.message || l2dErr));
+    } catch (avatarErr) {
+      markAiAvatar('none', '', false);
+      console.error('[soccer_demo] AI avatar failed:', avatarErr);
+      setStatus('AI avatar failed: ' + (avatarErr.message || avatarErr));
     }
 
     window.__SoccerLoading?.done(
@@ -680,7 +848,7 @@
  *  给 neko 本体 / 外部脚本（LLM 生成、美术素材、UI 控件）使用的稳定入口。
  * ═══════════════════════════════════════════════════════════════════════════
  *
- *  ── 心情（只作用于 AI；影响速度/冷却/冲量/散射/特殊行为，并同步 L2D 表情）
+ *  ── 心情（只作用于 AI；影响速度/冷却/冲量/散射/特殊行为，并同步头像表情）
  *     SoccerDemo.MOODS                  // ['calm','happy','angry','relaxed','sad','surprised']
  *     SoccerDemo.setMood(name)          // 切换心情；会触发 'mood-<name>' 气泡 + onEvent('mood-changed')
  *     SoccerDemo.getMood()              // 当前心情字符串
@@ -702,10 +870,11 @@
  *  ── 头像（运行时替换，无需刷新）
  *     await SoccerDemo.setPlayerAvatar({ type: 'vrm',    path: '/static/vrm/xxx.vrm' })
  *     await SoccerDemo.setAiAvatar   ({ type: 'live2d', path: '/static/xxx/xxx.model3.json' })
+ *     await SoccerDemo.setAiAvatar   ({ type: 'vrm',    path: '/user_vrm/xxx.vrm' })
  *     SoccerDemo.getPlayerAvatar()      // { type, path }
  *     SoccerDemo.getAiAvatar()
  *
- *     注意：目前 player 只支持 vrm、AI 只支持 live2d；换 avatar 会自动 fit 相机/scale。
+ *     注意：目前 player 只支持 vrm、AI 支持 live2d / vrm；MMD 暂不接入。
  *
  *  ── 说话（气泡 + LLM 钩子）
  *     SoccerDemo.say(text, opts?)       // 直接说一句任意文本，返回 bool（是否成功播出）
@@ -1221,9 +1390,9 @@
   function setMood(name) {
     if (!MOODS[name]) return;
     moodKey = name;
-    // 同步 L2D 表情（复用项目原有 setEmotion）
+    // 同步 AI 头像表情（Live2D / VRM）
     const emotion = MOODS[name].emotion;
-    try { window.live2dManager?.setEmotion?.(emotion); } catch (_) {}
+    window.__SoccerSetAiEmotion?.(emotion);
   }
 
   // startle：检测球加速度，突变时冻结 AI 一段时间
@@ -1900,8 +2069,21 @@
   }
 
   async function setAiAvatar({ type, path } = {}) {
-    if (type !== 'live2d') throw new Error('ai avatar: only live2d supported');
     if (!path) throw new Error('ai avatar: path required');
+    if (type === 'vrm') {
+      if (typeof VRMManager === 'undefined') throw new Error('ai avatar: VRMManager class not found');
+      window.aiVrmManager = window.aiVrmManager || new VRMManager();
+      await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, path, {
+        canvasId: 'ai-l2d-canvas',
+        containerId: 'ai-l2d-container',
+        label: 'AI VRM',
+      });
+      window.__focusL2DAt = (tx, ty) => window.__SoccerSetAiVrmFocus(tx, ty);
+      window.__SoccerAiAvatar = { type: 'vrm', path, ready: true };
+      emitEvent('ai-avatar-changed', { type, path });
+      return;
+    }
+    if (type !== 'live2d') throw new Error('ai avatar: only live2d/vrm supported');
     // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
     // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
     const loadPromise = window.live2dManager.loadModel(path);
@@ -1935,6 +2117,7 @@
       m.alpha = 1;
       if (window.live2dManager.pixi_app?.view) window.live2dManager.pixi_app.view.style.opacity = '1';
     }
+    window.__SoccerAiAvatar = { type: 'live2d', path, ready: true };
     emitEvent('ai-avatar-changed', { type, path });
   }
 
@@ -1964,7 +2147,12 @@
     setPlayerAvatar,
     setAiAvatar,
     getPlayerAvatar: () => ({ type: 'vrm', path: window.vrmManager?.currentModel?.url }),
-    getAiAvatar:    () => ({ type: 'live2d', path: window.live2dManager?.currentModel?.internalModel?.settings?.url }),
+    getAiAvatar:    () => {
+      if (window.__SoccerAiAvatar?.type === 'vrm') {
+        return { type: 'vrm', path: window.aiVrmManager?.currentModel?.url || window.__SoccerAiAvatar.path };
+      }
+      return { type: 'live2d', path: window.live2dManager?.currentModel?.internalModel?.settings?.url };
+    },
     // speech
     say,
     triggerScene,
@@ -3911,8 +4099,8 @@
       }
     }
 
-    // AI：L2D 没加载成功的话，用方块 fallback
-    if (!window.live2dManager?.currentModel) {
+    // AI：头像没加载成功的话，用方块 fallback
+    if (!window.__SoccerAiAvatar?.ready) {
       drawChar(state.ai);
     }
 
