@@ -32,7 +32,7 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
-from utils.config_manager import get_reserved
+from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
 from config import (
     AUTOSTART_CSRF_TOKEN,
     CHARACTER_SYSTEM_RESERVED_FIELDS,
@@ -802,6 +802,8 @@ async def update_core_config(request: Request):
         await asyncio.to_thread(
             config_manager.save_json_config, 'core_config.json', core_cfg
         )
+
+        await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
