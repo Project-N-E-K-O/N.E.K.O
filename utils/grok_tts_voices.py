@@ -83,7 +83,13 @@ def normalize_grok_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     parameter, because the routing layer accepts aliases like ``male`` /
     ``女声`` (via `NativeVoiceProvider.is_voice`) but xAI's endpoint only
     accepts canonical ids (eve/ara/leo/rex/sal) or 8-char custom voice ids.
+
+    Empty / unrecognized input always resolves to ``GROK_TTS_DEFAULT_VOICE``
+    (eve by default) so grok_streaming_tts_worker never forwards an empty
+    ``voice`` query param — even on the degraded code path where
+    ``api_providers.json`` failed to load and `GROK_PROVIDER` is None.
     """
     if GROK_PROVIDER is None:
-        return (voice_id or "").strip(), False
+        normalized = (voice_id or "").strip()
+        return (normalized or GROK_TTS_DEFAULT_VOICE), False
     return GROK_PROVIDER.normalize(voice_id)

@@ -80,9 +80,18 @@ if GEMINI_PROVIDER is not None:
 
 def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
     """Wire-format helper for Gemini-bound code paths (gemini_tts_worker,
-    omni_realtime_client). Cross-cutting code should go through the registry."""
+    omni_realtime_client). Cross-cutting code should go through the registry.
+
+    Empty / unrecognized input always resolves to ``GEMINI_TTS_DEFAULT_VOICE``
+    (Leda by default) so callers like gemini_tts_worker never send an empty
+    ``voiceName`` to the Gemini API — even on the degraded code path where
+    ``api_providers.json`` failed to load and `GEMINI_PROVIDER` is None.
+    Matches the behavior NativeVoiceProvider.normalize() provides in the
+    happy path.
+    """
     if GEMINI_PROVIDER is None:
-        return (voice_id or "").strip(), False
+        normalized = (voice_id or "").strip()
+        return (normalized or GEMINI_TTS_DEFAULT_VOICE), False
     return GEMINI_PROVIDER.normalize(voice_id)
 
 
