@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker, MasteryTracker, _difficulty_to_float
@@ -90,6 +91,26 @@ def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp
         store.close()
 
 
+def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        due_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        for index in range(12):
+            topic_id = f"review_topic_{index}"
+            store.ensure_topic(topic_id=topic_id, name=f"Review Topic {index}")
+            card = tracker.fsrs.new_knowledge_card(topic_id).to_dict()
+            card["due"] = due_at
+            store.upsert_fsrs_card(topic_id=topic_id, card=card, last_rating=3)
+
+        summary = tracker.get_status_summary(limit=8)
+
+        assert len(tracker.get_review_queue(limit=8)) == 8
+        assert summary["due_review_count"] == 12
+    finally:
+        store.close()
+
+
 def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -162,6 +183,73 @@ def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
             "review_log": 2,
             "knowledge_evidence": 2,
         }
+    finally:
+        store.close()
+
+
+def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        store.ensure_session(session_id="unknown-trim-session", mode="interactive")
+        for index in range(3):
+            store.add_qa_record(
+                session_id="unknown-trim-session",
+                topic_id="",
+                question={"question": f"unknown q{index}"},
+                user_answer="answer",
+                eval_result={"verdict": "correct"},
+                mode="interactive",
+                history_limit=2,
+            )
+
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT question
+                FROM qa_records
+                WHERE topic_id IS NULL
+                ORDER BY id
+                """
+            ).fetchall()
+
+        questions = [json.loads(row[0])["question"] for row in rows]
+        assert questions == ["unknown q1", "unknown q2"]
+    finally:
+        store.close()
+
+
+def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        original_add_qa_record = store.add_qa_record
+
+        def capped_add_qa_record(**kwargs):
+            kwargs["history_limit"] = 2
+            return original_add_qa_record(**kwargs)
+
+        store.add_qa_record = capped_add_qa_record  # type: ignore[method-assign]
+        tracker = KnowledgeTracker(store)
+        for index in range(3):
+            tracker.on_answer(
+                topic_id="",
+                question={"topic": f"runtime topic {index}", "question": f"q{index}", "answer": "a"},
+                user_answer="a",
+                eval_result={"verdict": "correct", "score": 90},
+                mode="interactive",
+            )
+
+        with sqlite3.connect(store.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT question
+                FROM qa_records
+                WHERE topic_id IS NULL
+                ORDER BY id
+                """
+            ).fetchall()
+
+        questions = [json.loads(row[0])["question"] for row in rows]
+        assert questions == ["q1", "q2"]
     finally:
         store.close()
 

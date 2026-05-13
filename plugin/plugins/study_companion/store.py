@@ -316,10 +316,26 @@ class StudyStore:
         *,
         table: str,
         group_column: str,
-        group_value: str,
+        group_value: str | None,
         history_limit: int,
     ) -> None:
         limit = max(1, int(history_limit))
+        if group_value is None:
+            conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE {group_column} IS NULL
+                  AND id NOT IN (
+                      SELECT id
+                      FROM {table}
+                      WHERE {group_column} IS NULL
+                      ORDER BY id DESC
+                      LIMIT ?
+                  )
+                """,
+                (limit,),
+            )
+            return
         conn.execute(
             f"""
             DELETE FROM {table}
@@ -1270,14 +1286,13 @@ class StudyStore:
                 """,
                 (self._json_dumps(touched), session_key),
             )
-            if db_topic_key is not None:
-                self._trim_append_only_rows(
-                    conn,
-                    table="qa_records",
-                    group_column="topic_id",
-                    group_value=db_topic_key,
-                    history_limit=history_limit,
-                )
+            self._trim_append_only_rows(
+                conn,
+                table="qa_records",
+                group_column="topic_id",
+                group_value=db_topic_key,
+                history_limit=history_limit,
+            )
             conn.commit()
 
     def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:

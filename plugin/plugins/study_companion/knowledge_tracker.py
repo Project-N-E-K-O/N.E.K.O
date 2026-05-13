@@ -445,6 +445,10 @@ class KnowledgeTracker:
             result.append({**item, "topic": topic})
         return result
 
+    def count_due_reviews(self) -> int:
+        rows = self.store.list_fsrs_cards(limit=5000)
+        return len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
+
     def get_weak_topics(self, limit: int = 5) -> list[dict[str, Any]]:
         overview = self.store.list_mastery_overview(limit=1000)
         weak = [
@@ -455,16 +459,22 @@ class KnowledgeTracker:
         weak.sort(key=lambda item: (float(item.get("mastery") or 0.0), -float(item.get("confidence") or 0.0)))
         return weak[: max(1, int(limit))]
 
+    def count_weak_topics(self) -> int:
+        overview = self.store.list_mastery_overview(limit=5000)
+        return sum(
+            1
+            for item in overview
+            if float(item.get("mastery") or 0.0) < 0.60 or "false_mastery" in (item.get("flags") or [])
+        )
+
     def get_status_summary(self, *, limit: int = 8) -> dict[str, Any]:
         overview = self.store.list_mastery_overview(limit=limit)
-        weak = self.get_weak_topics(limit=limit)
-        review = self.get_review_queue(limit=limit)
         return {
             "topic_count": self.store.count_topics(),
             "tracked_topic_count": self.store.count_tracked_mastery_topics(),
             "average_mastery": round(float(self.store.average_latest_mastery()), 4),
-            "weak_topic_count": len(weak),
-            "due_review_count": len(review),
+            "weak_topic_count": self.count_weak_topics(),
+            "due_review_count": self.count_due_reviews(),
             "last_updated_at": overview[0].get("updated_at") if overview else "",
             "candidate_quality": self.quality.status_summary(limit=limit),
         }

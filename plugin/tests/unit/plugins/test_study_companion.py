@@ -279,6 +279,8 @@ def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> No
         assert len(store.list_mastery_overview(limit=8)) == 8
         assert summary["tracked_topic_count"] == 12
         assert summary["average_mastery"] == 0.6667
+        assert summary["weak_topic_count"] == 4
+        assert len(KnowledgeTracker(store).get_weak_topics(limit=2)) == 2
     finally:
         store.close()
 
